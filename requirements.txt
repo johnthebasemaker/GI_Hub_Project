@@ -1,0 +1,8 @@
+bcrypt
+streamlit
+pywhatkit
+fpdf2
+openpyxl
+plotly
+pytest
+pywin32; sys_platform == 'win32'

@@ -1,0 +1,3 @@
+{
+  "tests/test_auth.py::TestRolePermissionMatrix::test_supervisor_cannot_access_reports": true
+}

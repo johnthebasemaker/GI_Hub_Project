@@ -1,0 +1,17 @@
+[theme]
+# General Industries Corporate Theme — Deep Blue & Gold
+primaryColor             = "#D4AF37"   # Corporate Gold (buttons, highlights)
+backgroundColor          = "#0A1628"   # Deep navy background
+secondaryBackgroundColor = "#162038"   # Card / sidebar surface
+textColor                = "#F0F4F8"   # Primary text
+font                     = "sans serif"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+headless      = true
+maxUploadSize = 50
+
+[runner]
+fastReruns = true

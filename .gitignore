@@ -1,0 +1,15 @@
+# Ignore virtual environments
+.venv/
+venv/
+env/
+
+# Ignore databases (Keep your local data local!)
+*.db
+*.sqlite3
+
+# Ignore passwords/secrets
+.env
+
+# Ignore Python cache clutter
+__pycache__/
+*.pyc
