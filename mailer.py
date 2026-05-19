@@ -16,9 +16,8 @@ Pure-Python API (testable without Streamlit):
 
 import io
 import os
+import platform
 import datetime
-import win32com.client as win32
-import pythoncom
 
 import pandas as pd
 import openpyxl
@@ -377,8 +376,9 @@ def send_eod_report(
     report_date: datetime.date = None,
 ) -> tuple[bool, str]:
     """
-    Builds the Daily Report and uses the local Outlook Desktop App
-    to draft the email and attach the file.
+    Builds the Daily Report and opens a local email draft.
+    - Windows: uses the Outlook Desktop App (COM automation)
+    - Mac/Linux: opens the system default mail app via a mailto: link
     """
     if not recipients:
         return False, "No recipients specified."
@@ -390,68 +390,97 @@ def send_eod_report(
     filename = f"GI_EOD_Report_{report_date.strftime('%Y%m%d')}.xlsx"
     temp_filepath = os.path.abspath(filename)
 
-    try:
-        # Initialize Windows COM for Streamlit's multi-threading
-        pythoncom.CoInitialize()
+    # 1. Build and save the Excel report (shared by both paths)
+    xlsx_bytes = build_daily_report(conn=conn, report_date=report_date)
+    with open(temp_filepath, "wb") as f:
+        f.write(xlsx_bytes)
 
-        # 1. Build Excel file and save to temporary path
-        xlsx_bytes = build_daily_report(conn=conn, report_date=report_date)
-        with open(temp_filepath, "wb") as f:
-            f.write(xlsx_bytes)
+    # ── Windows path: Outlook COM automation ────────────────────────────────
+    if platform.system() == "Windows":
+        try:
+            import win32com.client as win32
+            import pythoncom
+            pythoncom.CoInitialize()
 
-        # 2. Connect to local Outlook App
-        outlook = win32.Dispatch('outlook.application')
-        mail = outlook.CreateItem(0)  # 0 = Mail Item
+            outlook = win32.Dispatch('outlook.application')
+            mail = outlook.CreateItem(0)  # 0 = Mail Item
+            mail.To = "; ".join(recipients)  # Outlook uses semicolons
+            mail.Subject = f"GI Inventory — EOD Report {date_str}"
+            mail.HTMLBody = f"""
+            <html><body style="font-family: Calibri, Arial, sans-serif; color: #222;">
+              <div style="background:#003366; padding:20px; border-radius:8px 8px 0 0;">
+                <h2 style="color:#D4AF37; margin:0;">⚡ General Industries</h2>
+                <p style="color:#ccc; margin:4px 0 0 0;">End-of-Day Inventory Report — {date_str}</p>
+              </div>
+              <div style="padding:20px; background:#f8f9fa; border:1px solid #ddd; border-radius:0 0 8px 8px;">
+                <p>Dear Management,</p>
+                <p>Please find attached the <strong>End-of-Day Inventory Issue Report</strong>
+                   for <strong>{date_str}</strong>.</p>
+                <p>The report includes:</p>
+                <ul>
+                  <li>All material issues committed to the Master Log today</li>
+                  <li>Any items still in the pending staging queue</li>
+                  <li>Daily summary statistics</li>
+                </ul>
+                <p style="color:#666; font-size:12px; margin-top:30px; border-top:1px solid #ddd; padding-top:10px;">
+                  This is an automated message from the GI Lightning Hub v2.0.<br>
+                  Do not reply to this email.
+                </p>
+              </div>
+            </body></html>
+            """
+            mail.Attachments.Add(temp_filepath)
+            mail.Display(True)
 
-        # 3. Populate email
-        mail.To = "; ".join(recipients)  # Outlook uses semicolons
-        mail.Subject = f"GI Inventory — EOD Report {date_str}"
-        
-        mail.HTMLBody = f"""
-        <html><body style="font-family: Calibri, Arial, sans-serif; color: #222;">
-          <div style="background:#003366; padding:20px; border-radius:8px 8px 0 0;">
-            <h2 style="color:#D4AF37; margin:0;">⚡ General Industries</h2>
-            <p style="color:#ccc; margin:4px 0 0 0;">End-of-Day Inventory Report — {date_str}</p>
-          </div>
-          <div style="padding:20px; background:#f8f9fa; border:1px solid #ddd; border-radius:0 0 8px 8px;">
-            <p>Dear Management,</p>
-            <p>Please find attached the <strong>End-of-Day Inventory Issue Report</strong>
-               for <strong>{date_str}</strong>.</p>
-            <p>The report includes:</p>
-            <ul>
-              <li>All material issues committed to the Master Log today</li>
-              <li>Any items still in the pending staging queue</li>
-              <li>Daily summary statistics</li>
-            </ul>
-            <p style="color:#666; font-size:12px; margin-top:30px; border-top:1px solid #ddd; padding-top:10px;">
-              This is an automated message from the GI Lightning Hub v2.0.<br>
-              Do not reply to this email.
-            </p>
-          </div>
-        </body></html>
-        """
+            if os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
 
-        # 4. Attach the Excel file
-        mail.Attachments.Add(temp_filepath)
+            return True, "Draft opened in Outlook! Please review and click Send."
 
-        # 5. Pop up the email on screen
-        mail.Display(True)
+        except Exception as e:
+            if os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
+            return False, f"Outlook Desktop App error: {str(e)}"
 
-        # Clean up the temporary file from the system
-        if os.path.exists(temp_filepath):
-            os.remove(temp_filepath)
+        finally:
+            try:
+                import pythoncom
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
-        return True, "Draft opened in Outlook! Please review and click Send."
+    # ── Mac / Linux path: default mail app via mailto: ──────────────────────
+    else:
+        try:
+            import subprocess
+            import urllib.parse
 
-    except Exception as e:
-        # Ensure cleanup even if something fails
-        if os.path.exists(temp_filepath):
-            os.remove(temp_filepath)
-        return False, f"Outlook Desktop App error: {str(e)}"
-    
-    finally:
-        # Safely close the Windows COM connection
-        pythoncom.CoUninitialize()
+            subject = urllib.parse.quote(f"GI Inventory — EOD Report {date_str}")
+            body_text = (
+                f"Dear Management,\n\n"
+                f"Please find attached the End-of-Day Inventory Issue Report for {date_str}.\n\n"
+                f"The report includes:\n"
+                f"  - All material issues committed to the Master Log today\n"
+                f"  - Any items still in the pending staging queue\n"
+                f"  - Daily summary statistics\n\n"
+                f"Attachment saved at:\n{temp_filepath}\n\n"
+                f"This is an automated message from the GI Lightning Hub v2.0."
+            )
+            to_field = urllib.parse.quote(", ".join(recipients))
+            body_field = urllib.parse.quote(body_text)
+            mailto_url = f"mailto:{to_field}?subject={subject}&body={body_field}"
+
+            # Open the system default mail app
+            subprocess.Popen(["open", mailto_url])
+
+            return (
+                True,
+                f"Draft opened in your default Mail app! "
+                f"Please attach the report manually from:\n{temp_filepath}"
+            )
+
+        except Exception as e:
+            return False, f"Failed to open Mail app: {str(e)}"
 
 
 def send_pr_logistics_alert(pr_number: str, sap_code: str, mat_name: str, site_id: str, qty_received: float, balance_info: dict) -> tuple[bool, str]:
@@ -553,86 +582,123 @@ def send_pr_logistics_alert(pr_number: str, sap_code: str, mat_name: str, site_i
 
 def draft_logistics_email_via_outlook(pr_number: str, site_id: str, pr_df) -> tuple[bool, str]:
     """
-    Module 6: Opens a local Outlook draft with a well-formatted HTML table 
+    Module 6: Opens a local email draft with a well-formatted HTML table 
     showing the pending balance for a specific Purchase Request.
+    - Windows: uses the Outlook Desktop App (COM automation)
+    - Mac/Linux: opens the system default mail app via a mailto: link
     """
-    try:
-        import win32com.client as win32
-        import pythoncom  # <-- NEW IMPORT
-        import os
-        from dotenv import load_dotenv
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+    logistics_recipient = os.getenv("LOGISTICS_EMAIL", "logistics@generalindustries.net")
 
-        # Announce this thread to Windows OS so it allows Outlook to open
-        pythoncom.CoInitialize() 
-
-        load_dotenv()
-        logistics_recipient = os.getenv("LOGISTICS_EMAIL", "logistics@generalindustries.net")
-
-        # Connect to the local desktop Outlook app
-        outlook = win32.Dispatch('outlook.application')
-        mail = outlook.CreateItem(0)
-        mail.To = logistics_recipient
-        mail.Subject = f"🔔 Pending Delivery Advisory: PR {pr_number} ({site_id})"
-
-        # 1. Build the HTML Table Rows dynamically from the Database data
-        table_rows = ""
-        for _, row in pr_df.iterrows():
-            mat_code = row.get("Material_Code", "N/A")
-            name = row.get("Material_Name", "Unknown Material")
-            req = float(row.get("Requested_Qty", 0))
-            pend = float(row.get("Pending_Qty", 0))
-            rec = req - pend
-
-            # Color code the pending balance (Green if fulfilled, Red if still waiting)
-            status_color = "#27AE60" if pend <= 0 else "#C0392B"
-
-            table_rows += f"""
-            <tr>
-                <td style="padding: 8px; border: 1px solid #ddd;">{mat_code}</td>
-                <td style="padding: 8px; border: 1px solid #ddd;">{name}</td>
-                <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{req}</td>
-                <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{rec}</td>
-                <td style="padding: 8px; border: 1px solid #ddd; text-align: center; color: {status_color}; font-weight: bold;">{max(0, pend)}</td>
-            </tr>
-            """
-
-        # 2. Build the full branded HTML email body
-        html_body = f"""
-        <html>
-        <body style="font-family: 'Segoe UI', Arial, sans-serif; color: #333; line-height: 1.6;">
-            <h2 style="color: #0A192F;">General Industries Hub — Logistics Advisory</h2>
-            <p>Dear Logistics Team,</p>
-            <p>Please find the current pending delivery status for <strong>PR {pr_number}</strong> requested by <strong>{site_id}</strong>.</p>
-
-            <table style="width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px;">
-                <thead>
-                    <tr style="background-color: #0A192F; color: #FFF;">
-                        <th style="padding: 10px; border: 1px solid #0A192F; text-align: left;">Material Code</th>
-                        <th style="padding: 10px; border: 1px solid #0A192F; text-align: left;">Description</th>
-                        <th style="padding: 10px; border: 1px solid #0A192F;">Requested</th>
-                        <th style="padding: 10px; border: 1px solid #0A192F;">Received</th>
-                        <th style="padding: 10px; border: 1px solid #0A192F;">Pending Balance</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {table_rows}
-                </tbody>
-            </table>
-            
-            <p style="margin-top: 20px;">Kindly expedite the pending materials to ensure uninterrupted site operations.</p>
-            <p>Best Regards,<br><strong>{site_id} Hub Management</strong></p>
-        </body>
-        </html>
+    # Build the HTML Table Rows dynamically from the Database data
+    table_rows = ""
+    for _, row in pr_df.iterrows():
+        mat_code = row.get("Material_Code", "N/A")
+        name = row.get("Material_Name", "Unknown Material")
+        req = float(row.get("Requested_Qty", 0))
+        pend = float(row.get("Pending_Qty", 0))
+        rec = req - pend
+        status_color = "#27AE60" if pend <= 0 else "#C0392B"
+        table_rows += f"""
+        <tr>
+            <td style="padding: 8px; border: 1px solid #ddd;">{mat_code}</td>
+            <td style="padding: 8px; border: 1px solid #ddd;">{name}</td>
+            <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{req}</td>
+            <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{rec}</td>
+            <td style="padding: 8px; border: 1px solid #ddd; text-align: center; color: {status_color}; font-weight: bold;">{max(0, pend)}</td>
+        </tr>
         """
 
-        mail.HTMLBody = html_body
+    html_body = f"""
+    <html>
+    <body style="font-family: 'Segoe UI', Arial, sans-serif; color: #333; line-height: 1.6;">
+        <h2 style="color: #0A192F;">General Industries Hub — Logistics Advisory</h2>
+        <p>Dear Logistics Team,</p>
+        <p>Please find the current pending delivery status for <strong>PR {pr_number}</strong> requested by <strong>{site_id}</strong>.</p>
+
+        <table style="width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px;">
+            <thead>
+                <tr style="background-color: #0A192F; color: #FFF;">
+                    <th style="padding: 10px; border: 1px solid #0A192F; text-align: left;">Material Code</th>
+                    <th style="padding: 10px; border: 1px solid #0A192F; text-align: left;">Description</th>
+                    <th style="padding: 10px; border: 1px solid #0A192F;">Requested</th>
+                    <th style="padding: 10px; border: 1px solid #0A192F;">Received</th>
+                    <th style="padding: 10px; border: 1px solid #0A192F;">Pending Balance</th>
+                </tr>
+            </thead>
+            <tbody>
+                {table_rows}
+            </tbody>
+        </table>
         
-        # This commands Windows to physically pop the Outlook window open on your screen
-        mail.Display(True) 
-        
-        return True, f"Outlook draft opened for PR {pr_number}!"
-    
-    except ImportError:
-        return False, "pywin32 library not found. Please run: pip install pywin32"
-    except Exception as e:
-        return False, f"Failed to open Outlook Desktop App: {str(e)}"
+        <p style="margin-top: 20px;">Kindly expedite the pending materials to ensure uninterrupted site operations.</p>
+        <p>Best Regards,<br><strong>{site_id} Hub Management</strong></p>
+    </body>
+    </html>
+    """
+
+    # ── Windows path: Outlook COM automation ────────────────────────────────
+    if platform.system() == "Windows":
+        try:
+            import win32com.client as win32
+            import pythoncom
+            pythoncom.CoInitialize()
+
+            outlook = win32.Dispatch('outlook.application')
+            mail = outlook.CreateItem(0)
+            mail.To = logistics_recipient
+            mail.Subject = f"🔔 Pending Delivery Advisory: PR {pr_number} ({site_id})"
+            mail.HTMLBody = html_body
+            mail.Display(True)
+
+            return True, f"Outlook draft opened for PR {pr_number}!"
+
+        except ImportError:
+            return False, "pywin32 library not found. Please run: pip install pywin32"
+        except Exception as e:
+            return False, f"Failed to open Outlook Desktop App: {str(e)}"
+        finally:
+            try:
+                import pythoncom
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+    # ── Mac / Linux path: default mail app via mailto: ──────────────────────
+    else:
+        try:
+            import subprocess
+            import urllib.parse
+
+            subject = urllib.parse.quote(f"🔔 Pending Delivery Advisory: PR {pr_number} ({site_id})")
+
+            # Plain-text body for mailto (HTML is not supported in mailto: links)
+            lines = [f"Dear Logistics Team,",
+                     f"",
+                     f"Please find below the pending delivery status for PR {pr_number} requested by {site_id}.",
+                     f""]
+            for _, row in pr_df.iterrows():
+                mat_code = row.get("Material_Code", "N/A")
+                name = row.get("Material_Name", "Unknown Material")
+                req = float(row.get("Requested_Qty", 0))
+                pend = float(row.get("Pending_Qty", 0))
+                rec = req - pend
+                lines.append(f"  [{mat_code}] {name} | Requested: {req} | Received: {rec} | Pending: {max(0, pend)}")
+            lines += ["",
+                      "Kindly expedite the pending materials to ensure uninterrupted site operations.",
+                      "",
+                      f"Best Regards,",
+                      f"{site_id} Hub Management"]
+
+            body_field = urllib.parse.quote("\n".join(lines))
+            to_field = urllib.parse.quote(logistics_recipient)
+            mailto_url = f"mailto:{to_field}?subject={subject}&body={body_field}"
+
+            subprocess.Popen(["open", mailto_url])
+
+            return True, f"Draft opened in your default Mail app for PR {pr_number}!"
+
+        except Exception as e:
+            return False, f"Failed to open Mail app: {str(e)}"
