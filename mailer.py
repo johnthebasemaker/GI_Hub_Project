@@ -492,9 +492,9 @@ def send_pr_logistics_alert(pr_number: str, sap_code: str, mat_name: str, site_i
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     import os
-    from dotenv import load_load_env
+    from dotenv import load_dotenv
     
-    load_env()
+    load_dotenv()
     
     # Load configuration settings from environment
     sender = os.getenv("SMTP_USER", "hub-alerts@generalindustries.net")

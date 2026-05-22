@@ -685,43 +685,73 @@ def page_admin_portal(user: dict) -> None:
                 st.write("") # Spacing
                 st.write("")
                 if st.button("✅ Approve Transfer", type="primary", width="stretch"):
-                    update_request_status(conn, req_id, "approved", user["username"], admin_notes)
-                    st.success(f"Request #{req_id} Approved! Logistics notified.")
                     
-                    # --- 📱 WHATSAPP AUTOMATION INJECTION ---
-                    from database import queue_whatsapp_alert, get_phone_by_username
+                    # 🛑 STEP 1: Force Admin to type instructions
+                    if not admin_notes or admin_notes.strip() == "":
+                        st.error("⚠️ Please type instructions in the 'Admin Notes' box before approving.")
+                        st.stop() # Halts the script here until they type something
                     
-                    # 1. Isolate the specific row that was just approved
+                    # 🔍 STEP 2: Extract all the rich details for the message
                     target_row = reqs_df[reqs_df["id"] == req_id].iloc[0]
-                    target_site = target_row.get("Site_ID", "Unknown Site")
                     
-                    # 2. Get the phone number of the HOD (Assuming you have an 'hod' user, 
-                    # or you can pull the specific requester if 'username' is in reqs_df)
-                    requester_username = target_row.get("username", "hod") 
-                    target_phone = get_phone_by_username(requester_username)
+                    sap_val = target_row["SAP_Code"]
+                    req_qty = target_row["requested_qty"]
+                    req_date = target_row["created_at"]
+                    target_site = target_row.get("target_site", "Unknown Source") 
                     
-                    # 3. Queue the automated message
-                    if target_phone:
-                        msg = f"✅ TRANSFER APPROVED: Admin has approved Material Request #{req_id} for {target_site}. \nAdmin Notes: {admin_notes if admin_notes else 'None'}"
+                    # Safely grab the requesting site and username (depending on your exact DB schema)
+                    req_site = target_row.get("requesting_site", target_row.get("Site_ID", "Unknown Destination"))
+                    requester_user = target_row.get("requested_by", target_row.get("username", "hod"))
+                    
+                    # Query the inventory to get the exact Material Names
+                    inv_df = pd.read_sql("SELECT Material_Code, Equipment_Description FROM inventory WHERE SAP_Code = ?", conn, params=(sap_val,))
+                    if not inv_df.empty:
+                        mat_code = inv_df.iloc[0]["Material_Code"]
+                        mat_desc = inv_df.iloc[0]["Equipment_Description"]
+                    else:
+                        mat_code = "N/A"
+                        mat_desc = "Unknown Material"
+
+                    # 💾 STEP 3: Save to Database
+                    update_request_status(conn, req_id, "approved", user["username"], admin_notes)
+                    
+                    # 📱 STEP 4: Format and Queue the WhatsApp Message
+                    from database import queue_whatsapp_alert, get_phone_by_username
+                    target_phone = get_phone_by_username(requester_user)
+                    
+                    if target_phone and len(target_phone) >= 5:
+                        # Using asterisks (*) automatically bolds text in WhatsApp!
+                        msg = f"""✅ *TRANSFER APPROVED*
+ID: #{req_id}
+From: {target_site} ➡️ To: {req_site}
+
+📦 *Material Details:*
+• SAP Code: {sap_val}
+• Mat Code: {mat_code}
+• Item: {mat_desc}
+• Approved Qty: {req_qty}
+
+🕒 Requested On: {req_date}
+👤 Requested By: {requester_user}
+
+📝 *Admin Instructions:*
+{admin_notes}"""
                         queue_whatsapp_alert(target_phone, msg)
-                    # ----------------------------------------
+                        st.success(f"✅ Approved! WhatsApp queued for {requester_user}.")
+                    else:
+                        st.warning(f"✅ Approved, but no valid phone number found for {requester_user}.")
                     
                     st.rerun()
                     
                 if st.button("❌ Reject", width="stretch"):
+                    if not admin_notes or admin_notes.strip() == "":
+                        st.error("⚠️ Please provide a reason in the 'Admin Notes' box before rejecting.")
+                        st.stop()
+                        
                     update_request_status(conn, req_id, "rejected", user["username"], admin_notes)
+                    
+                    # (Optional) Add the same rich text block here if you want WhatsApp rejection alerts!
                     st.warning(f"Request #{req_id} Rejected.")
-                    
-                    # --- 📱 WHATSAPP AUTOMATION INJECTION (OPTIONAL FOR REJECTIONS) ---
-                    from database import queue_whatsapp_alert, get_phone_by_username
-                    target_row = reqs_df[reqs_df["id"] == req_id].iloc[0]
-                    target_phone = get_phone_by_username(target_row.get("username", "hod"))
-                    
-                    if target_phone:
-                        msg = f"❌ TRANSFER REJECTED: Admin has rejected Material Request #{req_id}. \nReason: {admin_notes if admin_notes else 'No reason provided.'}"
-                        queue_whatsapp_alert(target_phone, msg)
-                    # ----------------------------------------
-                    
                     st.rerun()
         conn.close()
 

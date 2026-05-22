@@ -58,7 +58,8 @@ def inject_custom_css() -> None:
     }}
 
     /* ── Hide Streamlit default branding ── */
-    #MainMenu, footer, header {{ visibility: hidden; }}
+    #MainMenu, footer {{ visibility: hidden; }}
+    header {{ background: transparent !important; }}
 
     /* ── Sidebar styling ── */
     section[data-testid="stSidebar"] {{
@@ -129,6 +130,25 @@ def inject_custom_css() -> None:
         font-size: 0.75rem;
         font-weight: 600;
     }}
+    
+    /* 🚀 UPGRADE: Make the collapsed sidebar arrow massive and branded */
+[data-testid="collapsedControl"] {{
+        background-color: #D4AF37 !important; /* Brand Gold */
+        color: #0A192F !important; /* Brand Navy */
+        border-radius: 0px 8px 8px 0px !important;
+        padding: 5px 15px 5px 10px !important;
+        border: 2px solid #0A192F !important;
+        box-shadow: 4px 4px 10px rgba(0,0,0,0.3) !important;
+        transition: all 0.3s ease !important;
+        z-index: 999999 !important; /* Ensure it floats above everything */
+    }}
+        
+    /* Make it glow when hovered */
+    [data-testid="collapsedControl"]:hover {{
+        background-color: #F5A623 !important;
+        cursor: pointer;
+    }}
+
     </style>
     """, unsafe_allow_html=True)
 

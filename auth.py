@@ -434,10 +434,19 @@ def render_user_management_tab(current_username: str) -> None:
         display_df = users_df.copy()
         display_df["Role"] = display_df["role"].apply(_badge)
 
+        conn = get_connection() 
         display_df = pd.read_sql("SELECT id, username, role, Site_ID, Phone_Number, created_at FROM users", conn)
         
-        # --- UPGRADE: Added Site_ID and Phone_Number to the display table ---
-        display_df = display_df.rename(columns={"username": "Username", "created_at": "Created", "Site_ID": "Site", "Phone_Number": "Phone"})
+        # 1. Rename the columns cleanly BEFORE calling the dataframe
+        display_df = display_df.rename(columns={
+            "username": "Username", 
+            "role": "Role",
+            "created_at": "Created", 
+            "Site_ID": "Site", 
+            "Phone_Number": "Phone"
+        })
+        
+        # 2. Pass the clean data into Streamlit
         st.dataframe(
             display_df[["Username", "Role", "Site", "Phone", "Created"]],
             use_container_width=True,
