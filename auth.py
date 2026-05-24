@@ -386,6 +386,17 @@ def login_form() -> None:
                             ok, msg = submit_registration_request(new_user, hash_password(new_pass), role_map[new_role], new_site, new_phone)
                             if ok:
                                 st.success(msg)
+                                
+                                # --- 📱 WHATSAPP AUTOMATION INJECTION ---
+                                from database import queue_whatsapp_alert, get_phone_by_username
+                                
+                                # Fetch the Admin's phone number
+                                admin_phone = get_phone_by_username("admin")
+                                if admin_phone:
+                                    alert_msg = f"🔔 *NEW ACCESS REQUEST*\n👤 User: {new_user}\n🏢 Site: {new_site}\n🛠️ Role: {new_role}\n\nPlease review in the Admin Portal."
+                                    queue_whatsapp_alert(admin_phone, alert_msg)
+                                # ----------------------------------------
+                                
                             else:
                                 st.error(msg)
 

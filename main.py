@@ -497,7 +497,23 @@ def page_hod_portal(user: dict) -> None:
                     c.execute("DELETE FROM pending_issues WHERE COALESCE(Site_ID,'HQ') = ?", (site_id,))
                     edited_admin_df.to_sql("pending_issues", conn, if_exists="append", index=False)
                     conn.commit()
-                    n = commit_eod(conn) # Commits global for now, assuming Admin handles logistics
+                    n = commit_eod(conn) 
+                    
+                    # --- 📱 WHATSAPP AUTOMATION INJECTION ---
+                    from database import queue_whatsapp_alert, get_phone_by_username, get_low_stock_items
+                    
+                    # Check if this EOD commit caused any items to drop below minimum
+                    low_df = get_low_stock_items(conn)
+                    if not low_df.empty:
+                        hod_phone = get_phone_by_username(user["username"])
+                        if hod_phone:
+                            critical_count = len(low_df[low_df["Current_Stock"] <= 0])
+                            warning_count = len(low_df) - critical_count
+                            
+                            alert_msg = f"🚨 *POST-EOD STOCK ALERT ({site_id})*\nCommit successful, but your inventory has dropped below safe levels:\n\n🔴 {critical_count} Critical (Empty/Negative)\n🟡 {warning_count} Low Stock\n\nPlease check the Live Dashboard."
+                            queue_whatsapp_alert(hod_phone, alert_msg)
+                    # ----------------------------------------
+                    
                     st.balloons()
                     st.success(f"✅ {n} record(s) committed to Master Database!")
                     st.rerun()
