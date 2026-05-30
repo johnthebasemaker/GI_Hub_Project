@@ -13,3 +13,78 @@ Time: 13:53
 Phone Number: +966569233053
 Message: 🔔 *NEW ACCESS REQUEST*👤 User: Mydeen🏢 Site: Jubail Plant🛠️ Role: Floor WorkerPlease review in the Admin Portal.
 --------------------
+Date: 24/5/2026
+Time: 17:58
+Phone Number: +966569233053
+Message: 🔔 *NEW ACCESS REQUEST*👤 User: John03🏢 Site: HQ🛠️ Role: Floor WorkerPlease review in the Admin Portal.
+--------------------
+Date: 24/5/2026
+Time: 18:33
+Phone Number: +966569233053
+Message: 🔔 *NEW ACCESS REQUEST*👤 User: John04🏢 Site: HQ🛠️ Role: Floor WorkerPlease review in the Admin Portal.
+--------------------
+Date: 24/5/2026
+Time: 18:34
+Phone Number: +916369719235
+Message: ❌ *ACCESS DENIED*Hello John03,Your registration request for the General Industries HUB has been declined by the Admin. Please contact your supervisor for further details.
+--------------------
+Date: 24/5/2026
+Time: 18:36
+Phone Number: +916369719235
+Message: 🎉 *ACCESS GRANTED*Welcome to the General Industries HUB, John04!Your request for the 'worker' role at HQ has been approved by the Admin. You may now log in to the system.
+--------------------
+Date: 24/5/2026
+Time: 20:6
+Phone Number: +916369719235
+Message: 📝 *NEW LOG ENTRY (HQ)*Floor Worker *John04* just added a new issue to the staging queue:📦 1.1x WATER STORAGE TANK 10000 LThis is pending your review in the End-of-Day commit tab.
+--------------------
+Date: 24/5/2026
+Time: 20:8
+Phone Number: +916369719235
+Message: 🚨 *POST-EOD STOCK ALERT (HQ)*Commit successful, but your inventory has dropped below safe levels:🔴 2 Critical (Empty/Negative)🟡 0 Low StockPlease check the Live Dashboard.
+--------------------
+Date: 24/5/2026
+Time: 20:9
+Phone Number: +916369719235
+Message: 📝 *NEW LOG ENTRY (HQ)*Floor Worker *John04* just added a new issue to the staging queue:📦 1.1x Concrete BlocksThis is pending your review in the End-of-Day commit tab.
+--------------------
+Date: 24/5/2026
+Time: 20:16
+Phone Number: +916369719235
+Message: 📝 *STAGING QUEUE READY (HQ)*Floor Worker *John04* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 24/5/2026
+Time: 20:21
+Phone Number: +966569233053
+Message: 🔔 *NEW ACCESS REQUEST*👤 User: John05🏢 Site: HQ🛠️ Role: Floor WorkerPlease review in the Admin Portal.
+--------------------
+Date: 24/5/2026
+Time: 20:26
+Phone Number: +966569233053
+Message: 🔔 *NEW ACCESS REQUEST*👤 User: John06🏢 Site: HQ🛠️ Role: Floor WorkerPlease review in the Admin Portal.
+--------------------
+Date: 24/5/2026
+Time: 20:30
+Phone Number: +916369719235
+Message: 🎉 *ACCESS GRANTED*Welcome to the General Industries HUB, John05!Your request for the 'worker' role at HQ has been approved by the Admin. You may now log in to the system.
+--------------------
+Date: 24/5/2026
+Time: 20:31
+Phone Number: +916369719235
+Message: 🎉 *ACCESS GRANTED*Welcome to the General Industries HUB, John06!Your request for the 'worker' role at HQ has been approved by the Admin. You may now log in to the system.
+--------------------
+Date: 24/5/2026
+Time: 20:33
+Phone Number: +916369719235
+Message: 📝 *STAGING QUEUE READY (HQ)*Floor Worker *John06* has finalized the staging queue.📦 Total Pending Items: 2This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 24/5/2026
+Time: 20:35
+Phone Number: +916369719235
+Message: 📝 *STAGING QUEUE READY (HQ)*Floor Worker *John06* has finalized the staging queue.📦 Total Pending Items: 2This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 24/5/2026
+Time: 20:36
+Phone Number: +916369719235
+Message: 🚨 *POST-EOD STOCK ALERT (HQ)*Commit successful, but your inventory has dropped below safe levels:🔴 3 Critical (Empty/Negative)🟡 0 Low StockPlease check the Live Dashboard.
+--------------------

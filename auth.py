@@ -486,11 +486,17 @@ def render_user_management_tab(current_username: str) -> None:
                     target_row = pd.read_sql("SELECT * FROM pending_users WHERE id = ?", conn, params=(target_id,))
                     if not target_row.empty:
                         t_user = target_row.iloc[0]
-                        # 🛠️ Transfer the Phone_Number to the active users table
                         c.execute("INSERT INTO users (username, password_hash, role, Site_ID, Phone_Number) VALUES (?, ?, ?, ?, ?)",
                                   (t_user["username"], t_user["password_hash"], t_user["role"], t_user["Site_ID"], t_user["Phone_Number"]))
                         c.execute("UPDATE pending_users SET status = 'approved' WHERE id = ?", (target_id,))
                         conn.commit()
+                        
+                        # --- 📱 WHATSAPP INJECTION: Welcome Message ---
+                        from database import queue_whatsapp_alert
+                        if t_user.get("Phone_Number"):
+                            welcome_msg = f"🎉 *ACCESS GRANTED*\nWelcome to the General Industries HUB, {t_user['username']}!\n\nYour request for the '{t_user['role']}' role at {t_user['Site_ID']} has been approved by the Admin. You may now log in to the system."
+                            queue_whatsapp_alert(t_user["Phone_Number"], welcome_msg)
+                        # ----------------------------------------------
                         
                         from database import log_audit_action
                         log_audit_action(current_username, "APPROVE_USER", "users", f"Approved access for {t_user['username']}")
@@ -501,12 +507,25 @@ def render_user_management_tab(current_username: str) -> None:
             with st.form("reject_user_form"):
                 rej_id = st.selectbox("Select ID to Reject", pending_df["id"].tolist())
                 if st.form_submit_button("❌ Reject Request"):
-                    t_name = pd.read_sql("SELECT username FROM pending_users WHERE id = ?", conn, params=(rej_id,)).iloc[0]["username"]
-                    c.execute("UPDATE pending_users SET status = 'rejected' WHERE id = ?", (rej_id,))
-                    conn.commit()
-                    log_audit_action(current_username, "REJECT_USER", "pending_users", f"Rejected access for {t_name}")
-                    st.warning("Request rejected.")
-                    st.rerun()
+                    # We need to fetch the phone number before we reject them
+                    target_row = pd.read_sql("SELECT username, Phone_Number FROM pending_users WHERE id = ?", conn, params=(rej_id,))
+                    if not target_row.empty:
+                        t_name = target_row.iloc[0]["username"]
+                        t_phone = target_row.iloc[0].get("Phone_Number")
+                        
+                        c.execute("UPDATE pending_users SET status = 'rejected' WHERE id = ?", (rej_id,))
+                        conn.commit()
+                        
+                        # --- 📱 WHATSAPP INJECTION: Rejection Message ---
+                        from database import queue_whatsapp_alert
+                        if t_phone:
+                            reject_msg = f"❌ *ACCESS DENIED*\nHello {t_name},\nYour registration request for the General Industries HUB has been declined by the Admin. Please contact your supervisor for further details."
+                            queue_whatsapp_alert(t_phone, reject_msg)
+                        # ------------------------------------------------
+                        
+                        log_audit_action(current_username, "REJECT_USER", "pending_users", f"Rejected access for {t_name}")
+                        st.warning("Request rejected.")
+                        st.rerun()
                     
     conn.close() # Safely close the connection when done
     st.divider()

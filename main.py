@@ -275,12 +275,15 @@ def page_daily_issue_log(user: dict) -> None:
                     str(v) if isinstance(v, datetime.date) else v
                     for v in input_data.values()
                 ]
+                
                 conn2.execute(
                     f"INSERT INTO pending_issues ({', '.join(columns)}) VALUES ({placeholders})",
                     values,
                 )
+                
                 conn2.commit()
                 conn2.close()
+                
                 st.success("✅ Added to staging queue!")
                 st.rerun()
 
@@ -321,7 +324,23 @@ def page_daily_issue_log(user: dict) -> None:
                     vals,
                 )
             conn3.commit()
-            st.success("Grid updates saved!")
+            
+            # --- 📱 WHATSAPP INJECTION: Notify Site HOD (Batched) ---
+            from database import queue_whatsapp_alert
+            
+            site_id = user.get("site_id", "HQ")
+            # conn3 is already open from the staging queue block above
+            hod_query = pd.read_sql("SELECT Phone_Number FROM users WHERE role = 'hod' AND Site_ID = ? LIMIT 1", conn3, params=(site_id,))
+            
+            if not hod_query.empty and hod_query.iloc[0]["Phone_Number"]:
+                hod_phone = hod_query.iloc[0]["Phone_Number"]
+                total_items = len(edited_df)
+                
+                alert_msg = f"📝 *STAGING QUEUE READY ({site_id})*\nFloor Worker *{user['username']}* has finalized the staging queue.\n\n📦 Total Pending Items: {total_items}\n\nThis list is now ready for your End-of-Day commit review."
+                queue_whatsapp_alert(hod_phone, alert_msg)
+            # --------------------------------------------------------
+            
+            st.success("Grid updates saved and HOD notified!")
             st.rerun()
     conn3.close()
 
@@ -818,7 +837,23 @@ From: {target_site} ➡️ To: {req_site}
                 target_df = pd.read_sql(f"SELECT * FROM {selected_table}", conn)
                 if "password_hash" in target_df.columns:
                     target_df["password_hash"] = "••••••••"
-                st.caption(f"{len(target_df):,} rows in `{selected_table}`")
+                
+                # --- PDF EXPORTER INJECTION ---
+                col_view, col_export = st.columns([4, 1])
+                with col_view:
+                    st.caption(f"{len(target_df):,} rows in `{selected_table}`")
+                with col_export:
+                    from reports import generate_universal_pdf
+                    pdf_bytes = generate_universal_pdf(f"Master Data: {selected_table}", target_df, user["username"])
+                    st.download_button(
+                        label="📄 Export as PDF",
+                        data=pdf_bytes,
+                        file_name=f"GI_{selected_table}_export.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+                # ------------------------------
+                
                 edited_df = st.data_editor(
                     target_df, num_rows="dynamic",
                     width="stretch", key=f"editor_{selected_table}",
