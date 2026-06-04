@@ -26,25 +26,33 @@ def process_queue():
         if row:
             msg_id, phone, text = row
             print(f"🚀 Found Message #{msg_id} for {phone}. Initiating Web Automation...")
-            
-            # Send message instantly (waits 15 seconds for page load, closes tab after 3 seconds)
-            pywhatkit.sendwhatmsg_instantly(
-                phone_no=phone, 
-                message=text, 
-                wait_time=15, 
-                tab_close=True, 
-                close_time=3
-            )
-            
-            # Mark as sent
-            c.execute("UPDATE whatsapp_queue SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE id = ?", (msg_id,))
+
+            # State-lock: mark as processing immediately so a crash or retry can't re-queue it
+            c.execute("UPDATE whatsapp_queue SET status = 'processing' WHERE id = ?", (msg_id,))
             conn.commit()
-            
-            print(f"✅ Successfully dispatched Message #{msg_id}. Cooling down for 10 seconds...")
-            time.sleep(10) # Anti-ban cooldown between messages
-            
+
+            try:
+                # Send message instantly (waits 15 seconds for page load, closes tab after 3 seconds)
+                pywhatkit.sendwhatmsg_instantly(
+                    phone_no=phone,
+                    message=text,
+                    wait_time=15,
+                    tab_close=True,
+                    close_time=3
+                )
+
+                c.execute("UPDATE whatsapp_queue SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE id = ?", (msg_id,))
+                conn.commit()
+                print(f"✅ Successfully dispatched Message #{msg_id}. Cooling down for 10 seconds...")
+                time.sleep(10)  # Anti-ban cooldown between messages
+
+            except Exception as send_err:
+                print(f"❌ Send failed for Message #{msg_id}: {send_err}")
+                c.execute("UPDATE whatsapp_queue SET status = 'failed' WHERE id = ?", (msg_id,))
+                conn.commit()
+
     except Exception as e:
-        print(f"❌ Automation Error: {e}")
+        print(f"❌ Worker Error: {e}")
     finally:
         conn.close()
 

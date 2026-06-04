@@ -247,6 +247,12 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         if col not in rec_cols:
             c.execute(f"ALTER TABLE receipts ADD COLUMN {col} TEXT")
 
+    # ── Self-Healing: status column for draft/submit workflow ─────────────────
+    c.execute("PRAGMA table_info(pending_issues)")
+    _pi_cols = {row[1] for row in c.fetchall()}
+    if "status" not in _pi_cols:
+        c.execute("ALTER TABLE pending_issues ADD COLUMN status TEXT DEFAULT 'draft'")
+
     # ── Seed Default Work Types (idempotent) ──────────────────────────────────
     c.execute("SELECT count(*) FROM system_settings WHERE category='Work_Type'")
     if c.fetchone()[0] == 0:
@@ -415,7 +421,7 @@ def commit_eod(conn: sqlite3.Connection = None) -> int:
         conn = get_connection()
 
     c = conn.cursor()
-    pending_df = pd.read_sql("SELECT * FROM pending_issues", conn)
+    pending_df = pd.read_sql("SELECT * FROM pending_issues WHERE COALESCE(status,'pending_hod') = 'pending_hod'", conn)
 
     if pending_df.empty:
         if _owns_conn:
@@ -453,7 +459,7 @@ def commit_eod(conn: sqlite3.Connection = None) -> int:
         )
         rows_committed += 1
 
-    c.execute("DELETE FROM pending_issues")
+    c.execute("DELETE FROM pending_issues WHERE COALESCE(status,'pending_hod') = 'pending_hod'")
     conn.commit()
 
     if _owns_conn:
@@ -483,6 +489,86 @@ def get_low_stock_items(conn: sqlite3.Connection = None, site_id: str = None) ->
     low = live_df[live_df["Current_Stock"] < live_df["Minimum_Qty"]].copy()
     low["Shortage"] = low["Minimum_Qty"] - low["Current_Stock"]
     return low.reset_index(drop=True)
+
+
+def get_burn_rate_and_forecast(
+    conn: sqlite3.Connection = None,
+    site_id: str = None,
+    lookback_days: int = 30,
+) -> pd.DataFrame:
+    """
+    Calculates Daily_Burn_Rate and Days_Remaining per material.
+
+    Queries consumption over the last `lookback_days` days, computes
+    Daily_Burn_Rate = total_consumed / lookback_days, then merges with
+    live inventory to derive Days_Remaining = Current_Stock / Daily_Burn_Rate.
+
+    Items with no recent consumption are excluded (inner join).
+    Burn_Alert = True when Days_Remaining < 7.
+    """
+    _owns_conn = conn is None
+    if _owns_conn:
+        conn = get_connection()
+
+    try:
+        cutoff = (
+            datetime.date.today() - datetime.timedelta(days=lookback_days)
+        ).strftime("%Y-%m-%d")
+
+        if site_id:
+            cons_df = pd.read_sql(
+                "SELECT SAP_Code, SUM(Quantity) AS Total_Consumed_30d "
+                "FROM consumption WHERE Date >= ? AND COALESCE(Site_ID,'HQ') = ? "
+                "GROUP BY SAP_Code",
+                conn, params=(cutoff, site_id),
+            )
+        else:
+            cons_df = pd.read_sql(
+                "SELECT SAP_Code, SUM(Quantity) AS Total_Consumed_30d "
+                "FROM consumption WHERE Date >= ? GROUP BY SAP_Code",
+                conn, params=(cutoff,),
+            )
+
+        if cons_df.empty:
+            return pd.DataFrame(columns=[
+                "SAP_Code", "Equipment_Description", "UOM",
+                "Current_Stock", "Daily_Burn_Rate", "Days_Remaining", "Burn_Alert",
+            ])
+
+        live_df = load_live_inventory(conn, site_id=site_id)
+
+    finally:
+        if _owns_conn:
+            conn.close()
+
+    if live_df.empty:
+        return pd.DataFrame(columns=[
+            "SAP_Code", "Equipment_Description", "UOM",
+            "Current_Stock", "Daily_Burn_Rate", "Days_Remaining", "Burn_Alert",
+        ])
+
+    merged = pd.merge(
+        live_df[["SAP_Code", "Equipment_Description", "UOM", "Current_Stock"]],
+        cons_df,
+        on="SAP_Code",
+        how="inner",
+    )
+    merged["Daily_Burn_Rate"] = (
+        pd.to_numeric(merged["Total_Consumed_30d"], errors="coerce").fillna(0)
+        / lookback_days
+    ).round(3)
+    merged["Days_Remaining"] = merged.apply(
+        lambda r: round(r["Current_Stock"] / r["Daily_Burn_Rate"], 1)
+        if r["Daily_Burn_Rate"] > 0 else None,
+        axis=1,
+    )
+    merged["Burn_Alert"] = merged["Days_Remaining"].apply(
+        lambda d: d is not None and d < 7
+    )
+    return merged[[
+        "SAP_Code", "Equipment_Description", "UOM",
+        "Current_Stock", "Daily_Burn_Rate", "Days_Remaining", "Burn_Alert",
+    ]].reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -529,7 +615,7 @@ def get_pending_issues_for_site(
         conn = get_connection()
 
     df = pd.read_sql(
-        "SELECT * FROM pending_issues WHERE COALESCE(Site_ID,'HQ') = ?",
+        "SELECT * FROM pending_issues WHERE COALESCE(Site_ID,'HQ') = ? AND COALESCE(status,'pending_hod') = 'pending_hod'",
         conn, params=(site_id,),
     )
     if _owns:
@@ -874,18 +960,34 @@ def process_pr_pdf(pdf_bytes: bytes, site_id: str, conn: sqlite3.Connection = No
 def process_receipt_delivery(
     conn: sqlite3.Connection, date: str, sap_code: str, qty: float,
     supplier: str, remarks: str, site_id: str,
-    pr_number: str = None, expiry_date: str = None
+    pr_number: str = None, expiry_date: str = None,
+    extra_fields: dict = None,
 ) -> tuple[bool, str]:
     """
     Inserts a new receipt and automatically checks if the linked PR has been fulfilled.
     If the received quantity >= requested quantity, it automatically closes the PR.
+    extra_fields: optional dict of {column_name: value} for any schema columns beyond
+    the base eight — merged dynamically into the INSERT.
     """
     try:
         c = conn.cursor()
-        c.execute("""
-            INSERT INTO receipts (Date, SAP_Code, Quantity, Supplier, Remarks, Site_ID, Expiry_Date, PR_Number)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (date, sap_code, qty, supplier, remarks, site_id, expiry_date, pr_number))
+
+        base_cols = ["Date", "SAP_Code", "Quantity", "Supplier", "Remarks",
+                     "Site_ID", "Expiry_Date", "PR_Number"]
+        base_vals = [date, sap_code, qty, supplier, remarks,
+                     site_id, expiry_date, pr_number]
+
+        if extra_fields:
+            all_cols = base_cols + list(extra_fields.keys())
+            all_vals = base_vals + list(extra_fields.values())
+        else:
+            all_cols, all_vals = base_cols, base_vals
+
+        _ph = ", ".join(["?"] * len(all_cols))
+        c.execute(
+            f"INSERT INTO receipts ({', '.join(all_cols)}) VALUES ({_ph})",
+            all_vals,
+        )
 
         msg = "✅ Receipt added successfully!"
 

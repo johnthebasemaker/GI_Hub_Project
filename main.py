@@ -30,7 +30,8 @@ from database import (
     commit_eod, get_low_stock_items,
     get_sites, get_pending_issues_for_site,
     get_pending_requests, create_request, update_request_status,
-    get_short_dated_stock, process_pr_pdf, process_receipt_delivery # <-- Added process_receipt_delivery
+    get_short_dated_stock, process_pr_pdf, process_receipt_delivery,
+    get_burn_rate_and_forecast,
 )
 from auth import (
     seed_default_users,
@@ -42,6 +43,7 @@ from ui_components import (
     render_aggrid, render_kpi_row,
     render_stock_donut, render_top_consumed_bar, render_stock_vs_minimum_bar,
     render_low_stock_sidebar_badge, render_barcode_scanner,
+    render_burn_rate_chart, render_burn_alert_banner,
 )
 from mailer import (
     build_daily_report, build_monthly_report, build_low_stock_report,
@@ -148,12 +150,17 @@ def page_live_dashboard() -> None:
     render_brand_header("Live Warehouse Stock Dashboard")
     st.title("📦 Live Inventory Dashboard")
 
-    live_df = load_live_inventory()
+    conn = get_connection()
+    live_df = load_live_inventory(conn)
+    forecast_df = get_burn_rate_and_forecast(conn)
+    conn.close()
+
     if live_df.empty:
         st.warning("No inventory data found. Please add items via the Admin Portal first.")
         return
 
     render_kpi_row(live_df)
+    render_burn_alert_banner(forecast_df)
     st.divider()
 
     chart_col1, chart_col2 = st.columns([1, 2])
@@ -165,6 +172,9 @@ def page_live_dashboard() -> None:
     st.divider()
     with st.expander("📉 Stock vs Minimum Threshold", expanded=False):
         render_stock_vs_minimum_bar(live_df)
+
+    with st.expander("🔥 Burn Rate Forecast (30-Day)", expanded=True):
+        render_burn_rate_chart(forecast_df)
 
     st.subheader("Full Inventory Table")
     display_cols = [c for c in [
@@ -254,6 +264,7 @@ def page_daily_issue_log(user: dict) -> None:
                     input_data[col_name] = st.text_input(f"{col_name}*")
 
         st.divider()
+        override_expiry = st.checkbox("⚠️ Override Expiry Warning (I confirm the expiring batch has been pulled first)")
         if st.button("Add to Grid ⬇️", type="primary"):
             mandatory_missing = any(
                 col not in OPTIONAL_ISSUE_COLS
@@ -264,11 +275,31 @@ def page_daily_issue_log(user: dict) -> None:
                 st.error("⚠️ Please select an item and fill in all mandatory (*) fields.")
             else:
                 conn2 = get_connection()
-                
-                # --- NEW CODE: Stamp the worker's Site_ID onto the record ---
+
                 input_data["Site_ID"] = user.get("site_id", "HQ")
-                # ------------------------------------------------------------
-                
+                input_data["status"]  = "draft"
+                site_id = input_data["Site_ID"]
+
+                # ── Shelf-Life Gatekeeper ─────────────────────────────────
+                if not override_expiry:
+                    from database import get_short_dated_stock
+                    expiry_df = get_short_dated_stock(conn2, site_id=site_id)
+                    if not expiry_df.empty:
+                        item_expiry = expiry_df[expiry_df["SAP_Code"] == sap_code]
+                        if not item_expiry.empty:
+                            exp_row = item_expiry.iloc[0]
+                            conn2.close()
+                            st.error(
+                                f"⚠️ **STOP — Expiring Stock Detected!**\n\n"
+                                f"There is a batch of **{exp_row['Equipment_Description']}** "
+                                f"at your site with status **{exp_row['Status']}** "
+                                f"(Expiry: **{exp_row['Expiry_Date']}**, Qty: {exp_row['Quantity']}).\n\n"
+                                f"Please physically pull from the expiring batch first. "
+                                f"Once done, check **'⚠️ Override Expiry Warning'** above to proceed."
+                            )
+                            st.stop()
+                # ─────────────────────────────────────────────────────────
+
                 columns      = ["SAP_Code"] + list(input_data.keys())
                 placeholders = ", ".join(["?"] * len(columns))
                 values = [sap_code] + [
@@ -289,12 +320,14 @@ def page_daily_issue_log(user: dict) -> None:
 
     st.subheader("📋 Staging Queue")
     conn3 = get_connection()
+    _site_id = user.get("site_id", "HQ")
     pending_df = pd.read_sql("""
         SELECT p.id, p.Date, p.SAP_Code,
                i.Equipment_Description AS Material_Name, i.UOM, p.*
         FROM pending_issues p
         LEFT JOIN inventory i ON p.SAP_Code = i.SAP_Code
-    """, conn3)
+        WHERE COALESCE(p.Site_ID,'HQ') = ? AND COALESCE(p.status,'draft') = 'draft'
+    """, conn3, params=(_site_id,))
     pending_df = pending_df.loc[:, ~pending_df.columns.duplicated()]
 
     if pending_df.empty:
@@ -307,41 +340,73 @@ def page_daily_issue_log(user: dict) -> None:
             "UOM":           st.column_config.TextColumn("UOM",       disabled=True),
             "Work_Type":     st.column_config.SelectboxColumn("Work Type", options=work_types),
             "Timestamp":     None,
+            "status":        None,
         }
         edited_df = st.data_editor(
             view_df, column_config=col_cfg,
             num_rows="dynamic", width="stretch", key="staging_editor",
         )
-        if st.button("💾 Save Grid Edits"):
-            save_cols = [col for col in edited_df.columns if col not in {"Material_Name", "UOM", "Timestamp"}]
-            placeholders = ", ".join(["?"] * (len(save_cols) + 1))
-            c2 = conn3.cursor()
-            c2.execute("DELETE FROM pending_issues")
-            for idx, row in edited_df.iterrows():
-                vals = [idx] + [row[col] for col in save_cols]
+
+        btn_save, btn_submit = st.columns([1, 2])
+        with btn_save:
+            if st.button("💾 Save Draft Edits", use_container_width=True):
+                save_cols = [col for col in edited_df.columns if col not in {"Material_Name", "UOM", "Timestamp"}]
+                placeholders = ", ".join(["?"] * (len(save_cols) + 1))
+                c2 = conn3.cursor()
                 c2.execute(
-                    f"INSERT INTO pending_issues (id, {', '.join(save_cols)}) VALUES ({placeholders})",
-                    vals,
+                    "DELETE FROM pending_issues WHERE COALESCE(Site_ID,'HQ') = ? AND COALESCE(status,'draft') = 'draft'",
+                    (_site_id,)
                 )
-            conn3.commit()
-            
-            # --- 📱 WHATSAPP INJECTION: Notify Site HOD (Batched) ---
-            from database import queue_whatsapp_alert
-            
-            site_id = user.get("site_id", "HQ")
-            # conn3 is already open from the staging queue block above
-            hod_query = pd.read_sql("SELECT Phone_Number FROM users WHERE role = 'hod' AND Site_ID = ? LIMIT 1", conn3, params=(site_id,))
-            
-            if not hod_query.empty and hod_query.iloc[0]["Phone_Number"]:
-                hod_phone = hod_query.iloc[0]["Phone_Number"]
-                total_items = len(edited_df)
-                
-                alert_msg = f"📝 *STAGING QUEUE READY ({site_id})*\nFloor Worker *{user['username']}* has finalized the staging queue.\n\n📦 Total Pending Items: {total_items}\n\nThis list is now ready for your End-of-Day commit review."
-                queue_whatsapp_alert(hod_phone, alert_msg)
-            # --------------------------------------------------------
-            
-            st.success("Grid updates saved and HOD notified!")
-            st.rerun()
+                for idx, row in edited_df.iterrows():
+                    vals = [idx] + [row[col] for col in save_cols]
+                    c2.execute(
+                        f"INSERT INTO pending_issues (id, {', '.join(save_cols)}) VALUES ({placeholders})",
+                        vals,
+                    )
+                conn3.commit()
+                st.success("Draft queue saved.")
+                st.rerun()
+
+        with btn_submit:
+            if st.button("📨 Submit Grid to HOD", type="primary", use_container_width=True):
+                items_df = pd.read_sql("""
+                    SELECT p.SAP_Code, i.Equipment_Description, p.Quantity
+                    FROM pending_issues p
+                    LEFT JOIN inventory i ON p.SAP_Code = i.SAP_Code
+                    WHERE COALESCE(p.Site_ID,'HQ') = ? AND COALESCE(p.status,'draft') = 'draft'
+                """, conn3, params=(_site_id,))
+
+                if items_df.empty:
+                    st.warning("⚠️ No draft items to submit.")
+                else:
+                    conn3.execute(
+                        "UPDATE pending_issues SET status = 'pending_hod' WHERE COALESCE(Site_ID,'HQ') = ? AND COALESCE(status,'draft') = 'draft'",
+                        (_site_id,)
+                    )
+                    conn3.commit()
+
+                    from database import queue_whatsapp_alert
+                    hod_q = pd.read_sql(
+                        "SELECT Phone_Number FROM users WHERE role = 'hod' AND Site_ID = ? LIMIT 1",
+                        conn3, params=(_site_id,)
+                    )
+                    if not hod_q.empty and hod_q.iloc[0]["Phone_Number"]:
+                        item_lines = "\n".join(
+                            f"• {r['Quantity']}x [{r['SAP_Code']}] {r['Equipment_Description']}"
+                            for _, r in items_df.iterrows()
+                        )
+                        msg = f"""📝 *STAGING QUEUE SUBMITTED ({_site_id})*
+👤 Floor Worker: {user['username']}
+
+📦 *Submitted Items ({len(items_df)}):*
+{item_lines}
+
+This queue is now ready for your End-of-Day commit review."""
+                        queue_whatsapp_alert(hod_q.iloc[0]["Phone_Number"], msg)
+
+                    st.success(f"✅ {len(items_df)} item(s) submitted to HOD for review!")
+                    st.rerun()
+
     conn3.close()
 
 # ===========================================================================
@@ -354,8 +419,9 @@ def page_hod_portal(user: dict) -> None:
     site_id = user.get("site_id", "HQ")
     st.caption(f"Managing Site: **{site_id}**")
 
-    tab_eod, tab_inquiry, tab_my_reqs, tab_shelf, tab_pr, tab_receive = st.tabs([
-        "🚀 EOD Commit", "🔍 Cross-Site Inquiry", "✅ My Requests", "🕒 Shelf-Life Alerts", "📄 Site PRs", "📥 Receive Material"
+    tab_eod, tab_inquiry, tab_my_reqs, tab_shelf, tab_pr, tab_receive, tab_burn = st.tabs([
+        "🚀 EOD Commit", "🔍 Cross-Site Inquiry", "✅ My Requests",
+        "🕒 Shelf-Life Alerts", "📄 Site PRs", "📥 Receive Material", "🔥 Burn Rate",
     ])
 
     # ... (Keep Tab 1, Tab 2, and Tab 3 exactly as they are) ...
@@ -513,7 +579,7 @@ def page_hod_portal(user: dict) -> None:
             with btn2:
                 if st.button("🚀 COMMIT SITE LOG TO MASTER", type="primary", width="stretch"):
                     c = conn.cursor()
-                    c.execute("DELETE FROM pending_issues WHERE COALESCE(Site_ID,'HQ') = ?", (site_id,))
+                    c.execute("DELETE FROM pending_issues WHERE COALESCE(Site_ID,'HQ') = ? AND COALESCE(status,'pending_hod') = 'pending_hod'", (site_id,))
                     edited_admin_df.to_sql("pending_issues", conn, if_exists="append", index=False)
                     conn.commit()
                     n = commit_eod(conn) 
@@ -540,6 +606,9 @@ def page_hod_portal(user: dict) -> None:
 
     # ── TAB 2: Cross-Site Inquiry ────────────────────────────────────────────
     with tab_inquiry:
+        if "inquiry_cart" not in st.session_state:
+            st.session_state["inquiry_cart"] = []
+
         st.subheader("Request Material From Another Branch")
         conn = get_connection()
         
@@ -572,17 +641,54 @@ def page_hod_portal(user: dict) -> None:
                 st.metric("Available Quantity", f"{avail_qty}")
                 st.metric("Suggested Transfer Qty", f"{suggested}", delta="Based on availability" if avail_qty > 0 else "Out of stock", delta_color="normal" if avail_qty > 0 else "inverse")
 
-                if st.button("📨 Send Request to Admin", type="primary", width="stretch"):
+                if st.button("➕ Add to Cart", type="primary", use_container_width=True):
                     if avail_qty <= 0:
                         st.error(f"Cannot request. {target_site} has no stock of this item.")
                     else:
+                        st.session_state["inquiry_cart"].append({
+                            "Target Site":    target_site,
+                            "SAP Code":       sap_code,
+                            "Description":    item_selection,
+                            "Qty":            req_qty,
+                            "Notes":          notes,
+                            "_available_qty": avail_qty,
+                            "_suggested_qty": suggested,
+                        })
+                        st.success(f"Added to cart. {len(st.session_state['inquiry_cart'])} item(s) in cart.")
+                        st.rerun()
+
+        if st.session_state["inquiry_cart"]:
+            st.write("---")
+            st.markdown("### 🛒 Your Request Cart")
+
+            display_cols = ["Target Site", "SAP Code", "Description", "Qty", "Notes"]
+            cart_display_df = pd.DataFrame(st.session_state["inquiry_cart"])[display_cols]
+            st.dataframe(cart_display_df, use_container_width=True, hide_index=True)
+
+            col_submit, col_clear = st.columns([3, 1])
+            with col_submit:
+                if st.button("📨 Submit All Requests to Admin", type="primary", use_container_width=True):
+                    count = len(st.session_state["inquiry_cart"])
+                    for item in st.session_state["inquiry_cart"]:
                         create_request(
-                            conn, requesting_site=site_id, target_site=target_site,
-                            sap_code=sap_code, requested_qty=req_qty,
-                            available_qty=avail_qty, suggested_qty=suggested,
-                            notes=notes, requested_by=user["username"]
+                            conn,
+                            requesting_site=site_id,
+                            target_site=item["Target Site"],
+                            sap_code=item["SAP Code"],
+                            requested_qty=item["Qty"],
+                            available_qty=item["_available_qty"],
+                            suggested_qty=item["_suggested_qty"],
+                            notes=item["Notes"],
+                            requested_by=user["username"],
                         )
-                        st.success("Request sent successfully! Awaiting Admin approval.")
+                    st.session_state["inquiry_cart"] = []
+                    st.success(f"✅ {count} request(s) submitted to Admin.")
+                    st.rerun()
+            with col_clear:
+                if st.button("🗑️ Clear Cart", use_container_width=True):
+                    st.session_state["inquiry_cart"] = []
+                    st.rerun()
+
         conn.close()
 
     # ── TAB 3: My Requests ───────────────────────────────────────────────────
@@ -640,6 +746,14 @@ def page_hod_portal(user: dict) -> None:
             material_options = []
 
         # 3. RECEIPT FORM
+        _RECEIPT_SPECIAL = {
+            "id", "Timestamp", "Date", "SAP_Code", "Quantity",
+            "Site_ID", "Expiry_Date", "PR_Number", "status",
+        }
+        _rc = conn.cursor()
+        _rc.execute("PRAGMA table_info(receipts)")
+        receipt_extra_cols = [row[1] for row in _rc.fetchall() if row[1] not in _RECEIPT_SPECIAL]
+
         with st.form("hod_receive_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
             with col1:
@@ -648,9 +762,12 @@ def page_hod_portal(user: dict) -> None:
                 date_val = st.date_input("Delivery Date*", datetime.date.today())
             with col2:
                 exp_date = st.date_input("Expiry Date (Optional)", value=None)
-                supplier = st.text_input("Supplier / Vendor")
-                remarks = st.text_input("Remarks")
-                
+                receipt_extra_vals = {}
+                for _col in receipt_extra_cols:
+                    _optional = _col in {"Remarks", "Supplier"}
+                    _label = f"{_col} (Optional)" if _optional else f"{_col}*"
+                    receipt_extra_vals[_col] = st.text_input(_label)
+
             if st.form_submit_button("💾 Save Receipt", type="primary"):
                 if not sel_item:
                     st.error("⚠️ Please select a material.")
@@ -658,9 +775,16 @@ def page_hod_portal(user: dict) -> None:
                     sap_code = sel_item.split("]")[0].replace("[", "").strip()
                     pr_val = selected_pr if selected_pr != "-- None (Direct Purchase) --" else None
                     exp_val = str(exp_date) if exp_date else None
-                    
+
                     ok, msg = process_receipt_delivery(
-                        conn, str(date_val), sap_code, qty, supplier, remarks, site_id, pr_val, exp_val
+                        conn, str(date_val), sap_code, qty,
+                        supplier=receipt_extra_vals.get("Supplier", ""),
+                        remarks=receipt_extra_vals.get("Remarks", ""),
+                        site_id=site_id,
+                        pr_number=pr_val,
+                        expiry_date=exp_val,
+                        extra_fields={k: v for k, v in receipt_extra_vals.items()
+                                      if k not in {"Supplier", "Remarks"}},
                     )
                     if ok:
                         # 📝 AUDIT LOG INJECTION
@@ -671,6 +795,29 @@ def page_hod_portal(user: dict) -> None:
                     else:
                         st.error(msg)
         conn.close()
+
+    # ── TAB 7: Burn Rate Forecast (Predictive Analytics) ─────────────────────
+    with tab_burn:
+        st.subheader("🔥 Burn Rate Forecast — Predictive Analytics")
+        st.markdown(
+            "Projected stock depletion based on the last **30 days** of consumption. "
+            "Items marked critical will run out within **7 days**."
+        )
+
+        conn = get_connection()
+        forecast_df = get_burn_rate_and_forecast(conn, site_id=site_id)
+        conn.close()
+
+        render_burn_alert_banner(forecast_df)
+        render_burn_rate_chart(forecast_df)
+
+        if not forecast_df.empty:
+            st.subheader("Detailed Forecast Table")
+            detail_cols = [c for c in [
+                "SAP_Code", "Equipment_Description", "UOM",
+                "Current_Stock", "Daily_Burn_Rate", "Days_Remaining",
+            ] if c in forecast_df.columns]
+            render_aggrid(forecast_df[detail_cols].copy(), key="burn_rate_grid", height=AGGRID_HEIGHT)
 
 # ===========================================================================
 # PAGE 3: ADMIN PORTAL
@@ -709,85 +856,138 @@ def page_admin_portal(user: dict) -> None:
         if reqs_df.empty:
             st.info("No pending requests to review.")
         else:
-            st.dataframe(reqs_df, width="stretch")
-            
+            reqs_df.insert(0, "☑️ Select", False)
+
+            edited_df = st.data_editor(
+                reqs_df,
+                use_container_width=True,
+                hide_index=True,
+                disabled=[col for col in reqs_df.columns if col != "☑️ Select"],
+                key="bulk_req_editor",
+            )
+
             st.write("---")
-            col_sel, col_act = st.columns(2)
-            with col_sel:
-                req_id = st.selectbox("Select Request ID to Action:", reqs_df["id"].tolist())
-                admin_notes = st.text_input("Admin Notes (Optional):")
-            with col_act:
-                st.write("") # Spacing
-                st.write("")
-                if st.button("✅ Approve Transfer", type="primary", width="stretch"):
-                    
-                    # 🛑 STEP 1: Force Admin to type instructions
-                    if not admin_notes or admin_notes.strip() == "":
-                        st.error("⚠️ Please type instructions in the 'Admin Notes' box before approving.")
-                        st.stop() # Halts the script here until they type something
-                    
-                    # 🔍 STEP 2: Extract all the rich details for the message
-                    target_row = reqs_df[reqs_df["id"] == req_id].iloc[0]
-                    
-                    sap_val = target_row["SAP_Code"]
-                    req_qty = target_row["requested_qty"]
-                    req_date = target_row["created_at"]
-                    target_site = target_row.get("target_site", "Unknown Source") 
-                    
-                    # Safely grab the requesting site and username (depending on your exact DB schema)
-                    req_site = target_row.get("requesting_site", target_row.get("Site_ID", "Unknown Destination"))
-                    requester_user = target_row.get("requested_by", target_row.get("username", "hod"))
-                    
-                    # Query the inventory to get the exact Material Names
-                    inv_df = pd.read_sql("SELECT Material_Code, Equipment_Description FROM inventory WHERE SAP_Code = ?", conn, params=(sap_val,))
-                    if not inv_df.empty:
-                        mat_code = inv_df.iloc[0]["Material_Code"]
-                        mat_desc = inv_df.iloc[0]["Equipment_Description"]
+            admin_notes = st.text_input("Admin Notes (Optional / Required for Rejection):")
+
+            col_approve, col_reject = st.columns(2)
+
+            with col_approve:
+                if st.button("✅ Approve Selected", type="primary", use_container_width=True):
+                    selected_rows = edited_df[edited_df["☑️ Select"] == True]
+                    if selected_rows.empty:
+                        st.warning("⚠️ No rows selected.")
                     else:
-                        mat_code = "N/A"
-                        mat_desc = "Unknown Material"
+                        from database import queue_whatsapp_alert, get_phone_by_username
+                        from collections import defaultdict
+                        approvals_by_user = defaultdict(list)
+                        approved_count = 0
 
-                    # 💾 STEP 3: Save to Database
-                    update_request_status(conn, req_id, "approved", user["username"], admin_notes)
-                    
-                    # 📱 STEP 4: Format and Queue the WhatsApp Message
-                    from database import queue_whatsapp_alert, get_phone_by_username
-                    target_phone = get_phone_by_username(requester_user)
-                    
-                    if target_phone and len(target_phone) >= 5:
-                        # Using asterisks (*) automatically bolds text in WhatsApp!
-                        msg = f"""✅ *TRANSFER APPROVED*
-ID: #{req_id}
-From: {target_site} ➡️ To: {req_site}
+                        for _, row in selected_rows.iterrows():
+                            req_id         = row["id"]
+                            sap_val        = row["SAP_Code"]
+                            req_qty        = row["requested_qty"]
+                            req_date       = row["created_at"]
+                            target_site    = row.get("target_site", "Unknown Source")
+                            req_site       = row.get("requesting_site", row.get("Site_ID", "Unknown Destination"))
+                            requester_user = row.get("requested_by", row.get("username", "hod"))
 
-📦 *Material Details:*
-• SAP Code: {sap_val}
-• Mat Code: {mat_code}
-• Item: {mat_desc}
-• Approved Qty: {req_qty}
+                            inv_df = pd.read_sql(
+                                "SELECT Material_Code, Equipment_Description FROM inventory WHERE SAP_Code = ?",
+                                conn, params=(sap_val,)
+                            )
+                            mat_code = inv_df.iloc[0]["Material_Code"]         if not inv_df.empty else "N/A"
+                            mat_desc = inv_df.iloc[0]["Equipment_Description"] if not inv_df.empty else "Unknown Material"
 
-🕒 Requested On: {req_date}
+                            update_request_status(conn, req_id, "approved", user["username"], admin_notes)
+
+                            approvals_by_user[requester_user].append({
+                                "req_id":      req_id,
+                                "sap_val":     sap_val,
+                                "mat_code":    mat_code,
+                                "mat_desc":    mat_desc,
+                                "req_qty":     req_qty,
+                                "target_site": target_site,
+                                "req_site":    req_site,
+                            })
+                            approved_count += 1
+
+                        for requester_user, items in approvals_by_user.items():
+                            target_phone = get_phone_by_username(requester_user)
+                            if target_phone and len(target_phone) >= 5:
+                                item_lines = "\n".join(
+                                    f"• {i['req_qty']}x [{i['sap_val']}] {i['mat_desc']} "
+                                    f"({i['target_site']} ➡️ {i['req_site']})"
+                                    for i in items
+                                )
+                                msg = f"""✅ *BATCH TRANSFER APPROVED*
 👤 Requested By: {requester_user}
 
+📦 *Approved Items ({len(items)}):*
+{item_lines}
+
 📝 *Admin Instructions:*
-{admin_notes}"""
-                        queue_whatsapp_alert(target_phone, msg)
-                        st.success(f"✅ Approved! WhatsApp queued for {requester_user}.")
-                    else:
-                        st.warning(f"✅ Approved, but no valid phone number found for {requester_user}.")
-                    
-                    st.rerun()
-                    
-                if st.button("❌ Reject", width="stretch"):
+{admin_notes if admin_notes.strip() else "N/A"}"""
+                                queue_whatsapp_alert(target_phone, msg)
+
+                        st.success(f"✅ {approved_count} request(s) approved. WhatsApp notifications queued.")
+                        st.rerun()
+
+            with col_reject:
+                if st.button("❌ Reject Selected", use_container_width=True):
                     if not admin_notes or admin_notes.strip() == "":
-                        st.error("⚠️ Please provide a reason in the 'Admin Notes' box before rejecting.")
+                        st.error("⚠️ Admin Notes are required to reject a request. Please provide a reason.")
                         st.stop()
-                        
-                    update_request_status(conn, req_id, "rejected", user["username"], admin_notes)
-                    
-                    # (Optional) Add the same rich text block here if you want WhatsApp rejection alerts!
-                    st.warning(f"Request #{req_id} Rejected.")
-                    st.rerun()
+
+                    selected_rows = edited_df[edited_df["☑️ Select"] == True]
+                    if selected_rows.empty:
+                        st.warning("⚠️ No rows selected.")
+                    else:
+                        from database import queue_whatsapp_alert, get_phone_by_username
+                        from collections import defaultdict
+                        rejections_by_user = defaultdict(list)
+                        rejected_count = 0
+
+                        for _, row in selected_rows.iterrows():
+                            req_id         = row["id"]
+                            sap_val        = row["SAP_Code"]
+                            req_qty        = row["requested_qty"]
+                            requester_user = row.get("requested_by", row.get("username", "hod"))
+
+                            inv_df = pd.read_sql(
+                                "SELECT Equipment_Description FROM inventory WHERE SAP_Code = ?",
+                                conn, params=(sap_val,)
+                            )
+                            mat_desc = inv_df.iloc[0]["Equipment_Description"] if not inv_df.empty else "Unknown Material"
+
+                            update_request_status(conn, row["id"], "rejected", user["username"], admin_notes)
+
+                            rejections_by_user[requester_user].append({
+                                "req_id":   req_id,
+                                "sap_val":  sap_val,
+                                "mat_desc": mat_desc,
+                                "req_qty":  req_qty,
+                            })
+                            rejected_count += 1
+
+                        for requester_user, items in rejections_by_user.items():
+                            target_phone = get_phone_by_username(requester_user)
+                            if target_phone and len(target_phone) >= 5:
+                                item_lines = "\n".join(
+                                    f"• {i['req_qty']}x [{i['sap_val']}] {i['mat_desc']} (Request #{i['req_id']})"
+                                    for i in items
+                                )
+                                msg = f"""❌ *BATCH TRANSFER REJECTED*
+👤 Requested By: {requester_user}
+
+📦 *Rejected Items ({len(items)}):*
+{item_lines}
+
+📝 *Reason:*
+{admin_notes}"""
+                                queue_whatsapp_alert(target_phone, msg)
+
+                        st.warning(f"❌ {rejected_count} request(s) rejected.")
+                        st.rerun()
         conn.close()
 
     # ── TAB 2: User Management ────────────────────────────────────────────────
@@ -853,15 +1053,24 @@ From: {target_site} ➡️ To: {req_site}
                         use_container_width=True
                     )
                 # ------------------------------
-                
+
+                # Inject label-select column for inventory table only
+                if selected_table == "inventory":
+                    target_df.insert(0, "🏷️ Print Label", False)
+                    col_cfg = {"🏷️ Print Label": st.column_config.CheckboxColumn("🏷️ Print Label", default=False)}
+                else:
+                    col_cfg = {}
+
                 edited_df = st.data_editor(
                     target_df, num_rows="dynamic",
+                    column_config=col_cfg if col_cfg else None,
                     width="stretch", key=f"editor_{selected_table}",
                 )
                 if st.button("💾 Save Table Updates", type="primary"):
                     try:
+                        save_df = edited_df.drop(columns=["🏷️ Print Label"], errors="ignore")
                         c.execute(f"DELETE FROM {selected_table}")
-                        edited_df.to_sql(selected_table, conn, if_exists="append", index=False)
+                        save_df.to_sql(selected_table, conn, if_exists="append", index=False)
                         conn.commit()
                         
                         # 📝 AUDIT LOG INJECTION
@@ -871,6 +1080,33 @@ From: {target_site} ➡️ To: {req_site}
                         st.success("✅ Table updated!")
                     except Exception as e:
                         st.error(f"Save failed: {e}")
+
+                # ── QR Label Generator (inventory table only) ────────────────
+                if selected_table == "inventory":
+                    st.divider()
+                    st.subheader("🖨️ QR Code Label Generator")
+                    label_col = "🏷️ Print Label"
+                    if label_col in edited_df.columns:
+                        selected_for_labels = edited_df[edited_df[label_col] == True]
+                    else:
+                        selected_for_labels = edited_df.iloc[0:0]
+                    label_count = len(selected_for_labels)
+                    st.caption(f"{label_count} material{'s' if label_count != 1 else ''} selected for label printing.")
+                    if st.button("🖨️ Generate QR Labels for Selected", type="primary", disabled=label_count == 0):
+                        try:
+                            from reports import generate_qr_labels_pdf
+                            label_items = selected_for_labels[["SAP_Code", "Equipment_Description"]].to_dict("records")
+                            pdf_bytes = generate_qr_labels_pdf(label_items)
+                            st.download_button(
+                                label=f"📥 Download QR Labels PDF ({label_count} label{'s' if label_count != 1 else ''})",
+                                data=pdf_bytes,
+                                file_name="GI_QR_Labels.pdf",
+                                mime="application/pdf",
+                                type="primary",
+                                use_container_width=True,
+                            )
+                        except ImportError as e:
+                            st.error(str(e))
 
             elif editor_mode == "➕ Add New Entry":
                 if selected_table == "users":

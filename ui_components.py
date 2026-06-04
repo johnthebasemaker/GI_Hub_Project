@@ -573,3 +573,107 @@ def render_barcode_scanner(input_key: str = "barcode_scan_result") -> str | None
         st.session_state[input_key] = manual
 
     return st.session_state[input_key] or None
+
+
+# ===========================================================================
+# PREDICTIVE ANALYTICS — BURN RATE
+# ===========================================================================
+
+def render_burn_rate_chart(forecast_df: pd.DataFrame, top_n: int = 15) -> None:
+    """
+    Horizontal bar chart of Days_Remaining per material, color-coded by urgency.
+    Shows the top_n most urgent items (fewest days remaining).
+    Red < 7 days, Amber 7–14 days, Green ≥ 14 days.
+    Includes a dashed vertical threshold line at 7 days.
+    """
+    if forecast_df is None or forecast_df.empty:
+        st.info("No burn rate data available — no consumption recorded in the last 30 days.")
+        return
+
+    df = forecast_df.dropna(subset=["Days_Remaining"]).copy()
+    if df.empty:
+        st.info("No burn rate data available — all active materials have undefined burn rates.")
+        return
+
+    desc_col = "Equipment_Description" if "Equipment_Description" in df.columns else "SAP_Code"
+    df["Label"] = df[desc_col].astype(str).str[:35]
+    df = df.nsmallest(top_n, "Days_Remaining")
+
+    def _color(days: float) -> str:
+        if days < 7:
+            return COLOR_CRITICAL
+        if days < 14:
+            return COLOR_LOW
+        return COLOR_OK
+
+    df["_color"] = df["Days_Remaining"].apply(_color)
+
+    fig = go.Figure()
+    for color_val, group in df.groupby("_color", sort=False):
+        fig.add_trace(go.Bar(
+            x=group["Days_Remaining"],
+            y=group["Label"],
+            orientation="h",
+            marker_color=color_val,
+            name={COLOR_CRITICAL: "< 7 days (Critical)", COLOR_LOW: "7–14 days (Low)", COLOR_OK: "≥ 14 days (OK)"}.get(color_val, ""),
+            customdata=group[["Daily_Burn_Rate", "Current_Stock", "SAP_Code"]].values,
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Days Remaining: <b>%{x:.1f}</b><br>"
+                "Daily Burn Rate: %{customdata[0]:.3f} units/day<br>"
+                "Current Stock: %{customdata[1]:,.1f}<br>"
+                "SAP Code: %{customdata[2]}<extra></extra>"
+            ),
+        ))
+
+    fig.add_vline(
+        x=7,
+        line_dash="dash",
+        line_color=COLOR_CRITICAL,
+        annotation_text="7-day alert",
+        annotation_font_color=COLOR_CRITICAL,
+        annotation_position="top",
+    )
+    fig.update_layout(
+        title=dict(text=f"Burn Rate Forecast — Days of Stock Remaining (Top {top_n} Most Urgent)", font=dict(color=BRAND_GOLD, size=16)),
+        barmode="overlay",
+        yaxis=dict(categoryorder="total ascending", color=TEXT_PRIMARY),
+        xaxis=dict(title="Days Remaining", color=TEXT_PRIMARY),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=TEXT_PRIMARY, family="Inter"),
+        margin=dict(t=60, b=20, l=0, r=20),
+        template=PLOTLY_TEMPLATE,
+        legend=dict(orientation="h", y=-0.15, font=dict(color=TEXT_PRIMARY)),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_burn_alert_banner(forecast_df: pd.DataFrame) -> None:
+    """
+    Inline alert banner listing materials with < 7 days of stock remaining.
+    Renders nothing if there are no alerts — safe to call unconditionally.
+    """
+    if forecast_df is None or forecast_df.empty:
+        return
+
+    alert_df = forecast_df[forecast_df["Burn_Alert"] == True].copy()
+    if alert_df.empty:
+        return
+
+    count = len(alert_df)
+    item_word = "item" if count == 1 else "items"
+    st.markdown(
+        f'<div style="background:{COLOR_CRITICAL}22; border:1px solid {COLOR_CRITICAL}; '
+        f'border-radius:10px; padding:0.6rem 1rem; margin-bottom:1rem;">'
+        f'<span style="color:{COLOR_CRITICAL}; font-weight:700; font-size:0.95rem;">'
+        f'🔥 {count} {item_word} will run out within 7 days at the current burn rate</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    with st.expander("View Critical Items", expanded=False):
+        cols_to_show = [c for c in [
+            "SAP_Code", "Equipment_Description", "UOM",
+            "Current_Stock", "Daily_Burn_Rate", "Days_Remaining",
+        ] if c in alert_df.columns]
+        st.dataframe(alert_df[cols_to_show], hide_index=True, use_container_width=True)

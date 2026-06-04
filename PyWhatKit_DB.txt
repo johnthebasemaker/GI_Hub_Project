@@ -88,3 +88,168 @@ Time: 20:36
 Phone Number: +916369719235
 Message: 🚨 *POST-EOD STOCK ALERT (HQ)*Commit successful, but your inventory has dropped below safe levels:🔴 3 Critical (Empty/Negative)🟡 0 Low StockPlease check the Live Dashboard.
 --------------------
+Date: 30/5/2026
+Time: 16:19
+Phone Number: +966569233053
+Message: ✅ *TRANSFER APPROVED*ID: #11From: HQ ➡️ To: SAR📦 *Material Details:*• SAP Code: 1006• Mat Code: GI-7001356• Item: Safety Signage Board• Approved Qty: 2.0🕒 Requested On: 2026-05-30 13:17:11👤 Requested By: Ansari📝 *Admin Instructions:*N/A
+--------------------
+Date: 30/5/2026
+Time: 16:20
+Phone Number: +966569233053
+Message: ✅ *TRANSFER APPROVED*ID: #10From: HQ ➡️ To: SAR📦 *Material Details:*• SAP Code: 1005• Mat Code: GI-7001245• Item: Tarpaulin 20x20 Blue• Approved Qty: 1.0🕒 Requested On: 2026-05-30 13:16:58👤 Requested By: Ansari📝 *Admin Instructions:*N/A
+--------------------
+Date: 30/5/2026
+Time: 16:21
+Phone Number: +966569233053
+Message: ✅ *TRANSFER APPROVED*ID: #9From: HQ ➡️ To: SAR📦 *Material Details:*• SAP Code: 1002• Mat Code: None• Item: Concrete Blocks• Approved Qty: 3.0🕒 Requested On: 2026-05-30 13:16:48👤 Requested By: Ansari📝 *Admin Instructions:*N/A
+--------------------
+Date: 30/5/2026
+Time: 16:34
+Phone Number: +966569233053
+Message: ✅ *TRANSFER APPROVED*ID: #14From: HQ ➡️ To: SAR📦 *Material Details:*• SAP Code: 1007• Mat Code: GI-7001123• Item: BLASTING POT• Approved Qty: 1.0🕒 Requested On: 2026-05-30 13:33:29👤 Requested By: Ansari📝 *Admin Instructions:*N/A
+--------------------
+Date: 30/5/2026
+Time: 16:35
+Phone Number: +966569233053
+Message: ✅ *TRANSFER APPROVED*ID: #13From: HQ ➡️ To: SAR📦 *Material Details:*• SAP Code: 1006• Mat Code: GI-7001356• Item: Safety Signage Board• Approved Qty: 1.0🕒 Requested On: 2026-05-30 13:33:24👤 Requested By: Ansari📝 *Admin Instructions:*N/A
+--------------------
+Date: 30/5/2026
+Time: 16:37
+Phone Number: +966569233053
+Message: ✅ *TRANSFER APPROVED*ID: #12From: HQ ➡️ To: SAR📦 *Material Details:*• SAP Code: 1003• Mat Code: GI-7002999• Item: AIR COMPRESSOR 750.0 CFM• Approved Qty: 2.0🕒 Requested On: 2026-05-30 13:33:18👤 Requested By: Ansari📝 *Admin Instructions:*N/A
+--------------------
+Date: 30/5/2026
+Time: 17:1
+Phone Number: +966569233053
+Message: ✅ *BATCH TRANSFER APPROVED*👤 Requested By: Ansari📦 *Approved Items (3):*• 1.0x [1007] BLASTING POT (HQ ➡️ SAR)• 1.0x [1009] AIR RECEIVER (HQ ➡️ SAR)• 1.0x [1003] AIR COMPRESSOR 750.0 CFM (HQ ➡️ SAR)📝 *Admin Instructions:*N/A
+--------------------
+Date: 30/5/2026
+Time: 17:23
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:24
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:26
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:27
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:29
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:30
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:32
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:33
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:35
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:36
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:38
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:39
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:41
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:42
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:44
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:45
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:46
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:48
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:49
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:51
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:52
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:54
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 17:55
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 20:30
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 20:31
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE READY (SAR)*Floor Worker *Mani* has finalized the staging queue.📦 Total Pending Items: 1This list is now ready for your End-of-Day commit review.
+--------------------
+Date: 30/5/2026
+Time: 22:33
+Phone Number: +966569233053
+Message: 📝 *STAGING QUEUE SUBMITTED (SAR)*👤 Floor Worker: Mani📦 *Submitted Items (2):*• 1.1x [1002] Concrete Blocks• 1.1x [1003] AIR COMPRESSOR 750.0 CFMThis queue is now ready for your End-of-Day commit review.
+--------------------

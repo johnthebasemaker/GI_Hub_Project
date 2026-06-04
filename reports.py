@@ -2,6 +2,13 @@ from fpdf import FPDF
 import pandas as pd
 import datetime
 import io
+from io import BytesIO
+
+try:
+    import qrcode
+    _HAS_QRCODE = True
+except ImportError:
+    _HAS_QRCODE = False
 
 class GI_PDF(FPDF):
     """Custom PDF template with General Industries branding."""
@@ -141,10 +148,86 @@ def generate_universal_pdf(report_title: str, df: pd.DataFrame, username: str) -
             
         for item in row:
             # Truncate cell text so it doesn't bleed into the next column
-            safe_val = str(item)[:25] if pd.notna(item) else ""
+            safe_val = str(item).encode('latin-1', 'ignore').decode('latin-1')[:25] if pd.notna(item) else ""
             pdf.cell(col_width, 6, safe_val, border=1, align="C")
             
         # Move to the next line after the row finishes
         pdf.ln(6)
-        
+
+    return bytes(pdf.output())
+
+
+def generate_qr_labels_pdf(items: list, cols: int = 3, rows_per_page: int = 4) -> bytes:
+    """
+    Generates a printable PDF grid of QR code labels.
+
+    items: list of dicts with keys "SAP_Code" and "Equipment_Description".
+           Each QR encodes the SAP_Code so the in-app barcode scanner can read it.
+    cols / rows_per_page: grid dimensions (default 3×4 = 12 labels per A4 page).
+    Returns: PDF bytes.
+    """
+    if not _HAS_QRCODE:
+        raise ImportError("QR label generation requires: pip install qrcode[pil]")
+
+    # ── Layout constants (all in mm, A4 portrait) ───────────────────────────
+    PAGE_W, PAGE_H = 210, 297
+    MARGIN = 8
+    CELL_W = (PAGE_W - 2 * MARGIN) / cols          # ≈ 64.67 mm
+    CELL_H = (PAGE_H - 2 * MARGIN) / rows_per_page  # ≈ 70.25 mm
+    QR_SIZE = 48
+    labels_per_page = cols * rows_per_page
+
+    # Plain FPDF — no branded header/footer so the full page is usable
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_margins(MARGIN, MARGIN, MARGIN)
+    pdf.set_auto_page_break(auto=False)
+
+    for idx, item in enumerate(items):
+        if idx % labels_per_page == 0:
+            pdf.add_page()
+
+        page_idx = idx % labels_per_page
+        col_idx = page_idx % cols
+        row_idx = page_idx // cols
+
+        cell_x = MARGIN + col_idx * CELL_W
+        cell_y = MARGIN + row_idx * CELL_H
+
+        # Cell border
+        pdf.set_line_width(0.3)
+        pdf.set_draw_color(180, 180, 180)
+        pdf.rect(cell_x, cell_y, CELL_W, CELL_H)
+
+        # QR code: generate as in-memory PNG, centered horizontally in the cell
+        sap_code = str(item.get("SAP_Code", ""))
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=8,
+            border=2,
+        )
+        qr.add_data(sap_code)
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="black", back_color="white")
+        buf = BytesIO()
+        qr_img.save(buf, format="PNG")
+        buf.seek(0)
+
+        qr_x = cell_x + (CELL_W - QR_SIZE) / 2
+        qr_y = cell_y + 4
+        pdf.image(buf, x=qr_x, y=qr_y, w=QR_SIZE, h=QR_SIZE)
+
+        # SAP Code — bold, centered
+        pdf.set_font("helvetica", "B", 8)
+        pdf.set_text_color(10, 25, 47)
+        pdf.set_xy(cell_x + 1, cell_y + 4 + QR_SIZE + 2)
+        pdf.cell(CELL_W - 2, 5, txt=sap_code, align="C")
+
+        # Equipment Description — smaller, truncated, centered
+        desc = str(item.get("Equipment_Description", "") or "")[:35]
+        pdf.set_font("helvetica", "", 6)
+        pdf.set_text_color(80, 80, 80)
+        pdf.set_xy(cell_x + 1, cell_y + 4 + QR_SIZE + 8)
+        pdf.cell(CELL_W - 2, 4, txt=desc, align="C")
+
     return bytes(pdf.output())
