@@ -44,7 +44,7 @@ _DEFAULT_USERS = [
     ("admin",      "admin2026",  "admin",      "HQ"),
     ("hod",        "hod2026",    "hod",        "HQ"),
     ("supervisor", "super2026",  "supervisor", "HQ"),
-    ("worker",     "floor2026",  "worker",     "HQ"),
+    ("worker",     "floor2026",  "store_keeper", "HQ"),
 ]
 
 
@@ -359,7 +359,7 @@ def login_form() -> None:
                     
                     # Ensure formatting matches global standards, defaulting to the +966 region format
                     new_phone = st.text_input("WhatsApp Number (Include Country Code, e.g., +9665...)").strip()
-                    new_role = st.selectbox("Requested Role", ["Floor Worker", "Supervisor", "Head of Department"])
+                    new_role = st.selectbox("Requested Role", ["Store Keeper", "Supervisor", "Head of Department"])
                     
                     conn = get_connection()
                     import pandas as pd
@@ -379,7 +379,7 @@ def login_form() -> None:
                             st.error("WhatsApp number MUST start with the '+' country code.")
                         else:
                             role_map = {
-                                "Floor Worker": "worker",
+                                "Store Keeper": "store_keeper",
                                 "Supervisor": "supervisor",
                                 "Head of Department": "hod"
                             }
@@ -408,7 +408,7 @@ def login_form() -> None:
             | 👑 Admin | `admin` | `admin2026` |
             | 🏛️ HOD | `hod` | `hod2026` |
             | 🛡️ Supervisor | `supervisor` | `super2026` |
-            | 👷 Floor Worker | `worker` | `floor2026` |
+            | 🗝️ Store Keeper | `worker` | `floor2026` |
 
             > ⚠️ **Change these immediately** via Admin → User Management after first login.
             """)

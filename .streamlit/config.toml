@@ -1,6 +1,7 @@
 [theme]
 # General Industries Corporate Theme — Deep Blue & Gold
-primaryColor             = "#D4AF37"   # Corporate Gold (buttons, highlights)
+base                     = "dark"
+primaryColor             = "#FBBF24"   # Lightning Gold (buttons, highlights, accents)
 backgroundColor          = "#0A1628"   # Deep navy background
 secondaryBackgroundColor = "#162038"   # Card / sidebar surface
 textColor                = "#F0F4F8"   # Primary text

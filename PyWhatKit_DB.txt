@@ -253,3 +253,88 @@ Time: 22:33
 Phone Number: +966569233053
 Message: 📝 *STAGING QUEUE SUBMITTED (SAR)*👤 Floor Worker: Mani📦 *Submitted Items (2):*• 1.1x [1002] Concrete Blocks• 1.1x [1003] AIR COMPRESSOR 750.0 CFMThis queue is now ready for your End-of-Day commit review.
 --------------------
+Date: 4/6/2026
+Time: 19:14
+Phone Number: +966569233053
+Message: ⚠️ *OVERDUE RETURN ALERT*📦 Item: 0.1 1 of 'Push Knife'👤 Borrower: Mydeen🕒 Was due back at: 2026-06-04 18:30:00Please follow up immediately and mark the item returned in the Store Keeper Portal.
+--------------------
+Date: 4/6/2026
+Time: 19:15
+Phone Number: +916369719235
+Message: ⚠️ *OVERDUE RETURN ALERT*📦 Item: 0.1 1 of 'Push Knife'👤 Borrower: Mydeen🕒 Was due back at: 2026-06-04 18:30:00Please follow up immediately and mark the item returned in the Store Keeper Portal.
+--------------------
+Date: 4/6/2026
+Time: 19:17
+Phone Number: +916369719235
+Message: ⚠️ *OVERDUE RETURN ALERT*📦 Item: 0.1 1 of 'Push Knife'👤 Borrower: Mydeen🕒 Was due back at: 2026-06-04 18:30:00Please follow up immediately and mark the item returned in the Store Keeper Portal.
+--------------------
+Date: 4/6/2026
+Time: 23:15
+Phone Number: +916369719235
+Message: ⚠️ *OVERDUE RETURN ALERT*📦 Item: 0.1 1 of 'Push Knife'👤 Borrower: Mydeen🕒 Was due back at: 2026-06-04 18:30:00Please follow up immediately and mark the item returned in the Store Keeper Portal.
+--------------------
+Date: 4/6/2026
+Time: 23:17
+Phone Number: +916369719235
+Message: ⚠️ *RETURN REMINDER — Push Knife*Dear Mydeen, you have an overdue item: 0.1 1 of 'Push Knife' that was due back at 2026-06-04 18:30:00. Please return it to the site store immediately. Thank you.
+--------------------
+Date: 5/6/2026
+Time: 0:3
+Phone Number: +966569233053
+Message: 🎉 *ACCESS GRANTED*Welcome to the General Industries HUB, Timcook!Your request for the 'store_keeper' role at Jubail Plant has been approved by the Admin. You may now log in to the system.
+--------------------
+Date: 5/6/2026
+Time: 0:4
+Phone Number: +966569233053
+Message: 📝 *ISSUE STAGING SUBMITTED (SAR)*👤 Store Keeper: Ansari📦 *Submitted Items (1):*• 0.1x [1001] WATER STORAGE TANK 10000 LQueue is ready for your EOD commit review.
+--------------------
+Date: 5/6/2026
+Time: 0:6
+Phone Number: +966569233053
+Message: ✅ *BATCH TRANSFER APPROVED*👤 Requested By: Ansari📦 *Approved Items (1):*• 1.0x [1001] WATER STORAGE TANK 10000 L (HQ ➡️ SAR)📝 *Admin Instructions:*N/A
+--------------------
+Date: 5/6/2026
+Time: 19:53
+Phone Number: +966569233053
+Message: 📝 *ISSUE STAGING SUBMITTED (SAR)*👤 Store Keeper: Ansari📦 *Submitted Items (1):*• 1.1x [1002] Concrete BlocksQueue is ready for your EOD commit review.
+--------------------
+Date: 5/6/2026
+Time: 19:56
+Phone Number: +966269233053
+Message: ⚠️ *RETURN REMINDER — Knife*Dear Mydeen, you have an overdue item: 0.1 Each of 'Knife' that was due back at 2026-06-05 19:45:00. Please return it to the site store immediately. Thank you.
+--------------------
+Date: 5/6/2026
+Time: 19:58
+Phone Number: +966569233053
+Message: ⚠️ *RETURN REMINDER — Knife*Dear Mydeen, you have an overdue item: 0.1 Each of 'Knife' that was due back at 2026-06-05 19:45:00. Please return it to the site store immediately. Thank you.
+--------------------
+Date: 5/6/2026
+Time: 20:1
+Phone Number: +966269233053
+Message: ⚠️ *RETURN REMINDER — Knife*Dear Mydeen, you have an overdue item: 0.1 Each of 'Knife' that was due back at 2026-06-05 20:00:00. Please return it to the site store immediately. Thank you.
+--------------------
+Date: 5/6/2026
+Time: 20:3
+Phone Number: +966569233053
+Message: ⚠️ *RETURN REMINDER — Knife*Dear Mydeen, you have an overdue item: 0.1 Each of 'Knife' that was due back at 2026-06-05 20:00:00. Please return it to the site store immediately. Thank you.
+--------------------
+Date: 5/6/2026
+Time: 21:27
+Phone Number: +966569233053
+Message: 🚚 *NEW CROSS-SITE TRANSFER REQUEST*📍 Requesting Site: *SAR*🎯 Target Site(s): *HQ*👤 Submitted by: Ansari📦 Items in cart: *1*Please log in to the Admin Portal → Pending Requests to review and approve.
+--------------------
+Date: 5/6/2026
+Time: 21:38
+Phone Number: +966569233053
+Message: ✅ *BATCH TRANSFER APPROVED*👤 Requested By: Ansari📦 *Approved Items (1):*• 1.0x [1001] WATER STORAGE TANK 10000 L (HQ ➡️ SAR)📝 *Admin Instructions:*N/A
+--------------------
+Date: 5/6/2026
+Time: 21:40
+Phone Number: +916369719235
+Message: 📦 *TRANSFER ORDER — HQ*Admin has approved the following items for outbound transfer from your site. Please arrange packing:• 1.0x [1001] WATER STORAGE TANK 10000 L → to *SAR*📝 Admin Notes: N/A
+--------------------
+Date: 5/6/2026
+Time: 21:41
+Phone Number: +966569233053
+Message: ❌ *BATCH TRANSFER REJECTED*👤 Requested By: Ansari📦 *Rejected Items (1):*• 1.0x [1001] WATER STORAGE TANK 10000 L (Request #20)📝 *Reason:*no
+--------------------

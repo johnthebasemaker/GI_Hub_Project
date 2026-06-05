@@ -43,20 +43,19 @@ COLOR_CRITICAL = "#EF4444"   # Empty / critical
 # ROLE DEFINITIONS
 # ---------------------------------------------------------------------------
 ROLES = {
-    "admin":      {"label": "Admin",              "icon": "👑",  "color": BRAND_GOLD},
-    "hod":        {"label": "Head of Department", "icon": "🏛️", "color": "#6366F1"},
-    "supervisor": {"label": "Supervisor",         "icon": "🛡️", "color": BRAND_BLUE_LIGHT},
-    "worker":     {"label": "Floor Worker",       "icon": "👷",  "color": TEXT_MUTED},
+    "admin":        {"label": "Admin",              "icon": "👑",  "color": BRAND_GOLD},
+    "hod":          {"label": "Head of Department", "icon": "🏛️", "color": "#6366F1"},
+    "supervisor":   {"label": "Supervisor",         "icon": "🛡️", "color": BRAND_BLUE_LIGHT},
+    "store_keeper": {"label": "Store Keeper",       "icon": "🗝️",  "color": TEXT_MUTED},
 }
 
-# worker=0 < supervisor=1 < hod=2 < admin=3
-# All existing relative-ordering tests remain valid after this shift.
-ROLE_HIERARCHY = {"worker": 0, "supervisor": 1, "hod": 2, "admin": 3}
+# store_keeper=0 < supervisor=1 < hod=2 < admin=3
+ROLE_HIERARCHY = {"store_keeper": 0, "supervisor": 1, "hod": 2, "admin": 3}
 
 # Minimum role required to VIEW each page
 PAGE_ACCESS = {
     "📦 Live Dashboard":  "supervisor",
-    "📝 Daily Issue Log": "worker",
+    "📝 Entry Log":       "store_keeper",
     "📋 HOD Portal":      "hod",          # HOD + Admin; EOD Commit lives here
     "🛡️ Admin Portal":    "admin",
     "📊 Reports":         "supervisor",

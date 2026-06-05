@@ -69,6 +69,55 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     """)
 
     c.execute("""
+        CREATE TABLE IF NOT EXISTS pending_receipts (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            Date        TEXT,
+            SAP_Code    TEXT,
+            Serial_No   TEXT,
+            PR          TEXT,
+            Quantity    REAL,
+            Location    TEXT,
+            Vehicle_No  TEXT,
+            Driver_Name TEXT,
+            DN_No       TEXT,
+            Pallet_No   TEXT,
+            Mob_From    TEXT,
+            Prepared_by TEXT,
+            Mob_To      TEXT,
+            Received_by TEXT,
+            DN_Copy     TEXT,
+            Remarks     TEXT,
+            Supplier    TEXT,
+            PR_Number   TEXT,
+            Expiry_Date TEXT,
+            Timestamp   DATETIME DEFAULT CURRENT_TIMESTAMP,
+            status      TEXT DEFAULT 'draft',
+            Site_ID     TEXT DEFAULT 'HQ'
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS returnable_items (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            material_name        TEXT NOT NULL,
+            uom                  TEXT,
+            qty                  REAL,
+            borrower_name        TEXT,
+            borrower_phone       TEXT,
+            given_time           DATETIME DEFAULT CURRENT_TIMESTAMP,
+            expected_return_time DATETIME,
+            status               TEXT DEFAULT 'borrowed',
+            Site_ID              TEXT DEFAULT 'HQ',
+            whatsapp_alert_sent  INTEGER DEFAULT 0
+        )
+    """)
+    # Self-healing: add whatsapp_alert_sent to tables that predate the column
+    c.execute("PRAGMA table_info(returnable_items)")
+    _ri_cols = {row[1] for row in c.fetchall()}
+    if "whatsapp_alert_sent" not in _ri_cols:
+        c.execute("ALTER TABLE returnable_items ADD COLUMN whatsapp_alert_sent INTEGER DEFAULT 0")
+
+    c.execute("""
         CREATE TABLE IF NOT EXISTS consumption (
             Date      TEXT,
             SAP_Code  TEXT,
@@ -116,7 +165,7 @@ def init_db(conn: sqlite3.Connection = None) -> None:
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             username      TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            role          TEXT NOT NULL CHECK(role IN ('admin','hod','supervisor','worker')),
+            role          TEXT NOT NULL CHECK(role IN ('admin','hod','supervisor','store_keeper')),
             Site_ID       TEXT DEFAULT 'HQ',
             created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
         )
@@ -247,6 +296,15 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         if col not in rec_cols:
             c.execute(f"ALTER TABLE receipts ADD COLUMN {col} TEXT")
 
+    # ── Self-Healing: Mirror all logistics columns into pending_receipts ───────
+    c.execute("PRAGMA table_info(pending_receipts)")
+    _prc_cols = {row[1] for row in c.fetchall()}
+    for _col in ["Serial_No", "PR", "Location", "Vehicle_No", "Driver_Name",
+                 "DN_No", "Pallet_No", "Mob_From", "Prepared_by", "Mob_To",
+                 "Received_by", "DN_Copy", "Supplier", "PR_Number", "Expiry_Date"]:
+        if _col not in _prc_cols:
+            c.execute(f"ALTER TABLE pending_receipts ADD COLUMN {_col} TEXT")
+
     # ── Self-Healing: status column for draft/submit workflow ─────────────────
     c.execute("PRAGMA table_info(pending_issues)")
     _pi_cols = {row[1] for row in c.fetchall()}
@@ -265,8 +323,9 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     # ── Self-Healing: Upgrade the Role CHECK constraint ───────────────────────
     c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'")
     table_sql = c.fetchone()[0]
-    if "'hod'" not in table_sql.lower():
-        # The old constraint is blocking HOD creation. Safely migrate the table.
+    needs_rebuild = ("'hod'" not in table_sql.lower()) or ("'store_keeper'" not in table_sql.lower())
+    if needs_rebuild:
+        # Rebuild the table with the current constraint (adds hod + store_keeper, drops worker).
         c.execute("PRAGMA foreign_keys=off;")
         c.execute("ALTER TABLE users RENAME TO _users_old;")
         c.execute("""
@@ -274,15 +333,24 @@ def init_db(conn: sqlite3.Connection = None) -> None:
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 username      TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
-                role          TEXT NOT NULL CHECK(role IN ('admin','hod','supervisor','worker')),
+                role          TEXT NOT NULL CHECK(role IN ('admin','hod','supervisor','store_keeper')),
                 Site_ID       TEXT DEFAULT 'HQ',
+                Phone_Number  TEXT,
                 created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Copy old data into the new structure
-        c.execute("INSERT INTO users SELECT * FROM _users_old;")
+        # Copy rows, renaming legacy 'worker' role in-flight
+        c.execute("""
+            INSERT INTO users (id, username, password_hash, role, Site_ID, Phone_Number, created_at)
+            SELECT id, username, password_hash,
+                   CASE WHEN role = 'worker' THEN 'store_keeper' ELSE role END,
+                   Site_ID,
+                   Phone_Number,
+                   created_at
+            FROM _users_old
+        """)
         c.execute("DROP TABLE _users_old;")
-        c.execute("PRAGMA foreign_keys=on;")        
+        c.execute("PRAGMA foreign_keys=on;")
             
 
     conn.commit()
@@ -1099,3 +1167,197 @@ def get_phone_by_username(username: str) -> str:
         return df.iloc[0]["Phone_Number"] if not df.empty and pd.notna(df.iloc[0]["Phone_Number"]) else ""
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# MODULE — PENDING RECEIPTS (staging workflow)
+# ---------------------------------------------------------------------------
+
+def get_pending_receipts_for_hod(
+    conn: sqlite3.Connection = None,
+    site_id: str = "HQ",
+) -> pd.DataFrame:
+    """Returns pending_receipts rows awaiting HOD approval for a specific site."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    df = pd.read_sql(
+        """SELECT pr.id, pr.Date, pr.SAP_Code,
+                  i.Equipment_Description AS Material_Name, i.UOM,
+                  pr.Quantity, pr.Supplier, pr.Expiry_Date,
+                  pr.PR_Number, pr.Remarks, pr.Timestamp
+           FROM pending_receipts pr
+           LEFT JOIN inventory i ON pr.SAP_Code = i.SAP_Code
+           WHERE pr.status = 'pending_hod'
+             AND COALESCE(pr.Site_ID, 'HQ') = ?
+           ORDER BY pr.Timestamp ASC""",
+        conn, params=(site_id,),
+    )
+    if _owns:
+        conn.close()
+    return df
+
+
+def commit_pending_receipts(
+    conn: sqlite3.Connection = None,
+    site_id: str = "HQ",
+    username: str = "hod",
+) -> int:
+    """
+    Moves all pending_receipts with status='pending_hod' for the site into the
+    permanent receipts table via process_receipt_delivery, then deletes the
+    staged rows. Returns the number of rows committed.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+
+    rows = pd.read_sql(
+        "SELECT * FROM pending_receipts WHERE status = 'pending_hod' AND COALESCE(Site_ID,'HQ') = ?",
+        conn, params=(site_id,),
+    )
+
+    if rows.empty:
+        if _owns:
+            conn.close()
+        return 0
+
+    _LOGISTICS_COLS = [
+        "Serial_No", "PR", "Location", "Vehicle_No", "Driver_Name",
+        "DN_No", "Pallet_No", "Mob_From", "Prepared_by", "Mob_To",
+        "Received_by", "DN_Copy",
+    ]
+
+    for _, row in rows.iterrows():
+        pr_val  = row.get("PR_Number") or None
+        exp_val = row.get("Expiry_Date") or None
+        if pr_val and str(pr_val).strip() in ("", "nan", "None"):
+            pr_val = None
+        if exp_val and str(exp_val).strip() in ("", "nan", "None"):
+            exp_val = None
+
+        extra_fields = {}
+        for col in _LOGISTICS_COLS:
+            if col in row.index:
+                val = row.get(col)
+                if val is not None and str(val).strip() not in ("", "nan", "None"):
+                    extra_fields[col] = str(val)
+
+        process_receipt_delivery(
+            conn,
+            date=str(row.get("Date", datetime.date.today())),
+            sap_code=str(row["SAP_Code"]),
+            qty=float(row["Quantity"]),
+            supplier=str(row.get("Supplier", "") or ""),
+            remarks=str(row.get("Remarks", "") or ""),
+            site_id=site_id,
+            pr_number=pr_val,
+            expiry_date=exp_val,
+            extra_fields=extra_fields,
+        )
+
+    count = len(rows)
+    conn.execute(
+        "DELETE FROM pending_receipts WHERE status = 'pending_hod' AND COALESCE(Site_ID,'HQ') = ?",
+        (site_id,),
+    )
+    conn.commit()
+    log_audit_action(username, "COMMIT_RECEIPTS", "receipts",
+                     f"Committed {count} staged receipt(s) for site {site_id}")
+    if _owns:
+        conn.close()
+    return count
+
+
+# ---------------------------------------------------------------------------
+# MODULE — RETURNABLE ITEMS (tool tracking)
+# ---------------------------------------------------------------------------
+
+def get_returnable_items(
+    conn: sqlite3.Connection = None,
+    site_id: str = "HQ",
+) -> pd.DataFrame:
+    """Returns all returnable_items rows for a site, newest first."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    df = pd.read_sql(
+        """SELECT id, material_name, uom, qty, borrower_name, borrower_phone,
+                  given_time, expected_return_time, status
+           FROM returnable_items
+           WHERE COALESCE(Site_ID, 'HQ') = ?
+           ORDER BY expected_return_time ASC""",
+        conn, params=(site_id,),
+    )
+    if _owns:
+        conn.close()
+    return df
+
+
+def insert_returnable_item(
+    conn: sqlite3.Connection = None,
+    material_name: str = "",
+    uom: str = "",
+    qty: float = 1.0,
+    borrower_name: str = "",
+    borrower_phone: str = "",
+    expected_return_time: str = "",
+    site_id: str = "HQ",
+) -> None:
+    """Inserts a new borrowed-item record with status='borrowed'."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    conn.execute(
+        """INSERT INTO returnable_items
+               (material_name, uom, qty, borrower_name, borrower_phone,
+                expected_return_time, status, Site_ID)
+           VALUES (?, ?, ?, ?, ?, ?, 'borrowed', ?)""",
+        (material_name, uom, qty, borrower_name, borrower_phone,
+         expected_return_time, site_id),
+    )
+    conn.commit()
+    if _owns:
+        conn.close()
+
+
+def mark_item_returned(
+    conn: sqlite3.Connection = None,
+    item_id: int = 0,
+) -> None:
+    """Marks a returnable_item row as returned."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE returnable_items SET status = 'returned' WHERE id = ?",
+            (int(item_id),),  # cast: numpy.int64 doesn't bind reliably via sqlite3
+        )
+        conn.commit()
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_overdue_unreported_items(
+    conn: sqlite3.Connection = None,
+    site_id: str = "HQ",
+) -> pd.DataFrame:
+    """Returns borrowed items past their expected_return_time that haven't had an alert sent."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    df = pd.read_sql(
+        """SELECT id, material_name, uom, qty, borrower_name,
+                  borrower_phone, expected_return_time, Site_ID
+           FROM returnable_items
+           WHERE status = 'borrowed'
+             AND expected_return_time < datetime('now')
+             AND whatsapp_alert_sent = 0
+             AND COALESCE(Site_ID, 'HQ') = ?""",
+        conn, params=(site_id,),
+    )
+    if _owns:
+        conn.close()
+    return df

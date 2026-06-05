@@ -46,6 +46,11 @@ except ImportError:
 def inject_custom_css() -> None:
     """
     Injects global CSS overrides for the GI brand theme.
+    v2.1 — Glassmorphism "Blue & Gold" overhaul:
+      • Frosted-glass cards, expanders, forms, and metric cards
+      • Global deep-navy background with radial gold/blue glow accents
+      • @keyframes fadeInUp page-load animation
+      • Sidebar radio buttons replaced with smooth gold pill navigation
     Call once at the top of main.py, after st.set_page_config().
     """
     st.markdown(f"""
@@ -57,26 +62,118 @@ def inject_custom_css() -> None:
         font-family: 'Inter', sans-serif;
     }}
 
+    /* ══════════════════════════════════════════════════════════════
+       GLOBAL BACKGROUND — deep navy with radial glow accents
+       ══════════════════════════════════════════════════════════════ */
+    .stApp {{
+        background:
+            radial-gradient(ellipse at 2%   2%,   rgba(37,  99, 235, 0.16) 0%, transparent 44%),
+            radial-gradient(ellipse at 98%  2%,   rgba(30,  64, 175, 0.13) 0%, transparent 40%),
+            radial-gradient(ellipse at 98%  98%,  rgba(251,191,  36, 0.09) 0%, transparent 44%),
+            linear-gradient(160deg, #020C1B 0%, #0A1929 60%, #020C1B 100%);
+        background-attachment: fixed;
+    }}
+
+    /* ── Fade-in-up animation (cards, metrics, page sections) ── */
+    @keyframes fadeInUp {{
+        from {{ opacity: 0; transform: translateY(18px); }}
+        to   {{ opacity: 1; transform: translateY(0);    }}
+    }}
+
     /* ── Hide Streamlit default branding ── */
     #MainMenu, footer {{ visibility: hidden; }}
     header {{ background: transparent !important; }}
 
-    /* ── Sidebar styling ── */
+    /* ── Sidebar — frosted glass panel ── */
     section[data-testid="stSidebar"] {{
-        background: {DARK_SURFACE} !important;
-        border-right: 1px solid {DARK_BORDER};
+        background: rgba(5, 15, 35, 0.82) !important;
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border-right: 1px solid rgba(255, 215, 0, 0.10);
     }}
 
-    /* ── Metric card overrides ── */
+    /* ══════════════════════════════════════════════════════════════
+       SIDEBAR — Pill Navigation  (replaces plain radio buttons)
+       Requires Chrome 105+ / Firefox 121+ / Safari 15.4+ for :has()
+       ══════════════════════════════════════════════════════════════ */
+
+    /* Hide the native radio circles */
+    [data-testid="stSidebar"] [role="radiogroup"] input[type="radio"] {{
+        display: none !important;
+    }}
+
+    /* Base pill label */
+    [data-testid="stSidebar"] [role="radiogroup"] label {{
+        display: flex;
+        align-items: center;
+        width: 100%;
+        padding: 0.48rem 1rem;
+        margin: 0.18rem 0;
+        border-radius: 50px;
+        border: 1px solid transparent;
+        cursor: pointer;
+        font-size: 0.88rem;
+        font-weight: 500;
+        color: {TEXT_SECONDARY};
+        transition: all 0.3s ease;
+        background: transparent;
+    }}
+
+    /* Hover state */
+    [data-testid="stSidebar"] [role="radiogroup"] label:hover {{
+        background: rgba(251, 191, 36, 0.10);
+        border-color: rgba(251, 191, 36, 0.40);
+        color: {BRAND_GOLD};
+        padding-left: 1.2rem;
+    }}
+
+    /* Selected / active state */
+    [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {{
+        background: rgba(251, 191, 36, 0.16);
+        border-color: rgba(251, 191, 36, 0.65);
+        color: {BRAND_GOLD};
+        font-weight: 700;
+        box-shadow: 0 2px 14px rgba(251, 191, 36, 0.13);
+    }}
+
+    /* ══════════════════════════════════════════════════════════════
+       GI CARD SYSTEM — Glassmorphism (Dark Mode default)
+       ══════════════════════════════════════════════════════════════ */
+    .gi-card {{
+        background: rgba(10, 25, 47, 0.50) !important;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 215, 0, 0.10) !important;
+        border-radius: 16px;
+        padding: 1.25rem 1.5rem;
+        margin-bottom: 1rem;
+        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.40),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        transition: all 0.3s ease;
+        animation: fadeInUp 0.45s ease both;
+    }}
+    .gi-card:hover {{
+        border-color: rgba(251, 191, 36, 0.35) !important;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55),
+                    0 0 24px rgba(251, 191, 36, 0.07);
+        transform: translateY(-2px);
+    }}
+
+    /* ── Metric cards — glass ── */
     div[data-testid="stMetric"] {{
-        background: {DARK_SURFACE_2};
-        border: 1px solid {DARK_BORDER};
-        border-radius: 12px;
+        background: rgba(10, 25, 47, 0.55) !important;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 215, 0, 0.12) !important;
+        border-radius: 14px;
         padding: 1rem 1.25rem;
-        transition: box-shadow 0.2s ease;
+        transition: all 0.3s ease;
+        animation: fadeInUp 0.40s ease both;
     }}
     div[data-testid="stMetric"]:hover {{
-        box-shadow: 0 0 0 2px {BRAND_GOLD}44;
+        border-color: rgba(251, 191, 36, 0.40) !important;
+        box-shadow: 0 4px 20px rgba(251, 191, 36, 0.10);
+        transform: translateY(-1px);
     }}
     div[data-testid="stMetricValue"] {{
         color: {BRAND_GOLD} !important;
@@ -91,27 +188,53 @@ def inject_custom_css() -> None:
         font-weight: 700;
         border: none;
         border-radius: 8px;
-        transition: all 0.2s ease;
+        transition: all 0.25s ease;
     }}
     div[data-testid="stButton"] > button[kind="primary"]:hover {{
-        transform: translateY(-1px);
-        box-shadow: 0 4px 16px {BRAND_GOLD}55;
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px {BRAND_GOLD}55;
     }}
 
     /* ── Tab styling ── */
     button[data-baseweb="tab"] {{
         font-weight: 600;
         color: {TEXT_MUTED} !important;
+        transition: all 0.2s ease;
     }}
     button[data-baseweb="tab"][aria-selected="true"] {{
         color: {BRAND_GOLD} !important;
         border-bottom-color: {BRAND_GOLD} !important;
     }}
 
-    /* ── Expander ── */
+    /* ── Expanders — glass ── */
+    [data-testid="stExpander"] {{
+        background: rgba(10, 25, 47, 0.42) !important;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 215, 0, 0.10) !important;
+        border-radius: 14px !important;
+        overflow: hidden;
+        margin-bottom: 0.75rem;
+        transition: all 0.3s ease;
+    }}
+    [data-testid="stExpander"]:hover {{
+        border-color: rgba(251, 191, 36, 0.28) !important;
+    }}
     details summary {{
         font-weight: 600;
         color: {TEXT_SECONDARY};
+    }}
+
+    /* ── Forms — glass ── */
+    [data-testid="stForm"] {{
+        background: rgba(10, 25, 47, 0.45) !important;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 215, 0, 0.10) !important;
+        border-radius: 14px;
+        padding: 1rem 1.25rem 0.5rem 1.25rem;
+        margin-bottom: 0.75rem;
+        transition: all 0.3s ease;
     }}
 
     /* ── AgGrid text colour fix for dark theme ── */
@@ -130,23 +253,404 @@ def inject_custom_css() -> None:
         font-size: 0.75rem;
         font-weight: 600;
     }}
-    
-    /* 🚀 UPGRADE: Make the collapsed sidebar arrow massive and branded */
-[data-testid="collapsedControl"] {{
-        background-color: #D4AF37 !important; /* Brand Gold */
-        color: #0A192F !important; /* Brand Navy */
+
+    /* ── Collapsed sidebar toggle ── */
+    [data-testid="collapsedControl"] {{
+        background-color: {BRAND_GOLD} !important;
+        color: {BRAND_BLUE} !important;
         border-radius: 0px 8px 8px 0px !important;
         padding: 5px 15px 5px 10px !important;
-        border: 2px solid #0A192F !important;
+        border: 2px solid {BRAND_BLUE} !important;
         box-shadow: 4px 4px 10px rgba(0,0,0,0.3) !important;
         transition: all 0.3s ease !important;
-        z-index: 999999 !important; /* Ensure it floats above everything */
+        z-index: 999999 !important;
     }}
-        
-    /* Make it glow when hovered */
     [data-testid="collapsedControl"]:hover {{
-        background-color: #F5A623 !important;
+        background-color: {BRAND_GOLD_LIGHT} !important;
         cursor: pointer;
+    }}
+
+    /* ══════════════════════════════════════════════════════════════
+       LIGHT MODE OVERRIDES
+       All glass elements swap to frosted-white with warm-gold accents
+       ══════════════════════════════════════════════════════════════ */
+
+    /* Light mode: page background */
+    [data-theme="light"] .stApp {{
+        background:
+            radial-gradient(ellipse at 2%   2%,   rgba(37,  99, 235, 0.06) 0%, transparent 45%),
+            radial-gradient(ellipse at 98%  98%,  rgba(251,191,  36, 0.05) 0%, transparent 45%),
+            linear-gradient(160deg, #EEF2FF 0%, #F8FAFC 60%, #EEF2FF 100%);
+        background-attachment: fixed;
+    }}
+
+    /* Light mode: sidebar */
+    [data-theme="light"] section[data-testid="stSidebar"] {{
+        background: rgba(248, 250, 252, 0.90) !important;
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border-right: 1px solid #E5E7EB !important;
+    }}
+
+    /* Light mode: sidebar pills */
+    [data-theme="light"] [data-testid="stSidebar"] [role="radiogroup"] label {{
+        color: #374151;
+    }}
+    [data-theme="light"] [data-testid="stSidebar"] [role="radiogroup"] label:hover {{
+        background: rgba(180, 83, 9, 0.08);
+        border-color: rgba(180, 83, 9, 0.35);
+        color: #B45309;
+    }}
+    [data-theme="light"] [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {{
+        background: rgba(180, 83, 9, 0.12);
+        border-color: rgba(180, 83, 9, 0.55);
+        color: #B45309;
+    }}
+
+    /* Light mode: .gi-card */
+    [data-theme="light"] .gi-card {{
+        background: rgba(255, 255, 255, 0.65) !important;
+        border-color: rgba(180, 83, 9, 0.14) !important;
+        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.07),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.90);
+    }}
+    [data-theme="light"] .gi-card:hover {{
+        border-color: rgba(180, 83, 9, 0.32) !important;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.11);
+    }}
+
+    /* Light mode: expanders */
+    [data-theme="light"] [data-testid="stExpander"] {{
+        background: rgba(255, 255, 255, 0.65) !important;
+        border-color: #E5E7EB !important;
+        box-shadow: 0 1px 6px rgba(0,0,0,0.05) !important;
+    }}
+
+    /* Light mode: forms */
+    [data-theme="light"] [data-testid="stForm"] {{
+        background: rgba(255, 255, 255, 0.65) !important;
+        border-color: #E5E7EB !important;
+        box-shadow: 0 1px 6px rgba(0,0,0,0.04) !important;
+    }}
+
+    /* Light mode: metric cards */
+    [data-theme="light"] div[data-testid="stMetric"] {{
+        background: rgba(255, 255, 255, 0.70) !important;
+        border: 1px solid #E5E7EB !important;
+    }}
+    [data-theme="light"] div[data-testid="stMetricValue"] {{
+        color: #B45309 !important;
+    }}
+
+    /* Light mode: AgGrid header */
+    [data-theme="light"] .ag-theme-streamlit .ag-header-cell-label {{
+        color: {BRAND_BLUE} !important;
+    }}
+
+    /* Light mode: tab text */
+    [data-theme="light"] button[data-baseweb="tab"] {{
+        color: #374151 !important;
+    }}
+    [data-theme="light"] button[data-baseweb="tab"][aria-selected="true"] {{
+        color: #B45309 !important;
+        border-bottom-color: #B45309 !important;
+    }}
+
+    /* Light mode: primary buttons */
+    [data-theme="light"] div[data-testid="stButton"] > button[kind="primary"] {{
+        background: linear-gradient(135deg, {BRAND_GOLD}, {BRAND_GOLD_LIGHT});
+        color: {BRAND_BLUE} !important;
+    }}
+
+    /* ══════════════════════════════════════════════════════════════
+       v2.2 GOAL 1: AGGRID — Full Glass Grid Theme
+       ag-grid ignores [data-theme] so dark + light are explicit.
+       ══════════════════════════════════════════════════════════════ */
+
+    /* Outer glass panel */
+    .ag-theme-streamlit .ag-root-wrapper {{
+        background: rgba(10, 25, 47, 0.42) !important;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border: 1px solid rgba(255, 215, 0, 0.12) !important;
+        border-radius: 12px !important;
+        overflow: hidden;
+    }}
+
+    /* Header — deep navy glass */
+    .ag-theme-streamlit .ag-header {{
+        background: rgba(5, 15, 40, 0.88) !important;
+        border-bottom: 1px solid rgba(255, 215, 0, 0.22) !important;
+    }}
+    .ag-theme-streamlit .ag-header-cell-label {{
+        color: #FBBF24 !important;
+        font-weight: 700 !important;
+    }}
+    .ag-theme-streamlit .ag-header-cell:hover {{
+        background: rgba(251, 191, 36, 0.08) !important;
+    }}
+
+    /* Alternating row stripes */
+    .ag-theme-streamlit .ag-row-even {{
+        background: rgba(10, 22, 42, 0.35) !important;
+    }}
+    .ag-theme-streamlit .ag-row-odd {{
+        background: rgba(15, 30, 58, 0.46) !important;
+    }}
+
+    /* Row hover — subtle gold tint */
+    .ag-theme-streamlit .ag-row:hover,
+    .ag-theme-streamlit .ag-row-hover {{
+        background: rgba(251, 191, 36, 0.09) !important;
+    }}
+
+    /* Selected row — gold accent (Admin bulk-approve) */
+    .ag-theme-streamlit .ag-row-selected {{
+        background: rgba(251, 191, 36, 0.18) !important;
+        border-left: 3px solid rgba(251, 191, 36, 0.85) !important;
+    }}
+    .ag-theme-streamlit .ag-row-selected:hover {{
+        background: rgba(251, 191, 36, 0.24) !important;
+    }}
+
+    /* Cell borders — very subtle */
+    .ag-theme-streamlit .ag-cell {{
+        border-right: 1px solid rgba(255, 255, 255, 0.05) !important;
+        color: {TEXT_PRIMARY} !important;
+    }}
+
+    /* Floating filter row inputs */
+    .ag-theme-streamlit .ag-floating-filter-input input,
+    .ag-theme-streamlit .ag-text-field-input {{
+        background: rgba(10, 25, 47, 0.65) !important;
+        border: 1px solid rgba(255, 215, 0, 0.15) !important;
+        color: {TEXT_PRIMARY} !important;
+        border-radius: 6px;
+        transition: border-color 0.2s ease;
+    }}
+    .ag-theme-streamlit .ag-floating-filter-input input:focus,
+    .ag-theme-streamlit .ag-text-field-input:focus {{
+        border-color: #FBBF24 !important;
+        box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.20) !important;
+        outline: none;
+    }}
+
+    /* Pagination bar */
+    .ag-theme-streamlit .ag-paging-panel {{
+        background: rgba(5, 15, 40, 0.78) !important;
+        border-top: 1px solid rgba(255, 215, 0, 0.12) !important;
+        color: {TEXT_SECONDARY} !important;
+    }}
+    .ag-theme-streamlit button.ag-paging-button {{
+        color: {TEXT_SECONDARY} !important;
+        transition: color 0.2s ease;
+    }}
+    .ag-theme-streamlit button.ag-paging-button:hover:not([disabled]) {{
+        color: #FBBF24 !important;
+    }}
+
+    /* ── AgGrid Light Mode ── */
+    [data-theme="light"] .ag-theme-streamlit .ag-root-wrapper {{
+        background: rgba(255, 255, 255, 0.65) !important;
+        border-color: #E5E7EB !important;
+    }}
+    [data-theme="light"] .ag-theme-streamlit .ag-header {{
+        background: rgba(240, 244, 255, 0.92) !important;
+        border-bottom-color: #D1D5DB !important;
+    }}
+    [data-theme="light"] .ag-theme-streamlit .ag-header-cell-label {{
+        color: {BRAND_BLUE} !important;
+    }}
+    [data-theme="light"] .ag-theme-streamlit .ag-row-even {{
+        background: rgba(248, 250, 252, 0.82) !important;
+    }}
+    [data-theme="light"] .ag-theme-streamlit .ag-row-odd {{
+        background: rgba(238, 242, 255, 0.72) !important;
+    }}
+    [data-theme="light"] .ag-theme-streamlit .ag-row:hover,
+    [data-theme="light"] .ag-theme-streamlit .ag-row-hover {{
+        background: rgba(180, 83, 9, 0.07) !important;
+    }}
+    [data-theme="light"] .ag-theme-streamlit .ag-row-selected {{
+        background: rgba(180, 83, 9, 0.14) !important;
+        border-left-color: rgba(180, 83, 9, 0.75) !important;
+    }}
+    [data-theme="light"] .ag-theme-streamlit .ag-cell {{
+        color: #1F2937 !important;
+        border-right-color: rgba(0, 0, 0, 0.06) !important;
+    }}
+    [data-theme="light"] .ag-theme-streamlit .ag-paging-panel {{
+        background: rgba(240, 244, 255, 0.88) !important;
+        border-top-color: #E5E7EB !important;
+    }}
+    [data-theme="light"] .ag-theme-streamlit .ag-floating-filter-input input,
+    [data-theme="light"] .ag-theme-streamlit .ag-text-field-input {{
+        background: rgba(255, 255, 255, 0.85) !important;
+        border-color: #D1D5DB !important;
+        color: #1F2937 !important;
+    }}
+    [data-theme="light"] .ag-theme-streamlit .ag-floating-filter-input input:focus,
+    [data-theme="light"] .ag-theme-streamlit .ag-text-field-input:focus {{
+        border-color: #B45309 !important;
+        box-shadow: 0 0 0 2px rgba(180, 83, 9, 0.18) !important;
+    }}
+
+    /* ══════════════════════════════════════════════════════════════
+       v2.2 GOAL 2: FROSTED INPUT FIELDS + FOCUS GLOW
+       ══════════════════════════════════════════════════════════════ */
+
+    /* Text, number, textarea — frosted base */
+    [data-testid="stTextInput"] input,
+    [data-testid="stNumberInput"] input,
+    [data-testid="stTextArea"] textarea {{
+        background: rgba(255, 255, 255, 0.05) !important;
+        border: 1px solid rgba(255, 255, 255, 0.14) !important;
+        border-radius: 8px !important;
+        color: {TEXT_PRIMARY} !important;
+        transition: all 0.25s ease !important;
+    }}
+
+    /* Gold focus glow */
+    [data-testid="stTextInput"]:focus-within input,
+    [data-testid="stNumberInput"]:focus-within input,
+    [data-testid="stTextArea"]:focus-within textarea {{
+        border-color: {BRAND_GOLD} !important;
+        box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.15),
+                    0 0 14px rgba(251, 191, 36, 0.10) !important;
+        background: rgba(255, 255, 255, 0.08) !important;
+        outline: none !important;
+    }}
+
+    /* Selectbox frosted */
+    [data-testid="stSelectbox"] [data-baseweb="select"] > div:first-child {{
+        background: rgba(255, 255, 255, 0.05) !important;
+        border: 1px solid rgba(255, 255, 255, 0.14) !important;
+        border-radius: 8px !important;
+        transition: all 0.25s ease !important;
+    }}
+    [data-testid="stSelectbox"]:focus-within [data-baseweb="select"] > div:first-child {{
+        border-color: {BRAND_GOLD} !important;
+        box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.15) !important;
+    }}
+
+    /* ── Input Light Mode ── */
+    [data-theme="light"] [data-testid="stTextInput"] input,
+    [data-theme="light"] [data-testid="stNumberInput"] input,
+    [data-theme="light"] [data-testid="stTextArea"] textarea {{
+        background: rgba(255, 255, 255, 0.82) !important;
+        border-color: #D1D5DB !important;
+        color: #1F2937 !important;
+    }}
+    [data-theme="light"] [data-testid="stTextInput"]:focus-within input,
+    [data-theme="light"] [data-testid="stNumberInput"]:focus-within input,
+    [data-theme="light"] [data-testid="stTextArea"]:focus-within textarea {{
+        border-color: #B45309 !important;
+        box-shadow: 0 0 0 3px rgba(180, 83, 9, 0.15),
+                    0 0 12px rgba(180, 83, 9, 0.08) !important;
+    }}
+    [data-theme="light"] [data-testid="stSelectbox"] [data-baseweb="select"] > div:first-child {{
+        background: rgba(255, 255, 255, 0.82) !important;
+        border-color: #D1D5DB !important;
+    }}
+    [data-theme="light"] [data-testid="stSelectbox"]:focus-within [data-baseweb="select"] > div:first-child {{
+        border-color: #B45309 !important;
+        box-shadow: 0 0 0 3px rgba(180, 83, 9, 0.15) !important;
+    }}
+
+    /* ══════════════════════════════════════════════════════════════
+       v2.2 GOAL 3: ENHANCED TABS + HEADING TYPOGRAPHY
+       ══════════════════════════════════════════════════════════════ */
+
+    /* Upgraded inactive tab */
+    button[data-baseweb="tab"] {{
+        font-weight: 500 !important;
+        color: rgba(148, 163, 184, 0.75) !important;
+        transition: all 0.25s ease !important;
+        border-radius: 6px 6px 0 0;
+    }}
+    button[data-baseweb="tab"]:hover {{
+        color: rgba(251, 191, 36, 0.85) !important;
+        background: rgba(251, 191, 36, 0.05) !important;
+    }}
+
+    /* Active tab — glowing gold underline */
+    button[data-baseweb="tab"][aria-selected="true"] {{
+        color: #FBBF24 !important;
+        font-weight: 700 !important;
+        border-bottom: 2px solid #FBBF24 !important;
+        filter: drop-shadow(0 0 8px rgba(251, 191, 36, 0.40));
+    }}
+
+    /* Heading depth-shadow (pop against glass) */
+    h1, h2, h3 {{
+        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.45),
+                     0 1px 4px  rgba(0, 0, 0, 0.50) !important;
+    }}
+
+    /* ── Tab + Heading Light Mode ── */
+    [data-theme="light"] button[data-baseweb="tab"] {{
+        color: #6B7280 !important;
+    }}
+    [data-theme="light"] button[data-baseweb="tab"]:hover {{
+        color: rgba(180, 83, 9, 0.85) !important;
+        background: rgba(180, 83, 9, 0.04) !important;
+    }}
+    [data-theme="light"] button[data-baseweb="tab"][aria-selected="true"] {{
+        color: #B45309 !important;
+        border-bottom-color: #B45309 !important;
+        filter: drop-shadow(0 0 8px rgba(180, 83, 9, 0.30));
+    }}
+    [data-theme="light"] h1,
+    [data-theme="light"] h2,
+    [data-theme="light"] h3 {{
+        text-shadow: 0 1px 6px rgba(0, 0, 0, 0.12) !important;
+    }}
+
+    /* ══════════════════════════════════════════════════════════════
+       v2.2 GOAL 4: GLASSMORPHIC ALERT BOXES
+       Universal blur base + type-specific tints.
+       Dual-selector strategy covers both baseweb kind attr
+       and Streamlit-specific data-testid variants.
+       ══════════════════════════════════════════════════════════════ */
+
+    /* Universal glass base applied to all alert wrappers */
+    [data-testid="stAlert"],
+    [data-testid="stAlert"] [data-baseweb="notification"] {{
+        backdrop-filter: blur(10px) !important;
+        -webkit-backdrop-filter: blur(10px) !important;
+        border-radius: 10px !important;
+        overflow: hidden;
+        border-width: 1px !important;
+        border-style: solid !important;
+        transition: all 0.25s ease;
+    }}
+
+    /* Success — glassmorphic green */
+    [data-baseweb="notification"][kind="positive"],
+    [data-testid="stSuccessMessage"] {{
+        background: rgba(16, 185, 129, 0.12) !important;
+        border-color: rgba(16, 185, 129, 0.30) !important;
+    }}
+
+    /* Error — glassmorphic red */
+    [data-baseweb="notification"][kind="negative"],
+    [data-testid="stErrorMessage"] {{
+        background: rgba(239, 68, 68, 0.12) !important;
+        border-color: rgba(239, 68, 68, 0.30) !important;
+    }}
+
+    /* Warning — glassmorphic amber */
+    [data-baseweb="notification"][kind="warning"],
+    [data-testid="stWarningMessage"] {{
+        background: rgba(251, 191, 36, 0.10) !important;
+        border-color: rgba(251, 191, 36, 0.28) !important;
+    }}
+
+    /* Info — glassmorphic blue */
+    [data-baseweb="notification"][kind="info"],
+    [data-testid="stInfoMessage"] {{
+        background: rgba(59, 130, 246, 0.12) !important;
+        border-color: rgba(59, 130, 246, 0.28) !important;
     }}
 
     </style>
