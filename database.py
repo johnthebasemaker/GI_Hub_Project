@@ -51,16 +51,37 @@ ADJUSTMENT_REASONS = {
 # CONNECTION
 # ---------------------------------------------------------------------------
 def get_connection(db_file: str = None) -> sqlite3.Connection:
-    """Return a SQLite connection. Pass db_file=':memory:' for in-memory testing."""
+    """Return a SQLite connection. Pass db_file=':memory:' for in-memory testing.
+
+    On cloud deployments the database file can become corrupt when two
+    processes crash mid-write. We detect corruption via a quick schema
+    read and wipe-and-recreate the file rather than crashing forever.
+    """
+    import os
     target = db_file or DB_FILE
-    conn = sqlite3.connect(target, check_same_thread=False, timeout=30)
-    if target != ":memory:":
+
+    def _open(path: str) -> sqlite3.Connection:
+        c = sqlite3.connect(path, check_same_thread=False, timeout=30)
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
+        c.execute("PRAGMA busy_timeout=30000")
+        return c
+
+    if target == ":memory:":
+        return _open(target)
+
+    conn = _open(target)
+    try:
+        # Lightweight corruption probe — fails immediately on a bad file.
+        conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+    except sqlite3.DatabaseError:
+        conn.close()
+        # Remove the corrupt file and start clean.
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA busy_timeout=5000")
-        except sqlite3.DatabaseError:
+            os.remove(target)
+        except OSError:
             pass
+        conn = _open(target)
     return conn
 
 
