@@ -53,35 +53,46 @@ ADJUSTMENT_REASONS = {
 def get_connection(db_file: str = None) -> sqlite3.Connection:
     """Return a SQLite connection. Pass db_file=':memory:' for in-memory testing.
 
-    On cloud deployments the database file can become corrupt when two
-    processes crash mid-write. We detect corruption via a quick schema
-    read and wipe-and-recreate the file rather than crashing forever.
+    Cloud filesystems (Streamlit Community, NFS) sometimes reject WAL mode.
+    Each PRAGMA is attempted independently so one failure never blocks the
+    rest. A separate corruption probe deletes and recreates the file only
+    when the schema bytes themselves are unreadable.
     """
     import os
     target = db_file or DB_FILE
 
-    def _open(path: str) -> sqlite3.Connection:
-        c = sqlite3.connect(path, check_same_thread=False, timeout=30)
-        c.execute("PRAGMA journal_mode=WAL")
-        c.execute("PRAGMA synchronous=NORMAL")
-        c.execute("PRAGMA busy_timeout=30000")
-        return c
+    conn = sqlite3.connect(target, check_same_thread=False, timeout=30)
 
     if target == ":memory:":
-        return _open(target)
+        return conn
 
-    conn = _open(target)
+    # PRAGMAs are best-effort — WAL may be unsupported on some cloud FS.
+    for pragma in (
+        "PRAGMA journal_mode=WAL",
+        "PRAGMA synchronous=NORMAL",
+        "PRAGMA busy_timeout=30000",
+    ):
+        try:
+            conn.execute(pragma)
+        except sqlite3.DatabaseError:
+            pass
+
+    # Corruption probe — distinct from PRAGMA failures.
+    # A fresh empty file returns no rows here (not an error).
     try:
-        # Lightweight corruption probe — fails immediately on a bad file.
         conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
     except sqlite3.DatabaseError:
         conn.close()
-        # Remove the corrupt file and start clean.
         try:
             os.remove(target)
         except OSError:
             pass
-        conn = _open(target)
+        conn = sqlite3.connect(target, check_same_thread=False, timeout=30)
+        try:
+            conn.execute("PRAGMA busy_timeout=30000")
+        except sqlite3.DatabaseError:
+            pass
+
     return conn
 
 
