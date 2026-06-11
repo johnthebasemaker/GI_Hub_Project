@@ -36,7 +36,8 @@ def _consumption_count(conn) -> int:
 
 def _add_pending(conn, sap_code, qty, date="2026-05-06", work_type="Maintenance"):
     conn.execute(
-        "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type) VALUES (?, ?, ?, ?)",
+        "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type, status) "
+        "VALUES (?, ?, ?, ?, 'pending_hod')",
         (date, sap_code, qty, work_type),
     )
     conn.commit()
@@ -153,7 +154,8 @@ class TestDataIntegrity:
     def test_date_preserved_exactly(self, db_conn):
         _add_inventory(db_conn, "INTEG-003")
         db_conn.execute(
-            "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type) VALUES (?, ?, ?, ?)",
+            "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type, status) "
+            "VALUES (?, ?, ?, ?, 'pending_hod')",
             ("2026-12-25", "INTEG-003", 1.0, "Maintenance"),
         )
         db_conn.commit()
@@ -164,7 +166,8 @@ class TestDataIntegrity:
     def test_work_type_preserved_exactly(self, db_conn):
         _add_inventory(db_conn, "INTEG-004")
         db_conn.execute(
-            "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type) VALUES (?, ?, ?, ?)",
+            "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type, status) "
+            "VALUES (?, ?, ?, ?, 'pending_hod')",
             ("2026-05-06", "INTEG-004", 3.0, "New Project Area"),
         )
         db_conn.commit()
@@ -176,8 +179,8 @@ class TestDataIntegrity:
         _add_inventory(db_conn, "INTEG-005")
         remark = "Tank #7 — Zone A/B (urgent!)"
         db_conn.execute(
-            "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type, Remarks) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type, Remarks, status) "
+            "VALUES (?, ?, ?, ?, ?, 'pending_hod')",
             ("2026-05-06", "INTEG-005", 2.0, "Maintenance", remark),
         )
         db_conn.commit()
@@ -189,7 +192,8 @@ class TestDataIntegrity:
         """Quantities like 3.14159 must not be rounded to integers."""
         _add_inventory(db_conn, "INTEG-006")
         db_conn.execute(
-            "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type) VALUES (?, ?, ?, ?)",
+            "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type, status) "
+            "VALUES (?, ?, ?, ?, 'pending_hod')",
             ("2026-05-06", "INTEG-006", 3.14159, "Fabrication"),
         )
         db_conn.commit()
@@ -226,8 +230,8 @@ class TestSchemaAutoSync:
 
         # Add a pending row with the custom field populated
         c.execute(
-            "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type, Custom_Field) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type, Custom_Field, status) "
+            "VALUES (?, ?, ?, ?, ?, 'pending_hod')",
             ("2026-05-06", "SYNC-001", 5.0, "Maintenance", "CustomValue"),
         )
         db_conn.commit()

@@ -29,6 +29,19 @@ from database import get_connection, load_live_inventory, get_low_stock_items
 # Load .env on import
 load_dotenv()
 
+# Windows-only Outlook COM bindings — exposed at module level so tests can
+# patch them, and so we don't pay the import cost on every send.
+try:
+    import win32com.client as win32  # type: ignore
+    import pythoncom  # type: ignore
+except ImportError:
+    # Non-Windows runtime: provide attribute stubs so unittest.mock.patch can
+    # target `mailer.win32.Dispatch` / `mailer.pythoncom.CoInitialize`. The
+    # actual Outlook code path is gated on `platform.system() == "Windows"`.
+    from types import SimpleNamespace
+    win32 = SimpleNamespace(Dispatch=None)
+    pythoncom = SimpleNamespace(CoInitialize=None, CoUninitialize=None)
+
 # ---------------------------------------------------------------------------
 # SMTP CONFIGURATION  (all sourced from .env)
 # ---------------------------------------------------------------------------
@@ -398,8 +411,6 @@ def send_eod_report(
     # ── Windows path: Outlook COM automation ────────────────────────────────
     if platform.system() == "Windows":
         try:
-            import win32com.client as win32
-            import pythoncom
             pythoncom.CoInitialize()
 
             outlook = win32.Dispatch('outlook.application')
@@ -444,7 +455,6 @@ def send_eod_report(
 
         finally:
             try:
-                import pythoncom
                 pythoncom.CoUninitialize()
             except Exception:
                 pass
@@ -642,8 +652,6 @@ def draft_logistics_email_via_outlook(pr_number: str, site_id: str, pr_df) -> tu
     # ── Windows path: Outlook COM automation ────────────────────────────────
     if platform.system() == "Windows":
         try:
-            import win32com.client as win32
-            import pythoncom
             pythoncom.CoInitialize()
 
             outlook = win32.Dispatch('outlook.application')
@@ -661,41 +669,108 @@ def draft_logistics_email_via_outlook(pr_number: str, site_id: str, pr_df) -> tu
             return False, f"Failed to open Outlook Desktop App: {str(e)}"
         finally:
             try:
-                import pythoncom
                 pythoncom.CoUninitialize()
             except Exception:
                 pass
 
     # ── Mac / Linux path: default mail app via mailto: ──────────────────────
+    # On Mac we first try to drive Mail.app via AppleScript so the body
+    # arrives as HTML (matching the Windows/Outlook treatment). The
+    # mailto:// fallback ships a monospaced fixed-width text table that
+    # renders cleanly in every email client.
     else:
         try:
             import subprocess
             import urllib.parse
 
-            subject = urllib.parse.quote(f"🔔 Pending Delivery Advisory: PR {pr_number} ({site_id})")
+            subject_raw = f"🔔 Pending Delivery Advisory: PR {pr_number} ({site_id})"
 
-            # Plain-text body for mailto (HTML is not supported in mailto: links)
-            lines = [f"Dear Logistics Team,",
-                     f"",
-                     f"Please find below the pending delivery status for PR {pr_number} requested by {site_id}.",
-                     f""]
+            # ── Try Mail.app via AppleScript (HTML body) ─────────────────
+            if platform.system() == "Darwin":
+                try:
+                    # AppleScript needs single-quoted strings escaped.
+                    safe_html = (
+                        html_body.replace("\\", "\\\\")
+                                 .replace('"', '\\"')
+                    )
+                    osa = (
+                        'tell application "Mail"\n'
+                        f'  set newMessage to make new outgoing message with properties '
+                        f'{{visible:true, subject:"{subject_raw}", '
+                        f'content:""}}\n'
+                        f'  tell newMessage to make new to recipient at end of to recipients '
+                        f'with properties {{address:"{logistics_recipient}"}}\n'
+                        '  set html content of newMessage to "' + safe_html + '"\n'
+                        'end tell'
+                    )
+                    res = subprocess.run(
+                        ["osascript", "-e", osa],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if res.returncode == 0:
+                        return True, (
+                            f"Mail.app draft opened with formatted table "
+                            f"for PR {pr_number}."
+                        )
+                    # else → fall through to mailto: with a pretty plaintext table
+                except Exception:
+                    pass
+
+            # ── Fallback: mailto: with a fixed-width plain-text table ────
+            # Build a clean column-aligned table that renders well even in
+            # plain-text only email clients.
+            COL_MC, COL_DESC, COL_REQ, COL_REC, COL_PND = 14, 38, 10, 10, 10
+            sep = (
+                "+-" + "-" * COL_MC + "-+-" + "-" * COL_DESC + "-+-"
+                + "-" * COL_REQ + "-+-" + "-" * COL_REC + "-+-"
+                + "-" * COL_PND + "-+"
+            )
+            header = (
+                "| " + "Material Code".ljust(COL_MC)
+                + " | " + "Description".ljust(COL_DESC)
+                + " | " + "Requested".rjust(COL_REQ)
+                + " | " + "Received".rjust(COL_REC)
+                + " | " + "Pending".rjust(COL_PND) + " |"
+            )
+
+            data_rows = []
             for _, row in pr_df.iterrows():
-                mat_code = row.get("Material_Code", "N/A")
-                name = row.get("Material_Name", "Unknown Material")
+                mat_code = str(row.get("Material_Code", "N/A"))[:COL_MC]
+                name = str(row.get("Material_Name", "Unknown"))[:COL_DESC]
                 req = float(row.get("Requested_Qty", 0))
                 pend = float(row.get("Pending_Qty", 0))
                 rec = req - pend
-                lines.append(f"  [{mat_code}] {name} | Requested: {req} | Received: {rec} | Pending: {max(0, pend)}")
-            lines += ["",
-                      "Kindly expedite the pending materials to ensure uninterrupted site operations.",
-                      "",
-                      f"Best Regards,",
-                      f"{site_id} Hub Management"]
+                data_rows.append(
+                    "| " + mat_code.ljust(COL_MC)
+                    + " | " + name.ljust(COL_DESC)
+                    + " | " + f"{req:.1f}".rjust(COL_REQ)
+                    + " | " + f"{rec:.1f}".rjust(COL_REC)
+                    + " | " + f"{max(0, pend):.1f}".rjust(COL_PND) + " |"
+                )
 
+            lines = [
+                "Dear Logistics Team,",
+                "",
+                f"Please find below the pending delivery status for "
+                f"PR {pr_number} requested by {site_id}.",
+                "",
+                sep,
+                header,
+                sep,
+                *data_rows,
+                sep,
+                "",
+                "Kindly expedite the pending materials to ensure uninterrupted "
+                "site operations.",
+                "",
+                "Best Regards,",
+                f"{site_id} Hub Management",
+            ]
+
+            subject = urllib.parse.quote(subject_raw)
             body_field = urllib.parse.quote("\n".join(lines))
             to_field = urllib.parse.quote(logistics_recipient)
             mailto_url = f"mailto:{to_field}?subject={subject}&body={body_field}"
-
             subprocess.Popen(["open", mailto_url])
 
             return True, f"Draft opened in your default Mail app for PR {pr_number}!"

@@ -22,6 +22,7 @@ from unittest.mock import patch, MagicMock
 import openpyxl
 import pandas as pd
 
+import mailer
 from mailer import (
     build_daily_report,
     build_monthly_report,
@@ -346,6 +347,20 @@ class TestSendEodReportOutlook:
         mock_app.CreateItem.return_value = mock_mail
         return mock_app, mock_mail
 
+    def _fake_win32_modules(self, mock_app=None, dispatch_side_effect=None):
+        """
+        Build stand-in `win32` and `pythoncom` MagicMocks suitable for
+        patching mailer.win32 / mailer.pythoncom on non-Windows hosts
+        where the real modules import as None.
+        """
+        fake_win32 = MagicMock()
+        if dispatch_side_effect is not None:
+            fake_win32.Dispatch.side_effect = dispatch_side_effect
+        elif mock_app is not None:
+            fake_win32.Dispatch.return_value = mock_app
+        fake_pythoncom = MagicMock()
+        return fake_win32, fake_pythoncom
+
     def test_no_recipients_returns_false(self, db_conn):
         ok, msg = send_eod_report([], conn=db_conn)
         assert ok is False
@@ -353,9 +368,10 @@ class TestSendEodReportOutlook:
 
     def test_outlook_dispatch_called(self, db_conn):
         mock_app, mock_mail = self._outlook_mocks()
-        with patch("mailer.win32.Dispatch", return_value=mock_app), \
-             patch("mailer.pythoncom.CoInitialize"), \
-             patch("mailer.pythoncom.CoUninitialize"), \
+        fake_win32, fake_pythoncom = self._fake_win32_modules(mock_app=mock_app)
+        with patch("mailer.platform.system", return_value="Windows"), \
+             patch.object(mailer, "win32", fake_win32), \
+             patch.object(mailer, "pythoncom", fake_pythoncom), \
              patch("mailer.open", create=True) as mo, \
              patch("mailer.os.path.exists", return_value=True), \
              patch("mailer.os.remove"):
@@ -367,9 +383,10 @@ class TestSendEodReportOutlook:
 
     def test_recipients_joined_with_semicolons(self, db_conn):
         mock_app, mock_mail = self._outlook_mocks()
-        with patch("mailer.win32.Dispatch", return_value=mock_app), \
-             patch("mailer.pythoncom.CoInitialize"), \
-             patch("mailer.pythoncom.CoUninitialize"), \
+        fake_win32, fake_pythoncom = self._fake_win32_modules(mock_app=mock_app)
+        with patch("mailer.platform.system", return_value="Windows"), \
+             patch.object(mailer, "win32", fake_win32), \
+             patch.object(mailer, "pythoncom", fake_pythoncom), \
              patch("mailer.open", create=True) as mo, \
              patch("mailer.os.path.exists", return_value=True), \
              patch("mailer.os.remove"):
@@ -380,10 +397,11 @@ class TestSendEodReportOutlook:
 
     def test_subject_contains_date(self, db_conn):
         mock_app, mock_mail = self._outlook_mocks()
+        fake_win32, fake_pythoncom = self._fake_win32_modules(mock_app=mock_app)
         test_date = datetime.date(2026, 5, 12)
-        with patch("mailer.win32.Dispatch", return_value=mock_app), \
-             patch("mailer.pythoncom.CoInitialize"), \
-             patch("mailer.pythoncom.CoUninitialize"), \
+        with patch("mailer.platform.system", return_value="Windows"), \
+             patch.object(mailer, "win32", fake_win32), \
+             patch.object(mailer, "pythoncom", fake_pythoncom), \
              patch("mailer.open", create=True) as mo, \
              patch("mailer.os.path.exists", return_value=True), \
              patch("mailer.os.remove"):
@@ -394,9 +412,10 @@ class TestSendEodReportOutlook:
 
     def test_attachment_added(self, db_conn):
         mock_app, mock_mail = self._outlook_mocks()
-        with patch("mailer.win32.Dispatch", return_value=mock_app), \
-             patch("mailer.pythoncom.CoInitialize"), \
-             patch("mailer.pythoncom.CoUninitialize"), \
+        fake_win32, fake_pythoncom = self._fake_win32_modules(mock_app=mock_app)
+        with patch("mailer.platform.system", return_value="Windows"), \
+             patch.object(mailer, "win32", fake_win32), \
+             patch.object(mailer, "pythoncom", fake_pythoncom), \
              patch("mailer.open", create=True) as mo, \
              patch("mailer.os.path.exists", return_value=True), \
              patch("mailer.os.remove"):
@@ -406,9 +425,12 @@ class TestSendEodReportOutlook:
         mock_mail.Attachments.Add.assert_called_once()
 
     def test_outlook_exception_returns_false(self, db_conn):
-        with patch("mailer.win32.Dispatch", side_effect=Exception("Outlook not installed")), \
-             patch("mailer.pythoncom.CoInitialize"), \
-             patch("mailer.pythoncom.CoUninitialize"), \
+        fake_win32, fake_pythoncom = self._fake_win32_modules(
+            dispatch_side_effect=Exception("Outlook not installed")
+        )
+        with patch("mailer.platform.system", return_value="Windows"), \
+             patch.object(mailer, "win32", fake_win32), \
+             patch.object(mailer, "pythoncom", fake_pythoncom), \
              patch("mailer.os.path.exists", return_value=False):
             ok, msg = send_eod_report(["mgr@gi.com"], conn=db_conn)
         assert ok is False

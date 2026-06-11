@@ -6,3 +6,8 @@ openpyxl
 plotly
 pytest
 pywin32; sys_platform == 'win32'
+
+# Phase 4 — standalone PWA scan-and-stage service (separate process from Streamlit)
+fastapi
+uvicorn[standard]
+httpx  # for pytest TestClient

@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<!--
+  GI Lightning Hub — Floor PWA
+  ============================
+  Single-file PWA for the warehouse floor. Works fully offline:
+    1. The shell (this HTML) is cached by the service worker on first load.
+    2. Inventory list is cached in IndexedDB after first online fetch.
+    3. New scans go into a local "outbox" store; a Sync button posts the
+       outbox to /api/pending_issues/batch when the browser is online.
+  Auth: bearer token stashed in localStorage. Login screen shown when no
+  token (or 401 from a protected endpoint).
+
+  No build step, no framework. Vanilla JS + IndexedDB.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#D4AF37">
+  <title>GI Floor — Scan & Stage</title>
+  <link rel="manifest" href="/app.webmanifest">
+  <style>
+    /* Same brand palette as the Streamlit glassmorphism theme. */
+    :root {
+      --bg:#020C1B; --bg-2:#0A1929; --gold:#D4AF37; --blue:#003366;
+      --text:#E7EEF6; --muted:#9FB3C8; --ok:#22C55E; --low:#F59E0B; --crit:#EF4444;
+    }
+    * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+    html,body { margin:0; padding:0; min-height:100vh; }
+    body {
+      font-family:-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+      color:var(--text);
+      background:
+        radial-gradient(ellipse at 0% 0%, rgba(37,99,235,0.18) 0%, transparent 50%),
+        radial-gradient(ellipse at 100% 100%, rgba(251,191,36,0.10) 0%, transparent 50%),
+        linear-gradient(160deg, #020C1B 0%, #0A1929 60%, #020C1B 100%);
+      background-attachment: fixed;
+      padding: max(env(safe-area-inset-top), 14px) 14px max(env(safe-area-inset-bottom), 14px);
+    }
+    h1 { font-size:1.3rem; margin:0; color:var(--gold); }
+    .sub { color:var(--muted); font-size:0.8rem; margin-bottom:14px; }
+    .card {
+      background:rgba(10,25,47,0.55); border:1px solid rgba(255,215,0,0.16);
+      border-radius:14px; padding:14px; margin:10px 0;
+      backdrop-filter:blur(10px);
+    }
+    label { display:block; color:var(--muted); font-size:0.78rem; margin:8px 0 4px; text-transform:uppercase; letter-spacing:0.04em; }
+    input, select, button, textarea {
+      width:100%; padding:12px; border-radius:10px; font-size:1rem;
+      background:rgba(255,255,255,0.04); color:var(--text);
+      border:1px solid rgba(255,255,255,0.10); outline:none;
+    }
+    input:focus, select:focus { border-color:var(--gold); }
+    button {
+      background:linear-gradient(135deg,var(--gold),#F4D578); color:var(--blue);
+      font-weight:700; border:none; cursor:pointer; padding:14px;
+    }
+    button.secondary { background:transparent; color:var(--gold); border:1px solid var(--gold); }
+    button.ghost { background:transparent; color:var(--muted); border:1px solid rgba(255,255,255,0.12); }
+    button:disabled { opacity:0.4; cursor:not-allowed; }
+    .row { display:flex; gap:10px; }
+    .row > * { flex:1; }
+    .pill {
+      display:inline-block; padding:4px 10px; border-radius:999px;
+      font-size:0.78rem; font-weight:600; margin-right:6px;
+    }
+    .pill.online  { background:rgba(34,197,94,0.18); color:var(--ok);   border:1px solid rgba(34,197,94,0.35); }
+    .pill.offline { background:rgba(239,68,68,0.18); color:var(--crit); border:1px solid rgba(239,68,68,0.35); }
+    .pill.queue   { background:rgba(245,158,11,0.18); color:var(--low); border:1px solid rgba(245,158,11,0.35); }
+    .hidden { display:none !important; }
+    .item-row {
+      padding:10px 12px; border-radius:10px;
+      background:rgba(255,255,255,0.04); margin:6px 0;
+      display:flex; justify-content:space-between; align-items:center; font-size:0.9rem;
+    }
+    .err  { color:var(--crit); font-size:0.85rem; margin-top:8px; min-height:1.2em; }
+    .ok   { color:var(--ok);   font-size:0.85rem; margin-top:8px; min-height:1.2em; }
+    .header { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+    .header .logo { font-size:1.4rem; }
+    select { -webkit-appearance:none; appearance:none; background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%); background-position:calc(100% - 18px) center, calc(100% - 12px) center; background-size:6px 6px,6px 6px; background-repeat:no-repeat; padding-right:36px; }
+  </style>
+</head>
+<body>
+<div class="header">
+  <h1>⚡ GI Floor</h1>
+  <div>
+    <span id="status-pill" class="pill offline">offline</span>
+    <span id="queue-pill"  class="pill queue hidden">0 queued</span>
+  </div>
+</div>
+<div class="sub">Scan-and-stage · works offline · syncs when online</div>
+
+<!-- LOGIN -->
+<div id="login" class="card">
+  <label>Username</label>
+  <input id="u" autocomplete="username" inputmode="text">
+  <label>Password</label>
+  <input id="p" type="password" autocomplete="current-password">
+  <div style="margin-top:12px;"><button id="login-btn">Sign in</button></div>
+  <div id="login-err" class="err"></div>
+</div>
+
+<!-- STAGE -->
+<div id="stage" class="card hidden">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <div>
+      <strong id="who"></strong>
+      <div class="sub" id="site-line" style="margin:0;"></div>
+    </div>
+    <button class="ghost" id="logout-btn" style="width:auto; padding:8px 12px;">Sign out</button>
+  </div>
+
+  <label>Material (SAP or description)</label>
+  <select id="sap"></select>
+
+  <div class="row">
+    <div>
+      <label>Quantity</label>
+      <input id="qty" type="number" inputmode="decimal" step="0.1" min="0.1">
+    </div>
+    <div>
+      <label>Date</label>
+      <input id="dt" type="date">
+    </div>
+  </div>
+
+  <label>Work Type (optional)</label>
+  <input id="wt" placeholder="e.g. Maintenance">
+
+  <label>Remarks (optional)</label>
+  <input id="rm">
+
+  <div style="margin-top:12px;" class="row">
+    <button id="add-btn">➕ Add to outbox</button>
+    <button class="secondary" id="sync-btn" disabled>↑ Sync now</button>
+  </div>
+  <div id="msg" class="ok"></div>
+
+  <h3 style="color:var(--gold); margin:18px 0 4px;">Outbox</h3>
+  <div id="outbox"></div>
+</div>
+
+<script>
+/* ====================================================================== *
+ *  GI Floor PWA — vanilla JS, ~7 KB of logic.
+ *  Stores:
+ *    inventory  (cached SAP list — refreshed on every successful login)
+ *    outbox     (rows queued while offline; flushed by Sync)
+ * ====================================================================== */
+
+const $ = (id) => document.getElementById(id);
+const TOKEN_KEY = "gi_floor_token";
+const USER_KEY  = "gi_floor_user";
+
+/* ------------------ IndexedDB tiny wrapper ------------------ */
+const DB_NAME = "gi_floor"; const DB_VER = 1;
+function openDB() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(DB_NAME, DB_VER);
+    r.onupgradeneeded = () => {
+      const db = r.result;
+      if (!db.objectStoreNames.contains("inventory")) {
+        db.createObjectStore("inventory", { keyPath: "SAP_Code" });
+      }
+      if (!db.objectStoreNames.contains("outbox")) {
+        db.createObjectStore("outbox", { keyPath: "client_id" });
+      }
+    };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function idbAll(store) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).getAll();
+    req.onsuccess = () => res(req.result || []);
+    req.onerror = () => rej(req.error);
+  });
+}
+async function idbPut(store, item) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(store, "readwrite");
+    tx.objectStore(store).put(item);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+}
+async function idbDel(store, key) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(store, "readwrite");
+    tx.objectStore(store).delete(key);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+}
+async function idbClear(store) {
+  const db = await openDB();
+  return new Promise((res) => {
+    const tx = db.transaction(store, "readwrite");
+    tx.objectStore(store).clear();
+    tx.oncomplete = () => res();
+  });
+}
+
+/* ------------------ Network + auth ------------------ */
+function token() { return localStorage.getItem(TOKEN_KEY) || ""; }
+function setToken(t) { localStorage.setItem(TOKEN_KEY, t); }
+function user() {
+  try { return JSON.parse(localStorage.getItem(USER_KEY) || "{}"); }
+  catch { return {}; }
+}
+function setUser(u) { localStorage.setItem(USER_KEY, JSON.stringify(u)); }
+function clearAuth() { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); }
+
+async function api(path, opts = {}) {
+  opts.headers = opts.headers || {};
+  opts.headers["Content-Type"] = "application/json";
+  if (token()) opts.headers["Authorization"] = "Bearer " + token();
+  const r = await fetch(path, opts);
+  if (r.status === 401) {
+    clearAuth();
+    showLogin();
+    throw new Error("Unauthorized");
+  }
+  return r;
+}
+
+/* ------------------ UI flows ------------------ */
+function showLogin() {
+  $("login").classList.remove("hidden");
+  $("stage").classList.add("hidden");
+}
+function showStage() {
+  $("login").classList.add("hidden");
+  $("stage").classList.remove("hidden");
+  const u = user();
+  $("who").innerText = (u.username || "") + " · " + (u.role || "");
+  $("site-line").innerText = "Site: " + (u.site_id || "HQ");
+}
+
+async function doLogin() {
+  $("login-err").innerText = "";
+  const u = $("u").value.trim();
+  const p = $("p").value;
+  if (!u || !p) { $("login-err").innerText = "Enter username and password."; return; }
+  try {
+    const r = await fetch("/api/login", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({username: u, password: p}),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      $("login-err").innerText = j.detail || "Login failed.";
+      return;
+    }
+    const j = await r.json();
+    setToken(j.token);
+    setUser({username: j.username, role: j.role, site_id: j.site_id});
+    showStage();
+    await refreshInventory();
+  } catch (e) {
+    $("login-err").innerText = "Network error — try again.";
+  }
+}
+
+async function refreshInventory() {
+  if (!navigator.onLine) return;
+  try {
+    const r = await api("/api/inventory");
+    if (!r.ok) return;
+    const j = await r.json();
+    await idbClear("inventory");
+    for (const item of j.items) await idbPut("inventory", item);
+    await renderSapOptions();
+  } catch {}
+}
+
+async function renderSapOptions() {
+  const items = await idbAll("inventory");
+  const sel = $("sap");
+  sel.innerHTML = "";
+  if (!items.length) {
+    sel.innerHTML = '<option value="">(no inventory cached — sign in online once)</option>';
+    return;
+  }
+  sel.innerHTML = '<option value="">— select material —</option>' +
+    items.slice(0, 2000).map((i) => {
+      const d = (i.Equipment_Description || "").substring(0, 40);
+      return `<option value="${i.SAP_Code}">[${i.SAP_Code}] ${d}</option>`;
+    }).join("");
+}
+
+async function renderOutbox() {
+  const rows = await idbAll("outbox");
+  $("queue-pill").innerText = rows.length + " queued";
+  $("queue-pill").classList.toggle("hidden", rows.length === 0);
+  $("sync-btn").disabled = (rows.length === 0) || !navigator.onLine;
+  const el = $("outbox");
+  if (!rows.length) { el.innerHTML = '<div class="sub">Outbox empty.</div>'; return; }
+  el.innerHTML = rows.map((r) => `
+    <div class="item-row">
+      <div>
+        <div><strong>${r.Quantity}×</strong> [${r.SAP_Code}]</div>
+        <div class="sub" style="margin:0;">${r.Date || ""} · ${r.Work_Type || ""}</div>
+      </div>
+      <button class="ghost" style="width:auto; padding:6px 10px;" onclick="del('${r.client_id}')">✕</button>
+    </div>
+  `).join("");
+}
+window.del = async (cid) => { await idbDel("outbox", cid); renderOutbox(); };
+
+async function addToOutbox() {
+  $("msg").innerText = "";
+  const sap = $("sap").value;
+  const qty = parseFloat($("qty").value);
+  if (!sap || !qty || qty <= 0) { $("msg").innerText = "Pick a material and qty."; $("msg").classList.replace("ok","err"); return; }
+  const row = {
+    client_id: crypto.randomUUID(),
+    SAP_Code: sap,
+    Quantity: qty,
+    Date: $("dt").value || new Date().toISOString().slice(0, 10),
+    Work_Type: $("wt").value.trim(),
+    Remarks: $("rm").value.trim(),
+  };
+  await idbPut("outbox", row);
+  $("qty").value = "";  $("rm").value = "";
+  $("msg").innerText = "Added to outbox.";
+  $("msg").classList.replace("err", "ok");
+  navigator.vibrate && navigator.vibrate(40);
+  renderOutbox();
+  // If online, opportunistically sync right away.
+  if (navigator.onLine) syncOutbox();
+}
+
+async function syncOutbox() {
+  const rows = await idbAll("outbox");
+  if (!rows.length || !navigator.onLine) return;
+  $("msg").innerText = "Syncing " + rows.length + " row(s)…";
+  $("msg").classList.replace("err", "ok");
+  try {
+    const r = await api("/api/pending_issues/batch", {
+      method: "POST", body: JSON.stringify({items: rows}),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    await idbClear("outbox");
+    $("msg").innerText = "Synced " + j.inserted + " row(s) to HOD review.";
+    renderOutbox();
+  } catch (e) {
+    $("msg").innerText = "Sync failed — will retry. " + (e.message || "");
+    $("msg").classList.replace("ok", "err");
+  }
+}
+
+function updateOnlinePill() {
+  const p = $("status-pill");
+  if (navigator.onLine) {
+    p.className = "pill online"; p.innerText = "online";
+    if (token()) syncOutbox();
+  } else {
+    p.className = "pill offline"; p.innerText = "offline";
+  }
+  renderOutbox();
+}
+
+/* ------------------ Bootstrap ------------------ */
+window.addEventListener("online",  updateOnlinePill);
+window.addEventListener("offline", updateOnlinePill);
+$("login-btn").addEventListener("click", doLogin);
+$("logout-btn").addEventListener("click", () => { clearAuth(); showLogin(); });
+$("add-btn").addEventListener("click", addToOutbox);
+$("sync-btn").addEventListener("click", syncOutbox);
+
+(async function init() {
+  $("dt").value = new Date().toISOString().slice(0, 10);
+  if ("serviceWorker" in navigator) {
+    try { await navigator.serviceWorker.register("/sw.js"); } catch (e) {}
+  }
+  updateOnlinePill();
+  if (token()) {
+    try {
+      const r = await api("/api/whoami");
+      if (r.ok) {
+        const j = await r.json();
+        setUser({username: j.username, role: j.role, site_id: j.site_id});
+        showStage();
+        await renderSapOptions();
+        if (navigator.onLine) await refreshInventory();
+        renderOutbox();
+        return;
+      }
+    } catch {}
+  }
+  showLogin();
+})();
+</script>
+</body>
+</html>

@@ -338,3 +338,43 @@ Time: 21:41
 Phone Number: +966569233053
 Message: ❌ *BATCH TRANSFER REJECTED*👤 Requested By: Ansari📦 *Rejected Items (1):*• 1.0x [1001] WATER STORAGE TANK 10000 L (Request #20)📝 *Reason:*no
 --------------------
+Date: 10/6/2026
+Time: 16:16
+Phone Number: +916369719235
+Message: 📝 *ISSUE STAGING SUBMITTED (HQ)*👤 Store Keeper: admin📦 *Submitted Items (1):*• 2.0x [1007] BLASTING POTQueue is ready for your EOD commit review.
+--------------------
+Date: 10/6/2026
+Time: 16:40
+Phone Number: +966569233053
+Message: 🔔 *NEW ACCESS REQUEST*👤 User: Akilan🏢 Site: SAR🛠️ Role: Head of DepartmentPlease review in the Admin Portal.
+--------------------
+Date: 10/6/2026
+Time: 16:43
+Phone Number: +966556246221
+Message: 🎉 *ACCESS GRANTED*Welcome to the General Industries HUB, Akilan!Your request for the 'hod' role at SAR has been approved by the Admin. You may now log in to the system.
+--------------------
+Date: 10/6/2026
+Time: 20:9
+Phone Number: +916369719235
+Message: 📝 *ISSUE STAGING SUBMITTED (HQ)*👤 Store Keeper: admin📦 *Submitted Items (1):*• 0.1x [1001] WATER STORAGE TANK 10000 LQueue is ready for your EOD commit review.
+--------------------
+Date: 10/6/2026
+Time: 22:49
+Phone Number: +966569233053
+Message: 🔔 *NEW ACCESS REQUEST*👤 User: John🏢 Site: CNCEC🛠️ Role: Store KeeperPlease review in the Admin Portal.
+--------------------
+Date: 10/6/2026
+Time: 22:53
+Phone Number: +966569233053
+Message: 🔔 *NEW ACCESS REQUEST*👤 User: Akilan🏢 Site: CNCEC🛠️ Role: Head of DepartmentPlease review in the Admin Portal.
+--------------------
+Date: 10/6/2026
+Time: 22:54
+Phone Number: +916369719235
+Message: 🎉 *ACCESS GRANTED*Welcome to the General Industries HUB, John!Your request for the 'store_keeper' role at CNCEC has been approved by the Admin. You may now log in to the system.
+--------------------
+Date: 10/6/2026
+Time: 22:56
+Phone Number: +966569233053
+Message: 🎉 *ACCESS GRANTED*Welcome to the General Industries HUB, Akilan!Your request for the 'hod' role at CNCEC has been approved by the Admin. You may now log in to the system.
+--------------------

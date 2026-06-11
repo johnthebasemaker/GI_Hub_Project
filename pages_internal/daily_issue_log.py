@@ -1,0 +1,1401 @@
+"""
+pages_internal/daily_issue_log.py — Entry Log (Consumption / Receipt / Returnables)
+=====================================================================================
+Extracted from main.py during Phase 2 structure refactor.
+SQL strings, math, and form logic are unchanged.
+"""
+
+import datetime
+
+import pandas as pd
+import streamlit as st
+
+from config import SYSTEM_COLS, OPTIONAL_ISSUE_COLS
+from database import (
+    get_connection,
+    queue_whatsapp_alert,
+    insert_returnable_item,
+    mark_item_returned,
+    get_returnable_items,
+    get_user_last_entry_defaults,
+    pwa_stage_pending_issues,
+    stage_pending_receipts_bulk,
+)
+from cache_layer import (
+    cached_work_types,
+    cached_short_dated_stock,
+    cached_item_snapshot,
+    cached_fefo_lots,
+    bust_inventory_cache,
+)
+from ui_components import (
+    render_brand_header,
+    render_barcode_scanner,
+    render_item_snapshot,
+    render_fefo_panel,
+    render_empty_state,
+    render_ocr_review_grid,
+    render_stock_badge,
+    render_aggrid,
+    LOAN_STATUS_BADGE_JS,
+)
+
+# Phase 5 — OCR upload pipeline. Lazy-imported inside the helper functions
+# below so the ai module's Ollama probe doesn't fire when the page renders
+# without anyone using the OCR features.
+
+
+def page_daily_issue_log(user: dict) -> None:
+    render_brand_header("Entry Log")
+    st.title("📝 Entry Log")
+
+    site_id    = user.get("site_id", "HQ")
+    work_types = cached_work_types()
+
+    # Shared inventory list used by the Issue and Receipt tabs
+    conn = get_connection()
+    try:
+        inv_list = pd.read_sql(
+            "SELECT SAP_Code, Equipment_Description, Material_Code, UOM FROM inventory", conn
+        )
+        inv_list["Search_String"] = (
+            "[" + inv_list["SAP_Code"].astype(str) + "] "
+            + inv_list["Equipment_Description"].astype(str)
+        )
+        search_options = inv_list["Search_String"].tolist()
+    except Exception:
+        search_options = []
+        inv_list = pd.DataFrame()
+
+    c = conn.cursor()
+    c.execute("PRAGMA table_info(pending_issues)")
+    form_cols = [
+        row[1] for row in c.fetchall()
+        if row[1] not in (SYSTEM_COLS | {"SAP_Code"})
+    ]
+    conn.close()
+
+    tab_issue, tab_receipt_stage, tab_returnables, tab_adjust = st.tabs([
+        "📋 Consumption Log", "📦 Receipt Staging",
+        "🔄 Returnable Items", "🧮 Stock Count",
+    ])
+
+    # ── TAB 1: Daily Issue Log ─────────────────────────────────────────────────
+    with tab_issue:
+        # Phase 5 — bulk OCR upload (handwritten consumption list)
+        with st.expander("📷 Upload Handwritten Consumption List (OCR)", expanded=False):
+            _render_consumption_ocr(user=user, site_id=site_id, inv_list=inv_list, work_types=work_types)
+
+        # Phase 2.2 UI polish — barcode scanner promoted from a nested expander
+        # to a sibling expander, removing one level of nesting so users on the
+        # warehouse floor don't have to drill 3 deep to scan a code.
+        with st.expander("📷 Barcode / QR Scanner (mobile camera)", expanded=False):
+            scanned = render_barcode_scanner(input_key="issue_barcode")
+            # Auto-select the matching item in the form below — same pattern as
+            # the recent-pills buttons.  The old preselect_idx approach is silently
+            # ignored by Streamlit once the selectbox key has any prior session
+            # state, so we must write to st.session_state["item_selectbox"] directly.
+            if scanned and not inv_list.empty:
+                _scan_hits = [s for s in search_options if scanned.strip() in s]
+                if _scan_hits:
+                    _target = _scan_hits[0]
+                    if st.session_state.get("item_selectbox") != _target:
+                        st.session_state["item_selectbox"] = _target
+                        # Only clear the non-widget backing state; Streamlit forbids
+                        # writing to a widget key ("issue_barcode_manual") after the
+                        # widget has already been instantiated this run.
+                        st.session_state["issue_barcode"] = ""
+                        st.rerun()
+                else:
+                    st.warning(
+                        f"⚠️ No inventory item matches **{scanned}**. "
+                        "Check the SAP code or use the search box below."
+                    )
+
+        with st.expander("➕ Scan / Add New Item to Queue", expanded=True):
+            # ── Phase 4: Recently-scanned ring buffer ────────────────────
+            # Quick-tap pills for the last 5 items this user touched.
+            # Saves keystrokes when issuing similar items in a row.
+            RECENT_KEY = "recent_scans_issue"
+            recents = st.session_state.get(RECENT_KEY, [])
+            if recents and not inv_list.empty:
+                st.caption("⏱️ Recent:")
+                rcols = st.columns(min(5, len(recents)))
+                for rc, rsap in zip(rcols, recents[:5]):
+                    with rc:
+                        # Show SAP + a short description for context.
+                        desc_match = inv_list[inv_list["SAP_Code"] == rsap]
+                        label = rsap
+                        if not desc_match.empty:
+                            d = str(desc_match.iloc[0]["Equipment_Description"])
+                            label = f"{rsap} · {d[:18]}" + ("…" if len(d) > 18 else "")
+                        if st.button(label, key=f"recent_{rsap}", use_container_width=True):
+                            # Set the selectbox to this item via session_state,
+                            # then rerun so the box picks the new value up.
+                            idx_list = inv_list.index[inv_list["SAP_Code"] == rsap].tolist()
+                            if idx_list:
+                                st.session_state["item_selectbox"] = search_options[idx_list[0]]
+                                st.rerun()
+
+            st.markdown(
+                '<div style="font-size:11px;color:#4A6080;font-weight:700;'
+                'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">'
+                '1. Select Material</div>',
+                unsafe_allow_html=True,
+            )
+            selected_item = st.selectbox(
+                "Search by SAP Code or Description",
+                options=search_options,
+                index=None,
+                placeholder="Start typing… e.g. 'Tank' or '1001'",
+                key="item_selectbox",
+            )
+
+            sap_code = None
+            if selected_item:
+                sap_code = selected_item.split("]")[0].replace("[", "").strip()
+
+                # Push to the ring buffer — front of list, deduped, capped at 5.
+                _rb = st.session_state.get(RECENT_KEY, [])
+                _rb = [sap_code] + [c for c in _rb if c != sap_code]
+                st.session_state[RECENT_KEY] = _rb[:5]
+
+                # Scan-to-Inspect snapshot — auto-by-role:
+                # admins see global totals; everyone else is scoped to their site.
+                snap_site = None if user.get("role") == "admin" else site_id
+                snap = cached_item_snapshot(sap_code=sap_code, site_id=snap_site)
+                render_item_snapshot(snap)
+
+                # FEFO suggestion — which lot to pull from first. Always site-
+                # scoped for floor users (lots are physically at a site), even
+                # for admin who otherwise sees global totals.
+                fefo_df = cached_fefo_lots(sap_code=sap_code, site_id=site_id)
+                render_fefo_panel(fefo_df)
+
+                # ── FEFO OVERRIDE (audit-trailed exception path) ──────────
+                # When 2+ open lots exist and the user MUST pull from a
+                # non-FEFO bin (physical access, damaged bin, etc.), they
+                # can override here. The reason is mandatory and lands on
+                # the consumption ledger row + audit log.
+                _override_key  = f"_fefo_override_lot__{sap_code}"
+                _override_why  = f"_fefo_override_why__{sap_code}"
+                _open_lots_df = (
+                    fefo_df[fefo_df.get("Remaining_Qty", 0) > 0]
+                    if fefo_df is not None and not fefo_df.empty
+                    and "Lot_Number" in fefo_df.columns else None
+                )
+                if _open_lots_df is not None and len(_open_lots_df) >= 2:
+                    fefo_top_lot = str(_open_lots_df.iloc[0]["Lot_Number"])
+                    with st.expander(
+                        "🔄 Pull from a different lot (FEFO override)",
+                        expanded=False,
+                    ):
+                        st.caption(
+                            "Use this **only** if you physically cannot pull "
+                            "from the FEFO-suggested lot. Your reason will be "
+                            "recorded on the consumption record and shared "
+                            "with the HOD."
+                        )
+                        # Show other lots, FEFO suggestion as a disabled reference
+                        other_lots = _open_lots_df[
+                            _open_lots_df["Lot_Number"] != fefo_top_lot
+                        ]
+                        if other_lots.empty:
+                            st.caption("No other open lots available.")
+                        else:
+                            lot_options = [
+                                f"{r['Lot_Number']}  ·  Exp {r.get('Expiry_Date') or 'no expiry'}  "
+                                f"·  Remaining {float(r.get('Remaining_Qty') or 0):g}"
+                                for _, r in other_lots.iterrows()
+                            ]
+                            chosen_label = st.selectbox(
+                                "Lot to pull from instead",
+                                ["— Keep FEFO suggestion —"] + lot_options,
+                                key=f"_fefo_lot_choice__{sap_code}",
+                            )
+                            if chosen_label != "— Keep FEFO suggestion —":
+                                chosen_lot = chosen_label.split("  ·")[0].strip()
+                                why = st.text_input(
+                                    "Reason for override (required, min 5 chars)",
+                                    key=_override_why,
+                                    placeholder="e.g. FEFO bin blocked by pallet, expected to clear EOD",
+                                    max_chars=200,
+                                )
+                                if len(why.strip()) >= 5:
+                                    st.session_state[_override_key] = chosen_lot
+                                    st.markdown(
+                                        f"<div style='color:#F59E0B;font-size:0.85rem;'>"
+                                        f"⚠️ FEFO override active: pulling from "
+                                        f"<b>{chosen_lot}</b> instead of "
+                                        f"<b>{fefo_top_lot}</b>.</div>",
+                                        unsafe_allow_html=True,
+                                    )
+                                else:
+                                    st.session_state.pop(_override_key, None)
+                                    st.caption(
+                                        "Type at least 5 characters of reason "
+                                        "to activate the override."
+                                    )
+                            else:
+                                st.session_state.pop(_override_key, None)
+
+            st.markdown(
+                '<div style="font-size:11px;color:#4A6080;font-weight:700;'
+                'text-transform:uppercase;letter-spacing:0.08em;'
+                'margin-top:10px;margin-bottom:6px;">'
+                '2. Fill Entry Details</div>',
+                unsafe_allow_html=True,
+            )
+            # Phase 4 — smart defaults from this user's most recent entry.
+            # Pulls Issued_By / Issued_To / Tank_No / Work_Type / PR_Number from
+            # their last commit (or last draft) at this site. Read-only and
+            # silent-fail; the form still works if the lookup returns nothing.
+            _defaults = get_user_last_entry_defaults(
+                username=user.get("username", ""),
+                site_id=site_id,
+            )
+            # Phase 5 — site-scoped stock for the qty-adjacent badge AND
+            # the over-issue guard at submit. Always scoped to the user's
+            # site (admins included) because consumption is physical: you
+            # can only issue what is at THIS site, regardless of role.
+            issue_site_snap = None
+            if sap_code:
+                issue_site_snap = cached_item_snapshot(sap_code=sap_code, site_id=site_id)
+            input_data = {}
+            n_cols = 2 if len(form_cols) <= 4 else 3
+            cols = st.columns(n_cols)
+            for i, col_name in enumerate(form_cols):
+                with cols[i % n_cols]:
+                    if col_name == "Date":
+                        input_data[col_name] = st.date_input(f"{col_name}*", datetime.date.today())
+                    elif "qty" in col_name.lower() or "quantity" in col_name.lower():
+                        # Highlighted, non-editable site-stock badge above the qty field.
+                        render_stock_badge(issue_site_snap or {}, site_id=site_id)
+                        input_data[col_name] = st.number_input(f"{col_name}*", min_value=0.1, step=1.0)
+                    elif col_name == "Work_Type":
+                        _wt_default = _defaults.get("Work_Type", "")
+                        _wt_idx = work_types.index(_wt_default) if _wt_default in work_types else 0
+                        input_data[col_name] = st.selectbox(
+                            f"{col_name}*", work_types, index=_wt_idx,
+                        )
+                    elif col_name in OPTIONAL_ISSUE_COLS:
+                        input_data[col_name] = st.text_input(
+                            f"{col_name} (Optional)",
+                            value=_defaults.get(col_name, ""),
+                        )
+                    else:
+                        # Required text fields also pre-fill from history where useful.
+                        input_data[col_name] = st.text_input(
+                            f"{col_name}*",
+                            value=_defaults.get(col_name, ""),
+                        )
+
+            st.markdown(
+                '<div style="background:rgba(245,158,11,0.06);'
+                'border:1px solid rgba(245,158,11,0.22);border-left:3px solid #F59E0B;'
+                'border-radius:7px;padding:8px 12px;margin:10px 0 4px 0;">'
+                '<span style="color:#F59E0B;font-size:12.5px;font-weight:600;">'
+                '⚠️ Override Expiry Warning</span>'
+                '<span style="color:#7A8FA0;font-size:12px;"> — check below once you\'ve '
+                'physically pulled the expiring batch first.</span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            override_expiry = st.checkbox(
+                "I confirm the expiring batch has been pulled first",
+                key="override_expiry_ck",
+            )
+            if st.button("Add to Grid ⬇️", type="primary"):
+                missing_fields = [
+                    col for col, val in input_data.items()
+                    if col not in OPTIONAL_ISSUE_COLS
+                    and (val is None or str(val).strip() == "")
+                ]
+                if not sap_code:
+                    st.error("⚠️ Please select a material from the search box before submitting.")
+                    st.stop()
+                if missing_fields:
+                    st.error(f"⚠️ The following required fields are empty: **{', '.join(missing_fields)}**. Every field marked * is mandatory.")
+                    st.stop()
+                # Phase 5 — over-issue guard: block consumption when the
+                # requested qty exceeds the SITE's current stock. Uses the
+                # already-fetched site snapshot to avoid a second query.
+                if issue_site_snap and issue_site_snap.get("found"):
+                    _qty_val = next(
+                        (v for k, v in input_data.items()
+                         if "qty" in k.lower() or "quantity" in k.lower()),
+                        None,
+                    )
+                    if _qty_val is not None:
+                        _avail = float(issue_site_snap.get("current_stock") or 0.0)
+                        if float(_qty_val) > _avail:
+                            _uom = issue_site_snap.get("uom", "") or ""
+                            st.error(
+                                f"🛑 **Insufficient stock at {site_id}.**\n\n"
+                                f"Requested: **{float(_qty_val):g} {_uom}**\n"
+                                f"Available: **{_avail:g} {_uom}**\n\n"
+                                "Reduce the quantity or receive more stock before issuing."
+                            )
+                            st.stop()
+                if True:
+                    conn2 = get_connection()
+                    input_data["Site_ID"] = site_id
+                    input_data["status"]  = "draft"
+
+                    # Attach Lot_Number: respect a deliberate override if
+                    # the user set one in the FEFO expander, else fall back
+                    # to the system's FEFO suggestion. Best-effort — a
+                    # missing FEFO chain just leaves Lot_Number unset.
+                    _ov_key = f"_fefo_override_lot__{sap_code}"
+                    _ov_why = f"_fefo_override_why__{sap_code}"
+                    _overridden_lot = st.session_state.get(_ov_key)
+                    _overridden_reason = st.session_state.get(_ov_why, "").strip()
+                    try:
+                        from database import suggest_fefo_lot_for_consumption
+                        _suggested = suggest_fefo_lot_for_consumption(
+                            sap_code=sap_code, site_id=site_id, conn=conn2,
+                        )
+                    except Exception:
+                        _suggested = None
+
+                    if _overridden_lot and len(_overridden_reason) >= 5:
+                        input_data["Lot_Number"]    = _overridden_lot
+                        input_data["FEFO_Override"] = _overridden_reason
+                        # Audit + WhatsApp the HOD — this is an exception
+                        # event worth surfacing in real time.
+                        try:
+                            from database import log_audit_action
+                            log_audit_action(
+                                user.get("username", ""),
+                                "FEFO_OVERRIDE", "pending_issues",
+                                f"sap={sap_code} site={site_id} "
+                                f"chose={_overridden_lot} fefo_was={_suggested} "
+                                f"reason={_overridden_reason!r}",
+                            )
+                            hod_q = pd.read_sql(
+                                "SELECT Phone_Number FROM users WHERE role='hod' "
+                                "AND Site_ID=? AND Phone_Number IS NOT NULL "
+                                "AND Phone_Number<>'' LIMIT 1",
+                                conn2, params=(site_id,),
+                            )
+                            if not hod_q.empty:
+                                queue_whatsapp_alert(
+                                    str(hod_q.iloc[0]["Phone_Number"]),
+                                    (f"⚠️ *FEFO OVERRIDE — {site_id}*\n"
+                                     f"👤 {user.get('username','')}\n"
+                                     f"📦 [{sap_code}]\n"
+                                     f"Pulled: {_overridden_lot}\n"
+                                     f"FEFO suggested: {_suggested or 'n/a'}\n"
+                                     f"Reason: {_overridden_reason}"),
+                                )
+                        except Exception:
+                            pass
+                        # Clear override so the next submission starts fresh.
+                        st.session_state.pop(_ov_key, None)
+                        st.session_state.pop(_ov_why, None)
+                    elif _suggested:
+                        input_data["Lot_Number"] = _suggested
+
+                    if not override_expiry:
+                        expiry_df = cached_short_dated_stock(site_id=site_id)
+                        if not expiry_df.empty:
+                            item_expiry = expiry_df[expiry_df["SAP_Code"] == sap_code]
+                            if not item_expiry.empty:
+                                exp_row = item_expiry.iloc[0]
+                                conn2.close()
+                                st.error(
+                                    f"⚠️ **STOP — Expiring Stock Detected!**\n\n"
+                                    f"There is a batch of **{exp_row['Equipment_Description']}** "
+                                    f"at your site with status **{exp_row['Status']}** "
+                                    f"(Expiry: **{exp_row['Expiry_Date']}**, Qty: {exp_row['Quantity']}).\n\n"
+                                    f"Please physically pull from the expiring batch first. "
+                                    f"Once done, check **'⚠️ Override Expiry Warning'** above to proceed."
+                                )
+                                st.stop()
+
+                    columns      = ["SAP_Code"] + list(input_data.keys())
+                    placeholders = ", ".join(["?"] * len(columns))
+                    values = [sap_code] + [
+                        str(v) if isinstance(v, datetime.date) else v
+                        for v in input_data.values()
+                    ]
+                    conn2.execute(
+                        f"INSERT INTO pending_issues ({', '.join(columns)}) VALUES ({placeholders})",
+                        values,
+                    )
+                    conn2.commit()
+                    conn2.close()
+                    st.toast("✅ Added to staging queue", icon="📥")
+                    st.rerun()
+
+        conn3 = get_connection()
+        pending_df = pd.read_sql("""
+            SELECT p.id, p.Date, p.SAP_Code,
+                   i.Equipment_Description AS Material_Name, i.UOM, p.*
+            FROM pending_issues p
+            LEFT JOIN inventory i ON p.SAP_Code = i.SAP_Code
+            WHERE COALESCE(p.Site_ID,'HQ') = ? AND COALESCE(p.status,'draft') = 'draft'
+        """, conn3, params=(site_id,))
+        pending_df = pending_df.loc[:, ~pending_df.columns.duplicated()]
+        _pq_count  = len(pending_df)
+        _pq_badge  = (
+            f'<span style="background:rgba(212,175,55,0.18);border:1px solid rgba(212,175,55,0.40);'
+            f'color:#D4AF37;font-size:11px;font-weight:700;padding:1px 8px;'
+            f'border-radius:999px;margin-left:8px;">{_pq_count}</span>'
+        ) if _pq_count else ""
+        st.markdown(
+            f'<div style="display:flex;align-items:center;margin:0.9rem 0 0.5rem 0;">'
+            f'<span style="color:#F0F4F8;font-size:1rem;font-weight:700;">📋 Staging Queue</span>'
+            f'{_pq_badge}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        if pending_df.empty:
+            render_empty_state(
+                icon="📋",
+                title="Staging queue is empty",
+                hint="Scan or pick a material above and click **Add to Grid** to start your shift.",
+            )
+        else:
+            view_df = pending_df.set_index("id")
+            col_cfg = {
+                "SAP_Code":      st.column_config.TextColumn("SAP Code",      disabled=True),
+                "Material_Name": st.column_config.TextColumn("Material Name", disabled=True),
+                "UOM":           st.column_config.TextColumn("UOM",           disabled=True),
+                "Work_Type":     st.column_config.SelectboxColumn("Work Type", options=work_types),
+                "Timestamp":     None,
+                "status":        None,
+            }
+            edited_df = st.data_editor(
+                view_df, column_config=col_cfg,
+                num_rows="dynamic", width="stretch", key="staging_editor",
+            )
+
+            btn_save, btn_submit = st.columns([1, 2])
+            with btn_save:
+                if st.button("💾 Save Draft Edits", use_container_width=True):
+                    save_cols = [col for col in edited_df.columns if col not in {"Material_Name", "UOM", "Timestamp"}]
+                    ph = ", ".join(["?"] * (len(save_cols) + 1))
+                    c2 = conn3.cursor()
+                    c2.execute(
+                        "DELETE FROM pending_issues WHERE COALESCE(Site_ID,'HQ') = ? AND COALESCE(status,'draft') = 'draft'",
+                        (site_id,)
+                    )
+                    for idx, row in edited_df.iterrows():
+                        vals = [idx] + [row[col] for col in save_cols]
+                        c2.execute(
+                            f"INSERT INTO pending_issues (id, {', '.join(save_cols)}) VALUES ({ph})",
+                            vals,
+                        )
+                    conn3.commit()
+                    st.toast("💾 Draft queue saved", icon="💾")
+                    st.rerun()
+
+            with btn_submit:
+                if st.button("📨 Submit Grid to HOD", type="primary", use_container_width=True):
+                    items_df = pd.read_sql("""
+                        SELECT p.SAP_Code, i.Equipment_Description, p.Quantity
+                        FROM pending_issues p
+                        LEFT JOIN inventory i ON p.SAP_Code = i.SAP_Code
+                        WHERE COALESCE(p.Site_ID,'HQ') = ? AND COALESCE(p.status,'draft') = 'draft'
+                    """, conn3, params=(site_id,))
+
+                    if items_df.empty:
+                        st.warning("⚠️ No draft items to submit.")
+                    else:
+                        conn3.execute(
+                            "UPDATE pending_issues SET status = 'pending_hod' WHERE COALESCE(Site_ID,'HQ') = ? AND COALESCE(status,'draft') = 'draft'",
+                            (site_id,)
+                        )
+                        conn3.commit()
+
+                        hod_q = pd.read_sql(
+                            "SELECT Phone_Number FROM users WHERE role = 'hod' AND Site_ID = ? LIMIT 1",
+                            conn3, params=(site_id,)
+                        )
+                        if not hod_q.empty and hod_q.iloc[0]["Phone_Number"]:
+                            item_lines = "\n".join(
+                                f"• {r['Quantity']}x [{r['SAP_Code']}] {r['Equipment_Description']}"
+                                for _, r in items_df.iterrows()
+                            )
+                            msg = (
+                                f"📝 *ISSUE STAGING SUBMITTED ({site_id})*\n"
+                                f"👤 Store Keeper: {user['username']}\n\n"
+                                f"📦 *Submitted Items ({len(items_df)}):*\n"
+                                f"{item_lines}\n\n"
+                                f"Queue is ready for your EOD commit review."
+                            )
+                            queue_whatsapp_alert(hod_q.iloc[0]["Phone_Number"], msg)
+
+                        st.success(f"✅ {len(items_df)} item(s) submitted to HOD for review!")
+                        st.rerun()
+
+        conn3.close()
+
+    # ── TAB 2: Receipt Staging ─────────────────────────────────────────────────
+    with tab_receipt_stage:
+        st.subheader("📦 Stage Inbound Receipts")
+        st.caption("Add received materials to the draft queue, then submit to HOD for approval.")
+
+        # Phase 5 — bulk OCR upload (delivery note image or pasted text)
+        with st.expander("📷 Upload Delivery Note (OCR)", expanded=False):
+            _render_receipt_ocr(user=user, site_id=site_id, inv_list=inv_list)
+
+        # Discover receipt form columns dynamically — mirrors consumption log pattern
+        # Open a fresh connection: the shared `conn` was closed after tab setup above.
+        _pragma_conn = get_connection()
+        _rcpt_all_cols = _pragma_conn.execute("PRAGMA table_info(pending_receipts)").fetchall()
+        _pragma_conn.close()
+        rcpt_form_cols = [
+            row[1] for row in _rcpt_all_cols
+            if row[1] not in (SYSTEM_COLS | {"SAP_Code"})
+        ]
+        OPTIONAL_RECEIPT_COLS = {
+            "Supplier", "Remarks", "PR_Number", "Expiry_Date",
+            "Serial_No", "PR", "Vehicle_No", "Driver_Name", "DN_No",
+            "Pallet_No", "Mob_From", "Prepared_by", "Mob_To", "DN_Copy",
+        }
+
+        with st.expander("➕ Add Receipt to Queue", expanded=True):
+            st.markdown(
+                '<div style="font-size:11px;color:#4A6080;font-weight:700;'
+                'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">'
+                '1. Select Material</div>',
+                unsafe_allow_html=True,
+            )
+            sel_rcpt_item = st.selectbox(
+                "Search by SAP Code or Description",
+                options=search_options,
+                index=None,
+                placeholder="Start typing…",
+                key="rcpt_item_selectbox",
+            )
+            rcpt_sap = None
+            if sel_rcpt_item:
+                rcpt_sap = sel_rcpt_item.split("]")[0].replace("[", "").strip()
+                if not inv_list.empty:
+                    m = inv_list[inv_list["SAP_Code"] == rcpt_sap]
+                    if not m.empty:
+                        _mat_code = m.iloc[0].get('Material_Code', 'N/A')
+                        _uom      = m.iloc[0].get('UOM', 'N/A')
+                        st.markdown(
+                            f'<div style="background:rgba(59,130,246,0.09);'
+                            f'border:1px solid rgba(59,130,246,0.27);'
+                            f'border-radius:7px;padding:8px 12px;margin:4px 0 6px 0;'
+                            f'font-size:12.5px;color:#93C5FD;">'
+                            f'📋 <b style="color:#BFDBFE;">Mat Code:</b> {_mat_code}'
+                            f'&nbsp;&nbsp;|&nbsp;&nbsp;'
+                            f'<b style="color:#BFDBFE;">UOM:</b> {_uom}'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+            st.markdown(
+                '<div style="font-size:11px;color:#4A6080;font-weight:700;'
+                'text-transform:uppercase;letter-spacing:0.08em;'
+                'margin-top:10px;margin-bottom:6px;">'
+                '2. Fill Receipt Details</div>',
+                unsafe_allow_html=True,
+            )
+            # Phase 5 — site-scoped stock for the qty-adjacent badge on the
+            # receipt form. Info only — no block here, because a receipt
+            # ADDS stock (the qty is what's incoming, not what's leaving).
+            rcpt_site_snap = None
+            if rcpt_sap:
+                rcpt_site_snap = cached_item_snapshot(sap_code=rcpt_sap, site_id=site_id)
+            rcpt_input = {}
+            rn_cols = 2 if len(rcpt_form_cols) <= 4 else 3
+            r_cols = st.columns(rn_cols)
+            for i, col_name in enumerate(rcpt_form_cols):
+                with r_cols[i % rn_cols]:
+                    if col_name == "Date":
+                        rcpt_input[col_name] = st.date_input(f"{col_name}*", datetime.date.today(), key=f"rcpt_{col_name}")
+                    elif "qty" in col_name.lower() or "quantity" in col_name.lower():
+                        # Highlighted, non-editable current-stock badge above the qty field.
+                        render_stock_badge(rcpt_site_snap or {}, site_id=site_id)
+                        rcpt_input[col_name] = st.number_input(f"{col_name}*", min_value=0.1, step=1.0, key=f"rcpt_{col_name}")
+                    elif col_name == "Expiry_Date":
+                        rcpt_input[col_name] = st.date_input(f"{col_name} (Optional)", value=None, key=f"rcpt_{col_name}")
+                    elif col_name in OPTIONAL_RECEIPT_COLS:
+                        rcpt_input[col_name] = st.text_input(f"{col_name} (Optional)", key=f"rcpt_{col_name}")
+                    else:
+                        rcpt_input[col_name] = st.text_input(f"{col_name}*", key=f"rcpt_{col_name}")
+
+            if st.button("Add to Receipt Queue ⬇️", type="primary", key="rcpt_add_btn"):
+                if not rcpt_sap:
+                    st.error("⚠️ Please select a material from the search box. This field is mandatory.")
+                    st.stop()
+                rcpt_missing = [
+                    col for col, val in rcpt_input.items()
+                    if col not in OPTIONAL_RECEIPT_COLS
+                    and (val is None or str(val).strip() == "")
+                ]
+                if rcpt_missing:
+                    st.error(f"⚠️ Missing required fields: **{', '.join(rcpt_missing)}**. Every field marked * is mandatory.")
+                    st.stop()
+                conn_ra = get_connection()
+                insert_cols = ["SAP_Code"] + list(rcpt_input.keys()) + ["status", "Site_ID"]
+                insert_vals = [rcpt_sap] + [
+                    str(v) if isinstance(v, datetime.date) and v is not None else v
+                    for v in rcpt_input.values()
+                ] + ["draft", site_id]
+                placeholders = ", ".join(["?"] * len(insert_cols))
+                conn_ra.execute(
+                    f"INSERT INTO pending_receipts ({', '.join(insert_cols)}) VALUES ({placeholders})",
+                    insert_vals,
+                )
+                conn_ra.commit()
+                conn_ra.close()
+                st.toast("✅ Added to receipt queue", icon="📦")
+                st.rerun()
+
+        conn_rq = get_connection()
+        rcpt_draft_df = pd.read_sql(
+            """SELECT pr.id, pr.Date, pr.SAP_Code,
+                      i.Equipment_Description AS Material_Name, i.UOM,
+                      pr.Quantity, pr.Supplier, pr.Expiry_Date, pr.PR_Number, pr.Remarks
+               FROM pending_receipts pr
+               LEFT JOIN inventory i ON pr.SAP_Code = i.SAP_Code
+               WHERE pr.status = 'draft' AND COALESCE(pr.Site_ID,'HQ') = ?
+               ORDER BY pr.Timestamp ASC""",
+            conn_rq, params=(site_id,)
+        )
+        _rq_count = len(rcpt_draft_df)
+        _rq_badge = (
+            f'<span style="background:rgba(212,175,55,0.18);border:1px solid rgba(212,175,55,0.40);'
+            f'color:#D4AF37;font-size:11px;font-weight:700;padding:1px 8px;'
+            f'border-radius:999px;margin-left:8px;">{_rq_count}</span>'
+        ) if _rq_count else ""
+        st.markdown(
+            f'<div style="display:flex;align-items:center;margin:0.9rem 0 0.5rem 0;">'
+            f'<span style="color:#F0F4F8;font-size:1rem;font-weight:700;">📋 Receipt Draft Queue</span>'
+            f'{_rq_badge}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        if rcpt_draft_df.empty:
+            render_empty_state(
+                icon="📦",
+                title="Receipt draft queue is empty",
+                hint="Add inbound material above, then submit the batch to HOD for approval.",
+            )
+        else:
+            rcpt_view = rcpt_draft_df.set_index("id")
+            rcpt_col_cfg = {
+                "SAP_Code":     st.column_config.TextColumn("SAP Code",      disabled=True),
+                "Material_Name":st.column_config.TextColumn("Material Name", disabled=True),
+                "UOM":          st.column_config.TextColumn("UOM",           disabled=True),
+            }
+            edited_rcpt = st.data_editor(
+                rcpt_view, column_config=rcpt_col_cfg,
+                num_rows="dynamic", width="stretch", key="rcpt_staging_editor",
+            )
+
+            rbtn_save, rbtn_submit = st.columns([1, 2])
+            with rbtn_save:
+                if st.button("💾 Save Draft Edits", key="rcpt_save_btn", use_container_width=True):
+                    save_rc = [c for c in edited_rcpt.columns if c not in {"Material_Name", "UOM"}]
+                    rph = ", ".join(["?"] * (len(save_rc) + 1))
+                    rc = conn_rq.cursor()
+                    rc.execute(
+                        "DELETE FROM pending_receipts WHERE status = 'draft' AND COALESCE(Site_ID,'HQ') = ?",
+                        (site_id,)
+                    )
+                    for idx, row in edited_rcpt.iterrows():
+                        rc.execute(
+                            f"INSERT INTO pending_receipts (id, {', '.join(save_rc)}) VALUES ({rph})",
+                            [idx] + [row[c] for c in save_rc],
+                        )
+                    conn_rq.commit()
+                    st.toast("💾 Receipt draft saved", icon="💾")
+                    st.rerun()
+
+            with rbtn_submit:
+                if st.button("📨 Submit to HOD for Approval", type="primary", key="rcpt_submit_btn", use_container_width=True):
+                    count_q = conn_rq.execute(
+                        "SELECT COUNT(*) FROM pending_receipts WHERE status = 'draft' AND COALESCE(Site_ID,'HQ') = ?",
+                        (site_id,)
+                    ).fetchone()[0]
+                    if count_q == 0:
+                        st.warning("⚠️ No draft receipts to submit.")
+                    else:
+                        items_for_msg = pd.read_sql(
+                            """SELECT pr.SAP_Code, i.Equipment_Description, pr.Quantity
+                               FROM pending_receipts pr
+                               LEFT JOIN inventory i ON pr.SAP_Code = i.SAP_Code
+                               WHERE pr.status = 'draft' AND COALESCE(pr.Site_ID,'HQ') = ?""",
+                            conn_rq, params=(site_id,)
+                        )
+                        conn_rq.execute(
+                            "UPDATE pending_receipts SET status = 'pending_hod' WHERE status = 'draft' AND COALESCE(Site_ID,'HQ') = ?",
+                            (site_id,)
+                        )
+                        conn_rq.commit()
+
+                        hod_phone_q = pd.read_sql(
+                            "SELECT Phone_Number FROM users WHERE role = 'hod' AND Site_ID = ? LIMIT 1",
+                            conn_rq, params=(site_id,)
+                        )
+                        if not hod_phone_q.empty and hod_phone_q.iloc[0]["Phone_Number"]:
+                            r_lines = "\n".join(
+                                f"• {r['Quantity']}x [{r['SAP_Code']}] {r['Equipment_Description']}"
+                                for _, r in items_for_msg.iterrows()
+                            )
+                            queue_whatsapp_alert(
+                                hod_phone_q.iloc[0]["Phone_Number"],
+                                (
+                                    f"📦 *RECEIPT STAGING SUBMITTED ({site_id})*\n"
+                                    f"👤 Store Keeper: {user['username']}\n\n"
+                                    f"*Items Submitted ({count_q}):*\n"
+                                    f"{r_lines}\n\n"
+                                    f"Please review in HOD Portal → Pending Receipts."
+                                ),
+                            )
+
+                        st.success(f"✅ {count_q} receipt(s) submitted to HOD for approval!")
+                        st.rerun()
+
+        conn_rq.close()
+
+    # ── TAB 3: Returnable Items ────────────────────────────────────────────────
+    with tab_returnables:
+        st.caption("Track tools and equipment borrowed from the store on a temporary basis.")
+
+        with st.expander("➕ Issue a Returnable Item", expanded=True):
+            ri1, ri2 = st.columns(2)
+            with ri1:
+                ri_material = st.text_input("Material / Tool Name*", key="ri_mat")
+                ri_uom      = st.text_input("UOM (e.g. Pcs, Set)", key="ri_uom")
+                ri_qty      = st.number_input("Quantity*", min_value=0.1, step=1.0, key="ri_qty")
+            with ri2:
+                ri_borrower      = st.text_input("Borrower Name*", key="ri_borrower")
+                ri_phone         = st.text_input("Borrower WhatsApp No. (Optional, +966...)", key="ri_phone")
+                ri_expected_back = st.date_input(
+                    "Expected Return Date*", datetime.date.today() + datetime.timedelta(days=1),
+                    key="ri_return_date"
+                )
+                _TIME_PRESETS = {"04:15 PM": "16:15:00", "06:15 PM": "18:15:00"}
+                ri_time_preset = st.selectbox(
+                    "Expected Return Time*",
+                    list(_TIME_PRESETS.keys()) + ["Custom Time..."],
+                    key="ri_time_preset",
+                )
+                if ri_time_preset == "Custom Time...":
+                    ri_custom_time = st.time_input(
+                        "Custom Time*", value=datetime.time(16, 15), key="ri_custom_time"
+                    )
+                    ri_time_str = ri_custom_time.strftime("%H:%M:%S")
+                else:
+                    ri_time_str = _TIME_PRESETS[ri_time_preset]
+
+            if st.button("Issue Item 📤", type="primary", key="ri_issue_btn"):
+                if not ri_material or not ri_borrower:
+                    st.error("⚠️ Material name and borrower name are required.")
+                    st.stop()
+                expected_dt = f"{ri_expected_back} {ri_time_str}"
+                insert_returnable_item(
+                    material_name=ri_material,
+                    uom=ri_uom,
+                    qty=ri_qty,
+                    borrower_name=ri_borrower,
+                    borrower_phone=ri_phone or "",
+                    expected_return_time=expected_dt,
+                    site_id=site_id,
+                )
+                bust_inventory_cache()
+                st.toast(f"✅ '{ri_material}' issued to {ri_borrower}", icon="📤")
+                st.rerun()
+
+        st.markdown(
+            '<div style="font-size:11px;color:#4A6080;font-weight:700;'
+            'text-transform:uppercase;letter-spacing:0.08em;'
+            'margin:0.9rem 0 0.4rem 0;">Currently Borrowed Items</div>',
+            unsafe_allow_html=True,
+        )
+        conn_ri = get_connection()
+        ri_df = get_returnable_items(conn_ri, site_id=site_id)
+        conn_ri.close()
+
+        borrowed_df = ri_df[ri_df["status"] == "borrowed"].copy()
+
+        if borrowed_df.empty:
+            st.success("✅ No items currently on loan.")
+        else:
+            now = pd.Timestamp.now()
+            borrowed_df["expected_return_time"] = pd.to_datetime(
+                borrowed_df["expected_return_time"], errors="coerce"
+            )
+            borrowed_df["is_overdue"] = borrowed_df["expected_return_time"] < now
+
+            # Overdue banner — shows item names and escalation message
+            overdue_names = borrowed_df.loc[borrowed_df["is_overdue"], "material_name"].tolist()
+            if overdue_names:
+                names_str = " · ".join(overdue_names)
+                st.markdown(
+                    f'<div style="background:rgba(239,68,68,0.09);'
+                    f'border:1px solid rgba(239,68,68,0.33);'
+                    f'border-radius:8px;padding:10px 14px;margin-bottom:12px;'
+                    f'color:#EF4444;font-size:13px;">'
+                    f'⚠️ <strong>OVERDUE ITEMS:</strong> {names_str} '
+                    f'— Contact borrower immediately or escalate to supervisor.'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+            # Build display DataFrame with a "Status" pill column
+            borrowed_df["Status"] = borrowed_df["is_overdue"].map(
+                {True: "Overdue", False: "On Loan"}
+            )
+            borrowed_df["Expected Return"] = borrowed_df["expected_return_time"].dt.strftime(
+                "%d/%m/%Y %H:%M"
+            ).fillna("—")
+
+            disp_cols = [c for c in [
+                "id", "material_name", "uom", "qty",
+                "borrower_name", "borrower_phone",
+                "given_time", "Expected Return", "Status",
+            ] if c in borrowed_df.columns or c in ("Expected Return", "Status")]
+            render_aggrid(
+                borrowed_df[disp_cols],
+                key="borrowed_items_grid",
+                height=280,
+                column_styles={"Status": LOAN_STATUS_BADGE_JS},
+            )
+
+            st.markdown(
+                '<div style="font-size:11px;color:#4A6080;font-weight:700;'
+                'text-transform:uppercase;letter-spacing:0.08em;'
+                'margin:0.9rem 0 0.4rem 0;">Mark as Returned</div>',
+                unsafe_allow_html=True,
+            )
+            item_options = {
+                f"[#{r['id']}] {r['material_name']} — {r['borrower_name']}": r["id"]
+                for _, r in borrowed_df.iterrows()
+            }
+            selected_label = st.selectbox(
+                "Select item to mark returned",
+                list(item_options.keys()),
+                key="ri_return_select",
+                label_visibility="collapsed",
+            )
+            if st.button("✅ Mark as Returned", type="primary", key="ri_return_btn"):
+                mark_item_returned(item_id=item_options[selected_label])
+                bust_inventory_cache()
+                st.toast("✅ Item marked as returned", icon="🔄")
+                st.rerun()
+
+    # ── TAB 4: Stock Count (physical-count adjustment) ────────────────────────
+    with tab_adjust:
+        _render_stock_count_tab(user=user, site_id=site_id, inv_list=inv_list)
+
+
+# ===========================================================================
+# Stock Count tab — Store Keeper physical-count → HOD-approved adjustment
+# ===========================================================================
+def _render_stock_count_tab(user: dict, site_id: str,
+                            inv_list: pd.DataFrame) -> None:
+    """
+    Submit a physical-count discrepancy as a reconciliation document.
+
+    Flow: pick material → system shows current stock → enter counted qty →
+    pick reason → optional notes → submit. The row lands in
+    `stock_adjustments` with status='pending_hod' and shows up in the HOD
+    Portal Adjustments tab. On HOD approval, a synthetic ledger row posts
+    so the perpetual-inventory identity stays exact.
+    """
+    from database import (
+        insert_stock_adjustment,
+        get_stock_adjustment_history,
+        ADJUSTMENT_REASONS,
+    )
+
+    st.markdown(
+        '<div style="font-size:11px;color:#4A6080;font-weight:700;'
+        'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">'
+        '1. Select Material to Count</div>',
+        unsafe_allow_html=True,
+    )
+
+    if inv_list is None or inv_list.empty:
+        st.warning("Inventory is empty — add items via Admin Portal first.")
+        return
+
+    options = inv_list["Search_String"].tolist()
+    selected = st.selectbox(
+        "Search by SAP Code or Description",
+        options=options,
+        index=None,
+        placeholder="Pick material to reconcile…",
+        key="adj_item_selectbox",
+    )
+
+    if not selected:
+        st.caption(
+            "Use this tab when the **physical shelf count** disagrees with the "
+            "system stock — damage, expiry disposal, miscount correction, "
+            "found-extra, etc. After HOD approval, the ledger updates and "
+            "your live stock matches reality again."
+        )
+
+        # History at bottom even when no item picked
+        st.divider()
+        st.markdown(
+            '<div style="font-size:11px;color:#4A6080;font-weight:700;'
+            'text-transform:uppercase;letter-spacing:0.08em;margin:0.5rem 0 0.4rem 0;">'
+            'Recent Adjustments at This Site</div>',
+            unsafe_allow_html=True,
+        )
+        hist = get_stock_adjustment_history(site_id=site_id, limit=15)
+        if hist.empty:
+            st.caption("No adjustments on file yet.")
+        else:
+            show = hist[["id", "SAP_Code", "Material_Name", "variance",
+                         "reason_code", "status", "submitted_by",
+                         "submitted_at"]].copy()
+            show["reason_code"] = show["reason_code"].map(
+                lambda r: ADJUSTMENT_REASONS.get(r, r)
+            )
+            st.dataframe(show, hide_index=True, use_container_width=True)
+        return
+
+    sap_code = selected.split("]")[0].replace("[", "").strip()
+
+    # Snapshot of current site stock (read-only, what we'll record as system_qty)
+    snap = cached_item_snapshot(sap_code=sap_code, site_id=site_id)
+    system_qty = float(snap.get("current_stock") or 0.0) if snap else 0.0
+    uom = str(snap.get("uom") or "") if snap else ""
+
+    st.markdown(
+        '<div style="font-size:11px;color:#4A6080;font-weight:700;'
+        'text-transform:uppercase;letter-spacing:0.08em;'
+        'margin:14px 0 6px 0;">2. Enter Count Details</div>',
+        unsafe_allow_html=True,
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(
+            f'<div style="padding:10px 14px;background:rgba(10,25,47,0.45);'
+            f'border:1px dashed rgba(255,215,0,0.22);border-radius:10px;'
+            f'margin-bottom:8px;">'
+            f'<div style="color:#7A8FA0;font-size:0.72rem;text-transform:uppercase;'
+            f'letter-spacing:0.06em;">📊 System Qty at {site_id}</div>'
+            f'<div style="color:#F0F4F8;font-size:1.4rem;font-weight:700;'
+            f'line-height:1.2;margin-top:2px;">{system_qty:g} '
+            f'<span style="color:#7A8FA0;font-size:0.85rem;font-weight:500;">'
+            f'{uom}</span></div></div>',
+            unsafe_allow_html=True,
+        )
+        counted_qty = st.number_input(
+            "🔢 Counted Qty (physical shelf) *",
+            min_value=0.0,
+            value=system_qty,
+            step=1.0,
+            key="adj_counted_qty",
+            help="Whatever you actually count on the shelf right now.",
+        )
+        variance = counted_qty - system_qty
+
+        # Variance preview
+        if abs(variance) < 1e-9:
+            var_color, var_lbl = "#7A8FA0", "No variance · nothing to submit"
+        elif variance > 0:
+            var_color, var_lbl = "#22C55E", f"➕ Found {variance:g} extra"
+        else:
+            var_color, var_lbl = "#EF4444", f"➖ Short by {abs(variance):g}"
+        st.markdown(
+            f'<div style="padding:8px 12px;background:rgba(10,25,47,0.35);'
+            f'border-left:3px solid {var_color};border-radius:6px;'
+            f'color:{var_color};font-weight:600;font-size:0.92rem;">'
+            f'{var_lbl}</div>',
+            unsafe_allow_html=True,
+        )
+
+    with c2:
+        # Reason dropdown
+        reason_labels = list(ADJUSTMENT_REASONS.values())
+        reason_keys   = list(ADJUSTMENT_REASONS.keys())
+        # Default reason depends on variance direction
+        default_idx = (
+            reason_keys.index("miscount_in") if variance > 0
+            else reason_keys.index("cycle_count")
+        )
+        chosen_label = st.selectbox(
+            "🏷️ Reason Code *",
+            reason_labels,
+            index=default_idx,
+            key="adj_reason",
+        )
+        reason_code = reason_keys[reason_labels.index(chosen_label)]
+        notes = st.text_area(
+            "📝 Notes (optional)",
+            placeholder="e.g. found in box behind shelf 3 / damaged in transit / …",
+            key="adj_notes",
+            max_chars=300,
+            height=110,
+        )
+
+    st.markdown(
+        f'<div style="background:rgba(245,158,11,0.06);'
+        f'border:1px solid rgba(245,158,11,0.22);border-left:3px solid #F59E0B;'
+        f'border-radius:7px;padding:8px 12px;margin:10px 0;'
+        f'color:#F59E0B;font-size:12.5px;">'
+        f'⚠️ Submitting this sends the count to your HOD for approval. '
+        f'No stock changes until they approve.</div>',
+        unsafe_allow_html=True,
+    )
+
+    submit_disabled = abs(variance) < 1e-9
+    if st.button(
+        "📤 Submit Count for HOD Approval",
+        type="primary",
+        disabled=submit_disabled,
+        key="adj_submit_btn",
+    ):
+        ok, msg, _adj_id = insert_stock_adjustment(
+            site_id=site_id,
+            sap_code=sap_code,
+            system_qty=system_qty,
+            counted_qty=counted_qty,
+            reason_code=reason_code,
+            notes=notes,
+            submitted_by=user.get("username", ""),
+        )
+        if ok:
+            # Notify the site HOD via WhatsApp
+            try:
+                conn_n = get_connection()
+                hod_q = pd.read_sql(
+                    "SELECT Phone_Number FROM users WHERE role='hod' AND Site_ID=? "
+                    "AND Phone_Number IS NOT NULL AND Phone_Number<>'' LIMIT 1",
+                    conn_n, params=(site_id,),
+                )
+                conn_n.close()
+                if not hod_q.empty:
+                    queue_whatsapp_alert(
+                        str(hod_q.iloc[0]["Phone_Number"]),
+                        (f"🧮 *STOCK ADJUSTMENT — {site_id}*\n"
+                         f"👤 By: {user.get('username','')}\n"
+                         f"📦 [{sap_code}] {snap.get('description','')}\n"
+                         f"System: {system_qty:g} {uom} → Counted: {counted_qty:g} {uom}\n"
+                         f"Variance: {variance:+g} · Reason: {chosen_label}\n\n"
+                         f"Approve in HOD Portal → Adjustments tab."),
+                    )
+            except Exception:
+                pass
+            st.toast(msg, icon="📤")
+            st.rerun()
+        else:
+            st.error(msg)
+
+
+# ===========================================================================
+# Phase 5 — OCR upload helpers (consumption + delivery note)
+# ===========================================================================
+def _render_consumption_ocr(user: dict, site_id: str, inv_list: pd.DataFrame,
+                            work_types: list) -> None:
+    """
+    Two-lane (image upload OR paste text) bulk consumption-stager.
+
+    Lane A — Image: uploads picture → vision LLM → rows.
+    Lane B — Paste: textarea (Issued_To, Material, UOM, Qty, Work_Type) → rows.
+
+    Both lanes feed the SAME fuzzy-match + editable preview + submit flow.
+    On submit, each row lands in pending_issues with status='draft' (the
+    HOD's EOD review picks it up exactly like a hand-typed entry).
+    """
+    from ai.fuzzy import resolve_rows
+    from ai.ocr import (
+        extract_consumption_from_image, parse_consumption_paste,
+    )
+
+    if inv_list is None or inv_list.empty:
+        st.warning("Inventory is empty — add items via Admin Portal first.")
+        return
+
+    lane = st.radio(
+        "Input method",
+        ["📷 Image upload (vision AI)", "📝 Paste text"],
+        horizontal=True, key="cons_ocr_lane",
+    )
+
+    parsed = None
+    if lane.startswith("📷"):
+        img = st.file_uploader(
+            "Upload a photo of the handwritten list",
+            type=["png", "jpg", "jpeg", "webp"],
+            key="cons_ocr_img",
+        )
+        if img is not None:
+            if st.button("🔎 Extract rows from image", type="primary", key="cons_ocr_run_btn"):
+                with st.spinner("Vision model reading the list…"):
+                    parsed = extract_consumption_from_image(img.getvalue())
+                st.session_state["cons_ocr_parsed"] = parsed
+        # Persist across reruns so reviewing the editor doesn't redo OCR.
+        parsed = parsed or st.session_state.get("cons_ocr_parsed")
+    else:
+        st.caption(
+            "One row per line. Columns: **Issued To, Material, UOM, Quantity, Work Type** — "
+            "separated by tab / comma / semicolon / pipe."
+        )
+        txt = st.text_area("Paste here", height=140, key="cons_ocr_text")
+        if st.button("🔎 Parse pasted rows", type="primary", key="cons_paste_run_btn"):
+            parsed = parse_consumption_paste(txt)
+            st.session_state["cons_ocr_parsed"] = parsed
+        parsed = parsed or st.session_state.get("cons_ocr_parsed")
+
+    if parsed is None:
+        return
+    if not parsed.ok:
+        st.error(parsed.message or "Could not parse input.")
+        return
+
+    # Fuzzy-resolve each row against inventory.
+    resolved = resolve_rows(parsed.rows, inv_list, name_key="material_text")
+
+    # Header section: shared fields applied to ALL rows (the "adding section").
+    st.markdown("**📌 Shared fields (apply to every row below)**")
+    h1, h2, h3 = st.columns(3)
+    with h1:
+        date_val = st.date_input("Date*", datetime.date.today(), key="cons_ocr_date")
+    with h2:
+        wt_idx = 0  # Default Work_Type from first row if it has one
+        wt_default = next((r["work_type"] for r in resolved if r.get("work_type")), "")
+        if wt_default and wt_default in work_types:
+            wt_idx = work_types.index(wt_default)
+        shared_wt = st.selectbox("Default Work Type", work_types, index=wt_idx, key="cons_ocr_wt")
+    with h3:
+        shared_pr = st.text_input("PR Number (optional)", key="cons_ocr_pr")
+
+    h4, h5 = st.columns(2)
+    with h4:
+        shared_tank = st.text_input("Tank No (optional)", key="cons_ocr_tank")
+    with h5:
+        shared_remarks = st.text_input("Remarks (optional)", key="cons_ocr_remarks")
+
+    # Review grid.
+    st.markdown(f"**📋 {len(resolved)} row(s) ready for review**")
+    edited, _picks = render_ocr_review_grid(
+        resolved, inv_list,
+        key_prefix="cons_ocr",
+        columns=["SAP_Code", "material_text", "Equipment_Description",
+                 "UOM", "quantity", "issued_to", "work_type"],
+        column_config={
+            "SAP_Code":              st.column_config.TextColumn("SAP Code"),
+            "material_text":         st.column_config.TextColumn("Material (as written)", disabled=True),
+            "Equipment_Description": st.column_config.TextColumn("Matched", disabled=True),
+            "UOM":                   st.column_config.TextColumn("UOM"),
+            "quantity":              st.column_config.NumberColumn("Quantity", min_value=0.0, step=1.0),
+            "issued_to":             st.column_config.TextColumn("Issued To"),
+            "work_type":             st.column_config.TextColumn("Work Type (per-row, blank = use shared)"),
+        },
+    )
+
+    if st.button("✅ Submit all rows to draft queue", type="primary", key="cons_ocr_submit_btn"):
+        _submit_consumption_ocr(
+            edited_df=edited, user=user, site_id=site_id,
+            date_val=date_val, shared_wt=shared_wt, shared_pr=shared_pr,
+            shared_tank=shared_tank, shared_remarks=shared_remarks,
+        )
+
+
+def _submit_consumption_ocr(edited_df, user, site_id, date_val,
+                            shared_wt, shared_pr, shared_tank, shared_remarks):
+    """Validate completeness then bulk-stage to pending_issues status='draft'."""
+    if edited_df is None or edited_df.empty:
+        st.warning("Nothing to submit.")
+        return
+    rows: list[dict] = []
+    incomplete = 0
+    for _, r in edited_df.iterrows():
+        sap = str(r.get("SAP_Code", "") or "").strip()
+        qty = r.get("quantity")
+        if not sap or not qty or float(qty) <= 0:
+            incomplete += 1
+            continue
+        rows.append({
+            "SAP_Code":  sap,
+            "Quantity":  float(qty),
+            "Date":      str(date_val),
+            "Work_Type": (str(r.get("work_type", "") or "").strip() or shared_wt),
+            "Issued_By": user.get("username", ""),
+            "Issued_To": str(r.get("issued_to", "") or "").strip(),
+            "Tank_No":   shared_tank,
+            "PR_Number": shared_pr,
+            "Remarks":   shared_remarks,
+        })
+
+    if not rows:
+        st.error("Every row needs both a SAP Code (or candidate pick) and a Quantity > 0.")
+        return
+    if incomplete:
+        st.warning(f"Skipping {incomplete} incomplete row(s) — fill SAP + Quantity then resubmit.")
+
+    n = pwa_stage_pending_issues(
+        rows=rows, username=user.get("username", ""), site_id=site_id,
+    )
+    bust_inventory_cache()
+    # Clear OCR session state so the expander is ready for the next batch.
+    for k in ("cons_ocr_parsed", "cons_ocr_text"):
+        st.session_state.pop(k, None)
+    st.toast(f"✅ Staged {n} consumption row(s) to draft queue", icon="📝")
+    st.success(f"{n} row(s) staged to draft. Submit to HOD from the Staging Queue below.")
+    st.rerun()
+
+
+def _render_receipt_ocr(user: dict, site_id: str, inv_list: pd.DataFrame) -> None:
+    """
+    Two-lane delivery-note importer.
+
+    Image → vision LLM → {header, items}.
+    Paste → 'Key: value' header lines + comma-separated item rows.
+
+    Header maps to pending_receipts columns: DN_No, Date, Mob_From,
+    Driver_Name, Vehicle_No, Prepared_by, Mob_To. Each item row gets
+    fuzzy-matched against inventory like consumption rows.
+    """
+    from ai.fuzzy import resolve_rows
+    from ai.ocr import (
+        extract_delivery_note_from_image, parse_delivery_note_paste,
+    )
+
+    if inv_list is None or inv_list.empty:
+        st.warning("Inventory is empty — add items via Admin Portal first.")
+        return
+
+    lane = st.radio(
+        "Input method",
+        ["📷 Image upload (vision AI)", "📝 Paste text"],
+        horizontal=True, key="rcpt_ocr_lane",
+    )
+
+    parsed = None
+    if lane.startswith("📷"):
+        img = st.file_uploader(
+            "Upload a photo of the delivery note",
+            type=["png", "jpg", "jpeg", "webp"],
+            key="rcpt_ocr_img",
+        )
+        if img is not None:
+            if st.button("🔎 Extract delivery note", type="primary", key="rcpt_ocr_run_btn"):
+                with st.spinner("Vision model reading the note…"):
+                    parsed = extract_delivery_note_from_image(img.getvalue())
+                st.session_state["rcpt_ocr_parsed"] = parsed
+        parsed = parsed or st.session_state.get("rcpt_ocr_parsed")
+    else:
+        st.caption(
+            "Paste header lines like `DN_No: 15668` then comma-separated item "
+            "rows (Material, UOM, Qty). See the placeholder for an example."
+        )
+        txt = st.text_area(
+            "Paste delivery note",
+            height=240,
+            key="rcpt_ocr_text",
+            placeholder=(
+                "DN_No: 15668\nDate: 2026-06-02\nMob_From: GI - ABU HADRIYAH\n"
+                "Driver_Name: Imran\nVehicle_No: 3909\nPrepared_by: Harshavardhan\n"
+                "Mob_To: CNCEC-RAS AL KHAIR\n\n"
+                "6m pipe, Nos, 45\n4m pipe, Nos, 60\n3m pipe, Nos, 35"
+            ),
+        )
+        if st.button("🔎 Parse pasted note", type="primary", key="rcpt_paste_run_btn"):
+            parsed = parse_delivery_note_paste(txt)
+            st.session_state["rcpt_ocr_parsed"] = parsed
+        parsed = parsed or st.session_state.get("rcpt_ocr_parsed")
+
+    if parsed is None:
+        return
+    if not parsed.ok:
+        st.error(parsed.message or "Could not parse input.")
+        return
+
+    # Editable header.
+    st.markdown("**📌 Delivery Note header** (edit any field before submit)")
+    hdr = parsed.header or {}
+    h1, h2, h3 = st.columns(3)
+    with h1:
+        dn_no = st.text_input("DN No / Ref No*", value=hdr.get("DN_No", ""), key="rcpt_ocr_dn")
+        prep  = st.text_input("Prepared By", value=hdr.get("Prepared_by", ""), key="rcpt_ocr_prep")
+    with h2:
+        # Date may be ISO or a free string the model returned; we don't force.
+        date_raw = hdr.get("Date") or datetime.date.today().isoformat()
+        try:
+            _d_default = datetime.date.fromisoformat(date_raw[:10])
+        except ValueError:
+            _d_default = datetime.date.today()
+        date_val = st.date_input("Date*", _d_default, key="rcpt_ocr_date")
+        driver   = st.text_input("Driver Name", value=hdr.get("Driver_Name", ""), key="rcpt_ocr_drv")
+    with h3:
+        mob_from = st.text_input("Customer / Mob From*", value=hdr.get("Mob_From", ""), key="rcpt_ocr_from")
+        vehicle  = st.text_input("Vehicle No", value=hdr.get("Vehicle_No", ""), key="rcpt_ocr_veh")
+
+    mob_to = st.text_input("Location / Mob To", value=hdr.get("Mob_To", ""), key="rcpt_ocr_to")
+
+    # Fuzzy-resolve items.
+    resolved = resolve_rows(parsed.items, inv_list, name_key="material_text")
+
+    st.markdown(f"**📋 {len(resolved)} item(s) ready for review**")
+    edited, _picks = render_ocr_review_grid(
+        resolved, inv_list,
+        key_prefix="rcpt_ocr",
+        columns=["SAP_Code", "material_text", "Equipment_Description", "UOM", "quantity"],
+        column_config={
+            "SAP_Code":              st.column_config.TextColumn("SAP Code"),
+            "material_text":         st.column_config.TextColumn("Material (as written)", disabled=True),
+            "Equipment_Description": st.column_config.TextColumn("Matched", disabled=True),
+            "UOM":                   st.column_config.TextColumn("UOM"),
+            "quantity":              st.column_config.NumberColumn("Quantity", min_value=0.0, step=1.0),
+        },
+    )
+
+    if st.button("✅ Submit delivery note to draft queue", type="primary", key="rcpt_ocr_submit_btn"):
+        _submit_receipt_ocr(
+            edited_df=edited, user=user, site_id=site_id,
+            header={
+                "DN_No": dn_no, "Date": str(date_val), "Mob_From": mob_from,
+                "Driver_Name": driver, "Vehicle_No": vehicle,
+                "Prepared_by": prep, "Mob_To": mob_to,
+            },
+        )
+
+
+def _submit_receipt_ocr(edited_df, user, site_id, header):
+    """Validate row completeness then bulk-stage to pending_receipts status='draft'."""
+    if edited_df is None or edited_df.empty:
+        st.warning("Nothing to submit.")
+        return
+    if not header.get("DN_No") or not header.get("Mob_From"):
+        st.error("DN No and Customer (Mob From) are required.")
+        return
+
+    rows: list[dict] = []
+    incomplete = 0
+    for _, r in edited_df.iterrows():
+        sap = str(r.get("SAP_Code", "") or "").strip()
+        qty = r.get("quantity")
+        if not sap or not qty or float(qty) <= 0:
+            incomplete += 1
+            continue
+        rows.append({
+            "SAP_Code": sap,
+            "Quantity": float(qty),
+            "UOM":      str(r.get("UOM", "") or "").strip(),
+        })
+
+    if not rows:
+        st.error("Every row needs both a SAP Code and a Quantity > 0.")
+        return
+    if incomplete:
+        st.warning(f"Skipping {incomplete} incomplete row(s).")
+
+    n = stage_pending_receipts_bulk(
+        rows=rows, header=header, username=user.get("username", ""), site_id=site_id,
+    )
+    bust_inventory_cache()
+    for k in ("rcpt_ocr_parsed", "rcpt_ocr_text"):
+        st.session_state.pop(k, None)
+    st.toast(f"✅ Staged {n} receipt row(s)", icon="📦")
+    st.success(f"{n} row(s) staged to draft. HOD will see them in the Pending Receipts tab.")
+    st.rerun()

@@ -118,6 +118,15 @@ class TestSiteIDSelfHealing:
     def _drop_site_id(self, conn, table):
         """SQLite <3.35 workaround: recreate table without Site_ID."""
         c = conn.cursor()
+        # Derived views (v_live_stock / v_site_stock) depend on the base tables.
+        # SQLite forbids dropping/rebuilding a table while a dependent view
+        # exists, so drop all views first; the init_db() call that follows in
+        # each test recreates them. (Real app code never rebuilds these base
+        # tables — only `users`, which the views don't reference.)
+        for (vname,) in c.execute(
+            "SELECT name FROM sqlite_master WHERE type='view'"
+        ).fetchall():
+            c.execute(f"DROP VIEW IF EXISTS {vname}")
         c.execute(f"PRAGMA table_info({table})")
         cols = [(r[1], r[2]) for r in c.fetchall() if r[1] != "Site_ID"]
         col_defs  = ", ".join(f"{n} {t}" for n, t in cols)
@@ -357,7 +366,7 @@ class TestHODRoleHierarchy:
 
     def test_exact_hierarchy_order(self):
         assert (
-            ROLE_HIERARCHY["worker"]
+            ROLE_HIERARCHY["store_keeper"]
             < ROLE_HIERARCHY["supervisor"]
             < ROLE_HIERARCHY["hod"]
             < ROLE_HIERARCHY["admin"]
@@ -374,7 +383,7 @@ class TestHODRoleHierarchy:
         assert sup < req
 
     def test_worker_cannot_access_hod_portal(self):
-        wkr = ROLE_HIERARCHY["worker"]
+        wkr = ROLE_HIERARCHY["store_keeper"]
         req = ROLE_HIERARCHY[PAGE_ACCESS["📋 HOD Portal"]]
         assert wkr < req
 
@@ -533,12 +542,12 @@ class TestGetPendingIssuesForSite:
 
     def test_returns_only_own_site_rows(self, db_conn):
         db_conn.execute(
-            "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type, Site_ID) "
-            "VALUES ('2026-05-12','PIS-001',5,'Maintenance','SITE-A')"
+            "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type, Site_ID, status) "
+            "VALUES ('2026-05-12','PIS-001',5,'Maintenance','SITE-A','pending_hod')"
         )
         db_conn.execute(
-            "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type, Site_ID) "
-            "VALUES ('2026-05-12','PIS-002',3,'Maintenance','SITE-B')"
+            "INSERT INTO pending_issues (Date, SAP_Code, Quantity, Work_Type, Site_ID, status) "
+            "VALUES ('2026-05-12','PIS-002',3,'Maintenance','SITE-B','pending_hod')"
         )
         db_conn.commit()
         df = get_pending_issues_for_site(db_conn, site_id="SITE-A")

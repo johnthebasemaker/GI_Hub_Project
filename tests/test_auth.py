@@ -82,11 +82,11 @@ class TestAuthenticateUser:
     """Validates the authenticate_user() login function."""
 
     def test_correct_credentials_return_user_dict(self, db_conn):
-        add_user("alice", "pass123", "worker", "HQ", db_conn)
+        add_user("alice", "pass123", "store_keeper", "HQ", db_conn)
         result = authenticate_user("alice", "pass123", db_conn)
         assert result is not None
         assert result["username"] == "alice"
-        assert result["role"] == "worker"
+        assert result["role"] == "store_keeper"
 
     def test_wrong_password_returns_none(self, db_conn):
         add_user("bob", "correct", "supervisor", "HQ", db_conn)
@@ -109,7 +109,7 @@ class TestAuthenticateUser:
 
     def test_username_is_case_sensitive(self, db_conn):
         """Usernames are case-sensitive — 'Alice' ≠ 'alice'."""
-        add_user("CaseSensitive", "pass", "worker", "HQ", db_conn)
+        add_user("CaseSensitive", "pass", "store_keeper", "HQ", db_conn)
         assert authenticate_user("casesensitive", "pass", db_conn) is None
 
     def test_empty_username_returns_none(self, db_conn):
@@ -146,7 +146,7 @@ class TestSeedDefaultUsers:
 
     def test_seed_creates_worker_user(self, db_conn):
         seed_default_users(db_conn)
-        df = pd.read_sql("SELECT username FROM users WHERE role='worker'", db_conn)
+        df = pd.read_sql("SELECT username FROM users WHERE role='store_keeper'", db_conn)
         assert "worker" in df["username"].values
 
     def test_seed_is_idempotent_called_twice(self, db_conn):
@@ -168,7 +168,7 @@ class TestSeedDefaultUsers:
     def test_default_worker_password_authenticates(self, db_conn):
         seed_default_users(db_conn)
         result = authenticate_user("worker", "floor2026", db_conn)
-        assert result is not None and result["role"] == "worker"
+        assert result is not None and result["role"] == "store_keeper"
 
     def test_seed_does_not_run_if_users_exist(self, db_conn):
         """Seed must check table emptiness — existing users are not overwritten."""
@@ -187,7 +187,7 @@ class TestUserCRUD:
     """Tests add_user / delete_user / reset_password / get_all_users."""
 
     def test_add_user_returns_true_on_success(self, db_conn):
-        assert add_user("newuser", "pass123", "worker", "HQ", db_conn) is True
+        assert add_user("newuser", "pass123", "store_keeper", "HQ", db_conn) is True
 
     def test_added_user_appears_in_get_all_users(self, db_conn):
         add_user("visible_user", "pass", "supervisor", "HQ", db_conn)
@@ -195,7 +195,7 @@ class TestUserCRUD:
         assert "visible_user" in df["username"].values
 
     def test_add_duplicate_username_returns_false(self, db_conn):
-        add_user("dupuser", "pass1", "worker", "HQ", db_conn)
+        add_user("dupuser", "pass1", "store_keeper", "HQ", db_conn)
         assert add_user("dupuser", "pass2", "admin", "HQ", db_conn) is False
 
     def test_add_user_invalid_role_raises_value_error(self, db_conn):
@@ -203,11 +203,11 @@ class TestUserCRUD:
             add_user("baduser", "pass", "god_mode", "HQ", db_conn)
 
     def test_delete_user_returns_true_on_success(self, db_conn):
-        add_user("to_delete", "pass", "worker", "HQ", db_conn)
+        add_user("to_delete", "pass", "store_keeper", "HQ", db_conn)
         assert delete_user("to_delete", db_conn) is True
 
     def test_deleted_user_not_in_get_all_users(self, db_conn):
-        add_user("gone_user", "pass", "worker", "HQ", db_conn)
+        add_user("gone_user", "pass", "store_keeper", "HQ", db_conn)
         delete_user("gone_user", db_conn)
         df = get_all_users(db_conn)
         assert "gone_user" not in df["username"].values
@@ -216,7 +216,7 @@ class TestUserCRUD:
         assert delete_user("phantom_user", db_conn) is False
 
     def test_reset_password_returns_true_on_success(self, db_conn):
-        add_user("resetme", "oldpass", "worker", "HQ", db_conn)
+        add_user("resetme", "oldpass", "store_keeper", "HQ", db_conn)
         assert reset_password("resetme", "newpass", db_conn) is True
 
     def test_new_password_authenticates_after_reset(self, db_conn):
@@ -225,7 +225,7 @@ class TestUserCRUD:
         assert authenticate_user("pwdchange", "updated", db_conn) is not None
 
     def test_old_password_fails_after_reset(self, db_conn):
-        add_user("strictreset", "oldpwd", "worker", "HQ", db_conn)
+        add_user("strictreset", "oldpwd", "store_keeper", "HQ", db_conn)
         reset_password("strictreset", "newpwd", db_conn)
         assert authenticate_user("strictreset", "oldpwd", db_conn) is None
 
@@ -233,7 +233,7 @@ class TestUserCRUD:
         assert reset_password("nobody_here", "anypass", db_conn) is False
 
     def test_get_all_users_excludes_password_hash(self, db_conn):
-        add_user("safe_user", "pass", "worker", "HQ", db_conn)
+        add_user("safe_user", "pass", "store_keeper", "HQ", db_conn)
         df = get_all_users(db_conn)
         assert "password_hash" not in df.columns
 
@@ -267,7 +267,7 @@ class TestLastAdminGuard:
         """Workers and supervisors can always be deleted (no lockout risk)."""
         add_user("spare_admin",  "pass", "admin",      "HQ", db_conn)
         add_user("a_supervisor", "pass", "supervisor", "HQ", db_conn)
-        add_user("a_worker",     "pass", "worker",     "HQ", db_conn)
+        add_user("a_worker",     "pass", "store_keeper", "HQ", db_conn)
         assert delete_user("a_supervisor", db_conn) is True
         assert delete_user("a_worker",     db_conn) is True
 
@@ -286,7 +286,7 @@ class TestRolePermissionMatrix:
         assert ROLE_HIERARCHY["admin"] > ROLE_HIERARCHY["supervisor"]
 
     def test_supervisor_outranks_worker(self):
-        assert ROLE_HIERARCHY["supervisor"] > ROLE_HIERARCHY["worker"]
+        assert ROLE_HIERARCHY["supervisor"] > ROLE_HIERARCHY["store_keeper"]
 
     def test_admin_can_access_all_pages(self):
         for page, min_role in PAGE_ACCESS.items():
@@ -295,10 +295,10 @@ class TestRolePermissionMatrix:
             )
 
     def test_worker_can_only_access_daily_issue_log(self):
-        worker_level = ROLE_HIERARCHY["worker"]
+        worker_level = ROLE_HIERARCHY["store_keeper"]
         for page, min_role in PAGE_ACCESS.items():
             required = ROLE_HIERARCHY[min_role]
-            if page == "📝 Daily Issue Log":
+            if page == "📝 Entry Log":
                 assert worker_level >= required, f"Worker must access '{page}'"
             else:
                 assert worker_level < required, (

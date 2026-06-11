@@ -93,6 +93,14 @@ AGGRID_PAGE_SIZE = 25
 AGGRID_THEME     = "streamlit"
 
 # ---------------------------------------------------------------------------
+# AI FEATURES (Phase 3) — optional local Ollama integration
+# ---------------------------------------------------------------------------
+# Toggle off if Ollama isn't installed or you want to deploy without AI.
+# When False, AI panels render a small "AI disabled in settings" hint instead
+# of calling the local server.
+AI_ENABLED = True
+
+# ---------------------------------------------------------------------------
 # LEGACY — removed in Module 3
 # ---------------------------------------------------------------------------
 ADMIN_PASSWORD = "admin2026"

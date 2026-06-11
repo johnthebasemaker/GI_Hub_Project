@@ -278,9 +278,16 @@ def login_form() -> None:
         # ── Branded header ─────────────────────────────────────────────────
         st.markdown(f"""
         <div style="text-align:center; padding: 2rem 0 1.5rem 0;">
-            <div style="font-size:3rem; margin-bottom:0.5rem;">{APP_ICON}</div>
+            <div style="width:72px;height:72px;border-radius:50%;
+                background:rgba(10,25,47,0.92);
+                border:2px solid rgba(212,175,55,0.65);
+                box-shadow:0 0 24px rgba(212,175,55,0.22),inset 0 0 18px rgba(212,175,55,0.06);
+                display:flex;align-items:center;justify-content:center;
+                margin:0 auto 1.25rem auto;font-size:1.85rem;line-height:1;">
+                {APP_ICON}
+            </div>
             <div>
-                <span style="color:{BRAND_BLUE}; font-size:1.8rem; font-weight:900;">General</span>
+                <span style="color:{TEXT_PRIMARY}; font-size:1.8rem; font-weight:900;">General</span>
                 <span style="color:{BRAND_GOLD}; font-size:1.8rem; font-weight:900;"> Industries</span>
             </div>
             <p style="color:{TEXT_MUTED}; font-size:0.8rem; margin:0.25rem 0 0 0;
@@ -412,6 +419,13 @@ def login_form() -> None:
 
             > ⚠️ **Change these immediately** via Admin → User Management after first login.
             """)
+
+        st.markdown(
+            f'<p style="text-align:center;color:{TEXT_MUTED};font-size:0.7rem;'
+            f'margin-top:1.5rem;letter-spacing:0.07em;opacity:0.65;">'
+            f'GI Lightning Hub &nbsp;·&nbsp; General Industries ERP &nbsp;·&nbsp; v{APP_VERSION}</p>',
+            unsafe_allow_html=True,
+        )
 
 
 # ===========================================================================

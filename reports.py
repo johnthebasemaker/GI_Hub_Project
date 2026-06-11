@@ -58,32 +58,46 @@ def generate_pr_pdf(pr_number: str, site_id: str, pr_df: pd.DataFrame, generated
 
     # --- TABLE HEADER ---
     pdf.set_font("helvetica", "B", 10)
-    pdf.set_fill_color(10, 25, 47) # Navy header
+    pdf.set_fill_color(10, 25, 47)  # Navy header
     pdf.set_text_color(255, 255, 255)
-    
-    # Column widths
-    col_widths = [35, 95, 30, 30]
-    
-    pdf.cell(col_widths[0], 8, "Material Code", border=1, fill=True)
-    pdf.cell(col_widths[1], 8, "Description", border=1, fill=True)
-    pdf.cell(col_widths[2], 8, "Req. Qty", border=1, align="C", fill=True)
-    pdf.cell(col_widths[3], 8, "Status", border=1, align="C", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+    # Column widths — Req / Recv / Pending share the right-hand strip so
+    # every PR PDF shows the full fulfillment picture, not just the ask.
+    col_widths = [30, 75, 20, 20, 20, 25]
+    headers = ["Material Code", "Description", "Req. Qty",
+               "Received", "Pending", "Status"]
+    for i, h in enumerate(headers):
+        is_last = (i == len(headers) - 1)
+        pdf.cell(
+            col_widths[i], 8, h, border=1,
+            align="C" if i >= 2 else "L", fill=True,
+            new_x="LMARGIN" if is_last else "RIGHT",
+            new_y="NEXT" if is_last else "TOP",
+        )
 
     # --- TABLE ROWS ---
     pdf.set_font("helvetica", "", 9)
     pdf.set_text_color(0, 0, 0)
-    
+
     for _, row in pr_df.iterrows():
-        # Handle long text wrapping for the description
         mat_code = str(row.get("Material_Code", "N/A"))
-        desc = str(row.get("Material_Name", "Unknown Material"))[:45] # Truncate to fit
-        req_qty = str(row.get("Requested_Qty", "0"))
+        desc = str(row.get("Material_Name", "Unknown Material"))[:38]
+        req = float(row.get("Requested_Qty", 0) or 0)
+        pend = float(row.get("Pending_Qty", 0) or 0)
+        # Pending_Qty is pre-computed in the HOD query (Req - Received),
+        # so we derive received from it. This keeps the PDF in lock-step
+        # with the on-screen table the HOD just confirmed visually.
+        recv = max(req - pend, 0)
+        pend_disp = max(pend, 0)
         status = str(row.get("status", "unknown")).upper()
-        
+
         pdf.cell(col_widths[0], 8, mat_code, border=1)
         pdf.cell(col_widths[1], 8, desc, border=1)
-        pdf.cell(col_widths[2], 8, req_qty, border=1, align="C")
-        pdf.cell(col_widths[3], 8, status, border=1, align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(col_widths[2], 8, f"{req:g}", border=1, align="C")
+        pdf.cell(col_widths[3], 8, f"{recv:g}", border=1, align="C")
+        pdf.cell(col_widths[4], 8, f"{pend_disp:g}", border=1, align="C")
+        pdf.cell(col_widths[5], 8, status, border=1, align="C",
+                 new_x="LMARGIN", new_y="NEXT")
 
     # --- AUDIT FOOTNOTE ---
     pdf.ln(15)
@@ -231,3 +245,260 @@ def generate_qr_labels_pdf(items: list, cols: int = 3, rows_per_page: int = 4) -
         pdf.cell(CELL_W - 2, 4, txt=desc, align="C")
 
     return bytes(pdf.output())
+
+
+# ===========================================================================
+# REPORTS PAGE — generic tabular PDF generator
+# ---------------------------------------------------------------------------
+# Used for the 8 Reports-page report types so we don't repeat plumbing.
+# Each row in `df` becomes a table row; the title + metadata block at the
+# top includes site / date-range / username so the file stands on its own
+# without the surrounding UI.
+# ===========================================================================
+def _latin1_safe(s) -> str:
+    """
+    fpdf2 + core Helvetica is latin-1 only. Map the common Unicode glyphs
+    that show up in our UI strings (em-dash, arrows, smart quotes, the
+    SAR currency sign, emoji) down to plain ASCII so cells never crash
+    the PDF builder.
+    """
+    if s is None:
+        return ""
+    out = str(s)
+    repl = {
+        "—": "-", "–": "-", "→": "->", "←": "<-",
+        "↑": "^", "↓": "v", "·": "*",
+        "“": '"', "”": '"', "‘": "'", "’": "'",
+        "✅": "[OK]", "❌": "[X]", "⚠️": "[!]",
+        "🔴": "[CRIT]", "🟡": "[LOW]", "🟢": "[OK]",
+        "📋": "", "📊": "", "📁": "", "📅": "", "📈": "",
+        "🏷️": "", "📜": "", "📦": "", "🔥": "", "🤖": "",
+        "🌐": "", "🛡️": "", "🏛️": "", "💬": "",
+        "⏳": "", "🛒": "", "💡": "", "🐛": "",
+    }
+    for k, v in repl.items():
+        out = out.replace(k, v)
+    # Final pass: strip anything still outside latin-1 so fpdf can't trip.
+    return out.encode("latin-1", "ignore").decode("latin-1")
+
+
+def generate_report_pdf(
+    *,
+    title: str,
+    df: pd.DataFrame,
+    generated_by: str,
+    site_label: str = "All Sites",
+    date_from: str = "",
+    date_to: str = "",
+    subtitle: str = "",
+    summary: dict | None = None,
+) -> bytes:
+    """
+    Generic tabular report PDF (landscape A4). Columns auto-size from the
+    dataframe's columns; cell text is truncated to keep the layout stable.
+    `summary` (optional) renders a small KPI strip above the table.
+    """
+    pdf = GI_PDF(orientation="L", unit="mm", format="A4")
+    pdf.add_page()
+    title = _latin1_safe(title)
+    subtitle = _latin1_safe(subtitle)
+    site_label = _latin1_safe(site_label)
+    generated_by = _latin1_safe(generated_by)
+    date_from = _latin1_safe(date_from)
+    date_to = _latin1_safe(date_to)
+
+    # Title block
+    pdf.set_font("helvetica", "B", 13)
+    pdf.set_text_color(10, 25, 47)
+    pdf.cell(0, 9, title, new_x="LMARGIN", new_y="NEXT")
+
+    if subtitle:
+        pdf.set_font("helvetica", "I", 10)
+        pdf.set_text_color(110, 110, 110)
+        pdf.cell(0, 6, subtitle, new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_font("helvetica", "", 9)
+    pdf.set_text_color(70, 70, 70)
+    meta_bits = [
+        f"Site: {site_label}",
+        f"Generated by: {generated_by}",
+        f"Generated at (UTC): {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}",
+    ]
+    if date_from or date_to:
+        meta_bits.insert(0, f"Period: {date_from or '-'} -> {date_to or '-'}")
+    for bit in meta_bits:
+        pdf.cell(0, 5, _latin1_safe(bit), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+
+    # Optional KPI strip
+    if summary:
+        col_w = max(60, (pdf.epw - 4) / max(len(summary), 1))
+        pdf.set_font("helvetica", "B", 9)
+        pdf.set_text_color(212, 175, 55)
+        for k in summary:
+            label = _latin1_safe(str(k).replace("_", " ").title())[:24]
+            pdf.cell(col_w, 6, label, border=0, align="L")
+        pdf.ln(5)
+        pdf.set_font("helvetica", "", 10)
+        pdf.set_text_color(20, 20, 20)
+        for v in summary.values():
+            pdf.cell(col_w, 6, _latin1_safe(str(v))[:24], border=0, align="L")
+        pdf.ln(8)
+
+    if df is None or df.empty:
+        pdf.set_font("helvetica", "I", 10)
+        pdf.set_text_color(150, 150, 150)
+        pdf.cell(0, 10, "No data in the requested window.",
+                 new_x="LMARGIN", new_y="NEXT")
+        return bytes(pdf.output())
+
+    # Column widths — short / numeric columns get a fixed slim width;
+    # the remaining width is spread across descriptive columns. This stops
+    # wide reports (Receipts: 12 columns) from collapsing into illegible
+    # 22mm slivers, and lets text columns (Material, Supplier, Remarks)
+    # actually breathe.
+    page_w = pdf.epw
+    NARROW_NAMES = {  # header → slim fixed width (mm)
+        "date":            18,
+        "expiry_date":     18,
+        "uom":             12,
+        "qty":             16,
+        "quantity":        16,
+        "received_qty":    18,
+        "consumed_qty":    18,
+        "remaining_qty":   18,
+        "unit_cost":       18,
+        "site":            16,
+        "site_id":         16,
+        "status":          18,
+        "sap_code":        22,
+        "sap":             22,
+        "lot_number":      30,
+        "pr_number":       22,
+        "pr no.":          22,
+        "pr":              22,
+    }
+    RIGHT_ALIGN_NAMES = {  # numeric columns → align right
+        "qty", "quantity", "received_qty", "consumed_qty", "remaining_qty",
+        "unit_cost", "receipt_value_sar", "stock_value", "total_qty",
+        "issued_value_sar", "received_value_sar", "closing_value_sar",
+        "opening", "issued", "received", "closing",
+    }
+    fixed_widths: dict[str, float] = {}
+    flex_cols: list[str] = []
+    for col_name in df.columns:
+        key = str(col_name).strip().lower()
+        if key in NARROW_NAMES:
+            fixed_widths[col_name] = NARROW_NAMES[key]
+        else:
+            flex_cols.append(col_name)
+    fixed_total = sum(fixed_widths.values())
+    flex_total = max(page_w - fixed_total, 0)
+    flex_w = flex_total / max(len(flex_cols), 1) if flex_cols else 0
+    col_widths = {c: (fixed_widths.get(c) or flex_w) for c in df.columns}
+    align_map = {
+        c: ("R" if str(c).strip().lower() in RIGHT_ALIGN_NAMES else "L")
+        for c in df.columns
+    }
+    row_h = 7
+
+    def _draw_header():
+        pdf.set_font("helvetica", "B", 8.5)
+        pdf.set_fill_color(10, 25, 47)
+        pdf.set_text_color(255, 255, 255)
+        for col_name in df.columns:
+            pdf.cell(col_widths[col_name], row_h,
+                     _latin1_safe(str(col_name))[:24],
+                     border=1, fill=True, align="C")
+        pdf.ln(row_h)
+        pdf.set_font("helvetica", "", 8)
+        pdf.set_text_color(20, 20, 20)
+
+    _draw_header()
+
+    # Body
+    for _, row in df.iterrows():
+        if pdf.get_y() > 185:
+            pdf.add_page()
+            _draw_header()
+        for col_name in df.columns:
+            val = row[col_name]
+            # Char budget proportional to width — looser for wide cols,
+            # tighter for the narrow ones so they never wrap into garbage.
+            char_budget = max(6, int(col_widths[col_name] / 1.7))
+            pdf.cell(col_widths[col_name], row_h - 0.5,
+                     _latin1_safe(val)[:char_budget],
+                     border=1, align=align_map[col_name])
+        pdf.ln(row_h - 0.5)
+
+    return bytes(pdf.output())
+
+
+# ===========================================================================
+# REPORTS PAGE — Excel + CSV wrappers
+# ===========================================================================
+def generate_report_excel(
+    *,
+    title: str,
+    df: pd.DataFrame,
+    summary: dict | None = None,
+    sheet_name: str = "Report",
+) -> bytes:
+    """
+    Single-sheet .xlsx using openpyxl. The summary dict (if any) becomes a
+    KPI block at the top of the sheet; the dataframe rows are written below
+    a one-row header. We keep this dependency-light so the existing mailer
+    Excel builders aren't disturbed.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = (sheet_name[:31] if sheet_name else "Report")
+
+    title_font  = Font(bold=True, size=14, color="0A192F")
+    label_font  = Font(bold=True, color="9A7000")
+    hdr_font    = Font(bold=True, color="FFFFFF")
+    hdr_fill    = PatternFill("solid", fgColor="0A192F")
+    centre      = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    ws["A1"] = title
+    ws["A1"].font = title_font
+    row_idx = 3
+    if summary:
+        for k in summary:
+            ws.cell(row=row_idx, column=1, value=str(k).replace("_", " ").title()).font = label_font
+        for j, v in enumerate(summary.values(), start=1):
+            ws.cell(row=row_idx + 1, column=j, value=str(v))
+        row_idx += 3
+
+    if df is not None and not df.empty:
+        for j, col in enumerate(df.columns, start=1):
+            cell = ws.cell(row=row_idx, column=j, value=str(col))
+            cell.font = hdr_font
+            cell.fill = hdr_fill
+            cell.alignment = centre
+        for i, (_, r) in enumerate(df.iterrows(), start=1):
+            for j, v in enumerate(r.values, start=1):
+                ws.cell(
+                    row=row_idx + i,
+                    column=j,
+                    value=("" if pd.isna(v) else v),
+                )
+        # column widths — sensible-ish defaults
+        for j, col in enumerate(df.columns, start=1):
+            ws.column_dimensions[ws.cell(row=row_idx, column=j).column_letter].width = max(
+                12, min(40, len(str(col)) + 6),
+            )
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def generate_report_csv(df: pd.DataFrame) -> bytes:
+    """CSV bytes — useful for the format chooser's third option."""
+    if df is None:
+        df = pd.DataFrame()
+    return df.to_csv(index=False).encode("utf-8")
