@@ -91,7 +91,10 @@ def seed_default_users(conn: sqlite3.Connection = None) -> None:
     if c.fetchone()[0] == 0:
         for username, plain, role, site_id in _DEFAULT_USERS:
             c.execute(
-                "INSERT INTO users (username, password_hash, role, Site_ID) VALUES (?, ?, ?, ?)",
+                # INSERT OR IGNORE: if two workers race past the count check
+                # simultaneously, the second one silently skips duplicates
+                # instead of crashing with UNIQUE constraint.
+                "INSERT OR IGNORE INTO users (username, password_hash, role, Site_ID) VALUES (?, ?, ?, ?)",
                 (username, hash_password(plain), role, site_id),
             )
         conn.commit()

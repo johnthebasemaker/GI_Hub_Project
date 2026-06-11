@@ -53,7 +53,7 @@ ADJUSTMENT_REASONS = {
 def get_connection(db_file: str = None) -> sqlite3.Connection:
     """Return a SQLite connection. Pass db_file=':memory:' for in-memory testing."""
     target = db_file or DB_FILE
-    conn = sqlite3.connect(target, check_same_thread=False)
+    conn = sqlite3.connect(target, check_same_thread=False, timeout=30)
     if target != ":memory:":
         try:
             conn.execute("PRAGMA journal_mode=WAL")
@@ -181,6 +181,11 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     """)
 
     c.execute("CREATE TABLE IF NOT EXISTS system_settings (category TEXT, value TEXT)")
+    # Self-heal: per-site dropdown support
+    try:
+        c.execute("ALTER TABLE system_settings ADD COLUMN Site_ID TEXT")
+    except Exception:
+        pass
 
     # ── RBAC Users Table ──────────────────────────────────────────────────────
     c.execute("""
@@ -543,13 +548,22 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         )
     """)
 
-    # ── Seed Default Work Types (idempotent) ──────────────────────────────────
-    c.execute("SELECT count(*) FROM system_settings WHERE category='Work_Type'")
+    # ── Seed Default Work Types (idempotent, global / Site_ID IS NULL) ────────
+    c.execute("SELECT count(*) FROM system_settings WHERE category='Work_Type' AND Site_ID IS NULL")
     if c.fetchone()[0] == 0:
         for wt in ["Maintenance", "New Project Area", "Fabrication", "Office"]:
             c.execute(
                 "INSERT INTO system_settings (category, value) VALUES ('Work_Type', ?)",
                 (wt,)
+            )
+
+    # ── Seed Default Tank Numbers (global placeholder) ─────────────────────
+    c.execute("SELECT count(*) FROM system_settings WHERE category='Tank_No' AND Site_ID IS NULL")
+    if c.fetchone()[0] == 0:
+        for tn in ["Tank 1", "Tank 2", "Tank 3"]:
+            c.execute(
+                "INSERT INTO system_settings (category, value) VALUES ('Tank_No', ?)",
+                (tn,)
             )
 
     # ── Self-Healing: Upgrade the Role CHECK constraint ───────────────────────
@@ -784,19 +798,121 @@ def _build_stock_views(c: sqlite3.Cursor) -> None:
 # ---------------------------------------------------------------------------
 # QUERY HELPERS
 # ---------------------------------------------------------------------------
-def get_work_types(conn: sqlite3.Connection = None) -> list[str]:
-    """Return list of Work_Type dropdown values from system_settings."""
+def get_work_types(conn: sqlite3.Connection = None, site_id: str = None) -> list[str]:
+    """Return Work_Type dropdown values.
+
+    If site_id given, returns site-specific values; falls back to global
+    (Site_ID IS NULL) when the site has none yet.
+    """
     _owns_conn = conn is None
     if _owns_conn:
         conn = get_connection()
 
-    result = pd.read_sql(
-        "SELECT value FROM system_settings WHERE category='Work_Type'", conn
-    )["value"].tolist()
+    try:
+        if site_id:
+            rows = pd.read_sql(
+                "SELECT value FROM system_settings WHERE category='Work_Type' AND Site_ID=?",
+                conn, params=(site_id,)
+            )["value"].tolist()
+            if not rows:
+                rows = pd.read_sql(
+                    "SELECT value FROM system_settings WHERE category='Work_Type' AND Site_ID IS NULL",
+                    conn
+                )["value"].tolist()
+        else:
+            rows = pd.read_sql(
+                "SELECT value FROM system_settings WHERE category='Work_Type' AND Site_ID IS NULL",
+                conn
+            )["value"].tolist()
+    finally:
+        if _owns_conn:
+            conn.close()
+    return rows
 
+
+def get_tank_nos(conn: sqlite3.Connection = None, site_id: str = None) -> list[str]:
+    """Return Tank_No dropdown values for a site (falls back to global)."""
+    _owns_conn = conn is None
     if _owns_conn:
-        conn.close()
-    return result
+        conn = get_connection()
+
+    try:
+        if site_id:
+            rows = pd.read_sql(
+                "SELECT value FROM system_settings WHERE category='Tank_No' AND Site_ID=?",
+                conn, params=(site_id,)
+            )["value"].tolist()
+            if not rows:
+                rows = pd.read_sql(
+                    "SELECT value FROM system_settings WHERE category='Tank_No' AND Site_ID IS NULL",
+                    conn
+                )["value"].tolist()
+        else:
+            rows = pd.read_sql(
+                "SELECT value FROM system_settings WHERE category='Tank_No' AND Site_ID IS NULL",
+                conn
+            )["value"].tolist()
+    finally:
+        if _owns_conn:
+            conn.close()
+    return rows
+
+
+def add_site_dropdown_value(
+    category: str, value: str, site_id: str = None,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Add a value to a site-scoped (or global) dropdown category."""
+    value = value.strip()
+    if not value:
+        return False, "Value cannot be empty."
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        existing = pd.read_sql(
+            "SELECT value FROM system_settings WHERE category=? AND value=? AND "
+            + ("Site_ID=?" if site_id else "Site_ID IS NULL"),
+            conn,
+            params=(category, value, site_id) if site_id else (category, value),
+        )["value"].tolist()
+        if existing:
+            return False, f"'{value}' already exists."
+        conn.execute(
+            "INSERT INTO system_settings (category, value, Site_ID) VALUES (?,?,?)",
+            (category, value, site_id),
+        )
+        conn.commit()
+        return True, f"Added '{value}'."
+    finally:
+        if _owns:
+            conn.close()
+
+
+def delete_site_dropdown_value(
+    category: str, value: str, site_id: str = None,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Delete a value from a site-scoped (or global) dropdown category."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        if site_id:
+            conn.execute(
+                "DELETE FROM system_settings WHERE category=? AND value=? AND Site_ID=?",
+                (category, value, site_id),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM system_settings WHERE category=? AND value=? AND Site_ID IS NULL",
+                (category, value),
+            )
+        conn.commit()
+        return True, f"Deleted '{value}'."
+    finally:
+        if _owns:
+            conn.close()
 
 
 def get_table_sum(
@@ -3067,7 +3183,9 @@ def report_daily_consumption(
             "       i.Equipment_Description AS Material, "
             "       c.Quantity, i.UOM, "
             "       COALESCE(c.Work_Type,'') AS Work_Type, "
+            "       COALESCE(c.Tank_No,'') AS Tank_No, "
             "       COALESCE(c.Issued_By,'') AS Submitted_By, "
+            "       COALESCE(c.Remarks,'') AS Remarks, "
             "       COALESCE(c.Site_ID,'HQ') AS Site "
             "FROM consumption c LEFT JOIN inventory i ON c.SAP_Code = i.SAP_Code "
             "WHERE c.Date BETWEEN ? AND ?"
@@ -3118,6 +3236,7 @@ def report_daily_receipts(
             "       COALESCE(r.PR_Number,'') AS PR_Number, "
             "       COALESCE(r.Lot_Number,'') AS Lot_Number, "
             "       COALESCE(r.Expiry_Date,'') AS Expiry_Date, "
+            "       COALESCE(r.Remarks,'') AS Remarks, "
             "       COALESCE(r.Site_ID,'HQ') AS Site, "
             "       COALESCE(i.Unit_Cost, 0) AS Unit_Cost "
             "FROM receipts r LEFT JOIN inventory i ON r.SAP_Code = i.SAP_Code "
