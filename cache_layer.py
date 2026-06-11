@@ -36,6 +36,7 @@ import streamlit as st
 
 from database import (
     get_work_types,
+    get_tank_nos,
     load_live_inventory,
     get_low_stock_items,
     get_burn_rate_and_forecast,
@@ -120,9 +121,15 @@ def cached_burn_rate_and_forecast(
 # SETTINGS / DROPDOWN READS — long TTL (admin-managed, rarely edited)
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=600, show_spinner=False)
-def cached_work_types() -> list[str]:
+def cached_work_types(site_id: Optional[str] = None) -> list[str]:
     """Cached wrapper for database.get_work_types. TTL 10min."""
-    return get_work_types(conn=None)
+    return get_work_types(conn=None, site_id=site_id)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_tank_nos(site_id: Optional[str] = None) -> list[str]:
+    """Cached wrapper for database.get_tank_nos. TTL 10min."""
+    return get_tank_nos(conn=None, site_id=site_id)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -179,9 +186,10 @@ def bust_inventory_cache() -> None:
 def bust_settings_cache() -> None:
     """
     Clears dropdown caches sourced from system_settings.
-    Call after an admin edits Work_Type or Site values.
+    Call after an admin/HOD edits Work_Type, Tank_No, or Site values.
     """
     cached_work_types.clear()
+    cached_tank_nos.clear()
     cached_sites.clear()
 
 

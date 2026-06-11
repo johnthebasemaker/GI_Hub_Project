@@ -70,7 +70,7 @@ DEFAULT_SITE     = "HQ"   # Site assigned to all legacy rows on schema upgrade
 # ---------------------------------------------------------------------------
 SYSTEM_COLS         = {"id", "Timestamp", "created_at", "Site_ID", "status"}
 EXTENDED_ISSUE_COLS = ["Date", "Issued_By", "Issued_To", "Tank_No", "Serial_No", "PR_Number"]
-OPTIONAL_ISSUE_COLS = {"Remarks", "Serial_No", "PR_Number"}
+OPTIONAL_ISSUE_COLS = {"Remarks", "Serial_No", "PR_Number", "Tank_No"}
 
 # ---------------------------------------------------------------------------
 # CHART SETTINGS

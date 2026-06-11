@@ -424,6 +424,13 @@ def _render_generate_tab(user: dict) -> None:
             "Format", ["PDF", "Excel", "CSV"], key="_rep_fmt",
         )
 
+    include_sar = st.checkbox(
+        "Include SAR / cost columns",
+        value=True,
+        key="_rep_include_sar",
+        help="Uncheck to produce a report without SAR values and unit-cost columns.",
+    )
+
     # Run + preview
     if st.button("▶ Generate Report", type="primary", key="_rep_run"):
         if date_from > date_to:
@@ -437,6 +444,7 @@ def _render_generate_tab(user: dict) -> None:
                 "df": df, "summary": summary, "type": rt[0],
                 "fmt": fmt, "from": date_from, "to": date_to,
                 "site_label": site_label,
+                "include_sar": include_sar,
             }
             st.toast("✅ Report ready — preview below", icon="📊")
             st.rerun()
@@ -495,10 +503,21 @@ def _render_generate_tab(user: dict) -> None:
 
     # Download + email + WhatsApp + archive row
     st.divider()
+
+    # Apply SAR/cost column filter when user opted out
+    _df_for_export = df_preview
+    if not result.get("include_sar", True) and _df_for_export is not None and not _df_for_export.empty:
+        _sar_cols = [
+            c for c in _df_for_export.columns
+            if any(tok in c.upper() for tok in ("SAR", "COST", "VALUE_SAR", "UNIT_COST"))
+        ]
+        if _sar_cols:
+            _df_for_export = _df_for_export.drop(columns=_sar_cols)
+
     payload, mime, fname = _encode_report(
         report_type=result["type"],
         fmt=result["fmt"],
-        df=df_preview,
+        df=_df_for_export,
         summary=summary,
         site_label=str(result["site_label"]),
         date_from=result["from"],

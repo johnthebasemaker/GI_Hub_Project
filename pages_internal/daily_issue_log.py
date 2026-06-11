@@ -23,6 +23,7 @@ from database import (
 )
 from cache_layer import (
     cached_work_types,
+    cached_tank_nos,
     cached_short_dated_stock,
     cached_item_snapshot,
     cached_fefo_lots,
@@ -50,7 +51,8 @@ def page_daily_issue_log(user: dict) -> None:
     st.title("📝 Entry Log")
 
     site_id    = user.get("site_id", "HQ")
-    work_types = cached_work_types()
+    work_types = cached_work_types(site_id=site_id)
+    tank_nos   = cached_tank_nos(site_id=site_id)
 
     # Shared inventory list used by the Issue and Receipt tabs
     conn = get_connection()
@@ -277,6 +279,14 @@ def page_daily_issue_log(user: dict) -> None:
                         _wt_idx = work_types.index(_wt_default) if _wt_default in work_types else 0
                         input_data[col_name] = st.selectbox(
                             f"{col_name}*", work_types, index=_wt_idx,
+                        )
+                    elif col_name == "Tank_No" and tank_nos:
+                        _tn_default = _defaults.get("Tank_No", "")
+                        _tn_opts = [""] + tank_nos
+                        _tn_idx = _tn_opts.index(_tn_default) if _tn_default in _tn_opts else 0
+                        input_data[col_name] = st.selectbox(
+                            "Tank_No (Optional)", _tn_opts, index=_tn_idx,
+                            key="tank_no_select",
                         )
                     elif col_name in OPTIONAL_ISSUE_COLS:
                         input_data[col_name] = st.text_input(

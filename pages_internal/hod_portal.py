@@ -44,15 +44,21 @@ from database import (
     hod_approve_pending_issue,
     hod_reject_pending_issue,
     hod_approve_all_pending_issues,
+    get_work_types,
+    get_tank_nos,
+    add_site_dropdown_value,
+    delete_site_dropdown_value,
 )
 from cache_layer import (
     cached_work_types,
+    cached_tank_nos,
     cached_sites,
     cached_live_inventory,
     cached_low_stock_items,
     cached_short_dated_stock,
     cached_burn_rate_and_forecast,
     bust_inventory_cache,
+    bust_settings_cache,
 )
 from ui_components import (
     render_brand_header_hod,
@@ -1871,6 +1877,92 @@ def _render_my_requests_tab(user: dict, site_id: str) -> None:
 
 
 # ===========================================================================
+# SITE CONFIG TAB — per-site Work Type and Tank No management
+# ===========================================================================
+def _render_site_config_tab(user: dict, site_id: str) -> None:
+    st.markdown(
+        f'<p style="color:{TEXT_MUTED};font-size:12.5px;margin:0 0 14px 0;">'
+        f'Manage dropdown values that appear in the Entry Log for <b style="color:{BRAND_GOLD};">'
+        f'{html.escape(site_id)}</b>. These override the global defaults for your site.</p>',
+        unsafe_allow_html=True,
+    )
+
+    for category, label, icon in [
+        ("Work_Type", "Work Types", "🔧"),
+        ("Tank_No",   "Tank Numbers", "🛢️"),
+    ]:
+        st.markdown(
+            f'<div style="color:{TEXT_MUTED};font-size:11px;font-weight:700;'
+            f'text-transform:uppercase;letter-spacing:0.08em;margin:16px 0 8px 0;">'
+            f'{icon} {label}</div>',
+            unsafe_allow_html=True,
+        )
+        # Load site-specific values only (not global fallback) for management
+        conn_cfg = get_connection()
+        try:
+            import pandas as _pd
+            site_vals = _pd.read_sql(
+                "SELECT rowid, value FROM system_settings WHERE category=? AND Site_ID=? ORDER BY value",
+                conn_cfg, params=(category, site_id)
+            )
+        finally:
+            conn_cfg.close()
+
+        if site_vals.empty:
+            global_vals = (
+                cached_work_types() if category == "Work_Type" else cached_tank_nos()
+            )
+            st.caption(
+                f"No site-specific values set — entry form uses global defaults: "
+                f"{', '.join(global_vals) or '(none)'}. Add values below to override."
+            )
+        else:
+            for _, row in site_vals.iterrows():
+                c1, c2 = st.columns([5, 1])
+                with c1:
+                    st.markdown(
+                        f'<div style="padding:6px 10px;background:rgba(26,40,56,0.6);'
+                        f'border:1px solid rgba(42,64,96,0.5);border-radius:6px;'
+                        f'color:#F0F4F8;font-size:13px;">{html.escape(str(row["value"]))}</div>',
+                        unsafe_allow_html=True,
+                    )
+                with c2:
+                    if st.button("🗑️", key=f"_del_{category}_{row['rowid']}",
+                                 use_container_width=True, help="Delete this value"):
+                        ok, msg = delete_site_dropdown_value(category, row["value"], site_id=site_id)
+                        if ok:
+                            bust_settings_cache()
+                            log_audit_action(user["username"], f"DELETE_{category}",
+                                             "system_settings",
+                                             f"site={site_id} value={row['value']!r}")
+                            st.toast(msg, icon="🗑️")
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
+        with st.form(key=f"_add_{category}_form"):
+            new_val = st.text_input(
+                f"Add new {label[:-1]}",
+                placeholder=f"e.g. {'Maintenance' if category == 'Work_Type' else 'Tank 4'}",
+                key=f"_new_{category}_input",
+            )
+            if st.form_submit_button(f"➕ Add {label[:-1]}", type="primary"):
+                if not new_val.strip():
+                    st.error("Please enter a value.")
+                else:
+                    ok, msg = add_site_dropdown_value(category, new_val, site_id=site_id)
+                    if ok:
+                        bust_settings_cache()
+                        log_audit_action(user["username"], f"ADD_{category}",
+                                         "system_settings",
+                                         f"site={site_id} value={new_val!r}")
+                        st.toast(msg, icon="✅")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+
+# ===========================================================================
 # PAGE  — top-level routing
 # ===========================================================================
 def page_hod_portal(user: dict) -> None:
@@ -1939,7 +2031,7 @@ def page_hod_portal(user: dict) -> None:
         "📤 EOD Commit", "🌐 Cross-Site", "📈 Burn Rate",
         "📬 Pending Receipts", "🧮 Adjustments", "📋 Purchase Requests",
         "📥 Receive Material", "⚠️ Shelf-Life", "🔔 Notifications",
-        "✅ My Requests",
+        "✅ My Requests", "⚙️ Site Config",
     ]
     tabs = st.tabs(tab_labels)
     with tabs[0]: _render_eod_tab(user, site_id)
@@ -1952,3 +2044,4 @@ def page_hod_portal(user: dict) -> None:
     with tabs[7]: _render_shelflife_tab(user, site_id)
     with tabs[8]: _render_notifications_tab(user, site_id)
     with tabs[9]: _render_my_requests_tab(user, site_id)
+    with tabs[10]: _render_site_config_tab(user, site_id)
