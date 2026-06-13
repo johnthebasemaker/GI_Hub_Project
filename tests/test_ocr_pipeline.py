@@ -113,6 +113,12 @@ def mock_vision(monkeypatch):
 
     monkeypatch.setattr(ocr, "OLLAMA_AVAILABLE", True)
     monkeypatch.setattr(ocr, "ollama_vision_generate", fake_vision)
+    # Pretend the configured vision model is installed so the preflight
+    # check passes (the real Ollama may not have qwen2.5vl:7b pulled).
+    monkeypatch.setattr(
+        ocr, "list_ollama_models",
+        lambda: [ocr.MODEL_VISION],
+    )
     return canned
 
 

@@ -19,6 +19,7 @@
 10. [Data Model & Concept Reference](#10-data-model--concept-reference)
 11. [Status Codes, Reason Codes & Glossary](#11-status-codes-reason-codes--glossary)
 12. [FAQ — Master Index by Role](#12-faq--master-index-by-role)
+13. [2026-06 Feature Update — What Changed](#13-2026-06-feature-update--what-changed)
 
 ---
 
@@ -1980,6 +1981,134 @@ A: Hard-refresh (Cmd+Shift+R / Ctrl+F5). If it persists, check with Admin — th
 ## 12.4 HOD — see §6.14
 
 ## 12.5 Admin — see §7.13
+
+---
+
+# 13. 2026-06 Feature Update — What Changed
+
+This section documents the upgrades shipped in the 2026-06 release. Everything above remains accurate except where this section overrides it.
+
+## 13.1 Field-level changes
+
+| Change | Where | Behaviour |
+|---|---|---|
+| **All form fields mandatory** | Entry Log (Consumption / Receipt Staging), HOD Receive Material, Admin Add Entry forms | Every text/number/select input is required. Validation lists missing fields on submit. |
+| **Expiry Date is optional** | SK Receipt Staging, HOD Receive Material | Marked `(Optional)`. Leave blank for non-perishable items. |
+| **Remarks, Tank No., Serial No., PR Number** | Same forms | No longer optional. |
+
+## 13.2 Live Dashboard column order
+
+The Live Dashboard table now renders in this order (when columns exist):
+
+`SAP_Code → Material_Code → Equipment_Description → UOM → Opening_Stock → Receipt → Consumption → Return → Closing_Stock → Minimum_Qty → Unit_Cost → Stock_Value → Category → Status`
+
+- **Opening_Stock** is now a configurable column on `inventory`. Default 0; admin can edit in DB Editor.
+- **Identity formula** updated to `Closing_Stock = Opening_Stock + Total_Received − Total_Consumed − Total_Returned`.
+- `Material_Code` now appears after `SAP_Code` in **every** report (Daily Consumption, Daily Receipts, Monthly Summary, PR Status, etc.) and in the HOD Pending Receipts approval list.
+
+## 13.3 Entry Log access — Store Keeper only
+
+The Entry Log page is now visible **only to the `store_keeper` role**. HODs review submissions in HOD Portal; Admins use Admin Portal. The page is hidden in the sidebar for other roles.
+
+## 13.4 EOD Commit — checkbox confirmation
+
+The "Confirm EOD Commit" dialog no longer requires typing `COMMIT`. Tick the confirmation checkbox and click **Confirm Commit**. Cancel still drops all pending state.
+
+## 13.5 Material Category
+
+Every inventory item now carries a **Category**. Categories: `Consumable`, `Equipments`, `Utilities`, `Maintenance`, `Others` (default), `Rubber materials`, `Tools`, `QC items`.
+
+- Admin Portal **Add New Entry** → renders Category as a selectbox.
+- Reports page → **Filter by Category** dropdown alongside the SAR / cost-columns toggle. "All Categories" disables the filter.
+
+## 13.6 Rubber MTC workflow
+
+When a Store Keeper stages a receipt and the selected material's category is **Rubber materials**, the system shows:
+
+- **MTC Number** text field (e.g. `MTC-2026-001234`)
+- **MTC Document** file uploader (PDF / JPEG / JPG / XLSX)
+
+Either field can be blank — the receipt still goes through. What changes is HOD-side visibility:
+
+- **HOD Portal → Pending Receipts**: a red banner lists rubber items received without an MTC.
+- Click **✉️ Draft Logistics Email** to open a pre-filled email to the logistics team listing SAP, description, lot, qty.
+- Sending (or clicking "Mark all as sent") flips the rubber rows to `sent_to_logistics`.
+
+The logistics email recipient defaults to `LOGISTICS_EMAIL` env var (`logistics@generalindustries.net` if unset). On Windows it opens Outlook; on macOS it opens Mail.app; on Linux it opens the default mailto handler.
+
+## 13.7 Document attachments — Entry Log + HOD DOC tab
+
+Store Keepers can attach reference documents (PDF / JPEG / JPG / XLSX) on:
+
+| SK form | Doc number used | Notes |
+|---|---|---|
+| **Consumption Log** | Auto = `DDMMYY` of the date | Pick scope: "Whole entry (batch)" or "Specific date". |
+| **Receipt Staging** | DN No. of the row (or manual override) | Falls back to `DN-DDMMYY` if no DN_No found. |
+
+Files are stored **as BLOBs inside the database** (authoritative copy) and **mirrored to `uploads/<Site_ID>/<doc_type>/<doc_number>/`** for local browsing. The disk mirror is gitignored; only the DB BLOB is portable.
+
+**HOD Portal → 📎 DOC** is a new tab with three sub-tabs: **📋 Consumption / 📥 Receipt / ↩️ Return**. Each shows period (From/To dates) and Doc Number text filters, with a per-file ⬇️ download button.
+
+The **↩️ Return** sub-tab pulls from the new Return Items workflow (see §13.10), not from Returnable Items.
+
+## 13.8 QR Label approval flow
+
+The Admin DB Editor's QR generator (single-user, single-item) is unchanged. The new flow is two-step:
+
+1. **Store Keeper → Entry Log → 🏷️ QR Label Request** (new tab)
+   - Multi-select materials in one form.
+   - Per-item label quantity.
+   - Click **📨 Submit Batch for HOD Approval**.
+
+2. **HOD Portal → 🏷️ QR Approval** (new tab)
+   - **⏳ Pending** sub-tab: select rows via checkbox, then **✓ Approve Selected** or **✗ Reject Selected**.
+   - **✅ Approved** sub-tab: **📥 Download QR Labels PDF for ALL approved** generates one consolidated PDF.
+
+## 13.9 Returnable Items — clarification
+
+The **🔄 Returnable Items** tab is for **temporary tool loans only** (e.g. issuing a torque wrench to a worker who'll return it before EOD). It is *not* a way to return stock to the warehouse. No DN No., no document attachment.
+
+For real returns (defective material going back to logistics), use the new Return Items tab — see §13.10.
+
+## 13.10 Return Items workflow (NEW)
+
+The new **↩️ Return Items** tab (between Receipt Staging and Returnable Items in the Entry Log) handles real returns to the warehouse / logistics.
+
+### Store Keeper flow
+
+1. The material picker is restricted to materials **received in the last 30 days** at the user's site.
+2. If multiple receipts exist for the same SAP code, the SK is asked which receipt is being returned (Date / DN No. / Received Qty).
+3. The system shows a locked summary of the original receipt: Date, DN No., PR, Lot, Received Qty.
+4. The SK enters:
+   - **Return Quantity** (capped at the original Received Qty)
+   - **Reason** (work-types dropdown)
+   - **Return DN No.**
+   - **Attachment** — mandatory: the Return DN + any photos
+5. To return material older than 30 days, tick **"Override 30-day window"** — the picker widens to 12 months and an Override Justification field appears. This routes to HOD as an explicit override request.
+6. Submit → request lands in HOD Portal **↩️ Returns** tab. A WhatsApp ping goes to the site HOD if a phone number is on file.
+
+### HOD flow
+
+1. **HOD Portal → ↩️ Returns** lists every pending return with a card per row.
+2. Rows that required an override are highlighted in red and show the SK's justification.
+3. **✓ Approve** → writes a row to the `returns` ledger (so `Current_Stock` reduces by the returned qty, the dashboard `Return` column ticks up, and the entry shows up in monthly / consumption reports). Then automatically opens the **logistics email draft** with item, qty, reason, and the original receipt's DN/PR/Lot context.
+4. **✗ Reject** → marks the request rejected. The SK sees this in their request history.
+
+### Dashboard / report impact
+
+- The **Return** column on the Live Dashboard reflects approved returns (since `returns` is the source of truth).
+- All existing reports (Daily Consumption, Daily Receipts, Monthly Summary, Audit) include returns via the same identity math.
+- The HOD DOC tab **↩️ Return** sub-tab lets the HOD browse all attached return documents.
+
+## 13.11 Per-site Work Type and Tank No.
+
+HOD Portal → **⚙️ Site Config** lets the site HOD add or delete Work Types and Tank Numbers scoped to their site. Empty per-site lists fall back to the global defaults.
+
+## 13.12 WhatsApp worker — startup fix
+
+The worker module no longer imports `pywhatkit` at module load (that pulled in heavy GUI deps and stalled local launch by tens of seconds). It now lazily imports `pywhatkit` only when an outbound message has no Twilio fallback. On Streamlit Cloud, Twilio handles delivery; on local desktop, `pywhatkit` is loaded the first time a message is queued.
+
+If you see the spinner sitting on `_start_whatsapp_worker()` for more than ~3 seconds locally, check that you ran `pip install -r requirements.txt` after the update.
 
 ---
 

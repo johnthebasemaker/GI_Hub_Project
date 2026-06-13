@@ -10,6 +10,7 @@ Identity vs. Math principle is preserved:
 """
 
 import sqlite3
+import os
 import pandas as pd
 import datetime
 import io
@@ -309,6 +310,14 @@ def init_db(conn: sqlite3.Connection = None) -> None:
             sent_at DATETIME
         )
     """)
+    # Self-heal: error_message + attempts so the admin console can show why a
+    # message landed in 'failed' and we can retry it without losing context.
+    c.execute("PRAGMA table_info(whatsapp_queue)")
+    _wq_cols = {row[1] for row in c.fetchall()}
+    if "error_message" not in _wq_cols:
+        c.execute("ALTER TABLE whatsapp_queue ADD COLUMN error_message TEXT")
+    if "attempts" not in _wq_cols:
+        c.execute("ALTER TABLE whatsapp_queue ADD COLUMN attempts INTEGER DEFAULT 0")
 
     # ── Self-Healing: Columns for PRs (Module 6) ───────────────────────
     c.execute("PRAGMA table_info(pr_master)")
@@ -545,9 +554,17 @@ def init_db(conn: sqlite3.Connection = None) -> None:
             c.execute(f"ALTER TABLE {_tbl} ADD COLUMN Expiry_Date TEXT")
 
     # ── Self-Healing: Logistics Columns for receipts (Module 6) ───────────────
+    # The full set the SK staging form / OCR / commit_pending_receipts can
+    # carry forward. Missing any of these caused process_receipt_delivery
+    # to silently fail (caught by its try/except) — dropping SK input.
     c.execute("PRAGMA table_info(receipts)")
     rec_cols = {row[1] for row in c.fetchall()}
-    for col in ["Supplier", "Expiry_Date", "PR_Number"]:
+    for col in [
+        "Supplier", "Expiry_Date", "PR_Number",
+        "Serial_No", "PR", "Location", "Vehicle_No", "Driver_Name",
+        "DN_No", "Pallet_No", "Mob_From", "Prepared_by", "Mob_To",
+        "Received_by", "DN_Copy",
+    ]:
         if col not in rec_cols:
             c.execute(f"ALTER TABLE receipts ADD COLUMN {col} TEXT")
 
@@ -629,6 +646,110 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         """)
         c.execute("DROP TABLE _users_old;")
         c.execute("PRAGMA foreign_keys=on;")
+
+    # ── Phase A: Category + Opening_Stock columns on inventory
+    c.execute("PRAGMA table_info(inventory)")
+    _inv_cols2 = {row[1] for row in c.fetchall()}
+    if "Category" not in _inv_cols2:
+        c.execute("ALTER TABLE inventory ADD COLUMN Category TEXT DEFAULT 'Others'")
+    if "Opening_Stock" not in _inv_cols2:
+        c.execute("ALTER TABLE inventory ADD COLUMN Opening_Stock REAL DEFAULT 0")
+
+    # ── Phase A: QR Approval Requests (SK submits, HOD approves)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS qr_approval_requests (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            Site_ID         TEXT    NOT NULL,
+            SAP_Code        TEXT    NOT NULL,
+            Material_Code   TEXT,
+            Equipment_Description TEXT,
+            Quantity        INTEGER DEFAULT 1,
+            requested_by    TEXT    NOT NULL,
+            requested_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            status          TEXT    DEFAULT 'pending'
+                            CHECK(status IN ('pending','approved','rejected')),
+            approved_by     TEXT,
+            approved_at     DATETIME,
+            rejection_reason TEXT
+        )
+    """)
+
+    # ── Phase A: Entry attachments (BLOB + uploads/ mirror path)
+    # Linked to a movement table row OR a date+site (per-date attachments).
+    # entry_table is one of: 'pending_issues','pending_receipts','returnable_items'.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS entry_attachments (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            Site_ID         TEXT    NOT NULL,
+            doc_type        TEXT    NOT NULL
+                            CHECK(doc_type IN ('consumption','receipt','return')),
+            doc_number      TEXT    NOT NULL,
+            entry_table     TEXT,
+            entry_id        INTEGER,
+            entry_date      TEXT,
+            file_name       TEXT    NOT NULL,
+            mime_type       TEXT,
+            file_size       INTEGER,
+            file_blob       BLOB,
+            disk_path       TEXT,
+            uploaded_by     TEXT    NOT NULL,
+            uploaded_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # ── Phase B (2026-06 round 2): pending_returns — SK stages return,
+    # HOD approves → commits to `returns` table (which drives Closing_Stock
+    # and the dashboard Return column).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS pending_returns (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            Site_ID         TEXT    NOT NULL,
+            SAP_Code        TEXT    NOT NULL,
+            Material_Code   TEXT,
+            Equipment_Description TEXT,
+            Quantity        REAL    NOT NULL,
+            Return_Reason   TEXT    NOT NULL,
+            Return_DN_No    TEXT    NOT NULL,
+            received_date   TEXT,
+            received_dn_no  TEXT,
+            received_qty    REAL,
+            PR_Number       TEXT,
+            Lot_Number      TEXT,
+            override_required INTEGER DEFAULT 0,
+            override_reason  TEXT,
+            status          TEXT    DEFAULT 'pending_hod'
+                            CHECK(status IN ('pending_hod','approved','rejected')),
+            submitted_by    TEXT    NOT NULL,
+            submitted_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            approved_by     TEXT,
+            approved_at     DATETIME,
+            rejection_reason TEXT
+        )
+    """)
+
+    # ── Phase A: MTC documents for rubber materials
+    # Captured at SK submit time. file_blob optional (logistics flow when missing).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS mtc_documents (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            Site_ID         TEXT    NOT NULL,
+            SAP_Code        TEXT    NOT NULL,
+            Material_Code   TEXT,
+            Lot_Number      TEXT,
+            Quantity        REAL,
+            mtc_number      TEXT,
+            file_name       TEXT,
+            mime_type       TEXT,
+            file_blob       BLOB,
+            disk_path       TEXT,
+            status          TEXT    DEFAULT 'attached'
+                            CHECK(status IN ('attached','missing','sent_to_logistics')),
+            pending_receipt_id INTEGER,
+            submitted_by    TEXT    NOT NULL,
+            submitted_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            logistics_emailed_at DATETIME
+        )
+    """)
 
     # ── Read-only Stock Views (Phase 3 — AI NL search backbone) ───────────────
     # These views encapsulate the EXACT Identity formula used by
@@ -947,6 +1068,443 @@ def delete_site_dropdown_value(
             conn.close()
 
 
+# ---------------------------------------------------------------------------
+# File-storage helpers — DB BLOB + uploads/ disk mirror (2026-06)
+# ---------------------------------------------------------------------------
+UPLOADS_ROOT = "uploads"
+
+
+def _safe_path(*parts: str) -> str:
+    """Build an attachments path, sanitising each component (drop ../ etc)."""
+    import re
+    cleaned = []
+    for p in parts:
+        s = re.sub(r"[^A-Za-z0-9_.\-]", "_", str(p))
+        cleaned.append(s or "_")
+    return os.path.join(UPLOADS_ROOT, *cleaned)
+
+
+def _store_blob_and_disk(
+    site_id: str, doc_type: str, doc_number: str, file_obj
+) -> tuple[bytes, str, str, str, int]:
+    """
+    Read a Streamlit UploadedFile / file-like object, persist a disk mirror
+    under uploads/<Site>/<doc_type>/<doc_number>/<name>, and return:
+      (blob_bytes, file_name, mime_type, disk_path, size_bytes).
+    Returns (b"", "", "", "", 0) if file_obj is falsy.
+    """
+    if not file_obj:
+        return b"", "", "", "", 0
+    import os as _os
+    file_name = getattr(file_obj, "name", "upload.bin")
+    mime_type = getattr(file_obj, "type", "") or ""
+    blob = file_obj.read() if hasattr(file_obj, "read") else bytes(file_obj)
+    # Reset stream pointer so the caller can re-read if needed.
+    try:
+        file_obj.seek(0)
+    except Exception:
+        pass
+    folder = _safe_path(site_id or "HQ", doc_type or "misc", doc_number or "unnumbered")
+    _os.makedirs(folder, exist_ok=True)
+    disk_path = _os.path.join(folder, file_name)
+    try:
+        with open(disk_path, "wb") as fh:
+            fh.write(blob)
+    except OSError:
+        disk_path = ""  # Cloud filesystem may be read-only; BLOB still saves.
+    return blob, file_name, mime_type, disk_path, len(blob)
+
+
+def save_entry_attachment(
+    site_id: str,
+    doc_type: str,             # 'consumption' | 'receipt' | 'return'
+    doc_number: str,
+    file_obj,
+    uploaded_by: str,
+    entry_table: str = None,
+    entry_id: int = None,
+    entry_date: str = None,
+    conn: sqlite3.Connection = None,
+) -> int | None:
+    """Persist a single attachment (BLOB + disk mirror). Returns inserted row id."""
+    if not file_obj:
+        return None
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        blob, fname, mime, disk_path, sz = _store_blob_and_disk(
+            site_id, doc_type, doc_number, file_obj,
+        )
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO entry_attachments "
+            "(Site_ID, doc_type, doc_number, entry_table, entry_id, entry_date, "
+            " file_name, mime_type, file_size, file_blob, disk_path, uploaded_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (site_id, doc_type, doc_number, entry_table, entry_id, entry_date,
+             fname, mime, sz, blob, disk_path, uploaded_by),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        if _owns:
+            conn.close()
+
+
+def save_mtc_document(
+    site_id: str,
+    sap_code: str,
+    material_code: str,
+    lot_number: str,
+    quantity: float,
+    mtc_number: str,
+    uploaded_file,
+    pending_receipt_id: int,
+    submitted_by: str,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """
+    Record an MTC document for a rubber-category receipt.
+    status = 'attached' when a file is given, else 'missing' (HOD-actionable).
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        if uploaded_file:
+            blob, fname, mime, disk_path, _ = _store_blob_and_disk(
+                site_id, "mtc", mtc_number or f"PRCT-{pending_receipt_id}", uploaded_file,
+            )
+            status = "attached"
+        else:
+            blob, fname, mime, disk_path, status = b"", "", "", "", "missing"
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO mtc_documents "
+            "(Site_ID, SAP_Code, Material_Code, Lot_Number, Quantity, mtc_number, "
+            " file_name, mime_type, file_blob, disk_path, status, "
+            " pending_receipt_id, submitted_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (site_id, sap_code, material_code, lot_number or "", quantity,
+             (mtc_number or "").strip(), fname, mime, blob, disk_path,
+             status, pending_receipt_id, submitted_by),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_missing_mtc_for_site(
+    site_id: str, conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Rubber items the SK pushed without an MTC — used by HOD warning + logistics email."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        df = pd.read_sql(
+            "SELECT m.id, m.SAP_Code, m.Material_Code, m.Lot_Number, m.Quantity, "
+            "       m.submitted_by, m.submitted_at, i.Equipment_Description "
+            "FROM mtc_documents m "
+            "LEFT JOIN inventory i ON m.SAP_Code = i.SAP_Code "
+            "WHERE m.Site_ID = ? AND m.status = 'missing' "
+            "ORDER BY m.submitted_at DESC",
+            conn, params=(site_id,),
+        )
+        return df
+    finally:
+        if _owns:
+            conn.close()
+
+
+def mark_mtc_emailed(mtc_ids: list[int], conn: sqlite3.Connection = None) -> int:
+    if not mtc_ids:
+        return 0
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        ph = ",".join(["?"] * len(mtc_ids))
+        cur = conn.cursor()
+        cur.execute(
+            f"UPDATE mtc_documents SET status='sent_to_logistics', "
+            f"logistics_emailed_at = CURRENT_TIMESTAMP WHERE id IN ({ph})",
+            tuple(mtc_ids),
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# QR approval workflow (2026-06)
+# ---------------------------------------------------------------------------
+def submit_qr_request(
+    site_id: str, sap_code: str, requested_by: str,
+    quantity: int = 1, conn: sqlite3.Connection = None,
+) -> int:
+    """SK submits a QR-label request. HOD approves later."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        meta = pd.read_sql(
+            "SELECT COALESCE(Material_Code,'') AS Material_Code, "
+            "       COALESCE(Equipment_Description,'') AS Equipment_Description "
+            "FROM inventory WHERE SAP_Code = ?",
+            conn, params=(sap_code,),
+        )
+        mat_code, eq_desc = ("", "")
+        if not meta.empty:
+            mat_code = str(meta.iloc[0]["Material_Code"])
+            eq_desc  = str(meta.iloc[0]["Equipment_Description"])
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO qr_approval_requests "
+            "(Site_ID, SAP_Code, Material_Code, Equipment_Description, "
+            " Quantity, requested_by) VALUES (?,?,?,?,?,?)",
+            (site_id, sap_code, mat_code, eq_desc, max(1, int(quantity)), requested_by),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_qr_requests(
+    site_id: str = None, status: str = None,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = "SELECT * FROM qr_approval_requests WHERE 1=1"
+        params: list = []
+        if site_id:
+            q += " AND Site_ID = ?"
+            params.append(site_id)
+        if status:
+            q += " AND status = ?"
+            params.append(status)
+        q += " ORDER BY requested_at DESC"
+        return pd.read_sql(q, conn, params=tuple(params))
+    finally:
+        if _owns:
+            conn.close()
+
+
+def approve_qr_request(
+    request_id: int, approver: str, conn: sqlite3.Connection = None,
+) -> bool:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE qr_approval_requests SET status='approved', "
+            "approved_by=?, approved_at=CURRENT_TIMESTAMP "
+            "WHERE id = ? AND status = 'pending'",
+            (approver, request_id),
+        )
+        conn.commit()
+        return True
+    finally:
+        if _owns:
+            conn.close()
+
+
+def reject_qr_request(
+    request_id: int, approver: str, reason: str = "",
+    conn: sqlite3.Connection = None,
+) -> bool:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE qr_approval_requests SET status='rejected', "
+            "approved_by=?, approved_at=CURRENT_TIMESTAMP, rejection_reason=? "
+            "WHERE id = ? AND status = 'pending'",
+            (approver, reason or "", request_id),
+        )
+        conn.commit()
+        return True
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Returns workflow (SK → HOD → commits to `returns` ledger)
+# ---------------------------------------------------------------------------
+def get_returnable_receipts(
+    site_id: str, days_back: int = 30,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """
+    Receipts from the last N days that the SK is allowed to return without
+    HOD override. Used to populate the material picker in the Returns tab.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        df = pd.read_sql(
+            "SELECT r.rowid AS receipt_id, r.Date, r.SAP_Code, "
+            "       COALESCE(i.Material_Code,'') AS Material_Code, "
+            "       i.Equipment_Description, i.UOM, "
+            "       r.Quantity AS received_qty, "
+            "       COALESCE(r.DN_No,'') AS DN_No, "
+            "       COALESCE(r.PR_Number,'') AS PR_Number, "
+            "       COALESCE(r.Lot_Number,'') AS Lot_Number "
+            "FROM receipts r LEFT JOIN inventory i ON r.SAP_Code = i.SAP_Code "
+            "WHERE COALESCE(r.Site_ID,'HQ') = ? "
+            "  AND DATE(r.Date) >= DATE('now', ?) "
+            "ORDER BY r.Date DESC",
+            conn, params=(site_id, f"-{int(days_back)} days"),
+        )
+        return df
+    finally:
+        if _owns:
+            conn.close()
+
+
+def submit_return_request(
+    site_id: str,
+    sap_code: str,
+    quantity: float,
+    return_reason: str,
+    return_dn_no: str,
+    received_receipt_row: dict,
+    submitted_by: str,
+    override_required: bool = False,
+    override_reason: str = "",
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Stage a return for HOD approval. Returns inserted row id."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO pending_returns "
+            "(Site_ID, SAP_Code, Material_Code, Equipment_Description, "
+            " Quantity, Return_Reason, Return_DN_No, "
+            " received_date, received_dn_no, received_qty, "
+            " PR_Number, Lot_Number, override_required, override_reason, "
+            " submitted_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                site_id, sap_code,
+                received_receipt_row.get("Material_Code", ""),
+                received_receipt_row.get("Equipment_Description", ""),
+                float(quantity),
+                (return_reason or "").strip(),
+                (return_dn_no or "").strip(),
+                received_receipt_row.get("Date"),
+                received_receipt_row.get("DN_No", ""),
+                float(received_receipt_row.get("received_qty", 0) or 0),
+                received_receipt_row.get("PR_Number", ""),
+                received_receipt_row.get("Lot_Number", ""),
+                1 if override_required else 0,
+                (override_reason or "").strip(),
+                submitted_by,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_pending_returns(
+    site_id: str = None, conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = "SELECT * FROM pending_returns WHERE status='pending_hod'"
+        params: list = []
+        if site_id:
+            q += " AND Site_ID = ?"
+            params.append(site_id)
+        q += " ORDER BY submitted_at ASC"
+        return pd.read_sql(q, conn, params=tuple(params))
+    finally:
+        if _owns:
+            conn.close()
+
+
+def approve_return_request(
+    request_id: int, approver: str, conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """
+    Approve a pending return → write a row into `returns` (which reduces
+    Current_Stock via the standard identity). Idempotent on status.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = pd.read_sql(
+            "SELECT * FROM pending_returns WHERE id = ?", conn, params=(request_id,),
+        )
+        if row.empty:
+            return False, "Return request not found."
+        r = row.iloc[0]
+        if r["status"] != "pending_hod":
+            return False, f"Already {r['status']}."
+        # Insert into returns ledger.
+        conn.execute(
+            "INSERT INTO returns (Date, SAP_Code, Quantity, Reason, Remarks, Site_ID) "
+            "VALUES (DATE('now'), ?, ?, ?, ?, ?)",
+            (r["SAP_Code"], float(r["Quantity"]), r["Return_Reason"],
+             f"Return DN: {r['Return_DN_No']} · approved by {approver}",
+             r["Site_ID"]),
+        )
+        conn.execute(
+            "UPDATE pending_returns SET status='approved', "
+            "approved_by=?, approved_at=CURRENT_TIMESTAMP WHERE id=?",
+            (approver, request_id),
+        )
+        conn.commit()
+        return True, "Approved."
+    finally:
+        if _owns:
+            conn.close()
+
+
+def reject_return_request(
+    request_id: int, approver: str, reason: str = "",
+    conn: sqlite3.Connection = None,
+) -> bool:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE pending_returns SET status='rejected', "
+            "approved_by=?, approved_at=CURRENT_TIMESTAMP, "
+            "rejection_reason=? WHERE id=? AND status='pending_hod'",
+            (approver, reason or "", request_id),
+        )
+        conn.commit()
+        return True
+    finally:
+        if _owns:
+            conn.close()
+
+
 def get_table_sum(
     conn: sqlite3.Connection, table_name: str, sum_col_name: str
 ) -> pd.DataFrame:
@@ -1000,7 +1558,9 @@ def load_live_inventory(
         # FIX: The Material Catalog is global (SAP_Code is Primary Key).
         # We load all items, but the math below will remain site-specific.
         inv_df = pd.read_sql(
-            "SELECT SAP_Code, Material_Code, Equipment_Description, UOM, Minimum_Qty "
+            "SELECT SAP_Code, Material_Code, Equipment_Description, UOM, "
+            "Minimum_Qty, COALESCE(Opening_Stock,0) AS Opening_Stock, "
+            "COALESCE(Category,'Others') AS Category "
             "FROM inventory",
             conn,
         )
@@ -1010,6 +1570,8 @@ def load_live_inventory(
         )
         inv_df["Material_Code"] = ""
         inv_df["Minimum_Qty"] = 0
+        inv_df["Opening_Stock"] = 0
+        inv_df["Category"] = "Others"
 
     inv_df["SAP_Code"] = inv_df["SAP_Code"].astype(str).str.strip()
 
@@ -1037,13 +1599,19 @@ def load_live_inventory(
     live_df = pd.merge(live_df, cons_df, on="SAP_Code", how="left")
     live_df = pd.merge(live_df, ret_df,  on="SAP_Code", how="left")
 
-    numeric_cols = ["Total_Received", "Total_Consumed", "Total_Returned", "Minimum_Qty"]
+    numeric_cols = ["Total_Received", "Total_Consumed", "Total_Returned",
+                    "Minimum_Qty", "Opening_Stock"]
     for col in numeric_cols:
         if col in live_df.columns:
             live_df[col] = pd.to_numeric(live_df[col], errors="coerce").fillna(0)
 
+    # Closing = Opening + Received - Consumed - Returned.
+    # Current_Stock kept as alias for backwards-compat with callers/tests.
+    if "Opening_Stock" not in live_df.columns:
+        live_df["Opening_Stock"] = 0
     live_df["Current_Stock"] = (
-        live_df["Total_Received"]
+        live_df["Opening_Stock"]
+        + live_df["Total_Received"]
         - live_df["Total_Consumed"]
         - live_df["Total_Returned"]
     )
@@ -2455,7 +3023,10 @@ def get_pending_receipts_for_hod(
         conn = get_connection()
     df = pd.read_sql(
         """SELECT pr.id, pr.Date, pr.SAP_Code,
-                  i.Equipment_Description AS Material_Name, i.UOM,
+                  COALESCE(i.Material_Code,'')        AS Material_Code,
+                  i.Equipment_Description             AS Equipment_Description,
+                  i.Equipment_Description             AS Material_Name,
+                  i.UOM,
                   pr.Quantity, pr.Supplier, pr.Expiry_Date,
                   pr.PR_Number, pr.Remarks, pr.Timestamp
            FROM pending_receipts pr
@@ -2873,14 +3444,47 @@ def get_whatsapp_log(
         conn = get_connection()
     try:
         df = pd.read_sql(
-            """SELECT id, phone_number, message, status, created_at, sent_at
-               FROM whatsapp_queue ORDER BY id DESC LIMIT ?""",
+            "SELECT id, phone_number, message, status, created_at, sent_at, "
+            "       COALESCE(attempts,0) AS attempts, "
+            "       COALESCE(error_message,'') AS error_message "
+            "FROM whatsapp_queue ORDER BY id DESC LIMIT ?",
             conn, params=(int(limit),),
         )
     finally:
         if _owns:
             conn.close()
     return df
+
+
+def retry_failed_whatsapp(
+    msg_ids: list[int] = None, conn: sqlite3.Connection = None,
+) -> int:
+    """
+    Flip selected failed rows back to 'pending'. If msg_ids is None,
+    retries every failed row. Returns the number of rows reset.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.cursor()
+        if msg_ids:
+            ph = ",".join(["?"] * len(msg_ids))
+            cur.execute(
+                f"UPDATE whatsapp_queue SET status='pending', error_message=NULL "
+                f"WHERE id IN ({ph}) AND status='failed'",
+                tuple(msg_ids),
+            )
+        else:
+            cur.execute(
+                "UPDATE whatsapp_queue SET status='pending', error_message=NULL "
+                "WHERE status='failed'",
+            )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        if _owns:
+            conn.close()
 
 
 def hod_approve_pending_issue(issue_id: int,
@@ -3328,6 +3932,7 @@ def report_monthly_summary(
             "SELECT i.SAP_Code, "
             "       COALESCE(i.Material_Code,'') AS Material_Code, "
             "       i.Equipment_Description AS Material, i.UOM, "
+            "  COALESCE(i.Opening_Stock,0) + "
             "  COALESCE((SELECT SUM(Quantity) FROM receipts r WHERE r.SAP_Code=i.SAP_Code "
             f"           AND r.Date < ? {where_site}),0) -"
             "  COALESCE((SELECT SUM(Quantity) FROM consumption c WHERE c.SAP_Code=i.SAP_Code "

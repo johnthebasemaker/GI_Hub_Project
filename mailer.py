@@ -777,3 +777,195 @@ def draft_logistics_email_via_outlook(pr_number: str, site_id: str, pr_df) -> tu
 
         except Exception as e:
             return False, f"Failed to open Mail app: {str(e)}"
+
+
+def draft_return_logistics_email(site_id: str, return_row: dict) -> tuple[bool, str]:
+    """
+    Drafts a logistics-notification email after HOD approves a return.
+    `return_row` keys: SAP_Code, Equipment_Description, Material_Code,
+    Quantity, Return_Reason, Return_DN_No, received_date, received_dn_no,
+    received_qty, PR_Number, Lot_Number.
+    """
+    import os
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
+    logistics_recipient = os.environ.get("LOGISTICS_EMAIL", "logistics@generalindustries.net")
+
+    subject_raw = (
+        f"↩️ Return Approved — [{return_row.get('SAP_Code','')}] "
+        f"{return_row.get('Equipment_Description','')[:40]} ({site_id})"
+    )
+    html_body = (
+        "<html><body style='font-family:Segoe UI, Arial, sans-serif;color:#333;'>"
+        "<h2 style='color:#0A192F;'>General Industries Hub — Return Notification</h2>"
+        f"<p>Dear Logistics Team,</p>"
+        f"<p>The following material has been <b>returned by {site_id}</b> "
+        "after HOD approval. Please collect / disposition as required.</p>"
+        "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
+        "<tbody>"
+        f"<tr><th style='text-align:left;padding:8px;background:#F4F6F8;'>SAP Code</th>"
+        f"<td style='padding:8px;border:1px solid #ddd;'>{return_row.get('SAP_Code','')}</td></tr>"
+        f"<tr><th style='text-align:left;padding:8px;background:#F4F6F8;'>Material Code</th>"
+        f"<td style='padding:8px;border:1px solid #ddd;'>{return_row.get('Material_Code','—') or '—'}</td></tr>"
+        f"<tr><th style='text-align:left;padding:8px;background:#F4F6F8;'>Description</th>"
+        f"<td style='padding:8px;border:1px solid #ddd;'>{return_row.get('Equipment_Description','')}</td></tr>"
+        f"<tr><th style='text-align:left;padding:8px;background:#F4F6F8;'>Return Qty</th>"
+        f"<td style='padding:8px;border:1px solid #ddd;'><b>{return_row.get('Quantity','')}</b></td></tr>"
+        f"<tr><th style='text-align:left;padding:8px;background:#F4F6F8;'>Reason</th>"
+        f"<td style='padding:8px;border:1px solid #ddd;'>{return_row.get('Return_Reason','')}</td></tr>"
+        f"<tr><th style='text-align:left;padding:8px;background:#F4F6F8;'>Return DN No.</th>"
+        f"<td style='padding:8px;border:1px solid #ddd;'>{return_row.get('Return_DN_No','')}</td></tr>"
+        f"<tr><th style='text-align:left;padding:8px;background:#F4F6F8;'>Original Receipt</th>"
+        f"<td style='padding:8px;border:1px solid #ddd;'>"
+        f"{return_row.get('received_date','')} · DN {return_row.get('received_dn_no','—') or '—'}"
+        f" · PR {return_row.get('PR_Number','—') or '—'}"
+        f" · Lot {return_row.get('Lot_Number','—') or '—'}"
+        f" · Received Qty {return_row.get('received_qty','')}"
+        f"</td></tr>"
+        "</tbody></table>"
+        f"<p style='margin-top:18px;'>Best Regards,<br>"
+        f"<b>{site_id} Hub Management</b></p>"
+        "</body></html>"
+    )
+
+    if platform.system() == "Windows":
+        try:
+            pythoncom.CoInitialize()
+            outlook = win32.Dispatch('outlook.application')
+            mail = outlook.CreateItem(0)
+            mail.To = logistics_recipient
+            mail.Subject = subject_raw
+            mail.HTMLBody = html_body
+            mail.Display(True)
+            return True, "Outlook draft opened for return."
+        except Exception as e:
+            return False, f"Outlook draft failed: {e}"
+        finally:
+            try: pythoncom.CoUninitialize()
+            except Exception: pass
+
+    try:
+        import subprocess, urllib.parse
+        text_body = (
+            "Dear Logistics Team,\n\n"
+            f"The following material has been returned by {site_id} after HOD approval:\n\n"
+            f"SAP Code      : {return_row.get('SAP_Code','')}\n"
+            f"Material Code : {return_row.get('Material_Code','—')}\n"
+            f"Description   : {return_row.get('Equipment_Description','')}\n"
+            f"Return Qty    : {return_row.get('Quantity','')}\n"
+            f"Reason        : {return_row.get('Return_Reason','')}\n"
+            f"Return DN     : {return_row.get('Return_DN_No','')}\n"
+            f"Original DN   : {return_row.get('received_dn_no','—')}  "
+            f"({return_row.get('received_date','')})\n"
+            f"Original PR   : {return_row.get('PR_Number','—')}\n"
+            f"Lot Number    : {return_row.get('Lot_Number','—')}\n\n"
+            f"Best Regards,\n{site_id} Hub Management\n"
+        )
+        url = (
+            f"mailto:{urllib.parse.quote(logistics_recipient)}"
+            f"?subject={urllib.parse.quote(subject_raw)}"
+            f"&body={urllib.parse.quote(text_body)}"
+        )
+        opener = "open" if platform.system() == "Darwin" else "xdg-open"
+        subprocess.Popen([opener, url])
+        return True, "Mail draft opened for return."
+    except Exception as e:
+        return False, f"Mail draft failed: {e}"
+
+
+def draft_rubber_mtc_email(site_id: str, mtc_df) -> tuple[bool, str]:
+    """
+    Drafts an email to logistics listing rubber materials received without
+    an MTC. mtc_df rows expected to have: SAP_Code, Equipment_Description,
+    Lot_Number, Quantity.
+    """
+    import os
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
+    logistics_recipient = os.environ.get("LOGISTICS_EMAIL", "logistics@generalindustries.net")
+
+    subject_raw = f"⚠️ Rubber materials received without MTC — {site_id}"
+    table_rows = ""
+    for _, row in mtc_df.iterrows():
+        table_rows += (
+            "<tr>"
+            f"<td style='padding:8px;border:1px solid #ddd;'>{row.get('SAP_Code','')}</td>"
+            f"<td style='padding:8px;border:1px solid #ddd;'>{row.get('Equipment_Description','')}</td>"
+            f"<td style='padding:8px;border:1px solid #ddd;'>{row.get('Lot_Number','—') or '—'}</td>"
+            f"<td style='padding:8px;border:1px solid #ddd;text-align:center;'>{row.get('Quantity','')}</td>"
+            "</tr>"
+        )
+    html_body = (
+        "<html><body style='font-family:Segoe UI, Arial, sans-serif;color:#333;'>"
+        "<h2 style='color:#0A192F;'>General Industries Hub — MTC Document Request</h2>"
+        "<p>Dear Logistics Team,</p>"
+        f"<p>The following rubber materials were received at <b>{site_id}</b> "
+        "without an accompanying MTC. Please forward the certificates at the earliest:</p>"
+        "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
+        "<thead><tr style='background:#0A192F;color:#fff;'>"
+        "<th style='padding:10px;border:1px solid #0A192F;text-align:left;'>SAP Code</th>"
+        "<th style='padding:10px;border:1px solid #0A192F;text-align:left;'>Description</th>"
+        "<th style='padding:10px;border:1px solid #0A192F;text-align:left;'>Lot Number</th>"
+        "<th style='padding:10px;border:1px solid #0A192F;'>Quantity</th>"
+        "</tr></thead>"
+        f"<tbody>{table_rows}</tbody></table>"
+        f"<p style='margin-top:20px;'>Thank you,<br><b>{site_id} Hub Management</b></p>"
+        "</body></html>"
+    )
+
+    if platform.system() == "Windows":
+        try:
+            pythoncom.CoInitialize()
+            outlook = win32.Dispatch('outlook.application')
+            mail = outlook.CreateItem(0)
+            mail.To = logistics_recipient
+            mail.Subject = subject_raw
+            mail.HTMLBody = html_body
+            mail.Display(True)
+            return True, "Outlook draft opened for missing MTC items."
+        except Exception as e:
+            return False, f"Outlook draft failed: {e}"
+        finally:
+            try: pythoncom.CoUninitialize()
+            except Exception: pass
+
+    try:
+        import subprocess, urllib.parse
+        COL_SAP, COL_DESC, COL_LOT, COL_QTY = 12, 36, 14, 8
+        sep = ("+-" + "-"*COL_SAP + "-+-" + "-"*COL_DESC + "-+-"
+               + "-"*COL_LOT + "-+-" + "-"*COL_QTY + "-+")
+        header = ("| " + "SAP".ljust(COL_SAP)
+                  + " | " + "Description".ljust(COL_DESC)
+                  + " | " + "Lot".ljust(COL_LOT)
+                  + " | " + "Qty".rjust(COL_QTY) + " |")
+        body_rows = []
+        for _, r in mtc_df.iterrows():
+            body_rows.append(
+                "| " + str(r.get("SAP_Code",""))[:COL_SAP].ljust(COL_SAP)
+                + " | " + str(r.get("Equipment_Description",""))[:COL_DESC].ljust(COL_DESC)
+                + " | " + str(r.get("Lot_Number","") or "—")[:COL_LOT].ljust(COL_LOT)
+                + " | " + f"{float(r.get('Quantity',0) or 0):.1f}".rjust(COL_QTY) + " |"
+            )
+        lines = [
+            "Dear Logistics Team,", "",
+            f"The following rubber materials were received at {site_id} without an MTC. "
+            "Please forward the certificates:", "",
+            sep, header, sep, *body_rows, sep, "",
+            "Thank you,", f"{site_id} Hub Management",
+        ]
+        url = (
+            f"mailto:{urllib.parse.quote(logistics_recipient)}"
+            f"?subject={urllib.parse.quote(subject_raw)}"
+            f"&body={urllib.parse.quote(chr(10).join(lines))}"
+        )
+        opener = "open" if platform.system() == "Darwin" else "xdg-open"
+        subprocess.Popen([opener, url])
+        return True, "Mail draft opened for missing MTC items."
+    except Exception as e:
+        return False, f"Mail draft failed: {e}"

@@ -38,7 +38,28 @@ except ImportError:  # pragma: no cover — tests may import safety without stre
 # ---------------------------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------------------------
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+def _secret(key: str, default: str) -> str:
+    """
+    Resolution order: Streamlit Secrets [ollama] block → env var → default.
+    Lets one Streamlit-Cloud secrets.toml point at a tunneled local Ollama:
+
+        [ollama]
+        host         = "https://your-tailnet.ts.net:11434"
+        vision_model = "qwen2.5vl:7b"
+    """
+    try:
+        if _HAS_ST:
+            cfg = st.secrets.get("ollama", {})  # type: ignore[attr-defined]
+            short = key.replace("OLLAMA_", "").lower()
+            val = cfg.get(short)
+            if val:
+                return str(val)
+    except Exception:
+        pass
+    return os.environ.get(key, default)
+
+
+OLLAMA_HOST = _secret("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_TIMEOUT_S = 60   # generous; coder + chat on M-series Air can take ~10–30s
 OLLAMA_HEALTH_TIMEOUT_S = 2
 
@@ -48,8 +69,8 @@ MODEL_CHAT  = "llama3.1:8b"             # used for summaries / chat
 MODEL_EMBED = "nomic-embed-text:latest" # reserved for future RAG features
 # Vision model — used for OCR of handwritten / printed delivery notes.
 # Pull with: ollama pull qwen2.5vl:7b   (NOT the same as qwen2.5-coder).
-# Override at runtime via OLLAMA_VISION_MODEL env var.
-MODEL_VISION = os.environ.get("OLLAMA_VISION_MODEL", "qwen2.5vl:7b")
+# Override via Streamlit Secrets [ollama] vision_model OR OLLAMA_VISION_MODEL env.
+MODEL_VISION = _secret("OLLAMA_VISION_MODEL", "qwen2.5vl:7b")
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +99,21 @@ else:  # pragma: no cover
 # Module-load probe so importers can branch on availability without paying
 # the round-trip on every call. Refreshed by callers via ollama_health().
 OLLAMA_AVAILABLE: bool = _probe_ollama()
+
+
+def list_ollama_models() -> list[str]:
+    """
+    Return the model ids the Ollama instance reports under /api/tags.
+    Empty list on transport failure. No exceptions raised — callers can
+    branch on `model in list_ollama_models()`.
+    """
+    try:
+        req = urllib.request.Request(f"{OLLAMA_HOST}/api/tags")
+        with urllib.request.urlopen(req, timeout=OLLAMA_HEALTH_TIMEOUT_S) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        return [m.get("name", "") for m in body.get("models", []) if m.get("name")]
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------

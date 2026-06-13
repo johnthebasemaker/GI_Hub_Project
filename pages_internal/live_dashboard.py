@@ -1,14 +1,18 @@
 """
 pages_internal/live_dashboard.py — Live Inventory Dashboard
 ============================================================
-Extracted from main.py during Phase 2 structure refactor.
-Phase 3: collapsible "Ask in plain English" panel added above the table
-when AI_ENABLED is True. Existing SQL/math/cache paths are untouched.
+2026-06 round: switched the main inventory grid from AgGrid to a custom HTML
+table matching the HOD pending-issues style — gold SAP code, monospace
+numbers, em-dash for blanks, status pill at the right. Per-column filter
+inputs sit above the table so the user can narrow the catalogue without
+the chunky AgGrid header chrome.
 """
 
+import html as _html
 import streamlit as st
+import pandas as pd
 
-from config import AGGRID_HEIGHT, AI_ENABLED
+from config import AI_ENABLED
 from cache_layer import (
     cached_live_inventory,
     cached_burn_rate_and_forecast,
@@ -20,14 +24,156 @@ from cache_layer import (
 from database import format_sar
 from ui_components import (
     render_brand_header,
-    render_aggrid,
     render_top_consumed_bar,
     render_stock_vs_minimum_bar,
     render_burn_rate_chart,
     render_burn_alert_banner,
     render_hero_metrics,
-    STATUS_BADGE_JS,
 )
+
+# Brand tokens (kept in sync with hod_portal._C)
+_C = {
+    "surf":   "#162038",
+    "surf2":  "#1E3050",
+    "border": "#2A4060",
+    "gold":   "#D4AF37",
+    "text":   "#F0F4F8",
+    "muted":  "#7A8FA0",
+    "dim":    "#4A6080",
+    "ok":     "#22C55E",
+    "low":    "#F59E0B",
+    "crit":   "#EF4444",
+}
+
+
+def _cell(val) -> str:
+    if val is None: return "—"
+    try:
+        if pd.isna(val): return "—"
+    except (TypeError, ValueError):
+        pass
+    s = str(val).strip()
+    return _html.escape(s) if s else "—"
+
+
+def _status_pill(status: str) -> str:
+    palette = {
+        "OK":         ("#15803D", "#86EFAC"),
+        "Low":        ("#854D0E", "#FDE68A"),
+        "Below Min":  ("#9A3412", "#FDBA74"),
+        "Empty":      ("#7F1D1D", "#FCA5A5"),
+    }
+    bg_dark, fg = palette.get(status, ("#374151", "#D1D5DB"))
+    return (
+        f'<span style="background:{bg_dark}33;border:1px solid {bg_dark}88;'
+        f'color:{fg};padding:2px 9px;border-radius:999px;'
+        f'font-size:11px;font-weight:700;">{_html.escape(status)}</span>'
+    )
+
+
+def _render_dashboard_html_table(df: pd.DataFrame, columns: list[str]) -> None:
+    """
+    Render `df` as a screenshot-3 style table:
+      • Per-column text filter row above the table (st.text_input, columns).
+      • One <table> with gold SAP cells, monospace numerics, em-dash blanks,
+        status pill at the right.
+    """
+    if df.empty:
+        st.caption("No items to display.")
+        return
+
+    # ── 1. Filter row (one input per column) ───────────────────────────────
+    st.markdown(
+        f'<div style="color:{_C["dim"]};font-size:10.5px;font-weight:700;'
+        f'text-transform:uppercase;letter-spacing:0.08em;margin:6px 0 4px 0;">'
+        f'Filters</div>',
+        unsafe_allow_html=True,
+    )
+    filter_cols = st.columns(len(columns))
+    filters: dict[str, str] = {}
+    for col_widget, col_name in zip(filter_cols, columns):
+        with col_widget:
+            filters[col_name] = st.text_input(
+                col_name, key=f"_dash_filter_{col_name}",
+                label_visibility="collapsed", placeholder=col_name,
+            ).strip()
+
+    # ── 2. Apply filters (case-insensitive substring per column) ──────────
+    view = df.copy()
+    for col_name, needle in filters.items():
+        if needle and col_name in view.columns:
+            view = view[
+                view[col_name].astype(str).str.contains(
+                    needle, case=False, na=False, regex=False,
+                )
+            ]
+
+    if view.empty:
+        st.caption("No rows match the current filters.")
+        return
+
+    # ── 3. Render rows ─────────────────────────────────────────────────────
+    NUM_COLS = {"Opening_Stock", "Receipt", "Consumption", "Return",
+                "Closing_Stock", "Minimum_Qty", "Unit_Cost", "Stock_Value"}
+
+    rows_html = []
+    for i, (_, r) in enumerate(view.iterrows()):
+        bg = _C["surf2"] + "33" if i % 2 else "transparent"
+        tds = []
+        for c in columns:
+            v = r.get(c)
+            if c == "SAP_Code":
+                tds.append(
+                    f'<td style="padding:7px 10px;color:{_C["gold"]};'
+                    f'font-family:monospace;font-weight:700;">{_cell(v)}</td>'
+                )
+            elif c == "Material_Code":
+                tds.append(
+                    f'<td style="padding:7px 10px;color:{_C["muted"]};'
+                    f'font-family:monospace;font-size:11.5px;">{_cell(v)}</td>'
+                )
+            elif c == "Equipment_Description":
+                tds.append(
+                    f'<td style="padding:7px 10px;color:{_C["text"]};">'
+                    f'{_cell(v)}</td>'
+                )
+            elif c == "Status":
+                tds.append(
+                    f'<td style="padding:7px 10px;">{_status_pill(str(v))}</td>'
+                )
+            elif c in NUM_COLS:
+                # Right-aligned monospace numbers
+                tds.append(
+                    f'<td style="padding:7px 10px;color:{_C["text"]};'
+                    f'font-family:monospace;text-align:right;">{_cell(v)}</td>'
+                )
+            else:
+                tds.append(
+                    f'<td style="padding:7px 10px;color:{_C["muted"]};'
+                    f'font-size:12px;">{_cell(v)}</td>'
+                )
+        rows_html.append(
+            f'<tr style="background:{bg};border-bottom:1px solid {_C["border"]}33;">'
+            + "".join(tds) + "</tr>"
+        )
+
+    head = "".join(
+        f'<th style="padding:8px 10px;color:{_C["muted"]};font-weight:600;'
+        f'font-size:10px;letter-spacing:0.07em;text-transform:uppercase;'
+        f'text-align:{"right" if c in NUM_COLS else "left"};'
+        f'white-space:nowrap;">{_html.escape(c)}</th>'
+        for c in columns
+    )
+    st.markdown(
+        f'<div style="overflow-x:auto;border-radius:8px;'
+        f'border:1px solid {_C["border"]};margin-top:6px;">'
+        f'<table style="width:100%;border-collapse:collapse;font-size:12.5px;">'
+        f'<thead><tr style="background:{_C["surf2"]};'
+        f'border-bottom:1px solid {_C["border"]};">{head}</tr></thead>'
+        f'<tbody>{"".join(rows_html)}</tbody></table></div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(f"{len(view):,} of {len(df):,} item(s)")
 
 
 def _render_nl_search_panel() -> None:
@@ -134,11 +280,15 @@ def page_live_dashboard() -> None:
     render_burn_alert_banner(forecast_df)
     st.divider()
 
-    display_cols = [c for c in [
-        "SAP_Code", "Equipment_Description", "UOM",
-        "Total_Returned", "Current_Stock", "Minimum_Qty",
-    ] if c in live_df.columns]
-    df_display = live_df[display_cols].copy()
+    # Rename to the friendlier labels the user requested while keeping
+    # backend column names intact for filters/sorts.
+    df_display = live_df.copy()
+    df_display = df_display.rename(columns={
+        "Total_Received": "Receipt",
+        "Total_Consumed": "Consumption",
+        "Total_Returned": "Return",
+        "Current_Stock":  "Closing_Stock",
+    })
 
     # Merge per-item valuation (Unit_Cost + Stock_Value) onto the grid so a
     # supervisor can sort the catalogue by SAR exposure.
@@ -151,20 +301,31 @@ def page_live_dashboard() -> None:
         df_display["Unit_Cost"]   = df_display["Unit_Cost"].fillna(0).round(2)
         df_display["Stock_Value"] = df_display["Stock_Value"].fillna(0).round(2)
 
-    # Computed STATUS column — colored badge text for AgGrid
+    # Final column order per 2026-06 spec.
+    desired_order = [
+        "SAP_Code", "Material_Code", "Equipment_Description", "UOM",
+        "Opening_Stock", "Receipt", "Consumption", "Return", "Closing_Stock",
+        "Minimum_Qty", "Unit_Cost", "Stock_Value", "Category",
+    ]
+    display_cols = [c for c in desired_order if c in df_display.columns]
+    df_display = df_display[display_cols + [
+        c for c in df_display.columns if c not in display_cols
+    ]]
+
+    # Computed STATUS column for the pill cell.
     def _status_label(row) -> str:
-        s = float(row.get("Current_Stock", 0))
-        m = float(row.get("Minimum_Qty", 0))
+        s = float(row.get("Closing_Stock", row.get("Current_Stock", 0)) or 0)
+        m = float(row.get("Minimum_Qty", 0) or 0)
         if s <= 0:        return "Empty"
         if m > 0 and s < m:         return "Below Min"
         if m > 0 and s < m * 1.25:  return "Low"
         return "OK"
 
     df_display["Status"] = df_display.apply(_status_label, axis=1)
-    render_aggrid(
-        df_display, key="dashboard_grid", height=AGGRID_HEIGHT,
-        column_styles={"Status": STATUS_BADGE_JS},
-    )
+
+    # Final column list — Status pushed to the right.
+    columns_to_show = [c for c in display_cols if c in df_display.columns] + ["Status"]
+    _render_dashboard_html_table(df_display, columns_to_show)
 
     st.divider()
     with st.expander("📉 Stock vs Minimum Threshold", expanded=False):

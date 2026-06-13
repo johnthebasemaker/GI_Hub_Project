@@ -6,6 +6,7 @@ SQL strings, math, and form logic are unchanged.
 """
 
 import datetime
+import html
 
 import pandas as pd
 import streamlit as st
@@ -58,7 +59,8 @@ def page_daily_issue_log(user: dict) -> None:
     conn = get_connection()
     try:
         inv_list = pd.read_sql(
-            "SELECT SAP_Code, Equipment_Description, Material_Code, UOM FROM inventory", conn
+            "SELECT SAP_Code, Equipment_Description, Material_Code, UOM, "
+            "COALESCE(Category,'Others') AS Category FROM inventory", conn
         )
         inv_list["Search_String"] = (
             "[" + inv_list["SAP_Code"].astype(str) + "] "
@@ -77,9 +79,11 @@ def page_daily_issue_log(user: dict) -> None:
     ]
     conn.close()
 
-    tab_issue, tab_receipt_stage, tab_returnables, tab_adjust = st.tabs([
-        "📋 Consumption Log", "📦 Receipt Staging",
+    (tab_issue, tab_receipt_stage, tab_return_items,
+     tab_returnables, tab_adjust, tab_qr) = st.tabs([
+        "📋 Consumption Log", "📦 Receipt Staging", "↩️ Return Items",
         "🔄 Returnable Items", "🧮 Stock Count",
+        "🏷️ QR Label Request",
     ])
 
     # ── TAB 1: Daily Issue Log ─────────────────────────────────────────────────
@@ -282,16 +286,10 @@ def page_daily_issue_log(user: dict) -> None:
                         )
                     elif col_name == "Tank_No" and tank_nos:
                         _tn_default = _defaults.get("Tank_No", "")
-                        _tn_opts = [""] + tank_nos
-                        _tn_idx = _tn_opts.index(_tn_default) if _tn_default in _tn_opts else 0
+                        _tn_idx = tank_nos.index(_tn_default) if _tn_default in tank_nos else 0
                         input_data[col_name] = st.selectbox(
-                            "Tank_No (Optional)", _tn_opts, index=_tn_idx,
+                            "Tank_No*", tank_nos, index=_tn_idx,
                             key="tank_no_select",
-                        )
-                    elif col_name in OPTIONAL_ISSUE_COLS:
-                        input_data[col_name] = st.text_input(
-                            f"{col_name} (Optional)",
-                            value=_defaults.get(col_name, ""),
                         )
                     else:
                         # Required text fields also pre-fill from history where useful.
@@ -482,6 +480,31 @@ def page_daily_issue_log(user: dict) -> None:
                 num_rows="dynamic", width="stretch", key="staging_editor",
             )
 
+            # Phase 5 — Attachments expander shown above the submit buttons.
+            from config import ATTACHMENT_ALLOWED as _AT
+            with st.expander("📎 Attach Documents (Optional)", expanded=False):
+                st.caption(
+                    "Attach reference documents (PDF / JPEG / JPG / XLSX). "
+                    "Auto doc number for consumption = DDMMYY of submission date."
+                )
+                cons_scope = st.radio(
+                    "Apply attachments to:",
+                    ["Whole entry (batch)", "Specific date"],
+                    horizontal=True, key="cons_attach_scope",
+                )
+                cons_attach_date = None
+                if cons_scope == "Specific date":
+                    cons_attach_date = st.date_input(
+                        "Pick date for these attachments",
+                        value=datetime.date.today(), key="cons_attach_date",
+                    )
+                cons_files = st.file_uploader(
+                    "Files (multiple allowed)",
+                    type=list(_AT),
+                    accept_multiple_files=True,
+                    key="cons_attach_files",
+                )
+
             btn_save, btn_submit = st.columns([1, 2])
             with btn_save:
                 if st.button("💾 Save Draft Edits", use_container_width=True):
@@ -520,6 +543,22 @@ def page_daily_issue_log(user: dict) -> None:
                         )
                         conn3.commit()
 
+                        # Persist attached docs (if any) under doc_type='consumption'.
+                        # Doc number = DDMMYY of the date or today.
+                        if cons_files:
+                            from database import save_entry_attachment
+                            attach_date = cons_attach_date or datetime.date.today()
+                            doc_num = attach_date.strftime("%d%m%y")
+                            for f in cons_files:
+                                save_entry_attachment(
+                                    site_id=site_id, doc_type="consumption",
+                                    doc_number=doc_num, file_obj=f,
+                                    uploaded_by=user["username"],
+                                    entry_table="pending_issues",
+                                    entry_date=attach_date.isoformat(),
+                                    conn=conn3,
+                                )
+
                         hod_q = pd.read_sql(
                             "SELECT Phone_Number FROM users WHERE role = 'hod' AND Site_ID = ? LIMIT 1",
                             conn3, params=(site_id,)
@@ -557,31 +596,80 @@ def page_daily_issue_log(user: dict) -> None:
         _pragma_conn = get_connection()
         _rcpt_all_cols = _pragma_conn.execute("PRAGMA table_info(pending_receipts)").fetchall()
         _pragma_conn.close()
+        # `rejection_reason` lives on pending_receipts but is HOD-side state;
+        # the SK should never see/fill it on the staging form.
         rcpt_form_cols = [
             row[1] for row in _rcpt_all_cols
-            if row[1] not in (SYSTEM_COLS | {"SAP_Code"})
+            if row[1] not in (SYSTEM_COLS | {"SAP_Code", "rejection_reason"})
         ]
-        OPTIONAL_RECEIPT_COLS = {
-            "Supplier", "Remarks", "PR_Number", "Expiry_Date",
-            "Serial_No", "PR", "Vehicle_No", "Driver_Name", "DN_No",
-            "Pallet_No", "Mob_From", "Prepared_by", "Mob_To", "DN_Copy",
-        }
+        # All receipt fields mandatory per 2026-06 spec.
+        OPTIONAL_RECEIPT_COLS: set[str] = set()
 
         with st.expander("➕ Add Receipt to Queue", expanded=True):
+            # ── PR-linking (moved from HOD Receive Material) ──────────────
+            # Loads open PRs for THIS site only. If a PR is chosen, the
+            # material picker is restricted to the PR's line items and
+            # the form's PR_Number field auto-fills + locks.
             st.markdown(
                 '<div style="font-size:11px;color:#4A6080;font-weight:700;'
                 'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">'
-                '1. Select Material</div>',
+                '1. Link to Open PR (Optional)</div>',
+                unsafe_allow_html=True,
+            )
+            _conn_pr = get_connection()
+            try:
+                _open_prs = pd.read_sql(
+                    "SELECT DISTINCT PR_Number FROM pr_master "
+                    "WHERE Site_ID = ? AND status = 'open' "
+                    "ORDER BY PR_Number",
+                    _conn_pr, params=(site_id,),
+                )
+            finally:
+                _conn_pr.close()
+            _pr_options = ["-- None (Direct Receipt) --"] + _open_prs["PR_Number"].tolist()
+            selected_pr = st.selectbox(
+                "Link this receipt to an open PR",
+                _pr_options, index=0, key="rcpt_pr_link",
+                help="Selecting a PR filters the material list to that PR's items "
+                     "and auto-fills the PR_Number field below.",
+            )
+            _linked_pr = None if selected_pr == "-- None (Direct Receipt) --" else selected_pr
+
+            # Filter the material picker by the chosen PR.
+            if _linked_pr:
+                _conn_f = get_connection()
+                try:
+                    _pr_saps = pd.read_sql(
+                        "SELECT DISTINCT SAP_Code FROM pr_master "
+                        "WHERE PR_Number = ? AND Site_ID = ?",
+                        _conn_f, params=(_linked_pr, site_id),
+                    )["SAP_Code"].astype(str).str.strip().tolist()
+                finally:
+                    _conn_f.close()
+                rcpt_search_options = [
+                    s for s in search_options
+                    if s.split("]")[0].replace("[", "").strip() in _pr_saps
+                ] or search_options  # fall back to all if PR has zero items
+            else:
+                rcpt_search_options = search_options
+
+            st.markdown(
+                '<div style="font-size:11px;color:#4A6080;font-weight:700;'
+                'text-transform:uppercase;letter-spacing:0.08em;margin:10px 0 6px 0;">'
+                '2. Select Material</div>',
                 unsafe_allow_html=True,
             )
             sel_rcpt_item = st.selectbox(
                 "Search by SAP Code or Description",
-                options=search_options,
+                options=rcpt_search_options,
                 index=None,
                 placeholder="Start typing…",
                 key="rcpt_item_selectbox",
             )
             rcpt_sap = None
+            rcpt_category = None
+            mtc_number = ""
+            mtc_file = None
             if sel_rcpt_item:
                 rcpt_sap = sel_rcpt_item.split("]")[0].replace("[", "").strip()
                 if not inv_list.empty:
@@ -589,6 +677,7 @@ def page_daily_issue_log(user: dict) -> None:
                     if not m.empty:
                         _mat_code = m.iloc[0].get('Material_Code', 'N/A')
                         _uom      = m.iloc[0].get('UOM', 'N/A')
+                        rcpt_category = str(m.iloc[0].get('Category', 'Others') or 'Others')
                         st.markdown(
                             f'<div style="background:rgba(59,130,246,0.09);'
                             f'border:1px solid rgba(59,130,246,0.27);'
@@ -597,15 +686,41 @@ def page_daily_issue_log(user: dict) -> None:
                             f'📋 <b style="color:#BFDBFE;">Mat Code:</b> {_mat_code}'
                             f'&nbsp;&nbsp;|&nbsp;&nbsp;'
                             f'<b style="color:#BFDBFE;">UOM:</b> {_uom}'
+                            f'&nbsp;&nbsp;|&nbsp;&nbsp;'
+                            f'<b style="color:#BFDBFE;">Category:</b> {html.escape(rcpt_category)}'
                             f'</div>',
                             unsafe_allow_html=True,
                         )
+
+            # Rubber-MTC gate: prompt for MTC number + file if this is rubber.
+            # Missing MTC won't block submission — HOD will see a warning and
+            # can email logistics for the missing doc.
+            from config import RUBBER_CATEGORY, ATTACHMENT_ALLOWED
+            if rcpt_category == RUBBER_CATEGORY:
+                st.warning(
+                    "⚠️ **Rubber material** — please attach the MTC document. "
+                    "If not available, the HOD will be alerted to follow up with Logistics."
+                )
+                mtc_c1, mtc_c2 = st.columns([1, 2])
+                with mtc_c1:
+                    mtc_number = st.text_input(
+                        "MTC Number",
+                        placeholder="e.g. MTC-2026-001234",
+                        key="rcpt_mtc_number",
+                    )
+                with mtc_c2:
+                    mtc_file = st.file_uploader(
+                        "MTC Document (PDF / JPEG / JPG / XLSX)",
+                        type=list(ATTACHMENT_ALLOWED),
+                        accept_multiple_files=False,
+                        key="rcpt_mtc_file",
+                    )
 
             st.markdown(
                 '<div style="font-size:11px;color:#4A6080;font-weight:700;'
                 'text-transform:uppercase;letter-spacing:0.08em;'
                 'margin-top:10px;margin-bottom:6px;">'
-                '2. Fill Receipt Details</div>',
+                '3. Fill Receipt Details</div>',
                 unsafe_allow_html=True,
             )
             # Phase 5 — site-scoped stock for the qty-adjacent badge on the
@@ -626,9 +741,19 @@ def page_daily_issue_log(user: dict) -> None:
                         render_stock_badge(rcpt_site_snap or {}, site_id=site_id)
                         rcpt_input[col_name] = st.number_input(f"{col_name}*", min_value=0.1, step=1.0, key=f"rcpt_{col_name}")
                     elif col_name == "Expiry_Date":
-                        rcpt_input[col_name] = st.date_input(f"{col_name} (Optional)", value=None, key=f"rcpt_{col_name}")
-                    elif col_name in OPTIONAL_RECEIPT_COLS:
-                        rcpt_input[col_name] = st.text_input(f"{col_name} (Optional)", key=f"rcpt_{col_name}")
+                        rcpt_input[col_name] = st.date_input(
+                            f"{col_name} (Optional)", value=None,
+                            key=f"rcpt_{col_name}",
+                        )
+                    elif col_name == "PR_Number" and _linked_pr:
+                        # Auto-filled + read-only when a PR is linked above.
+                        st.text_input(
+                            f"{col_name}* (auto-filled from PR link)",
+                            value=_linked_pr,
+                            disabled=True,
+                            key=f"rcpt_{col_name}_locked",
+                        )
+                        rcpt_input[col_name] = _linked_pr
                     else:
                         rcpt_input[col_name] = st.text_input(f"{col_name}*", key=f"rcpt_{col_name}")
 
@@ -636,9 +761,10 @@ def page_daily_issue_log(user: dict) -> None:
                 if not rcpt_sap:
                     st.error("⚠️ Please select a material from the search box. This field is mandatory.")
                     st.stop()
+                _RCPT_OPTIONAL = {"Expiry_Date"}
                 rcpt_missing = [
                     col for col, val in rcpt_input.items()
-                    if col not in OPTIONAL_RECEIPT_COLS
+                    if col not in _RCPT_OPTIONAL
                     and (val is None or str(val).strip() == "")
                 ]
                 if rcpt_missing:
@@ -651,13 +777,36 @@ def page_daily_issue_log(user: dict) -> None:
                     for v in rcpt_input.values()
                 ] + ["draft", site_id]
                 placeholders = ", ".join(["?"] * len(insert_cols))
-                conn_ra.execute(
+                cur_ra = conn_ra.cursor()
+                cur_ra.execute(
                     f"INSERT INTO pending_receipts ({', '.join(insert_cols)}) VALUES ({placeholders})",
                     insert_vals,
                 )
+                pending_rcpt_id = cur_ra.lastrowid
+
+                # Rubber-MTC capture — always insert a row so HOD can see
+                # status='attached' vs status='missing'.
+                if rcpt_category == RUBBER_CATEGORY:
+                    from database import save_mtc_document
+                    save_mtc_document(
+                        conn=conn_ra,
+                        site_id=site_id,
+                        sap_code=rcpt_sap,
+                        material_code=str(inv_list.loc[inv_list["SAP_Code"] == rcpt_sap, "Material_Code"].iloc[0])
+                                       if not inv_list.empty and (inv_list["SAP_Code"] == rcpt_sap).any() else "",
+                        lot_number=str(rcpt_input.get("Lot_Number", "") or ""),
+                        quantity=float(rcpt_input.get("Quantity", 0) or 0),
+                        mtc_number=mtc_number.strip(),
+                        uploaded_file=mtc_file,
+                        pending_receipt_id=pending_rcpt_id,
+                        submitted_by=user["username"],
+                    )
                 conn_ra.commit()
                 conn_ra.close()
-                st.toast("✅ Added to receipt queue", icon="📦")
+                if rcpt_category == RUBBER_CATEGORY and not mtc_file:
+                    st.toast("⚠️ Added — MTC missing, HOD will follow up", icon="⚠️")
+                else:
+                    st.toast("✅ Added to receipt queue", icon="📦")
                 st.rerun()
 
         conn_rq = get_connection()
@@ -703,6 +852,37 @@ def page_daily_issue_log(user: dict) -> None:
                 num_rows="dynamic", width="stretch", key="rcpt_staging_editor",
             )
 
+            # Phase 5 — Receipt attachments expander
+            from config import ATTACHMENT_ALLOWED as _AT_RC
+            with st.expander("📎 Attach Documents (Optional)", expanded=False):
+                st.caption(
+                    "Attach reference docs (PDF / JPEG / JPG / XLSX). "
+                    "Doc number defaults to the DN No. of the receipt; "
+                    "leave blank to auto-generate."
+                )
+                rc_scope = st.radio(
+                    "Apply attachments to:",
+                    ["Whole entry (batch)", "Specific date"],
+                    horizontal=True, key="rcpt_attach_scope",
+                )
+                rc_attach_date = None
+                if rc_scope == "Specific date":
+                    rc_attach_date = st.date_input(
+                        "Pick date", value=datetime.date.today(),
+                        key="rcpt_attach_date",
+                    )
+                rc_dn_override = st.text_input(
+                    "DN No. (optional override)",
+                    placeholder="Defaults to the DN_No on each row",
+                    key="rcpt_attach_dn",
+                )
+                rc_files = st.file_uploader(
+                    "Files (multiple allowed)",
+                    type=list(_AT_RC),
+                    accept_multiple_files=True,
+                    key="rcpt_attach_files",
+                )
+
             rbtn_save, rbtn_submit = st.columns([1, 2])
             with rbtn_save:
                 if st.button("💾 Save Draft Edits", key="rcpt_save_btn", use_container_width=True):
@@ -743,6 +923,32 @@ def page_daily_issue_log(user: dict) -> None:
                             (site_id,)
                         )
                         conn_rq.commit()
+
+                        # Persist attachments — doc_number = override OR first row's DN_No OR DDMMYY.
+                        if rc_files:
+                            from database import save_entry_attachment
+                            attach_date = rc_attach_date or datetime.date.today()
+                            dn_no = (rc_dn_override or "").strip()
+                            if not dn_no:
+                                _dn_lookup = pd.read_sql(
+                                    "SELECT DN_No FROM pending_receipts "
+                                    "WHERE status='pending_hod' AND COALESCE(Site_ID,'HQ')=? "
+                                    "AND DN_No IS NOT NULL AND DN_No <> '' LIMIT 1",
+                                    conn_rq, params=(site_id,),
+                                )
+                                dn_no = (
+                                    str(_dn_lookup.iloc[0]["DN_No"])
+                                    if not _dn_lookup.empty else attach_date.strftime("DN-%d%m%y")
+                                )
+                            for f in rc_files:
+                                save_entry_attachment(
+                                    site_id=site_id, doc_type="receipt",
+                                    doc_number=dn_no, file_obj=f,
+                                    uploaded_by=user["username"],
+                                    entry_table="pending_receipts",
+                                    entry_date=attach_date.isoformat(),
+                                    conn=conn_rq,
+                                )
 
                         hod_phone_q = pd.read_sql(
                             "SELECT Phone_Number FROM users WHERE role = 'hod' AND Site_ID = ? LIMIT 1",
@@ -896,9 +1102,387 @@ def page_daily_issue_log(user: dict) -> None:
                 st.toast("✅ Item marked as returned", icon="🔄")
                 st.rerun()
 
+    # ── TAB 3: Return Items (deduct stock — needs HOD approval) ───────────────
+    with tab_return_items:
+        _render_return_items_tab(user=user, site_id=site_id)
+
     # ── TAB 4: Stock Count (physical-count adjustment) ────────────────────────
     with tab_adjust:
         _render_stock_count_tab(user=user, site_id=site_id, inv_list=inv_list)
+
+    # ── TAB 5: QR Label Request (SK → HOD approval) ───────────────────────────
+    with tab_qr:
+        _render_qr_request_tab(user=user, site_id=site_id, inv_list=inv_list,
+                               search_options=search_options)
+
+
+def _render_return_items_tab(user: dict, site_id: str) -> None:
+    """
+    Real-return workflow (multi-row staging):
+      1. Pick a material from last 30 days of receipts (or override → 12 months).
+      2. If multiple receipts exist, pick the exact one.
+      3. Fill qty / reason / DN / attachment + click 'Add to Grid'.
+      4. Repeat for more items — they accumulate in a session-only queue.
+      5. Click 'Submit Batch to HOD' to ship the whole queue at once.
+    HOD approval writes each row to the `returns` ledger.
+    """
+    from config import ATTACHMENT_ALLOWED as _AT_RET
+    from database import (
+        get_returnable_receipts, get_work_types,
+        submit_return_request, save_entry_attachment,
+        queue_whatsapp_alert,
+    )
+
+    st.subheader("↩️ Return Items")
+    st.caption(
+        "Return material previously received from logistics. "
+        "Pick items one at a time and click **Add to Grid** to queue them, "
+        "then submit the whole batch to HOD for approval."
+    )
+
+    queue_key = "_ret_queue"
+    if queue_key not in st.session_state:
+        st.session_state[queue_key] = []
+
+    allow_older = st.checkbox(
+        "Override 30-day window (request HOD approval for older receipts)",
+        key="_ret_override",
+        help="When checked, the picker widens to the last 12 months.",
+    )
+    days_back = 365 if allow_older else 30
+
+    recv_df = get_returnable_receipts(site_id=site_id, days_back=days_back)
+    work_types = get_work_types(site_id=site_id) or [
+        "Defective", "Wrong item", "Excess", "Damaged", "Other"
+    ]
+
+    # ── Row-builder form ────────────────────────────────────────────────────
+    with st.expander("➕ Add a Return Line", expanded=True):
+        if recv_df.empty:
+            st.info(f"No receipts in the last {days_back} days for this site.")
+        else:
+            recv_df = recv_df.copy()
+            recv_df["_mat_label"] = (
+                "[" + recv_df["SAP_Code"].astype(str) + "] "
+                + recv_df["Equipment_Description"].astype(str).fillna("")
+            )
+            mat_choices = sorted(recv_df["_mat_label"].unique().tolist())
+
+            sel_mat = st.selectbox(
+                "Material (only items received in this window)",
+                options=mat_choices, index=None,
+                placeholder="Start typing…", key="_ret_mat",
+            )
+            picked = None
+            if sel_mat:
+                sap = sel_mat.split("]")[0].replace("[", "").strip()
+                rows_for_sap = (
+                    recv_df[recv_df["SAP_Code"].astype(str).str.strip() == sap]
+                    .reset_index(drop=True)
+                )
+                if len(rows_for_sap) > 1:
+                    rows_for_sap["_pick_label"] = (
+                        rows_for_sap["Date"].astype(str)
+                        + "  ·  DN: " + rows_for_sap["DN_No"].astype(str)
+                        + "  ·  Received Qty: " + rows_for_sap["received_qty"].astype(str)
+                    )
+                    pick = st.selectbox(
+                        "Which receipt is being returned?",
+                        options=rows_for_sap["_pick_label"].tolist(), index=None,
+                        placeholder="Pick the exact receipt row…", key="_ret_pick",
+                    )
+                    if pick:
+                        picked = rows_for_sap[
+                            rows_for_sap["_pick_label"] == pick
+                        ].iloc[0]
+                else:
+                    picked = rows_for_sap.iloc[0]
+
+            if picked is not None:
+                st.markdown(
+                    f'<div style="background:rgba(34,197,94,0.07);'
+                    f'border:1px solid rgba(34,197,94,0.25);border-radius:7px;'
+                    f'padding:8px 12px;margin:6px 0;font-size:12.5px;color:#86EFAC;">'
+                    f'📋 <b>Received:</b> {html.escape(str(picked["Date"]))}'
+                    f' · <b>DN No.:</b> {html.escape(str(picked["DN_No"] or "—"))}'
+                    f' · <b>PR:</b> {html.escape(str(picked["PR_Number"] or "—"))}'
+                    f' · <b>Lot:</b> {html.escape(str(picked["Lot_Number"] or "—"))}'
+                    f' · <b>Received Qty:</b> {picked["received_qty"]}'
+                    f' {html.escape(str(picked["UOM"] or ""))}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    ret_qty = st.number_input(
+                        "Return Quantity*", min_value=0.01,
+                        max_value=float(picked["received_qty"]),
+                        step=1.0, key="_ret_qty",
+                    )
+                    ret_reason = st.selectbox(
+                        "Reason*", work_types, index=None,
+                        placeholder="Select a reason…", key="_ret_reason",
+                    )
+                with c2:
+                    ret_dn = st.text_input(
+                        "Return DN No.*", key="_ret_dn",
+                        placeholder="e.g. RDN-2026-0042",
+                    )
+                    override_note = ""
+                    if allow_older:
+                        override_note = st.text_input(
+                            "Override justification (sent to HOD)*",
+                            key="_ret_over_note",
+                            placeholder="Why are you returning beyond the 30-day window?",
+                        )
+
+                ret_files = st.file_uploader(
+                    "📎 Attach Return DN / supporting docs (PDF / JPEG / JPG / XLSX)*",
+                    type=list(_AT_RET), accept_multiple_files=True,
+                    key="_ret_files",
+                )
+
+                if st.button("➕ Add to Grid", type="secondary", key="_ret_add_btn"):
+                    problems = []
+                    if not ret_qty:        problems.append("Return Quantity")
+                    if not ret_reason:     problems.append("Reason")
+                    if not ret_dn.strip(): problems.append("Return DN No.")
+                    if not ret_files:      problems.append("Attachment")
+                    if allow_older and not override_note.strip():
+                        problems.append("Override justification")
+                    if problems:
+                        st.error(
+                            f"⚠️ Missing required field(s): {', '.join(problems)}"
+                        )
+                    else:
+                        # Read file bytes now — UploadedFile is single-use and
+                        # disappears on the next rerun.
+                        captured_files = [
+                            {
+                                "name": f.name,
+                                "type": getattr(f, "type", "") or "",
+                                "data": f.read(),
+                            }
+                            for f in ret_files
+                        ]
+                        st.session_state[queue_key].append({
+                            "sap": sap,
+                            "Material_Code": str(picked.get("Material_Code", "") or ""),
+                            "Equipment_Description": str(picked.get("Equipment_Description", "") or ""),
+                            "Quantity": float(ret_qty),
+                            "Reason": ret_reason,
+                            "Return_DN_No": ret_dn.strip(),
+                            "received_date": str(picked.get("Date", "") or ""),
+                            "received_dn_no": str(picked.get("DN_No", "") or ""),
+                            "received_qty": float(picked.get("received_qty", 0) or 0),
+                            "PR_Number": str(picked.get("PR_Number", "") or ""),
+                            "Lot_Number": str(picked.get("Lot_Number", "") or ""),
+                            "UOM": str(picked.get("UOM", "") or ""),
+                            "override_required": bool(allow_older),
+                            "override_reason": override_note,
+                            "files": captured_files,
+                        })
+                        st.toast(
+                            f"➕ Added {ret_qty} × [{sap}] to the return grid",
+                            icon="📦",
+                        )
+                        st.rerun()
+
+    # ── Draft queue table + bulk submit ─────────────────────────────────────
+    queue = st.session_state[queue_key]
+    st.markdown(
+        f'<div style="display:flex;align-items:center;margin:0.9rem 0 0.5rem 0;">'
+        f'<span style="color:#F0F4F8;font-size:1rem;font-weight:700;">'
+        f'📋 Return Draft Queue</span>'
+        f'<span style="background:rgba(212,175,55,0.18);border:1px solid rgba(212,175,55,0.40);'
+        f'color:#D4AF37;font-size:11px;font-weight:700;padding:1px 8px;'
+        f'border-radius:999px;margin-left:8px;">{len(queue)}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not queue:
+        render_empty_state(
+            icon="↩️",
+            title="No return lines queued",
+            hint="Pick a material above, fill the form, click Add to Grid.",
+        )
+        return
+
+    for idx, row in enumerate(queue):
+        rc1, rc2 = st.columns([10, 1])
+        with rc1:
+            override_pill = (
+                ' <span style="color:#FCA5A5;font-size:11px;font-weight:700;">'
+                '⚠ Override</span>' if row["override_required"] else ""
+            )
+            st.markdown(
+                f'<div style="padding:6px 0;color:#F0F4F8;font-size:13px;">'
+                f'<span style="color:#D4AF37;font-family:monospace;">[{row["sap"]}]</span> '
+                f'{html.escape(row["Equipment_Description"])} — '
+                f'<b>{row["Quantity"]}</b> {html.escape(row["UOM"])} · '
+                f'<span style="color:#7A8FA0;">'
+                f'Reason: {html.escape(row["Reason"])} · '
+                f'Return DN: {html.escape(row["Return_DN_No"])} · '
+                f'Src DN: {html.escape(row["received_dn_no"] or "—")} '
+                f'({html.escape(row["received_date"] or "—")}) · '
+                f'📎 {len(row["files"])} file(s)'
+                f'</span>'
+                f'{override_pill}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        with rc2:
+            if st.button("🗑", key=f"_ret_del_{idx}", use_container_width=True,
+                         help="Remove this line"):
+                st.session_state[queue_key].pop(idx)
+                st.rerun()
+
+    st.write("")
+    bcA, bcB = st.columns([1, 2])
+    with bcA:
+        if st.button("✗ Clear Queue", key="_ret_clear", use_container_width=True):
+            st.session_state[queue_key] = []
+            st.rerun()
+    with bcB:
+        if st.button("📨 Submit Batch to HOD for Approval",
+                     type="primary", key="_ret_batch_submit",
+                     use_container_width=True):
+            class _BytesBlob:
+                def __init__(self, data, name, mime):
+                    self.data = data
+                    self.name = name
+                    self.type = mime
+                def read(self): return self.data
+                def seek(self, _p): return None
+
+            submitted_ids = []
+            for row in queue:
+                picked_dict = {
+                    "Material_Code": row["Material_Code"],
+                    "Equipment_Description": row["Equipment_Description"],
+                    "Date": row["received_date"],
+                    "DN_No": row["received_dn_no"],
+                    "PR_Number": row["PR_Number"],
+                    "Lot_Number": row["Lot_Number"],
+                    "received_qty": row["received_qty"],
+                }
+                rid = submit_return_request(
+                    site_id=site_id, sap_code=row["sap"],
+                    quantity=row["Quantity"],
+                    return_reason=row["Reason"],
+                    return_dn_no=row["Return_DN_No"],
+                    received_receipt_row=picked_dict,
+                    submitted_by=user["username"],
+                    override_required=row["override_required"],
+                    override_reason=row["override_reason"],
+                )
+                submitted_ids.append(rid)
+                for fmeta in row["files"]:
+                    save_entry_attachment(
+                        site_id=site_id, doc_type="return",
+                        doc_number=row["Return_DN_No"],
+                        file_obj=_BytesBlob(fmeta["data"], fmeta["name"], fmeta["type"]),
+                        uploaded_by=user["username"],
+                        entry_table="pending_returns", entry_id=rid,
+                        entry_date=str(datetime.date.today()),
+                    )
+
+            # One WhatsApp ping summarising the batch
+            conn_n = get_connection()
+            try:
+                hod_q = pd.read_sql(
+                    "SELECT Phone_Number FROM users "
+                    "WHERE role='hod' AND Site_ID=? LIMIT 1",
+                    conn_n, params=(site_id,),
+                )
+                if not hod_q.empty and hod_q.iloc[0]["Phone_Number"]:
+                    lines = "\n".join(
+                        f"• {row['Quantity']}x [{row['sap']}] {row['Equipment_Description']} — {row['Reason']}"
+                        for row in queue
+                    )
+                    has_override = any(r["override_required"] for r in queue)
+                    queue_whatsapp_alert(
+                        hod_q.iloc[0]["Phone_Number"],
+                        (
+                            f"↩️ *RETURN BATCH ({site_id})*\n"
+                            f"👤 Store Keeper: {user['username']}\n\n"
+                            f"*Lines ({len(queue)}):*\n{lines}\n\n"
+                            + ("⚠️ One or more lines need 30-day override approval.\n"
+                               if has_override else "")
+                            + "Please review in HOD Portal → Returns."
+                        ),
+                    )
+            finally:
+                conn_n.close()
+
+            st.session_state[queue_key] = []
+            st.toast(
+                f"✅ Submitted {len(submitted_ids)} return line(s) to HOD",
+                icon="📨",
+            )
+            st.rerun()
+
+
+def _render_qr_request_tab(user: dict, site_id: str,
+                           inv_list: pd.DataFrame,
+                           search_options: list) -> None:
+    st.subheader("🏷️ Request QR Labels")
+    st.caption(
+        "Pick one or more materials and set the label quantity per item, "
+        "then submit the batch for HOD approval. After approval, HOD "
+        "downloads the QR PDF from the HOD Portal."
+    )
+    from database import submit_qr_request, list_qr_requests
+
+    sel_items = st.multiselect(
+        "Search materials by SAP / description (multi-select)",
+        options=search_options,
+        key="qr_req_multi",
+        placeholder="Start typing — pick one or more materials…",
+    )
+
+    # Per-item qty editor (renders rows for the selected items)
+    qty_map: dict[str, int] = {}
+    if sel_items:
+        st.caption("Set number of labels per item:")
+        for itm in sel_items:
+            sap = itm.split("]")[0].replace("[", "").strip()
+            qty_map[sap] = int(st.number_input(
+                f"{itm}", min_value=1, step=1, value=1,
+                key=f"qr_qty_{sap}",
+            ))
+
+    if st.button("📨 Submit Batch for HOD Approval",
+                 type="primary", key="qr_req_btn",
+                 disabled=not sel_items):
+        submitted = 0
+        for sap, q in qty_map.items():
+            submit_qr_request(
+                site_id=site_id, sap_code=sap,
+                requested_by=user["username"], quantity=q,
+            )
+            submitted += 1
+        st.toast(f"✅ Submitted {submitted} request(s) to HOD", icon="🏷️")
+        st.rerun()
+
+    st.markdown("---")
+    st.caption("Your recent requests:")
+    mine = list_qr_requests(site_id=site_id)
+    if not mine.empty:
+        mine_view = mine[mine["requested_by"] == user["username"]]
+        if mine_view.empty:
+            st.caption("No requests yet.")
+        else:
+            st.dataframe(
+                mine_view[["id", "SAP_Code", "Equipment_Description",
+                           "Quantity", "status", "requested_at",
+                           "approved_by", "approved_at"]],
+                use_container_width=True, hide_index=True,
+            )
+    else:
+        st.caption("No requests yet.")
 
 
 # ===========================================================================

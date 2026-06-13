@@ -70,7 +70,18 @@ DEFAULT_SITE     = "HQ"   # Site assigned to all legacy rows on schema upgrade
 # ---------------------------------------------------------------------------
 SYSTEM_COLS         = {"id", "Timestamp", "created_at", "Site_ID", "status"}
 EXTENDED_ISSUE_COLS = ["Date", "Issued_By", "Issued_To", "Tank_No", "Serial_No", "PR_Number"]
-OPTIONAL_ISSUE_COLS = {"Remarks", "Serial_No", "PR_Number", "Tank_No"}
+OPTIONAL_ISSUE_COLS: set[str] = set()  # All entry fields are mandatory (2026-06).
+
+# Material categories — drive category-filtered reports and the rubber-MTC
+# workflow. "Rubber materials" requires an MTC doc on receipt staging.
+MATERIAL_CATEGORIES = [
+    "Consumable", "Equipments", "Utilities", "Maintenance",
+    "Others", "Rubber materials", "Tools", "QC items",
+]
+RUBBER_CATEGORY = "Rubber materials"
+
+# Allowed attachment MIME suffixes (PDF, JPEG, JPG, XLSX per 2026-06 spec).
+ATTACHMENT_ALLOWED = ("pdf", "jpeg", "jpg", "xlsx")
 
 # ---------------------------------------------------------------------------
 # CHART SETTINGS

@@ -424,12 +424,22 @@ def _render_generate_tab(user: dict) -> None:
             "Format", ["PDF", "Excel", "CSV"], key="_rep_fmt",
         )
 
-    include_sar = st.checkbox(
-        "Include SAR / cost columns",
-        value=True,
-        key="_rep_include_sar",
-        help="Uncheck to produce a report without SAR values and unit-cost columns.",
-    )
+    from config import MATERIAL_CATEGORIES
+    cfg_c1, cfg_c2 = st.columns([1, 1])
+    with cfg_c1:
+        include_sar = st.checkbox(
+            "Include SAR / cost columns",
+            value=True,
+            key="_rep_include_sar",
+            help="Uncheck to produce a report without SAR values and unit-cost columns.",
+        )
+    with cfg_c2:
+        category_filter = st.selectbox(
+            "Filter by Category (Optional)",
+            ["All Categories"] + MATERIAL_CATEGORIES,
+            key="_rep_category",
+            help="Only include items whose inventory Category matches.",
+        )
 
     # Run + preview
     if st.button("▶ Generate Report", type="primary", key="_rep_run"):
@@ -440,11 +450,29 @@ def _render_generate_tab(user: dict) -> None:
                 df, summary = _run_report(
                     st.session_state["_rep_type"], date_from, date_to, site_id,
                 )
+                # Apply category filter post-fetch — joins inventory.Category
+                # for the SAP codes present in the result.
+                if category_filter != "All Categories" and df is not None and not df.empty and "SAP_Code" in df.columns:
+                    conn_cat = get_connection()
+                    try:
+                        sap_list = df["SAP_Code"].astype(str).str.strip().unique().tolist()
+                        placeholders = ",".join(["?"] * len(sap_list)) or "''"
+                        cat_df = pd.read_sql(
+                            f"SELECT SAP_Code, COALESCE(Category,'Others') AS Category "
+                            f"FROM inventory WHERE SAP_Code IN ({placeholders})",
+                            conn_cat, params=tuple(sap_list),
+                        )
+                    finally:
+                        conn_cat.close()
+                    keep_codes = set(cat_df[cat_df["Category"] == category_filter]["SAP_Code"])
+                    df = df[df["SAP_Code"].astype(str).str.strip().isin(keep_codes)].reset_index(drop=True)
+                    summary = {**(summary or {}), "Items": len(df), "Category": category_filter}
             st.session_state["_rep_last_result"] = {
                 "df": df, "summary": summary, "type": rt[0],
                 "fmt": fmt, "from": date_from, "to": date_to,
                 "site_label": site_label,
                 "include_sar": include_sar,
+                "category": category_filter,
             }
             st.toast("✅ Report ready — preview below", icon="📊")
             st.rerun()

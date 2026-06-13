@@ -71,6 +71,29 @@ seed_default_users()  # Seeds admin/supervisor/worker if users table is empty
 
 
 # ===========================================================================
+# BACKGROUND WORKER — WhatsApp queue processor
+# @st.cache_resource runs this exactly ONCE per server lifecycle, regardless
+# of page reruns or concurrent users.
+# ===========================================================================
+@st.cache_resource
+def _start_whatsapp_worker() -> str:
+    import threading
+    try:
+        from whatsapp_worker import run_worker_loop
+        t = threading.Thread(
+            target=run_worker_loop,
+            daemon=True,
+            name="whatsapp_worker",
+        )
+        t.start()
+        return "started"
+    except Exception as e:
+        return f"failed: {e}"   # Non-critical — app works without notifications
+
+_start_whatsapp_worker()
+
+
+# ===========================================================================
 # AUTH GATE  — unauthenticated users see ONLY the login screen
 # ===========================================================================
 def _require_login() -> dict:
@@ -81,7 +104,17 @@ def _require_login() -> dict:
     return user
 
 
+# Pages that are role-locked exactly (NOT inherited via hierarchy).
+# Entry Log is for Store Keepers only — HOD reviews in HOD Portal, Admin in Admin Portal.
+_EXACT_ROLE_PAGES = {
+    "📝 Entry Log": {"store_keeper"},
+}
+
+
 def _can_access(role: str, page: str) -> bool:
+    exact = _EXACT_ROLE_PAGES.get(page)
+    if exact is not None:
+        return role in exact
     required = PAGE_ACCESS.get(page, "admin")
     return ROLE_HIERARCHY.get(role, -1) >= ROLE_HIERARCHY.get(required, 99)
 

@@ -208,7 +208,7 @@ def _eod_commit_dialog() -> None:
         if st.button("Close", width="stretch", key="_eod_blocked_close"):
             for k in ("_eod_pending_df", "_eod_pending_site",
                       "_eod_pending_user", "_eod_pending_count",
-                      "_eod_confirm_text"):
+                      "_eod_confirm_check"):
                 st.session_state.pop(k, None)
             st.rerun()
         return
@@ -219,21 +219,21 @@ def _eod_commit_dialog() -> None:
         "This moves data into the permanent ledger and recomputes live stock. "
         "**It cannot be undone.**"
     )
-    confirm_text = st.text_input(
-        "Type **COMMIT** to enable the button:",
-        key="_eod_confirm_text",
-        placeholder="COMMIT",
+    confirm_checked = st.checkbox(
+        "I have reviewed the pending rows and confirm the commit.",
+        key="_eod_confirm_check",
+        value=False,
     )
     c1, c2 = st.columns(2)
     with c1:
         if st.button("Cancel", width="stretch", key="_eod_cancel_btn"):
             for k in ("_eod_pending_df", "_eod_pending_site",
                       "_eod_pending_user", "_eod_pending_count",
-                      "_eod_confirm_text"):
+                      "_eod_confirm_check"):
                 st.session_state.pop(k, None)
             st.rerun()
     with c2:
-        disabled = confirm_text.strip() != "COMMIT"
+        disabled = not confirm_checked
         if st.button(
             "Confirm Commit",
             type="primary",
@@ -288,7 +288,7 @@ def _eod_commit_dialog() -> None:
 
             for k in ("_eod_pending_df", "_eod_pending_site",
                       "_eod_pending_user", "_eod_pending_count",
-                      "_eod_confirm_text"):
+                      "_eod_confirm_check"):
                 st.session_state.pop(k, None)
 
             st.balloons()
@@ -846,7 +846,7 @@ def _render_crosssite_tab(user: dict, site_id: str) -> None:
                         )
                     finally:
                         _c2.close()
-                    st.toast("Rejected", icon="✗")
+                    st.toast("Rejected", icon="🚫")
                     st.rerun()
 
 
@@ -992,6 +992,37 @@ def _render_pending_receipts_tab(user: dict, site_id: str) -> None:
         unsafe_allow_html=True,
     )
 
+    # ── Rubber MTC missing — banner + logistics email draft (2026-06)
+    from database import get_missing_mtc_for_site, mark_mtc_emailed
+    missing_mtc = get_missing_mtc_for_site(site_id)
+    if missing_mtc is not None and not missing_mtc.empty:
+        st.error(
+            f"⚠️ **{len(missing_mtc)} rubber item(s) received without MTC.** "
+            "Please follow up with Logistics."
+        )
+        with st.expander("Show rubber items missing MTC", expanded=False):
+            st.dataframe(
+                missing_mtc[["SAP_Code", "Equipment_Description", "Lot_Number",
+                             "Quantity", "submitted_by", "submitted_at"]],
+                use_container_width=True, hide_index=True,
+            )
+            mc1, mc2 = st.columns([1, 1])
+            with mc1:
+                if st.button("✉️ Draft Logistics Email", key="_hod_mtc_email"):
+                    from mailer import draft_rubber_mtc_email
+                    ok, msg = draft_rubber_mtc_email(site_id, missing_mtc)
+                    if ok:
+                        mark_mtc_emailed([int(x) for x in missing_mtc["id"].tolist()])
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            with mc2:
+                if st.button("✓ Mark all as sent", key="_hod_mtc_mark"):
+                    mark_mtc_emailed([int(x) for x in missing_mtc["id"].tolist()])
+                    st.toast("Marked sent_to_logistics", icon="✅")
+                    st.rerun()
+
     conn_pr = get_connection()
     try:
         pending_rcpt_df = get_pending_receipts_for_hod(conn_pr, site_id=site_id)
@@ -1026,8 +1057,9 @@ def _render_pending_receipts_tab(user: dict, site_id: str) -> None:
             st.toast(f"✅ {committed} receipt(s) committed", icon="✅")
             st.rerun()
 
-    # Display table
-    show_cols = [c for c in ["Date", "SAP_Code", "Equipment_Description", "UOM",
+    # Display table — SAP → Material_Code → Equipment_Description per spec.
+    show_cols = [c for c in ["Date", "SAP_Code", "Material_Code",
+                             "Equipment_Description", "UOM",
                              "Quantity", "Supplier", "PR_Number", "Site_ID"]
                  if c in pending_rcpt_df.columns]
     rows_html = []
@@ -1077,6 +1109,8 @@ def _render_pending_receipts_tab(user: dict, site_id: str) -> None:
             st.markdown(
                 f'<div style="padding:6px 0;color:{_C["text"]};font-size:12.5px;">'
                 f'<span style="color:{_C["gold"]};font-family:monospace;">[{_esc(r.get("SAP_Code"))}]</span> '
+                f'<span style="color:{_C["muted"]};">Mat: {_esc(r.get("Material_Code"))}</span> · '
+                f'<b>{_esc(r.get("Equipment_Description"))}</b> — '
                 f'<b>{_esc(r.get("Quantity"))}</b> {_esc(r.get("UOM"))} · '
                 f'<span style="color:{_C["muted"]};">{_esc(r.get("Supplier"))}</span></div>',
                 unsafe_allow_html=True,
@@ -1085,7 +1119,7 @@ def _render_pending_receipts_tab(user: dict, site_id: str) -> None:
             if st.button("✗ Reject", key=f"_hod_rcpt_rej_{rid}", use_container_width=True):
                 if reject_pending_receipt(rid, reason=f"Rejected by HOD {user['username']}",
                                           username=user["username"]):
-                    st.toast(f"Receipt #{rid} rejected", icon="✗")
+                    st.toast(f"Receipt #{rid} rejected", icon="🚫")
                     st.rerun()
 
 
@@ -1382,22 +1416,55 @@ def _render_receive_tab(user: dict, site_id: str) -> None:
     receipt_extra_cols = [row[1] for row in _rc.fetchall() if row[1] not in _RECEIPT_SPECIAL]
 
     with st.form("hod_receive_form", clear_on_submit=True):
+        # Build a flat list of (render_fn, key) so columns balance row-by-row.
+        # All fields mandatory per 2026-06 spec — no '(Optional)' suffix.
+        receipt_extra_vals: dict[str, str] = {}
+        fixed_fields = [
+            ("material",  "Select Material *",       "selectbox_material"),
+            ("qty",       "Quantity Received *",     "number_qty"),
+            ("date",      "Delivery Date *",         "date_delivery"),
+            ("exp",       "Expiry Date (Optional)",  "date_expiry"),
+        ]
+        all_fields = fixed_fields + [("extra", f"{c} *", c) for c in receipt_extra_cols]
+
+        # Split half/half so both columns are the same height.
+        midpoint = (len(all_fields) + 1) // 2
+        left_fields, right_fields = all_fields[:midpoint], all_fields[midpoint:]
         col1, col2 = st.columns(2)
+        sel_item = qty = date_val = exp_date = None
+
+        def _render_one(kind, label, key):
+            nonlocal sel_item, qty, date_val, exp_date
+            if kind == "material":
+                sel_item = st.selectbox(label, material_options, index=None, key=key)
+            elif kind == "qty":
+                qty = st.number_input(label, min_value=0.1, step=1.0, key=key)
+            elif kind == "date":
+                date_val = st.date_input(label, datetime.date.today(), key=key)
+            elif kind == "exp":
+                exp_date = st.date_input(label, value=None, key=key)
+            else:
+                receipt_extra_vals[key] = st.text_input(label, key=f"_recv_{key}")
+
         with col1:
-            sel_item = st.selectbox("Select Material*", material_options, index=None)
-            qty = st.number_input("Quantity Received*", min_value=0.1, step=1.0)
-            date_val = st.date_input("Delivery Date*", datetime.date.today())
+            for f in left_fields:
+                _render_one(*f)
         with col2:
-            exp_date = st.date_input("Expiry Date (Optional)", value=None)
-            receipt_extra_vals = {}
-            for _col in receipt_extra_cols:
-                _optional = _col in {"Remarks", "Supplier"}
-                _label = f"{_col} (Optional)" if _optional else f"{_col}*"
-                receipt_extra_vals[_col] = st.text_input(_label)
+            for f in right_fields:
+                _render_one(*f)
 
         if st.form_submit_button("💾 Save Receipt", type="primary"):
-            if not sel_item:
-                st.error("⚠️ Please select a material.")
+            # All-mandatory check
+            missing = []
+            if not sel_item:           missing.append("Material")
+            if not qty:                missing.append("Quantity")
+            if not date_val:           missing.append("Delivery Date")
+            # Expiry_Date is OPTIONAL — skip.
+            for k, v in receipt_extra_vals.items():
+                if not str(v).strip():
+                    missing.append(k)
+            if missing:
+                st.error(f"⚠️ All fields are mandatory. Missing: {', '.join(missing)}")
             else:
                 sap_code = sel_item.split("]")[0].replace("[", "").strip()
                 pr_val = selected_pr if selected_pr != "-- None (Direct Purchase) --" else None
@@ -1772,7 +1839,7 @@ def _render_adjustments_tab(user: dict, site_id: str) -> None:
                         reason=f"Rejected by HOD {user['username']}",
                     )
                     if ok:
-                        st.toast(msg, icon="✗")
+                        st.toast(msg, icon="🚫")
                         st.rerun()
                     else:
                         st.error(msg)
@@ -1963,6 +2030,286 @@ def _render_site_config_tab(user: dict, site_id: str) -> None:
 
 
 # ===========================================================================
+# TAB — RETURNS: review SK-staged returns, approve → ledger row + email
+# ===========================================================================
+def _render_returns_tab(user: dict, site_id: str) -> None:
+    from database import (
+        get_pending_returns, approve_return_request, reject_return_request,
+    )
+
+    st.markdown(
+        f'<h3 style="color:{_C["text"]};font-size:16px;font-weight:600;'
+        f'margin:0 0 4px 0;">↩️ Pending Returns — {_esc(site_id)}</h3>'
+        f'<p style="color:{_C["muted"]};font-size:12.5px;margin:0 0 12px 0;">'
+        f'Returns staged by Store Keepers. Approving writes to the <code>returns</code> '
+        f'ledger (Closing_Stock recomputes) and opens a logistics email draft.</p>',
+        unsafe_allow_html=True,
+    )
+
+    pending = get_pending_returns(site_id=site_id)
+    if pending is None or pending.empty:
+        st.success("✅ No pending returns.")
+        return
+
+    # Stat strip
+    n_total = len(pending)
+    n_override = int((pending["override_required"] == 1).sum())
+    render_hero_metrics([
+        {"label": "Pending returns", "value": n_total, "tone": "low" if n_total else "ok"},
+        {"label": "Beyond 30-day window", "value": n_override,
+         "tone": "critical" if n_override else "neutral",
+         "delta": "needs override" if n_override else "—"},
+    ])
+    st.write("")
+
+    for _, r in pending.iterrows():
+        rid = int(r["id"])
+        is_override = int(r.get("override_required") or 0) == 1
+        border_color = "#EF4444" if is_override else "#2A4060"
+        st.markdown(
+            f'<div style="border:1px solid {border_color}66;'
+            f'border-radius:8px;padding:10px 14px;margin:6px 0;'
+            f'background:rgba(30,48,80,0.18);">'
+            f'<div style="color:{_C["text"]};font-weight:600;font-size:13.5px;">'
+            f'<span style="color:{_C["gold"]};font-family:monospace;">'
+            f'[{_esc(r["SAP_Code"])}]</span>'
+            f' · Mat: {_esc(r.get("Material_Code") or "—")}'
+            f' · {_esc(r.get("Equipment_Description"))}'
+            f'</div>'
+            f'<div style="color:{_C["muted"]};font-size:12px;margin-top:3px;">'
+            f'Qty: <b style="color:{_C["text"]};">{_esc(r["Quantity"])}</b>'
+            f' / Received: {_esc(r.get("received_qty"))}'
+            f'  ·  Reason: {_esc(r["Return_Reason"])}'
+            f'  ·  Return DN: {_esc(r["Return_DN_No"])}'
+            f'  ·  Original DN: {_esc(r.get("received_dn_no") or "—")}'
+            f' ({_esc(r.get("received_date") or "—")})'
+            f'  ·  by {_esc(r["submitted_by"])} on {_esc(r["submitted_at"])}'
+            f'</div>'
+            + (f'<div style="color:#FCA5A5;font-size:12px;margin-top:4px;">'
+               f'⚠️ <b>Override requested.</b> Reason: {_esc(r.get("override_reason") or "—")}'
+               f'</div>' if is_override else "")
+            + '</div>',
+            unsafe_allow_html=True,
+        )
+        cA, cB, _spc = st.columns([1, 1, 5])
+        with cA:
+            if st.button("✓ Approve", key=f"_ret_appr_{rid}", type="primary",
+                         use_container_width=True):
+                ok, msg = approve_return_request(rid, approver=user["username"])
+                if not ok:
+                    st.error(msg)
+                else:
+                    # Open the logistics email draft
+                    from mailer import draft_return_logistics_email
+                    row_dict = {k: r.get(k) for k in r.index}
+                    sent_ok, sent_msg = draft_return_logistics_email(site_id, row_dict)
+                    bust_inventory_cache()
+                    st.toast("Approved · stock updated", icon="✅")
+                    if sent_ok:
+                        st.success(f"Approved #{rid}. {sent_msg}")
+                    else:
+                        st.warning(f"Approved #{rid}, but email draft failed: {sent_msg}")
+                    st.rerun()
+        with cB:
+            if st.button("✗ Reject", key=f"_ret_rej_{rid}",
+                         use_container_width=True):
+                reject_return_request(rid, approver=user["username"],
+                                      reason="Rejected by HOD")
+                st.toast(f"Rejected #{rid}", icon="🚫")
+                st.rerun()
+
+
+# ===========================================================================
+# TAB 12 — DOC: attachment browser (Consumption / Receipt / Return sub-tabs)
+# ===========================================================================
+def _render_doc_tab(user: dict, site_id: str) -> None:
+    st.markdown(
+        f'<h3 style="color:{_C["text"]};font-size:16px;font-weight:600;'
+        f'margin:0 0 4px 0;">📎 Document Library — {_esc(site_id)}</h3>'
+        f'<p style="color:{_C["muted"]};font-size:12.5px;margin:0 0 14px 0;">'
+        f'Browse and download files attached by Store Keepers during '
+        f'Consumption / Receipt / Returnable submissions.</p>',
+        unsafe_allow_html=True,
+    )
+
+    sub_consumption, sub_receipt, sub_return = st.tabs([
+        "📋 Consumption", "📥 Receipt", "↩️ Return",
+    ])
+    for sub_widget, doc_type, label in [
+        (sub_consumption, "consumption", "Consumption"),
+        (sub_receipt,     "receipt",     "Receipt"),
+        (sub_return,      "return",      "Return"),
+    ]:
+        with sub_widget:
+            _render_doc_subtab(site_id, doc_type, label)
+
+
+def _render_doc_subtab(site_id: str, doc_type: str, label: str) -> None:
+    today = datetime.date.today()
+    f1, f2, f3 = st.columns([1, 1, 2])
+    with f1:
+        df_from = st.date_input(
+            f"From", value=today - datetime.timedelta(days=30),
+            key=f"_doc_{doc_type}_from",
+        )
+    with f2:
+        df_to = st.date_input(
+            f"To", value=today, key=f"_doc_{doc_type}_to",
+        )
+    with f3:
+        doc_filter = st.text_input(
+            "Filter by Doc Number (optional)",
+            placeholder="DN_No / DDMMYY / Return DN…",
+            key=f"_doc_{doc_type}_num",
+        )
+
+    conn = get_connection()
+    try:
+        q = (
+            "SELECT id, doc_number, file_name, mime_type, file_size, "
+            "       entry_date, uploaded_by, uploaded_at, entry_table, entry_id "
+            "FROM entry_attachments "
+            "WHERE Site_ID = ? AND doc_type = ? "
+            "AND COALESCE(entry_date, DATE(uploaded_at)) BETWEEN ? AND ?"
+        )
+        params: list = [site_id, doc_type, df_from.isoformat(), df_to.isoformat()]
+        if doc_filter.strip():
+            q += " AND doc_number LIKE ?"
+            params.append(f"%{doc_filter.strip()}%")
+        q += " ORDER BY uploaded_at DESC"
+        rows_df = pd.read_sql(q, conn, params=tuple(params))
+    finally:
+        conn.close()
+
+    if rows_df.empty:
+        st.caption(f"No {label.lower()} attachments in this window.")
+        return
+
+    st.caption(f"{len(rows_df)} file(s).")
+    for _, r in rows_df.iterrows():
+        c1, c2, c3 = st.columns([5, 2, 1])
+        with c1:
+            st.markdown(
+                f"**{_esc(r['file_name'])}** &nbsp; "
+                f"<span style='color:{_C['muted']};font-size:12px;'>"
+                f"Doc #{_esc(r['doc_number'])} · "
+                f"{int(r['file_size'] or 0):,} bytes · "
+                f"by {_esc(r['uploaded_by'])} on {_esc(r['uploaded_at'])}"
+                f"</span>",
+                unsafe_allow_html=True,
+            )
+        with c2:
+            st.caption(f"entry: {r['entry_table']} #{r['entry_id']}")
+        with c3:
+            conn2 = get_connection()
+            try:
+                blob_row = conn2.execute(
+                    "SELECT file_blob, mime_type FROM entry_attachments WHERE id = ?",
+                    (int(r["id"]),),
+                ).fetchone()
+            finally:
+                conn2.close()
+            if blob_row and blob_row[0]:
+                st.download_button(
+                    "⬇️", data=blob_row[0],
+                    file_name=str(r["file_name"]),
+                    mime=blob_row[1] or "application/octet-stream",
+                    key=f"_doc_dl_{doc_type}_{r['id']}",
+                )
+
+
+# ===========================================================================
+# TAB 13 — QR APPROVAL (SK submits → HOD approves → HOD downloads)
+# ===========================================================================
+def _render_qr_approval_tab(user: dict, site_id: str) -> None:
+    st.markdown(
+        f'<h3 style="color:{_C["text"]};font-size:16px;font-weight:600;'
+        f'margin:0 0 4px 0;">🏷️ QR Label Approval — {_esc(site_id)}</h3>'
+        f'<p style="color:{_C["muted"]};font-size:12.5px;margin:0 0 14px 0;">'
+        f'Review and approve QR-label print requests submitted by Store Keepers. '
+        f'Approved batches become downloadable as PDF here.</p>',
+        unsafe_allow_html=True,
+    )
+    from database import (
+        list_qr_requests, approve_qr_request, reject_qr_request,
+    )
+    sub_pending, sub_approved = st.tabs(["⏳ Pending", "✅ Approved"])
+    with sub_pending:
+        df_p = list_qr_requests(site_id=site_id, status="pending")
+        if df_p.empty:
+            st.caption("No pending QR requests.")
+        else:
+            # Multi-select bulk approve / reject.
+            df_view = df_p[[
+                "id", "SAP_Code", "Material_Code", "Equipment_Description",
+                "Quantity", "requested_by", "requested_at",
+            ]].copy()
+            df_view.insert(0, "✓ Select", False)
+            edited = st.data_editor(
+                df_view,
+                column_config={
+                    "✓ Select": st.column_config.CheckboxColumn("✓ Select", default=False),
+                    "id": st.column_config.NumberColumn("ID", disabled=True),
+                    "SAP_Code": st.column_config.TextColumn("SAP", disabled=True),
+                    "Material_Code": st.column_config.TextColumn("Mat Code", disabled=True),
+                    "Equipment_Description": st.column_config.TextColumn("Material", disabled=True),
+                    "Quantity": st.column_config.NumberColumn("Qty", disabled=True),
+                    "requested_by": st.column_config.TextColumn("By", disabled=True),
+                    "requested_at": st.column_config.TextColumn("At", disabled=True),
+                },
+                hide_index=True, use_container_width=True, key="_qr_pending_editor",
+            )
+            picked_ids = [int(x) for x in edited.loc[edited["✓ Select"], "id"].tolist()]
+            ba1, ba2, ba3 = st.columns([1, 1, 4])
+            with ba1:
+                if st.button(f"✓ Approve Selected ({len(picked_ids)})",
+                             type="primary", disabled=not picked_ids,
+                             key="_qr_bulk_appr"):
+                    for rid in picked_ids:
+                        approve_qr_request(rid, approver=user["username"])
+                    st.toast(f"Approved {len(picked_ids)} request(s)", icon="✅")
+                    st.rerun()
+            with ba2:
+                if st.button(f"✗ Reject Selected ({len(picked_ids)})",
+                             disabled=not picked_ids, key="_qr_bulk_rej"):
+                    for rid in picked_ids:
+                        reject_qr_request(rid, approver=user["username"],
+                                          reason="Rejected by HOD")
+                    st.toast(f"Rejected {len(picked_ids)} request(s)", icon="🚫")
+                    st.rerun()
+    with sub_approved:
+        df_a = list_qr_requests(site_id=site_id, status="approved")
+        if df_a.empty:
+            st.caption("No approved QR requests waiting for download.")
+        else:
+            st.dataframe(
+                df_a[["id", "SAP_Code", "Material_Code", "Equipment_Description",
+                      "Quantity", "approved_by", "approved_at"]],
+                use_container_width=True, hide_index=True,
+            )
+            if st.button("📥 Download QR Labels PDF for ALL approved", type="primary"):
+                try:
+                    from reports import generate_qr_labels_pdf
+                    items: list[dict] = []
+                    for _, r in df_a.iterrows():
+                        for _ in range(int(r["Quantity"] or 1)):
+                            items.append({
+                                "SAP_Code": r["SAP_Code"],
+                                "Equipment_Description": r["Equipment_Description"],
+                            })
+                    pdf_bytes = generate_qr_labels_pdf(items)
+                    st.download_button(
+                        "Download PDF",
+                        data=pdf_bytes,
+                        file_name=f"GI_QR_Labels_{site_id}_{datetime.date.today()}.pdf",
+                        mime="application/pdf",
+                        type="primary",
+                    )
+                except ImportError as e:
+                    st.error(str(e))
+
+
+# ===========================================================================
 # PAGE  — top-level routing
 # ===========================================================================
 def page_hod_portal(user: dict) -> None:
@@ -2027,21 +2374,26 @@ def page_hod_portal(user: dict) -> None:
     # Design-matching tab ORDER:
     # EOD → Cross-Site → Burn Rate → Pending Receipts →
     # Purchase Requests → Receive Material → Shelf-Life → Notifications → My Requests
+    # NOTE (2026-06): "📥 Receive Material" moved to Store Keeper's Receipt
+    # Staging tab. HOD now only reviews / approves in "📬 Pending Receipts".
     tab_labels = [
         "📤 EOD Commit", "🌐 Cross-Site", "📈 Burn Rate",
-        "📬 Pending Receipts", "🧮 Adjustments", "📋 Purchase Requests",
-        "📥 Receive Material", "⚠️ Shelf-Life", "🔔 Notifications",
-        "✅ My Requests", "⚙️ Site Config",
+        "📬 Pending Receipts", "↩️ Returns", "🧮 Adjustments",
+        "📋 Purchase Requests",
+        "⚠️ Shelf-Life", "🔔 Notifications",
+        "✅ My Requests", "⚙️ Site Config", "📎 DOC", "🏷️ QR Approval",
     ]
     tabs = st.tabs(tab_labels)
     with tabs[0]: _render_eod_tab(user, site_id)
     with tabs[1]: _render_crosssite_tab(user, site_id)
     with tabs[2]: _render_burn_rate_tab(site_id)
     with tabs[3]: _render_pending_receipts_tab(user, site_id)
-    with tabs[4]: _render_adjustments_tab(user, site_id)
-    with tabs[5]: _render_pr_tab(user, site_id)
-    with tabs[6]: _render_receive_tab(user, site_id)
+    with tabs[4]: _render_returns_tab(user, site_id)
+    with tabs[5]: _render_adjustments_tab(user, site_id)
+    with tabs[6]: _render_pr_tab(user, site_id)
     with tabs[7]: _render_shelflife_tab(user, site_id)
     with tabs[8]: _render_notifications_tab(user, site_id)
     with tabs[9]: _render_my_requests_tab(user, site_id)
     with tabs[10]: _render_site_config_tab(user, site_id)
+    with tabs[11]: _render_doc_tab(user, site_id)
+    with tabs[12]: _render_qr_approval_tab(user, site_id)

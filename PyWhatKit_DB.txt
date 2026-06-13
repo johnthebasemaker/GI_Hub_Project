@@ -378,3 +378,48 @@ Time: 22:56
 Phone Number: +966569233053
 Message: 🎉 *ACCESS GRANTED*Welcome to the General Industries HUB, Akilan!Your request for the 'hod' role at CNCEC has been approved by the Admin. You may now log in to the system.
 --------------------
+Date: 11/6/2026
+Time: 22:32
+Phone Number: +966569233053
+Message: 📦 *RECEIPT STAGING SUBMITTED (CNCEC)*👤 Store Keeper: John*Items Submitted (1):*• 1.0x [1002] Concrete BlocksPlease review in HOD Portal → Pending Receipts.
+--------------------
+Date: 11/6/2026
+Time: 22:33
+Phone Number: +966569233053
+Message: 📦 *RECEIPT STAGING SUBMITTED (CNCEC)*👤 Store Keeper: John*Items Submitted (6):*• 1.0x [1004] DIESEL GENERATOR (3 PHASE 220/380 V 110.0 KVA)• 2.0x [1290] Office Table• 2.0x [1291] Office Chair• 2.0x [1292] Drawer• 3.0x [1293] Dip Tray• 2.0x [1093] Air Hose 3/4" 15 M Please review in HOD Portal → Pending Receipts.
+--------------------
+Date: 11/6/2026
+Time: 22:35
+Phone Number: +966569233053
+Message: 📝 *ISSUE STAGING SUBMITTED (CNCEC)*👤 Store Keeper: admin📦 *Submitted Items (1):*• 1.0x [1004] DIESEL GENERATOR (3 PHASE 220/380 V 110.0 KVA)Queue is ready for your EOD commit review.
+--------------------
+Date: 12/6/2026
+Time: 14:49
+Phone Number: +966569233053
+Message: 📦 *RECEIPT STAGING SUBMITTED (CNCEC)*👤 Store Keeper: John*Items Submitted (2):*• 2.1x [1087] AIR HORN • 2.1x [1084] PLASTIC BUCKET 10 LPlease review in HOD Portal → Pending Receipts.
+--------------------
+Date: 12/6/2026
+Time: 14:50
+Phone Number: +966569233053
+Message: ↩️ *RETURN REQUEST (CNCEC)*👤 Store Keeper: John📦 1.0 x [1004] DIESEL GENERATOR (3 PHASE 220/380 V 110.0 KVA)Reason: MaintenanceReturn DN: adfPlease review in HOD Portal → Returns.
+--------------------
+Date: 12/6/2026
+Time: 14:52
+Phone Number: +966569233053
+Message: ↩️ *RETURN REQUEST (CNCEC)*👤 Store Keeper: John📦 1.0 x [1004] DIESEL GENERATOR (3 PHASE 220/380 V 110.0 KVA)Reason: MaintenanceReturn DN: adfPlease review in HOD Portal → Returns.
+--------------------
+Date: 12/6/2026
+Time: 14:53
+Phone Number: +966569233053
+Message: ↩️ *RETURN REQUEST (CNCEC)*👤 Store Keeper: John📦 1.0 x [1004] DIESEL GENERATOR (3 PHASE 220/380 V 110.0 KVA)Reason: MaintenanceReturn DN: adfPlease review in HOD Portal → Returns.
+--------------------
+Date: 12/6/2026
+Time: 14:55
+Phone Number: +966569233053
+Message: ↩️ *RETURN REQUEST (CNCEC)*👤 Store Keeper: John📦 1.0 x [1004] DIESEL GENERATOR (3 PHASE 220/380 V 110.0 KVA)Reason: MaintenanceReturn DN: adfPlease review in HOD Portal → Returns.
+--------------------
+Date: 12/6/2026
+Time: 14:56
+Phone Number: +966569233053
+Message: ↩️ *RETURN REQUEST (CNCEC)*👤 Store Keeper: John📦 1.0 x [1004] DIESEL GENERATOR (3 PHASE 220/380 V 110.0 KVA)Reason: MaintenanceReturn DN: adfPlease review in HOD Portal → Returns.
+--------------------

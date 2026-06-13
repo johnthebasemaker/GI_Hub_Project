@@ -40,8 +40,43 @@ from typing import Any, Optional
 from ai.client import (
     MODEL_VISION,
     OLLAMA_AVAILABLE,
+    OLLAMA_HOST,
+    list_ollama_models,
     ollama_vision_generate,
 )
+
+
+def _vision_preflight(model: str) -> Optional[str]:
+    """
+    Return a friendly error string if image OCR can't run; None if good to go.
+    Catches the two common setup mistakes: server unreachable, vision model
+    not pulled.
+    """
+    if not OLLAMA_AVAILABLE:
+        return (
+            f"Ollama server not reachable at `{OLLAMA_HOST}`. "
+            "Locally: run `ollama serve` (or it's already running — check `ollama ps`). "
+            "On Streamlit Cloud: set `[ollama] host = \"...\"` in App Secrets "
+            "pointing at your tunneled local instance."
+        )
+    installed = list_ollama_models()
+    if installed and model not in installed:
+        # Suggest a close match if user has a similar one.
+        suggestion = next(
+            (m for m in installed if "vl" in m.lower() or "vision" in m.lower()),
+            None,
+        )
+        hint = (
+            f"Found these vision-capable models instead: `{suggestion}` "
+            "— set `OLLAMA_VISION_MODEL` env var or `[ollama] vision_model` "
+            "in Streamlit Secrets to use it."
+            if suggestion else
+            f"Pull it once with:\n```\nollama pull {model}\n```"
+        )
+        return (
+            f"Vision model `{model}` not installed on `{OLLAMA_HOST}`. {hint}"
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -156,14 +191,9 @@ def extract_consumption_from_image(
     Run the vision model on `image_bytes` and return a parsed list of
     consumption rows. Never raises — failures show as ok=False.
     """
-    if not OLLAMA_AVAILABLE:
-        return ConsumptionResult(
-            ok=False, rows=[],
-            message=(
-                "Local AI server not reachable. Start `ollama serve` and pull "
-                f"`{model or MODEL_VISION}` to enable image OCR."
-            ),
-        )
+    err = _vision_preflight(model or MODEL_VISION)
+    if err:
+        return ConsumptionResult(ok=False, rows=[], message=err)
     try:
         raw = ollama_vision_generate(
             model or MODEL_VISION,
@@ -191,14 +221,9 @@ def extract_delivery_note_from_image(
     model: str = None,
 ) -> DeliveryNoteResult:
     """Run the vision model on a delivery-note image; return header + items."""
-    if not OLLAMA_AVAILABLE:
-        return DeliveryNoteResult(
-            ok=False, header={}, items=[],
-            message=(
-                "Local AI server not reachable. Start `ollama serve` and pull "
-                f"`{model or MODEL_VISION}` to enable image OCR."
-            ),
-        )
+    err = _vision_preflight(model or MODEL_VISION)
+    if err:
+        return DeliveryNoteResult(ok=False, header={}, items=[], message=err)
     try:
         raw = ollama_vision_generate(
             model or MODEL_VISION,

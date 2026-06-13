@@ -878,11 +878,17 @@ def _render_master_db_editor_tab(user: dict) -> None:
                             continue
                         display_cols.append(col_name)
 
+                    from config import MATERIAL_CATEGORIES
                     for i, col_name in enumerate(display_cols):
                         with form_col[i % 3]:
                             if col_name == "Date":
                                 input_data[col_name] = st.date_input(col_name, datetime.date.today())
-                            elif "qty" in col_name.lower() or "quantity" in col_name.lower():
+                            elif col_name == "Category":
+                                input_data[col_name] = st.selectbox(
+                                    "Category*", MATERIAL_CATEGORIES,
+                                    index=MATERIAL_CATEGORIES.index("Others"),
+                                )
+                            elif "qty" in col_name.lower() or "quantity" in col_name.lower() or col_name == "Opening_Stock":
                                 input_data[col_name] = st.number_input(col_name, step=1.0)
                             else:
                                 input_data[col_name] = st.text_input(col_name)
@@ -1206,17 +1212,41 @@ def _render_whatsapp_console_tab(user: dict) -> None:
     if log_df is None or log_df.empty:
         st.caption("No WhatsApp messages have been queued yet.")
     else:
+        # Retry-all-failed button
+        from database import retry_failed_whatsapp
+        ra1, ra2 = st.columns([1, 4])
+        with ra1:
+            if st.button(f"🔄 Retry all failed ({fail_n})",
+                         disabled=(fail_n == 0), key="_adm_wa_retry_all"):
+                n = retry_failed_whatsapp()
+                log_audit_action(
+                    user["username"], "WHATSAPP_RETRY_ALL", "whatsapp_queue",
+                    f"reset {n} failed → pending",
+                )
+                st.toast(f"🔄 {n} message(s) requeued", icon="🔄")
+                st.rerun()
+
         rows_html = []
         for i, (_, r) in enumerate(log_df.iterrows()):
             bg = _C["surf2"] + "44" if i % 2 else "transparent"
+            err = str(r.get("error_message", "") or "").strip()
+            attempts = int(r.get("attempts", 0) or 0)
+            err_cell = (
+                f'<td style="padding:7px 10px;color:#F87171;font-size:11.5px;'
+                f'max-width:280px;overflow:hidden;text-overflow:ellipsis;'
+                f'white-space:nowrap;" title="{_esc(err)}">{_esc(err) or "—"}</td>'
+            )
             rows_html.append(
                 f'<tr style="background:{bg};border-bottom:1px solid {_C["border"]}33;">'
                 f'<td style="padding:7px 10px;">{status_pill_html(str(r["status"]).lower())}</td>'
                 f'<td style="padding:7px 10px;color:{_C["muted"]};font-size:12px;'
                 f'font-family:monospace;white-space:nowrap;">{_esc(r["phone_number"])}</td>'
-                f'<td style="padding:7px 10px;color:{_C["text"]};max-width:340px;'
+                f'<td style="padding:7px 10px;color:{_C["text"]};max-width:280px;'
                 f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" '
                 f'title="{_esc(r["message"])}">{_esc(r["message"])}</td>'
+                f'<td style="padding:7px 10px;color:{_C["dim"]};font-size:11.5px;'
+                f'text-align:center;">{attempts}</td>'
+                + err_cell +
                 f'<td style="padding:7px 10px;color:{_C["muted"]};font-size:11.5px;'
                 f'white-space:nowrap;">{_esc(r["created_at"])}</td>'
                 f'<td style="padding:7px 10px;color:{_C["dim"]};font-size:11.5px;'
@@ -1225,7 +1255,8 @@ def _render_whatsapp_console_tab(user: dict) -> None:
             )
         st.markdown(
             _html_table("".join(rows_html),
-                        ["Status", "Recipient", "Message", "Queued", "Sent"]),
+                        ["Status", "Recipient", "Message",
+                         "Tries", "Error", "Queued", "Sent"]),
             unsafe_allow_html=True,
         )
 
@@ -1242,6 +1273,121 @@ def _render_settings_tab(user: dict) -> None:
         f'Danger Zone at the bottom.</p>',
         unsafe_allow_html=True,
     )
+
+    # ── User Manual PDF download ──────────────────────────────────────────
+    with st.expander("📄 Download User Manual (Branded PDF)", expanded=False):
+        st.caption(
+            "Builds a designed PDF from `USER_MANUAL.md` — cover page, "
+            "table of contents, page headers, navy + gold brand. "
+            "Suitable for printing or sharing with management."
+        )
+        manual_src = "USER_MANUAL.md"
+        try:
+            import os, datetime
+            from pathlib import Path
+            src = Path(manual_src)
+            if not src.exists():
+                st.error(f"Source file `{manual_src}` not found in the repo root.")
+            else:
+                meta_c1, meta_c2 = st.columns([1, 1])
+                with meta_c1:
+                    st.metric("Source size", f"{src.stat().st_size:,} bytes")
+                with meta_c2:
+                    st.metric("Last modified",
+                              datetime.datetime.fromtimestamp(src.stat().st_mtime)
+                              .strftime("%Y-%m-%d %H:%M"))
+
+                if st.button("🛠️ Build PDF now", key="_adm_manual_build"):
+                    with st.spinner("Rendering branded PDF…"):
+                        from build_manual_pdf import build_manual_pdf
+                        md = src.read_text(encoding="utf-8")
+                        pdf_bytes = build_manual_pdf(md)
+                    st.session_state["_adm_manual_pdf"] = pdf_bytes
+                    st.session_state["_adm_manual_built_at"] = datetime.datetime.now()
+                    log_audit_action(
+                        user["username"], "BUILD_MANUAL_PDF", "documentation",
+                        f"size={len(pdf_bytes)}",
+                    )
+                    st.toast(f"📄 Built {len(pdf_bytes):,} bytes", icon="📄")
+
+                pdf_bytes = st.session_state.get("_adm_manual_pdf")
+                if pdf_bytes:
+                    built_at = st.session_state.get("_adm_manual_built_at")
+                    st.success(
+                        f"Ready — {len(pdf_bytes):,} bytes "
+                        + (f"(built {built_at.strftime('%H:%M:%S')})"
+                           if built_at else "")
+                    )
+                    st.download_button(
+                        "⬇️ Download GI_Hub_User_Manual.pdf",
+                        data=pdf_bytes,
+                        file_name=f"GI_Hub_User_Manual_v2.0_"
+                                  f"{datetime.date.today().isoformat()}.pdf",
+                        mime="application/pdf",
+                        type="primary",
+                    )
+        except Exception as e:
+            st.error(f"PDF build failed: {type(e).__name__}: {e}")
+
+    # ── AI Connection panel (Ollama host + installed models) ──────────────
+    with st.expander("🤖 AI Connection (Ollama)", expanded=False):
+        from ai.client import (
+            OLLAMA_HOST, MODEL_CODER, MODEL_CHAT, MODEL_EMBED, MODEL_VISION,
+            list_ollama_models, ollama_health,
+        )
+        try:
+            ollama_health.clear()    # type: ignore[attr-defined]
+        except Exception:
+            pass
+        reachable = ollama_health()
+        installed = list_ollama_models() if reachable else []
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            badge = ("background:#16653433;border:1px solid #22C55E66;color:#86EFAC;"
+                     if reachable else
+                     "background:#7F1D1D33;border:1px solid #EF444466;color:#FCA5A5;")
+            st.markdown(
+                f'<div style="{badge}border-radius:8px;padding:8px 12px;'
+                f'font-size:12.5px;font-weight:600;">'
+                f'{"✅ Reachable" if reachable else "❌ Unreachable"}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        with c2:
+            st.code(OLLAMA_HOST, language="text")
+        st.caption(
+            "Streamlit Cloud → local: set `[ollama] host = \"...\"` in App "
+            "Secrets, pointing at a Tailscale/ngrok URL that reaches your Mac. "
+            "Locally: leave blank to default to http://localhost:11434."
+        )
+
+        # Per-purpose model status
+        st.markdown("**Models used in this app**")
+        rows = [
+            ("NL Search → SQL",  MODEL_CODER),
+            ("Summaries / Chat", MODEL_CHAT),
+            ("OCR (Vision)",     MODEL_VISION),
+            ("Embeddings (RAG)", MODEL_EMBED),
+        ]
+        for purpose, model in rows:
+            present = model in installed
+            pill_color = "#22C55E" if present else "#EF4444"
+            label_color = "#86EFAC" if present else "#FCA5A5"
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:10px;'
+                f'padding:5px 0;">'
+                f'<span style="background:{pill_color}33;border:1px solid {pill_color}66;'
+                f'color:{label_color};font-size:11px;font-weight:700;'
+                f'padding:2px 8px;border-radius:999px;">'
+                f'{"INSTALLED" if present else "MISSING"}</span>'
+                f'<span style="color:{_C["text"]};font-size:13px;'
+                f'min-width:170px;">{purpose}</span>'
+                f'<code style="color:{_C["muted"]};font-size:12px;">{model}</code>'
+                + (f'<code style="color:#FCA5A5;font-size:11px;margin-left:auto;">'
+                   f'ollama pull {model}</code>' if not present and reachable else "")
+                + '</div>',
+                unsafe_allow_html=True,
+            )
 
     # Dropdown Manager (preserved verbatim)
     with st.expander("📋 Dropdown Manager — Work Types", expanded=True):

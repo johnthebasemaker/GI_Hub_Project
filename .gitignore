@@ -13,3 +13,6 @@ env/
 # Ignore Python cache clutter
 __pycache__/
 *.pyc
+
+# Attachment store — DB BLOBs are authoritative; disk mirror is local-only.
+uploads/

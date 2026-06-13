@@ -1,11 +1,13 @@
 bcrypt
 streamlit
-pywhatkit
+twilio
 fpdf2
 openpyxl
 plotly
 pytest
 pywin32; sys_platform == 'win32'
+# pywhatkit is a local-desktop fallback — not installed on cloud (needs display)
+pywhatkit; sys_platform == 'win32' or sys_platform == 'darwin'
 
 # Phase 4 — standalone PWA scan-and-stage service (separate process from Streamlit)
 fastapi
