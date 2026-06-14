@@ -753,6 +753,8 @@ def _render_crosssite_tab(user: dict, site_id: str) -> None:
                ORDER BY r.created_at DESC""",
             _in_conn, params=(site_id,),
         )
+        from config import localize_timestamps_df
+        incoming_df = localize_timestamps_df(incoming_df, ["created_at", "updated_at"])
     except Exception:
         incoming_df = pd.DataFrame()
     finally:
@@ -1026,6 +1028,11 @@ def _render_pending_receipts_tab(user: dict, site_id: str) -> None:
     conn_pr = get_connection()
     try:
         pending_rcpt_df = get_pending_receipts_for_hod(conn_pr, site_id=site_id)
+        from config import localize_timestamps_df
+        pending_rcpt_df = localize_timestamps_df(
+            pending_rcpt_df, ["Timestamp", "Date"],
+            fmt="%Y-%m-%d %H:%M",
+        )
     finally:
         conn_pr.close()
 
@@ -1282,6 +1289,9 @@ def _render_pr_tab(user: dict, site_id: str) -> None:
         conn, params=(site_id,),
     )
     conn.close()
+
+    from config import auto_localize_timestamps
+    pr_df = auto_localize_timestamps(pr_df)
 
     if pr_df.empty:
         render_empty_state(
@@ -1727,6 +1737,8 @@ def _render_adjustments_tab(user: dict, site_id: str) -> None:
     )
 
     pending = get_pending_stock_adjustments(site_id=site_id)
+    from config import auto_localize_timestamps
+    pending = auto_localize_timestamps(pending)
     short_n = int((pending["variance"] < 0).sum()) if not pending.empty else 0
     surplus_n = int((pending["variance"] > 0).sum()) if not pending.empty else 0
 
@@ -1892,9 +1904,11 @@ def _render_adjustments_tab(user: dict, site_id: str) -> None:
 # TAB 10 — MY REQUESTS  (preserved working feature, kept at end)
 # ===========================================================================
 def _render_my_requests_tab(user: dict, site_id: str) -> None:
+    from config import auto_localize_timestamps  # noqa: F401 — used below
     st.subheader("My Outbound Requests")
     conn = get_connection()
     reqs_df = get_pending_requests(conn, site_id=site_id)
+    reqs_df = auto_localize_timestamps(reqs_df)
 
     if reqs_df.empty:
         render_empty_state(
@@ -2028,6 +2042,79 @@ def _render_site_config_tab(user: dict, site_id: str) -> None:
                     else:
                         st.error(msg)
 
+    # ── WBS Manager (per site) ─────────────────────────────────────────────
+    from database import get_wbs_for_site, add_wbs, set_wbs_status
+    st.markdown(
+        f'<div style="color:{TEXT_MUTED};font-size:11px;font-weight:700;'
+        f'text-transform:uppercase;letter-spacing:0.08em;margin:18px 0 8px 0;">'
+        f'📐 WBS Numbers</div>',
+        unsafe_allow_html=True,
+    )
+    wbs_df = get_wbs_for_site(site_id, include_closed=True)
+    if wbs_df is None or wbs_df.empty:
+        st.caption(
+            f"No WBS numbers configured for {site_id}. Add one below — "
+            "Store Keepers can't post consumption / receipts without an active WBS."
+        )
+    else:
+        from config import auto_localize_timestamps
+        wbs_df = auto_localize_timestamps(wbs_df)
+        for _, row in wbs_df.iterrows():
+            wc1, wc2, wc3 = st.columns([4, 2, 1])
+            with wc1:
+                pill_color = "#22C55E" if row["status"] == "active" else "#7A8FA0"
+                st.markdown(
+                    f'<div style="padding:6px 10px;background:rgba(26,40,56,0.6);'
+                    f'border:1px solid rgba(42,64,96,0.5);border-radius:6px;'
+                    f'color:#F0F4F8;font-size:13px;">'
+                    f'<span style="font-family:monospace;font-weight:600;color:#D4AF37;">'
+                    f'{html.escape(str(row["WBS_Number"]))}</span>'
+                    f'<span style="background:{pill_color}33;color:{pill_color};'
+                    f'border:1px solid {pill_color}66;font-size:10px;font-weight:700;'
+                    f'padding:1px 7px;border-radius:999px;margin-left:8px;'
+                    f'text-transform:uppercase;">{html.escape(str(row["status"]))}</span>'
+                    f'<div style="color:#7A8FA0;font-size:11.5px;margin-top:2px;">'
+                    f'{html.escape(str(row.get("Description") or "—"))}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            with wc2:
+                new_status = "closed" if row["status"] == "active" else "active"
+                lbl = "🔒 Close" if row["status"] == "active" else "🔓 Re-open"
+                if st.button(lbl, key=f"_wbs_toggle_{row['id']}",
+                             use_container_width=True):
+                    set_wbs_status(row["WBS_Number"], site_id, new_status)
+                    log_audit_action(user["username"], f"WBS_{new_status.upper()}",
+                                     "wbs_master",
+                                     f"site={site_id} wbs={row['WBS_Number']!r}")
+                    st.toast(f"WBS {new_status}", icon="✅")
+                    st.rerun()
+            with wc3:
+                st.caption(str(row.get("created_at", ""))[:10])
+
+    with st.form(key="_wbs_add_form"):
+        c_a, c_b = st.columns([2, 3])
+        with c_a:
+            new_wbs = st.text_input(
+                "WBS Number*", placeholder="e.g. WBS-2026-001",
+                key="_new_wbs_number",
+            )
+        with c_b:
+            new_desc = st.text_input(
+                "Description (optional)",
+                placeholder="What is this WBS for?",
+                key="_new_wbs_desc",
+            )
+        if st.form_submit_button("➕ Add WBS Number", type="primary"):
+            ok, msg = add_wbs(new_wbs, new_desc, site_id, user["username"])
+            if ok:
+                log_audit_action(user["username"], "WBS_ADD", "wbs_master",
+                                 f"site={site_id} wbs={new_wbs!r}")
+                st.toast(msg, icon="✅")
+                st.rerun()
+            else:
+                st.error(msg)
+
 
 # ===========================================================================
 # TAB — RETURNS: review SK-staged returns, approve → ledger row + email
@@ -2050,6 +2137,9 @@ def _render_returns_tab(user: dict, site_id: str) -> None:
     if pending is None or pending.empty:
         st.success("✅ No pending returns.")
         return
+
+    from config import auto_localize_timestamps
+    pending = auto_localize_timestamps(pending)
 
     # Stat strip
     n_total = len(pending)
@@ -2185,6 +2275,9 @@ def _render_doc_subtab(site_id: str, doc_type: str, label: str) -> None:
         st.caption(f"No {label.lower()} attachments in this window.")
         return
 
+    from config import auto_localize_timestamps
+    rows_df = auto_localize_timestamps(rows_df)
+
     st.caption(f"{len(rows_df)} file(s).")
     for _, r in rows_df.iterrows():
         c1, c2, c3 = st.columns([5, 2, 1])
@@ -2239,6 +2332,8 @@ def _render_qr_approval_tab(user: dict, site_id: str) -> None:
         if df_p.empty:
             st.caption("No pending QR requests.")
         else:
+            from config import auto_localize_timestamps
+            df_p = auto_localize_timestamps(df_p)
             # Multi-select bulk approve / reject.
             df_view = df_p[[
                 "id", "SAP_Code", "Material_Code", "Equipment_Description",
@@ -2282,6 +2377,8 @@ def _render_qr_approval_tab(user: dict, site_id: str) -> None:
         if df_a.empty:
             st.caption("No approved QR requests waiting for download.")
         else:
+            from config import auto_localize_timestamps
+            df_a = auto_localize_timestamps(df_a)
             st.dataframe(
                 df_a[["id", "SAP_Code", "Material_Code", "Equipment_Description",
                       "Quantity", "approved_by", "approved_at"]],

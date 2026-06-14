@@ -30,6 +30,22 @@ DB_FILE = "gi_database.db"
 # Columns that are auto-managed and should not appear in dynamic forms
 SYSTEM_COLS = {"id", "Timestamp", "created_at"}
 
+
+def _localize(df):
+    """
+    Apply config.auto_localize_timestamps to a DataFrame and return it.
+    Lazy-imported to avoid any circular-import risk with config.py. Safe on
+    None / empty DataFrames. Used at the boundary of every display-bound
+    `get_*` helper so callers don't have to know about timezones.
+    """
+    if df is None:
+        return df
+    try:
+        from config import auto_localize_timestamps
+        return auto_localize_timestamps(df)
+    except Exception:
+        return df  # never break a read because of a display helper
+
 # Columns that must be propagated to both pending_issues AND consumption
 EXTENDED_ISSUE_COLS = ["Date", "Issued_By", "Issued_To", "Tank_No", "Serial_No", "PR_Number"]
 
@@ -647,6 +663,33 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         c.execute("DROP TABLE _users_old;")
         c.execute("PRAGMA foreign_keys=on;")
 
+    # ── Phase B (2026-06 round 3): WBS workflow ─────────────────────────────
+    # `wbs_master` mirrors pr_master's per-site pattern. HOD/Admin creates
+    # the allowed WBS numbers for a site; SK picks from a dropdown when
+    # staging consumption / receipts so the WBS field is auditable.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS wbs_master (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            WBS_Number  TEXT    NOT NULL,
+            Description TEXT,
+            Site_ID     TEXT    NOT NULL DEFAULT 'HQ',
+            status      TEXT    DEFAULT 'active' CHECK(status IN ('active','closed')),
+            created_by  TEXT,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(WBS_Number, Site_ID)
+        )
+    """)
+    # Self-heal: WBS column on every transaction table (the SK enters it
+    # in the entry log, HOD commit propagates it through, reports group on it).
+    for _tbl in ("consumption", "receipts", "pending_issues", "pending_receipts"):
+        c.execute(f"PRAGMA table_info({_tbl})")
+        _cols = {r[1] for r in c.fetchall()}
+        if "wbs" not in _cols and "WBS_Number" not in _cols:
+            try:
+                c.execute(f"ALTER TABLE {_tbl} ADD COLUMN wbs TEXT")
+            except sqlite3.OperationalError:
+                pass
+
     # ── Phase A: Category + Opening_Stock columns on inventory
     c.execute("PRAGMA table_info(inventory)")
     _inv_cols2 = {row[1] for row in c.fetchall()}
@@ -1011,6 +1054,141 @@ def get_tank_nos(conn: sqlite3.Connection = None, site_id: str = None) -> list[s
     return rows
 
 
+# ---------------------------------------------------------------------------
+# WBS Master — per-site allowed WBS numbers (mirrors pr_master pattern)
+# ---------------------------------------------------------------------------
+def get_wbs_for_site(
+    site_id: str, conn: sqlite3.Connection = None,
+    include_closed: bool = False,
+) -> pd.DataFrame:
+    """Return all WBS rows for a site. Active first."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = "SELECT * FROM wbs_master WHERE Site_ID = ?"
+        params: list = [site_id]
+        if not include_closed:
+            q += " AND status = 'active'"
+        q += " ORDER BY status, WBS_Number"
+        return _localize(pd.read_sql(q, conn, params=tuple(params)))
+    finally:
+        if _owns:
+            conn.close()
+
+
+def add_wbs(
+    wbs_number: str, description: str, site_id: str,
+    created_by: str, conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        wbs_number = (wbs_number or "").strip()
+        if not wbs_number:
+            return False, "WBS Number cannot be empty."
+        try:
+            conn.execute(
+                "INSERT INTO wbs_master "
+                "(WBS_Number, Description, Site_ID, created_by) "
+                "VALUES (?, ?, ?, ?)",
+                (wbs_number, (description or "").strip(), site_id, created_by),
+            )
+            conn.commit()
+            return True, f"Added WBS '{wbs_number}' for {site_id}."
+        except sqlite3.IntegrityError:
+            return False, f"WBS '{wbs_number}' already exists at {site_id}."
+    finally:
+        if _owns:
+            conn.close()
+
+
+def set_wbs_status(
+    wbs_number: str, site_id: str, status: str,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    if status not in ("active", "closed"):
+        return False
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE wbs_master SET status = ? WHERE WBS_Number = ? AND Site_ID = ?",
+            (status, wbs_number, site_id),
+        )
+        conn.commit()
+        return True
+    finally:
+        if _owns:
+            conn.close()
+
+
+def report_wbs_consumption(
+    date_from: str, date_to: str, site_id: str = None,
+    conn: sqlite3.Connection = None,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Site-scoped report grouped by WBS:
+        WBS_Number, total consumption qty + count, total receipt qty + count,
+        net value in SAR (via inventory.Unit_Cost).
+    site_id=None falls back to "All Sites" (admin / supervisor).
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        where_site_c = " AND COALESCE(c.Site_ID,'HQ') = ?" if site_id else ""
+        where_site_r = " AND COALESCE(r.Site_ID,'HQ') = ?" if site_id else ""
+        params_c: tuple = ((date_from, date_to, site_id) if site_id
+                           else (date_from, date_to))
+        params_r: tuple = ((date_from, date_to, site_id) if site_id
+                           else (date_from, date_to))
+        cons = pd.read_sql(
+            "SELECT COALESCE(c.wbs,'(no WBS)') AS WBS_Number, "
+            "       COUNT(*)                 AS Consumption_Rows, "
+            "       COALESCE(SUM(c.Quantity),0) AS Consumption_Qty, "
+            "       COALESCE(SUM(c.Quantity * COALESCE(i.Unit_Cost,0)),0) AS Consumption_Value_SAR "
+            "FROM consumption c LEFT JOIN inventory i ON c.SAP_Code = i.SAP_Code "
+            f"WHERE c.Date BETWEEN ? AND ?{where_site_c} "
+            "GROUP BY COALESCE(c.wbs,'(no WBS)')",
+            conn, params=params_c,
+        )
+        recs = pd.read_sql(
+            "SELECT COALESCE(r.wbs,'(no WBS)') AS WBS_Number, "
+            "       COUNT(*)                 AS Receipt_Rows, "
+            "       COALESCE(SUM(r.Quantity),0) AS Receipt_Qty, "
+            "       COALESCE(SUM(r.Quantity * COALESCE(i.Unit_Cost,0)),0) AS Receipt_Value_SAR "
+            "FROM receipts r LEFT JOIN inventory i ON r.SAP_Code = i.SAP_Code "
+            f"WHERE r.Date BETWEEN ? AND ?{where_site_r} "
+            "GROUP BY COALESCE(r.wbs,'(no WBS)')",
+            conn, params=params_r,
+        )
+    finally:
+        if _owns:
+            conn.close()
+
+    df = pd.merge(cons, recs, on="WBS_Number", how="outer").fillna(0)
+    # Reorder + descending by total spend
+    cols = ["WBS_Number", "Consumption_Rows", "Consumption_Qty",
+            "Consumption_Value_SAR", "Receipt_Rows", "Receipt_Qty",
+            "Receipt_Value_SAR"]
+    for c in cols:
+        if c not in df.columns:
+            df[c] = 0
+    df = df[cols].sort_values("Consumption_Value_SAR", ascending=False).reset_index(drop=True)
+
+    summary = {
+        "WBS_Count": int(len(df)),
+        "Total_Consumption_Qty": float(df["Consumption_Qty"].sum()),
+        "Total_Receipt_Qty":     float(df["Receipt_Qty"].sum()),
+        "Total_Consumption_SAR": format_sar(float(df["Consumption_Value_SAR"].sum())),
+        "Total_Receipt_SAR":     format_sar(float(df["Receipt_Value_SAR"].sum())),
+    }
+    return df, summary
+
+
 def add_site_dropdown_value(
     category: str, value: str, site_id: str = None,
     conn: sqlite3.Connection = None,
@@ -1214,7 +1392,7 @@ def get_missing_mtc_for_site(
             "ORDER BY m.submitted_at DESC",
             conn, params=(site_id,),
         )
-        return df
+        return _localize(df)
     finally:
         if _owns:
             conn.close()
@@ -1294,7 +1472,7 @@ def list_qr_requests(
             q += " AND status = ?"
             params.append(status)
         q += " ORDER BY requested_at DESC"
-        return pd.read_sql(q, conn, params=tuple(params))
+        return _localize(pd.read_sql(q, conn, params=tuple(params)))
     finally:
         if _owns:
             conn.close()
@@ -1439,7 +1617,7 @@ def get_pending_returns(
             q += " AND Site_ID = ?"
             params.append(site_id)
         q += " ORDER BY submitted_at ASC"
-        return pd.read_sql(q, conn, params=tuple(params))
+        return _localize(pd.read_sql(q, conn, params=tuple(params)))
     finally:
         if _owns:
             conn.close()
@@ -1863,7 +2041,7 @@ def get_pending_requests(
     )
     if _owns:
         conn.close()
-    return df
+    return _localize(df)
 
 
 def create_request(
@@ -2984,10 +3162,22 @@ def submit_registration_request(username: str, password_hash: str, role: str, si
 # ---------------------------------------------------------------------------
 
 def queue_whatsapp_alert(phone_number: str, message: str) -> None:
-    """Silently drops a message into the background queue to avoid slowing down the UI."""
+    """
+    Drop a notification into the background queue. Strips any HTML chrome
+    from the message so what's stored (and later shown to WhatsApp users +
+    in the Admin Console) is plain text only — never raw `<td>` etc.
+    Silent if the phone number is obviously bogus.
+    """
     if not phone_number or len(phone_number) < 5:
         return
-        
+
+    # Strip HTML tags and collapse whitespace so WhatsApp doesn't show
+    # literal markup. We do this here (write side) AND in the Admin
+    # Console (read side) for defence-in-depth.
+    if message:
+        message = re.sub(r"<[^>]+>", " ", str(message))
+        message = re.sub(r"\s+", " ", message).strip()
+
     conn = get_connection()
     try:
         conn.execute(
@@ -3141,7 +3331,7 @@ def get_returnable_items(
     )
     if _owns:
         conn.close()
-    return df
+    return _localize(df)
 
 
 def insert_returnable_item(
@@ -3431,7 +3621,7 @@ def get_receipt_history(
     finally:
         if _owns:
             conn.close()
-    return df
+    return _localize(df)
 
 
 def get_whatsapp_log(
@@ -3453,7 +3643,7 @@ def get_whatsapp_log(
     finally:
         if _owns:
             conn.close()
-    return df
+    return _localize(df)
 
 
 def retry_failed_whatsapp(
@@ -4345,7 +4535,7 @@ def get_pending_stock_adjustments(
             q += "AND a.Site_ID = ? "
             params.append(site_id)
         q += "ORDER BY a.submitted_at DESC"
-        return pd.read_sql(q, conn, params=tuple(params))
+        return _localize(pd.read_sql(q, conn, params=tuple(params)))
     finally:
         if _owns:
             conn.close()
@@ -4376,7 +4566,7 @@ def get_stock_adjustment_history(
             params.append(site_id)
         q += "ORDER BY a.id DESC LIMIT ?"
         params.append(int(limit))
-        return pd.read_sql(q, conn, params=tuple(params))
+        return _localize(pd.read_sql(q, conn, params=tuple(params)))
     finally:
         if _owns:
             conn.close()

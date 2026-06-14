@@ -72,13 +72,16 @@ SYSTEM_COLS         = {"id", "Timestamp", "created_at", "Site_ID", "status"}
 EXTENDED_ISSUE_COLS = ["Date", "Issued_By", "Issued_To", "Tank_No", "Serial_No", "PR_Number"]
 OPTIONAL_ISSUE_COLS: set[str] = set()  # All entry fields are mandatory (2026-06).
 
-# Material categories — drive category-filtered reports and the rubber-MTC
-# workflow. "Rubber materials" requires an MTC doc on receipt staging.
+# Material categories — drive category-filtered reports and the MTC workflow.
+# Items in MTC_REQUIRED_CATEGORY are forced to supply a Material Test
+# Certificate (MTC) doc + number on receipt staging.
 MATERIAL_CATEGORIES = [
     "Consumable", "Equipments", "Utilities", "Maintenance",
-    "Others", "Rubber materials", "Tools", "QC items",
+    "Others", "Surface Shields", "Tools", "QC items",
 ]
-RUBBER_CATEGORY = "Rubber materials"
+MTC_REQUIRED_CATEGORY = "Surface Shields"
+# Back-compat alias — older code paths still reference RUBBER_CATEGORY.
+RUBBER_CATEGORY = MTC_REQUIRED_CATEGORY
 
 # Allowed attachment MIME suffixes (PDF, JPEG, JPG, XLSX per 2026-06 spec).
 ATTACHMENT_ALLOWED = ("pdf", "jpeg", "jpg", "xlsx")
@@ -115,3 +118,91 @@ AI_ENABLED = True
 # LEGACY — removed in Module 3
 # ---------------------------------------------------------------------------
 ADMIN_PASSWORD = "admin2026"
+
+# ---------------------------------------------------------------------------
+# TIMEZONE — display offset vs UTC
+# ---------------------------------------------------------------------------
+# DB timestamps default to SQLite CURRENT_TIMESTAMP (UTC). The launchd plists
+# set TZ=Asia/Riyadh so Python datetime.now() returns local time, but rows
+# already written via DEFAULT CURRENT_TIMESTAMP remain UTC. Helpers below
+# convert at display time.
+import datetime as _dt
+import os as _os
+
+TZ_NAME = _os.environ.get("TZ", "Asia/Riyadh")
+TZ_OFFSET_HOURS = int(_os.environ.get("GI_TZ_OFFSET_HOURS", "3"))
+
+
+def utc_to_local(value, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """
+    Convert a single UTC timestamp (string from SQLite or datetime) into a
+    formatted local-time string. Empty / nan / None / "—" pass through as "—".
+    """
+    if value is None:
+        return "—"
+    s = str(value).strip()
+    if not s or s.lower() in ("nan", "none", "nat", "—"):
+        return "—"
+    if isinstance(value, _dt.datetime):
+        t = value
+    else:
+        try:
+            t = _dt.datetime.fromisoformat(s.replace(" ", "T"))
+        except (ValueError, TypeError):
+            return s  # unparseable — show as-is rather than break the UI
+    t = t + _dt.timedelta(hours=TZ_OFFSET_HOURS)
+    return t.strftime(fmt)
+
+
+def localize_timestamps_df(df, columns: list[str], fmt: str = "%Y-%m-%d %H:%M:%S"):
+    """
+    Apply utc_to_local to every named column in a DataFrame. Missing columns
+    are silently skipped so callers don't crash on schema drift. Returns the
+    same DataFrame for chaining.
+    """
+    if df is None or len(df) == 0:
+        return df
+    for col in columns:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda v: utc_to_local(v, fmt))
+    return df
+
+
+# Canonical timestamp column names across the whole project. Any column
+# matching one of these (case-sensitive) is treated as a UTC timestamp
+# eligible for auto-localization on display. Extend this set rather than
+# adding new ad-hoc names in queries.
+_DEFAULT_TS_COLS = (
+    # snake_case (most of the new tables)
+    "created_at", "updated_at", "sent_at", "approved_at",
+    "requested_at", "submitted_at", "uploaded_at",
+    "logistics_emailed_at", "received_at", "rejected_at",
+    "last_used_at", "last_run", "generated_at",
+    "given_time", "expected_return_time",
+    "delivered_at", "reviewed_at",
+    # PascalCase / lowercase (legacy SQLite default-column names)
+    "Timestamp", "timestamp",
+)
+
+
+def auto_localize_timestamps(df, extra_cols: list[str] = None,
+                             fmt: str = "%Y-%m-%d %H:%M:%S"):
+    """
+    Detect timestamp columns by name in `df` and convert each to GMT+3 strings.
+
+    Recognised columns: every name in `_DEFAULT_TS_COLS` plus anything passed
+    in `extra_cols`. Anything else is left alone. Idempotent — already-formatted
+    timestamps pass through unchanged because `utc_to_local` returns the input
+    string when it can't be parsed as ISO8601.
+
+    Use this in any tab that does `pd.read_sql(...)` to avoid hand-listing
+    columns. For one-off custom column names, call `localize_timestamps_df`
+    directly.
+    """
+    if df is None or len(df) == 0:
+        return df
+    targets = set(_DEFAULT_TS_COLS) | set(extra_cols or [])
+    cols_present = [c for c in df.columns if c in targets]
+    if not cols_present:
+        return df
+    return localize_timestamps_df(df, cols_present, fmt)

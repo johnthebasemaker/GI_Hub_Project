@@ -291,6 +291,23 @@ def page_daily_issue_log(user: dict) -> None:
                             "Tank_No*", tank_nos, index=_tn_idx,
                             key="tank_no_select",
                         )
+                    elif col_name == "wbs":
+                        from database import get_wbs_for_site
+                        _wbs_df = get_wbs_for_site(site_id)
+                        _wbs_opts = _wbs_df["WBS_Number"].tolist() if not _wbs_df.empty else []
+                        if not _wbs_opts:
+                            st.warning("⚠️ No active WBS for this site. Ask HOD to add WBS numbers in Site Config.")
+                            input_data[col_name] = st.text_input(
+                                "WBS Number*", value=_defaults.get("wbs", ""),
+                            )
+                        else:
+                            _wbs_default = _defaults.get("wbs", "")
+                            _wbs_idx = (_wbs_opts.index(_wbs_default)
+                                        if _wbs_default in _wbs_opts else 0)
+                            input_data[col_name] = st.selectbox(
+                                "WBS Number*", _wbs_opts, index=_wbs_idx,
+                                key="wbs_consumption_select",
+                            )
                     else:
                         # Required text fields also pre-fill from history where useful.
                         input_data[col_name] = st.text_input(
@@ -754,6 +771,20 @@ def page_daily_issue_log(user: dict) -> None:
                             key=f"rcpt_{col_name}_locked",
                         )
                         rcpt_input[col_name] = _linked_pr
+                    elif col_name == "wbs":
+                        from database import get_wbs_for_site
+                        _wbs_df_r = get_wbs_for_site(site_id)
+                        _wbs_opts_r = _wbs_df_r["WBS_Number"].tolist() if not _wbs_df_r.empty else []
+                        if not _wbs_opts_r:
+                            st.warning("⚠️ No active WBS for this site. Ask HOD to add WBS numbers in Site Config.")
+                            rcpt_input[col_name] = st.text_input(
+                                "WBS Number*", key=f"rcpt_{col_name}",
+                            )
+                        else:
+                            rcpt_input[col_name] = st.selectbox(
+                                "WBS Number*", _wbs_opts_r, index=0,
+                                key=f"rcpt_{col_name}",
+                            )
                     else:
                         rcpt_input[col_name] = st.text_input(f"{col_name}*", key=f"rcpt_{col_name}")
 
@@ -1033,6 +1064,9 @@ def page_daily_issue_log(user: dict) -> None:
         conn_ri = get_connection()
         ri_df = get_returnable_items(conn_ri, site_id=site_id)
         conn_ri.close()
+
+        from config import auto_localize_timestamps
+        ri_df = auto_localize_timestamps(ri_df)
 
         borrowed_df = ri_df[ri_df["status"] == "borrowed"].copy()
 
@@ -1471,6 +1505,8 @@ def _render_qr_request_tab(user: dict, site_id: str,
     st.caption("Your recent requests:")
     mine = list_qr_requests(site_id=site_id)
     if not mine.empty:
+        from config import auto_localize_timestamps
+        mine = auto_localize_timestamps(mine)
         mine_view = mine[mine["requested_by"] == user["username"]]
         if mine_view.empty:
             st.caption("No requests yet.")

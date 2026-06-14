@@ -890,7 +890,7 @@ def draft_rubber_mtc_email(site_id: str, mtc_df) -> tuple[bool, str]:
         pass
     logistics_recipient = os.environ.get("LOGISTICS_EMAIL", "logistics@generalindustries.net")
 
-    subject_raw = f"⚠️ Rubber materials received without MTC — {site_id}"
+    subject_raw = f"⚠️ Surface Shields received without MTC — {site_id}"
     table_rows = ""
     for _, row in mtc_df.iterrows():
         table_rows += (
@@ -905,7 +905,7 @@ def draft_rubber_mtc_email(site_id: str, mtc_df) -> tuple[bool, str]:
         "<html><body style='font-family:Segoe UI, Arial, sans-serif;color:#333;'>"
         "<h2 style='color:#0A192F;'>General Industries Hub — MTC Document Request</h2>"
         "<p>Dear Logistics Team,</p>"
-        f"<p>The following rubber materials were received at <b>{site_id}</b> "
+        f"<p>The following Surface Shields items were received at <b>{site_id}</b> "
         "without an accompanying MTC. Please forward the certificates at the earliest:</p>"
         "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
         "<thead><tr style='background:#0A192F;color:#fff;'>"
@@ -954,7 +954,7 @@ def draft_rubber_mtc_email(site_id: str, mtc_df) -> tuple[bool, str]:
             )
         lines = [
             "Dear Logistics Team,", "",
-            f"The following rubber materials were received at {site_id} without an MTC. "
+            f"The following Surface Shields items were received at {site_id} without an MTC. "
             "Please forward the certificates:", "",
             sep, header, sep, *body_rows, sep, "",
             "Thank you,", f"{site_id} Hub Management",

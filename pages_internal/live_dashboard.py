@@ -82,21 +82,51 @@ def _render_dashboard_html_table(df: pd.DataFrame, columns: list[str]) -> None:
         st.caption("No items to display.")
         return
 
-    # ── 1. Filter row (one input per column) ───────────────────────────────
+    # ── 1. Filter row — only the searchable text columns ──────────────────
+    # Numeric / pill columns aren't useful as text filters and add latency.
+    # SAP_Code, Material_Code, Equipment_Description, Category are the
+    # only ones that get a live-keyup input. All other columns render an
+    # empty cell so the table's column alignment stays intact.
+    LIVE_FILTER_COLS = {
+        "SAP_Code", "Material_Code", "Equipment_Description", "Category",
+    }
+    try:
+        from st_keyup import st_keyup as _live_input
+        _LIVE = True
+    except ImportError:
+        _live_input = None
+        _LIVE = False
+
     st.markdown(
         f'<div style="color:{_C["dim"]};font-size:10.5px;font-weight:700;'
         f'text-transform:uppercase;letter-spacing:0.08em;margin:6px 0 4px 0;">'
-        f'Filters</div>',
+        f'Filters {"(live)" if _LIVE else "(press Enter)"} — '
+        f'searchable on SAP / Mat Code / Description / Category</div>',
         unsafe_allow_html=True,
     )
     filter_cols = st.columns(len(columns))
     filters: dict[str, str] = {}
     for col_widget, col_name in zip(filter_cols, columns):
         with col_widget:
-            filters[col_name] = st.text_input(
-                col_name, key=f"_dash_filter_{col_name}",
-                label_visibility="collapsed", placeholder=col_name,
-            ).strip()
+            if col_name not in LIVE_FILTER_COLS:
+                # Render an invisible spacer so the column widths stay aligned
+                # with the table header below.
+                st.markdown("&nbsp;", unsafe_allow_html=True)
+                continue
+            if _LIVE:
+                val = _live_input(
+                    label=col_name,
+                    key=f"_dash_keyup_{col_name}",
+                    placeholder=col_name,
+                    debounce=180,
+                    label_visibility="collapsed",
+                )
+            else:
+                val = st.text_input(
+                    col_name, key=f"_dash_filter_{col_name}",
+                    label_visibility="collapsed", placeholder=col_name,
+                )
+            filters[col_name] = (val or "").strip()
 
     # ── 2. Apply filters (case-insensitive substring per column) ──────────
     view = df.copy()

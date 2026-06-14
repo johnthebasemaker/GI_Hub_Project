@@ -421,6 +421,8 @@ def _render_overview_tab(user: dict) -> None:
             "FROM system_audit_log ORDER BY id DESC LIMIT 12", _c,
         )
         _c.close()
+        from config import localize_timestamps_df
+        feed_df = localize_timestamps_df(feed_df, ["timestamp"])
     except Exception:
         feed_df = pd.DataFrame()
 
@@ -485,6 +487,10 @@ def _render_pending_requests_tab(user: dict) -> None:
         )
         conn.close()
         return
+
+    # GMT+0 → GMT+3 for the timestamp columns the data_editor renders.
+    from config import localize_timestamps_df
+    reqs_df = localize_timestamps_df(reqs_df, ["created_at", "updated_at"])
 
     reqs_df.insert(0, "☑️ Select", False)
 
@@ -1018,6 +1024,10 @@ def _render_audit_logs_tab(user: dict) -> None:
     audit_df = pd.read_sql(query, conn, params=tuple(params))
     conn.close()
 
+    # UTC → GMT+3 for the timestamp column.
+    from config import localize_timestamps_df
+    audit_df = localize_timestamps_df(audit_df, ["timestamp"])
+
     if audit_df.empty:
         render_empty_state(
             icon="📜",
@@ -1214,7 +1224,7 @@ def _render_whatsapp_console_tab(user: dict) -> None:
     else:
         # Retry-all-failed button
         from database import retry_failed_whatsapp
-        ra1, ra2 = st.columns([1, 4])
+        ra1, _ra_spacer = st.columns([1, 4])
         with ra1:
             if st.button(f"🔄 Retry all failed ({fail_n})",
                          disabled=(fail_n == 0), key="_adm_wa_retry_all"):
@@ -1226,11 +1236,37 @@ def _render_whatsapp_console_tab(user: dict) -> None:
                 st.toast(f"🔄 {n} message(s) requeued", icon="🔄")
                 st.rerun()
 
+        # ── Sanitiser: WhatsApp message bodies sometimes carry HTML chrome
+        # (from older notification templates that reused mailer fragments).
+        # Strip every HTML tag and collapse whitespace so the queue log
+        # never bleeds raw `<td style=...>` into the page.
+        import re as _re_wa
+        def _strip_html(s: str) -> str:
+            if not s:
+                return ""
+            s = _re_wa.sub(r"<[^>]+>", " ", str(s))   # drop tags
+            s = _re_wa.sub(r"\s+", " ", s).strip()    # collapse whitespace
+            return s
+
+        # ── Local-time formatter (DB rows are UTC; display in GMT+3) ──────
+        import datetime as _dt_wa
+        TZ_OFFSET_H = 3
+        def _local_ts(s) -> str:
+            if not s or str(s) in ("nan", "None"):
+                return "—"
+            try:
+                t = _dt_wa.datetime.fromisoformat(str(s).replace(" ", "T"))
+            except (ValueError, TypeError):
+                return str(s)
+            t = t + _dt_wa.timedelta(hours=TZ_OFFSET_H)
+            return t.strftime("%Y-%m-%d %H:%M:%S")
+
         rows_html = []
         for i, (_, r) in enumerate(log_df.iterrows()):
             bg = _C["surf2"] + "44" if i % 2 else "transparent"
-            err = str(r.get("error_message", "") or "").strip()
-            attempts = int(r.get("attempts", 0) or 0)
+            clean_msg = _strip_html(r["message"])
+            err       = _strip_html(str(r.get("error_message", "") or ""))
+            attempts  = int(r.get("attempts", 0) or 0)
             err_cell = (
                 f'<td style="padding:7px 10px;color:#F87171;font-size:11.5px;'
                 f'max-width:280px;overflow:hidden;text-overflow:ellipsis;'
@@ -1243,20 +1279,20 @@ def _render_whatsapp_console_tab(user: dict) -> None:
                 f'font-family:monospace;white-space:nowrap;">{_esc(r["phone_number"])}</td>'
                 f'<td style="padding:7px 10px;color:{_C["text"]};max-width:280px;'
                 f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" '
-                f'title="{_esc(r["message"])}">{_esc(r["message"])}</td>'
+                f'title="{_esc(clean_msg)}">{_esc(clean_msg)}</td>'
                 f'<td style="padding:7px 10px;color:{_C["dim"]};font-size:11.5px;'
                 f'text-align:center;">{attempts}</td>'
                 + err_cell +
                 f'<td style="padding:7px 10px;color:{_C["muted"]};font-size:11.5px;'
-                f'white-space:nowrap;">{_esc(r["created_at"])}</td>'
+                f'white-space:nowrap;">{_local_ts(r["created_at"])}</td>'
                 f'<td style="padding:7px 10px;color:{_C["dim"]};font-size:11.5px;'
-                f'white-space:nowrap;">{_esc(r.get("sent_at"))}</td>'
+                f'white-space:nowrap;">{_local_ts(r.get("sent_at"))}</td>'
                 f'</tr>'
             )
         st.markdown(
             _html_table("".join(rows_html),
                         ["Status", "Recipient", "Message",
-                         "Tries", "Error", "Queued", "Sent"]),
+                         "Tries", "Error", "Queued (GMT+3)", "Sent (GMT+3)"]),
             unsafe_allow_html=True,
         )
 

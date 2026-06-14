@@ -1,8 +1,8 @@
 # GI Hub ERP — Handoff
 
-**Last update:** 2026-06 round — Categories, Returns, Attachments, Cloud hosting, automated bug harness, self-host guide, branded PDF generator.
+**Last update:** 2026-06 round 2 — Surface Shields rename, WBS Master + report, Site_ID sidebar pill, live-typing dashboard filter, Ask Hub Assistant (role-filtered RAG), GMT+3 timestamps, macOS Accessibility-only WhatsApp sender, host_setup/ launchd installer.
 **Test status:** 315/315 pytest · 114/114 in `bug_check.py` (run `python bug_check.py` any time).
-**Production hosting:** Self-host on a spare Mac + Cloudflare Tunnel. See §4 "Run / Develop" → "Production hosting".
+**Production hosting:** Self-host on `giinventory.com` via Cloudflare Tunnel + Access (email allow-list `@generalindustries.net`). Turnkey installer at `host_setup/scripts/install.sh`. See §4 "Run / Develop" and the new "Production hosting" chapter.
 **Purpose:** Get the next session productive in <5 minutes — architecture, what changed, what's next.
 
 ---
@@ -52,14 +52,36 @@ CNCEC PROJECT/
 ├── bug_check.py                  Standalone smoke harness. Run `python bug_check.py`.
 │                                 Writes BUG_REPORT.md. Throwaway DB, never touches live.
 ├── BUG_REPORT.md    (generated)  Latest bug_check output — pass/fail per check, by area.
-├── build_manual_pdf.py  (NEW)    Markdown → branded fpdf2 PDF (cover + TOC + headers).
+├── build_manual_pdf.py           Markdown → branded fpdf2 PDF (cover + TOC + headers).
 │                                 Used by Admin → Settings → "Download User Manual".
-├── USER_MANUAL.md                Full user catalogue. §13 covers 2026-06 changes.
+├── host_setup/      (NEW)        Turnkey Path-A deployment for the host Mac.
+│   ├── README.md                 45-min step-by-step install playbook
+│   ├── cloudflared_config.yml.example
+│   ├── launchd/                  4 plist templates with __PROJECT_DIR__ placeholders
+│   │   ├── com.gi.streamlit.plist.tmpl
+│   │   ├── com.gi.whatsapp-worker.plist.tmpl
+│   │   ├── com.gi.cloudflared.plist.tmpl
+│   │   └── com.gi.backup.plist.tmpl
+│   └── scripts/
+│       ├── install.sh            render + launchctl load all four
+│       ├── uninstall.sh          remove without touching data
+│       ├── restart_app.sh        zero-downtime restart after git pull
+│       ├── run_streamlit.sh      wrapper exec'd by streamlit plist (avoids exit-126)
+│       └── backup_db.sh          SQLite online backup + iCloud + 14-day prune
+├── ai/manual_qa.py  (NEW)        Role-aware Q&A over USER_MANUAL.md. Sidebar widget.
+├── USER_MANUAL.md                §1–13 user catalogue. §14 = host operations chapter.
 └── handoff.md                    THIS FILE
 ```
 
 ### Critical contracts (do not break)
 
+- **`config.utc_to_local(value, fmt)`, `config.localize_timestamps_df(df, cols)`, and `config.auto_localize_timestamps(df)`** — display-time UTC → GMT+3 conversion. DB stays UTC; helpers add `TZ_OFFSET_HOURS` (defaults to 3 / Asia/Riyadh) at render.
+  - **`auto_localize_timestamps(df)`** is the one you want 99% of the time — it scans for any column matching the canonical set (`_DEFAULT_TS_COLS` in `config.py`) and converts only those. Idempotent on already-localized strings.
+  - **Every display-bound `get_*` helper in `database.py` already wraps its result through `_localize()`** — `get_pending_returns`, `list_qr_requests`, `get_pending_requests`, `get_returnable_items`, `get_receipt_history`, `get_whatsapp_log`, `get_pending_stock_adjustments`, `get_stock_adjustment_history`, `get_missing_mtc_for_site`, `get_wbs_for_site`. Callers get GMT+3 strings for free.
+  - For ad-hoc `pd.read_sql` calls at the page level (no helper), call `auto_localize_timestamps(df)` right after the read. Already done in Admin Pending Cross-Site, Admin Audit Log, Admin Live Activity Feed, Admin WhatsApp Console, HOD Cross-Site Incoming, HOD Pending Receipts, HOD PR tab, HOD My Requests, SK QR Requests, SK Returnable Items.
+  - If you add a new timestamp column to the schema, ALSO add its name to `_DEFAULT_TS_COLS` so auto-detection picks it up everywhere.
+- **`GI_SUPPRESS_EMBEDDED_WORKER=1`** — when set, `main.py` skips spawning the embedded WhatsApp worker thread. The Streamlit plist sets this so the standalone `com.gi.whatsapp-worker` process is the only consumer. Without this, both workers race and the embedded one (daemon thread, fails macOS Cocoa main-thread guard) flips every message to `failed`.
+- **macOS WhatsApp sender uses ONLY `System Events` for input** (`whatsapp_worker._send_via_chrome_macos`). No `tell application <browser>` anywhere → no Automation permission prompt. Needs Accessibility permission once on the Python binary. If you ever add new AppleScript snippets here, keep them `System Events`-only or the prompt comes back.
 - **`commit_eod(conn) → int`** — signature unchanged. Moves `pending_issues` → `consumption`, deletes staged.
 - **`process_receipt_delivery(conn, date, sap, qty, supplier, remarks, site, pr_number, expiry_date, extra_fields)`** — auto-creates lot row when Lot_Number provided or Expiry_Date set. Idempotent via UNIQUE on lots. **`extra_fields` MUST be a column on `receipts`** — the function swallows OperationalErrors, so missing columns silently drop SK input. The receipts self-heal block now covers the full 15-column logistics set (see `database.py:553`).
 - **Identity math:** `Closing_Stock = Opening_Stock + Σ receipts − Σ consumption − Σ returns`. **Opening_Stock is a column on `inventory`** (default 0) — admins can set it via DB Editor. Never stored as a computed total. Same pattern for `v_lot_balance` (Remaining = Received − Consumed per Lot_Number).
@@ -347,7 +369,172 @@ from_number  = "whatsapp:+14155238886"
 
 Every recipient must join the Twilio sandbox once by sending `join <code>` to `+1 415 523 8886` on WhatsApp. Sandbox is free; a paid Twilio number removes the join step but needs an approved WhatsApp Business Account.
 
+### Production hosting — full comparison + giinventory.com playbook
+
+You own `giinventory.com` on Cloudflare. That's the front door — pick a back door (where the app actually runs) from this table.
+
+| Option | Always-on without Mac? | DB persists? | WhatsApp | AI / Ollama | Free? | Best for |
+|---|---|---|---|---|---|---|
+| **A. Self-host on Mac + Cloudflare Tunnel** | ❌ Mac must stay on | ✅ on Mac disk | pywhatkit OR Twilio | ✅ local (when Mac on) | Yes (~$8 domain only) | True warehouse rollout with Mac as the server |
+| **B. Fly.io free tier + Cloudflare DNS** | ✅ Always-on cloud VM | ✅ Fly volume + nightly B2 backup | Twilio (cloud) OR tunneled pywhatkit | ❌ unless Mac+Tailscale | Yes | Always-on, no Mac dependency |
+| **C. Streamlit Cloud + Litestream → B2** | ✅ but sleeps weekly | ✅ via Litestream replication | Twilio | ❌ unless Mac+Tailscale | Yes | Minimum-effort cloud, accept brief restarts |
+| **D. Render free tier** | ⚠ sleeps after 15 min, wakes ~30 s | ✅ persistent disk add-on | Twilio | ❌ unless Mac+Tailscale | Yes (1 sleeping service) | Low-traffic, idle-tolerant |
+| **E. Cheap VPS** ($5/mo Hetzner/Contabo) | ✅ Always-on, no sleep | ✅ permanent | Twilio OR own Ollama+Mac for AI | $5/month + $8 domain | Tightest control, mid-cost | Mid-scale rollout where Mac is awkward |
+
+The honest verdict: **A** is best when the Mac CAN stay on (it can; it's a laptop in a server room with FileVault). **B (Fly.io)** is the best free always-on alternative. **C (Streamlit Cloud + Litestream)** is the easiest if you accept ~5 sec cold-start after weekly auto-restarts. Don't use D for a real warehouse — the sleep wake is painful for SK who scan and walk away.
+
+#### What "safe for our data" actually means (the brief for management)
+
+Same on every option above:
+
+| Risk | Defence | Where it lives |
+|---|---|---|
+| External attacker | Inbound port = 0 (Tunnel/proxy). No public IP, no SSH port, no Redis/Postgres exposed. | Network layer |
+| Eavesdropping in transit | TLS 1.3 end-to-end. Cloudflare provides the cert. | Wire |
+| Eavesdropping at the edge | Cloudflare cannot decrypt the *body* — they terminate TLS at their POP and re-encrypt to your origin via the Tunnel's mutual-TLS connection. Body is opaque to them. (Documented at https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) | Cloudflare ↔ origin |
+| Unauthorised user | Cloudflare Access email allow-list at the edge (FREE ≤50 users) + the app's own bcrypt login. Two locks, not one. | Identity layer |
+| Data leak via screenshot | Audit log records every consequential action with username + timestamp. Reviewable in Admin Portal → Audit Logs. | App layer |
+| Data leak via stolen Mac (option A) | macOS FileVault (AES-256). Without the disk password the SQLite file is unreadable. Backups (next row) are independent. | Disk layer |
+| Disk failure / accidental delete | Nightly backups to **two** independent destinations (e.g. iCloud Drive + Backblaze B2). 14-day retention. Restore = `sqlite3 db ".restore <file>"`. | Backup layer |
+| Compliance / data residency | Data lives on YOUR machine (Mac, Fly Frankfurt, Streamlit US — you pick) — not on a vendor-owned DB. Full deletion at will. | Architecture |
+
+If management asks "where does the data go when we type into the app?" the chain is: **browser → TLS → Cloudflare POP → encrypted Tunnel → your origin's local SQLite file**. The data never sits on anyone else's database service.
+
+#### Daily backup options (free, pick any two)
+
+| Destination | Free quota | Setup time | Restore complexity |
+|---|---|---|---|
+| **Backblaze B2** | 10 GB free, 1 GB/day egress | 15 min (rclone or `b2 sync`) | One `b2 download-file-by-name` |
+| **Cloudflare R2** | 10 GB free, no egress charges | 20 min (rclone with S3 endpoint) | One `aws s3 cp` (R2 is S3-compat) |
+| **Private GitHub repo** | Unlimited <100 MB files | 5 min (git commit cron) | `git pull` and copy in |
+| **Google Drive** via rclone | 15 GB on personal account | 10 min (rclone config; one-time OAuth) | `rclone copyto` |
+| **iCloud Drive** (Mac only) | 5 GB free | 0 min (it's already mounted) | Drag and drop |
+
+Recommended pair: **iCloud Drive (always there) + Backblaze B2 (off-Apple, off-Mac, off-Cloudflare)**. If any one party (you, Apple, Cloudflare) is compromised, the other two snapshots survive.
+
+#### Setting up giinventory.com — pick A, B, or C and follow
+
+##### Path A — point giinventory.com at your Mac (self-host)
+
+You already finished the tunnel install. The DNS step inside Cloudflare's dashboard:
+
+1. **Dash → giinventory.com → DNS → Records** (you're already here per your screenshot).
+2. **Add record** → Type `CNAME` → Name `gi` (so URL is `gi.giinventory.com`) or `@` (apex `giinventory.com`) → Target: leave for the tunnel command.
+3. Actually skip step 2 and let `cloudflared` do it for you:
+   ```bash
+   cloudflared tunnel route dns gi-hub gi.giinventory.com
+   ```
+   Refresh the Cloudflare DNS page — a CNAME for `gi` appears automatically, pointing at `<tunnel-uuid>.cfargotunnel.com`. **Proxied** (orange cloud) should be ON.
+4. Visit `https://gi.giinventory.com` — app loads.
+
+##### Path B — point giinventory.com at Fly.io (always-on, no Mac)
+
+1. **Sign up at fly.io** (free, no credit card for the smallest tier).
+2. **Install flyctl locally:** `curl -L https://fly.io/install.sh | sh`
+3. In the repo root:
+   ```bash
+   fly launch --no-deploy           # asks: app name → gi-hub, region → fra (Frankfurt closest to KSA)
+   fly volumes create gi_data --size 1 --region fra
+   ```
+4. Edit the generated `fly.toml`:
+   ```toml
+   [[mounts]]
+     source = "gi_data"
+     destination = "/data"
+   [env]
+     STREAMLIT_SERVER_PORT = "8080"
+     # gi_database.db will live at /data/gi_database.db
+   ```
+5. Add a tiny `Dockerfile`:
+   ```dockerfile
+   FROM python:3.12-slim
+   WORKDIR /app
+   COPY requirements.txt .
+   RUN pip install --no-cache-dir -r requirements.txt
+   COPY . .
+   ENV STREAMLIT_SERVER_HEADLESS=true
+   CMD ["streamlit", "run", "main.py", "--server.address=0.0.0.0", "--server.port=8080"]
+   ```
+6. `fly deploy`. After ~3 min, Fly prints `https://gi-hub.fly.dev`.
+7. **Point giinventory.com at Fly:** Cloudflare dash → DNS → Add record → Type `CNAME` → Name `gi` → Target `gi-hub.fly.dev` → **Proxied** ON.
+8. In Fly: `fly certs create gi.giinventory.com` — Fly auto-issues a TLS cert via Cloudflare's CDN.
+
+Cost: $0 until you exceed 3 small VMs or 160 GB egress/month — you won't.
+
+##### Path C — point giinventory.com at Streamlit Cloud + Litestream
+
+1. Add **Litestream** sidecar to the repo. Create `litestream.yml`:
+   ```yaml
+   dbs:
+     - path: /mount/src/cncec-project/gi_database.db
+       replicas:
+         - type: s3
+           bucket: gi-hub-db-backup
+           path: gi_database.db
+           endpoint: https://s3.eu-central-003.backblazeb2.com
+           region: us-east-1
+   ```
+2. In Streamlit Cloud → Secrets, add B2 credentials:
+   ```toml
+   [s3]
+   access_key_id     = "..."
+   secret_access_key = "..."
+   ```
+3. Modify `main.py` to call `litestream restore -if-replica-exists` before `init_db()` on startup, then `litestream replicate &` to mirror writes.
+4. Point Cloudflare DNS: dashboard → DNS → Add `CNAME` → `gi` → `your-app.streamlit.app` → Proxied ON. Streamlit ignores the host header so it works.
+
+This path is the most fragile (Streamlit Cloud restart kills `litestream replicate` and you risk seconds of writes). Only pick C if you absolutely cannot run a VM.
+
+#### Cloudflare Access — email-only login (FREE ≤50 users)
+
+Works for any path above where giinventory.com goes through Cloudflare DNS.
+
+1. Cloudflare dash → **Zero Trust** (left sidebar bottom) → on first visit it asks for a Team name → choose `giinventory` → Free plan (no card).
+2. **Access → Applications → Add application** → Self-hosted.
+3. Application name: `GI Hub Warehouse`. Application domain: `gi.giinventory.com`. Session duration: 24 hours.
+4. **Add a policy** → Name: "Staff allow-list" → Action: Allow → Selector: **Emails** → paste comma-separated emails OR Selector: **Emails ending in @yourcompany.com**.
+5. Save. Now anyone hitting `gi.giinventory.com` sees a Cloudflare-branded login page first. They enter their email → receive a one-time PIN → only then reach your app's login. Non-allow-listed emails see "You don't have permission" with no further info leaked.
+
+#### The 8 things to do before sharing the URL with users
+
+1. Change every default password (`admin/admin2026` etc.). They're public knowledge from the repo.
+2. Enable FileVault on the host Mac (path A only): System Settings → Privacy & Security → FileVault → On.
+3. Set up Cloudflare Access with the staff email list.
+4. Add Twilio credentials to App Secrets (cloud paths) so WhatsApp doesn't depend on the Mac for path B/C/D.
+5. Test the nightly backup script restores cleanly to a fresh DB before you start collecting real data.
+6. Run `python bug_check.py` — make sure it shows 114/114.
+7. Run `python build_manual_pdf.py` and email the resulting PDF to management for review.
+8. Take a "day 0" backup before letting anyone log in: `cp gi_database.db gi_database_day0_$(date +%Y%m%d).db`.
+
+#### Quick tunnel for testing TODAY without buying anything
+
+While you decide between A/B/C, you can already share a URL with one teammate to validate the app:
+
+```bash
+# Terminal 1 — Streamlit
+.venv/bin/streamlit run main.py --server.headless true
+
+# Terminal 2 — Cloudflare quick tunnel
+cloudflared tunnel --url http://localhost:8501
+```
+
+Terminal 2 prints `https://random-words.trycloudflare.com`. Share that URL. When you Ctrl-C, the URL dies. Perfect for "does it work end-to-end" before committing to a permanent setup.
+
+---
+
 ### Production hosting — self-host on a spare Mac/laptop + Cloudflare Tunnel
+
+**Turnkey installer:** `host_setup/` ships everything as runnable scripts. After installing `cloudflared` and creating the tunnel, you just run:
+
+```bash
+./host_setup/scripts/install.sh
+```
+
+That renders four `launchd` plists into `~/Library/LaunchAgents/`, loads them, and shows a coloured status table. See `host_setup/README.md` for the full step-by-step (45 minutes from zero to live, including Cloudflare Access setup for the `@generalindustries.net` email allow-list).
+
+The narrative description below is kept for reference but the scripts are the authoritative path.
+
+---
 
 This is the recommended path for a real warehouse rollout. Free, permanent, no API costs, full control. The trade-off is that the host machine must stay on.
 
@@ -580,6 +767,11 @@ Caveats: AI features only work while your Mac is on, awake, and connected. Put `
 | `FPDFUnicodeEncodingException: Character X outside the range` | fpdf2 core fonts are Latin-1 only. Add the offender's glyph → ASCII mapping in `build_manual_pdf.py:_REPLACE`. Don't switch to a Unicode TTF font unless you're OK with the 1-3 MB binary footprint that adds. |
 | Self-host: app unreachable from outside | `launchctl list \| grep gi` — all three (streamlit, whatsapp-worker, cloudflared) should show non-zero PIDs. Check `~/Library/Logs/gi-*.err` for crashes. Test `curl http://localhost:8501` first to isolate Streamlit vs tunnel. |
 | Self-host: backup script fails | Run it manually under your shell to see the error. Common: `sqlite3` not on $PATH (use `/opt/homebrew/bin/sqlite3`); iCloud Drive path not present (system migration?). |
+| `com.gi.streamlit exit 126` | launchd can't exec the venv binary. The wrapper at `host_setup/scripts/run_streamlit.sh` works around it. If you bypassed the wrapper, look for missing exec bit (`chmod +x .venv/bin/streamlit`) or Gatekeeper quarantine (`xattr -d com.apple.quarantine .venv/bin/streamlit`). |
+| WhatsApp messages all `failed` even though worker is running | Embedded thread in main.py is racing the standalone process. Confirm `GI_SUPPRESS_EMBEDDED_WORKER=1` appears in the rendered `~/Library/LaunchAgents/com.gi.streamlit.plist`. Reinstall via `./host_setup/scripts/install.sh` if missing. |
+| "Python wants to control Google Chrome" popup repeats | macOS Automation prompt. Means a `tell application <X>` slipped back into the AppleScript path. The current sender uses `System Events` only; check `whatsapp_worker._send_via_chrome_macos` hasn't been edited. |
+| Timestamps still UTC on a specific page | `localize_timestamps_df(df, [...])` not yet applied there. Add the import + one-liner call right after the `pd.read_sql(...)`. The helper is idempotent and safe to apply on already-converted DataFrames (it returns the input on the second pass — strings don't re-parse as timestamps). |
+| Ask Hub Assistant returns "That isn't covered in your section of the manual" | Either (a) the user IS asking about a section above their role — that's the security feature working, or (b) USER_MANUAL.md has drifted away from the role-section allow-list in `ai/manual_qa._ROLE_ALLOWED`. Re-check the section numbering matches `# N. ` headings. |
 
 ---
 
@@ -600,11 +792,18 @@ Caveats: AI features only work while your Mac is on, awake, and connected. Put `
 - New tables:
   - `qr_approval_requests` — SK label requests → HOD approval → consolidated PDF download
   - `entry_attachments` — BLOB + disk-mirror path; `doc_type IN ('consumption','receipt','return')`
-  - `mtc_documents` — rubber-material MTC; `status IN ('attached','missing','sent_to_logistics')`
+  - `mtc_documents` — Surface Shields MTC; `status IN ('attached','missing','sent_to_logistics')`
   - `pending_returns` — SK return staging → HOD approval; `override_required` flag for >30-day returns
 - Inventory: `Category` (default `'Others'`) + `Opening_Stock` (default 0)
 - System settings: `system_settings.Site_ID` (NULL = global, non-NULL = site-specific)
 - Receipts: `DN_No`, `Serial_No`, `PR`, `Location`, `Vehicle_No`, `Driver_Name`, `Pallet_No`, `Mob_From`, `Prepared_by`, `Mob_To`, `Received_by`, `DN_Copy` — closes the silent-drop bug
+- `whatsapp_queue`: `error_message`, `attempts` columns for failure visibility + retry
+
+**2026-06 round 2:**
+- New tables:
+  - `wbs_master` — per-site allowed WBS numbers; UNIQUE(WBS_Number, Site_ID); `active`/`closed` status
+- Self-heal: `wbs` column on `consumption`, `receipts`, `pending_issues`, `pending_receipts`
+- Config rename: `RUBBER_CATEGORY` → `MTC_REQUIRED_CATEGORY = "Surface Shields"` (old name kept as alias)
 
 All added via self-healing `ALTER TABLE` in `init_db()`. None require manual migration. The bug harness asserts every column listed here.
 
@@ -620,6 +819,11 @@ All added via self-healing `ALTER TABLE` in `init_db()`. None require manual mig
 6. **Toast icon emojis are validated by Streamlit.** Stick to actual single emojis (✅ 🚫 📨 📦 ⚠️ …), not shortcodes or geometric glyphs.
 7. **Streamlit Cloud filesystem rejects WAL mode.** `get_connection()` applies PRAGMAs in a per-pragma try/except. Don't refactor that block back into a single statement.
 8. **HOD Portal hides itself from Admin in the sidebar** but `_can_access('admin', '📋 HOD Portal')` returns `True` — admin can navigate there if the URL is set. That's deliberate (Admin can shadow for support). Don't "fix" it.
+9. **launchd direct exec of `caffeinate <abs-path>` is unreliable on Apple Silicon / newer macOS** — silent `exit 126`. Use the `host_setup/scripts/run_streamlit.sh` wrapper. Don't "simplify" the plist back to direct exec.
+10. **`tell application <browser>` in AppleScript triggers Automation permission, NOT Accessibility**. They're separate macOS prompts. The Chrome WhatsApp sender uses only `System Events` keystrokes to stay under Accessibility (one-time grant per binary). If you ever add `tell application` you'll be back to per-message popups.
+11. **`Ask Hub Assistant` role-filters at the RAG layer, not just system prompt.** A Store Keeper's request never sees the Admin chapter in the prompt context — that's why the model can't leak privileged info even under prompt-injection attack. Preserve this when extending. The role allow-list lives in `ai/manual_qa._ROLE_ALLOWED`.
+12. **SQLite `CURRENT_TIMESTAMP` is UTC by spec.** New rows we write through Python use Riyadh time (because `TZ=Asia/Riyadh` in launchd plists). Mixed timestamps in the DB are normal; display layer normalises via `config.utc_to_local()`. Don't try to "fix" the DB to all-local — portability across timezones depends on UTC at rest.
+13. **`streamlit-keyup` is a Streamlit component**, not a pip dep we can install on Streamlit Cloud's container if there's no network. It's in `requirements.txt` and works on Streamlit Cloud. The dashboard gracefully degrades to plain `st.text_input` if the import fails.
 
 ---
 

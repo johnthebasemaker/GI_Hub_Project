@@ -1,5 +1,6 @@
 bcrypt
 streamlit
+streamlit-keyup            # live-typing column filters on Live Dashboard
 twilio
 fpdf2
 openpyxl

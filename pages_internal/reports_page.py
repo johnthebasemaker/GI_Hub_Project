@@ -30,6 +30,7 @@ from database import (
     report_daily_receipts,
     report_monthly_summary,
     report_pr_status,
+    report_wbs_consumption,
     report_fefo_compliance,
     report_audit_export,
     add_report_schedule,
@@ -86,6 +87,7 @@ _REPORT_TYPES = [
     ("daily",     "📋", "Daily Consumption",   "All material issues for a given day/range, by work type"),
     ("receipts",  "📥", "Daily Receipts",      "All material receipts for a given day/range — by supplier + lot + SAR value"),
     ("monthly",   "📅", "Monthly Summary",     "Per-SAP opening, issued, received, closing + SAR value"),
+    ("wbs",       "📐", "WBS Report",          "Site-scoped roll-up grouped by WBS number — consumption + receipt + SAR"),
     ("lowstock",  "⚠️", "Low Stock Alert",     "Materials below minimum — reorder recommendations"),
     ("burnrate",  "📈", "Burn Rate Analysis",  "30-day consumption trends, days-of-supply per item"),
     ("valuation", "💰", "Inventory Valuation", "Stock × Unit_Cost (standard cost) — SAR rollup"),
@@ -205,6 +207,8 @@ def _run_report_raw(
         return report_daily_receipts(df_from, df_to, site_id=site_id)
     if report_type == "monthly":
         return report_monthly_summary(df_from, df_to, site_id=site_id)
+    if report_type == "wbs":
+        return report_wbs_consumption(df_from, df_to, site_id=site_id)
     if report_type == "lowstock":
         conn = get_connection()
         try:

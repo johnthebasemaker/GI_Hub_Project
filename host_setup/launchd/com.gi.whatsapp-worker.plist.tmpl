@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.gi.whatsapp-worker</string>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_DIR__</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PROJECT_DIR__/.venv/bin/python</string>
+        <string>whatsapp_worker.py</string>
+    </array>
+
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key><false/>
+        <key>Crashed</key><true/>
+    </dict>
+    <key>ThrottleInterval</key><integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>__USER_HOME__/Library/Logs/gi-whatsapp-worker.log</string>
+    <key>StandardErrorPath</key>
+    <string>__USER_HOME__/Library/Logs/gi-whatsapp-worker.err</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__PROJECT_DIR__/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>TZ</key>
+        <string>Asia/Riyadh</string>
+        <!-- Use Chrome+AppleScript instead of pywhatkit's pyautogui path -->
+        <key>GI_WHATSAPP_BROWSER</key>
+        <string>chrome</string>
+    </dict>
+</dict>
+</plist>

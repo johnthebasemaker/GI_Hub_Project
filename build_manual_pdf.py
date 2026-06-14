@@ -424,37 +424,40 @@ class ManualPDF(FPDF):
         self.ln(1)
 
     def render_paragraph(self, text: str):
-        runs = inline_runs(text)
+        # Use a single multi_cell so wrapping respects right margin even
+        # when the paragraph spans a page break. We render inline styles by
+        # stripping the markdown punctuation rather than trying to mix
+        # fonts mid-paragraph — fpdf2's write() can overflow the right edge
+        # when fonts change between runs.
         self.set_text_color(*TEXT_BODY)
         self.set_font("helvetica", "", 10.5)
-        # fpdf2 doesn't have inline mixed-style writes that wrap nicely
-        # without HTML mode, so we use write() — it respects font changes
-        # between calls.
-        for run_text, style in runs:
-            if style.get("bold"):
-                self.set_font("helvetica", "B", 10.5)
-            elif style.get("italic"):
-                self.set_font("helvetica", "I", 10.5)
-            elif style.get("code"):
-                self.set_font("courier", "", 9.5)
-                self.set_text_color(*BRAND_NAVY)
-            else:
-                self.set_font("helvetica", "", 10.5)
-                self.set_text_color(*TEXT_BODY)
-            self.write(5.5, _ascii(run_text))
-            # Reset color after code runs
-            self.set_text_color(*TEXT_BODY)
-        self.ln(8)
+        usable_w = PAGE_W_MM - 2 * MARGIN_MM
+        # Always start at the left margin
+        self.set_x(MARGIN_MM)
+        self.multi_cell(usable_w, 5.5, _ascii(_strip_md_punct(text)))
+        self.ln(3)
 
     def render_list(self, items: list):
         self.set_text_color(*TEXT_BODY)
+        usable_w = PAGE_W_MM - 2 * MARGIN_MM
+        bullet_w = 6
+        body_w   = usable_w - bullet_w
         for bullet, body in items:
+            # Always re-anchor to the left margin before drawing the bullet
+            self.set_x(MARGIN_MM)
+            # Capture y BEFORE the bullet so the body can align even if it wraps.
+            y_start = self.get_y()
+            # Bullet (navy, bold)
             self.set_font("helvetica", "B", 10.5)
             self.set_text_color(*BRAND_NAVY)
-            self.cell(6, 6, _ascii(bullet), align="L")
+            self.cell(bullet_w, 5.5, _ascii(bullet), align="L")
+            # Body (regular)
             self.set_font("helvetica", "", 10.5)
             self.set_text_color(*TEXT_BODY)
-            self.multi_cell(PAGE_W_MM - 2 * MARGIN_MM - 6, 6, _ascii(_strip_md_punct(body)))
+            self.set_xy(MARGIN_MM + bullet_w, y_start)
+            self.multi_cell(body_w, 5.5, _ascii(_strip_md_punct(body)))
+            # No manual ln — multi_cell already advanced. Just nudge spacing.
+            self.ln(0.5)
         self.ln(2)
 
     def render_code(self, text: str):
@@ -534,29 +537,32 @@ class ManualPDF(FPDF):
             if fill:
                 self.set_fill_color(*TABLE_ROW_ALT_BG)
             cells = (row + [""] * n_cols)[:n_cols]
-            # Find tallest cell for this row
+            # Always anchor table x to the left margin to avoid drift
+            x_start = MARGIN_MM
+            y_start = self.get_y()
+            # Find tallest cell for this row (helvetica char width ~ 1.7mm @ 9pt)
             heights = []
             for cell in cells:
                 cell_clean = _ascii(_strip_md_punct(cell))
-                # rough wrap calc
-                w_per_char = 1.8
-                chars_per_line = max(1, int((col_w - 2) / w_per_char))
+                w_per_char = 1.7
+                chars_per_line = max(1, int((col_w - 3) / w_per_char))
                 n_lines = max(1, (len(cell_clean) + chars_per_line - 1) // chars_per_line)
-                heights.append(line_h * min(3, n_lines))
+                heights.append(line_h * min(4, n_lines))
             row_h = max(heights)
-            x_start = self.get_x()
-            y_start = self.get_y()
+            # Background + borders first, content next, so wrapping never
+            # paints over neighbouring columns.
+            for i in range(n_cols):
+                self.rect(x_start + i * col_w, y_start, col_w, row_h, "DF" if fill else "D")
             for i, cell in enumerate(cells):
                 cell_clean = _ascii(_strip_md_punct(cell))
-                self.rect(x_start + i * col_w, y_start, col_w, row_h, "DF" if fill else "D")
-                self.set_xy(x_start + i * col_w + 1, y_start + 0.5)
-                # Truncate to fit
-                max_chars = int((col_w - 2) * 1.8)
-                if len(cell_clean) > max_chars * 3:
-                    cell_clean = cell_clean[:max_chars * 3 - 1] + "…"
-                self.multi_cell(col_w - 2, line_h, cell_clean, align="L")
-                self.set_xy(x_start + (i + 1) * col_w, y_start)
-            self.set_y(y_start + row_h)
+                # Hard truncate so multi_cell can never overflow into the next col
+                w_per_char = 1.7
+                max_chars = int((col_w - 3) / w_per_char) * 4
+                if len(cell_clean) > max_chars:
+                    cell_clean = cell_clean[:max_chars - 1] + "..."
+                self.set_xy(x_start + i * col_w + 1.5, y_start + 0.8)
+                self.multi_cell(col_w - 3, line_h, cell_clean, align="L")
+            self.set_xy(MARGIN_MM, y_start + row_h)
         self.ln(2)
 
     def render_hr(self):

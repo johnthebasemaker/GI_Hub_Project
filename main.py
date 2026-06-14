@@ -72,11 +72,23 @@ seed_default_users()  # Seeds admin/supervisor/worker if users table is empty
 
 # ===========================================================================
 # BACKGROUND WORKER — WhatsApp queue processor
-# @st.cache_resource runs this exactly ONCE per server lifecycle, regardless
-# of page reruns or concurrent users.
+# @st.cache_resource runs this exactly ONCE per server lifecycle.
+#
+# On macOS hosts where a SEPARATE `python whatsapp_worker.py` process is
+# already running (e.g. via launchd), this embedded thread MUST NOT also
+# run — both would compete for the same queue rows and the embedded one
+# fails the macOS Cocoa-main-thread guard, flipping every message to
+# 'failed'. The launchd plist sets GI_SUPPRESS_EMBEDDED_WORKER=1 to opt
+# out cleanly. Streamlit-Cloud deployments (no standalone process) leave
+# the env var unset and use the embedded thread + Twilio.
 # ===========================================================================
+import os as _os_main
+
+
 @st.cache_resource
 def _start_whatsapp_worker() -> str:
+    if _os_main.environ.get("GI_SUPPRESS_EMBEDDED_WORKER") == "1":
+        return "skipped (standalone worker)"
     import threading
     try:
         from whatsapp_worker import run_worker_loop
@@ -147,18 +159,25 @@ def render_sidebar(user: dict) -> str:
         st.divider()
 
         role_meta = ROLES.get(role, {"icon": "?", "label": role, "color": TEXT_MUTED})
+        site_id  = user.get("site_id", "HQ") or "HQ"
         st.markdown(
             f"<div style='background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);"
             f"border-radius:10px;padding:0.55rem 0.75rem;margin-bottom:0.75rem;"
             f"display:flex;align-items:center;gap:10px;'>"
             f"<span style='font-size:1.4rem;line-height:1;flex-shrink:0;'>{role_meta['icon']}</span>"
-            f"<div style='overflow:hidden;'>"
+            f"<div style='overflow:hidden;flex:1;min-width:0;'>"
             f"<div style='color:{TEXT_PRIMARY};font-weight:700;font-size:0.92rem;"
             f"line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>"
             f"{username}</div>"
-            f"<div style='color:{role_meta['color']};font-size:0.7rem;font-weight:600;"
-            f"text-transform:uppercase;letter-spacing:0.07em;margin-top:1px;'>"
-            f"{role_meta['label']}</div>"
+            f"<div style='display:flex;align-items:center;gap:6px;margin-top:2px;flex-wrap:wrap;'>"
+            f"<span style='color:{role_meta['color']};font-size:0.7rem;font-weight:600;"
+            f"text-transform:uppercase;letter-spacing:0.07em;'>"
+            f"{role_meta['label']}</span>"
+            f"<span style='background:rgba(212,175,55,0.18);border:1px solid rgba(212,175,55,0.40);"
+            f"color:{BRAND_GOLD};font-size:0.62rem;font-weight:700;padding:1px 7px;"
+            f"border-radius:999px;letter-spacing:0.05em;'>"
+            f"📍 {site_id}</span>"
+            f"</div>"
             f"</div>"
             f"</div>",
             unsafe_allow_html=True,
@@ -200,6 +219,51 @@ def render_sidebar(user: dict) -> str:
                     )
                 except Exception:
                     pass
+        st.divider()
+
+        # Hub Assistant — role-filtered Q&A against USER_MANUAL.md.
+        # Sees only the manual sections their role is allowed to read.
+        with st.expander("💬 Ask Hub Assistant", expanded=False):
+            st.caption("Ask anything about the part of the system you can use. "
+                       "Answers come from the user manual via your local AI.")
+            q_key = f"_hub_q_{user['username']}"
+            ans_key = f"_hub_ans_{user['username']}"
+            question = st.text_area(
+                "Your question",
+                placeholder="e.g. How do I stage a return?",
+                key=q_key, height=80, label_visibility="collapsed",
+            )
+            bcol_a, bcol_b = st.columns([1, 1])
+            with bcol_a:
+                ask_clicked = st.button("Ask", type="primary",
+                                        use_container_width=True,
+                                        key=f"_hub_ask_{user['username']}")
+            with bcol_b:
+                if st.button("Clear", use_container_width=True,
+                             key=f"_hub_clear_{user['username']}"):
+                    st.session_state.pop(ans_key, None)
+                    st.rerun()
+            if ask_clicked and question.strip():
+                try:
+                    from ai.manual_qa import answer_manual_question
+                    chunks: list[str] = []
+                    placeholder = st.empty()
+                    for piece in answer_manual_question(question, role):
+                        chunks.append(piece)
+                        placeholder.markdown(
+                            f"<div style='font-size:12.5px;color:#E0E6ED;'>"
+                            f"{''.join(chunks)}</div>",
+                            unsafe_allow_html=True,
+                        )
+                    st.session_state[ans_key] = "".join(chunks)
+                except Exception as e:
+                    st.error(f"Hub Assistant: {type(e).__name__}: {e}")
+            elif st.session_state.get(ans_key):
+                st.markdown(
+                    f"<div style='font-size:12.5px;color:#E0E6ED;'>"
+                    f"{st.session_state[ans_key]}</div>",
+                    unsafe_allow_html=True,
+                )
         st.divider()
 
         # Feedback hooks — every signed-in user can flag bugs or request

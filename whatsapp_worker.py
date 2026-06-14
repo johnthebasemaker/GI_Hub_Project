@@ -88,18 +88,109 @@ def _twilio_config() -> tuple[str, str, str]:
 # ---------------------------------------------------------------------------
 # Unified send — Twilio → PyWhatKit fallback
 # ---------------------------------------------------------------------------
+def _send_via_chrome_macos(phone: str, text: str) -> None:
+    """
+    Send a WhatsApp message on macOS via the system browser.
+
+    Permission strategy:
+      - We deliberately AVOID `tell application "Google Chrome"` because that
+        triggers macOS Automation permission ("Python wants to control Chrome")
+        which prompts on every send if the binary path varies.
+      - Instead, we use ONLY `System Events` for input, which needs the
+        Accessibility permission once — granted, then quiet forever.
+      - `open -a <browser> URL` and `open -a <browser>` to focus only need
+        no permission at all (they're plain LaunchServices calls).
+
+    Browser override: env GI_WHATSAPP_BROWSER (default 'Google Chrome').
+    """
+    import subprocess
+    import time
+    import urllib.parse
+
+    browser = os.environ.get("GI_WHATSAPP_BROWSER", "Google Chrome")
+    if browser.lower() in {"chrome", "google chrome"}:
+        browser = "Google Chrome"
+    elif browser.lower() == "safari":
+        browser = "Safari"
+
+    clean_phone = phone.lstrip("+").replace(" ", "").replace("-", "")
+    url = (
+        f"https://web.whatsapp.com/send?phone={clean_phone}"
+        f"&text={urllib.parse.quote(text)}"
+    )
+
+    # 1. Open the URL in the chosen browser (LaunchServices — no perm needed).
+    try:
+        subprocess.run(["open", "-a", browser, url], check=True, timeout=10)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Couldn't open WhatsApp Web in {browser}. "
+            f"Is it installed? Try: open -a '{browser}' --args --version. "
+            f"Override with GI_WHATSAPP_BROWSER env var. (exit {e.returncode})"
+        ) from e
+    except FileNotFoundError as e:
+        raise RuntimeError(f"`open` command missing — is this macOS? {e}") from e
+
+    # 2. Wait for WhatsApp Web to load + parse the ?text= param into the input.
+    wait_s = int(os.environ.get("GI_WHATSAPP_WAIT_S", "15"))
+    time.sleep(wait_s)
+
+    # 3. Make sure the target browser is the active app (LaunchServices, no perm).
+    subprocess.run(["open", "-a", browser], timeout=5)
+    time.sleep(0.5)
+
+    # 4. Press Enter via System Events — Accessibility permission only.
+    #    No "tell application <browser>" here, so no Automation prompt.
+    enter_osa = 'tell application "System Events" to keystroke return'
+    try:
+        subprocess.run(
+            ["osascript", "-e", enter_osa],
+            check=True, timeout=10,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            "AppleScript keystroke failed. Grant the Python binary "
+            "Accessibility permission ONCE in:\n"
+            "  System Settings → Privacy & Security → Accessibility → add "
+            f"{sys_executable()}\n"
+            f"(exit {e.returncode})"
+        ) from e
+
+    # 5. Let WhatsApp Web actually send, then close the tab via Cmd+W
+    #    (System Events keystroke — no Automation permission).
+    time.sleep(3)
+    close_osa = (
+        'tell application "System Events" to keystroke "w" using {command down}'
+    )
+    try:
+        subprocess.run(["osascript", "-e", close_osa], timeout=5)
+    except Exception:
+        pass  # best-effort
+
+
+def sys_executable() -> str:
+    """Return the path of the Python interpreter the worker is running under.
+    Used in error messages so the user knows which binary to whitelist."""
+    import sys
+    return sys.executable
+
+
 def _send_whatsapp(phone: str, text: str) -> None:
     """
-    Send one WhatsApp message.  Raises on failure so the caller can mark
-    the queue row as 'failed'. Tries Twilio first, then pywhatkit (local).
+    Send one WhatsApp message. Raises on failure so the caller can mark
+    the queue row as 'failed' with a useful error_message.
 
-    The error messages we raise are deliberately specific so they're useful
-    in the Admin → WhatsApp Console "error_message" column.
+    Priority order:
+      1. Twilio  — if credentials are configured (any platform)
+      2. macOS native — `open -a 'Google Chrome'` + AppleScript Enter key.
+         Bypasses pywhatkit. Works from any process / thread.
+      3. pywhatkit — legacy fallback on non-macOS desktop (Windows/Linux)
+         that has a logged-in WhatsApp Web in the default browser.
     """
     sid, token, from_num = _twilio_config()
 
+    # ── 1. Twilio (cloud / production) ────────────────────────────────────
     if sid and token:
-        # Twilio path — works on any server, no browser needed
         try:
             from twilio.rest import Client
         except ImportError as e:
@@ -111,37 +202,23 @@ def _send_whatsapp(phone: str, text: str) -> None:
         try:
             Client(sid, token).messages.create(from_=from_num, body=text, to=to)
         except Exception as e:
-            # Twilio surfaces the most useful info inside the exception body
             raise RuntimeError(f"Twilio API error: {e}") from e
         return
 
+    # ── 2. macOS-native Chrome/Safari + AppleScript ───────────────────────
+    import sys
+    if sys.platform == "darwin":
+        _send_via_chrome_macos(phone, text)
+        return
+
+    # ── 3. pywhatkit fallback (Windows / Linux desktop) ───────────────────
     pwk = _load_pywhatkit()
     if pwk is None:
         raise RuntimeError(
             "No WhatsApp sender configured. "
-            "Locally: keep pywhatkit installed and WhatsApp Web logged in. "
-            "On Streamlit Cloud: add Twilio credentials to App Secrets."
+            "Cloud: add Twilio credentials. "
+            "Windows/Linux desktop: install pywhatkit + log in to WhatsApp Web."
         )
-
-    # pywhatkit drives a browser via pyautogui. On macOS that needs
-    # Accessibility + Input-Monitoring permissions granted to the Python
-    # binary that's running Streamlit; otherwise the keyboard automation
-    # silently no-ops and the message is never typed. We can't grant the
-    # permission for the user, but we can give them a clear next step.
-    import sys, threading
-    if threading.current_thread() is not threading.main_thread():
-        # pyautogui on macOS requires the main thread for some Cocoa calls.
-        # When Streamlit runs the worker via @st.cache_resource, we're in a
-        # daemon thread — the browser will open but the keyboard send will
-        # often fail silently. Force a clear error rather than a silent drop.
-        if sys.platform == "darwin":
-            raise RuntimeError(
-                "pywhatkit can't run from a Streamlit background thread on "
-                "macOS (Cocoa requires main thread). For local desktop usage, "
-                "run `python whatsapp_worker.py` in a separate terminal "
-                "instead of relying on the embedded thread."
-            )
-
     try:
         pwk.sendwhatmsg_instantly(
             phone_no=phone,
@@ -153,10 +230,7 @@ def _send_whatsapp(phone: str, text: str) -> None:
     except Exception as e:
         raise RuntimeError(
             f"pywhatkit failed: {type(e).__name__}: {e}. "
-            "Check that (1) WhatsApp Web is signed in, "
-            "(2) Chrome/Safari is the default browser, "
-            "(3) on macOS, the Python binary has Accessibility + "
-            "Input Monitoring permissions in System Settings → Privacy."
+            "Confirm WhatsApp Web is signed in and default browser is set."
         ) from e
 
 

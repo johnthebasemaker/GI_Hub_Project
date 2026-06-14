@@ -1,0 +1,28 @@
+# Copy to ~/.cloudflared/config.yml, then:
+#   1. Replace <TUNNEL_UUID> with the UUID printed by `cloudflared tunnel create gi-hub`
+#   2. Replace <USERNAME> with your macOS short username (echo $USER)
+#
+# After this file exists, `cloudflared tunnel run gi-hub` works without
+# any other flags.
+
+tunnel: gi-hub
+credentials-file: /Users/<USERNAME>/.cloudflared/<TUNNEL_UUID>.json
+
+ingress:
+  # Route the public URL to local Streamlit
+  - hostname: gi.giinventory.com
+    service: http://localhost:8501
+    originRequest:
+      # Stream long-polling cleanly — Streamlit uses websockets
+      noTLSVerify: false
+      connectTimeout: 30s
+      disableChunkedEncoding: false
+
+  # Optional: serve Ollama too at a sibling subdomain, if you want
+  # streamlit.giinventory.com to be able to point at a remote Ollama from
+  # a phone/laptop. Lock this down via Cloudflare Access (see README).
+  # - hostname: ai.giinventory.com
+  #   service: http://localhost:11434
+
+  # Catch-all 404 must be last
+  - service: http_status:404
