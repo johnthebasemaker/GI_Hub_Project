@@ -27,6 +27,11 @@ from database import (
     get_connection,
     get_overdue_unreported_items,
     log_audit_action,
+    # Phase 5 — sidebar notifications bell
+    count_unread_notifications,
+    get_app_notifications,
+    mark_notification_read,
+    mark_all_notifications_read,
 )
 from cache_layer import cached_low_stock_items
 from auth import (
@@ -49,6 +54,8 @@ from pages_internal import (
     page_hod_portal,
     page_admin_portal,
     page_reports,
+    page_logistics_portal,
+    page_warehouse_portal,
 )
 
 # ===========================================================================
@@ -118,8 +125,17 @@ def _require_login() -> dict:
 
 # Pages that are role-locked exactly (NOT inherited via hierarchy).
 # Entry Log is for Store Keepers only — HOD reviews in HOD Portal, Admin in Admin Portal.
+# Logistics + Warehouse portals are exact-role + admin-shadow so HOD/Supervisor
+# never accidentally land there.
 _EXACT_ROLE_PAGES = {
-    "📝 Entry Log": {"store_keeper"},
+    "📝 Entry Log":         {"store_keeper"},
+    # HOD Portal is exact-locked so the procurement roles (which sit higher
+    # in the hierarchy numerically) don't inherit access. Admin can still
+    # land there via shadow — see the hide-from-sidebar rule below — but
+    # logistics + warehouse_user must NEVER see it.
+    "📋 HOD Portal":        {"hod", "admin"},
+    "🚚 Logistics Portal":  {"logistics", "admin"},
+    "🏭 Warehouse Portal":  {"warehouse_user", "admin"},
 }
 
 
@@ -134,6 +150,146 @@ def _can_access(role: str, page: str) -> bool:
 # ===========================================================================
 # SIDEBAR
 # ===========================================================================
+# ---------------------------------------------------------------------------
+# Phase 5 — In-app notifications bell
+# ---------------------------------------------------------------------------
+# Lightweight inbox surfaced as a sidebar button with an unread count.
+# Click → modal with the most recent notifications + per-row 👁 Mark read
+# and a bulk ✅ Mark all read. Notifications are produced by all the
+# procurement-chain helpers in database.py.
+
+def _user_warehouse_for_notif(username: str) -> str | None:
+    """Lookup the warehouse_id bound to a warehouse_user account so the
+    role-broadcast notifications scoped to a warehouse reach the right user."""
+    try:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT Warehouse_ID FROM users WHERE username = ?",
+            (username,)).fetchone()
+        conn.close()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+@st.dialog("🔔 Notifications")
+def _notifications_dialog(user: dict) -> None:
+    role = user.get("role")
+    username = user.get("username")
+    site_id  = user.get("site_id")
+    wh_id    = (user.get("warehouse_id")
+                or _user_warehouse_for_notif(username))
+    only_unread = st.toggle(
+        "Only unread", value=True, key="_notif_only_unread",
+    )
+    df = get_app_notifications(
+        username=username, role=role,
+        site_id=site_id, warehouse_id=wh_id,
+        unread_only=only_unread, limit=80,
+    )
+    if df.empty:
+        st.caption(
+            "✨ All caught up. New events appear here as soon as they fire."
+        )
+    else:
+        if st.button("✅ Mark all as read",
+                     key="_notif_mark_all", use_container_width=True):
+            n = mark_all_notifications_read(
+                username=username, role=role,
+                site_id=site_id, warehouse_id=wh_id,
+            )
+            st.toast(f"Marked {n} notification(s) as read", icon="✅")
+            st.rerun()
+        st.markdown("---")
+        sev_palette = {
+            "critical": ("🔴", "#EF4444"),
+            "warning":  ("🟡", "#F59E0B"),
+            "success":  ("🟢", "#22C55E"),
+            "info":     ("🔵", "#0EA5E9"),
+        }
+        for _, row in df.iterrows():
+            icon, color = sev_palette.get(
+                row.get("severity") or "info", ("🔵", "#0EA5E9"),
+            )
+            unread = row.get("read_at") in (None, "", "NaT")
+            bg = "rgba(212,175,55,0.06)" if unread else "transparent"
+            title_html = (
+                f"<div style='font-weight:600;color:#F0F4F8;font-size:13px;'>"
+                f"{icon} {str(row.get('title') or '')}</div>"
+            )
+            body_html = ""
+            if row.get("body"):
+                body_html = (
+                    f"<div style='color:#C0CCD8;font-size:12px;"
+                    f"margin-top:3px;'>{str(row['body'])[:240]}</div>"
+                )
+            meta_html = (
+                f"<div style='color:#7A8FA0;font-size:10.5px;margin-top:4px;'>"
+                f"<span style='color:{color};font-weight:700;text-transform:"
+                f"uppercase;letter-spacing:0.05em;'>"
+                f"{str(row.get('severity') or 'info')}</span>"
+                f" · {str(row.get('created_at') or '')}"
+                f"{(' · ' + str(row['link_page'])) if row.get('link_page') else ''}"
+                f"</div>"
+            )
+            st.markdown(
+                f"<div style='background:{bg};border:1px solid #2A4060;"
+                f"border-left:3px solid {color};border-radius:6px;"
+                f"padding:8px 10px;margin-bottom:6px;'>"
+                f"{title_html}{body_html}{meta_html}</div>",
+                unsafe_allow_html=True,
+            )
+            if unread:
+                if st.button(
+                    "👁 Mark read",
+                    key=f"_notif_read_{int(row['id'])}",
+                    use_container_width=False,
+                ):
+                    mark_notification_read(int(row["id"]))
+                    st.rerun()
+
+
+def _render_notifications_bell(user: dict) -> None:
+    """Render the bell + unread badge inside the sidebar. Tolerant of any
+    DB error so a notification helper failure never breaks page loading."""
+    try:
+        wh_id = (user.get("warehouse_id")
+                 or _user_warehouse_for_notif(user.get("username") or ""))
+        n_unread = count_unread_notifications(
+            username=user.get("username"),
+            role=user.get("role"),
+            site_id=user.get("site_id"),
+            warehouse_id=wh_id,
+        )
+    except Exception:
+        n_unread = 0
+
+    badge_html = ""
+    if n_unread > 0:
+        # Cap display at 99+ so the chip stays compact
+        display = "99+" if n_unread > 99 else str(n_unread)
+        badge_html = (
+            f"<span style='background:#EF4444;color:#fff;border-radius:999px;"
+            f"font-size:10px;font-weight:800;padding:2px 7px;margin-left:6px;'>"
+            f"{display}</span>"
+        )
+    label = f"🔔 Notifications {badge_html}"
+    # Use markdown for the badge, then a real button right under it so the
+    # click target is unambiguous and accessible.
+    st.markdown(
+        f"<div style='color:#C0CCD8;font-size:12px;margin:2px 0 4px 0;'>"
+        f"{label}</div>",
+        unsafe_allow_html=True,
+    )
+    if st.button(
+        "Open inbox" if n_unread == 0 else f"Open inbox ({n_unread} unread)",
+        key="_sb_notif_open", use_container_width=True,
+        type="primary" if n_unread > 0 else "secondary",
+    ):
+        _notifications_dialog(user)
+    st.divider()
+
+
 def render_sidebar(user: dict) -> str:
     role     = user["role"]
     username = user["username"]
@@ -182,6 +338,9 @@ def render_sidebar(user: dict) -> str:
             f"</div>",
             unsafe_allow_html=True,
         )
+
+        # Phase 5 — Notifications bell
+        _render_notifications_bell(user)
 
         # Build the list of allowed pages
         visible_pages = []
@@ -244,20 +403,62 @@ def render_sidebar(user: dict) -> str:
                     st.session_state.pop(ans_key, None)
                     st.rerun()
             if ask_clicked and question.strip():
+                # Pre-flight the Ollama server BEFORE streaming — so an
+                # unreachable server shows a friendly warning instead of
+                # leaking the raw "unreachable at http://localhost:11434"
+                # technical message into chat.
                 try:
-                    from ai.manual_qa import answer_manual_question
-                    chunks: list[str] = []
-                    placeholder = st.empty()
-                    for piece in answer_manual_question(question, role):
-                        chunks.append(piece)
-                        placeholder.markdown(
-                            f"<div style='font-size:12.5px;color:#E0E6ED;'>"
-                            f"{''.join(chunks)}</div>",
-                            unsafe_allow_html=True,
+                    from ai.manual_qa import (
+                        answer_manual_question, health as _hub_health,
+                    )
+                except Exception as _imp_err:
+                    st.warning(
+                        "💬 Hub Assistant is unavailable in this build "
+                        f"({type(_imp_err).__name__})."
+                    )
+                else:
+                    try:
+                        _ok, _hmsg = _hub_health()
+                    except Exception:
+                        _ok, _hmsg = False, "unreachable"
+                    if not _ok and ("unreachable" in _hmsg.lower()
+                                    or "connection" in _hmsg.lower()):
+                        st.warning(
+                            "🤖 Local AI is offline. Please run `ollama serve` "
+                            "in your terminal to enable the AI assistant."
                         )
-                    st.session_state[ans_key] = "".join(chunks)
-                except Exception as e:
-                    st.error(f"Hub Assistant: {type(e).__name__}: {e}")
+                    elif not _ok:
+                        # Other health failures (model not pulled, manual
+                        # missing) — surface the structured message verbatim,
+                        # it's already user-friendly.
+                        st.warning(_hmsg)
+                    else:
+                        try:
+                            chunks: list[str] = []
+                            placeholder = st.empty()
+                            for piece in answer_manual_question(question, role):
+                                chunks.append(piece)
+                                placeholder.markdown(
+                                    f"<div style='font-size:12.5px;color:#E0E6ED;'>"
+                                    f"{''.join(chunks)}</div>",
+                                    unsafe_allow_html=True,
+                                )
+                            st.session_state[ans_key] = "".join(chunks)
+                        except (ConnectionError, OSError, TimeoutError):
+                            # Race: server died mid-stream. Same friendly
+                            # message as the pre-flight branch.
+                            st.warning(
+                                "🤖 Local AI is offline. Please run "
+                                "`ollama serve` in your terminal to enable "
+                                "the AI assistant."
+                            )
+                        except Exception as e:
+                            # Last-resort catch — keep the user out of a
+                            # stack trace; surface the type only.
+                            st.error(
+                                f"Hub Assistant unavailable "
+                                f"({type(e).__name__}). Try again shortly."
+                            )
             elif st.session_state.get(ans_key):
                 st.markdown(
                     f"<div style='font-size:12.5px;color:#E0E6ED;'>"
@@ -323,6 +524,10 @@ def main() -> None:
         page_admin_portal(user)
     elif page == "📊 Reports":
         page_reports(user)
+    elif page == "🚚 Logistics Portal":
+        page_logistics_portal(user)
+    elif page == "🏭 Warehouse Portal":
+        page_warehouse_portal(user)
 
 
 if __name__ == "__main__":

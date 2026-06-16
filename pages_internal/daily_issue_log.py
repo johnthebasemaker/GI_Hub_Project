@@ -604,6 +604,12 @@ def page_daily_issue_log(user: dict) -> None:
         st.subheader("📦 Stage Inbound Receipts")
         st.caption("Add received materials to the draft queue, then submit to HOD for approval.")
 
+        # Phase 3 — Procurement chain. DNs that already passed Logistics +
+        # HOD approval land here as ready-to-confirm rows. Confirming
+        # writes directly into `receipts` so Live Dashboard reflects the
+        # stock the same minute.
+        _render_incoming_dns_expander(user=user, site_id=site_id)
+
         # Phase 5 — bulk OCR upload (delivery note image or pasted text)
         with st.expander("📷 Upload Delivery Note (OCR)", expanded=False):
             _render_receipt_ocr(user=user, site_id=site_id, inv_list=inv_list)
@@ -1873,6 +1879,61 @@ def _submit_consumption_ocr(edited_df, user, site_id, date_val,
     st.toast(f"✅ Staged {n} consumption row(s) to draft queue", icon="📝")
     st.success(f"{n} row(s) staged to draft. Submit to HOD from the Staging Queue below.")
     st.rerun()
+
+
+def _render_incoming_dns_expander(user: dict, site_id: str) -> None:
+    """Phase 3 — Procurement chain. Shows DNs that already passed HOD
+    approval and are pending physical confirmation at this site. One click
+    writes rows into `receipts` and closes the DN."""
+    from database import list_incoming_dns_for_sk, get_dn_detail, sk_mark_dn_received
+    df = list_incoming_dns_for_sk(site_id)
+    badge = f" ({len(df)})" if not df.empty else ""
+    with st.expander(f"🚚 Incoming Delivery Notes from Warehouse{badge}",
+                     expanded=not df.empty):
+        if df.empty:
+            st.caption(
+                "Nothing inbound. Logistics → HOD-approved DNs will appear "
+                "here for you to confirm physical receipt."
+            )
+            return
+        for _, row in df.iterrows():
+            with st.container(border=True):
+                cA, cB = st.columns([3, 1])
+                with cA:
+                    st.markdown(
+                        f"**DN {row['DN_Number']}** · PO `{row['PO_Number']}` "
+                        f"· Warehouse `{row['Warehouse_ID']}` · "
+                        f"DN Date {row.get('DN_Date') or '—'}"
+                    )
+                    st.caption(
+                        f"{int(row.get('line_count') or 0)} line(s) · "
+                        f"{float(row.get('total_qty') or 0):.2f} units"
+                    )
+                    with st.expander("View lines", expanded=False):
+                        items = get_dn_detail(row["DN_Number"])["items"]
+                        if not items.empty:
+                            cols = [c for c in [
+                                "Material_Code", "Description", "Qty", "UOM",
+                                "Lot_Number", "Expiry_Date", "Remarks",
+                            ] if c in items.columns]
+                            st.dataframe(items[cols],
+                                         use_container_width=True,
+                                         hide_index=True)
+                with cB:
+                    if st.button(
+                        "✅ Mark as Received",
+                        type="primary",
+                        key=f"_sk_dn_recv_{row['DN_Number']}",
+                        use_container_width=True,
+                    ):
+                        ok, msg = sk_mark_dn_received(
+                            dn_number=row["DN_Number"],
+                            store_keeper=user["username"],
+                        )
+                        (st.success if ok else st.error)(msg)
+                        if ok:
+                            st.balloons()
+                            st.rerun()
 
 
 def _render_receipt_ocr(user: dict, site_id: str, inv_list: pd.DataFrame) -> None:

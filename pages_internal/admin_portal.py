@@ -196,6 +196,8 @@ def page_admin_portal(user: dict) -> None:
         "👥 Users", "🗄️ Master DB Editor", "📜 Audit Logs",
         "📱 WhatsApp Console", "⚙️ Settings", "🔑 Access Control",
         "💬 Reports & Bugs",
+        # Phase 5 — cross-site oversight of the procurement chain
+        "🚚 Logistics Oversight",
     ]
     tabs = st.tabs(tab_labels)
     with tabs[0]: _render_overview_tab(user)
@@ -208,6 +210,7 @@ def page_admin_portal(user: dict) -> None:
     with tabs[7]: _render_settings_tab(user)
     with tabs[8]: _render_access_control_tab(user)
     with tabs[9]: _render_bugs_tab(user)
+    with tabs[10]: _render_logistics_oversight_tab(user)
 
 
 # ===========================================================================
@@ -488,11 +491,26 @@ def _render_pending_requests_tab(user: dict) -> None:
         conn.close()
         return
 
-    # GMT+0 → GMT+3 for the timestamp columns the data_editor renders.
-    from config import localize_timestamps_df
-    reqs_df = localize_timestamps_df(reqs_df, ["created_at", "updated_at"])
+    # Timestamps already converted to GMT+3 inside get_pending_requests() via
+    # the shared _localize() boundary helper. Applying localize_timestamps_df
+    # again here would add a redundant +3 hours — keep the row as-is.
 
     reqs_df.insert(0, "☑️ Select", False)
+
+    # Surface Material_Code + Material_Name right after SAP_Code so the
+    # reviewer can see "WHAT they're asking for" at a glance instead of
+    # having to scroll to the far-right of the table. The LEFT JOIN already
+    # populated these columns from inventory.
+    _preferred_order = [
+        "☑️ Select", "id", "requesting_site", "target_site",
+        "SAP_Code", "Material_Code", "Material_Name", "UOM",
+        "requested_qty", "available_qty", "suggested_qty",
+        "status", "notes", "requested_by", "reviewed_by",
+        "created_at", "updated_at",
+    ]
+    _ordered = [c for c in _preferred_order if c in reqs_df.columns]
+    _ordered += [c for c in reqs_df.columns if c not in _ordered]
+    reqs_df = reqs_df[_ordered]
 
     edited_df = st.data_editor(
         reqs_df,
@@ -500,6 +518,14 @@ def _render_pending_requests_tab(user: dict) -> None:
         hide_index=True,
         disabled=[col for col in reqs_df.columns if col != "☑️ Select"],
         key="bulk_req_editor",
+        column_config={
+            "SAP_Code":      st.column_config.TextColumn("SAP Code"),
+            "Material_Code": st.column_config.TextColumn("Material Code"),
+            "Material_Name": st.column_config.TextColumn("Material Name"),
+            "requested_qty": st.column_config.NumberColumn("Req. Qty"),
+            "available_qty": st.column_config.NumberColumn("Avail."),
+            "suggested_qty": st.column_config.NumberColumn("Suggested"),
+        },
     )
 
     st.write("---")
@@ -1248,18 +1274,14 @@ def _render_whatsapp_console_tab(user: dict) -> None:
             s = _re_wa.sub(r"\s+", " ", s).strip()    # collapse whitespace
             return s
 
-        # ── Local-time formatter (DB rows are UTC; display in GMT+3) ──────
-        import datetime as _dt_wa
-        TZ_OFFSET_H = 3
+        # ── Timestamp passthrough ─────────────────────────────────────────
+        # get_whatsapp_log() returns rows that already passed through
+        # _localize() (UTC → GMT+3). Re-adding +3 hours here would shift
+        # the display 6 hours ahead. Just normalise empties / NaN.
         def _local_ts(s) -> str:
-            if not s or str(s) in ("nan", "None"):
+            if not s or str(s) in ("nan", "None", "NaT"):
                 return "—"
-            try:
-                t = _dt_wa.datetime.fromisoformat(str(s).replace(" ", "T"))
-            except (ValueError, TypeError):
-                return str(s)
-            t = t + _dt_wa.timedelta(hours=TZ_OFFSET_H)
-            return t.strftime("%Y-%m-%d %H:%M:%S")
+            return str(s)
 
         rows_html = []
         for i, (_, r) in enumerate(log_df.iterrows()):
@@ -1953,3 +1975,130 @@ def _render_bugs_tab(user: dict) -> None:
                     st.rerun()
                 else:
                     st.error("Update failed.")
+
+
+# ===========================================================================
+# TAB 11 — LOGISTICS OVERSIGHT (Phase 5)
+# ===========================================================================
+def _render_logistics_oversight_tab(user: dict) -> None:
+    """Cross-site, read-only window onto the procurement chain. Admins see
+    PRs, POs, DNs, vendor returns, reschedules, and force-closures in one
+    place. No new mutation paths — every action belongs in the Logistics
+    or Warehouse portal where the role-locked workflow lives."""
+    from database import (
+        list_prs_for_logistics, list_pos, list_dns,
+        list_vendor_returns, list_force_closures,
+        list_pending_reschedules, list_warehouses, get_sites,
+    )
+
+    st.markdown(
+        f'<h3 style="color:{BRAND_GOLD};font-weight:700;'
+        f'margin:0 0 4px 0;">🚚 Logistics Oversight</h3>'
+        f'<p style="color:{TEXT_MUTED};margin:0 0 14px 0;font-size:13px;">'
+        f'Cross-site picture of every active PR, PO, DN, and exception. '
+        f'For actions, jump to the Logistics or Warehouse portal.</p>',
+        unsafe_allow_html=True,
+    )
+
+    # ── KPI strip ─────────────────────────────────────────────────────────
+    pr_q   = list_prs_for_logistics()
+    po_df  = list_pos(open_only=True)
+    dn_df  = list_dns(status_filter=[
+        "pending_logistics", "logistics_approved",
+        "pending_hod", "pending_sk",
+    ])
+    ret_df = list_vendor_returns(open_only=True)
+    fc_df  = list_force_closures()
+    rs_df  = list_pending_reschedules()
+
+    def _kpi(label, value, sub, color=BRAND_GOLD):
+        return (
+            f'<div style="flex:1;min-width:140px;background:#1E3050;'
+            f'border:1px solid #2A4060;border-radius:10px;padding:12px 14px;">'
+            f'<div style="color:#7A8FA0;font-size:10px;letter-spacing:0.1em;'
+            f'text-transform:uppercase;">{label}</div>'
+            f'<div style="color:{color};font-size:22px;font-weight:800;'
+            f'margin-top:4px;">{value}</div>'
+            f'<div style="color:#7A8FA0;font-size:11px;margin-top:2px;">'
+            f'{sub}</div></div>'
+        )
+    st.markdown(
+        '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">'
+        + "".join([
+            _kpi("OPEN PRs",  str(len(pr_q)),  "awaiting PO"),
+            _kpi("OPEN POs",  str(len(po_df)), "in pipeline", "#0EA5E9"),
+            _kpi("ACTIVE DNs", str(len(dn_df)), "in transit", "#10B981"),
+            _kpi("VENDOR RETURNS", str(len(ret_df)), "open",   "#F59E0B"),
+            _kpi("RESCHEDULES", str(len(rs_df)), "awaiting decision", "#F59E0B"),
+            _kpi("FORCE-CLOSURES", str(len(fc_df)), "lifetime audit", "#EF4444"),
+        ]) + '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Filters ──────────────────────────────────────────────────────────
+    fA, fB = st.columns([1, 1])
+    with fA:
+        sites = ["All sites"] + sorted(get_sites() or [])
+        site_pick = st.selectbox("Site", sites, key="_admin_overs_site")
+    with fB:
+        wh_df = list_warehouses()
+        wh_options = ["All warehouses"] + (
+            wh_df["Warehouse_ID"].tolist() if not wh_df.empty else []
+        )
+        wh_pick = st.selectbox("Warehouse", wh_options,
+                                key="_admin_overs_wh")
+
+    def _filter_by_site(df, col="Site_ID"):
+        if site_pick != "All sites" and col in df.columns:
+            return df[df[col] == site_pick].reset_index(drop=True)
+        return df
+
+    def _filter_by_wh(df, col="Warehouse_ID"):
+        if wh_pick != "All warehouses" and col in df.columns:
+            return df[df[col] == wh_pick].reset_index(drop=True)
+        return df
+
+    # ── Sub-tabs: PRs / POs / DNs / Returns / Closures / Reschedules ─────
+    sA, sB, sC, sD, sE, sF = st.tabs([
+        "📥 PRs", "📋 POs", "🚚 DNs",
+        "↩️ Vendor Returns", "🛑 Force-Closures", "🔁 Reschedules",
+    ])
+    with sA:
+        df = _filter_by_site(pr_q)
+        if df.empty:
+            render_empty_state(icon="📭", title="No PRs match filter")
+        else:
+            st.dataframe(df, use_container_width=True, hide_index=True)
+    with sB:
+        df = _filter_by_site(po_df)
+        if df.empty:
+            render_empty_state(icon="📦", title="No POs match filter")
+        else:
+            st.dataframe(df, use_container_width=True, hide_index=True)
+    with sC:
+        df = _filter_by_site(dn_df)
+        df = _filter_by_wh(df)
+        if df.empty:
+            render_empty_state(icon="🛣️", title="No DNs match filter")
+        else:
+            st.dataframe(df, use_container_width=True, hide_index=True)
+    with sD:
+        if ret_df.empty:
+            render_empty_state(icon="↩️", title="No open vendor returns")
+        else:
+            st.dataframe(ret_df, use_container_width=True, hide_index=True)
+    with sE:
+        df = fc_df
+        if site_pick != "All sites" and "Site_ID" in df.columns:
+            df = df[df["Site_ID"] == site_pick].reset_index(drop=True)
+        if df.empty:
+            render_empty_state(icon="🛑", title="No force-closures recorded")
+        else:
+            st.dataframe(df.head(100), use_container_width=True,
+                         hide_index=True)
+    with sF:
+        if rs_df.empty:
+            render_empty_state(icon="🔁",
+                               title="No pending reschedule requests")
+        else:
+            st.dataframe(rs_df, use_container_width=True, hide_index=True)

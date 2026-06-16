@@ -1,7 +1,8 @@
 # General Industries Hub — Product Manual & User Catalogue
 
-**Version 2.0** · Multi-Site Warehouse Inventory ERP
+**Version 3.0** · Multi-Site Warehouse Inventory ERP + Procurement Chain
 **Document Scope:** Complete operational reference for every role, page, tab, and element built into the system.
+**Companion documents:** `handoff.md` (technical architecture for engineers) · `SOP.md` (daily/weekly procedure for the Logistics + Warehouse teams).
 
 ---
 
@@ -15,12 +16,15 @@
 6. [HOD (Head of Department) Manual](#6-hod-head-of-department-manual)
 7. [Admin Manual](#7-admin-manual)
 8. [Reports Module — Detailed Reference (HOD / Admin / Supervisor)](#8-reports-module--detailed-reference)
-9. [Automated Notifications — WhatsApp & Email](#9-automated-notifications--whatsapp--email)
+9. [Automated Notifications — WhatsApp & Email & In-app Bell](#9-automated-notifications--whatsapp--email)
 10. [Data Model & Concept Reference](#10-data-model--concept-reference)
 11. [Status Codes, Reason Codes & Glossary](#11-status-codes-reason-codes--glossary)
 12. [FAQ — Master Index by Role](#12-faq--master-index-by-role)
 13. [2026-06 Feature Update — What Changed](#13-2026-06-feature-update--what-changed)
-14. [Operations & Hosting — the after-launch chapter](#14-operations--hosting--the-after-launch-chapter)
+14. [Logistics Portal Manual (NEW in v3.0)](#14-logistics-portal-manual)
+15. [Warehouse Portal Manual (NEW in v3.0)](#15-warehouse-portal-manual)
+16. [Cross-Role Procurement Walk-through (NEW in v3.0)](#16-cross-role-procurement-walk-through)
+17. [Operations & Hosting — the after-launch chapter](#17-operations--hosting--the-after-launch-chapter)
 
 ---
 
@@ -39,6 +43,9 @@ The General Industries (GI) Hub is a **multi-site warehouse inventory ERP** buil
 | **Site isolation** | HODs and Supervisors see only their own site's stock. Only Admin sees all sites. Cross-site moves require formal request + approval. |
 | **Audit-first** | Every consequential action writes to `system_audit_log` with username + timestamp + details. Even deletions leave a trace. |
 | **Self-healing schema** | The DB layer automatically adds missing columns/tables on startup. You never need to run migrations manually. |
+| **Procurement chain (v3.0)** | A SQL-driven workflow from Site PR through Logistics PO, Warehouse DN, and Site SK receipt. Every state transition is audited. Logistics owns POs; Warehouse owns physical receiving + DN preparation; Site HOD approves DN content; SK confirms physical arrival. |
+| **RL/BL strict separation** | Rubber Lining and Brick Lining items NEVER share a PO line group, a DN, or a warehouse aggregation. The system rejects mixed-family DNs by design and tags each line with its family on insert. |
+| **Warehouse-blind pricing** | Warehouse users can see materials and quantities but NEVER see Unit_Price, Total_Price, or any monetary header field on a PO. Three independent enforcement layers guarantee this. |
 
 ## 1.3 The transaction lifecycle (the heart of the system)
 
@@ -58,6 +65,21 @@ The General Industries (GI) Hub is a **multi-site warehouse inventory ERP** buil
 
 The same shape applies to receipts (`pending_receipts → receipts`) and adjustments (`stock_adjustments → consumption/receipts`).
 
+### 1.3a The procurement chain (v3.0)
+
+```
+Site HOD          → submits PR        → Logistics: 📥 Incoming PRs
+Logistics         → issues PO         → Site HOD: notifies + Admin: oversight
+Logistics         → assigns PO/items  → Warehouse: 🔔 Incoming Assignments
+Warehouse user    → acks + receives from vendor (records physical arrival)
+Warehouse user    → drafts DN (RL/BL safe) → Logistics: ✈️ DN approval queue
+Logistics         → approves date    → HOD: 🚚 DN Approvals tab
+HOD               → approves content → SK: 🚚 Incoming DNs (Receipt Staging)
+Store Keeper      → marks received   → receipts ledger + DN closed
+```
+
+Side-paths: vendor returns (any role can raise), reschedules (Warehouse/HOD → Logistics), force-closures (Logistics only, audited to Admin + Site HOD).
+
 ## 1.4 Currency, dates, units
 
 - **Currency:** SAR (Saudi Riyal). All money is stored as REAL and displayed via `format_sar()`.
@@ -72,29 +94,33 @@ The same shape applies to receipts (`pending_receipts → receipts`) and adjustm
 ## 2.1 Role hierarchy
 
 ```
-store_keeper (0) < supervisor (1) < hod (2) < admin (3)
+store_keeper (0) < warehouse_user (1) ≈ supervisor (1) < hod (2) < logistics (3) < admin (4)
 ```
 
-Higher roles inherit all lower-role permissions plus their own. The hierarchy lives in `config.py:ROLE_HIERARCHY`.
+The hierarchy is parallel, not strictly linear — `warehouse_user` and `supervisor` sit at the same numeric level but are scoped differently (one to a warehouse, the other to a site). Procurement-chain pages (Logistics Portal, Warehouse Portal) are EXACT-role-locked in addition to the hierarchy check, so a numerically higher role (e.g. Logistics) does NOT inherit access to a lower role's page (e.g. HOD Portal) just because the hierarchy says it could. The hierarchy lives in `config.py:ROLE_HIERARCHY`; the exact locks live in `main.py:_EXACT_ROLE_PAGES`.
 
 ## 2.2 Page access matrix
 
-| Page | Store Keeper | Supervisor | HOD | Admin |
-|------|:---:|:---:|:---:|:---:|
-| 📦 Live Dashboard | ❌ | ✅ | ✅ | ✅ |
-| 📝 Entry Log | ✅ | ✅ | ✅ | ✅ |
-| 📋 HOD Portal | ❌ | ❌ | ✅ | ❌ (hidden — Admin uses Admin Portal) |
-| 🛡️ Admin Portal | ❌ | ❌ | ❌ | ✅ |
-| 📊 Reports | ❌ | ✅ | ✅ | ✅ |
+| Page | Store Keeper | Warehouse User | Supervisor | HOD | Logistics | Admin |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|
+| 📦 Live Dashboard | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 📝 Entry Log | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| 📋 HOD Portal | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ (hidden — uses Admin Portal) |
+| 🚚 Logistics Portal (NEW) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (admin shadow) |
+| 🏭 Warehouse Portal (NEW) | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ (admin shadow, picks WH in sidebar) |
+| 🛡️ Admin Portal | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| 📊 Reports | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ## 2.3 Site scope by role
 
 | Role | What they see |
 |------|---|
 | Store Keeper | Their own site only — they cannot view another site's stock. |
+| Warehouse User (NEW) | Their own warehouse only — POs assigned to them, DNs they've prepared, items received from vendors. Tied to `users.Warehouse_ID`. |
 | Supervisor | Their own site only — Reports, Live Dashboard, Burn Rate all site-locked. |
-| HOD | Their own site only — but they can REQUEST material from other sites (Cross-Site tab). |
-| Admin | All sites globally — has the "All Sites" filter on every multi-site view. |
+| HOD | Their own site only — but they can REQUEST material from other sites (Cross-Site tab) and submit PRs to Logistics. |
+| Logistics (NEW) | All sites globally for PRs and POs they manage. No site lock — they sit above the site boundary. |
+| Admin | All sites + all warehouses globally — has the "All Sites" filter on every multi-site view; warehouse picker in sidebar when shadowing the Warehouse Portal. |
 
 ## 2.4 Default seeded accounts
 
@@ -106,6 +132,8 @@ The first time the app starts, these accounts are created. **Change the password
 | hod | hod2026 | HOD |
 | supervisor | super2026 | Supervisor |
 | worker | floor2026 | Store Keeper |
+
+**No default `logistics` or `warehouse_user` accounts are seeded.** Both roles are strictly admin-created — go to **Admin Portal → 👥 Users → Add user**. This is intentional: the procurement chain has commercial visibility (Logistics sees prices, Warehouse routes inventory) and seeded credentials would be a security liability. When you create a `warehouse_user`, set their `Warehouse_ID` to one of the values from **Admin Portal → 🗄️ Master DB Editor → `warehouses` table** — without it, the user lands on the Warehouse Portal and sees an error telling them to ask Admin.
 
 ---
 
@@ -137,8 +165,9 @@ Every page shares this sidebar. Reading top to bottom:
 
 | Element | Purpose | Notes |
 |---|---|---|
-| **GI Hub bolt icon + version** | Branding | Shows `v2.0.0` |
-| **Role card** | Your username + role badge | Color-coded: green=Store Keeper, blue=Supervisor, purple=HOD, gold=Admin |
+| **GI Hub bolt icon + version** | Branding | Shows `v3.0.0` |
+| **Role card** | Your username + role badge | Color-coded: grey=Store Keeper, emerald=Warehouse, blue=Supervisor, indigo=HOD, sky=Logistics, gold=Admin |
+| **🔔 Notifications bell (NEW v3.0)** | Unread count + inbox dialog | Red badge if N>0, primary button changes to `"Open inbox (N unread)"`. Modal shows recent procurement events with mark-read controls. See §3.6 |
 | **"Navigate to:" radio** | Page picker | Only shows pages allowed by your role |
 | **INVENTORY ALERTS section** | Compact stock-alert badge | Visible to Supervisor/HOD/Admin only. Shows count of items below minimum (or "All levels adequate" if clear) |
 | **Bug/Feature reporting** | Opens a dialog | See §3.4 |
@@ -161,6 +190,40 @@ Available to every user from the sidebar:
 - **Page dropdown** — which page the issue/idea relates to (Live Dashboard, Entry Log, HOD Portal, Admin Portal, Reports, Other)
 - **Description textarea** — up to 200 characters
 - **Submit button** — writes to `bug_reports` table with user, timestamp, type, page, description. Visible to Admin in the Admin Portal Reports & Bugs tab for triage.
+
+## 3.6 Notifications bell (NEW in v3.0)
+
+Sits between the role card and the navigation radio. Every signed-in user sees their own personalised inbox of procurement-chain events.
+
+**The button:**
+- **No unread:** `"Open inbox"` (secondary button, no badge)
+- **1+ unread:** `"Open inbox (N unread)"` (primary button, red pill badge with the count, capped at "99+")
+
+**The inbox dialog (click the button):**
+- **Only unread toggle** — on by default. Flip off to see your full history.
+- **Per-notification card** — colour-coded left border by severity:
+  - 🔴 Critical (red) — force-closures, T-0 delivery reminders
+  - 🟡 Warning (amber) — T-1/T-2 reminders, reschedule requests
+  - 🟢 Success (green) — DN approved / received successfully
+  - 🔵 Info (blue) — PR submitted, PO issued, assignments
+- **Per-row 👁 Mark read** — flips just that notification
+- **Bulk ✅ Mark all as read** — flips every visible row (respecting the role + site + warehouse scope you'd see normally)
+
+**What gets sent here:**
+| Event you'll see | Triggered by |
+|---|---|
+| New PR from a site (Logistics only) | Site HOD pressing "🚚 Submit PR(s) to Logistics" |
+| PO issued (Site HOD) | Logistics creating a PO against your site's PR |
+| PO assigned to warehouse (Warehouse only) | Logistics routing a PO to your WH |
+| DN awaiting your approval (HOD) | Logistics approving a DN delivery date |
+| Incoming DN ready to receive (SK) | HOD approving DN content |
+| Reschedule requested (Logistics) | Warehouse or HOD asking to push a date |
+| Reschedule decided (requester) | Logistics approve/reject |
+| Force-closure (Admin + originating HOD) | Logistics force-closing a PR/PO/line |
+| Vendor return raised (Logistics) | Any role raising a return |
+| Delivery reminder T-2 / T-1 / T-0 | The daily sweep job (see §9) |
+
+The bell is tolerant — if a notification helper errors, the badge silently shows 0 instead of crashing the sidebar. In-app notifications ALWAYS fire; the WhatsApp side is gated by toggles in `config.WHATSAPP_TRIGGERS` (see §9).
 
 ## 3.5 Overdue Returnable banner (Store Keepers only)
 
@@ -359,6 +422,33 @@ When picked, a blue-tinted info card shows:
 #### C. Add to Receipt Queue ⬇️ button
 
 Validates: material picked, required fields populated. Inserts a `pending_receipts` row with `status='draft'`.
+
+### 4.4.0 🚚 Incoming Delivery Notes from Warehouse (NEW in v3.0)
+
+A new expander appears at the TOP of the Receipt Staging tab. It's only populated when the Warehouse has prepared a DN bound for your site AND your HOD has approved it. If empty, the expander shows: *"Nothing inbound. Logistics → HOD-approved DNs will appear here for you to confirm physical receipt."*
+
+When DNs are inbound, each appears as its own container:
+
+| Element | Purpose |
+|---|---|
+| **DN header line** | `DN <number> · PO <number> · Warehouse <id> · DN Date <date>` |
+| **Line count + total qty** | At-a-glance: how many SKUs, how many units total |
+| **View lines expander** | Material_Code, Description, Qty, UOM, Lot_Number, Expiry_Date, Remarks — read-only preview of every line |
+| **✅ Mark as Received button** | When you confirm physical receipt: writes one `receipts` row per DN line (with DN_Number, Warehouse_ID, PO_Number_Source for full traceback), flips the DN to `received`, and clears it from your list. Inventory cache busts immediately so Live Dashboard reflects the new stock the same minute. |
+
+**When to use:**
+- The Warehouse delivered the materials physically to your site
+- HOD already approved the DN content (you'll see it appear without any action)
+- You've inspected the goods and they match the DN qty + lot
+
+**When NOT to use:**
+- Direct deliveries from supplier to your site (those go through the existing Add Receipt to Queue → Submit to HOD flow below; the email-driven PR/PO path remains supported)
+- Partial receipts (the current flow assumes you confirm the full DN qty — for partials, raise a Vendor Return on the diff after confirming and ask your HOD)
+
+This is the FINAL step in the procurement chain. After you click Mark as Received:
+- Logistics sees `dn_received_by_sk` in their notifications
+- Warehouse sees the same
+- The PO and PR move toward closure if this DN completes the order
 
 ### 4.4.3 Receipt Draft Queue section
 
@@ -676,7 +766,7 @@ A: Yes — AgGrid has a built-in CSV export (right-click the grid). For a formal
 
 # 6. HOD (Head of Department) Manual
 
-The HOD owns their site's inventory ledger. Every transaction flows through their approval. The HOD Portal has **10 tabs**.
+The HOD owns their site's inventory ledger. Every transaction flows through their approval. The HOD Portal has **15 tabs** as of v3.0 — the original 13 (covering EOD, Cross-Site, Burn Rate, Receipts, Returns, Adjustments, PRs, Shelf-Life, Notifications, My Requests, Site Config, DOC, QR Approval) plus two new procurement-chain tabs: 🚚 DN Approvals and 🚚 In-Transit. Existing tabs are unchanged; the new tabs are documented in §6.15 and §6.16 below.
 
 ## 6.1 Pages visible
 
@@ -987,6 +1077,17 @@ Columns: PR No. · SAP · Material · UOM · Qty Req · Qty Pending · Supplier 
 
 `Pending_Qty = Requested_Qty − SUM(receipts where PR_Number matches)`
 
+### 6.8.4a 🚚 Submit PR(s) to Logistics Portal (NEW in v3.0)
+
+A new expander sits between the PR list and the email/PDF block. It opens the procurement-chain path — handing off your PR to the in-app Logistics queue instead of (or in addition to) the legacy email path.
+
+| Element | Purpose |
+|---|---|
+| **Multi-select** | All open PRs at your site that haven't yet been submitted to Logistics |
+| **📨 Submit Selected to Logistics button** | Calls `submit_pr_to_logistics()` for each picked PR. Their `logistics_status` flips to `submitted` and the row appears in Logistics Portal → 📥 Incoming PRs. A `pr_submitted_to_logistics` notification fires to the Logistics role inbox + WhatsApp (if enabled). |
+
+The legacy email path (§6.8.4) **still works** — your team can use it for direct-to-vendor relationships that don't go through central Logistics. Both paths coexist. The email path is marked for future deprecation once procurement chain adoption reaches the agreed threshold.
+
 ### 6.8.4 📧 Notify Logistics section
 
 When at least one PR has `status='open'`:
@@ -1099,6 +1200,109 @@ When at least one request has `status='approved'`:
 
 ---
 
+## 6.15 HOD Portal → 🚚 DN Approvals (NEW in v3.0)
+
+This is your approval queue for Delivery Notes inbound to your site. The Warehouse has prepared them, Logistics has approved the delivery date — now you confirm the **content** (what's actually arriving, in what qty).
+
+### 6.15.1 Empty state
+
+If nothing's pending: an empty-state card reads *"No DNs awaiting your approval — They appear here after Logistics signs off the delivery date."* No action needed.
+
+### 6.15.2 Per-DN cards
+
+Each pending DN renders as its own bordered container with two columns:
+
+**Left column:**
+- **Header line:** `DN <number> · PO <number> · From Warehouse <id>`
+- **Subline:** DN Date · Vehicle No · Driver Name
+- **View lines expander:** Read-only preview of every line item (Material_Code, Description, Qty, UOM, rl_bl_family, Lot_Number, Expiry_Date, Remarks)
+
+**Right column (Decide popover):**
+- **Notes textbox** (required if rejecting)
+- **✅ Approve button** (primary) — flips DN to `pending_sk` and mirrors lines into `pending_receipts` so SK sees them
+- **❌ Reject button** — flips DN to `rejected` with your reason; Warehouse gets pinged to redo
+
+### 6.15.3 When to approve
+
+- DN qty matches what your site needs (matches the PR line you originally raised)
+- RL/BL family is correct
+- Lot + expiry are acceptable (not over-expiry)
+- The originating PO is the right one (not a misroute)
+
+### 6.15.4 When to reject
+
+- Wrong qty (e.g. site asked for 100, DN says 200 — too much exposure)
+- Wrong material (the Material_Code doesn't match the PR you raised)
+- Lot has insufficient remaining shelf life
+- Vehicle / driver details suggest a routing problem
+
+**Always include a clear rejection reason.** The Warehouse user sees the reason verbatim in their bell inbox and on the bounced DN. Sloppy reasons cost a rebuild cycle.
+
+---
+
+## 6.16 HOD Portal → 🚚 In-Transit (NEW in v3.0)
+
+A read-only window onto the procurement chain for your site. Use this tab when a user asks *"when is X arriving?"* or *"why didn't Y arrive yesterday?"*. Three sub-tabs.
+
+### 6.16.1 Sub-tab: 🚚 Active in-transit
+
+KPI strip at the top with counts per pipeline state:
+- **At Logistics** — DN drafted by Warehouse, waiting on Logistics date approval
+- **Logistics approved** — date confirmed, waiting on YOU
+- **Awaiting my approval** — same as Logistics approved (highlighted gold)
+- **Pending SK receipt** — you've approved, SK has it in their tab
+
+Below the KPI strip, each in-transit DN renders as a card:
+
+| Element | Purpose |
+|---|---|
+| **DN header** | `DN <number>` (gold) + RL/BL chip (orange for RL, purple for BL) |
+| **Subline** | `PO <number>` · `Warehouse <id>` · `ETA <date>` · `<line count>` line(s), `<total qty>` units |
+| **Status pill (right)** | Colour-coded pipeline state |
+| **View lines expander** | Read-only line preview |
+| **🔁 Request reschedule popover** | Date picker (defaults to ETA + 3 days, min=today) + reason textarea + Submit button. Submits to Logistics. |
+
+The reschedule UI is deliberately frictionless:
+- Date is pre-filled so a quick "+3 days" submission is one click
+- `min_value=today` prevents accidentally picking yesterday
+- Same-date submission warns instead of wasting a round-trip
+- Caption "📨 Goes to Logistics" makes the destination unambiguous
+
+### 6.16.2 Sub-tab: 🔁 My reschedule requests
+
+KPI strip: Pending / Approved / Rejected counts.
+
+Custom table showing your full reschedule history for THIS site:
+
+| Column | Source |
+|---|---|
+| PO No. | the linked PO |
+| DN No. | the linked DN (if any) |
+| From | current_date when you raised the request |
+| Requested | the new date you asked for (gold, monospace, with arrow) |
+| Reason | your justification (tooltip-truncated) |
+| Status | pill — pending / approved / rejected |
+| Decided by | Logistics user who handled it |
+| Notes | decision notes from Logistics |
+
+### 6.16.3 Sub-tab: 🛑 Force-closures affecting me
+
+Read-only audit table showing every PR / PO / line that Logistics force-closed, scoped to your site. Three-way fallback join means closures on records with NULL Site_ID still appear correctly via their PR or PO parent.
+
+| Column | Source |
+|---|---|
+| Type | "PR closed" / "PO closed" / "Line closed" badge |
+| Target | The closed ref (PR number / PO number / line id) |
+| PR No. | Linked PR (if applicable) |
+| PO No. | Linked PO (if applicable) |
+| Reason | Logistics' force-close reason |
+| Closed by | Logistics user who closed it |
+| When | Timestamp |
+
+50 most recent shown.
+
+---
+
 ## 6.13 HOD — Use Cases
 
 ### Use Case 1: Approve and commit the day's consumption
@@ -1196,7 +1400,7 @@ A: Filter Admin → 📜 Audit Logs by action `FEFO_OVERRIDE`. Or query the `con
 
 # 7. Admin Manual
 
-The Admin is the system owner. The Admin Portal has **9 tabs** covering operations, users, data, audit, integrations, and security. Admins do NOT see HOD Portal (intentional — Admin uses Admin Portal for cross-site work).
+The Admin is the system owner. The Admin Portal has **11 tabs** as of v3.0 — the original 10 (Overview, Pending Requests, Global Sites, Users, Master DB Editor, Audit Logs, WhatsApp Console, Settings, Access Control, Reports & Bugs) plus the new **🚚 Logistics Oversight** tab. Admins do NOT see HOD Portal (intentional — Admin uses Admin Portal for cross-site work). Admins CAN see the Logistics Portal and Warehouse Portal as shadow access — when entering the Warehouse Portal, a sidebar dropdown lets the admin pick which warehouse to view as.
 
 ## 7.1 Pages visible
 
@@ -1541,6 +1745,46 @@ Read-only 2-column grid showing:
 
 ---
 
+## 7.11a Admin Portal → 🚚 Logistics Oversight (NEW in v3.0)
+
+Cross-site, read-only window onto the entire procurement chain. For actions, jump to the Logistics Portal (shadow access) — this tab is observation-only by design.
+
+### 7.11a.1 KPI strip
+
+Six cards at the top:
+
+| Card | Source |
+|---|---|
+| **OPEN PRs** | Count from `list_prs_for_logistics()` — awaiting PO issuance |
+| **OPEN POs** | Count from `list_pos(open_only=True)` |
+| **ACTIVE DNs** | Count of DNs in pipeline states (pending_logistics, logistics_approved, pending_hod, pending_sk) |
+| **VENDOR RETURNS** | Open returns from `list_vendor_returns(open_only=True)` |
+| **RESCHEDULES** | Pending reschedule decisions |
+| **FORCE-CLOSURES** | Lifetime audit count |
+
+### 7.11a.2 Filters
+
+| Element | Purpose |
+|---|---|
+| **Site dropdown** | "All sites" or pick one — narrows every sub-tab |
+| **Warehouse dropdown** | "All warehouses" or pick one — narrows DN view |
+
+### 7.11a.3 Six sub-tabs
+
+| Sub-tab | What's shown |
+|---|---|
+| **📥 PRs** | Every active PR in the Logistics queue, filterable by site |
+| **📋 POs** | Every open PO with vendor, dates, total, status, source (manual/PDF) |
+| **🚚 DNs** | Every active DN with warehouse, site, status, family |
+| **↩️ Vendor Returns** | Open returns awaiting vendor acknowledgement |
+| **🛑 Force-Closures** | 100 most recent force-closure records with reason + closed-by |
+| **🔁 Reschedules** | Pending reschedule decisions Logistics hasn't acted on |
+
+### 7.11a.4 What it's NOT
+
+- This tab cannot create / approve / reject anything. All mutation happens in role-specific portals.
+- Admins who need to ACT (e.g. approve a reschedule because Logistics is on leave) should switch to the Logistics Portal — admin has shadow access there.
+
 ## 7.12 Admin — Use Cases
 
 ### Use Case 1: Set initial Unit_Costs for valuation reports
@@ -1806,9 +2050,12 @@ Per-row Actions:
 
 ---
 
-# 9. Automated Notifications — WhatsApp & Email
+# 9. Automated Notifications — WhatsApp & Email & In-app Bell
 
-The system automatically queues messages on key events. Background worker (`whatsapp_worker.py`) drains the queue.
+The system automatically queues messages on key events. There are now THREE notification surfaces:
+1. **WhatsApp queue** — `whatsapp_queue` table, drained by `whatsapp_worker.py`. Gated by `config.WHATSAPP_ENABLED` master switch + `config.WHATSAPP_TRIGGERS` per-event dict. Flip a key to `False` to silence WhatsApp for that event without touching in-app behaviour.
+2. **In-app notifications bell (NEW in v3.0)** — `app_notifications` table, surfaced via the sidebar bell described in §3.6. ALWAYS fires regardless of WhatsApp toggle.
+3. **Email** — same Outlook / Mail.app / mailto: + SMTP paths as before.
 
 ## 9.1 WhatsApp triggers (auto-fire)
 
@@ -1828,6 +2075,20 @@ The system automatically queues messages on key events. Background worker (`what
 | New self-registration request | All Admins | Registration form | Includes username + role + site |
 | Self-registration approved | Requesting user | Admin User Mgmt | "ACCESS GRANTED · Welcome" |
 | Manual send | Free | HOD Notifications / Admin WhatsApp Console | Audit `MANUAL_WHATSAPP` |
+| **PR submitted to Logistics (v3.0)** | Logistics role | HOD PR tab → 🚚 Submit PR(s) to Logistics | Event key `pr_submitted_to_logistics` |
+| **PO issued (v3.0)** | Site HOD | Logistics → 💾 Save PO | Event key `po_issued` |
+| **PO assigned to Warehouse (v3.0)** | Warehouse users at that WH | Logistics → 📨 Assign | Event key `po_assigned_to_warehouse` |
+| **Warehouse acknowledged (v3.0)** | Logistics | Warehouse → ✅ Acknowledge | Event key `warehouse_acknowledged` (off by default) |
+| **Warehouse received goods (v3.0)** | Logistics | Warehouse → 📥 Record receipt | Event key `warehouse_received` |
+| **DN logistics approved (v3.0)** | Site HOD | Logistics → ✅ Approve DN | Event key `dn_logistics_approved` |
+| **DN HOD approved → SK (v3.0)** | Site SK | HOD → 🚚 DN Approvals → ✅ Approve | Event key `dn_auto_generated` (reuses slot for SK ping) |
+| **DN received at site (v3.0)** | Logistics + Warehouse | SK → ✅ Mark as Received | Event key `dn_received_by_sk` (off by default) |
+| **Reschedule requested (v3.0)** | Logistics | Warehouse / HOD → 🔁 Request reschedule | Event key `reschedule_requested` |
+| **Reschedule decided (v3.0)** | Requester | Logistics → ✅ Approve / ❌ Reject | Event key `reschedule_decided` |
+| **Vendor return raised (v3.0)** | Logistics | Any role → ↩️ Raise return | Event key `vendor_return_raised` |
+| **PR force-closed (v3.0)** | Admin + originating Site HOD | Logistics → 🛑 Force-Close | Event key `pr_force_closed`, severity `critical` |
+| **PO force-closed (v3.0)** | Admin + originating Site HOD | Logistics → 🛑 Force-Close | Event key `po_force_closed`, severity `critical` |
+| **Delivery reminder T-2 / T-1 / T-0 (v3.0)** | Logistics + HOD + Warehouse (per DN) | Daily sweep job — see §9.3 | Event keys `delivery_reminder_t_minus_2/_minus_1/_zero` |
 
 ## 9.2 Email triggers
 
@@ -1838,6 +2099,30 @@ The system automatically queues messages on key events. Background worker (`what
 | Report delivery (scheduled) | Reports → Scheduled | Same SMTP pipeline |
 
 ---
+
+## 9.3 In-app notifications bell (NEW in v3.0)
+
+See §3.6 for the UI. Backed by the `app_notifications` table; queried with role + site + warehouse scoping. Per-event severity (`info` / `warning` / `success` / `critical`) drives the colour-coded left border on each card.
+
+## 9.4 Delivery reminder daily sweep (NEW in v3.0)
+
+A once-per-day job in `whatsapp_worker.run_worker_loop()` calls `sweep_delivery_reminders()` which fires T-2 / T-1 / T-0 reminders for upcoming deliveries:
+
+| Watched | When | Severity |
+|---|---|---|
+| `purchase_orders.Expected_Delivery` | T-2 / T-1 / T-0 | `warning` / `warning` / `critical` |
+| `delivery_notes.DN_Date` | T-2 / T-1 / T-0 | `warning` / `warning` / `critical` |
+
+PO reminders ping: Logistics + originating Site HOD.
+DN reminders ping: Logistics + Site HOD + Warehouse user(s) at the receiving warehouse.
+
+**Idempotency** — the sweep cannot double-fire for the same target on the same day. Two guards:
+1. UNIQUE(`ref_type`, `ref_number`, `target_date`, `offset_days`) on the `delivery_reminders_sent` table.
+2. Day-marker stored in `app_settings.delivery_reminders_last_run` — the 60-sec worker poll loop skips the sweep query entirely on second-and-later ticks of the same day.
+
+Restarting the worker mid-day is safe. Re-running the sweep manually on the same day fires zero new notifications.
+
+**Customising the cadence** — currently the offsets are hardcoded `(2, 1, 0)` in `database.sweep_delivery_reminders()`. A configurable offsets list is on the v3.0 backlog (see `handoff.md` §3 item 25).
 
 # 10. Data Model & Concept Reference
 
@@ -1878,6 +2163,24 @@ The system automatically queues messages on key events. Background worker (`what
 | `bug_reports` | User-submitted issues/ideas |
 | `report_schedules` | Scheduled report definitions |
 | `report_archive` | Generated report metadata |
+
+## 10.4a Procurement chain tables (NEW in v3.0)
+
+| Table | What it stores | State machine |
+|---|---|---|
+| `warehouses` | Master of receiving locations | `active` / `inactive` |
+| `vendors` | Supplier master | `active` / `inactive` |
+| `purchase_orders` | PO header (PO_Number UNIQUE) | `open` → `partially_delivered` → `delivered` → `closed` / `force_closed` / `cancelled` |
+| `po_items` | PO line items with `rl_bl_family` tag | `open` → `partially_delivered` → `delivered` / `returned` / `closed` / `force_closed` |
+| `po_shipment_schedule` | Parsed PO Annexure rows | `pending` / `shipped` / `delivered` / `delayed` / `cancelled` |
+| `po_assignments` | Logistics → Warehouse routing | `assigned` → `acknowledged` → `partial` / `received` / `closed` / `cancelled` |
+| `delivery_notes` | DN header (DN_Number UNIQUE) | DN state machine: `draft` → `pending_logistics` → `pending_hod` → `pending_sk` → `received` (or `rejected` from any pending) |
+| `dn_items` | DN line items | `pending` / `received` / `partial` / `returned` / `cancelled` |
+| `po_returns` | Vendor returns (raised by any role) | `open` → `vendor_acknowledged` / `resupplied` / `cancelled` |
+| `po_reschedule_requests` | Date-change asks | `pending` → `approved` / `rejected` |
+| `po_force_closures` | Force-closure audit log | (terminal — write-once) |
+| `app_notifications` | In-app bell inbox | `read_at IS NULL` (unread) → timestamp (read) |
+| `delivery_reminders_sent` | T-2/T-1/T-0 idempotency log | (terminal — UNIQUE constraint) |
 
 ## 10.4 Views
 
@@ -1941,6 +2244,58 @@ The system automatically queues messages on key events. Background worker (`what
 - `expired` — past expiry date (manual or background)
 - `disposed` — physically removed (manual)
 - `quarantine` — held pending inspection (manual)
+
+## 11.4a DN states (NEW v3.0)
+
+`draft` → `pending_logistics` → `logistics_approved` → `pending_hod` → `hod_approved` → `pending_sk` → `received`
+With `rejected` as terminal from any pending state.
+
+## 11.4b PO + PO line states (NEW v3.0)
+
+PO header: `open` → `partially_delivered` → `delivered` → `closed` / `force_closed` / `cancelled`
+PO item line: `open` → `partially_delivered` → `delivered` → `returned` / `closed` / `force_closed`
+
+## 11.4c Force-closure target types (NEW v3.0)
+
+| Code | Label |
+|---|---|
+| `pr` | Whole PR closed |
+| `po` | Whole PO closed |
+| `po_item` | Single line on a PO closed |
+
+## 11.4d Reschedule + vendor return states (NEW v3.0)
+
+Reschedule: `pending` → `approved` / `rejected`
+Vendor return: `open` → `vendor_acknowledged` / `resupplied` / `cancelled`
+
+## 11.4e RL/BL family tags (NEW v3.0)
+
+| Tag | Meaning | Detection rule |
+|---|---|---|
+| `RL` | Rubber Lining | Substring `RL-`, `RUBBER LINING`, `RUBBER-LINING` in Material_Code OR Description |
+| `BL` | Brick Lining | Substring `BL-`, `BRICK LINING`, `BRICK-LINING`, `BRICK MATERIAL` |
+| `NULL` | Neither family | Default |
+
+Logic in `config.classify_rl_bl_family()`. NEVER a combo string — RL takes precedence if both tokens are present.
+
+## 11.4f Notification severity (NEW v3.0)
+
+| Severity | Visual | When used |
+|---|---|---|
+| `info` (🔵 blue) | Info pings — PR submitted, PO issued, assignments |
+| `warning` (🟡 amber) | T-2/T-1 reminders, reschedule requests, rejections |
+| `success` (🟢 green) | DN approved successfully, delivery completed |
+| `critical` (🔴 red) | T-0 reminder, force-closures, urgent escalation |
+
+## 11.4g Logistics-status on PR rows (NEW v3.0)
+
+| Code | Meaning |
+|---|---|
+| `site_draft` | HOD has the PR but hasn't submitted to Logistics yet |
+| `submitted` | Sitting in Logistics queue waiting for PO issuance |
+| `in_po` | A PO has been issued against this PR line |
+| `closed` | PR fulfilled normally |
+| `force_closed` | Logistics force-closed the PR with a reason |
 
 ## 11.5 Glossary
 
@@ -2186,9 +2541,603 @@ Two new env-controlled knobs:
 
 When the standalone worker is running (launchd `com.gi.whatsapp-worker`), the embedded thread inside the Streamlit process is suppressed via `GI_SUPPRESS_EMBEDDED_WORKER=1` so the two don't race for the same queue rows.
 
+## 13.21 v3.0 Procurement chain — what changed (2026-06 round 3)
+
+The largest single feature batch since launch. Fully additive — no edits to existing SK / HOD / Admin tabs, EOD commit, identity math, cache layer, mailer, WhatsApp worker, or Ollama integration.
+
+**New role-locked portals:**
+- 🚚 Logistics Portal — 8 tabs (Incoming PRs · Create PO · Open POs · Assign to Warehouse · Reschedules · Force-Close · Vendor Returns · History). Documented in §14.
+- 🏭 Warehouse Portal — 6 tabs (Incoming Assignments · Receive Goods · Prepare DN · Outbound DNs · Returns from Site · History). Documented in §15.
+
+**New tabs / expanders on existing pages:**
+- HOD Portal → 🚚 DN Approvals (§6.15) and 🚚 In-Transit (§6.16) — 14th and 15th HOD tabs.
+- HOD Portal → 📋 Purchase Requests → new "🚚 Submit PR(s) to Logistics Portal" expander (§6.8.4a). Coexists with the existing email path.
+- SK Entry Log → 📦 Receipt Staging → new "🚚 Incoming Delivery Notes from Warehouse" expander (§4.4.0).
+- Admin Portal → 🚚 Logistics Oversight (§7.11a) — 11th admin tab.
+
+**New sidebar component:**
+- 🔔 Notifications bell with unread badge + inbox dialog (§3.6).
+
+**New background job:**
+- T-2 / T-1 / T-0 delivery reminders fired by `whatsapp_worker._maybe_run_delivery_reminders()` once per local day (§9.4).
+
+**New reports:** PO Status / Warehouse Throughput / Force-Closures (added to the existing Reports module, available to Supervisor + HOD + Admin).
+
+**RL/BL strict separation:** Rubber Lining and Brick Lining never aggregate. Enforced in `po_items.rl_bl_family` tagging, DN splitter rejection, and DN header family tag. See §11.4e.
+
+**Warehouse-blind pricing:** Three independent enforcement layers ensure Warehouse users never see Unit_Price, Total_Price, or any monetary header field. See §15.
+
+**Bug fixes that shipped with v3.0:**
+- Double GMT+3 addition removed from Admin Pending Requests, HOD My Requests, Admin WhatsApp Console (`_localize()` already converts at the data-layer boundary).
+- Admin Pending Requests now joins inventory to display Material_Code + Material_Name + UOM alongside SAP_Code.
+- Sidebar Hub Assistant gracefully handles unreachable Ollama with `st.warning("🤖 Local AI is offline. Please run 'ollama serve'…")`.
+
 ---
 
-# 14. Operations & Hosting — the after-launch chapter
+# 14. Logistics Portal Manual
+
+The Logistics Portal sits between Site HOD (who creates PRs) and Warehouse (which physically receives goods). Role-locked to `{logistics, admin}` — exact-role lock means no other role inherits access via the hierarchy. Eight tabs.
+
+## 14.1 Pages visible to Logistics
+
+- 📦 Live Dashboard (read-only — all sites)
+- 🚚 Logistics Portal (this page)
+- 📊 Reports (incl. the 3 new procurement reports)
+
+## 14.2 Tab 1: 📥 Incoming PRs
+
+Site HODs submit PRs to Logistics from their HOD Portal → PR tab. They land here.
+
+### 14.2.1 Site filter
+
+Dropdown of all sites + "All sites". Defaults to all.
+
+### 14.2.2 Hero strip (3 cards)
+
+| Card | Source |
+|---|---|
+| **OPEN PRs** | Active queue count |
+| **TOTAL QTY** | Sum across all open PR lines |
+| **SITES** | Distinct sites currently submitting |
+
+### 14.2.3 Queue table
+
+AgGrid with columns: PR No. · Site · Lines · Total Qty · Submitted · Earliest Delivery · Status. Sortable, filterable, exportable.
+
+### 14.2.4 Per-PR drilldown
+
+Selectbox under the queue table. Pick a `PR + Site` combination and a section card appears:
+
+| Card row | Source |
+|---|---|
+| PR Number | the row |
+| Site | the row |
+| Lines | line count |
+| Total Qty | summed across lines |
+| Earliest Delivery | min of Delivery_Date across lines |
+
+Below: full line items grid with Material_Code, Material_Name, Requested_Qty, UOM, WBS_Number, Network, Plant, Delivery_Date, Supplier, Est_Cost_SAR.
+
+### 14.2.5 🧾 Use this PR to create a PO button
+
+Loads the PR into Tab 2 (Create PO). Selectbox state is preserved so you can switch tabs without losing the chosen PR.
+
+## 14.3 Tab 2: 🧾 Create PO
+
+Two sub-tabs: **✍️ Manual entry** and **📄 PDF upload**. Both funnel into the same `purchase_orders` insert path.
+
+### 14.3.1 Vendor picker
+
+Selectbox of all active vendors `<code> · <name>`, plus a "➕ Add new vendor" option that opens an inline expander with Vendor Code, Name, Address, Default Inco Terms, Default Payment Terms. Save → re-renders the parent form with the new vendor pre-selected.
+
+### 14.3.2 PO header form
+
+Three-column layout:
+
+| Column | Fields |
+|---|---|
+| Left | PO Number * · PO Date · PO Type |
+| Middle | PR Number · Quotation No. · Quotation Date |
+| Right | Expected Delivery · Inco Terms · Payment Terms |
+
+Plus a second three-column row for Contact (vendor), Contact Email, Mobile, Our Reference, Your Reference, Our Email.
+
+Vendor defaults (Inco / Payment Terms) auto-fill from the master row but remain editable.
+
+### 14.3.3 Manual sub-tab: line items
+
+If a PR was loaded via the Tab 1 shortcut, every PR line pre-fills with `Include = True` and zero Unit_Price + Total_Price (you set them). Otherwise an empty editable grid opens.
+
+Editable columns: Include · Material_Code · Description · Qty · UOM · Unit_Price · Total_Price · WBS_Number · Network · Plant. Rows with `Include = False` are dropped on save.
+
+### 14.3.4 PDF upload sub-tab
+
+| Element | Purpose |
+|---|---|
+| **File uploader** | Drop the PO PDF |
+| **🔎 Extract from PDF button** | Calls `process_po_pdf()` — regex-based extraction of header (PO Number, Vendor, Inco/Payment, Quotation refs, totals) + line items (Sr. No, Material_Code, Description, Qty, UOM, Unit_Price, Total_Price) + PO Annexure delivery schedule (Shipment N / Material Group / Date) |
+| **Review extracted PO** | Editable preview of every extracted field. The header form pre-fills. The line items grid pre-fills. Edit anything before saving. |
+| **Delivery schedule** | If Annexure parsed, a table shows shipment_no · material_group · target_date |
+| **💾 Save PO (from PDF)** | Persists the PO + items + shipment schedule. The original PDF is stored as a BLOB on the `purchase_orders` row (`attachment_blob`/`_name`/`_mime`) for audit. |
+
+**On PO numbers with X-masking:** the sample PDF has the last 4 digits masked as `XXXX` for security. The extractor preserves whatever is on the page verbatim. In production, vendors send full 10-digit numbers and those pass through unchanged.
+
+### 14.3.5 Side-effects on save
+
+- New row in `purchase_orders` with status `'open'`
+- One row per item in `po_items` with `rl_bl_family` auto-tagged
+- Linked PR rows (matching `PR_Number` + `Site_ID`) flip to `logistics_status='in_po'` so they leave your Incoming PRs queue
+- Site HOD gets `po_issued` notification (in-app + WhatsApp gated)
+
+## 14.4 Tab 3: 📋 Open POs
+
+Browse + drill into every open PO.
+
+### 14.4.1 Filters
+
+Site dropdown · Vendor dropdown · PR Number exact-match textbox.
+
+### 14.4.2 KPI strip
+
+OPEN POs count · Total value SAR · PENDING (not yet delivered) count.
+
+### 14.4.3 Per-PO drilldown
+
+Select a PO → section card with PR Number, Vendor, Inco/Payment Terms, PO Date, Expected, Source (manual/pdf_upload), Status, Total. Below: items grid with an RL/BL family chip per row, the parsed delivery schedule (if any), and a list of warehouse assignments.
+
+## 14.5 Tab 4: 🏭 Assign to Warehouse
+
+Route a PO (or a subset of items) to a warehouse for receiving.
+
+### 14.5.1 PO + Warehouse pickers
+
+Two-column row: PO selectbox · Warehouse selectbox (shows `<id> · <name>`).
+
+### 14.5.2 Items selector
+
+Editable grid showing every PO line with an `Include` checkbox (default `True`). Disable lines you don't want to route — they stay with this PO for a future assignment.
+
+### 14.5.3 Header
+
+Expected Delivery date + Notes (visible to Warehouse).
+
+### 14.5.4 📨 Assign to Warehouse button
+
+- Subset = if all items included, encoded as `None` (cleaner audit)
+- Subset = if partial, encoded as `JSON list of po_items.id` in `po_assignments.items_subset_json`
+- Warehouse user(s) at the chosen WH get a `po_assigned_to_warehouse` notification (in-app + gated WhatsApp)
+- PO header's Expected_Delivery auto-fills with this date if not set
+- Audit log entry: `ASSIGN_PO_TO_WAREHOUSE`
+
+## 14.6 Tab 5: 🔁 Reschedules
+
+Incoming reschedule requests from Warehouse / Site HOD.
+
+### 14.6.1 Empty state
+
+If no pending requests: empty-state card.
+
+### 14.6.2 Per-request card
+
+| Element | Purpose |
+|---|---|
+| **Header line** | `PO <number> · DN <number> · From <current_date> → <requested_date>` |
+| **Subline** | requested_by + role + reason |
+| **Decide popover** | Decision notes textbox + ✅ Approve / ❌ Reject buttons (reject requires reason) |
+
+Approval auto-pushes the new date to: the PO header `Expected_Delivery`, the `po_assignments.Expected_Delivery`, and the DN `DN_Date` (if linked).
+
+## 14.7 Tab 6: 🛑 Force-Close
+
+Use sparingly. Force-closing notifies Admin + originating Site HOD immediately with the reason.
+
+### 14.7.1 Target radio
+
+`PR (entire)` · `PO (entire)` · `PO line (single item)`
+
+### 14.7.2 Reason textbox
+
+Mandatory, minimum 3 characters. Logged verbatim to `po_force_closures` + audit.
+
+### 14.7.3 Target picker (changes per radio)
+
+- **PR:** dropdown of open PR numbers in Logistics queue
+- **PO:** dropdown of open POs
+- **Line:** PO dropdown → then line dropdown showing only `open` / `partially_delivered` lines
+
+### 14.7.4 🛑 Force-close button
+
+Single confirm-and-execute. Behind it:
+- `pr_master.status='closed'` + `logistics_status='force_closed'` (for PR target)
+- `purchase_orders.status='force_closed'` + line statuses for `force_closed` (for PO target)
+- `po_items.line_status='force_closed'` (for line target)
+- New row in `po_force_closures` with reason
+- Notifications fan-out: Admin (`recipient_role='admin'`) + originating Site HOD (`recipient_role='hod', recipient_site=<site>`), severity = `critical`
+
+### 14.7.5 Recent force-closures (audit)
+
+AgGrid of the last 50 closures. Read-only.
+
+## 14.8 Tab 7: ↩️ Vendor Returns
+
+Raise a return to the vendor against a PO. Returning a line REOPENS the PO so it shows in your active queue again.
+
+### 14.8.1 PO picker + scope
+
+PO selectbox (all POs incl. closed). Then radio: `Whole PO` or `Single line`. If single line, a line picker appears.
+
+### 14.8.2 Return details form
+
+- **Return quantity** (number, > 0)
+- **Reason** (textarea, mandatory)
+- **Expected resupply** (date picker, defaults to today + 14)
+- **Notes** (optional)
+
+### 14.8.3 ↩️ Raise vendor return button
+
+- New row in `po_returns` with `raised_by_role='logistics'`
+- `po_items.Returned_Qty` bumps; `line_status` flips back to `partially_delivered` or `open`
+- If the PO had been closed, header flips back to `partially_delivered` and `closed_by` / `closed_at` / `close_reason` are nulled
+- Notification: `vendor_return_raised` to logistics inbox + WhatsApp gated
+
+### 14.8.4 Open returns table
+
+AgGrid of all open returns. Read-only.
+
+## 14.9 Tab 8: 📂 History
+
+Read-only archive. Two sub-tabs: **Closed POs** and **Closed PRs**.
+
+- Closed POs: status in `closed` / `force_closed` / `cancelled`
+- Closed PRs: any PR where `pr_status='closed'` OR `logistics_status` in `force_closed`/`closed`/`in_po`
+
+For force-closures with the reason history, use Tab 6 → Recent force-closures table.
+
+## 14.10 Logistics — Use Cases
+
+### Use Case 1: Issue PO from a fresh PR
+
+1. 📥 Incoming PRs → pick PR → 🧾 Use this PR to create a PO
+2. 🧾 Create PO → ✍️ Manual entry → pick / add vendor, fill header, edit Unit Price per line
+3. 💾 Save PO → balloon animation → notification fires to Site HOD
+
+### Use Case 2: Issue PO from a vendor's emailed PDF
+
+1. Receive PO PDF from vendor (sample format: 🧾 Create PO → 📄 PDF upload)
+2. Drop the PDF → 🔎 Extract from PDF
+3. Review extracted header + line items + delivery schedule
+4. Correct anything the parser missed
+5. 💾 Save PO (from PDF) — original PDF is archived
+
+### Use Case 3: Route a PO to a warehouse
+
+1. 🏭 Assign to Warehouse → pick PO + warehouse
+2. Disable lines you want to route separately later
+3. Pick Expected Delivery, add a routing note
+4. 📨 Assign — warehouse user is pinged
+
+### Use Case 4: Handle a Warehouse reschedule ask
+
+1. 🔁 Reschedules → review the request (reason text + current vs requested date)
+2. Decide → notes + ✅ Approve
+3. PO Expected_Delivery auto-updates; Warehouse + requester get the decision notification
+
+### Use Case 5: Force-close a stale PR
+
+1. 🛑 Force-Close → radio = `PR (entire)`
+2. Write the reason (e.g. "Project cancelled by site management 2026-06-15")
+3. Pick PR → 🛑 Force-close PR
+4. Admin + Site HOD see a critical notification in their bell
+
+## 14.11 Logistics — FAQ
+
+**Q: A PR appears in Incoming PRs but I can't issue a PO against it — Material_Code is wrong.**
+A: PR lines come from the Site HOD's inventory catalogue. If the Material_Code is wrong, the SK created it wrong upstream. Don't fix in your PO — bounce the PR back via WhatsApp / chat, ask the site to re-submit. There's no in-app "reject PR" button (yet) because PR rejection should be a conversation, not a click.
+
+**Q: PDF extraction picked up wrong qty.**
+A: The Review preview is editable. Always check Qty / Unit_Price / Total_Price before saving. The extractor is calibrated against the General Industries sample layout; other vendor templates may need template additions.
+
+**Q: I want to assign a PO to multiple warehouses.**
+A: Two separate 🏭 Assign actions — one per warehouse. The `items_subset_json` field on each assignment row keeps them distinct.
+
+**Q: Why can't I see prices in Tab 4 / on assignment cards?**
+A: You CAN see prices in Tab 3 (Open POs drilldown). Tab 4 (Assign to Warehouse) shares the read with Warehouse users, so prices are hidden there for consistency.
+
+**Q: Force-closure undo?**
+A: Not yet. Once force-closed, you'd have to either raise a Vendor Return (reopens the line) or admin-edit via Master DB Editor. A 24-hour undo window is on the v3.0 backlog.
+
+---
+
+# 15. Warehouse Portal Manual
+
+The Warehouse Portal is the physical-receiving and DN-preparation side. Role-locked to `{warehouse_user, admin}`. Six tabs. **Prices are completely hidden in every view** — three independent enforcement layers guarantee `Unit_Price`, `Total_Price`, `Total_Amount`, `Freight_Charges`, `Handling_Charges`, `Discount_Amount`, `Amount_In_Words` are never visible to a warehouse user.
+
+## 15.1 Pages visible to Warehouse User
+
+- 📦 Live Dashboard
+- 🏭 Warehouse Portal (this page)
+- 📊 Reports
+
+## 15.2 Sidebar warehouse resolution
+
+- A `warehouse_user` is bound to a single warehouse via `users.Warehouse_ID`. The portal auto-resolves from the user's profile.
+- An `admin` shadowing the portal gets a sidebar `"🏭 Shadow warehouse"` selectbox listing every active warehouse.
+- If neither resolves: red error card `"🛑 Your account is not bound to a warehouse. Ask Admin to set your Warehouse_ID in Admin Portal → Users."`
+
+## 15.3 Page title
+
+`🏭 Warehouse <ID>` in gold, with `(prices hidden — Logistics-only)` muted caption next to it as a permanent visual reminder.
+
+## 15.4 Tab 1: 🔔 Incoming Assignments
+
+POs Logistics has routed to this warehouse.
+
+### 15.4.1 Hero strip
+
+| Card | Source |
+|---|---|
+| **AWAITING ACK** | Count of assignments with `status='assigned'` |
+| **ACKED** | Status = `acknowledged` (you've seen them, waiting on goods) |
+| **IN/RECEIVED** | Status in `partial` / `received` |
+
+### 15.4.2 Assignments grid
+
+AgGrid: Assign # · PO No. · PR No. · Vendor · Dest Site · Expected · Assigned · Acked · Status. **No price columns.**
+
+### 15.4.3 Acknowledge action
+
+Selectbox of `status='assigned'` rows. Picking one → ✅ Acknowledge button → flips to `acknowledged` and pings Logistics with `warehouse_acknowledged` notification (off by default in WhatsApp toggles to keep noise low).
+
+## 15.5 Tab 2: 📦 Receive Goods
+
+Record qty actually received at this warehouse against an acknowledged assignment.
+
+### 15.5.1 Assignment picker
+
+Selectbox of `status IN ('acknowledged', 'partial')` rows.
+
+### 15.5.2 PO snapshot card (no prices)
+
+| KV row | Value |
+|---|---|
+| PO Number | the PO |
+| Vendor | `<code> · <name>` |
+| Inco / Payment | the terms |
+| Expected | the date |
+
+Total_Amount, Freight_Charges, Handling_Charges, Discount_Amount, Amount_In_Words are stripped from the header dict before render. **Never visible.**
+
+### 15.5.3 Receive grid
+
+Editable grid showing every line on the assignment:
+
+| Column | Source |
+|---|---|
+| id | po_items.id (disabled — read-only) |
+| Material_Code | line code |
+| Description | line description |
+| UOM | unit |
+| rl_bl_family | family chip (RL / BL / blank) |
+| Qty | ordered (read-only) |
+| Delivered_Qty | already received cumulative (read-only) |
+| Open_Qty | computed `Qty − Delivered + Returned` (read-only) |
+| **Receive Now** | EDITABLE — type the qty you physically received this event |
+
+### 15.5.4 📥 Record receipt button
+
+- Validates: at least one row with `Receive Now > 0`
+- Over-deliver guard: `Delivered_Qty − Returned_Qty + new_qty` may NOT exceed ordered Qty. If it does, the entire batch is rejected with a friendly message naming the line.
+- On success: bumps each line's `Delivered_Qty`, flips `line_status` (`delivered` if `Delivered − Returned ≥ Qty`, else `partially_delivered`)
+- Rolls assignment status (`received` if every line on the parent PO is `delivered`, else `partial`)
+- Rolls PO header status to match
+- Notification: `warehouse_received` to Logistics with line count
+
+## 15.6 Tab 3: 📝 Prepare DN
+
+Build a Delivery Note for a site. **RL/BL strict separation is enforced here** — a DN cannot span both families. If you try, the action is rejected with: *"Strict separation violated: this DN spans multiple RL/BL families. Prepare one DN per family."*
+
+### 15.6.1 Source pickers
+
+- PO No. selectbox (assignments with status `acknowledged` / `partial` / `received`)
+- Destination Site selectbox
+
+### 15.6.2 Items grid
+
+Editable grid with read-only inventory columns (Material_Code, Description, UOM, rl_bl_family, Qty, Delivered_Qty, Returned_Qty) and editable shipping columns:
+
+| Column | Purpose |
+|---|---|
+| **Ship Qty** | What you're sending on this DN (must be > 0 to include) |
+| **Lot_Number** | If you tracked the lot at receive time |
+| **Expiry_Date** | Lot expiry |
+| **Remarks** | Free text |
+
+### 15.6.3 DN header
+
+Three-column row: DN Date · Vehicle No · Driver Name · Driver Phone · Prepared By (auto-filled with your username) · Remarks.
+
+### 15.6.4 📝 Save DN draft button
+
+- Validates: at least one row with Ship Qty > 0
+- Over-ship guard: `available = Delivered_Qty − Returned_Qty − Σ(live DN qty)` per line; ship qty cannot exceed available
+- RL/BL strict-separation check: if the items span both families, REJECTED
+- On success: new `delivery_notes` row with `status='draft'` and one `dn_items` row per line. The DN header carries `rl_bl_family` if non-NULL.
+- Toast: 📝 DN <number>
+
+### 15.6.5 DN numbering convention
+
+`DN-<WAREHOUSE_ID>-<YYYYMMDD>-<seq>` — seq resets per (warehouse, day). Example: `DN-WH-A-20260616-003`.
+
+## 15.7 Tab 4: ✈️ Outbound DNs
+
+Track every DN this warehouse has prepared.
+
+### 15.7.1 Status filter
+
+Multi-select of every DN status. Defaults to `draft`, `pending_logistics`, `pending_hod`, `pending_sk` (the active ones).
+
+### 15.7.2 DN grid
+
+AgGrid of every matching DN with full state metadata.
+
+### 15.7.3 Submit-to-Logistics action
+
+When the filter shows any `draft` row, a "Submit a draft to Logistics" section appears with a selectbox of drafts + 📨 Submit to Logistics button. Submission flips status to `pending_logistics` and pings Logistics with the DN-approval-queue notification.
+
+### 15.7.4 Per-DN drilldown
+
+Select a DN → section card showing PO, Site, Status, RL/BL family, Vehicle/Driver, and the full signature trail (Logistics decided by/decision, HOD decided by, SK received by). Items grid below.
+
+### 15.7.5 🔁 Request reschedule expander
+
+If the date you targeted isn't going to work, raise a reschedule from here. Same flow as the HOD's In-Transit tab (defaults, min_value=today, mandatory reason).
+
+## 15.8 Tab 5: ↩️ Returns from Site
+
+Raise a return when a site flags defective material from a DN this warehouse delivered.
+
+### 15.8.1 DN picker
+
+Selectbox of DNs in `received` / `pending_sk` / `hod_approved` states.
+
+### 15.8.2 Items grid
+
+Editable grid with a `Return Qty` column. Filling > 0 on a line includes it in the return.
+
+### 15.8.3 Reason textarea
+
+Mandatory.
+
+### 15.8.4 ↩️ Raise return to vendor button
+
+- Internally calls `record_internal_return()` which fans out to `raise_vendor_return()` per affected line
+- Each line: `po_returns` row written with `raised_by_role='warehouse_user'`, dn_item flagged `returned`, parent po_item's `Returned_Qty` bumps and `line_status` flips back to `partially_delivered` or `open`
+- PO header reopens if it had been `closed`
+- Notification fires to Logistics
+
+## 15.9 Tab 6: 📂 History
+
+Read-only. Two sub-tabs: **Completed DNs** (status in `received` / `rejected` / `cancelled`) and **Closed assignments**.
+
+## 15.10 Warehouse — Use Cases
+
+### Use Case 1: Receive a vendor delivery
+
+1. 🔔 Incoming Assignments → ✅ Acknowledge the assignment when you see it
+2. Goods physically arrive
+3. 📦 Receive Goods → pick the assignment → type the actual received qty per line → 📥 Record receipt
+
+### Use Case 2: Ship to a site (single family)
+
+1. 📝 Prepare DN → pick PO + destination site
+2. Type Ship Qty per line — keep all RL or all BL
+3. Fill DN header (Vehicle, Driver, Date)
+4. 📝 Save DN draft → status = `draft`
+5. ✈️ Outbound DNs → select the draft → 📨 Submit to Logistics
+
+### Use Case 3: Ship RL + BL to the same site on the same day
+
+You need TWO DNs:
+1. Prepare DN with only RL lines → save + submit
+2. Prepare second DN with only BL lines → save + submit
+The system rejects any attempt to combine them on a single DN.
+
+### Use Case 4: A site rejects part of a DN — raise to vendor
+
+1. ↩️ Returns from Site → pick the DN
+2. Type Return Qty on the offending line
+3. Reason: "Site reported defective surface coating"
+4. ↩️ Raise return to vendor — PO + po_item reopen; Logistics sees the return in their tab
+
+### Use Case 5: Request a reschedule
+
+1. ✈️ Outbound DNs → drill into the affected DN
+2. 🔁 Request reschedule for this DN → pick new date + reason → Submit
+
+## 15.11 Warehouse — FAQ
+
+**Q: Why don't I see prices anywhere?**
+A: Warehouse role is intentionally blind to commercial data. Three independent enforcement layers strip every monetary field. If you genuinely need a price (e.g. to file a damage claim), ask Logistics or Admin.
+
+**Q: My over-ship guard rejected a DN. I just received everything from the vendor.**
+A: Probably another DN is already drafted (or submitted) shipping a slice of that line. Check ✈️ Outbound DNs filter for live DNs against the same PO. If one was abandoned, ask Logistics to reject/cancel it so the qty frees back up.
+
+**Q: RL and BL are going to the same site on the same truck. Can I combine?**
+A: No. Two DNs. The strict separation is by design (different testing standards, different storage requirements). The site receives them as two separate DNs in their Receipt Staging queue.
+
+**Q: Where did the "Receive Goods" assignment go? It was here this morning.**
+A: Once every line on the parent PO is fully delivered, the assignment moves from `partial` to `received` and stops appearing in Tab 2 (which filters to `acknowledged` + `partial`). Check the assignment grid in Tab 1.
+
+**Q: Can I edit a DN after submitting to Logistics?**
+A: Not directly. Ask Logistics to reject it (✈️ Outbound DNs shows the rejection if it happens) — then it returns to `draft` for you to edit.
+
+---
+
+# 16. Cross-Role Procurement Walk-through
+
+A single happy-path narrative threading all five roles together, useful for onboarding.
+
+## 16.1 The scenario
+
+Site GI-PS01 needs 50 RL panels and 20 BL bricks. Total 3 working days from PR raise to physical receipt.
+
+## 16.2 Hour by hour
+
+| When | Who | What |
+|---|---|---|
+| Day 1 — 8:00 AM | **Site HOD** | Opens HOD Portal → 📋 Purchase Requests. Creates 2 PR lines (50 RL panels, 20 BL bricks) with PR Number 3000099999, WBS Number 4003951, Network 4003951-PROJ-A, Plant GI-PS01, Delivery_Date Day 3. |
+| Day 1 — 8:15 AM | **Site HOD** | Opens the **🚚 Submit PR(s) to Logistics Portal** expander → multi-selects PR 3000099999 → 📨 Submit Selected to Logistics. |
+| Day 1 — 8:15 AM | (auto) | `pr_submitted_to_logistics` notification → Logistics inbox (red badge). WhatsApp ping if enabled. |
+| Day 1 — 9:00 AM | **Logistics** | Sees PR 3000099999 in 📥 Incoming PRs queue. Drills in — 2 lines, RL + BL. Clicks 🧾 Use this PR to create a PO. |
+| Day 1 — 9:30 AM | **Logistics** | Switches to 🧾 Create PO → manual entry. Picks vendor "Carborundum Universal" (0000110341), Inco/Payment auto-fill, fills PO Number 4720033030, Unit_Price per line, Total_Price computed. 💾 Save PO. |
+| Day 1 — 9:30 AM | (auto) | PR rows flip to `logistics_status='in_po'` → disappear from Logistics queue. Site HOD gets `po_issued` notification with vendor + PO number. |
+| Day 1 — 10:00 AM | **Logistics** | 🏭 Assign to Warehouse → picks PO 4720033030 + Warehouse WH-A + Expected Delivery Day 2 evening. 📨 Assign. |
+| Day 1 — 10:00 AM | (auto) | `po_assigned_to_warehouse` notification → WH-A users' inbox. WhatsApp ping if enabled. |
+| Day 1 — 11:00 AM | **Warehouse user (WH-A)** | 🔔 Incoming Assignments → ✅ Acknowledge assignment #N. Goes about their day. |
+| Day 2 — 5:00 PM | **Warehouse user** | Physical truck arrives from vendor. 📦 Receive Goods → assignment #N → type 50 in Receive Now for the RL line, 20 for the BL line. 📥 Record receipt. Both lines flip to `delivered`. |
+| Day 2 — 5:30 PM | **Warehouse user** | 📝 Prepare DN → pick PO 4720033030, destination GI-PS01. Types Ship Qty 50 for RL line, attempts to add BL line — rejected (RL/BL strict separation). Saves DN-WH-A-20260617-001 for RL only. |
+| Day 2 — 5:35 PM | **Warehouse user** | Repeats: new DN with only the BL line → DN-WH-A-20260617-002. |
+| Day 2 — 5:40 PM | **Warehouse user** | ✈️ Outbound DNs → submits both drafts to Logistics. |
+| Day 2 — 5:45 PM | **Logistics** | Sees DN-WH-A-20260617-001 + 002 in their DN approval queue. Confirms delivery date Day 3 AM. Approves both. |
+| Day 2 — 5:45 PM | (auto) | DN status flips to `pending_hod`. Site HOD gets `dn_logistics_approved` notification. |
+| Day 2 — 6:00 PM | **Site HOD** | Logs in, sees red bell badge `2 unread`. Opens inbox → drills into the DNs via 🚚 DN Approvals tab. Approves both. |
+| Day 2 — 6:00 PM | (auto) | DN status `pending_sk`. Two mirror rows in `pending_receipts.status='pending_sk'`. Site SK gets `dn_auto_generated` notification. |
+| Day 3 — 8:30 AM | **Truck arrives at site GI-PS01** | |
+| Day 3 — 8:45 AM | **Site SK** | Opens Entry Log → 📦 Receipt Staging. The new **🚚 Incoming Delivery Notes from Warehouse** expander is open at the top, showing both DNs. Inspects both, confirms physical match, clicks ✅ Mark as Received on each. |
+| Day 3 — 8:45 AM | (auto) | Two `receipts` rows written (with DN_Number, Warehouse_ID, PO_Number_Source). Both DNs flip to `received`. `pending_receipts` mirror rows deleted. Inventory cache busted. Live Dashboard shows the new stock immediately. |
+
+## 16.3 Side-path examples
+
+### A site rejects a DN
+
+Same scenario, but on Day 2 at 6:00 PM, Site HOD inspects the line preview on DN-002 and notices the BL qty doesn't match the PR. Rejects DN-002 with note "BL qty in DN is 25, PR asked for 20 — bounce back".
+
+- DN-002 status → `rejected`, `rejection_reason` stored
+- Warehouse user gets the rejection notification with the reason
+- The BL line on the PO frees up qty (the over-ship guard recalculates available since DN-002 is no longer "live")
+- Warehouse prepares DN-003 with correct qty
+
+### Logistics force-closes the PR mid-flight
+
+Project cancelled by management on Day 1 evening:
+
+- Logistics → 🛑 Force-Close → radio = PR → reason "Project cancelled per CFO email 2026-06-16" → 🛑 Force-close PR
+- Admin + Site HOD see critical-severity notification in their bell
+- The pending PO can either stay (if vendor already shipped) or also be force-closed
+- Site HOD's 🚚 In-Transit → Force-closures sub-tab shows the closure with the reason
+
+### Warehouse asks for reschedule
+
+Receiving day Truck doesn't show up — vendor delay:
+
+- Warehouse → ✈️ Outbound DNs → drill into DN-001 → 🔁 Request reschedule → new date Day 4 → reason "Vendor delivery delayed 24h confirmed by vendor email"
+- Logistics → 🔁 Reschedules → reviews → ✅ Approve with notes "Confirmed with vendor"
+- PO Expected_Delivery, po_assignments.Expected_Delivery, AND DN_Date all flip to Day 4 in one transaction
+- Site HOD sees the decision notification
+
+---
+
+# 17. Operations & Hosting — the after-launch chapter
 
 This chapter is what the host operator (you, today: johnsonandrew) needs every day after the system is live. Everything before this chapter is about the application; this chapter is about keeping the application running on a real Mac that real users hit through `https://gi.giinventory.com`.
 
@@ -2534,7 +3483,7 @@ tail -200 ~/Library/Logs/gi-whatsapp-worker.err > /tmp/worker-err.txt
 
 ## Document end
 
-This manual covers every page, tab, button, table, and field built into the General Industries Hub v2.0 as of the latest commit. For technical reference (function signatures, table schemas, full SQL), see `database.py`, `auth.py`, and `pages_internal/*.py` source files.
+This manual covers every page, tab, button, table, and field built into the General Industries Hub v3.0 as of the latest commit, including the new Logistics and Warehouse portals and the procurement chain. For technical reference (function signatures, table schemas, full SQL), see `database.py`, `auth.py`, and `pages_internal/*.py` source files. For day-to-day operating procedure across all five roles, see `SOP.md`.
 
 For PDF export: use any markdown-to-PDF converter (Typora, pandoc, marp, or VSCode's "Markdown PDF" extension). Suggested pandoc command:
 ```bash

@@ -95,6 +95,11 @@ _REPORT_TYPES = [
     ("pr",        "📋", "PR Status Report",    "All purchase requests and their current state"),
     ("fefo",      "✅", "FEFO Compliance",     "First-expiry-first-out adherence audit"),
     ("audit",     "📜", "Full Audit Report",   "Complete system audit log for a date range"),
+    # Phase 5 — procurement chain reports
+    ("po_status",  "🧾", "PO Status",            "Per-PO rollup: ordered, delivered, returned qty + status"),
+    ("warehouse_throughput", "🏭", "Warehouse Throughput",
+     "DN counts by warehouse, split by state and RL/BL family"),
+    ("force_closures", "🛑", "Force-Closures",   "Audit of every PR/PO/line closed by Logistics"),
 ]
 _REPORT_TYPE_MAP = {t[0]: t for t in _REPORT_TYPES}
 
@@ -261,6 +266,15 @@ def _run_report_raw(
         return report_fefo_compliance(df_from, df_to, site_id=site_id)
     if report_type == "audit":
         return report_audit_export(df_from, df_to)
+    if report_type == "po_status":
+        from database import report_po_status
+        return report_po_status(df_from, df_to, site_id=site_id)
+    if report_type == "warehouse_throughput":
+        from database import report_warehouse_throughput
+        return report_warehouse_throughput(df_from, df_to, site_id=site_id)
+    if report_type == "force_closures":
+        from database import report_force_closures
+        return report_force_closures(df_from, df_to, site_id=site_id)
     if report_type == "valuation":
         # Standard-cost inventory valuation. Date filter is informational
         # only (live snapshot — we don't have point-in-time stock history).

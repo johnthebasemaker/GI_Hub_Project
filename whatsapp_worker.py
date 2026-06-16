@@ -352,6 +352,38 @@ def check_overdue_returnables() -> None:
 # ---------------------------------------------------------------------------
 # Worker loop — called by the embedded thread OR standalone script
 # ---------------------------------------------------------------------------
+def _maybe_run_delivery_reminders() -> None:
+    """Run sweep_delivery_reminders() at most once per local day. The
+    UNIQUE constraint inside the helper would block duplicate per-target
+    fires, but firing the sweep query itself 1,440 times a day is wasteful.
+    We use app_settings.delivery_reminders_last_run as a cheap day-marker."""
+    try:
+        import datetime as _dt
+        import database as _db
+        today = _dt.date.today().isoformat()
+        conn = _db.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_settings "
+                "WHERE key='delivery_reminders_last_run'").fetchone()
+            if row and row[0] == today:
+                return
+            n = _db.sweep_delivery_reminders(conn=conn)
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES "
+                "  ('delivery_reminders_last_run', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (today,),
+            )
+            conn.commit()
+            if n:
+                print(f"📨 Delivery reminders: fired {n} fresh notification(s) for {today}")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"❌ delivery_reminders crashed: {e}")
+
+
 def run_worker_loop() -> None:
     """Infinite poll loop. Safe to run as a daemon thread."""
     print("🟢 WhatsApp worker loop started")
@@ -364,6 +396,8 @@ def run_worker_loop() -> None:
             check_overdue_returnables()
         except Exception as e:
             print(f"❌ check_overdue crashed: {e}")
+        # Phase 5 — T-2 / T-1 / T-0 reminders, idempotent within a day
+        _maybe_run_delivery_reminders()
         time.sleep(60)
 
 

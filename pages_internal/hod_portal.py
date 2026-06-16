@@ -38,6 +38,13 @@ from database import (
     set_app_setting,
     insert_manual_pr,
     update_pr_workflow_state,
+    submit_pr_to_logistics,
+    list_pending_hod_dns, get_dn_detail, hod_decide_dn,
+    # Phase 4 — In-Transit visibility + reschedule wiring
+    list_in_transit_dns_for_site,
+    list_reschedule_requests_for_site,
+    list_force_closures_for_site,
+    request_reschedule,
     reject_pending_receipt,
     get_all_sites_stock_matrix,
     get_receipt_history,
@@ -1331,6 +1338,50 @@ def _render_pr_tab(user: dict, site_id: str) -> None:
         )
     st.markdown(_html_table("".join(rows_html), cols), unsafe_allow_html=True)
 
+    # ── 3.5) SUBMIT PR TO LOGISTICS (Phase C — procurement chain) ───────
+    # This step hands the PR off to the Logistics Portal queue. The
+    # existing email + PDF block below is preserved as an alternative
+    # "manual" path — both can coexist.
+    site_prs_open = sorted(set(
+        pr_df[
+            (pr_df["status"] == "open")
+            & (pr_df.get("logistics_status", "site_draft").fillna("site_draft")
+               .isin(["site_draft", "submitted"]))
+        ]["PR_Number"].tolist()
+    ))
+    if site_prs_open:
+        with st.expander("🚚 Submit PR(s) to Logistics Portal", expanded=False):
+            st.caption(
+                "Hand off the selected PR(s) to the Logistics team. They will issue "
+                "POs against each PR and notify your site once delivery dates are confirmed."
+            )
+            to_submit = st.multiselect(
+                "Select PRs to submit",
+                site_prs_open,
+                key="_hod_pr_submit_to_logistics_ms",
+            )
+            if st.button(
+                "📨 Submit Selected to Logistics",
+                type="primary",
+                disabled=not to_submit,
+                key="_hod_pr_submit_to_logistics_btn",
+            ):
+                ok_n, fail_n = 0, 0
+                for pr_no in to_submit:
+                    ok, msg = submit_pr_to_logistics(
+                        pr_number=pr_no,
+                        site_id=site_id,
+                        username=user["username"],
+                    )
+                    if ok:
+                        ok_n += 1
+                    else:
+                        fail_n += 1
+                        st.warning(f"{pr_no}: {msg}")
+                if ok_n:
+                    st.success(f"✅ Submitted {ok_n} PR(s) to Logistics")
+                    st.rerun()
+
     # ── 4) NOTIFY LOGISTICS (preserved: Outlook email + PDF download) ───
     st.divider()
     st.markdown("**📧 Notify Logistics (Pending Balance Follow-up)**")
@@ -1904,11 +1955,12 @@ def _render_adjustments_tab(user: dict, site_id: str) -> None:
 # TAB 10 — MY REQUESTS  (preserved working feature, kept at end)
 # ===========================================================================
 def _render_my_requests_tab(user: dict, site_id: str) -> None:
-    from config import auto_localize_timestamps  # noqa: F401 — used below
     st.subheader("My Outbound Requests")
     conn = get_connection()
+    # get_pending_requests already passes the result through _localize()
+    # which converts UTC → GMT+3 at the boundary. Calling
+    # auto_localize_timestamps() again here would add another +3 hours.
     reqs_df = get_pending_requests(conn, site_id=site_id)
-    reqs_df = auto_localize_timestamps(reqs_df)
 
     if reqs_df.empty:
         render_empty_state(
@@ -2479,6 +2531,10 @@ def page_hod_portal(user: dict) -> None:
         "📋 Purchase Requests",
         "⚠️ Shelf-Life", "🔔 Notifications",
         "✅ My Requests", "⚙️ Site Config", "📎 DOC", "🏷️ QR Approval",
+        # Phase 3 — Procurement chain: DNs arriving from Warehouse
+        "🚚 DN Approvals",
+        # Phase 4 — read-only visibility into the procurement chain for this site
+        "🚚 In-Transit",
     ]
     tabs = st.tabs(tab_labels)
     with tabs[0]: _render_eod_tab(user, site_id)
@@ -2494,3 +2550,403 @@ def page_hod_portal(user: dict) -> None:
     with tabs[10]: _render_site_config_tab(user, site_id)
     with tabs[11]: _render_doc_tab(user, site_id)
     with tabs[12]: _render_qr_approval_tab(user, site_id)
+    with tabs[13]: _render_dn_approvals_tab(user, site_id)
+    with tabs[14]: _render_in_transit_tab(user, site_id)
+
+
+# ===========================================================================
+# DN APPROVALS TAB (Phase 3 — procurement chain handoff to Site SK)
+# ===========================================================================
+def _render_dn_approvals_tab(user: dict, site_id: str) -> None:
+    """Lists Delivery Notes arriving at this site that already passed
+    Logistics approval. HOD approves the content → flows to SK as a
+    pending receipt; HOD rejects → Warehouse sees the bounce."""
+    st.markdown("#### 🚚 Incoming Delivery Notes — awaiting HOD approval")
+    st.caption(
+        "Logistics has approved the delivery date for these DNs. Approve "
+        "the content here so your Store Keeper can confirm physical receipt."
+    )
+    df = list_pending_hod_dns(site_id)
+    if df.empty:
+        render_empty_state(
+            icon="📭",
+            title="No DNs awaiting your approval",
+            hint="They appear here after Logistics signs off the delivery date.",
+        )
+        return
+
+    for _, row in df.iterrows():
+        with st.container(border=True):
+            cA, cB = st.columns([3, 1])
+            with cA:
+                st.markdown(
+                    f"**DN {_esc(row['DN_Number'])}** · PO {_esc(row['PO_Number'])} "
+                    f"· From Warehouse `{_esc(row['Warehouse_ID'])}`"
+                )
+                st.caption(
+                    f"DN Date {_esc(row.get('DN_Date'))} · "
+                    f"Vehicle {_esc(row.get('Vehicle_No'))} · "
+                    f"Driver {_esc(row.get('Driver_Name'))}"
+                )
+                # Quick line-item peek
+                with st.expander("View lines", expanded=False):
+                    items = get_dn_detail(row["DN_Number"])["items"]
+                    if items.empty:
+                        st.caption("No items.")
+                    else:
+                        cols = [c for c in [
+                            "Material_Code", "Description", "Qty", "UOM",
+                            "rl_bl_family", "Lot_Number", "Expiry_Date",
+                            "Remarks",
+                        ] if c in items.columns]
+                        st.dataframe(items[cols], use_container_width=True,
+                                     hide_index=True)
+            with cB:
+                with st.popover("Decide", use_container_width=True):
+                    notes = st.text_input(
+                        "Notes (required to reject)",
+                        key=f"_hod_dn_notes_{row['DN_Number']}",
+                    )
+                    bA, bB = st.columns(2)
+                    with bA:
+                        if st.button("✅ Approve",
+                                     type="primary",
+                                     use_container_width=True,
+                                     key=f"_hod_dn_appr_{row['DN_Number']}"):
+                            ok, msg = hod_decide_dn(
+                                row["DN_Number"], approve=True,
+                                decided_by=user["username"],
+                                decision_notes=notes,
+                            )
+                            (st.success if ok else st.error)(msg)
+                            if ok:
+                                st.rerun()
+                    with bB:
+                        if st.button("❌ Reject",
+                                     use_container_width=True,
+                                     key=f"_hod_dn_rej_{row['DN_Number']}"):
+                            if not notes.strip():
+                                st.error("Reason required.")
+                            else:
+                                ok, msg = hod_decide_dn(
+                                    row["DN_Number"], approve=False,
+                                    decided_by=user["username"],
+                                    decision_notes=notes,
+                                )
+                                (st.success if ok else st.error)(msg)
+                                if ok:
+                                    st.rerun()
+
+
+# ===========================================================================
+# IN-TRANSIT TAB (Phase 4 — read-only procurement-chain visibility)
+# ===========================================================================
+def _render_in_transit_tab(user: dict, site_id: str) -> None:
+    """Read-only window into the procurement chain for this site.
+
+    Three sub-tabs:
+      1. 🚚 Active in-transit — DNs heading to me, with per-row 🔁 reschedule
+      2. 🔁 My reschedule requests — outcomes from Logistics
+      3. 🛑 Force-closures — PR/PO/lines closed by Logistics that affect me
+
+    No mutation paths except reschedule submission, which goes through the
+    existing `request_reschedule` helper. EOD commit + every other HOD tab
+    are untouched."""
+    st.markdown("#### 🚚 Procurement Chain — Read-only Visibility")
+    st.caption(
+        "Everything currently bound for this site. Use this tab to see what's "
+        "in transit, where it is in the approval chain, and to ask Logistics "
+        "to push a delivery date back if you need it."
+    )
+
+    sub_active, sub_resch, sub_close = st.tabs([
+        "🚚 Active in-transit",
+        "🔁 My reschedule requests",
+        "🛑 Force-closures affecting me",
+    ])
+
+    # ── Sub-tab 1: Active in-transit DNs ──────────────────────────────────
+    with sub_active:
+        df = list_in_transit_dns_for_site(site_id)
+        if df.empty:
+            render_empty_state(
+                icon="🛣️",
+                title="Nothing in transit right now",
+                hint="DNs bound for this site appear here once Logistics or "
+                     "the Warehouse moves them into the approval chain.",
+            )
+        else:
+            # Compact KPI strip — counts by state
+            counts = df["status"].value_counts().to_dict()
+            n_log    = int(counts.get("pending_logistics", 0))
+            n_la     = int(counts.get("logistics_approved", 0))
+            n_hod    = int(counts.get("pending_hod", 0))
+            n_sk     = int(counts.get("pending_sk", 0))
+            st.markdown(
+                '<div style="display:flex;gap:10px;flex-wrap:wrap;'
+                'margin-bottom:10px;">'
+                + "".join([
+                    _intransit_chip("At Logistics", n_log, _C["muted"]),
+                    _intransit_chip("Logistics approved", n_la, _C["blueLt"]),
+                    _intransit_chip("Awaiting my approval", n_hod,
+                                    _C["gold"]),
+                    _intransit_chip("Pending SK receipt", n_sk, _C["ok"]),
+                ]) + '</div>',
+                unsafe_allow_html=True,
+            )
+
+            # Per-DN card with line preview + Reschedule popover
+            for _, row in df.iterrows():
+                _render_intransit_dn_card(row, user, site_id)
+
+    # ── Sub-tab 2: My reschedule requests ────────────────────────────────
+    with sub_resch:
+        rdf = list_reschedule_requests_for_site(site_id)
+        if rdf.empty:
+            render_empty_state(
+                icon="🗓️",
+                title="No reschedule requests on file",
+                hint="Use the 🔁 button on any in-transit DN to ask Logistics "
+                     "to push a delivery date.",
+            )
+        else:
+            # KPI strip
+            pending  = int((rdf["status"] == "pending").sum())
+            approved = int((rdf["status"] == "approved").sum())
+            rejected = int((rdf["status"] == "rejected").sum())
+            st.markdown(
+                '<div style="display:flex;gap:10px;flex-wrap:wrap;'
+                'margin-bottom:10px;">'
+                + "".join([
+                    _intransit_chip("Pending", pending,    _C["low"]),
+                    _intransit_chip("Approved", approved,  _C["ok"]),
+                    _intransit_chip("Rejected", rejected,  _C["crit"]),
+                ]) + '</div>',
+                unsafe_allow_html=True,
+            )
+            # Custom HTML table for richer status visualisation
+            rows_html = []
+            for _, r in rdf.iterrows():
+                bg = _C["surf2"] + "44"
+                status_lower = (r.get("status") or "pending").lower()
+                rows_html.append(
+                    f'<tr style="background:{bg};border-bottom:1px solid {_C["border"]}33;">'
+                    f'<td style="padding:7px 10px;color:{_C["gold"]};font-weight:600;">'
+                    f'{_esc(r["PO_Number"])}</td>'
+                    f'<td style="padding:7px 10px;color:{_C["text"]};">'
+                    f'{_esc(r.get("DN_Number")) or "—"}</td>'
+                    f'<td style="padding:7px 10px;color:{_C["muted"]};'
+                    f'font-family:monospace;">{_esc(r.get("current_date"))}</td>'
+                    f'<td style="padding:7px 10px;color:{_C["gold"]};'
+                    f'font-family:monospace;font-weight:600;">'
+                    f'→ {_esc(r["requested_date"])}</td>'
+                    f'<td style="padding:7px 10px;color:{_C["text"]};font-size:11.5px;'
+                    f'max-width:260px;overflow:hidden;text-overflow:ellipsis;'
+                    f'white-space:nowrap;" title="{_esc(r.get("reason"))}">'
+                    f'{_esc(r.get("reason"))}</td>'
+                    f'<td style="padding:7px 10px;">{status_pill_html(status_lower)}</td>'
+                    f'<td style="padding:7px 10px;color:{_C["muted"]};font-size:11.5px;">'
+                    f'{_esc(r.get("decided_by"))}</td>'
+                    f'<td style="padding:7px 10px;color:{_C["muted"]};font-size:11.5px;'
+                    f'max-width:200px;overflow:hidden;text-overflow:ellipsis;'
+                    f'white-space:nowrap;" title="{_esc(r.get("decision_notes"))}">'
+                    f'{_esc(r.get("decision_notes"))}</td>'
+                    f'</tr>'
+                )
+            st.markdown(
+                _html_table(
+                    "".join(rows_html),
+                    ["PO No.", "DN No.", "From", "Requested",
+                     "Reason", "Status", "Decided by", "Notes"],
+                ),
+                unsafe_allow_html=True,
+            )
+
+    # ── Sub-tab 3: Force-closures affecting me ───────────────────────────
+    with sub_close:
+        fc = list_force_closures_for_site(site_id, limit=50)
+        if fc.empty:
+            render_empty_state(
+                icon="🛑",
+                title="No force-closures recorded for this site",
+                hint="If Logistics force-closes a PR, PO, or line that "
+                     "originated from this site, it shows up here.",
+            )
+        else:
+            st.caption(
+                f"Most recent {len(fc)} force-closure(s) affecting this site."
+            )
+            # Reuse the existing styled HTML pattern for consistency
+            rows_html = []
+            for _, r in fc.iterrows():
+                bg = _C["surf2"] + "44"
+                badge = {
+                    "pr":      ('PR closed',   _C["crit"]),
+                    "po":      ('PO closed',   _C["crit"]),
+                    "po_item": ('Line closed', _C["low"]),
+                }.get(r.get("target_type"), (r.get("target_type") or "—", _C["muted"]))
+                rows_html.append(
+                    f'<tr style="background:{bg};border-bottom:1px solid {_C["border"]}33;">'
+                    f'<td style="padding:7px 10px;"><span style="background:{badge[1]}22;'
+                    f'color:{badge[1]};border:1px solid {badge[1]}55;border-radius:999px;'
+                    f'padding:2px 9px;font-size:11px;font-weight:600;">{badge[0]}</span></td>'
+                    f'<td style="padding:7px 10px;color:{_C["gold"]};font-weight:600;'
+                    f'font-family:monospace;">{_esc(r["target_ref"])}</td>'
+                    f'<td style="padding:7px 10px;color:{_C["text"]};font-family:monospace;'
+                    f'font-size:11.5px;">{_esc(r.get("PR_Number"))}</td>'
+                    f'<td style="padding:7px 10px;color:{_C["text"]};font-family:monospace;'
+                    f'font-size:11.5px;">{_esc(r.get("PO_Number"))}</td>'
+                    f'<td style="padding:7px 10px;color:{_C["text"]};font-size:11.5px;'
+                    f'max-width:320px;overflow:hidden;text-overflow:ellipsis;'
+                    f'white-space:nowrap;" title="{_esc(r.get("reason"))}">'
+                    f'{_esc(r.get("reason"))}</td>'
+                    f'<td style="padding:7px 10px;color:{_C["muted"]};font-size:11.5px;">'
+                    f'{_esc(r.get("closed_by"))}</td>'
+                    f'<td style="padding:7px 10px;color:{_C["muted"]};font-size:11.5px;'
+                    f'font-family:monospace;">{_esc(r.get("closed_at"))}</td>'
+                    f'</tr>'
+                )
+            st.markdown(
+                _html_table(
+                    "".join(rows_html),
+                    ["Type", "Target", "PR No.", "PO No.",
+                     "Reason", "Closed by", "When"],
+                ),
+                unsafe_allow_html=True,
+            )
+
+
+def _intransit_chip(label: str, n: int, color: str) -> str:
+    """Compact KPI chip used by the In-Transit tab. Inlined here so we
+    don't accidentally fight with another module's CSS rules."""
+    return (
+        f'<div style="background:{_C["surf2"]};border:1px solid {color}44;'
+        f'border-radius:10px;padding:8px 14px;display:flex;flex-direction:column;'
+        f'gap:2px;min-width:130px;">'
+        f'<div style="color:{_C["muted"]};font-size:10px;letter-spacing:0.1em;'
+        f'text-transform:uppercase;">{html.escape(label)}</div>'
+        f'<div style="color:{color};font-size:20px;font-weight:800;line-height:1;">'
+        f'{int(n)}</div></div>'
+    )
+
+
+def _render_intransit_dn_card(row, user: dict, site_id: str) -> None:
+    """One per-DN container with a status pill, key details, line preview,
+    and a 🔁 Reschedule popover. The reschedule submit reuses the existing
+    request_reschedule helper — no new mutation path."""
+    dn_no   = row["DN_Number"]
+    status_ = (row.get("status") or "pending").lower()
+    eta     = row.get("DN_Date") or "—"
+    wh_id   = row.get("Warehouse_ID") or "—"
+    po_no   = row.get("PO_Number") or "—"
+    fam     = row.get("rl_bl_family")
+
+    with st.container(border=True):
+        # Header row: PO + DN + warehouse + status pill on the right
+        cA, cB = st.columns([4, 1])
+        with cA:
+            fam_chip = ""
+            if fam == "RL":
+                fam_chip = (
+                    f' <span style="background:#0EA5E922;color:#0EA5E9;'
+                    f'border:1px solid #0EA5E955;border-radius:999px;'
+                    f'padding:1px 8px;font-size:10.5px;font-weight:700;">RL</span>'
+                )
+            elif fam == "BL":
+                fam_chip = (
+                    f' <span style="background:#A855F722;color:#A855F7;'
+                    f'border:1px solid #A855F755;border-radius:999px;'
+                    f'padding:1px 8px;font-size:10.5px;font-weight:700;">BL</span>'
+                )
+            st.markdown(
+                f"<div style='font-size:14px;font-weight:600;color:{_C['text']};'>"
+                f"DN <span style='color:{_C['gold']};font-family:monospace;'>"
+                f"{_esc(dn_no)}</span>"
+                f"{fam_chip}"
+                f"</div>"
+                f"<div style='color:{_C['muted']};font-size:12px;margin-top:3px;'>"
+                f"PO <span style='color:{_C['gold']}CC;font-family:monospace;'>"
+                f"{_esc(po_no)}</span>"
+                f" · Warehouse <code style='color:{_C['text']}EE;'>{_esc(wh_id)}</code>"
+                f" · ETA <span style='color:{_C['text']};font-weight:600;'>"
+                f"{_esc(eta)}</span>"
+                f" · {int(row.get('line_count') or 0)} line(s),"
+                f" {float(row.get('total_qty') or 0):.2f} units"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with cB:
+            st.markdown(
+                f"<div style='text-align:right;padding-top:4px;'>"
+                f"{status_pill_html(status_)}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+        # Line preview (collapsed) — read-only
+        with st.expander("View lines", expanded=False):
+            try:
+                items = get_dn_detail(dn_no)["items"]
+            except Exception:
+                items = pd.DataFrame()
+            if items.empty:
+                st.caption("No items.")
+            else:
+                show_cols = [c for c in [
+                    "Material_Code", "Description", "Qty", "UOM",
+                    "Lot_Number", "Expiry_Date", "rl_bl_family", "Remarks",
+                ] if c in items.columns]
+                st.dataframe(items[show_cols], use_container_width=True,
+                             hide_index=True)
+
+        # Reschedule popover — date picker + reason, intuitive enough to
+        # submit in under 10 seconds
+        with st.popover("🔁 Request reschedule", use_container_width=False):
+            st.caption(
+                "Ask Logistics to push this DN to a later (or earlier) "
+                "date. The Warehouse stays informed automatically."
+            )
+            # Default to current ETA + 3 days, or today+3 if no ETA
+            try:
+                cur_date_obj = datetime.date.fromisoformat(str(eta)[:10])
+            except (ValueError, TypeError):
+                cur_date_obj = datetime.date.today()
+            new_date = st.date_input(
+                "Requested new date",
+                value=cur_date_obj + datetime.timedelta(days=3),
+                min_value=datetime.date.today(),
+                key=f"_hod_intransit_resch_date_{dn_no}",
+            )
+            reason = st.text_area(
+                "Reason (sent to Logistics)",
+                key=f"_hod_intransit_resch_reason_{dn_no}",
+                max_chars=400, height=80,
+                placeholder=("e.g. Site is offline for shutdown on "
+                             "the originally requested date."),
+            )
+            cP1, cP2 = st.columns([1, 1])
+            with cP1:
+                if st.button("Submit",
+                             type="primary",
+                             use_container_width=True,
+                             key=f"_hod_intransit_resch_submit_{dn_no}"):
+                    if not reason.strip():
+                        st.error("Reason is required.")
+                    elif new_date.isoformat() == str(eta):
+                        st.warning("Requested date matches current ETA — "
+                                   "no change to send.")
+                    else:
+                        ok, msg = request_reschedule(
+                            po_number=po_no,
+                            dn_number=dn_no,
+                            current_date=str(eta),
+                            requested_date=new_date.isoformat(),
+                            reason=reason,
+                            requested_by_role="hod",
+                            requested_by=user["username"],
+                        )
+                        (st.success if ok else st.error)(msg)
+                        if ok:
+                            st.rerun()
+            with cP2:
+                st.caption("📨 Goes to Logistics")

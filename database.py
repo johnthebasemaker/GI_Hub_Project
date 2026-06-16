@@ -794,6 +794,427 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         )
     """)
 
+    # ════════════════════════════════════════════════════════════════════════
+    # ── Phase C (Procurement chain) — Logistics + Warehouse portals ─────────
+    # ════════════════════════════════════════════════════════════════════════
+    # The chain is:
+    #   Site HOD creates PR  →  Logistics issues PO(s) against PR
+    #                        →  Logistics assigns PO items to a Warehouse
+    #                        →  Warehouse receives + prepares Delivery Notes
+    #                        →  Logistics approves DN delivery date
+    #                        →  Site HOD approves DN → Site SK confirms receipt
+    # All movement still funnels into the existing `receipts` ledger at the
+    # final step, so identity math is unchanged.
+
+    # warehouses — physical receiving locations (Factory / Yard / Hub).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS warehouses (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            Warehouse_ID  TEXT    UNIQUE NOT NULL,
+            Name          TEXT    NOT NULL,
+            Location      TEXT,
+            Contact_Name  TEXT,
+            Contact_Phone TEXT,
+            Contact_Email TEXT,
+            status        TEXT    DEFAULT 'active'
+                          CHECK(status IN ('active','inactive')),
+            created_by    TEXT,
+            created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # vendors — supplier master, auto-fills PO creation form.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS vendors (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            Vendor_Code     TEXT    UNIQUE NOT NULL,
+            Vendor_Name     TEXT    NOT NULL,
+            Address         TEXT,
+            Contact_Name    TEXT,
+            Contact_Phone   TEXT,
+            Contact_Email   TEXT,
+            Default_Inco_Terms    TEXT,
+            Default_Payment_Terms TEXT,
+            status          TEXT    DEFAULT 'active'
+                            CHECK(status IN ('active','inactive')),
+            created_by      TEXT,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # purchase_orders — one row per PO header. PO_Number is a free-text
+    # captured by Logistics; in production it's a 10-digit numeric string
+    # (e.g. '4720002930'). Samples mask the last 4 with X for security but
+    # the column accepts both. PR_Number is the linked PR; one PR can spawn
+    # many POs (split buys). source = 'manual' | 'pdf_upload'.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS purchase_orders (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            PO_Number           TEXT    NOT NULL,
+            PR_Number           TEXT,
+            Site_ID             TEXT,
+            Vendor_Code         TEXT,
+            Vendor_Name         TEXT,
+            Inco_Terms          TEXT,
+            Payment_Terms       TEXT,
+            PO_Date             TEXT,
+            PO_Type             TEXT,
+            Quotation_No        TEXT,
+            Quotation_Date      TEXT,
+            Your_Reference      TEXT,
+            Our_Reference       TEXT,
+            Contact_Person      TEXT,
+            Contact_Email       TEXT,
+            Mobile              TEXT,
+            Our_Email           TEXT,
+            Expected_Delivery   TEXT,
+            Freight_Charges     REAL    DEFAULT 0,
+            Handling_Charges    REAL    DEFAULT 0,
+            Discount_Amount     REAL    DEFAULT 0,
+            Total_Amount        REAL    DEFAULT 0,
+            Amount_In_Words     TEXT,
+            source              TEXT    DEFAULT 'manual'
+                                CHECK(source IN ('manual','pdf_upload')),
+            attachment_blob     BLOB,
+            attachment_name     TEXT,
+            attachment_mime     TEXT,
+            status              TEXT    DEFAULT 'open'
+                                CHECK(status IN ('open','partially_delivered','delivered','closed','force_closed','cancelled')),
+            created_by          TEXT,
+            created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            closed_at           DATETIME,
+            closed_by           TEXT,
+            close_reason        TEXT,
+            UNIQUE(PO_Number)
+        )
+    """)
+
+    # po_items — one row per PO line. SAP_Code intentionally absent at this
+    # layer — Logistics works with Material_Code only; SAP_Code joins back
+    # at the site receipt step. rl_bl_family is set by config.classify_rl_bl_family
+    # at insert time and locks the line into its own splitter group.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS po_items (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            PO_Number         TEXT    NOT NULL,
+            line_no           INTEGER,
+            Material_Code     TEXT,
+            Description       TEXT,
+            Qty               REAL    NOT NULL,
+            UOM               TEXT,
+            Unit_Price        REAL    DEFAULT 0,
+            Total_Price       REAL    DEFAULT 0,
+            PR_Number         TEXT,
+            WBS_Number        TEXT,
+            Network           TEXT,
+            Plant             TEXT,
+            rl_bl_family      TEXT,   -- 'RL' | 'BL' | NULL — strict separation flag
+            Delivered_Qty     REAL    DEFAULT 0,
+            Returned_Qty      REAL    DEFAULT 0,
+            line_status       TEXT    DEFAULT 'open'
+                              CHECK(line_status IN ('open','partially_delivered','delivered','returned','closed','force_closed')),
+            close_reason      TEXT,
+            created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # po_shipment_schedule — parses the "PO Annexure: Delivery Schedule"
+    # block from sample POs into structured rows for reminder scheduling.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS po_shipment_schedule (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            PO_Number       TEXT    NOT NULL,
+            shipment_no     TEXT,
+            material_group  TEXT,
+            target_date     TEXT,
+            actual_date     TEXT,
+            status          TEXT    DEFAULT 'pending'
+                            CHECK(status IN ('pending','shipped','delivered','delayed','cancelled')),
+            notes           TEXT,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # po_assignments — Logistics → Warehouse routing for a PO.
+    # items_subset_json is a JSON list of po_items.id values; NULL means
+    # "all items on the PO". When the Warehouse views the assignment, it
+    # always sees prices blanked (enforced at the query layer, not stored).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS po_assignments (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            PO_Number           TEXT    NOT NULL,
+            Warehouse_ID        TEXT    NOT NULL,
+            items_subset_json   TEXT,
+            Expected_Delivery   TEXT,
+            assigned_by         TEXT    NOT NULL,
+            assigned_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+            acknowledged_at     DATETIME,
+            acknowledged_by     TEXT,
+            status              TEXT    DEFAULT 'assigned'
+                                CHECK(status IN ('assigned','acknowledged','received','partial','closed','cancelled')),
+            notes               TEXT
+        )
+    """)
+
+    # delivery_notes — Warehouse → Site DN header. One PO may produce many
+    # DNs (split by site / date / RL-vs-BL family). HOD approves the DN
+    # before it lands on the SK's pending receipts.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS delivery_notes (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            DN_Number          TEXT    UNIQUE NOT NULL,
+            PO_Number          TEXT    NOT NULL,
+            Warehouse_ID       TEXT    NOT NULL,
+            Site_ID            TEXT    NOT NULL,
+            rl_bl_family       TEXT,   -- locks the DN to a single family if non-null
+            DN_Date            TEXT,
+            Vehicle_No         TEXT,
+            Driver_Name        TEXT,
+            Driver_Phone       TEXT,
+            Prepared_By        TEXT,
+            Remarks            TEXT,
+            status             TEXT    DEFAULT 'draft'
+                               CHECK(status IN ('draft','pending_logistics','logistics_approved','pending_hod','hod_approved','pending_sk','received','rejected','cancelled')),
+            logistics_decided_at  DATETIME,
+            logistics_decided_by  TEXT,
+            logistics_decision    TEXT,
+            hod_decided_at        DATETIME,
+            hod_decided_by        TEXT,
+            sk_received_at        DATETIME,
+            sk_received_by        TEXT,
+            rejection_reason      TEXT,
+            created_by         TEXT    NOT NULL,
+            created_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # dn_items — DN line items. References po_items.id so we can trace
+    # back to the original PO line and reduce the open balance. The
+    # warehouse can edit Qty in the DN draft before sending for HOD approval.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS dn_items (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            DN_Number       TEXT    NOT NULL,
+            po_item_id      INTEGER NOT NULL,
+            Material_Code   TEXT,
+            Description     TEXT,
+            Qty             REAL    NOT NULL,
+            UOM             TEXT,
+            Lot_Number      TEXT,
+            Expiry_Date     TEXT,
+            Remarks         TEXT,
+            rl_bl_family    TEXT,
+            sk_received_qty REAL,
+            status          TEXT    DEFAULT 'pending'
+                            CHECK(status IN ('pending','received','partial','returned','cancelled')),
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # po_returns — Logistics / Warehouse / Site can raise a return. Returns
+    # reopen the linked po_item (line_status flips back to 'partially_delivered'
+    # or 'open' depending on Returned_Qty vs Delivered_Qty).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS po_returns (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            PO_Number           TEXT    NOT NULL,
+            po_item_id          INTEGER,
+            DN_Number           TEXT,
+            Material_Code       TEXT,
+            Qty                 REAL    NOT NULL,
+            Reason              TEXT    NOT NULL,
+            raised_by_role      TEXT    NOT NULL
+                                CHECK(raised_by_role IN ('logistics','warehouse_user','hod','store_keeper','admin')),
+            raised_by           TEXT    NOT NULL,
+            raised_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+            Expected_Resupply   TEXT,
+            status              TEXT    DEFAULT 'open'
+                                CHECK(status IN ('open','vendor_acknowledged','resupplied','cancelled')),
+            closed_at           DATETIME,
+            closed_by           TEXT,
+            notes               TEXT
+        )
+    """)
+
+    # po_reschedule_requests — Warehouse / Site HOD → Logistics. Logistics
+    # approves with a new Expected_Delivery date or denies with a reason.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS po_reschedule_requests (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            PO_Number           TEXT    NOT NULL,
+            DN_Number           TEXT,
+            current_date        TEXT,
+            requested_date      TEXT    NOT NULL,
+            reason              TEXT    NOT NULL,
+            requested_by_role   TEXT    NOT NULL
+                                CHECK(requested_by_role IN ('warehouse_user','hod','admin')),
+            requested_by        TEXT    NOT NULL,
+            requested_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+            status              TEXT    DEFAULT 'pending'
+                                CHECK(status IN ('pending','approved','rejected')),
+            decided_by          TEXT,
+            decided_at          DATETIME,
+            decision_notes      TEXT
+        )
+    """)
+
+    # po_force_closures — audit row written every time Logistics force-closes
+    # a PR, PO, or specific line. Surfaced to Admin + originating Site HOD
+    # per user spec.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS po_force_closures (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_type     TEXT    NOT NULL
+                            CHECK(target_type IN ('pr','po','po_item')),
+            target_ref      TEXT    NOT NULL,  -- PR_Number / PO_Number / po_items.id
+            Site_ID         TEXT,
+            PR_Number       TEXT,
+            PO_Number       TEXT,
+            reason          TEXT    NOT NULL,
+            closed_by       TEXT    NOT NULL,
+            closed_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+            notes           TEXT
+        )
+    """)
+
+    # delivery_reminders_sent — idempotency log for the T-2/T-1/T-0 sweep.
+    # The UNIQUE constraint stops duplicate fires for the same (ref, offset)
+    # even if the worker is restarted mid-day.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS delivery_reminders_sent (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ref_type    TEXT    NOT NULL CHECK(ref_type IN ('po','dn')),
+            ref_number  TEXT    NOT NULL,
+            target_date TEXT    NOT NULL,
+            offset_days INTEGER NOT NULL,
+            fired_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(ref_type, ref_number, target_date, offset_days)
+        )
+    """)
+
+    # app_notifications — in-app inbox (bell icon in sidebar). The same event
+    # may also fire a WhatsApp via WHATSAPP_TRIGGERS in config.py; in-app
+    # notifications always fire regardless of WhatsApp toggle.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS app_notifications (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipient_user  TEXT,           -- exact username; OR
+            recipient_role  TEXT,           -- broadcast to all users of role; OR
+            recipient_site  TEXT,           -- combined with role for site-scoped
+            recipient_warehouse TEXT,       -- combined with role for warehouse-scoped
+            event_key       TEXT    NOT NULL,
+            severity        TEXT    DEFAULT 'info'
+                            CHECK(severity IN ('info','warning','critical','success')),
+            title           TEXT    NOT NULL,
+            body            TEXT,
+            link_page       TEXT,           -- which sidebar page to deep-link
+            link_anchor     TEXT,           -- tab/section anchor inside the page
+            related_table   TEXT,
+            related_ref     TEXT,
+            read_at         DATETIME,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # ── Self-heal: pr_master extensions for procurement chain ─────────────
+    # WBS_Number / Network / Plant / Delivery_Date carry across from the
+    # PR PDF columns we already extract. submitted_to_logistics_at and
+    # logistics_status drive the new "submit to Logistics" button + queue.
+    c.execute("PRAGMA table_info(pr_master)")
+    _pr_cols2 = {row[1] for row in c.fetchall()}
+    for _col, _ddl in [
+        ("WBS_Number",                "TEXT"),
+        ("Network",                   "TEXT"),
+        ("Plant",                     "TEXT"),
+        ("Delivery_Date",             "TEXT"),
+        ("submitted_to_logistics_at", "DATETIME"),
+        ("submitted_to_logistics_by", "TEXT"),
+        ("logistics_status",          "TEXT DEFAULT 'site_draft'"),
+        # site_draft → submitted → in_po → closed | force_closed
+    ]:
+        if _col not in _pr_cols2:
+            try:
+                c.execute(f"ALTER TABLE pr_master ADD COLUMN {_col} {_ddl}")
+            except sqlite3.OperationalError:
+                pass
+
+    # ── Self-heal: receipts carry the upstream DN/PO/Warehouse refs ───────
+    # These let the Site SK Receipt Staging show a "🚚 from warehouse" chip
+    # and let auditors trace a stock movement back to its originating PO.
+    c.execute("PRAGMA table_info(receipts)")
+    _rec_cols2 = {row[1] for row in c.fetchall()}
+    for _col in ("DN_Number", "Warehouse_ID", "PO_Number_Source"):
+        if _col not in _rec_cols2:
+            try:
+                c.execute(f"ALTER TABLE receipts ADD COLUMN {_col} TEXT")
+            except sqlite3.OperationalError:
+                pass
+    c.execute("PRAGMA table_info(pending_receipts)")
+    _prc_cols2 = {row[1] for row in c.fetchall()}
+    for _col in ("DN_Number", "Warehouse_ID", "PO_Number_Source"):
+        if _col not in _prc_cols2:
+            try:
+                c.execute(f"ALTER TABLE pending_receipts ADD COLUMN {_col} TEXT")
+            except sqlite3.OperationalError:
+                pass
+
+    # ── Self-heal: users.Warehouse_ID for warehouse_user role scoping ─────
+    c.execute("PRAGMA table_info(users)")
+    _usr_cols2 = {row[1] for row in c.fetchall()}
+    if "Warehouse_ID" not in _usr_cols2:
+        try:
+            c.execute("ALTER TABLE users ADD COLUMN Warehouse_ID TEXT")
+        except sqlite3.OperationalError:
+            pass
+    c.execute("PRAGMA table_info(pending_users)")
+    _pu_cols2 = {row[1] for row in c.fetchall()}
+    if "Warehouse_ID" not in _pu_cols2:
+        try:
+            c.execute("ALTER TABLE pending_users ADD COLUMN Warehouse_ID TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+    # ── Self-heal: users role CHECK — add logistics + warehouse_user ──────
+    # Mirrors the worker→store_keeper upgrade block above. We only rebuild
+    # if the new roles are missing from the CHECK constraint.
+    c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'")
+    _users_sql_row = c.fetchone()
+    _users_sql = (_users_sql_row[0] if _users_sql_row else "") or ""
+    if ("'logistics'" not in _users_sql) or ("'warehouse_user'" not in _users_sql):
+        try:
+            c.execute("PRAGMA foreign_keys=off;")
+            c.execute("ALTER TABLE users RENAME TO _users_old2;")
+            c.execute("""
+                CREATE TABLE users (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username      TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    role          TEXT NOT NULL CHECK(role IN
+                                   ('admin','logistics','hod','warehouse_user','supervisor','store_keeper')),
+                    Site_ID       TEXT DEFAULT 'HQ',
+                    Warehouse_ID  TEXT,
+                    Phone_Number  TEXT,
+                    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            # Detect which columns existed on the old table so we copy a safe subset.
+            c.execute("PRAGMA table_info(_users_old2)")
+            _old_cols = {r[1] for r in c.fetchall()}
+            _has_wh = "Warehouse_ID" in _old_cols
+            _wh_col = "Warehouse_ID" if _has_wh else "NULL"
+            c.execute(f"""
+                INSERT INTO users (id, username, password_hash, role, Site_ID, Warehouse_ID, Phone_Number, created_at)
+                SELECT id, username, password_hash, role, Site_ID, {_wh_col}, Phone_Number, created_at
+                FROM _users_old2
+            """)
+            c.execute("DROP TABLE _users_old2;")
+            c.execute("PRAGMA foreign_keys=on;")
+        except sqlite3.OperationalError:
+            # Never block init on the rebuild — older constraints still accept
+            # the existing seed roles; the new roles will simply fail to insert
+            # until the rebuild succeeds on next startup.
+            pass
+
     # ── Read-only Stock Views (Phase 3 — AI NL search backbone) ───────────────
     # These views encapsulate the EXACT Identity formula used by
     # load_live_inventory() so that any consumer (AI search, ad-hoc queries)
@@ -2017,7 +2438,9 @@ def get_pending_requests(
     status: str = None,
 ) -> pd.DataFrame:
     """
-    Returns rows from the `requests` table.
+    Returns rows from the `requests` table joined to the inventory master so
+    each row carries Material_Code + Material_Name alongside SAP_Code.
+
     site_id=None  → all sites (Admin global view)
     site_id='X'   → only requests where requesting_site='X' OR target_site='X'
     status='pending' → filter by FSM state
@@ -2028,15 +2451,26 @@ def get_pending_requests(
 
     clauses, params = [], []
     if site_id:
-        clauses.append("(requesting_site = ? OR target_site = ?)")
+        clauses.append("(r.requesting_site = ? OR r.target_site = ?)")
         params += [site_id, site_id]
     if status:
-        clauses.append("status = ?")
+        clauses.append("r.status = ?")
         params.append(status)
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    # LEFT JOIN inventory so requests for SAP codes not in the catalogue
+    # still render (with Material_Code / Material_Name as empty strings).
+    # The `r.*` keeps every existing column intact for downstream callers
+    # (admin Pending Requests editor, HOD My Requests table).
     df = pd.read_sql(
-        f"SELECT * FROM requests {where} ORDER BY created_at DESC",
+        f"""SELECT r.*,
+                  COALESCE(i.Material_Code, '')        AS Material_Code,
+                  COALESCE(i.Equipment_Description, '') AS Material_Name,
+                  COALESCE(i.UOM, '')                  AS UOM
+           FROM requests r
+           LEFT JOIN inventory i ON r.SAP_Code = i.SAP_Code
+           {where}
+           ORDER BY r.created_at DESC""",
         conn, params=params,
     )
     if _owns:
@@ -4922,3 +5356,2874 @@ def suggest_fefo_lot_for_consumption(
     if df is None or df.empty:
         return None
     return str(df.iloc[0]["Lot_Number"])
+
+
+# ===========================================================================
+# Phase C — Procurement chain helpers (Logistics + Warehouse portals)
+# ===========================================================================
+# These are the minimum surface Phase 2 / Phase 3 need. PO/DN/Return/
+# Reschedule/ForceClose flow helpers are added in their respective phases.
+
+def add_warehouse(
+    warehouse_id: str,
+    name: str,
+    location: str = "",
+    contact_name: str = "",
+    contact_phone: str = "",
+    contact_email: str = "",
+    created_by: str = "",
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Insert a new warehouse master row. UNIQUE on Warehouse_ID."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO warehouses (Warehouse_ID, Name, Location, "
+            "Contact_Name, Contact_Phone, Contact_Email, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (warehouse_id.strip(), name.strip(), location.strip(),
+             contact_name.strip(), contact_phone.strip(),
+             contact_email.strip(), created_by),
+        )
+        conn.commit()
+        return True, f"Warehouse {warehouse_id} added"
+    except sqlite3.IntegrityError:
+        return False, f"Warehouse {warehouse_id} already exists"
+    except sqlite3.Error as e:
+        return False, f"DB error: {e}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_warehouses(
+    active_only: bool = True,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Return all warehouses (active by default)."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = "SELECT * FROM warehouses"
+        if active_only:
+            q += " WHERE status='active'"
+        q += " ORDER BY Warehouse_ID"
+        return _localize(pd.read_sql_query(q, conn))
+    finally:
+        if _owns:
+            conn.close()
+
+
+def add_vendor(
+    vendor_code: str,
+    vendor_name: str,
+    address: str = "",
+    contact_name: str = "",
+    contact_phone: str = "",
+    contact_email: str = "",
+    default_inco_terms: str = "",
+    default_payment_terms: str = "",
+    created_by: str = "",
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Insert a new vendor master row. UNIQUE on Vendor_Code."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO vendors (Vendor_Code, Vendor_Name, Address, "
+            "Contact_Name, Contact_Phone, Contact_Email, "
+            "Default_Inco_Terms, Default_Payment_Terms, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (vendor_code.strip(), vendor_name.strip(), address.strip(),
+             contact_name.strip(), contact_phone.strip(), contact_email.strip(),
+             default_inco_terms.strip(), default_payment_terms.strip(),
+             created_by),
+        )
+        conn.commit()
+        return True, f"Vendor {vendor_code} added"
+    except sqlite3.IntegrityError:
+        return False, f"Vendor {vendor_code} already exists"
+    except sqlite3.Error as e:
+        return False, f"DB error: {e}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_vendors(
+    active_only: bool = True,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Return all vendors (active by default)."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = "SELECT * FROM vendors"
+        if active_only:
+            q += " WHERE status='active'"
+        q += " ORDER BY Vendor_Name"
+        return _localize(pd.read_sql_query(q, conn))
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# App notifications (in-app inbox)
+# ---------------------------------------------------------------------------
+# Recipient resolution: pass at least one of (recipient_user) OR
+# (recipient_role [+ recipient_site OR recipient_warehouse]). The bell-icon
+# query then UNIONs:
+#   • user-targeted rows (recipient_user = me)
+#   • role-broadcast rows where my (role, site, warehouse) match.
+
+def queue_app_notification(
+    event_key: str,
+    title: str,
+    body: str = "",
+    severity: str = "info",
+    recipient_user: str | None = None,
+    recipient_role: str | None = None,
+    recipient_site: str | None = None,
+    recipient_warehouse: str | None = None,
+    link_page: str | None = None,
+    link_anchor: str | None = None,
+    related_table: str | None = None,
+    related_ref: str | None = None,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Insert a row into app_notifications. Returns the new id."""
+    if severity not in ("info", "warning", "critical", "success"):
+        severity = "info"
+    if not (recipient_user or recipient_role):
+        # No recipient = silently drop. Callers should validate at site of call.
+        return 0
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT INTO app_notifications "
+            "(recipient_user, recipient_role, recipient_site, recipient_warehouse, "
+            " event_key, severity, title, body, link_page, link_anchor, "
+            " related_table, related_ref) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (recipient_user, recipient_role, recipient_site, recipient_warehouse,
+             event_key, severity, title, body, link_page, link_anchor,
+             related_table, related_ref),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_app_notifications(
+    username: str,
+    role: str,
+    site_id: str | None = None,
+    warehouse_id: str | None = None,
+    unread_only: bool = False,
+    limit: int = 50,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Bell-icon inbox query — user-targeted OR matching role broadcast."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        # Role-broadcast match: role matches AND (site is unspecified OR equal)
+        # AND (warehouse is unspecified OR equal). NULL on either side of
+        # site/warehouse means "any" — pattern lets us send to all-of-role.
+        # The OR-group MUST be parenthesised so the optional `AND read_at IS NULL`
+        # binds to BOTH branches, not just the second one (`OR ... AND ...`
+        # left unparenthesised reads as `OR (... AND read_at IS NULL)` and
+        # leaks read rows on the user-targeted branch).
+        q = ("SELECT * FROM app_notifications WHERE ("
+             "    recipient_user = ? "
+             " OR (recipient_role = ? "
+             "     AND (recipient_site IS NULL OR recipient_site = ?) "
+             "     AND (recipient_warehouse IS NULL OR recipient_warehouse = ?))"
+             ")")
+        params: list = [username, role, site_id, warehouse_id]
+        if unread_only:
+            q += " AND read_at IS NULL"
+        q += " ORDER BY created_at DESC LIMIT ?"
+        params.append(int(limit))
+        df = pd.read_sql_query(q, conn, params=params)
+        return _localize(df)
+    finally:
+        if _owns:
+            conn.close()
+
+
+def mark_notification_read(
+    notification_id: int,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Mark a single notification as read."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE app_notifications "
+            "SET read_at = CURRENT_TIMESTAMP WHERE id = ? AND read_at IS NULL",
+            (int(notification_id),),
+        )
+        conn.commit()
+        return True
+    finally:
+        if _owns:
+            conn.close()
+
+
+def mark_all_notifications_read(
+    username: str,
+    role: str,
+    site_id: str | None = None,
+    warehouse_id: str | None = None,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Mark every notification visible to this user as read. Returns the
+    number of rows updated. Mirrors the SELECT visibility rules in
+    get_app_notifications so we never silently mark someone else's row."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE app_notifications "
+            "SET read_at = CURRENT_TIMESTAMP "
+            "WHERE read_at IS NULL AND ("
+            "    recipient_user = ? "
+            " OR (recipient_role = ? "
+            "     AND (recipient_site IS NULL OR recipient_site = ?) "
+            "     AND (recipient_warehouse IS NULL OR recipient_warehouse = ?))"
+            ")",
+            (username, role, site_id, warehouse_id),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        if _owns:
+            conn.close()
+
+
+def count_unread_notifications(
+    username: str,
+    role: str,
+    site_id: str | None = None,
+    warehouse_id: str | None = None,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Tight count query — used by the sidebar bell badge."""
+    df = get_app_notifications(
+        username, role, site_id=site_id, warehouse_id=warehouse_id,
+        unread_only=True, limit=999, conn=conn,
+    )
+    return 0 if df is None or df.empty else int(len(df))
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp trigger gate (respects config.WHATSAPP_TRIGGERS)
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# PR → Logistics flow
+# ---------------------------------------------------------------------------
+# Site HOD marks a PR as "submitted to logistics" → it appears in the
+# Logistics Portal queue. Logistics then issues 1..N POs against the PR.
+# Closed PRs (status='closed' OR logistics_status='closed'/'force_closed')
+# are hidden from the active queue but still visible in History.
+
+def submit_pr_to_logistics(
+    pr_number: str,
+    site_id: str,
+    username: str,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Flip every open pr_master row for this (PR_Number, Site_ID) to
+    logistics_status='submitted'. Idempotent — re-submitting a row that's
+    already in_po or closed is silently skipped."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE pr_master "
+            "SET logistics_status = 'submitted', "
+            "    submitted_to_logistics_at = CURRENT_TIMESTAMP, "
+            "    submitted_to_logistics_by = ? "
+            "WHERE PR_Number = ? AND COALESCE(Site_ID,'HQ') = ? "
+            "  AND COALESCE(logistics_status,'site_draft') "
+            "      IN ('site_draft','submitted')",
+            (username, pr_number, site_id),
+        )
+        if cur.rowcount == 0:
+            return False, f"PR {pr_number} has no eligible lines to submit"
+        conn.commit()
+        try:
+            log_audit_action(
+                username, "SUBMIT_PR_TO_LOGISTICS", "pr_master",
+                f"PR={pr_number} site={site_id} lines={cur.rowcount}",
+            )
+        except Exception:
+            pass
+        # In-app notification to Logistics role (broadcast)
+        try:
+            queue_app_notification(
+                event_key="pr_submitted_to_logistics",
+                title=f"New PR {pr_number} from {site_id}",
+                body=f"{cur.rowcount} line(s) awaiting PO issuance",
+                severity="info",
+                recipient_role="logistics",
+                link_page="🚚 Logistics Portal",
+                related_table="pr_master",
+                related_ref=pr_number,
+                conn=conn,
+            )
+        except Exception:
+            pass
+        return True, f"Submitted {cur.rowcount} line(s) of PR {pr_number}"
+    except sqlite3.Error as e:
+        return False, f"DB error: {e}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_prs_for_logistics(
+    site_id: str | None = None,
+    include_history: bool = False,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """One row per (PR_Number, Site_ID) — the Logistics queue.
+
+    Active queue = logistics_status='submitted' AND status='open'.
+    History = anything closed OR force_closed (caller passes include_history=True)."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = (
+            "SELECT PR_Number, COALESCE(Site_ID,'HQ') AS Site_ID, "
+            "       COUNT(*) AS line_count, "
+            "       SUM(Requested_Qty) AS total_qty, "
+            "       MIN(submitted_to_logistics_at) AS submitted_at, "
+            "       MIN(Delivery_Date) AS earliest_delivery, "
+            "       MAX(logistics_status) AS logistics_status, "
+            "       MAX(status) AS pr_status "
+            "FROM pr_master "
+        )
+        params: list = []
+        if include_history:
+            q += " WHERE COALESCE(logistics_status,'site_draft') NOT IN ('site_draft') "
+        else:
+            q += (" WHERE COALESCE(logistics_status,'site_draft') = 'submitted' "
+                  "   AND status = 'open' ")
+        if site_id:
+            q += " AND COALESCE(Site_ID,'HQ') = ? "
+            params.append(site_id)
+        q += " GROUP BY PR_Number, Site_ID ORDER BY submitted_at DESC"
+        df = pd.read_sql_query(q, conn, params=params)
+        return _localize(df)
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_pr_lines(
+    pr_number: str,
+    site_id: str | None = None,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """All lines for a PR (one Site or one row per site if site_id is None)."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = ("SELECT id, PR_Number, COALESCE(Site_ID,'HQ') AS Site_ID, "
+             "       SAP_Code, Material_Code, Material_Name, "
+             "       Requested_Qty, UOM, "
+             "       WBS_Number, Network, Plant, Delivery_Date, "
+             "       Supplier, Est_Cost_SAR, Notes, "
+             "       status, logistics_status, workflow_state, created_at "
+             "FROM pr_master WHERE PR_Number = ?")
+        params: list = [pr_number]
+        if site_id:
+            q += " AND COALESCE(Site_ID,'HQ') = ?"
+            params.append(site_id)
+        q += " ORDER BY id"
+        df = pd.read_sql_query(q, conn, params=params)
+        return _localize(df)
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# PO creation
+# ---------------------------------------------------------------------------
+# `create_po_manual()` and `process_po_pdf()` both funnel into the same
+# insertion path: header → po_items (with rl_bl_family tagged at insert)
+# → optional po_shipment_schedule rows. On success the linked pr_master
+# rows flip to logistics_status='in_po' so the queue empties as POs land.
+
+def _flip_pr_to_in_po(
+    pr_number: str, site_id: str, conn: sqlite3.Connection,
+) -> None:
+    """Internal — flip all matching pr_master rows to logistics_status='in_po'
+    once a PO is created for them. Site_ID may be NULL on legacy rows."""
+    try:
+        conn.execute(
+            "UPDATE pr_master SET logistics_status='in_po' "
+            "WHERE PR_Number = ? "
+            "  AND COALESCE(Site_ID,'HQ') = COALESCE(?, 'HQ') "
+            "  AND COALESCE(logistics_status,'site_draft') = 'submitted'",
+            (pr_number, site_id or "HQ"),
+        )
+    except sqlite3.Error:
+        pass
+
+
+def create_po_manual(
+    header: dict,
+    items: list[dict],
+    shipment_schedule: list[dict] | None = None,
+    attachment_blob: bytes | None = None,
+    attachment_name: str | None = None,
+    attachment_mime: str | None = None,
+    created_by: str = "",
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Insert a PO header + items. `header` keys (all optional except PO_Number):
+       PO_Number, PR_Number, Site_ID, Vendor_Code, Vendor_Name,
+       Inco_Terms, Payment_Terms, PO_Date, PO_Type, Quotation_No,
+       Quotation_Date, Your_Reference, Our_Reference, Contact_Person,
+       Contact_Email, Mobile, Our_Email, Expected_Delivery,
+       Freight_Charges, Handling_Charges, Discount_Amount, Total_Amount,
+       Amount_In_Words.
+       Each item dict: Material_Code, Description, Qty, UOM, Unit_Price,
+       Total_Price, PR_Number, WBS_Number, Network, Plant.
+       rl_bl_family is auto-tagged from config.classify_rl_bl_family.
+    """
+    po_number = (header or {}).get("PO_Number", "").strip()
+    if not po_number:
+        return False, "PO Number is required"
+    if not items:
+        return False, "At least one item is required"
+
+    try:
+        from config import classify_rl_bl_family
+    except ImportError:
+        classify_rl_bl_family = lambda code, desc: None
+
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        # Header
+        cols = [
+            "PO_Number", "PR_Number", "Site_ID", "Vendor_Code", "Vendor_Name",
+            "Inco_Terms", "Payment_Terms", "PO_Date", "PO_Type",
+            "Quotation_No", "Quotation_Date", "Your_Reference", "Our_Reference",
+            "Contact_Person", "Contact_Email", "Mobile", "Our_Email",
+            "Expected_Delivery", "Freight_Charges", "Handling_Charges",
+            "Discount_Amount", "Total_Amount", "Amount_In_Words", "source",
+            "attachment_blob", "attachment_name", "attachment_mime", "created_by",
+        ]
+        vals = [
+            po_number,
+            header.get("PR_Number"), header.get("Site_ID"),
+            header.get("Vendor_Code"), header.get("Vendor_Name"),
+            header.get("Inco_Terms"), header.get("Payment_Terms"),
+            header.get("PO_Date"), header.get("PO_Type"),
+            header.get("Quotation_No"), header.get("Quotation_Date"),
+            header.get("Your_Reference"), header.get("Our_Reference"),
+            header.get("Contact_Person"), header.get("Contact_Email"),
+            header.get("Mobile"), header.get("Our_Email"),
+            header.get("Expected_Delivery"),
+            float(header.get("Freight_Charges") or 0),
+            float(header.get("Handling_Charges") or 0),
+            float(header.get("Discount_Amount") or 0),
+            float(header.get("Total_Amount") or 0),
+            header.get("Amount_In_Words"),
+            header.get("source") or "manual",
+            attachment_blob, attachment_name, attachment_mime,
+            created_by,
+        ]
+        try:
+            conn.execute(
+                f"INSERT INTO purchase_orders ({','.join(cols)}) "
+                f"VALUES ({','.join('?'*len(cols))})",
+                vals,
+            )
+        except sqlite3.IntegrityError:
+            return False, f"PO {po_number} already exists"
+
+        # Items
+        for idx, it in enumerate(items, start=1):
+            mat_code = (it.get("Material_Code") or "").strip()
+            desc     = (it.get("Description") or "").strip()
+            fam      = classify_rl_bl_family(mat_code, desc)
+            try:
+                qty = float(it.get("Qty") or 0)
+            except (TypeError, ValueError):
+                qty = 0.0
+            if qty <= 0:
+                continue
+            try:
+                unit = float(it.get("Unit_Price") or 0)
+            except (TypeError, ValueError):
+                unit = 0.0
+            try:
+                total = float(it.get("Total_Price") or 0)
+            except (TypeError, ValueError):
+                total = 0.0
+            conn.execute(
+                "INSERT INTO po_items "
+                "(PO_Number, line_no, Material_Code, Description, Qty, UOM, "
+                " Unit_Price, Total_Price, PR_Number, WBS_Number, Network, Plant, "
+                " rl_bl_family) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (po_number, idx, mat_code, desc, qty,
+                 it.get("UOM"), unit, total,
+                 it.get("PR_Number") or header.get("PR_Number"),
+                 it.get("WBS_Number"), it.get("Network"), it.get("Plant"),
+                 fam),
+            )
+
+        # Shipment schedule (optional, from PO Annexure)
+        for sh in (shipment_schedule or []):
+            conn.execute(
+                "INSERT INTO po_shipment_schedule "
+                "(PO_Number, shipment_no, material_group, target_date, notes) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (po_number, sh.get("shipment_no"), sh.get("material_group"),
+                 sh.get("target_date"), sh.get("notes")),
+            )
+
+        # Flip linked PR lines to in_po
+        if header.get("PR_Number"):
+            _flip_pr_to_in_po(header["PR_Number"], header.get("Site_ID") or "HQ", conn)
+
+        conn.commit()
+
+        # Notify Site HOD (in-app + WhatsApp via gate)
+        try:
+            queue_app_notification(
+                event_key="po_issued",
+                title=f"PO {po_number} issued",
+                body=f"Vendor: {header.get('Vendor_Name') or header.get('Vendor_Code') or '—'}",
+                severity="success",
+                recipient_role="hod",
+                recipient_site=header.get("Site_ID"),
+                link_page="📋 HOD Portal",
+                related_table="purchase_orders",
+                related_ref=po_number,
+                conn=conn,
+            )
+        except Exception:
+            pass
+
+        try:
+            log_audit_action(
+                created_by, "CREATE_PO", "purchase_orders",
+                f"PO={po_number} PR={header.get('PR_Number')} "
+                f"items={len(items)} vendor={header.get('Vendor_Code')}",
+            )
+        except Exception:
+            pass
+        return True, f"PO {po_number} created with {len(items)} item(s)"
+    except sqlite3.Error as e:
+        return False, f"DB error: {e}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def process_po_pdf(
+    pdf_bytes: bytes,
+    pr_number_hint: str | None = None,
+    site_id_hint: str | None = None,
+    created_by: str = "",
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str, dict]:
+    """Parse a PO PDF (matches the General Industries sample layout) and
+    return (ok, message, extracted_dict). Caller can edit the dict in the
+    UI before calling create_po_manual() to persist.
+
+    Extracted shape:
+        {
+          "header": {PO_Number, PR_Number, PO_Date, Vendor_Code,
+                     Vendor_Name, Inco_Terms, Payment_Terms, ...},
+          "items":  [{Material_Code, Description, Qty, UOM, Unit_Price,
+                      Total_Price}, ...],
+          "shipment_schedule": [{shipment_no, material_group, target_date}, ...],
+        }
+    The X-mask in sample POs (last 4 chars 'XXXX') is preserved verbatim;
+    production POs come through with the full 10-digit number unchanged."""
+    if pdfplumber is None:
+        return False, "pdfplumber not installed", {}
+    if not pdf_bytes:
+        return False, "Empty PDF", {}
+
+    extracted = {"header": {}, "items": [], "shipment_schedule": []}
+
+    try:
+        from config import classify_rl_bl_family
+    except ImportError:
+        classify_rl_bl_family = lambda code, desc: None
+
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            full_text = ""
+            tables_all: list[list[list[str]]] = []
+            for page in pdf.pages:
+                full_text += "\n" + (page.extract_text() or "")
+                for t in (page.extract_tables() or []):
+                    tables_all.append(t)
+    except Exception as e:
+        return False, f"PDF parse failure: {type(e).__name__}: {e}", {}
+
+    # ── Header field extraction (regex on the flat text) ────────────────
+    H = extracted["header"]
+    H["source"] = "pdf_upload"
+    if pr_number_hint:
+        H["PR_Number"] = pr_number_hint
+    if site_id_hint:
+        H["Site_ID"]   = site_id_hint
+
+    # Patterns calibrated against the sample PO (Page 1 of 2 / Page 2 of 2).
+    patterns = {
+        "PO_Number":      r"Purch\.?\s*Order\s*No\.?\s*[:\-]?\s*([A-Z0-9X]+)",
+        "PO_Date":        r"^\s*Date\s*[:\-]?\s*([0-9XA-Za-z][\d\.\-/A-Za-z]+)",
+        "PO_Type":        r"PO\s*Type\s*[:\-]?\s*(.+)",
+        "Quotation_No":   r"Quotation\s*No\.?\s*[:\-]?\s*([^\n]*)",
+        "Quotation_Date": r"Quotation\s*Date\s*[:\-]?\s*([^\n]*)",
+        "PR_Number_PDF":  r"Purch\.?\s*Req\.?\s*No\.?\s*[:\-]?\s*([^\n]*)",
+        "Vendor_Code":    r"Vendor\s*[:\-]?\s*0*([0-9]+)",
+        "Inco_Terms":     r"Inco\s*Terms\s*[:\-]?\s*(.+)",
+        "Payment_Terms":  r"Payment\s*Terms\s*[:\-]?\s*([^\n]*)",
+        "Your_Reference": r"Your\s*Reference\s*[:\-]?\s*([^\n]*)",
+        "Our_Reference":  r"Our\s*Reference\s*[:\-]?\s*([^\n]*)",
+        "Contact_Person": r"Contact\s*[:\-]?\s*([^\n]+)",
+        "Mobile":         r"Mobile\s*[:\-]?\s*([+\d\s]+)",
+    }
+    for key, pat in patterns.items():
+        m = re.search(pat, full_text, re.IGNORECASE | re.MULTILINE)
+        if m:
+            val = (m.group(1) or "").strip().strip(":").strip()
+            if key == "PR_Number_PDF" and val and not H.get("PR_Number"):
+                H["PR_Number"] = val
+            elif key != "PR_Number_PDF":
+                H[key] = val
+
+    # Vendor name — sample has it on the line right after "Vendor :<code>".
+    vend_lines = re.search(
+        r"Vendor\s*[:\-]?\s*\d+\s*\n([^\n]+)", full_text, re.IGNORECASE)
+    if vend_lines:
+        H["Vendor_Name"] = vend_lines.group(1).strip()
+
+    # Email lines — two columns: vendor email (left) + Our_Email (right).
+    emails = re.findall(r"[\w\.\-]+@[\w\.\-]+", full_text)
+    if emails:
+        H["Contact_Email"] = emails[0]
+        if len(emails) > 1:
+            H["Our_Email"] = emails[-1]
+
+    # Footer totals
+    for k, pat in {
+        "Freight_Charges":  r"Freight\s*Charges\s*([\d,\.]+)",
+        "Handling_Charges": r"Handling\s*Charges\s*([\d,\.]+)",
+        "Discount_Amount":  r"Discount\s*Amount\s*([\d,\.]+)",
+        "Total_Amount":     r"Total\s*Amount\s*([\d,\.]+)",
+    }.items():
+        m = re.search(pat, full_text, re.IGNORECASE)
+        if m:
+            try:
+                H[k] = float(m.group(1).replace(",", ""))
+            except ValueError:
+                pass
+
+    # ── Line items (table extraction) ───────────────────────────────────
+    # Sample format: rows like
+    #     001  GI-8003100  CUMIFURAN SYRUP LIQUID RESIN  5,025.00  KG  …
+    # extract_tables() typically returns this as a list with Sr.No / Material /
+    # QTY / UoM / Unit Price / Total Price columns. We accept either.
+    item_pat = re.compile(
+        r"^\s*(\d{1,3})\s+(GI-\d{6,8})\s+(.+?)\s+([\d,\.]+)\s+([A-Za-z]{1,5})"
+        r"(?:\s+([\d,\.]+))?(?:\s+([\d,\.]+))?\s*$",
+        re.MULTILINE,
+    )
+    # The "Material code on its own line then desc on next" variant in the
+    # sample wraps. We also try a 2-line fallback below.
+    seen_lines: set[int] = set()
+    for m in item_pat.finditer(full_text):
+        try:
+            line_no = int(m.group(1))
+        except ValueError:
+            continue
+        if line_no in seen_lines:
+            continue
+        seen_lines.add(line_no)
+        mat = m.group(2).strip()
+        desc = m.group(3).strip()
+        try:
+            qty = float(m.group(4).replace(",", ""))
+        except ValueError:
+            continue
+        uom = m.group(5).strip()
+        try:
+            unit  = float((m.group(6) or "0").replace(",", ""))
+            total = float((m.group(7) or "0").replace(",", ""))
+        except ValueError:
+            unit, total = 0.0, 0.0
+        extracted["items"].append({
+            "line_no": line_no,
+            "Material_Code": mat,
+            "Description": desc,
+            "Qty": qty,
+            "UOM": uom,
+            "Unit_Price": unit,
+            "Total_Price": total,
+            "rl_bl_family": classify_rl_bl_family(mat, desc),
+        })
+
+    # Two-line fallback (Material_Code on one line, Description on next)
+    if not extracted["items"]:
+        two_line = re.compile(
+            r"^\s*(\d{1,3})\s+(GI-\d{6,8})\s*\n\s*([A-Z0-9][^\n]+?)\s+"
+            r"([\d,\.]+)\s+([A-Za-z]{1,5})(?:\s+([\d,\.]+))?(?:\s+([\d,\.]+))?",
+            re.MULTILINE,
+        )
+        for m in two_line.finditer(full_text):
+            try:
+                line_no = int(m.group(1))
+            except ValueError:
+                continue
+            if line_no in seen_lines:
+                continue
+            seen_lines.add(line_no)
+            mat  = m.group(2).strip()
+            desc = m.group(3).strip()
+            try:
+                qty = float(m.group(4).replace(",", ""))
+            except ValueError:
+                continue
+            uom = m.group(5).strip()
+            try:
+                unit  = float((m.group(6) or "0").replace(",", ""))
+                total = float((m.group(7) or "0").replace(",", ""))
+            except ValueError:
+                unit, total = 0.0, 0.0
+            extracted["items"].append({
+                "line_no": line_no, "Material_Code": mat,
+                "Description": desc, "Qty": qty, "UOM": uom,
+                "Unit_Price": unit, "Total_Price": total,
+                "rl_bl_family": classify_rl_bl_family(mat, desc),
+            })
+
+    # ── PO Annexure: Delivery Schedule ──────────────────────────────────
+    # Sample format: SHIPMENT 01 / BRICK MATERIALS / 05.02.2026
+    sch_pat = re.compile(
+        r"(SHIPMENT\s*\d+)\s+([A-Z][A-Z ]+?)\s+(\d{2}\.\d{2}\.\d{4})",
+        re.IGNORECASE,
+    )
+    for m in sch_pat.finditer(full_text):
+        ship_no = m.group(1).strip()
+        mat_grp = m.group(2).strip()
+        date_raw = m.group(3).strip()
+        # Convert DD.MM.YYYY → YYYY-MM-DD for sortability
+        try:
+            d, mo, y = date_raw.split(".")
+            iso = f"{y}-{mo}-{d}"
+        except ValueError:
+            iso = date_raw
+        extracted["shipment_schedule"].append({
+            "shipment_no": ship_no,
+            "material_group": mat_grp,
+            "target_date": iso,
+        })
+
+    if not extracted["items"]:
+        return False, "No line items extracted from PDF — please use manual entry", extracted
+    return True, (f"Extracted {len(extracted['items'])} item(s) — "
+                  "review the preview and click Save"), extracted
+
+
+# ---------------------------------------------------------------------------
+# PO listing + detail
+# ---------------------------------------------------------------------------
+
+def list_pos(
+    site_id: str | None = None,
+    vendor_code: str | None = None,
+    pr_number: str | None = None,
+    open_only: bool = True,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = (
+            "SELECT po.PO_Number, po.PR_Number, po.Site_ID, "
+            "       po.Vendor_Code, po.Vendor_Name, po.PO_Date, "
+            "       po.Expected_Delivery, po.Inco_Terms, po.Payment_Terms, "
+            "       po.Total_Amount, po.status, po.source, po.created_at, "
+            "       (SELECT COUNT(*) FROM po_items pi WHERE pi.PO_Number = po.PO_Number) "
+            "         AS line_count, "
+            "       (SELECT COALESCE(SUM(pi.Qty),0) FROM po_items pi "
+            "          WHERE pi.PO_Number = po.PO_Number) AS total_qty, "
+            "       (SELECT COALESCE(SUM(pi.Delivered_Qty),0) FROM po_items pi "
+            "          WHERE pi.PO_Number = po.PO_Number) AS delivered_qty "
+            "FROM purchase_orders po WHERE 1=1"
+        )
+        params: list = []
+        if open_only:
+            q += " AND po.status NOT IN ('closed','force_closed','cancelled') "
+        if site_id:
+            q += " AND COALESCE(po.Site_ID,'HQ') = ? "
+            params.append(site_id)
+        if vendor_code:
+            q += " AND po.Vendor_Code = ? "
+            params.append(vendor_code)
+        if pr_number:
+            q += " AND po.PR_Number = ? "
+            params.append(pr_number)
+        q += " ORDER BY po.created_at DESC"
+        return _localize(pd.read_sql_query(q, conn, params=params))
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_po_detail(
+    po_number: str,
+    hide_prices: bool = False,
+    conn: sqlite3.Connection = None,
+) -> dict:
+    """Return {'header': dict, 'items': DataFrame, 'shipments': DataFrame,
+       'assignments': DataFrame}.
+
+    hide_prices=True blanks Unit_Price + Total_Price columns on items —
+    that's what the Warehouse Portal must see (per spec: warehouse never
+    sees prices)."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        header_df = pd.read_sql_query(
+            "SELECT * FROM purchase_orders WHERE PO_Number = ?",
+            conn, params=(po_number,),
+        )
+        header = header_df.iloc[0].to_dict() if not header_df.empty else {}
+        # Don't return the heavy attachment_blob in the dict — caller fetches it
+        # separately if it needs it.
+        header.pop("attachment_blob", None)
+
+        items = pd.read_sql_query(
+            "SELECT id, line_no, Material_Code, Description, Qty, UOM, "
+            "       Unit_Price, Total_Price, PR_Number, WBS_Number, Network, "
+            "       Plant, rl_bl_family, Delivered_Qty, Returned_Qty, "
+            "       line_status, close_reason "
+            "FROM po_items WHERE PO_Number = ? ORDER BY line_no",
+            conn, params=(po_number,),
+        )
+        if hide_prices and not items.empty:
+            items["Unit_Price"]  = None
+            items["Total_Price"] = None
+
+        ships = pd.read_sql_query(
+            "SELECT shipment_no, material_group, target_date, actual_date, "
+            "       status, notes "
+            "FROM po_shipment_schedule WHERE PO_Number = ? "
+            "ORDER BY target_date",
+            conn, params=(po_number,),
+        )
+        asg = pd.read_sql_query(
+            "SELECT id, Warehouse_ID, items_subset_json, Expected_Delivery, "
+            "       assigned_by, assigned_at, acknowledged_at, acknowledged_by, "
+            "       status, notes "
+            "FROM po_assignments WHERE PO_Number = ? "
+            "ORDER BY assigned_at DESC",
+            conn, params=(po_number,),
+        )
+        return {
+            "header": header,
+            "items":  _localize(items),
+            "shipments":  _localize(ships),
+            "assignments": _localize(asg),
+        }
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# PO → Warehouse assignment
+# ---------------------------------------------------------------------------
+
+def assign_po_to_warehouse(
+    po_number: str,
+    warehouse_id: str,
+    expected_delivery: str | None,
+    items_subset_ids: list[int] | None,
+    assigned_by: str,
+    notes: str = "",
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Assign a PO (or a subset of its items) to a warehouse for receiving.
+    items_subset_ids: list of po_items.id or None for 'all items'."""
+    import json as _json
+    if not po_number or not warehouse_id:
+        return False, "PO Number and Warehouse are required"
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        # Confirm the warehouse exists
+        wh = conn.execute(
+            "SELECT 1 FROM warehouses WHERE Warehouse_ID = ? AND status='active'",
+            (warehouse_id,),
+        ).fetchone()
+        if not wh:
+            return False, f"Warehouse {warehouse_id} not active / not found"
+        # Confirm the PO exists
+        po = conn.execute(
+            "SELECT status FROM purchase_orders WHERE PO_Number = ?",
+            (po_number,),
+        ).fetchone()
+        if not po:
+            return False, f"PO {po_number} not found"
+        if po[0] in ("closed", "force_closed", "cancelled"):
+            return False, f"PO {po_number} is {po[0]} — cannot assign"
+
+        subset_json = _json.dumps(items_subset_ids) if items_subset_ids else None
+        conn.execute(
+            "INSERT INTO po_assignments "
+            "(PO_Number, Warehouse_ID, items_subset_json, Expected_Delivery, "
+            " assigned_by, notes) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (po_number, warehouse_id, subset_json, expected_delivery,
+             assigned_by, notes),
+        )
+        # Also write the Expected_Delivery on the PO header if not set.
+        if expected_delivery:
+            conn.execute(
+                "UPDATE purchase_orders SET Expected_Delivery = "
+                "  COALESCE(Expected_Delivery, ?) "
+                "WHERE PO_Number = ?",
+                (expected_delivery, po_number),
+            )
+        conn.commit()
+
+        # In-app notification to the Warehouse role (warehouse-scoped)
+        try:
+            queue_app_notification(
+                event_key="po_assigned_to_warehouse",
+                title=f"PO {po_number} assigned to {warehouse_id}",
+                body=(f"Expected {expected_delivery or '—'}. "
+                      f"{'Subset of items' if items_subset_ids else 'All items'}."),
+                severity="info",
+                recipient_role="warehouse_user",
+                recipient_warehouse=warehouse_id,
+                link_page="🏭 Warehouse Portal",
+                related_table="po_assignments",
+                related_ref=po_number,
+                conn=conn,
+            )
+        except Exception:
+            pass
+
+        try:
+            log_audit_action(
+                assigned_by, "ASSIGN_PO_TO_WAREHOUSE", "po_assignments",
+                f"PO={po_number} WH={warehouse_id} "
+                f"items={'all' if not items_subset_ids else len(items_subset_ids)}",
+            )
+        except Exception:
+            pass
+        return True, f"PO {po_number} → {warehouse_id} assigned"
+    except sqlite3.Error as e:
+        return False, f"DB error: {e}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Reschedule
+# ---------------------------------------------------------------------------
+
+def list_pending_reschedules(
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        return _localize(pd.read_sql_query(
+            "SELECT * FROM po_reschedule_requests WHERE status='pending' "
+            "ORDER BY requested_at DESC", conn,
+        ))
+    finally:
+        if _owns:
+            conn.close()
+
+
+def request_reschedule(
+    po_number: str,
+    dn_number: str | None,
+    current_date: str | None,
+    requested_date: str,
+    reason: str,
+    requested_by_role: str,
+    requested_by: str,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    if not requested_date or not reason:
+        return False, "Requested date and reason are required"
+    if requested_by_role not in ("warehouse_user", "hod", "admin"):
+        return False, "Role not permitted to request reschedule"
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT INTO po_reschedule_requests "
+            "(PO_Number, DN_Number, current_date, requested_date, reason, "
+            " requested_by_role, requested_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (po_number, dn_number, current_date, requested_date, reason,
+             requested_by_role, requested_by),
+        )
+        conn.commit()
+        try:
+            queue_app_notification(
+                event_key="reschedule_requested",
+                title=f"Reschedule requested for PO {po_number}",
+                body=f"From {current_date or '—'} → {requested_date}. {reason[:120]}",
+                severity="warning",
+                recipient_role="logistics",
+                link_page="🚚 Logistics Portal",
+                related_table="po_reschedule_requests",
+                related_ref=str(cur.lastrowid),
+                conn=conn,
+            )
+        except Exception:
+            pass
+        return True, "Reschedule request submitted"
+    except sqlite3.Error as e:
+        return False, f"DB error: {e}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def decide_reschedule(
+    request_id: int,
+    approve: bool,
+    decided_by: str,
+    decision_notes: str = "",
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT PO_Number, DN_Number, requested_date, requested_by "
+            "FROM po_reschedule_requests WHERE id = ? AND status='pending'",
+            (int(request_id),),
+        ).fetchone()
+        if not row:
+            return False, "Reschedule request not found or already decided"
+        po_number, dn_number, requested_date, requested_by = row
+        new_status = "approved" if approve else "rejected"
+        conn.execute(
+            "UPDATE po_reschedule_requests "
+            "SET status = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP, "
+            "    decision_notes = ? "
+            "WHERE id = ?",
+            (new_status, decided_by, decision_notes, int(request_id)),
+        )
+        # On approval, push the new date to the PO + linked assignment + DN.
+        if approve:
+            conn.execute(
+                "UPDATE purchase_orders SET Expected_Delivery = ? "
+                "WHERE PO_Number = ?",
+                (requested_date, po_number),
+            )
+            conn.execute(
+                "UPDATE po_assignments SET Expected_Delivery = ? "
+                "WHERE PO_Number = ?",
+                (requested_date, po_number),
+            )
+            if dn_number:
+                conn.execute(
+                    "UPDATE delivery_notes SET DN_Date = ? WHERE DN_Number = ?",
+                    (requested_date, dn_number),
+                )
+        conn.commit()
+        try:
+            queue_app_notification(
+                event_key="reschedule_decided",
+                title=(f"Reschedule {'approved' if approve else 'rejected'} "
+                       f"for PO {po_number}"),
+                body=(f"New date: {requested_date}. {decision_notes[:120]}"
+                      if approve else f"Rejected: {decision_notes[:120]}"),
+                severity="success" if approve else "warning",
+                recipient_user=requested_by,
+                link_page="📋 HOD Portal" if requested_by else None,
+                related_table="po_reschedule_requests",
+                related_ref=str(request_id),
+                conn=conn,
+            )
+        except Exception:
+            pass
+        try:
+            log_audit_action(
+                decided_by, f"RESCHEDULE_{new_status.upper()}",
+                "po_reschedule_requests",
+                f"id={request_id} PO={po_number} new_date={requested_date}",
+            )
+        except Exception:
+            pass
+        return True, f"Reschedule {new_status}"
+    except sqlite3.Error as e:
+        return False, f"DB error: {e}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Force-close
+# ---------------------------------------------------------------------------
+
+def force_close_target(
+    target_type: str,         # 'pr' | 'po' | 'po_item'
+    target_ref: str,          # PR_Number | PO_Number | po_items.id as str
+    reason: str,
+    closed_by: str,
+    notes: str = "",
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    if target_type not in ("pr", "po", "po_item"):
+        return False, "Invalid target_type"
+    if not reason or len(reason.strip()) < 3:
+        return False, "Reason is required (3+ characters)"
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        site_id = None
+        pr_number = None
+        po_number = None
+
+        if target_type == "pr":
+            pr_number = target_ref
+            row = conn.execute(
+                "SELECT DISTINCT COALESCE(Site_ID,'HQ') FROM pr_master "
+                "WHERE PR_Number = ?", (target_ref,)).fetchone()
+            site_id = row[0] if row else None
+            conn.execute(
+                "UPDATE pr_master SET status='closed', "
+                "    logistics_status='force_closed' "
+                "WHERE PR_Number = ?", (target_ref,),
+            )
+        elif target_type == "po":
+            po_number = target_ref
+            row = conn.execute(
+                "SELECT PR_Number, Site_ID FROM purchase_orders "
+                "WHERE PO_Number = ?", (target_ref,)).fetchone()
+            if row:
+                pr_number, site_id = row
+            conn.execute(
+                "UPDATE purchase_orders "
+                "SET status='force_closed', closed_at=CURRENT_TIMESTAMP, "
+                "    closed_by=?, close_reason=? "
+                "WHERE PO_Number = ?",
+                (closed_by, reason, target_ref),
+            )
+            conn.execute(
+                "UPDATE po_items SET line_status='force_closed', "
+                "    close_reason=? "
+                "WHERE PO_Number = ? AND line_status NOT IN ('delivered','closed')",
+                (reason, target_ref),
+            )
+        else:  # po_item
+            try:
+                item_id = int(target_ref)
+            except ValueError:
+                return False, "po_item target_ref must be the numeric id"
+            row = conn.execute(
+                "SELECT po.PO_Number, po.PR_Number, po.Site_ID "
+                "FROM po_items pi JOIN purchase_orders po "
+                "  ON po.PO_Number = pi.PO_Number "
+                "WHERE pi.id = ?", (item_id,)).fetchone()
+            if row:
+                po_number, pr_number, site_id = row
+            conn.execute(
+                "UPDATE po_items SET line_status='force_closed', close_reason=? "
+                "WHERE id = ?", (reason, item_id),
+            )
+
+        conn.execute(
+            "INSERT INTO po_force_closures "
+            "(target_type, target_ref, Site_ID, PR_Number, PO_Number, "
+            " reason, closed_by, notes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (target_type, str(target_ref), site_id, pr_number, po_number,
+             reason, closed_by, notes),
+        )
+        conn.commit()
+
+        # Notify Admin + originating Site HOD
+        try:
+            ref_label = f"{target_type.upper()} {target_ref}"
+            for role, role_site in (("admin", None), ("hod", site_id)):
+                queue_app_notification(
+                    event_key=("pr_force_closed" if target_type == "pr"
+                               else "po_force_closed"),
+                    title=f"Force-closed: {ref_label}",
+                    body=f"Reason: {reason[:200]}",
+                    severity="critical",
+                    recipient_role=role,
+                    recipient_site=role_site,
+                    link_page=("🛡️ Admin Portal" if role == "admin"
+                               else "📋 HOD Portal"),
+                    related_table=("pr_master" if target_type == "pr"
+                                   else "purchase_orders"),
+                    related_ref=str(target_ref),
+                    conn=conn,
+                )
+        except Exception:
+            pass
+        try:
+            log_audit_action(
+                closed_by, f"FORCE_CLOSE_{target_type.upper()}",
+                "po_force_closures",
+                f"target={target_type}:{target_ref} reason={reason[:80]}",
+            )
+        except Exception:
+            pass
+        return True, f"Force-closed {target_type} {target_ref}"
+    except sqlite3.Error as e:
+        return False, f"DB error: {e}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Vendor returns
+# ---------------------------------------------------------------------------
+
+def raise_vendor_return(
+    po_number: str,
+    po_item_id: int | None,
+    dn_number: str | None,
+    qty: float,
+    reason: str,
+    raised_by_role: str,
+    raised_by: str,
+    expected_resupply: str | None = None,
+    notes: str = "",
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    if qty is None or float(qty) <= 0:
+        return False, "Return quantity must be > 0"
+    if not reason or len(reason.strip()) < 3:
+        return False, "Reason is required"
+    if raised_by_role not in (
+        "logistics", "warehouse_user", "hod", "store_keeper", "admin"
+    ):
+        return False, "Role not permitted to raise return"
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        po = conn.execute(
+            "SELECT PR_Number, Site_ID, status FROM purchase_orders "
+            "WHERE PO_Number = ?", (po_number,)).fetchone()
+        if not po:
+            return False, f"PO {po_number} not found"
+        material_code = None
+        if po_item_id:
+            row = conn.execute(
+                "SELECT Material_Code FROM po_items WHERE id = ? "
+                "AND PO_Number = ?", (int(po_item_id), po_number)).fetchone()
+            if row:
+                material_code = row[0]
+        conn.execute(
+            "INSERT INTO po_returns "
+            "(PO_Number, po_item_id, DN_Number, Material_Code, Qty, Reason, "
+            " raised_by_role, raised_by, Expected_Resupply, notes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (po_number, po_item_id, dn_number, material_code,
+             float(qty), reason, raised_by_role, raised_by,
+             expected_resupply, notes),
+        )
+        # Reopen impacted PO/PR records so they show up in Logistics again.
+        if po[2] in ("closed", "delivered", "partially_delivered"):
+            conn.execute(
+                "UPDATE purchase_orders "
+                "SET status='partially_delivered', closed_at=NULL, "
+                "    closed_by=NULL, close_reason=NULL "
+                "WHERE PO_Number = ?", (po_number,),
+            )
+        if po_item_id:
+            conn.execute(
+                "UPDATE po_items "
+                "SET Returned_Qty = COALESCE(Returned_Qty,0) + ?, "
+                "    line_status = CASE "
+                "      WHEN COALESCE(Delivered_Qty,0) "
+                "         - (COALESCE(Returned_Qty,0) + ?) > 0 "
+                "         THEN 'partially_delivered' "
+                "      ELSE 'open' END "
+                "WHERE id = ?",
+                (float(qty), float(qty), int(po_item_id)),
+            )
+        conn.commit()
+
+        try:
+            queue_app_notification(
+                event_key="vendor_return_raised",
+                title=f"Vendor return raised on PO {po_number}",
+                body=f"{qty} units · {reason[:150]}",
+                severity="warning",
+                recipient_role="logistics",
+                link_page="🚚 Logistics Portal",
+                related_table="po_returns",
+                related_ref=po_number,
+                conn=conn,
+            )
+        except Exception:
+            pass
+        try:
+            log_audit_action(
+                raised_by, "VENDOR_RETURN", "po_returns",
+                f"PO={po_number} qty={qty} reason={reason[:80]}",
+            )
+        except Exception:
+            pass
+        return True, f"Vendor return raised on PO {po_number}"
+    except sqlite3.Error as e:
+        return False, f"DB error: {e}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_vendor_returns(
+    open_only: bool = False,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = "SELECT * FROM po_returns"
+        if open_only:
+            q += " WHERE status = 'open'"
+        q += " ORDER BY raised_at DESC"
+        return _localize(pd.read_sql_query(q, conn))
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_force_closures(
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        return _localize(pd.read_sql_query(
+            "SELECT * FROM po_force_closures ORDER BY closed_at DESC", conn,
+        ))
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Closed PR / PO history (read-only viewer)
+# ---------------------------------------------------------------------------
+
+def list_closed_pos_history(
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        return _localize(pd.read_sql_query(
+            "SELECT PO_Number, PR_Number, Site_ID, Vendor_Name, PO_Date, "
+            "       Expected_Delivery, Total_Amount, status, "
+            "       closed_at, closed_by, close_reason, created_at "
+            "FROM purchase_orders "
+            "WHERE status IN ('closed','force_closed','cancelled') "
+            "ORDER BY COALESCE(closed_at, created_at) DESC", conn,
+        ))
+    finally:
+        if _owns:
+            conn.close()
+
+
+def fire_whatsapp_event(
+    event_key: str,
+    phone_number: str,
+    message: str,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Queue a WhatsApp message ONLY if the global toggle and per-event toggle
+    are both True in config.py. Returns True if queued, False if suppressed.
+    In-app notifications should still be sent regardless — that's the point
+    of having the gate here and not at the queue_app_notification layer.
+    """
+    try:
+        from config import WHATSAPP_ENABLED, WHATSAPP_TRIGGERS
+    except ImportError:
+        return False
+    if not WHATSAPP_ENABLED:
+        return False
+    if not WHATSAPP_TRIGGERS.get(event_key, False):
+        return False
+    if not phone_number or not str(phone_number).strip():
+        return False
+    queue_whatsapp_alert(phone_number, message)
+    return True
+
+
+# ===========================================================================
+# Phase 3 — Warehouse Portal data layer
+# ===========================================================================
+# Warehouse users live one-per-warehouse and see only POs assigned to them
+# by Logistics. They never see prices — every helper that returns a PO view
+# to a warehouse uses get_po_detail(hide_prices=True).
+#
+# DN state machine:
+#   draft → pending_logistics → logistics_approved → pending_hod
+#         → hod_approved → pending_sk → received
+# (rejected is a terminal state from any pending_* step)
+
+import json as _json_wh  # local alias used by JSON-encoded subset payloads
+
+
+# ---------------------------------------------------------------------------
+# Assignment-side: WH ack + receive-against-PO
+# ---------------------------------------------------------------------------
+
+def list_assignments_for_warehouse(
+    warehouse_id: str,
+    status_filter: list[str] | None = None,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """POs Logistics has routed to this warehouse. PRICES NEVER JOINED."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = (
+            "SELECT a.id AS assignment_id, a.PO_Number, a.items_subset_json, "
+            "       a.Expected_Delivery, a.assigned_by, a.assigned_at, "
+            "       a.acknowledged_at, a.acknowledged_by, a.status, a.notes, "
+            "       po.PR_Number, po.Site_ID, po.Vendor_Code, po.Vendor_Name, "
+            "       po.PO_Date, po.Inco_Terms, po.Payment_Terms, "
+            "       po.Quotation_No, po.Quotation_Date "
+            "FROM po_assignments a "
+            "JOIN purchase_orders po ON po.PO_Number = a.PO_Number "
+            "WHERE a.Warehouse_ID = ?"
+        )
+        params: list = [warehouse_id]
+        if status_filter:
+            q += (" AND a.status IN ("
+                  + ",".join("?" * len(status_filter)) + ")")
+            params.extend(status_filter)
+        q += " ORDER BY a.assigned_at DESC"
+        return _localize(pd.read_sql_query(q, conn, params=params))
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_assignment_detail(
+    assignment_id: int,
+    conn: sqlite3.Connection = None,
+) -> dict:
+    """Full assignment view for a warehouse_user — strictly no prices.
+
+    Returns {'assignment': dict, 'po_header': dict, 'items': DataFrame}
+    where items is the subset (if any) or all PO items, with Unit_Price +
+    Total_Price hard-blanked at the boundary."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        a_df = pd.read_sql_query(
+            "SELECT * FROM po_assignments WHERE id = ?",
+            conn, params=(int(assignment_id),),
+        )
+        if a_df.empty:
+            return {"assignment": {}, "po_header": {}, "items": pd.DataFrame()}
+        a = a_df.iloc[0].to_dict()
+        po_number = a["PO_Number"]
+
+        # Force price-hidden PO detail
+        detail = get_po_detail(po_number, hide_prices=True, conn=conn)
+        items = detail["items"]
+        subset_json = a.get("items_subset_json")
+        if subset_json:
+            try:
+                ids = set(int(i) for i in _json_wh.loads(subset_json))
+                items = items[items["id"].isin(ids)].reset_index(drop=True)
+            except (ValueError, TypeError):
+                pass
+
+        # Defensive: blank prices again in case caller forgot.
+        for col in ("Unit_Price", "Total_Price"):
+            if col in items.columns:
+                items[col] = None
+
+        header = detail["header"]
+        # Strip every monetary header field too.
+        for col in ("Total_Amount", "Freight_Charges", "Handling_Charges",
+                     "Discount_Amount", "Amount_In_Words"):
+            header.pop(col, None)
+
+        return {"assignment": a, "po_header": header, "items": items}
+    finally:
+        if _owns:
+            conn.close()
+
+
+def acknowledge_assignment(
+    assignment_id: int,
+    warehouse_user: str,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Warehouse confirms it has seen + accepted the routing."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE po_assignments "
+            "SET status='acknowledged', acknowledged_at=CURRENT_TIMESTAMP, "
+            "    acknowledged_by=? "
+            "WHERE id = ? AND status='assigned'",
+            (warehouse_user, int(assignment_id)),
+        )
+        if cur.rowcount == 0:
+            return False, "Assignment not found or already acknowledged"
+        conn.commit()
+        # Notify Logistics (gated WhatsApp + always-in-app)
+        row = conn.execute(
+            "SELECT PO_Number FROM po_assignments WHERE id=?",
+            (int(assignment_id),)).fetchone()
+        po_number = row[0] if row else ""
+        try:
+            queue_app_notification(
+                event_key="warehouse_acknowledged",
+                title=f"Warehouse acknowledged PO {po_number}",
+                body=f"Assignment #{assignment_id} acknowledged by {warehouse_user}",
+                severity="info",
+                recipient_role="logistics",
+                link_page="🚚 Logistics Portal",
+                related_table="po_assignments",
+                related_ref=po_number,
+                conn=conn,
+            )
+        except Exception:
+            pass
+        try:
+            log_audit_action(
+                warehouse_user, "ACK_ASSIGNMENT", "po_assignments",
+                f"id={assignment_id} PO={po_number}",
+            )
+        except Exception:
+            pass
+        return True, "Acknowledged"
+    except sqlite3.Error as e:
+        return False, f"DB error: {e}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def record_warehouse_receipt(
+    assignment_id: int,
+    received_map: dict[int, float],
+    warehouse_user: str,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Mark items as physically received at the warehouse against an
+    assignment. `received_map` is {po_items.id: qty_received_this_event}.
+    Bumps po_items.Delivered_Qty, flips line_status, and rolls the parent
+    PO header status to delivered / partially_delivered."""
+    if not received_map:
+        return False, "Nothing to record"
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        a = conn.execute(
+            "SELECT PO_Number, status FROM po_assignments WHERE id = ?",
+            (int(assignment_id),)).fetchone()
+        if not a:
+            return False, "Assignment not found"
+        if a[1] in ("closed", "cancelled"):
+            return False, f"Assignment is {a[1]}"
+        po_number = a[0]
+
+        # Validate each id belongs to this PO, then bump.
+        affected = 0
+        for raw_id, raw_qty in received_map.items():
+            try:
+                item_id = int(raw_id)
+                qty = float(raw_qty)
+            except (TypeError, ValueError):
+                continue
+            if qty <= 0:
+                continue
+            line = conn.execute(
+                "SELECT Qty, Delivered_Qty, Returned_Qty FROM po_items "
+                "WHERE id = ? AND PO_Number = ?",
+                (item_id, po_number)).fetchone()
+            if not line:
+                continue
+            ordered = float(line[0] or 0)
+            already = float(line[1] or 0)
+            returned = float(line[2] or 0)
+            new_delivered = already + qty
+            # Don't allow Delivered_Qty − Returned_Qty to exceed ordered.
+            if new_delivered - returned > ordered + 1e-9:
+                return False, (f"Cannot receive {qty}: would over-deliver "
+                               f"line #{item_id} (ordered {ordered}, "
+                               f"already delivered {already})")
+            # Status: open / partial / delivered, RL/BL stays separate via po_items.rl_bl_family
+            if new_delivered - returned >= ordered - 1e-9:
+                new_status = "delivered"
+            else:
+                new_status = "partially_delivered"
+            conn.execute(
+                "UPDATE po_items SET Delivered_Qty = ?, line_status = ? "
+                "WHERE id = ?",
+                (new_delivered, new_status, item_id),
+            )
+            affected += 1
+
+        if affected == 0:
+            return False, "No valid line items in received_map"
+
+        # Roll assignment status
+        # All items on the PO that the assignment covers — recheck after bumps.
+        # Simplification: if every PO line is 'delivered', the assignment too.
+        agg = conn.execute(
+            "SELECT COUNT(*) AS total, "
+            "       SUM(CASE WHEN line_status='delivered' THEN 1 ELSE 0 END) AS done "
+            "FROM po_items WHERE PO_Number = ?", (po_number,)).fetchone()
+        if agg and agg[1] and agg[0] == agg[1]:
+            conn.execute(
+                "UPDATE po_assignments SET status='received' WHERE id=?",
+                (int(assignment_id),))
+            conn.execute(
+                "UPDATE purchase_orders SET status='delivered' "
+                "WHERE PO_Number=?", (po_number,))
+        else:
+            conn.execute(
+                "UPDATE po_assignments SET status='partial' WHERE id=?",
+                (int(assignment_id),))
+            conn.execute(
+                "UPDATE purchase_orders SET status='partially_delivered' "
+                "WHERE PO_Number=?", (po_number,))
+        conn.commit()
+
+        try:
+            queue_app_notification(
+                event_key="warehouse_received",
+                title=f"PO {po_number} — items received at warehouse",
+                body=f"{affected} line(s) received by {warehouse_user}",
+                severity="success",
+                recipient_role="logistics",
+                link_page="🚚 Logistics Portal",
+                related_table="po_assignments",
+                related_ref=po_number,
+                conn=conn,
+            )
+        except Exception:
+            pass
+        try:
+            log_audit_action(
+                warehouse_user, "WAREHOUSE_RECEIVE", "po_items",
+                f"PO={po_number} assignment={assignment_id} lines={affected}",
+            )
+        except Exception:
+            pass
+        return True, f"Received {affected} line(s) at warehouse"
+    except sqlite3.Error as e:
+        return False, f"DB error: {e}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Delivery Notes
+# ---------------------------------------------------------------------------
+
+def _generate_dn_number(
+    warehouse_id: str, conn: sqlite3.Connection,
+) -> str:
+    """Sequence-driven DN number scoped to a warehouse + day.
+    Format: DN-{WAREHOUSE}-{YYYYMMDD}-{seq}, e.g. DN-WH-A-20260616-003.
+    Sequence resets per (warehouse, day)."""
+    today = datetime.date.today().isoformat().replace("-", "")
+    prefix = f"DN-{warehouse_id}-{today}-"
+    row = conn.execute(
+        "SELECT COUNT(*) FROM delivery_notes WHERE DN_Number LIKE ?",
+        (prefix + "%",)).fetchone()
+    seq = (row[0] if row else 0) + 1
+    return f"{prefix}{seq:03d}"
+
+
+def create_delivery_note(
+    po_number: str,
+    warehouse_id: str,
+    site_id: str,
+    line_items: list[dict],
+    header: dict | None = None,
+    created_by: str = "",
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str, str]:
+    """Build one DN draft for (po_number, warehouse_id, site_id).
+
+    `line_items`: [{po_item_id, Qty, Lot_Number, Expiry_Date, Remarks}, ...]
+    RL/BL strict separation is enforced HERE: if the items span multiple
+    families, the call is rejected with a guidance message — the caller
+    (Warehouse Portal Prepare DN tab) prepares one DN per family.
+
+    Returns (ok, message, dn_number)."""
+    if not po_number or not warehouse_id or not site_id:
+        return False, "PO, Warehouse and Site are required", ""
+    if not line_items:
+        return False, "At least one line item is required", ""
+
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        # Pull po_items rows referenced by the caller, in one shot.
+        ids = [int(li.get("po_item_id")) for li in line_items
+               if li.get("po_item_id") is not None]
+        if not ids:
+            return False, "po_item_id missing on every line", ""
+        rows = conn.execute(
+            "SELECT id, Material_Code, Description, UOM, rl_bl_family, "
+            "       Qty, Delivered_Qty, Returned_Qty "
+            "FROM po_items WHERE PO_Number = ? AND id IN ("
+            + ",".join("?" * len(ids)) + ")",
+            tuple([po_number] + ids),
+        ).fetchall()
+        by_id = {r[0]: r for r in rows}
+        if len(by_id) != len(ids):
+            return False, "One or more line items not found on this PO", ""
+
+        # RL/BL strict separation
+        families = {by_id[i][4] for i in ids}
+        if len(families - {None}) > 1:
+            return False, (
+                "Strict separation violated: this DN spans multiple RL/BL "
+                "families. Prepare one DN per family."), ""
+        family = next(iter(families - {None})) if families - {None} else None
+
+        # Qty + over-ship guard
+        # Available = Delivered_Qty (received from vendor at WH)
+        #           − Returned_Qty
+        #           − already-shipped via other live DNs for the SAME po_item
+        # We must NEVER conflate "received-from-vendor" with "already shipped
+        # to a site". A line that's been fully received at WH can spawn many
+        # DNs, each consuming a slice of the available stock.
+        for li in line_items:
+            iid = int(li["po_item_id"])
+            try:
+                qty = float(li.get("Qty") or 0)
+            except (TypeError, ValueError):
+                return False, f"Bad Qty on line {iid}", ""
+            if qty <= 0:
+                return False, f"Qty must be > 0 on line {iid}", ""
+            delivered = float(by_id[iid][6] or 0)
+            returned  = float(by_id[iid][7] or 0)
+            shipped_row = conn.execute(
+                "SELECT COALESCE(SUM(dn_items.Qty), 0) FROM dn_items "
+                "JOIN delivery_notes dn ON dn.DN_Number = dn_items.DN_Number "
+                "WHERE dn_items.po_item_id = ? "
+                "  AND dn.status NOT IN ('rejected','cancelled')",
+                (iid,)).fetchone()
+            shipped = float(shipped_row[0] or 0)
+            available = delivered - returned - shipped
+            if qty > available + 1e-9:
+                return False, (
+                    f"Line {iid}: shipping {qty} would exceed available "
+                    f"({available:g}; delivered {delivered}, returned "
+                    f"{returned}, already on live DNs {shipped})"), ""
+
+        dn_number = _generate_dn_number(warehouse_id, conn)
+        h = header or {}
+        conn.execute(
+            "INSERT INTO delivery_notes "
+            "(DN_Number, PO_Number, Warehouse_ID, Site_ID, rl_bl_family, "
+            " DN_Date, Vehicle_No, Driver_Name, Driver_Phone, Prepared_By, "
+            " Remarks, status, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)",
+            (dn_number, po_number, warehouse_id, site_id, family,
+             h.get("DN_Date") or datetime.date.today().isoformat(),
+             h.get("Vehicle_No"), h.get("Driver_Name"), h.get("Driver_Phone"),
+             h.get("Prepared_By") or created_by,
+             h.get("Remarks"), created_by),
+        )
+
+        for li in line_items:
+            iid = int(li["po_item_id"])
+            base = by_id[iid]
+            conn.execute(
+                "INSERT INTO dn_items "
+                "(DN_Number, po_item_id, Material_Code, Description, "
+                " Qty, UOM, Lot_Number, Expiry_Date, Remarks, "
+                " rl_bl_family, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
+                (dn_number, iid, base[1], base[2],
+                 float(li.get("Qty") or 0), base[3],
+                 li.get("Lot_Number"), li.get("Expiry_Date"),
+                 li.get("Remarks"), base[4]),
+            )
+
+        conn.commit()
+        try:
+            log_audit_action(
+                created_by, "CREATE_DN", "delivery_notes",
+                f"DN={dn_number} PO={po_number} site={site_id} "
+                f"lines={len(line_items)}",
+            )
+        except Exception:
+            pass
+        return True, f"DN {dn_number} drafted ({len(line_items)} line(s))", dn_number
+    except sqlite3.Error as e:
+        return False, f"DB error: {e}", ""
+    finally:
+        if _owns:
+            conn.close()
+
+
+def submit_dn_for_logistics(
+    dn_number: str,
+    warehouse_user: str,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE delivery_notes SET status='pending_logistics' "
+            "WHERE DN_Number = ? AND status='draft'",
+            (dn_number,),
+        )
+        if cur.rowcount == 0:
+            return False, "DN not in draft state"
+        conn.commit()
+        try:
+            row = conn.execute(
+                "SELECT PO_Number, Site_ID FROM delivery_notes "
+                "WHERE DN_Number = ?", (dn_number,)).fetchone()
+            queue_app_notification(
+                event_key="dn_logistics_approved",  # reuse channel for visibility
+                title=f"DN {dn_number} awaits Logistics approval",
+                body=f"PO {row[0] if row else '?'} → Site {row[1] if row else '?'}",
+                severity="info",
+                recipient_role="logistics",
+                link_page="🚚 Logistics Portal",
+                related_table="delivery_notes",
+                related_ref=dn_number,
+                conn=conn,
+            )
+        except Exception:
+            pass
+        return True, "DN submitted to Logistics"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def logistics_decide_dn(
+    dn_number: str,
+    approve: bool,
+    decided_by: str,
+    decision_notes: str = "",
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE delivery_notes "
+            "SET status = ?, "
+            "    logistics_decided_at = CURRENT_TIMESTAMP, "
+            "    logistics_decided_by = ?, "
+            "    logistics_decision = ? "
+            "WHERE DN_Number = ? AND status='pending_logistics'",
+            ("pending_hod" if approve else "rejected",
+             decided_by,
+             "approved" if approve else "rejected",
+             dn_number),
+        )
+        if cur.rowcount == 0:
+            return False, "DN not pending Logistics approval"
+        if not approve:
+            conn.execute(
+                "UPDATE delivery_notes SET rejection_reason = ? "
+                "WHERE DN_Number = ?", (decision_notes, dn_number),
+            )
+        conn.commit()
+        # Notify HOD on approval; notify Warehouse on rejection
+        try:
+            row = conn.execute(
+                "SELECT PO_Number, Site_ID, Warehouse_ID "
+                "FROM delivery_notes WHERE DN_Number=?",
+                (dn_number,)).fetchone()
+            po_no, site_id, wh_id = row or (None, None, None)
+            if approve:
+                queue_app_notification(
+                    event_key="dn_logistics_approved",
+                    title=f"Incoming delivery: DN {dn_number}",
+                    body=f"PO {po_no} approved by Logistics — pending your approval",
+                    severity="info",
+                    recipient_role="hod", recipient_site=site_id,
+                    link_page="📋 HOD Portal",
+                    related_table="delivery_notes",
+                    related_ref=dn_number, conn=conn,
+                )
+            else:
+                queue_app_notification(
+                    event_key="dn_logistics_approved",
+                    title=f"DN {dn_number} rejected by Logistics",
+                    body=decision_notes[:200] or "—",
+                    severity="warning",
+                    recipient_role="warehouse_user",
+                    recipient_warehouse=wh_id,
+                    link_page="🏭 Warehouse Portal",
+                    related_table="delivery_notes",
+                    related_ref=dn_number, conn=conn,
+                )
+        except Exception:
+            pass
+        try:
+            log_audit_action(
+                decided_by, f"DN_LOGISTICS_{'APPROVE' if approve else 'REJECT'}",
+                "delivery_notes", f"DN={dn_number} notes={decision_notes[:80]}",
+            )
+        except Exception:
+            pass
+        return True, f"DN {'approved' if approve else 'rejected'}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def hod_decide_dn(
+    dn_number: str,
+    approve: bool,
+    decided_by: str,
+    decision_notes: str = "",
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """HOD approves a logistics-approved DN. On approval, the DN moves to
+    pending_sk AND we mirror its lines into pending_receipts (status
+    `pending_sk`) so the Site SK can confirm physical receipt from their
+    Entry Log without HOD doing a second pass."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        dn = conn.execute(
+            "SELECT PO_Number, Site_ID, Warehouse_ID, status "
+            "FROM delivery_notes WHERE DN_Number=?",
+            (dn_number,)).fetchone()
+        if not dn:
+            return False, "DN not found"
+        if dn[3] != "pending_hod":
+            return False, f"DN status is {dn[3]} — not pending HOD"
+        po_no, site_id, wh_id, _ = dn
+
+        new_status = "pending_sk" if approve else "rejected"
+        conn.execute(
+            "UPDATE delivery_notes "
+            "SET status = ?, hod_decided_at = CURRENT_TIMESTAMP, "
+            "    hod_decided_by = ?, rejection_reason = ? "
+            "WHERE DN_Number = ?",
+            (new_status, decided_by,
+             None if approve else decision_notes,
+             dn_number),
+        )
+
+        if approve:
+            # Mirror DN items into pending_receipts so SK sees them in
+            # the existing Receipt Staging flow. status='pending_sk' is a
+            # new value reserved for DN-driven rows; HOD's existing
+            # Pending Receipts tab filters for 'pending_hod' so these
+            # don't bleed into that tab.
+            c = conn.cursor()
+            c.execute("PRAGMA table_info(pending_receipts)")
+            existing = {r[1] for r in c.fetchall()}
+            dni = pd.read_sql_query(
+                "SELECT po_item_id, Material_Code, Description, Qty, UOM, "
+                "       Lot_Number, Expiry_Date, Remarks "
+                "FROM dn_items WHERE DN_Number = ? AND status='pending'",
+                conn, params=(dn_number,),
+            )
+            for _, r in dni.iterrows():
+                # Resolve SAP_Code from Material_Code via inventory if present
+                sap_row = conn.execute(
+                    "SELECT SAP_Code FROM inventory "
+                    "WHERE Material_Code = ? LIMIT 1",
+                    (r["Material_Code"],)).fetchone()
+                sap_code = sap_row[0] if sap_row else r["Material_Code"]
+                row = {
+                    "SAP_Code":  sap_code,
+                    "Quantity":  float(r["Qty"] or 0),
+                    "Site_ID":   site_id,
+                    "status":    "pending_sk",
+                    "Date":      datetime.date.today().isoformat(),
+                    "DN_No":     dn_number,
+                    "DN_Number": dn_number,
+                    "Warehouse_ID": wh_id,
+                    "PO_Number_Source": po_no,
+                    "PR_Number": None,
+                    "Supplier":  None,
+                    "Lot_Number": r.get("Lot_Number"),
+                    "Expiry_Date": r.get("Expiry_Date"),
+                    "Remarks":  r.get("Remarks"),
+                }
+                # UOM lives on pending_receipts in some installs only.
+                if "UOM" in existing:
+                    row["UOM"] = r.get("UOM")
+                row = {k: v for k, v in row.items() if k in existing}
+                cols = list(row.keys())
+                conn.execute(
+                    f"INSERT INTO pending_receipts ({','.join(cols)}) "
+                    f"VALUES ({','.join('?'*len(cols))})",
+                    [row[k] for k in cols],
+                )
+
+        conn.commit()
+
+        # Notifications
+        try:
+            if approve:
+                queue_app_notification(
+                    event_key="dn_auto_generated",  # repurposing slot for SK ping
+                    title=f"Incoming DN {dn_number} ready to receive",
+                    body=f"PO {po_no} from {wh_id} — confirm physical receipt",
+                    severity="info",
+                    recipient_role="store_keeper",
+                    recipient_site=site_id,
+                    link_page="📝 Entry Log",
+                    related_table="delivery_notes",
+                    related_ref=dn_number, conn=conn,
+                )
+            else:
+                queue_app_notification(
+                    event_key="dn_logistics_approved",
+                    title=f"DN {dn_number} rejected by HOD",
+                    body=decision_notes[:200] or "—",
+                    severity="warning",
+                    recipient_role="warehouse_user",
+                    recipient_warehouse=wh_id,
+                    link_page="🏭 Warehouse Portal",
+                    related_table="delivery_notes",
+                    related_ref=dn_number, conn=conn,
+                )
+        except Exception:
+            pass
+        try:
+            log_audit_action(
+                decided_by, f"DN_HOD_{'APPROVE' if approve else 'REJECT'}",
+                "delivery_notes", f"DN={dn_number}",
+            )
+        except Exception:
+            pass
+        return True, f"DN {'approved' if approve else 'rejected'}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def sk_mark_dn_received(
+    dn_number: str,
+    store_keeper: str,
+    received_map: dict[int, float] | None = None,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Site SK confirms physical receipt of a HOD-approved DN.
+    Writes one row into `receipts` per DN line (so identity math sees it
+    immediately), flips the DN to 'received', drops the pending_receipts
+    mirror rows, and notifies Logistics + Warehouse.
+
+    `received_map` is optional {dn_items.id: confirmed_qty}; when omitted,
+    the DN's qty is taken verbatim. Partial confirmations supported."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        dn = conn.execute(
+            "SELECT PO_Number, Site_ID, Warehouse_ID, status "
+            "FROM delivery_notes WHERE DN_Number=?",
+            (dn_number,)).fetchone()
+        if not dn:
+            return False, "DN not found"
+        if dn[3] != "pending_sk":
+            return False, f"DN status is {dn[3]} — not pending SK"
+        po_no, site_id, wh_id, _ = dn
+
+        # Inspect columns on receipts so we only insert known ones
+        c = conn.cursor()
+        c.execute("PRAGMA table_info(receipts)")
+        rcpt_cols = {r[1] for r in c.fetchall()}
+
+        items = pd.read_sql_query(
+            "SELECT id, po_item_id, Material_Code, Description, Qty, UOM, "
+            "       Lot_Number, Expiry_Date, Remarks "
+            "FROM dn_items WHERE DN_Number = ?",
+            conn, params=(dn_number,),
+        )
+        if items.empty:
+            return False, "DN has no items"
+
+        for _, r in items.iterrows():
+            iid = int(r["id"])
+            qty_actual = float((received_map or {}).get(iid, r["Qty"]) or 0)
+            if qty_actual <= 0:
+                continue
+            sap_row = conn.execute(
+                "SELECT SAP_Code FROM inventory "
+                "WHERE Material_Code = ? LIMIT 1",
+                (r["Material_Code"],)).fetchone()
+            sap_code = sap_row[0] if sap_row else r["Material_Code"]
+            payload = {
+                "SAP_Code":  sap_code,
+                "Quantity":  qty_actual,
+                "Date":      datetime.date.today().isoformat(),
+                "Site_ID":   site_id,
+                "Supplier":  "WAREHOUSE",
+                "DN_No":     dn_number,
+                "DN_Number": dn_number,
+                "Warehouse_ID": wh_id,
+                "PO_Number_Source": po_no,
+                "Lot_Number": r.get("Lot_Number"),
+                "Expiry_Date": r.get("Expiry_Date"),
+                "Remarks":  r.get("Remarks") or f"Received via DN {dn_number}",
+                "Received_by": store_keeper,
+            }
+            payload = {k: v for k, v in payload.items() if k in rcpt_cols}
+            cols = list(payload.keys())
+            conn.execute(
+                f"INSERT INTO receipts ({','.join(cols)}) "
+                f"VALUES ({','.join('?'*len(cols))})",
+                [payload[k] for k in cols],
+            )
+            # Mark the DN item line as received with the actual qty
+            conn.execute(
+                "UPDATE dn_items SET status='received', sk_received_qty = ? "
+                "WHERE id = ?", (qty_actual, iid),
+            )
+
+        # Flip DN header + clean up the pending_receipts mirror rows
+        conn.execute(
+            "UPDATE delivery_notes "
+            "SET status='received', sk_received_at = CURRENT_TIMESTAMP, "
+            "    sk_received_by = ? WHERE DN_Number = ?",
+            (store_keeper, dn_number),
+        )
+        conn.execute(
+            "DELETE FROM pending_receipts "
+            "WHERE COALESCE(DN_Number,'') = ? AND status='pending_sk'",
+            (dn_number,),
+        )
+        conn.commit()
+
+        # Notifications + cache bust
+        try:
+            queue_app_notification(
+                event_key="dn_received_by_sk",
+                title=f"DN {dn_number} received at site",
+                body=f"PO {po_no} closed at site {site_id}",
+                severity="success",
+                recipient_role="logistics",
+                link_page="🚚 Logistics Portal",
+                related_table="delivery_notes",
+                related_ref=dn_number, conn=conn,
+            )
+            queue_app_notification(
+                event_key="dn_received_by_sk",
+                title=f"DN {dn_number} received at site",
+                body=f"Site {site_id} confirmed",
+                severity="success",
+                recipient_role="warehouse_user",
+                recipient_warehouse=wh_id,
+                link_page="🏭 Warehouse Portal",
+                related_table="delivery_notes",
+                related_ref=dn_number, conn=conn,
+            )
+        except Exception:
+            pass
+        try:
+            from cache_layer import bust_inventory_cache
+            bust_inventory_cache()
+        except Exception:
+            pass
+        try:
+            log_audit_action(
+                store_keeper, "DN_SK_RECEIVE", "receipts",
+                f"DN={dn_number} PO={po_no}",
+            )
+        except Exception:
+            pass
+        return True, f"DN {dn_number} received at site"
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# DN listing / detail
+# ---------------------------------------------------------------------------
+
+def list_dns(
+    warehouse_id: str | None = None,
+    site_id: str | None = None,
+    status_filter: list[str] | None = None,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = "SELECT * FROM delivery_notes WHERE 1=1"
+        params: list = []
+        if warehouse_id:
+            q += " AND Warehouse_ID = ?"
+            params.append(warehouse_id)
+        if site_id:
+            q += " AND Site_ID = ?"
+            params.append(site_id)
+        if status_filter:
+            q += " AND status IN (" + ",".join("?" * len(status_filter)) + ")"
+            params.extend(status_filter)
+        q += " ORDER BY created_at DESC"
+        return _localize(pd.read_sql_query(q, conn, params=params))
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_dn_detail(
+    dn_number: str,
+    conn: sqlite3.Connection = None,
+) -> dict:
+    """Return {'header': dict, 'items': DataFrame}. No prices joined —
+    safe for Warehouse + Site HOD + SK views."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        h_df = pd.read_sql_query(
+            "SELECT * FROM delivery_notes WHERE DN_Number = ?",
+            conn, params=(dn_number,),
+        )
+        h = h_df.iloc[0].to_dict() if not h_df.empty else {}
+        items = pd.read_sql_query(
+            "SELECT id, po_item_id, Material_Code, Description, Qty, UOM, "
+            "       Lot_Number, Expiry_Date, Remarks, rl_bl_family, "
+            "       sk_received_qty, status "
+            "FROM dn_items WHERE DN_Number = ? ORDER BY id",
+            conn, params=(dn_number,),
+        )
+        return {"header": h, "items": _localize(items)}
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Internal returns (site → warehouse) — uses po_returns with role-tag
+# ---------------------------------------------------------------------------
+
+def record_internal_return(
+    dn_number: str,
+    items: list[dict],
+    reason: str,
+    raised_by_role: str,
+    raised_by: str,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """A Site HOD/SK or Warehouse user flags a DN line as defective →
+    we open a po_returns row tagged with the originating DN so Logistics
+    can chase the vendor. `items` is [{dn_item_id, qty}, ...]."""
+    if not items:
+        return False, "No items to return"
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        dn = conn.execute(
+            "SELECT PO_Number FROM delivery_notes WHERE DN_Number = ?",
+            (dn_number,)).fetchone()
+        if not dn:
+            return False, "DN not found"
+        po_number = dn[0]
+        affected = 0
+        for it in items:
+            try:
+                dn_item_id = int(it["dn_item_id"])
+                qty = float(it.get("qty") or 0)
+            except (TypeError, ValueError, KeyError):
+                continue
+            if qty <= 0:
+                continue
+            row = conn.execute(
+                "SELECT po_item_id, Material_Code FROM dn_items "
+                "WHERE id = ? AND DN_Number = ?",
+                (dn_item_id, dn_number)).fetchone()
+            if not row:
+                continue
+            po_item_id, mat = row
+            ok, _ = raise_vendor_return(
+                po_number=po_number, po_item_id=int(po_item_id),
+                dn_number=dn_number, qty=qty, reason=reason,
+                raised_by_role=raised_by_role, raised_by=raised_by,
+                conn=conn,
+            )
+            if ok:
+                conn.execute(
+                    "UPDATE dn_items SET status='returned' WHERE id = ?",
+                    (dn_item_id,),
+                )
+                affected += 1
+        if affected == 0:
+            return False, "No valid return lines"
+        conn.commit()
+        return True, f"Raised {affected} return line(s) to vendor"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_incoming_dns_for_sk(
+    site_id: str,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """SK view: DNs pending_sk at this site. Read-only summary for the
+    Entry Log expander."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        return _localize(pd.read_sql_query(
+            "SELECT dn.DN_Number, dn.PO_Number, dn.Warehouse_ID, dn.DN_Date, "
+            "       dn.Vehicle_No, dn.Driver_Name, "
+            "       (SELECT COUNT(*) FROM dn_items WHERE DN_Number=dn.DN_Number) "
+            "         AS line_count, "
+            "       (SELECT COALESCE(SUM(Qty),0) FROM dn_items "
+            "          WHERE DN_Number=dn.DN_Number) AS total_qty "
+            "FROM delivery_notes dn "
+            "WHERE Site_ID = ? AND status = 'pending_sk' "
+            "ORDER BY hod_decided_at DESC", conn, params=(site_id,),
+        ))
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_pending_hod_dns(
+    site_id: str,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """HOD-side view: DNs heading to this site, sitting at pending_hod."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        return _localize(pd.read_sql_query(
+            "SELECT * FROM delivery_notes "
+            "WHERE Site_ID = ? AND status = 'pending_hod' "
+            "ORDER BY logistics_decided_at DESC", conn, params=(site_id,),
+        ))
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_pending_logistics_dns(
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Logistics queue: DNs awaiting our approval before HOD sees them."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        return _localize(pd.read_sql_query(
+            "SELECT * FROM delivery_notes WHERE status = 'pending_logistics' "
+            "ORDER BY created_at DESC", conn,
+        ))
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Site-side read helpers (HOD "In-Transit" tab)
+# ---------------------------------------------------------------------------
+
+def list_in_transit_dns_for_site(
+    site_id: str,
+    include_received: bool = False,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Every DN that is somewhere in the pipeline bound for this site.
+    Used by HOD's read-only In-Transit view. Sorted earliest-ETA first
+    (DN_Date) so the soonest deliveries surface at the top.
+
+    Status set is `pending_logistics`, `logistics_approved` (transient — DN
+    sits here briefly before HOD review), `pending_hod`, `pending_sk`.
+    Passing `include_received=True` also returns the most recent received
+    DNs for the same view (handy 'just landed' strip)."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        active_states = (
+            "pending_logistics", "logistics_approved",
+            "pending_hod", "pending_sk",
+        )
+        if include_received:
+            states = active_states + ("received",)
+        else:
+            states = active_states
+        placeholders = ",".join("?" * len(states))
+        q = (
+            "SELECT dn.DN_Number, dn.PO_Number, dn.Warehouse_ID, dn.Site_ID, "
+            "       dn.DN_Date, dn.Vehicle_No, dn.Driver_Name, dn.Driver_Phone, "
+            "       dn.status, dn.rl_bl_family, "
+            "       dn.logistics_decided_at, dn.logistics_decided_by, "
+            "       dn.hod_decided_at, dn.hod_decided_by, "
+            "       dn.sk_received_at, dn.sk_received_by, "
+            "       dn.created_at, "
+            "       (SELECT COUNT(*) FROM dn_items "
+            "          WHERE DN_Number=dn.DN_Number) AS line_count, "
+            "       (SELECT COALESCE(SUM(Qty),0) FROM dn_items "
+            "          WHERE DN_Number=dn.DN_Number) AS total_qty "
+            "FROM delivery_notes dn "
+            f"WHERE dn.Site_ID = ? AND dn.status IN ({placeholders}) "
+            "ORDER BY "
+            "  CASE dn.status "
+            "    WHEN 'pending_sk' THEN 1 "
+            "    WHEN 'pending_hod' THEN 2 "
+            "    WHEN 'logistics_approved' THEN 3 "
+            "    WHEN 'pending_logistics' THEN 4 "
+            "    WHEN 'received' THEN 5 ELSE 9 END, "
+            "  COALESCE(dn.DN_Date, dn.created_at) ASC"
+        )
+        return _localize(pd.read_sql_query(
+            q, conn, params=(site_id, *states),
+        ))
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_reschedule_requests_for_site(
+    site_id: str,
+    status_filter: list[str] | None = None,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Reschedule requests raised against POs bound for this site.
+    Joined through purchase_orders so we can filter by Site_ID. Decision
+    state (`pending` / `approved` / `rejected`) drives the status pill."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = (
+            "SELECT r.id, r.PO_Number, r.DN_Number, r.current_date, "
+            "       r.requested_date, r.reason, r.requested_by_role, "
+            "       r.requested_by, r.requested_at, r.status, "
+            "       r.decided_by, r.decided_at, r.decision_notes "
+            "FROM po_reschedule_requests r "
+            "LEFT JOIN purchase_orders po ON po.PO_Number = r.PO_Number "
+            "WHERE COALESCE(po.Site_ID, ?) = ?"
+        )
+        params: list = [site_id, site_id]
+        if status_filter:
+            q += " AND r.status IN (" + ",".join("?" * len(status_filter)) + ")"
+            params.extend(status_filter)
+        q += " ORDER BY r.requested_at DESC"
+        return _localize(pd.read_sql_query(q, conn, params=params))
+    finally:
+        if _owns:
+            conn.close()
+
+
+def sweep_delivery_reminders(
+    today: datetime.date | None = None,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Fire T-2 / T-1 / T-0 reminders for upcoming PO Expected_Delivery
+    and DN DN_Date dates. Returns the number of fresh notifications fired.
+
+    Idempotent via the `delivery_reminders_sent` UNIQUE constraint — calling
+    this function any number of times on the same day for the same target
+    fires at most ONE event per (ref_type, ref_number, target_date, offset).
+
+    Called by the WhatsApp worker once per day. Each fire writes a row to
+    `app_notifications` (always visible in the bell) and queues a WhatsApp
+    via `fire_whatsapp_event` (gated by config.WHATSAPP_TRIGGERS)."""
+    today = today or datetime.date.today()
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    fired = 0
+    try:
+        # Build the list of (offset, target_iso) tuples we're firing today.
+        targets: list[tuple[int, str]] = []
+        for offset in (2, 1, 0):
+            d = today + datetime.timedelta(days=offset)
+            targets.append((offset, d.isoformat()))
+
+        for offset, iso in targets:
+            event_key = {
+                2: "delivery_reminder_t_minus_2",
+                1: "delivery_reminder_t_minus_1",
+                0: "delivery_reminder_t_zero",
+            }[offset]
+            label = {2: "in 2 days", 1: "tomorrow", 0: "today"}[offset]
+
+            # ── POs landing on this date ──────────────────────────────
+            pos = conn.execute(
+                "SELECT PO_Number, COALESCE(Site_ID,'HQ') AS Site_ID, "
+                "       Vendor_Name "
+                "FROM purchase_orders "
+                "WHERE Expected_Delivery = ? "
+                "  AND status NOT IN ('closed','force_closed','cancelled','delivered')",
+                (iso,)).fetchall()
+            for po_no, site_id, vendor in pos:
+                try:
+                    conn.execute(
+                        "INSERT INTO delivery_reminders_sent "
+                        "(ref_type, ref_number, target_date, offset_days) "
+                        "VALUES ('po', ?, ?, ?)",
+                        (po_no, iso, offset),
+                    )
+                except sqlite3.IntegrityError:
+                    continue  # already fired
+                queue_app_notification(
+                    event_key=event_key,
+                    title=f"PO {po_no} due {label} ({iso})",
+                    body=f"Vendor: {vendor or '—'}",
+                    severity="warning" if offset > 0 else "critical",
+                    recipient_role="logistics",
+                    link_page="🚚 Logistics Portal",
+                    related_table="purchase_orders",
+                    related_ref=po_no, conn=conn,
+                )
+                # Also ping the originating site HOD so they're not blindsided
+                if site_id:
+                    queue_app_notification(
+                        event_key=event_key,
+                        title=f"PO {po_no} due {label}",
+                        body=f"Expected at site on {iso}",
+                        severity="info",
+                        recipient_role="hod",
+                        recipient_site=site_id,
+                        link_page="📋 HOD Portal",
+                        related_table="purchase_orders",
+                        related_ref=po_no, conn=conn,
+                    )
+                fired += 1
+                # WhatsApp (gated)
+                try:
+                    fire_whatsapp_event(
+                        event_key, "",
+                        f"PO {po_no} due {label} ({iso})", conn=conn,
+                    )
+                except Exception:
+                    pass
+
+            # ── DNs landing on this date ──────────────────────────────
+            dns = conn.execute(
+                "SELECT DN_Number, PO_Number, Warehouse_ID, Site_ID "
+                "FROM delivery_notes "
+                "WHERE DN_Date = ? AND status IN ("
+                "  'logistics_approved','pending_hod','pending_sk')",
+                (iso,)).fetchall()
+            for dn_no, po_no, wh_id, site_id in dns:
+                try:
+                    conn.execute(
+                        "INSERT INTO delivery_reminders_sent "
+                        "(ref_type, ref_number, target_date, offset_days) "
+                        "VALUES ('dn', ?, ?, ?)",
+                        (dn_no, iso, offset),
+                    )
+                except sqlite3.IntegrityError:
+                    continue
+                # Notify all three roles touching the DN
+                for role, scope_site, scope_wh, page in (
+                    ("logistics", None, None, "🚚 Logistics Portal"),
+                    ("hod", site_id, None, "📋 HOD Portal"),
+                    ("warehouse_user", None, wh_id, "🏭 Warehouse Portal"),
+                ):
+                    queue_app_notification(
+                        event_key=event_key,
+                        title=f"DN {dn_no} due {label}",
+                        body=f"PO {po_no} → site {site_id} on {iso}",
+                        severity="warning" if offset > 0 else "critical",
+                        recipient_role=role,
+                        recipient_site=scope_site,
+                        recipient_warehouse=scope_wh,
+                        link_page=page,
+                        related_table="delivery_notes",
+                        related_ref=dn_no, conn=conn,
+                    )
+                fired += 1
+                try:
+                    fire_whatsapp_event(
+                        event_key, "",
+                        f"DN {dn_no} due {label} ({iso})", conn=conn,
+                    )
+                except Exception:
+                    pass
+        conn.commit()
+        return fired
+    except sqlite3.Error:
+        return fired
+    finally:
+        if _owns:
+            conn.close()
+
+
+def report_po_status(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    site_id: str | None = None,
+    conn: sqlite3.Connection = None,
+) -> tuple[pd.DataFrame, dict]:
+    """PO-level rollup: PO_Number, PR_Number, vendor, site, PO_Date,
+    Expected_Delivery, status, ordered/delivered/returned qty totals, line
+    count. Date window applies to PO_Date."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = (
+            "SELECT po.PO_Number, po.PR_Number, "
+            "       COALESCE(po.Site_ID,'HQ') AS Site_ID, "
+            "       po.Vendor_Code, po.Vendor_Name, po.PO_Date, "
+            "       po.Expected_Delivery, po.status, po.source, "
+            "       (SELECT COUNT(*)            FROM po_items pi "
+            "          WHERE pi.PO_Number = po.PO_Number) AS Line_Count, "
+            "       (SELECT COALESCE(SUM(Qty),0)         FROM po_items pi "
+            "          WHERE pi.PO_Number = po.PO_Number) AS Ordered_Qty, "
+            "       (SELECT COALESCE(SUM(Delivered_Qty),0) FROM po_items pi "
+            "          WHERE pi.PO_Number = po.PO_Number) AS Delivered_Qty, "
+            "       (SELECT COALESCE(SUM(Returned_Qty),0)  FROM po_items pi "
+            "          WHERE pi.PO_Number = po.PO_Number) AS Returned_Qty, "
+            "       po.Total_Amount, po.created_at, po.closed_at "
+            "FROM purchase_orders po WHERE 1=1"
+        )
+        params: list = []
+        if site_id:
+            q += " AND COALESCE(po.Site_ID,'HQ') = ?"
+            params.append(site_id)
+        if date_from:
+            q += " AND COALESCE(po.PO_Date, po.created_at) >= ?"
+            params.append(date_from)
+        if date_to:
+            q += " AND COALESCE(po.PO_Date, po.created_at) <= ?"
+            params.append(date_to)
+        q += " ORDER BY COALESCE(po.PO_Date, po.created_at) DESC"
+        df = pd.read_sql_query(q, conn, params=params)
+        if df.empty:
+            return df, {"POs": 0}
+        summary = {
+            "POs":             int(len(df)),
+            "Open":            int((df["status"].isin(
+                ["open", "partially_delivered"])).sum()),
+            "Delivered":       int((df["status"] == "delivered").sum()),
+            "Closed_or_Force": int((df["status"].isin(
+                ["closed", "force_closed", "cancelled"])).sum()),
+            "Total_Value_SAR": float(df["Total_Amount"].fillna(0).sum()),
+        }
+        return _localize(df), summary
+    finally:
+        if _owns:
+            conn.close()
+
+
+def report_warehouse_throughput(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    site_id: str | None = None,
+    conn: sqlite3.Connection = None,
+) -> tuple[pd.DataFrame, dict]:
+    """Per-warehouse DN counts split by state inside the window. Date
+    window applies to delivery_notes.created_at."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = (
+            "SELECT Warehouse_ID, "
+            "       COUNT(*) AS DNs, "
+            "       SUM(CASE WHEN status='draft' THEN 1 ELSE 0 END) AS Drafts, "
+            "       SUM(CASE WHEN status='pending_logistics' THEN 1 ELSE 0 END) "
+            "         AS Pending_Logistics, "
+            "       SUM(CASE WHEN status='pending_hod' THEN 1 ELSE 0 END) "
+            "         AS Pending_HOD, "
+            "       SUM(CASE WHEN status='pending_sk' THEN 1 ELSE 0 END) "
+            "         AS Pending_SK, "
+            "       SUM(CASE WHEN status='received' THEN 1 ELSE 0 END) "
+            "         AS Received, "
+            "       SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) "
+            "         AS Rejected, "
+            "       SUM(CASE WHEN rl_bl_family='RL' THEN 1 ELSE 0 END) "
+            "         AS RL_DNs, "
+            "       SUM(CASE WHEN rl_bl_family='BL' THEN 1 ELSE 0 END) "
+            "         AS BL_DNs "
+            "FROM delivery_notes WHERE 1=1"
+        )
+        params: list = []
+        if site_id:
+            q += " AND Site_ID = ?"
+            params.append(site_id)
+        if date_from:
+            q += " AND DATE(created_at) >= ?"
+            params.append(date_from)
+        if date_to:
+            q += " AND DATE(created_at) <= ?"
+            params.append(date_to)
+        q += " GROUP BY Warehouse_ID ORDER BY DNs DESC"
+        df = pd.read_sql_query(q, conn, params=params)
+        if df.empty:
+            return df, {"Warehouses": 0, "DNs": 0}
+        summary = {
+            "Warehouses":         int(len(df)),
+            "DNs":                int(df["DNs"].sum()),
+            "Received":           int(df["Received"].sum()),
+            "Open_pipeline":      int((df["Pending_Logistics"] + df["Pending_HOD"]
+                                        + df["Pending_SK"]).sum()),
+            "RL_DNs":             int(df["RL_DNs"].sum()),
+            "BL_DNs":             int(df["BL_DNs"].sum()),
+        }
+        return _localize(df), summary
+    finally:
+        if _owns:
+            conn.close()
+
+
+def report_force_closures(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    site_id: str | None = None,
+    conn: sqlite3.Connection = None,
+) -> tuple[pd.DataFrame, dict]:
+    """Force-closures within the window. Filterable by site (matches direct
+    Site_ID column OR origin via PR/PO joins, mirroring
+    list_force_closures_for_site so the report sees the same set)."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = (
+            "SELECT fc.id, fc.target_type, fc.target_ref, "
+            "       fc.Site_ID, fc.PR_Number, fc.PO_Number, "
+            "       fc.reason, fc.closed_by, fc.closed_at, fc.notes "
+            "FROM po_force_closures fc "
+            "LEFT JOIN purchase_orders po ON po.PO_Number = fc.PO_Number "
+            "LEFT JOIN ( "
+            "    SELECT DISTINCT PR_Number, Site_ID FROM pr_master "
+            ") pr ON pr.PR_Number = fc.PR_Number "
+            "WHERE 1=1"
+        )
+        params: list = []
+        if site_id:
+            q += (" AND (fc.Site_ID = ? "
+                  "      OR COALESCE(po.Site_ID,'') = ? "
+                  "      OR COALESCE(pr.Site_ID,'') = ?)")
+            params += [site_id, site_id, site_id]
+        if date_from:
+            q += " AND DATE(fc.closed_at) >= ?"
+            params.append(date_from)
+        if date_to:
+            q += " AND DATE(fc.closed_at) <= ?"
+            params.append(date_to)
+        q += " ORDER BY fc.closed_at DESC"
+        df = pd.read_sql_query(q, conn, params=params)
+        if df.empty:
+            return df, {"Closures": 0}
+        summary = {
+            "Closures": int(len(df)),
+            "PR":       int((df["target_type"] == "pr").sum()),
+            "PO":       int((df["target_type"] == "po").sum()),
+            "Line":     int((df["target_type"] == "po_item").sum()),
+        }
+        return _localize(df), summary
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_force_closures_for_site(
+    site_id: str,
+    limit: int = 50,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Force-closures originating from this site (PR/PO/po_item).
+
+    Many force-closure rows carry Site_ID directly (resolved by
+    force_close_target). Older rows may have Site_ID NULL — we also match
+    via PR_Number → pr_master.Site_ID and PO_Number → purchase_orders.Site_ID
+    so nothing slips through the cracks."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = (
+            "SELECT fc.* FROM po_force_closures fc "
+            "LEFT JOIN purchase_orders po ON po.PO_Number = fc.PO_Number "
+            "LEFT JOIN ( "
+            "    SELECT DISTINCT PR_Number, Site_ID FROM pr_master "
+            ") pr ON pr.PR_Number = fc.PR_Number "
+            "WHERE fc.Site_ID = ? "
+            "   OR COALESCE(po.Site_ID, '') = ? "
+            "   OR COALESCE(pr.Site_ID, '') = ? "
+            "ORDER BY fc.closed_at DESC LIMIT ?"
+        )
+        return _localize(pd.read_sql_query(
+            q, conn, params=(site_id, site_id, site_id, int(limit)),
+        ))
+    finally:
+        if _owns:
+            conn.close()

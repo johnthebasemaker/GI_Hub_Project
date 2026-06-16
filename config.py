@@ -43,22 +43,37 @@ COLOR_CRITICAL = "#EF4444"   # Empty / critical
 # ROLE DEFINITIONS
 # ---------------------------------------------------------------------------
 ROLES = {
-    "admin":        {"label": "Admin",              "icon": "👑",  "color": BRAND_GOLD},
-    "hod":          {"label": "Head of Department", "icon": "🏛️", "color": "#6366F1"},
-    "supervisor":   {"label": "Supervisor",         "icon": "🛡️", "color": BRAND_BLUE_LIGHT},
-    "store_keeper": {"label": "Store Keeper",       "icon": "🗝️",  "color": TEXT_MUTED},
+    "admin":          {"label": "Admin",              "icon": "👑",  "color": BRAND_GOLD},
+    "logistics":      {"label": "Logistics",          "icon": "🚚",  "color": "#0EA5E9"},
+    "hod":            {"label": "Head of Department", "icon": "🏛️", "color": "#6366F1"},
+    "warehouse_user": {"label": "Warehouse",          "icon": "🏭",  "color": "#10B981"},
+    "supervisor":     {"label": "Supervisor",         "icon": "🛡️", "color": BRAND_BLUE_LIGHT},
+    "store_keeper":   {"label": "Store Keeper",       "icon": "🗝️",  "color": TEXT_MUTED},
 }
 
-# store_keeper=0 < supervisor=1 < hod=2 < admin=3
-ROLE_HIERARCHY = {"store_keeper": 0, "supervisor": 1, "hod": 2, "admin": 3}
+# Hierarchy is used by `_can_access()` for cascading visibility. The new
+# procurement roles (logistics, warehouse_user) are parallel ladders — they
+# do not inherit Site-scoped pages. _EXACT_ROLE_PAGES in main.py locks each
+# procurement page to its exact role so a HOD cannot see Logistics Portal
+# just because they're "above" warehouse_user numerically.
+ROLE_HIERARCHY = {
+    "store_keeper":   0,
+    "warehouse_user": 1,
+    "supervisor":     1,
+    "hod":            2,
+    "logistics":      3,
+    "admin":          4,
+}
 
 # Minimum role required to VIEW each page
 PAGE_ACCESS = {
-    "📦 Live Dashboard":  "supervisor",
-    "📝 Entry Log":       "store_keeper",
-    "📋 HOD Portal":      "hod",          # HOD + Admin; EOD Commit lives here
-    "🛡️ Admin Portal":    "admin",
-    "📊 Reports":         "supervisor",
+    "📦 Live Dashboard":   "supervisor",
+    "📝 Entry Log":        "store_keeper",
+    "📋 HOD Portal":       "hod",          # HOD + Admin; EOD Commit lives here
+    "🚚 Logistics Portal": "logistics",    # exact-locked in main.py (admin shadow allowed)
+    "🏭 Warehouse Portal": "warehouse_user", # exact-locked in main.py (admin shadow allowed)
+    "🛡️ Admin Portal":     "admin",
+    "📊 Reports":          "supervisor",
 }
 
 # Cross-site request status FSM: pending → approved|rejected → fulfilled
@@ -82,6 +97,63 @@ MATERIAL_CATEGORIES = [
 MTC_REQUIRED_CATEGORY = "Surface Shields"
 # Back-compat alias — older code paths still reference RUBBER_CATEGORY.
 RUBBER_CATEGORY = MTC_REQUIRED_CATEGORY
+
+# ---------------------------------------------------------------------------
+# RL / BL strict separation (procurement)
+# ---------------------------------------------------------------------------
+# Rubber Lining and Brick Lining items must NEVER be aggregated with each
+# other or with anything else in PO splitting, DN preparation, or warehouse
+# receipt calculations. The match is substring + case-insensitive against
+# Material_Code OR Equipment_Description — if either contains one of these
+# tokens, the line is tagged with that family and the splitter forces it
+# into its own DN/PO group.
+RL_BL_FAMILY_TOKENS = {
+    "RL": ("RL-", "RUBBER LINING", "RUBBER-LINING"),
+    "BL": ("BL-", "BRICK LINING", "BRICK-LINING", "BRICK MATERIAL"),
+}
+
+def classify_rl_bl_family(material_code: str, description: str) -> str | None:
+    """Return 'RL', 'BL', or None. Used by the PO/DN splitter to enforce
+    strict separation — RL and BL families never share a DN or PO group."""
+    blob = f"{material_code or ''} {description or ''}".upper()
+    for family, tokens in RL_BL_FAMILY_TOKENS.items():
+        if any(tok in blob for tok in tokens):
+            return family
+    return None
+
+# ---------------------------------------------------------------------------
+# WhatsApp triggers — easy on/off per procurement event
+# ---------------------------------------------------------------------------
+# Every procurement-flow event funnels through `_fire_whatsapp(event_key, ...)`
+# in database.py, which consults this dict. Flip a value to False to silence
+# WhatsApp for that event; in-app notifications still fire. App-level toggle
+# `WHATSAPP_ENABLED` is the master switch (False = all WhatsApp off, in-app only).
+WHATSAPP_ENABLED = True
+
+WHATSAPP_TRIGGERS = {
+    # PR → Logistics
+    "pr_submitted_to_logistics":   True,   # site HOD → Logistics
+    "pr_force_closed":             True,   # Logistics → Admin + originating Site HOD
+    # PO → Site / Warehouse
+    "po_issued":                   True,   # Logistics → Site HOD
+    "po_assigned_to_warehouse":    True,   # Logistics → Warehouse lead
+    "po_force_closed":             True,   # Logistics → Admin + Site HOD
+    # Warehouse ↔ Logistics
+    "warehouse_acknowledged":      False,  # Warehouse → Logistics (low value, off by default)
+    "warehouse_received":          True,   # Warehouse → Logistics
+    # DN flow
+    "dn_logistics_approved":       True,   # Logistics → Site HOD
+    "dn_auto_generated":           True,   # Warehouse lead
+    "dn_received_by_sk":           False,  # Site SK confirms → optional ping
+    # Reschedule + Returns
+    "reschedule_requested":        True,   # Warehouse / Site HOD → Logistics
+    "reschedule_decided":          True,   # Logistics → requester
+    "vendor_return_raised":        True,   # → Logistics
+    # Delivery reminders
+    "delivery_reminder_t_minus_2": True,
+    "delivery_reminder_t_minus_1": True,
+    "delivery_reminder_t_zero":    True,
+}
 
 # Allowed attachment MIME suffixes (PDF, JPEG, JPG, XLSX per 2026-06 spec).
 ATTACHMENT_ALLOWED = ("pdf", "jpeg", "jpg", "xlsx")

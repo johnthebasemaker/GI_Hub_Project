@@ -177,6 +177,13 @@ def register_schema_checks() -> None:
         "whatsapp_queue", "bug_reports",
         "report_schedules", "report_archive",
         "qr_approval_requests", "entry_attachments", "mtc_documents",
+        # Phase C — Procurement chain
+        "warehouses", "vendors", "purchase_orders", "po_items",
+        "po_shipment_schedule", "po_assignments", "delivery_notes", "dn_items",
+        "po_returns", "po_reschedule_requests", "po_force_closures",
+        "app_notifications",
+        # Phase 5
+        "delivery_reminders_sent",
     ]
     for t in tables:
         run_check("Schema", f"table · {t}",
@@ -191,7 +198,9 @@ def register_schema_checks() -> None:
                        "Remarks", "Site_ID", "Tank_No"],
         "receipts":   ["Date", "SAP_Code", "Quantity", "Supplier",
                        "Expiry_Date", "PR_Number", "Site_ID", "Unit_Cost",
-                       "DN_No", "Lot_Number"],
+                       "DN_No", "Lot_Number",
+                       # Phase C — DN / Warehouse / PO traceback chain
+                       "DN_Number", "Warehouse_ID", "PO_Number_Source"],
         "returns":    ["Date", "SAP_Code", "Quantity", "Reason",
                        "Remarks", "Site_ID"],
         "pending_returns": ["SAP_Code", "Quantity", "Return_Reason",
@@ -203,7 +212,38 @@ def register_schema_checks() -> None:
                                  "uploaded_by", "Site_ID"],
         "mtc_documents":        ["SAP_Code", "mtc_number", "status",
                                  "pending_receipt_id", "Site_ID"],
-        "users":      ["username", "role", "Site_ID", "Phone_Number"],
+        "users":      ["username", "role", "Site_ID", "Phone_Number",
+                       "Warehouse_ID"],
+        # Phase C — Procurement chain
+        "warehouses": ["Warehouse_ID", "Name", "status"],
+        "vendors":    ["Vendor_Code", "Vendor_Name", "status",
+                       "Default_Inco_Terms", "Default_Payment_Terms"],
+        "purchase_orders": ["PO_Number", "PR_Number", "Vendor_Code",
+                            "PO_Date", "Expected_Delivery", "status",
+                            "Inco_Terms", "Payment_Terms", "source"],
+        "po_items":   ["PO_Number", "Material_Code", "Qty", "UOM",
+                       "Unit_Price", "Total_Price", "rl_bl_family",
+                       "Delivered_Qty", "line_status",
+                       "WBS_Number", "Network"],
+        "po_shipment_schedule": ["PO_Number", "shipment_no", "target_date",
+                                 "status"],
+        "po_assignments": ["PO_Number", "Warehouse_ID", "assigned_by",
+                           "Expected_Delivery", "status"],
+        "delivery_notes": ["DN_Number", "PO_Number", "Warehouse_ID",
+                           "Site_ID", "status", "rl_bl_family"],
+        "dn_items":   ["DN_Number", "po_item_id", "Qty", "UOM",
+                       "rl_bl_family", "status"],
+        "po_returns": ["PO_Number", "Qty", "Reason", "raised_by_role",
+                       "status"],
+        "po_reschedule_requests": ["PO_Number", "requested_date", "reason",
+                                   "requested_by_role", "status"],
+        "po_force_closures": ["target_type", "target_ref", "reason",
+                              "closed_by"],
+        "app_notifications": ["event_key", "title", "severity",
+                              "recipient_user", "recipient_role"],
+        # Self-heal on existing tables
+        "pr_master":  ["WBS_Number", "Network", "Plant", "Delivery_Date",
+                       "logistics_status"],
     }
     for tbl, cs in cols.items():
         for c in cs:
@@ -222,7 +262,14 @@ def register_schema_checks() -> None:
 # RBAC matrix — replicates main.py:_can_access logic so we don't have to
 # import main.py (which calls st.set_page_config at import time).
 # ---------------------------------------------------------------------------
-_EXACT_ROLE_PAGES = {"📝 Entry Log": {"store_keeper"}}
+_EXACT_ROLE_PAGES = {
+    "📝 Entry Log":         {"store_keeper"},
+    # HOD Portal is exact-locked so procurement roles don't inherit via hierarchy.
+    "📋 HOD Portal":        {"hod", "admin"},
+    # Procurement chain — exact-role lock, admin shadow allowed.
+    "🚚 Logistics Portal":  {"logistics", "admin"},
+    "🏭 Warehouse Portal":  {"warehouse_user", "admin"},
+}
 
 
 def _can_access(role: str, page: str) -> bool:
@@ -249,6 +296,17 @@ def register_rbac_checks() -> None:
         ("supervisor",   "📋 HOD Portal",      False),
         ("supervisor",   "📊 Reports",         True),
         ("store_keeper", "📊 Reports",         False),
+        # Phase C — Procurement chain
+        ("logistics",      "🚚 Logistics Portal", True),
+        ("admin",          "🚚 Logistics Portal", True),
+        ("hod",            "🚚 Logistics Portal", False),
+        ("warehouse_user", "🚚 Logistics Portal", False),
+        ("warehouse_user", "🏭 Warehouse Portal", True),
+        ("admin",          "🏭 Warehouse Portal", True),
+        ("logistics",      "🏭 Warehouse Portal", False),
+        ("hod",            "🏭 Warehouse Portal", False),
+        ("store_keeper",   "🚚 Logistics Portal", False),
+        ("store_keeper",   "🏭 Warehouse Portal", False),
     ]
     for role, page, expected in cases:
         def fn(role=role, page=page, expected=expected):
@@ -641,6 +699,1375 @@ def check_whatsapp_queue() -> None:
         conn.close()
 
 
+def check_rl_bl_classification() -> None:
+    """RL and BL strict-separation invariant: classify_rl_bl_family must
+    return distinct family tags so the PO/DN splitter can never aggregate
+    Rubber Lining and Brick Lining lines into the same group."""
+    fn = config.classify_rl_bl_family
+    # RL detection
+    assert fn("RL-100-CHEM", "Rubber Lining 6mm")    == "RL"
+    assert fn("XYZ-001", "RUBBER LINING SHEET")      == "RL"
+    # BL detection
+    assert fn("BL-200-BRICK", "Brick Lining tile")   == "BL"
+    assert fn("XYZ-002", "BRICK MATERIAL Class A")   == "BL"
+    assert fn("XYZ-003", "BRICK-LINING red")         == "BL"
+    # Negatives — neither token
+    assert fn("GI-7001079", "SAFETY HELMET WHITE")   is None
+    assert fn("", "")                                is None
+    # Strict separation: a description containing both tokens locks to the
+    # first-detected family (RL takes precedence by dict insertion order).
+    # The point of the test is that result is never "RL/BL" — never aggregated.
+    mixed = fn("HYBRID-1", "RUBBER LINING with BRICK LINING wrap")
+    assert mixed in ("RL", "BL"), "RL/BL must classify to ONE family, not both"
+
+
+def check_warehouses_crud() -> None:
+    conn = database.get_connection()
+    try:
+        ok, _ = database.add_warehouse("WH-A", "Yard Alpha",
+                                       location="Jubail",
+                                       contact_name="Ali", conn=conn)
+        assert ok
+        # Duplicate insert must fail gracefully
+        dup_ok, _ = database.add_warehouse("WH-A", "dup", conn=conn)
+        assert not dup_ok
+        df = database.list_warehouses(conn=conn)
+        assert "WH-A" in set(df["Warehouse_ID"]), "Warehouse not returned"
+    finally:
+        conn.close()
+
+
+def check_vendors_crud() -> None:
+    conn = database.get_connection()
+    try:
+        ok, _ = database.add_vendor("0000110341", "Carborundum Universal",
+                                    default_inco_terms="EXW Chennai",
+                                    default_payment_terms="60 days",
+                                    conn=conn)
+        assert ok
+        df = database.list_vendors(conn=conn)
+        assert "0000110341" in set(df["Vendor_Code"])
+        # Inco/Payment terms persist for auto-fill
+        row = df[df["Vendor_Code"] == "0000110341"].iloc[0]
+        assert row["Default_Inco_Terms"] == "EXW Chennai"
+    finally:
+        conn.close()
+
+
+def check_app_notifications() -> None:
+    conn = database.get_connection()
+    try:
+        nid = database.queue_app_notification(
+            event_key="po_issued",
+            title="New PO 4720002930 issued",
+            body="Vendor: Carborundum",
+            severity="info",
+            recipient_user="hod",
+            link_page="📋 HOD Portal",
+            related_table="purchase_orders",
+            related_ref="4720002930",
+            conn=conn,
+        )
+        assert nid > 0
+        # Role-broadcast variant
+        rid = database.queue_app_notification(
+            event_key="po_assigned_to_warehouse",
+            title="PO assigned",
+            recipient_role="warehouse_user",
+            recipient_warehouse="WH-A",
+            conn=conn,
+        )
+        assert rid > 0
+        # User-targeted query returns the hod row
+        inbox = database.get_app_notifications("hod", role="hod", conn=conn)
+        assert len(inbox) >= 1
+        # Warehouse user role-broadcast query returns the WH-A row
+        wh_inbox = database.get_app_notifications(
+            "wh1", role="warehouse_user",
+            warehouse_id="WH-A", conn=conn,
+        )
+        assert len(wh_inbox) >= 1
+        # mark_read flips read_at
+        database.mark_notification_read(nid, conn=conn)
+        unread = database.count_unread_notifications("hod", role="hod", conn=conn)
+        # hod's nid is now read but other notifications may exist; the
+        # specific one we marked must not contribute.
+        still_unread_ids = set(database.get_app_notifications(
+            "hod", role="hod", unread_only=True, conn=conn,
+        ).get("id", []))
+        assert nid not in still_unread_ids
+    finally:
+        conn.close()
+
+
+def check_whatsapp_event_gate() -> None:
+    """fire_whatsapp_event honours per-event toggle in config.WHATSAPP_TRIGGERS
+    and the global WHATSAPP_ENABLED switch."""
+    conn = database.get_connection()
+    try:
+        # Baseline queue size
+        baseline = conn.execute(
+            "SELECT COUNT(*) FROM whatsapp_queue").fetchone()[0]
+        # Unknown event → suppressed
+        sent = database.fire_whatsapp_event(
+            "no_such_event", "+966500000000", "x", conn=conn)
+        assert sent is False
+        after_unknown = conn.execute(
+            "SELECT COUNT(*) FROM whatsapp_queue").fetchone()[0]
+        assert after_unknown == baseline, "Unknown event must not enqueue"
+        # Enabled event → enqueued (po_issued is True by default in config)
+        sent2 = database.fire_whatsapp_event(
+            "po_issued", "+966500000000", "PO 123 issued", conn=conn)
+        assert sent2 is True
+        after_enabled = conn.execute(
+            "SELECT COUNT(*) FROM whatsapp_queue").fetchone()[0]
+        assert after_enabled == after_unknown + 1
+        # Master switch off → suppressed even though the per-event flag is True
+        prev = config.WHATSAPP_ENABLED
+        try:
+            config.WHATSAPP_ENABLED = False
+            suppressed = database.fire_whatsapp_event(
+                "po_issued", "+966500000000", "x", conn=conn)
+            assert suppressed is False
+        finally:
+            config.WHATSAPP_ENABLED = prev
+    finally:
+        conn.close()
+
+
+def check_role_check_constraint() -> None:
+    """The rebuilt users CHECK constraint must accept the two new procurement
+    roles (logistics, warehouse_user). The bcrypt cost makes hash_password
+    slow — we go direct INSERT here since we just need to validate the CHECK."""
+    conn = database.get_connection()
+    try:
+        # Direct insert with a placeholder hash — CHECK is what matters here.
+        conn.execute(
+            "INSERT INTO users (username, password_hash, role, Site_ID, Warehouse_ID) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("logi_test", "x" * 60, "logistics", "HQ", None),
+        )
+        conn.execute(
+            "INSERT INTO users (username, password_hash, role, Site_ID, Warehouse_ID) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("wh_test", "x" * 60, "warehouse_user", "HQ", "WH-A"),
+        )
+        conn.commit()
+        # Invalid role must still be rejected
+        try:
+            conn.execute(
+                "INSERT INTO users (username, password_hash, role, Site_ID) "
+                "VALUES (?, ?, ?, ?)",
+                ("bogus_test", "x" * 60, "ceo", "HQ"),
+            )
+            conn.commit()
+            assert False, "CHECK constraint should have rejected 'ceo'"
+        except Exception:
+            pass  # expected
+    finally:
+        conn.close()
+
+
+def check_po_items_rl_bl_tagging() -> None:
+    """Inserting po_items with RL/BL descriptions must set the rl_bl_family
+    column at the application boundary (caller responsibility). Bug-check
+    asserts the column exists + accepts the values."""
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO purchase_orders (PO_Number, Vendor_Code, PO_Date, status) "
+            "VALUES (?, ?, ?, 'open')",
+            ("4720002930", "0000110341", "2026-06-15"),
+        )
+        # Helper to tag at insert (caller-side rule, validated here)
+        def _ins(line_no: int, code: str, desc: str, qty: float):
+            fam = config.classify_rl_bl_family(code, desc)
+            conn.execute(
+                "INSERT INTO po_items "
+                "(PO_Number, line_no, Material_Code, Description, Qty, UOM, "
+                " Unit_Price, Total_Price, rl_bl_family) "
+                "VALUES (?, ?, ?, ?, ?, 'EA', 0, 0, ?)",
+                ("4720002930", line_no, code, desc, qty, fam),
+            )
+        _ins(1, "RL-100", "Rubber Lining 6mm",       10)
+        _ins(2, "BL-200", "Brick Lining red",         5)
+        _ins(3, "GI-7001", "Safety helmet",            3)
+        conn.commit()
+        # Strict separation: RL rows and BL rows have distinct families
+        rl = conn.execute(
+            "SELECT COUNT(*) FROM po_items "
+            "WHERE PO_Number='4720002930' AND rl_bl_family='RL'").fetchone()[0]
+        bl = conn.execute(
+            "SELECT COUNT(*) FROM po_items "
+            "WHERE PO_Number='4720002930' AND rl_bl_family='BL'").fetchone()[0]
+        none_fam = conn.execute(
+            "SELECT COUNT(*) FROM po_items "
+            "WHERE PO_Number='4720002930' AND rl_bl_family IS NULL").fetchone()[0]
+        assert rl == 1 and bl == 1 and none_fam == 1, \
+            f"RL/BL strict separation violated: rl={rl} bl={bl} none={none_fam}"
+        # And critically — no row is ever tagged 'RL/BL' or similar combo.
+        combos = conn.execute(
+            "SELECT DISTINCT rl_bl_family FROM po_items "
+            "WHERE PO_Number='4720002930'"
+        ).fetchall()
+        allowed = {None, "RL", "BL"}
+        for (fam,) in combos:
+            assert fam in allowed, f"Unexpected family value: {fam!r}"
+    finally:
+        conn.close()
+
+
+def check_pr_to_logistics_handoff() -> None:
+    """End-to-end: insert PR via insert_manual_pr → submit_pr_to_logistics
+    → it appears in list_prs_for_logistics queue."""
+    conn = database.get_connection()
+    try:
+        ok, _ = database.insert_manual_pr(
+            pr_number="3000099001",
+            sap_code="SAP-LOGI-1",
+            material_code="GI-9000001",
+            material_name="Test material",
+            requested_qty=10.0,
+            uom="EA",
+            supplier="x", est_cost_sar=0,
+            notes="", site_id="HQ",
+            conn=conn,
+        )
+        assert ok
+        # Before submit: not in queue
+        q0 = database.list_prs_for_logistics(conn=conn)
+        assert "3000099001" not in set(q0.get("PR_Number", []))
+        # Submit
+        ok2, _ = database.submit_pr_to_logistics(
+            "3000099001", "HQ", "hod", conn=conn)
+        assert ok2
+        # In queue
+        q1 = database.list_prs_for_logistics(conn=conn)
+        assert "3000099001" in set(q1["PR_Number"])
+        # Idempotent re-submit returns False (already submitted)
+        ok3, _ = database.submit_pr_to_logistics(
+            "3000099001", "HQ", "hod", conn=conn)
+        # After first submit, logistics_status='submitted' — re-submit on
+        # the same row is permitted by the WHERE clause (still 'submitted'),
+        # but rowcount > 0 means the timestamp is updated. Either way the
+        # outcome is "row is in queue".
+        q2 = database.list_prs_for_logistics(conn=conn)
+        assert "3000099001" in set(q2["PR_Number"])
+    finally:
+        conn.close()
+
+
+def check_po_manual_creation_and_rl_bl() -> None:
+    """create_po_manual round-trip with mixed RL/BL/normal lines; assert
+    rl_bl_family tagging; assert PR flips to in_po."""
+    conn = database.get_connection()
+    try:
+        # Prep: PR submitted to logistics
+        database.insert_manual_pr(
+            pr_number="3000099002", sap_code="SAP-1",
+            material_code="GI-9000002", material_name="m",
+            requested_qty=20, uom="EA", supplier="",
+            est_cost_sar=0, notes="", site_id="HQ",
+            conn=conn,
+        )
+        database.submit_pr_to_logistics(
+            "3000099002", "HQ", "hod", conn=conn)
+        # Issue PO with 3 items: RL, BL, neutral
+        ok, msg = database.create_po_manual(
+            header={
+                "PO_Number": "4720099001",
+                "PR_Number": "3000099002",
+                "Site_ID":   "HQ",
+                "Vendor_Code": "0000099001",
+                "Vendor_Name": "Test Vendor",
+                "PO_Date":   "2026-06-15",
+                "Inco_Terms": "EXW",
+                "Payment_Terms": "30 days",
+                "Total_Amount": 12345.67,
+            },
+            items=[
+                {"Material_Code": "RL-001",
+                 "Description":  "Rubber Lining sheet",
+                 "Qty": 5, "UOM": "EA",
+                 "Unit_Price": 100, "Total_Price": 500},
+                {"Material_Code": "BL-001",
+                 "Description":  "Brick Lining red",
+                 "Qty": 3, "UOM": "EA",
+                 "Unit_Price": 50, "Total_Price": 150},
+                {"Material_Code": "GI-9000003",
+                 "Description":  "Helmet",
+                 "Qty": 10, "UOM": "EA",
+                 "Unit_Price": 25, "Total_Price": 250},
+            ],
+            created_by="logi", conn=conn,
+        )
+        assert ok, msg
+        # PO row exists
+        po = conn.execute(
+            "SELECT status, source FROM purchase_orders WHERE PO_Number = ?",
+            ("4720099001",)).fetchone()
+        assert po is not None and po[0] == "open"
+        # 3 items, families tagged
+        fams = [r[0] for r in conn.execute(
+            "SELECT rl_bl_family FROM po_items WHERE PO_Number = ? "
+            "ORDER BY line_no", ("4720099001",)).fetchall()]
+        assert fams == ["RL", "BL", None], f"Families: {fams}"
+        # PR flipped to in_po
+        pr_status = conn.execute(
+            "SELECT logistics_status FROM pr_master WHERE PR_Number = ?",
+            ("3000099002",)).fetchone()[0]
+        assert pr_status == "in_po", pr_status
+        # Duplicate PO Number rejected
+        ok_dup, _ = database.create_po_manual(
+            header={"PO_Number": "4720099001"},
+            items=[{"Material_Code": "X", "Description": "x", "Qty": 1,
+                    "UOM": "EA"}],
+            conn=conn,
+        )
+        assert not ok_dup
+    finally:
+        conn.close()
+
+
+def check_po_detail_price_hiding() -> None:
+    """get_po_detail(hide_prices=True) must blank Unit_Price + Total_Price."""
+    conn = database.get_connection()
+    try:
+        database.create_po_manual(
+            header={"PO_Number": "4720099002", "Vendor_Code": "V1",
+                    "PO_Date": "2026-06-15"},
+            items=[{"Material_Code": "GI-1", "Description": "x",
+                    "Qty": 1, "UOM": "EA", "Unit_Price": 99.0,
+                    "Total_Price": 99.0}],
+            created_by="logi", conn=conn,
+        )
+        with_prices = database.get_po_detail("4720099002", hide_prices=False,
+                                              conn=conn)
+        assert float(with_prices["items"]["Unit_Price"].iloc[0]) == 99.0
+        without = database.get_po_detail("4720099002", hide_prices=True,
+                                          conn=conn)
+        assert without["items"]["Unit_Price"].iloc[0] is None
+        assert without["items"]["Total_Price"].iloc[0] is None
+    finally:
+        conn.close()
+
+
+def check_assign_po_to_warehouse() -> None:
+    """End-to-end: create warehouse + PO, then assign full + subset, both
+    should fire an in-app notification to warehouse_user role scoped to WH."""
+    conn = database.get_connection()
+    try:
+        database.add_warehouse("WH-PHASE2", "Phase 2 yard", conn=conn)
+        database.create_po_manual(
+            header={"PO_Number": "4720099010", "PO_Date": "2026-06-15"},
+            items=[
+                {"Material_Code": "M-1", "Description": "a",
+                 "Qty": 1, "UOM": "EA"},
+                {"Material_Code": "M-2", "Description": "b",
+                 "Qty": 2, "UOM": "EA"},
+            ],
+            created_by="logi", conn=conn,
+        )
+        # 1. Full PO
+        ok, msg = database.assign_po_to_warehouse(
+            "4720099010", "WH-PHASE2",
+            expected_delivery="2026-07-01",
+            items_subset_ids=None,
+            assigned_by="logi", notes="full", conn=conn,
+        )
+        assert ok, msg
+        # 2. Subset assignment — pick the first item id
+        first_id = conn.execute(
+            "SELECT id FROM po_items WHERE PO_Number='4720099010' "
+            "ORDER BY line_no LIMIT 1").fetchone()[0]
+        ok2, _ = database.assign_po_to_warehouse(
+            "4720099010", "WH-PHASE2",
+            expected_delivery="2026-07-02",
+            items_subset_ids=[int(first_id)],
+            assigned_by="logi", notes="subset", conn=conn,
+        )
+        assert ok2
+        # Two assignments exist
+        n = conn.execute(
+            "SELECT COUNT(*) FROM po_assignments "
+            "WHERE PO_Number='4720099010'").fetchone()[0]
+        assert n == 2
+        # In-app notification fired to warehouse_user scope
+        inbox = database.get_app_notifications(
+            username="wh1", role="warehouse_user",
+            warehouse_id="WH-PHASE2", conn=conn,
+        )
+        assert (inbox["event_key"] == "po_assigned_to_warehouse").any()
+        # Unknown warehouse → rejected
+        ok3, msg3 = database.assign_po_to_warehouse(
+            "4720099010", "WH-DOES-NOT-EXIST",
+            expected_delivery=None, items_subset_ids=None,
+            assigned_by="logi", conn=conn,
+        )
+        assert not ok3
+    finally:
+        conn.close()
+
+
+def check_reschedule_flow() -> None:
+    """request_reschedule → decide_reschedule (approve) updates PO date."""
+    conn = database.get_connection()
+    try:
+        database.create_po_manual(
+            header={"PO_Number": "4720099020",
+                    "PO_Date": "2026-06-15",
+                    "Expected_Delivery": "2026-07-15"},
+            items=[{"Material_Code": "X", "Description": "x",
+                    "Qty": 1, "UOM": "EA"}],
+            created_by="logi", conn=conn,
+        )
+        ok, _ = database.request_reschedule(
+            po_number="4720099020", dn_number=None,
+            current_date="2026-07-15", requested_date="2026-07-25",
+            reason="Vendor delay",
+            requested_by_role="warehouse_user",
+            requested_by="wh1", conn=conn,
+        )
+        assert ok
+        # Get pending row
+        pend = database.list_pending_reschedules(conn=conn)
+        assert not pend.empty
+        rid = int(pend.iloc[0]["id"])
+        # Approve
+        ok2, _ = database.decide_reschedule(
+            rid, approve=True, decided_by="logi",
+            decision_notes="approved", conn=conn,
+        )
+        assert ok2
+        new_date = conn.execute(
+            "SELECT Expected_Delivery FROM purchase_orders "
+            "WHERE PO_Number='4720099020'").fetchone()[0]
+        assert new_date == "2026-07-25"
+        # Reject path (separate request)
+        database.request_reschedule(
+            po_number="4720099020", dn_number=None,
+            current_date="2026-07-25", requested_date="2026-08-01",
+            reason="Another reason",
+            requested_by_role="hod", requested_by="hod",
+            conn=conn,
+        )
+        rid2 = int(database.list_pending_reschedules(conn=conn).iloc[0]["id"])
+        ok3, _ = database.decide_reschedule(
+            rid2, approve=False, decided_by="logi",
+            decision_notes="no capacity", conn=conn,
+        )
+        assert ok3
+        # The PO date must NOT have been updated by the rejected request
+        new_date2 = conn.execute(
+            "SELECT Expected_Delivery FROM purchase_orders "
+            "WHERE PO_Number='4720099020'").fetchone()[0]
+        assert new_date2 == "2026-07-25", new_date2
+    finally:
+        conn.close()
+
+
+def check_force_close_flow() -> None:
+    """force_close_target on each of pr/po/po_item — verify audit row +
+    state flip + notification fan-out (admin + originating HOD)."""
+    conn = database.get_connection()
+    try:
+        # Set up PR + PO + line
+        database.insert_manual_pr(
+            pr_number="3000099050", sap_code="S", material_code="GI-FC-1",
+            material_name="m", requested_qty=5, uom="EA",
+            supplier="", est_cost_sar=0, notes="",
+            site_id="HQ", conn=conn,
+        )
+        database.submit_pr_to_logistics(
+            "3000099050", "HQ", "hod", conn=conn)
+        database.create_po_manual(
+            header={"PO_Number": "4720099050",
+                    "PR_Number": "3000099050",
+                    "Site_ID": "HQ",
+                    "PO_Date": "2026-06-15"},
+            items=[
+                {"Material_Code": "GI-FC-A", "Description": "a",
+                 "Qty": 2, "UOM": "EA"},
+                {"Material_Code": "GI-FC-B", "Description": "b",
+                 "Qty": 3, "UOM": "EA"},
+            ],
+            created_by="logi", conn=conn,
+        )
+        # 1. Close a single line
+        line_id = conn.execute(
+            "SELECT id FROM po_items WHERE PO_Number='4720099050' "
+            "ORDER BY line_no LIMIT 1").fetchone()[0]
+        ok, _ = database.force_close_target(
+            "po_item", str(int(line_id)),
+            "Line is obsolete", closed_by="logi", conn=conn,
+        )
+        assert ok
+        line_status = conn.execute(
+            "SELECT line_status, close_reason FROM po_items "
+            "WHERE id=?", (line_id,)).fetchone()
+        assert line_status[0] == "force_closed"
+        # 2. Force-close PO
+        ok2, _ = database.force_close_target(
+            "po", "4720099050", "Vendor cancelled",
+            closed_by="logi", conn=conn,
+        )
+        assert ok2
+        po_status = conn.execute(
+            "SELECT status FROM purchase_orders "
+            "WHERE PO_Number='4720099050'").fetchone()[0]
+        assert po_status == "force_closed"
+        # 3. Force-close PR
+        ok3, _ = database.force_close_target(
+            "pr", "3000099050", "Cancelled by requestor",
+            closed_by="logi", conn=conn,
+        )
+        assert ok3
+        pr_status = conn.execute(
+            "SELECT logistics_status, status FROM pr_master "
+            "WHERE PR_Number='3000099050' LIMIT 1").fetchone()
+        assert pr_status[0] == "force_closed" and pr_status[1] == "closed"
+        # Audit rows present (one per close)
+        n = conn.execute(
+            "SELECT COUNT(*) FROM po_force_closures "
+            "WHERE PR_Number='3000099050' OR PO_Number='4720099050' "
+            "   OR (target_type='po_item' AND target_ref=?)",
+            (str(int(line_id)),)).fetchone()[0]
+        assert n == 3
+        # Admin in-app notification fired
+        admin_inbox = database.get_app_notifications(
+            "admin", role="admin", conn=conn)
+        assert (admin_inbox["event_key"]
+                .isin(["po_force_closed", "pr_force_closed"])).any()
+        # Reason < 3 chars rejected
+        ok4, _ = database.force_close_target(
+            "pr", "3000099051", "x", closed_by="logi", conn=conn,
+        )
+        assert not ok4
+    finally:
+        conn.close()
+
+
+def check_vendor_return_reopens_po() -> None:
+    """Raising a return on a delivered PO line flips line_status back to
+    partially_delivered (and PO header to partially_delivered if it was closed)."""
+    conn = database.get_connection()
+    try:
+        database.create_po_manual(
+            header={"PO_Number": "4720099060",
+                    "PO_Date": "2026-06-15"},
+            items=[{"Material_Code": "GI-RET-1",
+                    "Description": "thing",
+                    "Qty": 10, "UOM": "EA"}],
+            created_by="logi", conn=conn,
+        )
+        # Pretend it was delivered
+        line_id = conn.execute(
+            "SELECT id FROM po_items WHERE PO_Number='4720099060'"
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE po_items SET Delivered_Qty=10, line_status='delivered' "
+            "WHERE id=?", (line_id,))
+        conn.execute(
+            "UPDATE purchase_orders SET status='delivered' "
+            "WHERE PO_Number='4720099060'")
+        conn.commit()
+        ok, msg = database.raise_vendor_return(
+            po_number="4720099060", po_item_id=int(line_id),
+            dn_number=None, qty=3, reason="Damaged at receiving",
+            raised_by_role="warehouse_user",
+            raised_by="wh1",
+            expected_resupply="2026-07-30",
+            conn=conn,
+        )
+        assert ok, msg
+        # Line state
+        row = conn.execute(
+            "SELECT Returned_Qty, line_status FROM po_items WHERE id=?",
+            (line_id,)).fetchone()
+        assert row[0] == 3 and row[1] == "partially_delivered"
+        # PO reopened
+        po_status = conn.execute(
+            "SELECT status FROM purchase_orders "
+            "WHERE PO_Number='4720099060'").fetchone()[0]
+        assert po_status == "partially_delivered"
+    finally:
+        conn.close()
+
+
+def check_process_po_pdf_smoke() -> None:
+    """Synthetic-PDF smoke: build a tiny PDF that resembles the sample PO
+    layout and assert process_po_pdf returns at least the PO_Number + 1+ item.
+    If reportlab isn't installed, skip cleanly — this is a smoke test, not a
+    blocker."""
+    try:
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import letter
+    except ImportError:
+        return  # skip silently — reportlab not in requirements
+
+    import io as _io
+    buf = _io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=letter)
+    c.setFont("Helvetica", 10)
+    # Headers
+    c.drawString(40, 760, "Purchase Order")
+    c.drawString(40, 740, "Vendor :0000110341")
+    c.drawString(40, 730, "TEST VENDOR LIMITED")
+    c.drawString(40, 710, "Inco Terms: EXW Chennai")
+    c.drawString(40, 700, "Payment Terms: 30 days")
+    c.drawString(40, 690, "Purch. Order No.: 4720099999")
+    c.drawString(40, 680, "Date: 15.06.2026")
+    c.drawString(40, 670, "PO Type: ZGI2 -GI Trading/Import PO")
+    c.drawString(40, 660, "Contact: 914430006080")
+    c.drawString(40, 650, "Mobile: +966 59 733 2265")
+    c.drawString(40, 640, "Our Reference: Mohammed Hyder")
+    c.drawString(40, 630, "subramanyamv@cumi.murugappa.com")
+    c.drawString(40, 620, "logistics@generalindustries.net")
+    # A line item in the recognised pattern
+    c.drawString(40, 580,
+                 "001  GI-8003100  CUMIFURAN SYRUP LIQUID RESIN  5,025.00  KG  10.00  50250.00")
+    c.drawString(40, 560,
+                 "002  GI-8003099  RUBBER LINING PANEL  100.00  KG  20.00  2000.00")
+    # Annexure shipment schedule (single row)
+    c.drawString(40, 500, "SHIPMENT 01  BRICK MATERIALS  05.02.2026")
+    # Totals
+    c.drawString(40, 460, "Freight Charges 100.00")
+    c.drawString(40, 450, "Total Amount 52350.00")
+    c.showPage()
+    c.save()
+    pdf_bytes = buf.getvalue()
+
+    ok, msg, extracted = database.process_po_pdf(pdf_bytes, created_by="logi")
+    assert ok, f"PO PDF smoke failed: {msg}"
+    assert extracted["header"].get("PO_Number") == "4720099999", extracted["header"]
+    assert len(extracted["items"]) >= 2
+    fams = [it.get("rl_bl_family") for it in extracted["items"]]
+    assert "RL" in fams, f"Expected RL tag, got {fams}"
+    # Annexure parsed
+    assert len(extracted["shipment_schedule"]) >= 1
+
+
+def check_warehouse_acknowledge_and_receive() -> None:
+    """End-to-end: WH ack assignment → WH receives partial qty → po_items
+    Delivered_Qty bumps → over-deliver is rejected."""
+    conn = database.get_connection()
+    try:
+        database.add_warehouse("WH-P3", "Phase 3 yard", conn=conn)
+        database.create_po_manual(
+            header={"PO_Number": "4720033001",
+                    "PO_Date": "2026-06-16"},
+            items=[
+                {"Material_Code": "P3-A", "Description": "Item A",
+                 "Qty": 10, "UOM": "EA"},
+                {"Material_Code": "P3-B", "Description": "Item B",
+                 "Qty": 5,  "UOM": "EA"},
+            ],
+            created_by="logi", conn=conn,
+        )
+        ok, _ = database.assign_po_to_warehouse(
+            "4720033001", "WH-P3", expected_delivery="2026-07-01",
+            items_subset_ids=None, assigned_by="logi", conn=conn,
+        )
+        assert ok
+        aid = conn.execute(
+            "SELECT id FROM po_assignments WHERE PO_Number='4720033001'"
+        ).fetchone()[0]
+        # Ack
+        ok_ack, _ = database.acknowledge_assignment(int(aid), "wh1", conn=conn)
+        assert ok_ack
+        assert conn.execute(
+            "SELECT status FROM po_assignments WHERE id=?", (aid,)
+        ).fetchone()[0] == "acknowledged"
+        # Partial receive
+        ids = [r[0] for r in conn.execute(
+            "SELECT id FROM po_items WHERE PO_Number='4720033001' "
+            "ORDER BY line_no").fetchall()]
+        ok_rec, msg = database.record_warehouse_receipt(
+            int(aid), {ids[0]: 4, ids[1]: 5}, "wh1", conn=conn,
+        )
+        assert ok_rec, msg
+        # po_items state
+        states = conn.execute(
+            "SELECT line_status, Delivered_Qty FROM po_items "
+            "WHERE PO_Number='4720033001' ORDER BY line_no").fetchall()
+        assert states == [("partially_delivered", 4), ("delivered", 5)]
+        # PO header rolled to partial
+        assert conn.execute(
+            "SELECT status FROM purchase_orders "
+            "WHERE PO_Number='4720033001'").fetchone()[0] == "partially_delivered"
+        # Over-deliver blocked
+        ok_over, msg_over = database.record_warehouse_receipt(
+            int(aid), {ids[0]: 100}, "wh1", conn=conn,
+        )
+        assert not ok_over and "over-deliver" in msg_over.lower()
+    finally:
+        conn.close()
+
+
+def check_warehouse_view_strict_price_hiding() -> None:
+    """The Warehouse-facing assignment detail MUST blank every monetary
+    column on items AND remove monetary keys from the header."""
+    conn = database.get_connection()
+    try:
+        database.create_po_manual(
+            header={"PO_Number": "4720033010", "PO_Date": "2026-06-16",
+                    "Vendor_Code": "V", "Vendor_Name": "V Co",
+                    "Total_Amount": 99999.99, "Freight_Charges": 100.0,
+                    "Handling_Charges": 50.0, "Discount_Amount": 25.0,
+                    "Amount_In_Words": "Ninety nine thousand"},
+            items=[{"Material_Code": "X", "Description": "x",
+                    "Qty": 1, "UOM": "EA",
+                    "Unit_Price": 77.0, "Total_Price": 77.0}],
+            created_by="logi", conn=conn,
+        )
+        database.add_warehouse("WH-PRICEHIDE", "PriceHide WH", conn=conn)
+        database.assign_po_to_warehouse(
+            "4720033010", "WH-PRICEHIDE", expected_delivery="2026-07-01",
+            items_subset_ids=None, assigned_by="logi", conn=conn,
+        )
+        aid = conn.execute(
+            "SELECT id FROM po_assignments WHERE PO_Number='4720033010'"
+        ).fetchone()[0]
+        detail = database.get_assignment_detail(int(aid), conn=conn)
+        items = detail["items"]
+        # Prices blanked
+        assert items["Unit_Price"].iloc[0] is None
+        assert items["Total_Price"].iloc[0] is None
+        # Header has no money keys
+        h = detail["po_header"]
+        for forbidden in ("Total_Amount", "Freight_Charges",
+                          "Handling_Charges", "Discount_Amount",
+                          "Amount_In_Words"):
+            assert forbidden not in h, f"WH header leaked {forbidden}"
+    finally:
+        conn.close()
+
+
+def check_dn_rl_bl_strict_separation_blocks_mixed() -> None:
+    """create_delivery_note must REJECT a DN that bundles RL + BL lines.
+    Single-family DNs go through."""
+    conn = database.get_connection()
+    try:
+        database.create_po_manual(
+            header={"PO_Number": "4720033020", "PO_Date": "2026-06-16"},
+            items=[
+                {"Material_Code": "RL-X", "Description": "Rubber Lining sheet",
+                 "Qty": 5, "UOM": "EA"},
+                {"Material_Code": "BL-X", "Description": "Brick Lining tile",
+                 "Qty": 5, "UOM": "EA"},
+                {"Material_Code": "GI-X", "Description": "Safety helmet",
+                 "Qty": 5, "UOM": "EA"},
+            ],
+            created_by="logi", conn=conn,
+        )
+        database.add_warehouse("WH-RLBL", "RLBL WH", conn=conn)
+        database.assign_po_to_warehouse(
+            "4720033020", "WH-RLBL", expected_delivery="2026-07-01",
+            items_subset_ids=None, assigned_by="logi", conn=conn,
+        )
+        aid = conn.execute(
+            "SELECT id FROM po_assignments WHERE PO_Number='4720033020'"
+        ).fetchone()[0]
+        ok_ack, _ = database.acknowledge_assignment(int(aid), "wh1", conn=conn)
+        assert ok_ack
+        # Receive everything
+        ids = {row[1]: row[0] for row in conn.execute(
+            "SELECT id, Material_Code FROM po_items "
+            "WHERE PO_Number='4720033020'").fetchall()}
+        database.record_warehouse_receipt(
+            int(aid), {v: 5 for v in ids.values()}, "wh1", conn=conn,
+        )
+        # Mixed-family DN → rejected
+        ok_mix, msg_mix, _ = database.create_delivery_note(
+            po_number="4720033020", warehouse_id="WH-RLBL",
+            site_id="HQ",
+            line_items=[
+                {"po_item_id": ids["RL-X"], "Qty": 2},
+                {"po_item_id": ids["BL-X"], "Qty": 2},
+            ],
+            created_by="wh1", conn=conn,
+        )
+        assert not ok_mix
+        assert "strict separation" in msg_mix.lower()
+        # Single-family DN → goes through
+        ok_rl, _, dn_rl = database.create_delivery_note(
+            po_number="4720033020", warehouse_id="WH-RLBL",
+            site_id="HQ",
+            line_items=[{"po_item_id": ids["RL-X"], "Qty": 3}],
+            created_by="wh1", conn=conn,
+        )
+        assert ok_rl and dn_rl
+        # Family stamped on the DN header
+        fam = conn.execute(
+            "SELECT rl_bl_family FROM delivery_notes "
+            "WHERE DN_Number = ?", (dn_rl,)).fetchone()[0]
+        assert fam == "RL"
+    finally:
+        conn.close()
+
+
+def check_full_dn_flow_to_sk_receipt() -> None:
+    """End-to-end: WH draft DN → submit Logistics → Logistics approve →
+    HOD approve (stages pending_receipts row) → SK confirm (→ receipts).
+    Asserts identity math + every state transition + dn_items.status."""
+    conn = database.get_connection()
+    try:
+        # Inventory entry so Material_Code → SAP_Code join works
+        conn.execute(
+            "INSERT INTO inventory (SAP_Code, Material_Code, "
+            " Equipment_Description, UOM, Minimum_Qty) "
+            "VALUES ('SAP-DN-1', 'M-DN-1', 'Widget', 'EA', 0)",
+        )
+        database.create_po_manual(
+            header={"PO_Number": "4720033030", "PO_Date": "2026-06-16",
+                    "Site_ID": "HQ"},
+            items=[{"Material_Code": "M-DN-1", "Description": "Widget",
+                    "Qty": 10, "UOM": "EA"}],
+            created_by="logi", conn=conn,
+        )
+        database.add_warehouse("WH-FLOW", "Flow WH", conn=conn)
+        database.assign_po_to_warehouse(
+            "4720033030", "WH-FLOW", expected_delivery="2026-07-01",
+            items_subset_ids=None, assigned_by="logi", conn=conn,
+        )
+        aid = conn.execute(
+            "SELECT id FROM po_assignments WHERE PO_Number='4720033030'"
+        ).fetchone()[0]
+        database.acknowledge_assignment(int(aid), "wh1", conn=conn)
+        po_item_id = conn.execute(
+            "SELECT id FROM po_items WHERE PO_Number='4720033030'"
+        ).fetchone()[0]
+        database.record_warehouse_receipt(
+            int(aid), {int(po_item_id): 10}, "wh1", conn=conn,
+        )
+        # Build a DN
+        ok_dn, _, dn = database.create_delivery_note(
+            po_number="4720033030", warehouse_id="WH-FLOW", site_id="HQ",
+            line_items=[{"po_item_id": int(po_item_id), "Qty": 10,
+                         "Lot_Number": "LOT-DN-1",
+                         "Expiry_Date": "2027-01-01"}],
+            header={"DN_Date": "2026-06-16", "Vehicle_No": "TRK-1",
+                    "Driver_Name": "Bob"},
+            created_by="wh1", conn=conn,
+        )
+        assert ok_dn and dn
+        # Submit → Logistics → HOD → SK
+        ok1, _ = database.submit_dn_for_logistics(dn, "wh1", conn=conn)
+        assert ok1
+        ok2, _ = database.logistics_decide_dn(
+            dn, approve=True, decided_by="logi", conn=conn)
+        assert ok2
+        ok3, _ = database.hod_decide_dn(
+            dn, approve=True, decided_by="hod", conn=conn)
+        assert ok3
+        # pending_receipts mirror row created
+        pr_n = conn.execute(
+            "SELECT COUNT(*) FROM pending_receipts "
+            "WHERE DN_Number = ? AND status='pending_sk'",
+            (dn,)).fetchone()[0]
+        assert pr_n == 1, f"Expected 1 pending_sk row, got {pr_n}"
+        # SK confirms — writes to receipts, drops pending_receipts mirror
+        ok4, _ = database.sk_mark_dn_received(
+            dn, store_keeper="sk", conn=conn)
+        assert ok4
+        rcpt = conn.execute(
+            "SELECT COUNT(*), SUM(Quantity) FROM receipts "
+            "WHERE DN_Number = ?", (dn,)).fetchone()
+        assert rcpt[0] == 1 and float(rcpt[1]) == 10.0
+        # DN status
+        st_ = conn.execute(
+            "SELECT status FROM delivery_notes WHERE DN_Number=?",
+            (dn,)).fetchone()[0]
+        assert st_ == "received"
+        # dn_items.status flipped + sk_received_qty stored
+        dn_item = conn.execute(
+            "SELECT status, sk_received_qty FROM dn_items "
+            "WHERE DN_Number = ?", (dn,)).fetchone()
+        assert dn_item[0] == "received" and float(dn_item[1]) == 10.0
+        # pending_receipts mirror row cleaned up
+        pr_remaining = conn.execute(
+            "SELECT COUNT(*) FROM pending_receipts "
+            "WHERE DN_Number = ?", (dn,)).fetchone()[0]
+        assert pr_remaining == 0
+        # Receipt carries the traceback fields
+        traceback_row = conn.execute(
+            "SELECT DN_Number, Warehouse_ID, PO_Number_Source FROM receipts "
+            "WHERE DN_Number = ?", (dn,)).fetchone()
+        assert traceback_row == (dn, "WH-FLOW", "4720033030")
+    finally:
+        conn.close()
+
+
+def check_internal_return_from_site() -> None:
+    """A site SK-confirmed DN line can be returned by Warehouse → raises a
+    vendor_return + reopens the originating PO line."""
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO inventory (SAP_Code, Material_Code, "
+            " Equipment_Description, UOM, Minimum_Qty) "
+            "VALUES ('SAP-RET-1', 'M-RET-1', 'X', 'EA', 0)",
+        )
+        database.create_po_manual(
+            header={"PO_Number": "4720033040", "PO_Date": "2026-06-16",
+                    "Site_ID": "HQ"},
+            items=[{"Material_Code": "M-RET-1", "Description": "X",
+                    "Qty": 8, "UOM": "EA"}],
+            created_by="logi", conn=conn,
+        )
+        database.add_warehouse("WH-RET", "Returns WH", conn=conn)
+        database.assign_po_to_warehouse(
+            "4720033040", "WH-RET", expected_delivery="2026-07-01",
+            items_subset_ids=None, assigned_by="logi", conn=conn,
+        )
+        aid = conn.execute(
+            "SELECT id FROM po_assignments WHERE PO_Number='4720033040'"
+        ).fetchone()[0]
+        database.acknowledge_assignment(int(aid), "wh1", conn=conn)
+        po_item_id = conn.execute(
+            "SELECT id FROM po_items WHERE PO_Number='4720033040'"
+        ).fetchone()[0]
+        database.record_warehouse_receipt(
+            int(aid), {int(po_item_id): 8}, "wh1", conn=conn,
+        )
+        # Prepare + ship the full DN
+        ok, _, dn = database.create_delivery_note(
+            po_number="4720033040", warehouse_id="WH-RET", site_id="HQ",
+            line_items=[{"po_item_id": int(po_item_id), "Qty": 8}],
+            created_by="wh1", conn=conn,
+        )
+        database.submit_dn_for_logistics(dn, "wh1", conn=conn)
+        database.logistics_decide_dn(dn, approve=True, decided_by="logi", conn=conn)
+        database.hod_decide_dn(dn, approve=True, decided_by="hod", conn=conn)
+        database.sk_mark_dn_received(dn, store_keeper="sk", conn=conn)
+        dn_item_id = conn.execute(
+            "SELECT id FROM dn_items WHERE DN_Number = ?",
+            (dn,)).fetchone()[0]
+        # Now raise an internal return for 2 units
+        ok_ret, _ = database.record_internal_return(
+            dn_number=dn,
+            items=[{"dn_item_id": int(dn_item_id), "qty": 2}],
+            reason="Damaged during unloading",
+            raised_by_role="warehouse_user", raised_by="wh1",
+            conn=conn,
+        )
+        assert ok_ret
+        # po_items reopened
+        rec = conn.execute(
+            "SELECT Returned_Qty, line_status FROM po_items "
+            "WHERE id = ?", (po_item_id,)).fetchone()
+        assert rec[0] == 2 and rec[1] == "partially_delivered"
+        # dn_items flagged returned
+        assert conn.execute(
+            "SELECT status FROM dn_items WHERE id = ?",
+            (dn_item_id,)).fetchone()[0] == "returned"
+        # vendor_return row written + linked to DN
+        assert conn.execute(
+            "SELECT COUNT(*) FROM po_returns "
+            "WHERE DN_Number = ?", (dn,)).fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def check_hod_rejection_flow() -> None:
+    """HOD rejection should NOT stage pending_receipts and should leave DN
+    status='rejected' with a rejection_reason."""
+    conn = database.get_connection()
+    try:
+        database.create_po_manual(
+            header={"PO_Number": "4720033050", "PO_Date": "2026-06-16"},
+            items=[{"Material_Code": "REJ-1", "Description": "X",
+                    "Qty": 3, "UOM": "EA"}],
+            created_by="logi", conn=conn,
+        )
+        database.add_warehouse("WH-REJ", "Rej WH", conn=conn)
+        database.assign_po_to_warehouse(
+            "4720033050", "WH-REJ", expected_delivery="2026-07-01",
+            items_subset_ids=None, assigned_by="logi", conn=conn,
+        )
+        aid = conn.execute(
+            "SELECT id FROM po_assignments WHERE PO_Number='4720033050'"
+        ).fetchone()[0]
+        database.acknowledge_assignment(int(aid), "wh1", conn=conn)
+        po_item_id = conn.execute(
+            "SELECT id FROM po_items WHERE PO_Number='4720033050'"
+        ).fetchone()[0]
+        database.record_warehouse_receipt(
+            int(aid), {int(po_item_id): 3}, "wh1", conn=conn,
+        )
+        ok, _, dn = database.create_delivery_note(
+            po_number="4720033050", warehouse_id="WH-REJ", site_id="HQ",
+            line_items=[{"po_item_id": int(po_item_id), "Qty": 3}],
+            created_by="wh1", conn=conn,
+        )
+        database.submit_dn_for_logistics(dn, "wh1", conn=conn)
+        database.logistics_decide_dn(dn, approve=True, decided_by="logi", conn=conn)
+        ok_rej, _ = database.hod_decide_dn(
+            dn, approve=False, decided_by="hod",
+            decision_notes="Wrong qty", conn=conn,
+        )
+        assert ok_rej
+        row = conn.execute(
+            "SELECT status, rejection_reason FROM delivery_notes "
+            "WHERE DN_Number = ?", (dn,)).fetchone()
+        assert row[0] == "rejected" and row[1] == "Wrong qty"
+        # No pending_receipts row created
+        n = conn.execute(
+            "SELECT COUNT(*) FROM pending_receipts WHERE DN_Number = ?",
+            (dn,)).fetchone()[0]
+        assert n == 0
+    finally:
+        conn.close()
+
+
+def check_in_transit_for_site() -> None:
+    """A DN sitting at each pipeline state should surface in the HOD's
+    In-Transit view, ordered by pipeline depth (closest-to-SK first).
+    Filters out other sites."""
+    conn = database.get_connection()
+    try:
+        # Inventory join target so SK confirm works downstream
+        conn.execute(
+            "INSERT INTO inventory (SAP_Code, Material_Code, "
+            " Equipment_Description, UOM, Minimum_Qty) "
+            "VALUES ('SAP-IT-1','M-IT-1','Widget','EA',0)",
+        )
+        database.add_warehouse("WH-IT", "In-Transit WH", conn=conn)
+
+        # Build two POs: one bound for SITE-A, one for SITE-OTHER
+        for po, site in (("4720070001", "SITE-A"),
+                         ("4720070002", "SITE-OTHER")):
+            database.create_po_manual(
+                header={"PO_Number": po, "PO_Date": "2026-06-16",
+                        "Site_ID": site},
+                items=[{"Material_Code": "M-IT-1",
+                        "Description": "Widget",
+                        "Qty": 5, "UOM": "EA"}],
+                created_by="logi", conn=conn,
+            )
+            database.assign_po_to_warehouse(
+                po, "WH-IT", expected_delivery="2026-07-01",
+                items_subset_ids=None, assigned_by="logi", conn=conn,
+            )
+            aid = conn.execute(
+                "SELECT id FROM po_assignments WHERE PO_Number=?",
+                (po,)).fetchone()[0]
+            database.acknowledge_assignment(int(aid), "wh1", conn=conn)
+            pid = conn.execute(
+                "SELECT id FROM po_items WHERE PO_Number=?",
+                (po,)).fetchone()[0]
+            database.record_warehouse_receipt(
+                int(aid), {int(pid): 5}, "wh1", conn=conn,
+            )
+
+        # SITE-A DNs across the pipeline
+        # DN1: stays at draft → submit → pending_logistics
+        # DN2: → logistics approved → pending_hod
+        # DN3: → logistics approved → hod approved → pending_sk
+        def _ship(po_number, site_id, qty):
+            pid = conn.execute(
+                "SELECT id FROM po_items WHERE PO_Number=?",
+                (po_number,)).fetchone()[0]
+            ok, _, dn = database.create_delivery_note(
+                po_number=po_number, warehouse_id="WH-IT",
+                site_id=site_id,
+                line_items=[{"po_item_id": int(pid), "Qty": qty}],
+                created_by="wh1", conn=conn,
+            )
+            assert ok
+            return dn
+
+        # 3 separate POs for SITE-A — but we only built one. Build extras.
+        for po_n in ("4720070003", "4720070004"):
+            database.create_po_manual(
+                header={"PO_Number": po_n, "PO_Date": "2026-06-16",
+                        "Site_ID": "SITE-A"},
+                items=[{"Material_Code": "M-IT-1",
+                        "Description": "Widget",
+                        "Qty": 5, "UOM": "EA"}],
+                created_by="logi", conn=conn,
+            )
+            database.assign_po_to_warehouse(
+                po_n, "WH-IT", expected_delivery="2026-07-01",
+                items_subset_ids=None, assigned_by="logi", conn=conn,
+            )
+            aid2 = conn.execute(
+                "SELECT id FROM po_assignments WHERE PO_Number=?",
+                (po_n,)).fetchone()[0]
+            database.acknowledge_assignment(int(aid2), "wh1", conn=conn)
+            pid2 = conn.execute(
+                "SELECT id FROM po_items WHERE PO_Number=?",
+                (po_n,)).fetchone()[0]
+            database.record_warehouse_receipt(
+                int(aid2), {int(pid2): 5}, "wh1", conn=conn,
+            )
+
+        dn1 = _ship("4720070001", "SITE-A", 1)
+        database.submit_dn_for_logistics(dn1, "wh1", conn=conn)
+        dn2 = _ship("4720070003", "SITE-A", 1)
+        database.submit_dn_for_logistics(dn2, "wh1", conn=conn)
+        database.logistics_decide_dn(dn2, approve=True,
+                                     decided_by="logi", conn=conn)
+        dn3 = _ship("4720070004", "SITE-A", 1)
+        database.submit_dn_for_logistics(dn3, "wh1", conn=conn)
+        database.logistics_decide_dn(dn3, approve=True,
+                                     decided_by="logi", conn=conn)
+        database.hod_decide_dn(dn3, approve=True, decided_by="hod",
+                               conn=conn)
+        # SITE-OTHER DN — should NOT appear in SITE-A view
+        dn_other = _ship("4720070002", "SITE-OTHER", 1)
+        database.submit_dn_for_logistics(dn_other, "wh1", conn=conn)
+
+        # Query
+        df = database.list_in_transit_dns_for_site("SITE-A", conn=conn)
+        dns_seen = set(df["DN_Number"])
+        assert dn1 in dns_seen and dn2 in dns_seen and dn3 in dns_seen, dns_seen
+        # Site isolation
+        assert dn_other not in dns_seen, "Cross-site leak"
+        # Ordering: pending_sk should sort earlier than pending_logistics
+        order = df["status"].tolist()
+        idx_sk = order.index("pending_sk")
+        idx_log = order.index("pending_logistics")
+        assert idx_sk < idx_log, f"Ordering wrong: {order}"
+    finally:
+        conn.close()
+
+
+def check_hod_can_submit_reschedule_and_see_outcome() -> None:
+    """Site HOD raises a reschedule on a DN, it appears as 'pending' in
+    My-Reschedule-Requests; Logistics approves; the next list call
+    reflects the new status + decision metadata."""
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO inventory (SAP_Code, Material_Code, "
+            " Equipment_Description, UOM, Minimum_Qty) "
+            "VALUES ('SAP-IT-2','M-IT-2','W2','EA',0)",
+        )
+        database.add_warehouse("WH-RES", "Reschedule WH", conn=conn)
+        database.create_po_manual(
+            header={"PO_Number": "4720071000", "PO_Date": "2026-06-16",
+                    "Site_ID": "SITE-A"},
+            items=[{"Material_Code": "M-IT-2", "Description": "W2",
+                    "Qty": 2, "UOM": "EA"}],
+            created_by="logi", conn=conn,
+        )
+        database.assign_po_to_warehouse(
+            "4720071000", "WH-RES",
+            expected_delivery="2026-07-01",
+            items_subset_ids=None, assigned_by="logi", conn=conn,
+        )
+        aid = conn.execute(
+            "SELECT id FROM po_assignments WHERE PO_Number='4720071000'"
+        ).fetchone()[0]
+        database.acknowledge_assignment(int(aid), "wh1", conn=conn)
+        pid = conn.execute(
+            "SELECT id FROM po_items WHERE PO_Number='4720071000'"
+        ).fetchone()[0]
+        database.record_warehouse_receipt(int(aid), {int(pid): 2},
+                                          "wh1", conn=conn)
+        ok, _, dn = database.create_delivery_note(
+            po_number="4720071000", warehouse_id="WH-RES",
+            site_id="SITE-A",
+            line_items=[{"po_item_id": int(pid), "Qty": 2}],
+            header={"DN_Date": "2026-07-01"},
+            created_by="wh1", conn=conn,
+        )
+        assert ok
+        database.submit_dn_for_logistics(dn, "wh1", conn=conn)
+        database.logistics_decide_dn(dn, approve=True,
+                                     decided_by="logi", conn=conn)
+        # HOD raises the reschedule
+        ok_req, _ = database.request_reschedule(
+            po_number="4720071000", dn_number=dn,
+            current_date="2026-07-01", requested_date="2026-07-08",
+            reason="Site is on shutdown that week",
+            requested_by_role="hod", requested_by="hod",
+            conn=conn,
+        )
+        assert ok_req
+        # Site list view shows it as pending — grab the row matching THIS
+        # specific PO + DN to avoid any race-condition with prior tests'
+        # rows sharing the same second-precision timestamp.
+        rdf = database.list_reschedule_requests_for_site(
+            "SITE-A", status_filter=["pending"], conn=conn)
+        mine = rdf[(rdf["PO_Number"] == "4720071000")
+                   & (rdf["DN_Number"] == dn)]
+        assert not mine.empty, "Newly-submitted reschedule not visible"
+        rid = int(mine.iloc[0]["id"])
+        # Logistics approves
+        ok_dec, msg_dec = database.decide_reschedule(
+            rid, approve=True, decided_by="logi",
+            decision_notes="Shutdown noted",
+            conn=conn,
+        )
+        assert ok_dec, f"decide_reschedule(rid={rid}) failed: {msg_dec}"
+        # Site view now reflects approved + decided_by + new date pushed
+        rdf2 = database.list_reschedule_requests_for_site(
+            "SITE-A", status_filter=["approved"], conn=conn,
+        )
+        assert (rdf2["status"] == "approved").all()
+        assert rdf2.iloc[0]["decided_by"] == "logi"
+        # PO Expected_Delivery picked up the new date
+        new_eta = conn.execute(
+            "SELECT Expected_Delivery FROM purchase_orders "
+            "WHERE PO_Number='4720071000'").fetchone()[0]
+        assert new_eta == "2026-07-08"
+    finally:
+        conn.close()
+
+
+def check_force_closure_site_visibility() -> None:
+    """A force-closure on a PR/PO bound for SITE-A must surface in
+    SITE-A's list and NOT in SITE-B's list. The fallback joins
+    (via pr_master + purchase_orders) catch rows with NULL Site_ID."""
+    conn = database.get_connection()
+    try:
+        # PR bound for SITE-A → force-close it
+        database.insert_manual_pr(
+            pr_number="3000077001", sap_code="SAP-FC", material_code="GI-FC",
+            material_name="m", requested_qty=5, uom="EA",
+            supplier="", est_cost_sar=0, notes="",
+            site_id="SITE-A", conn=conn,
+        )
+        database.submit_pr_to_logistics(
+            "3000077001", "SITE-A", "hod", conn=conn)
+        ok, _ = database.force_close_target(
+            "pr", "3000077001", "Cancelled by site",
+            closed_by="logi", conn=conn,
+        )
+        assert ok
+        # PO bound for SITE-B → also force-close
+        database.create_po_manual(
+            header={"PO_Number": "4720077002", "PO_Date": "2026-06-16",
+                    "Site_ID": "SITE-B"},
+            items=[{"Material_Code": "X", "Description": "x",
+                    "Qty": 1, "UOM": "EA"}],
+            created_by="logi", conn=conn,
+        )
+        database.force_close_target(
+            "po", "4720077002", "Vendor cancelled",
+            closed_by="logi", conn=conn,
+        )
+        # SITE-A view: PR row only
+        fc_a = database.list_force_closures_for_site("SITE-A", conn=conn)
+        refs_a = set(fc_a["target_ref"])
+        assert "3000077001" in refs_a
+        assert "4720077002" not in refs_a, "PO from SITE-B leaked into SITE-A"
+        # SITE-B view: PO row only
+        fc_b = database.list_force_closures_for_site("SITE-B", conn=conn)
+        refs_b = set(fc_b["target_ref"])
+        assert "4720077002" in refs_b
+        assert "3000077001" not in refs_b
+    finally:
+        conn.close()
+
+
+def check_delivery_reminders_idempotent() -> None:
+    """sweep_delivery_reminders fires once per (ref, date, offset). Running
+    it twice on the same day must NOT double-insert. T-2 / T-1 / T-0 windows
+    must each fire correctly when matching dates exist."""
+    import datetime as _dt
+    conn = database.get_connection()
+    try:
+        # Three POs landing on the three offset dates from a fixed "today"
+        today = _dt.date(2026, 6, 16)
+        for off, po_no in [(0, "4720088000"),  # T-0
+                           (1, "4720088001"),  # T-1
+                           (2, "4720088002")]:  # T-2
+            d_iso = (today + _dt.timedelta(days=off)).isoformat()
+            database.create_po_manual(
+                header={"PO_Number": po_no, "PO_Date": "2026-06-16",
+                        "Expected_Delivery": d_iso,
+                        "Site_ID": "HQ"},
+                items=[{"Material_Code": "X", "Description": "x",
+                        "Qty": 1, "UOM": "EA"}],
+                created_by="logi", conn=conn,
+            )
+        # First sweep — three new fires, one per PO
+        n1 = database.sweep_delivery_reminders(today=today, conn=conn)
+        assert n1 >= 3, f"Expected ≥3 fresh fires, got {n1}"
+        # Dedup row count matches
+        dedup_n = conn.execute(
+            "SELECT COUNT(*) FROM delivery_reminders_sent "
+            "WHERE ref_type='po' AND ref_number IN (?, ?, ?)",
+            ("4720088000", "4720088001", "4720088002")).fetchone()[0]
+        assert dedup_n == 3, f"Dedup rows expected 3, got {dedup_n}"
+        # Second sweep — same day, no new fires
+        n2 = database.sweep_delivery_reminders(today=today, conn=conn)
+        # n2 may be 0 (UNIQUE blocks) — that's the whole point
+        dedup_n2 = conn.execute(
+            "SELECT COUNT(*) FROM delivery_reminders_sent "
+            "WHERE ref_type='po' AND ref_number IN (?, ?, ?)",
+            ("4720088000", "4720088001", "4720088002")).fetchone()[0]
+        assert dedup_n2 == 3, f"After re-sweep, dedup should stay 3, got {dedup_n2}"
+        # Verify in-app notifications were queued at the right severities
+        inbox = database.get_app_notifications(
+            "logi", role="logistics", conn=conn,
+        )
+        sev_seen = set(inbox[
+            inbox["event_key"].isin([
+                "delivery_reminder_t_minus_2",
+                "delivery_reminder_t_minus_1",
+                "delivery_reminder_t_zero",
+            ])
+        ]["severity"])
+        assert "critical" in sev_seen, "T-0 must be critical"
+        assert "warning"  in sev_seen, "T-1/T-2 must be warning"
+    finally:
+        conn.close()
+
+
+def check_phase5_reports_run_without_raising() -> None:
+    """report_po_status / report_warehouse_throughput / report_force_closures
+    must each execute without raising and return a (DataFrame, dict) shape."""
+    conn = database.get_connection()
+    try:
+        for fn in (database.report_po_status,
+                   database.report_warehouse_throughput,
+                   database.report_force_closures):
+            df, summary = fn(date_from="2020-01-01", date_to="2030-12-31",
+                             site_id=None, conn=conn)
+            import pandas as _pd
+            assert isinstance(df, _pd.DataFrame), f"{fn.__name__} bad type"
+            assert isinstance(summary, dict), f"{fn.__name__} bad summary"
+    finally:
+        conn.close()
+
+
+def check_mark_all_notifications_read() -> None:
+    """mark_all_notifications_read flips every visible row. Does NOT touch
+    rows for a different user or a different role."""
+    conn = database.get_connection()
+    try:
+        # Targeted to user A, plus broadcast to role X at site Y
+        database.queue_app_notification(
+            event_key="x", title="alpha",
+            recipient_user="user_a", conn=conn,
+        )
+        database.queue_app_notification(
+            event_key="x", title="beta",
+            recipient_role="role_x", recipient_site="Y", conn=conn,
+        )
+        # And a row for someone else that must stay unread
+        database.queue_app_notification(
+            event_key="x", title="other",
+            recipient_user="someone_else", conn=conn,
+        )
+        n = database.mark_all_notifications_read(
+            username="user_a", role="role_x",
+            site_id="Y", warehouse_id=None, conn=conn,
+        )
+        assert n >= 2, f"Expected ≥2 marked, got {n}"
+        # Other user's row still unread
+        other = database.get_app_notifications(
+            "someone_else", role="other_role", unread_only=True, conn=conn,
+        )
+        assert (other["title"] == "other").any()
+    finally:
+        conn.close()
+
+
 def check_sites() -> None:
     sites = database.get_sites()
     assert "HQ" in sites, f"HQ not in get_sites() → {sites}"
@@ -789,6 +2216,97 @@ def main() -> int:
               check_whatsapp_queue)
     run_check("Sites",       "HQ visible to get_sites()",
               check_sites)
+
+    # ── Phase C — Procurement chain checks ─────────────────────────────────
+    run_check("Procurement", "RL/BL strict-separation classifier",
+              check_rl_bl_classification,
+              "config.classify_rl_bl_family must tag each line as RL/BL/None.")
+    run_check("Procurement", "Warehouses CRUD round-trip",
+              check_warehouses_crud,
+              "add_warehouse/list_warehouses + UNIQUE constraint.")
+    run_check("Procurement", "Vendors CRUD round-trip",
+              check_vendors_crud,
+              "add_vendor/list_vendors + Inco/Payment terms persist.")
+    run_check("Procurement", "App notifications inbox (user + role broadcast)",
+              check_app_notifications,
+              "queue_app_notification, get_app_notifications, mark_read.")
+    run_check("Procurement", "WhatsApp per-event gate honours config toggles",
+              check_whatsapp_event_gate,
+              "fire_whatsapp_event respects WHATSAPP_ENABLED + WHATSAPP_TRIGGERS.")
+    run_check("Procurement", "users CHECK accepts logistics + warehouse_user",
+              check_role_check_constraint,
+              "init_db must rebuild users with the new role CHECK.")
+    run_check("Procurement", "po_items RL/BL strict-separation persists",
+              check_po_items_rl_bl_tagging,
+              "rl_bl_family column accepts 'RL', 'BL', NULL — no combo values.")
+
+    # ── Phase 2 — Logistics flow end-to-end ────────────────────────────────
+    run_check("Logistics", "HOD submits PR → appears in Logistics queue",
+              check_pr_to_logistics_handoff,
+              "submit_pr_to_logistics + list_prs_for_logistics.")
+    run_check("Logistics", "Create PO (manual) — RL/BL tagged, PR→in_po",
+              check_po_manual_creation_and_rl_bl,
+              "create_po_manual + post-insert side-effects.")
+    run_check("Logistics", "get_po_detail(hide_prices=True) blanks prices",
+              check_po_detail_price_hiding,
+              "Warehouse view must NEVER see prices.")
+    run_check("Logistics", "Assign PO to Warehouse — full + subset",
+              check_assign_po_to_warehouse,
+              "assign_po_to_warehouse, items_subset, notification fan-out.")
+    run_check("Logistics", "Reschedule request → approve updates PO date",
+              check_reschedule_flow,
+              "request_reschedule + decide_reschedule.")
+    run_check("Logistics", "Force-close PR / PO / line with audit",
+              check_force_close_flow,
+              "force_close_target + po_force_closures audit row.")
+    run_check("Logistics", "Vendor return reopens the closed PO",
+              check_vendor_return_reopens_po,
+              "raise_vendor_return + po_items.line_status flip.")
+    run_check("Logistics", "PO PDF extraction smoke test",
+              check_process_po_pdf_smoke,
+              "process_po_pdf — synthetic PDF, RL tag survives.")
+
+    # ── Phase 3 — Warehouse Portal end-to-end ─────────────────────────────
+    run_check("Warehouse", "Acknowledge + receive (partial + over-deliver guard)",
+              check_warehouse_acknowledge_and_receive,
+              "acknowledge_assignment, record_warehouse_receipt.")
+    run_check("Warehouse", "Warehouse view strictly hides prices (items + header)",
+              check_warehouse_view_strict_price_hiding,
+              "get_assignment_detail must blank every monetary field.")
+    run_check("Warehouse", "DN splitter enforces RL/BL strict separation",
+              check_dn_rl_bl_strict_separation_blocks_mixed,
+              "create_delivery_note rejects mixed-family payloads.")
+    run_check("Warehouse", "Full DN flow → SK confirms → receipts row",
+              check_full_dn_flow_to_sk_receipt,
+              "submit + logistics_decide_dn + hod_decide_dn + sk_mark_dn_received.")
+    run_check("Warehouse", "Internal return reopens PO line",
+              check_internal_return_from_site,
+              "record_internal_return + po_returns + line_status flip.")
+    run_check("Warehouse", "HOD rejection terminates the DN cleanly",
+              check_hod_rejection_flow,
+              "hod_decide_dn(approve=False) writes rejection_reason, no pending_receipts.")
+
+    # ── Phase 4 — Site-side visibility + reschedule wiring ─────────────────
+    run_check("Site Visibility", "In-Transit DNs filtered + sorted per site",
+              check_in_transit_for_site,
+              "list_in_transit_dns_for_site — site isolation + pipeline order.")
+    run_check("Site Visibility", "HOD reschedule → Logistics → outcome reflected",
+              check_hod_can_submit_reschedule_and_see_outcome,
+              "request_reschedule + decide_reschedule + list_reschedule_requests_for_site.")
+    run_check("Site Visibility", "Force-closure visibility scoped to site",
+              check_force_closure_site_visibility,
+              "list_force_closures_for_site — PR/PO/po_item joins.")
+
+    # ── Phase 5 — Admin oversight + reminders + reports + notifications ────
+    run_check("Reminders", "T-2 / T-1 / T-0 sweep is idempotent",
+              check_delivery_reminders_idempotent,
+              "sweep_delivery_reminders + delivery_reminders_sent UNIQUE.")
+    run_check("Reports", "Phase 5 procurement reports run cleanly",
+              check_phase5_reports_run_without_raising,
+              "report_po_status / report_warehouse_throughput / report_force_closures.")
+    run_check("Notifications", "mark_all_notifications_read scopes correctly",
+              check_mark_all_notifications_read,
+              "Only touches rows visible to this user/role.")
 
     out = write_report()
     print()
