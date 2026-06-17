@@ -138,8 +138,18 @@ _EXACT_ROLE_PAGES = {
     "🏭 Warehouse Portal":  {"warehouse_user", "admin"},
 }
 
+# Per-page deny-list. Used when a role would otherwise pass the hierarchy
+# check but should be excluded by policy. Keeps PAGE_ACCESS untouched.
+# warehouse_user shares hierarchy level 1 with supervisor → would inherit
+# Reports access by default. Policy: warehouse staff don't get Reports.
+_PAGE_BLOCKED_ROLES = {
+    "📊 Reports": {"warehouse_user"},
+}
+
 
 def _can_access(role: str, page: str) -> bool:
+    if role in _PAGE_BLOCKED_ROLES.get(page, set()):
+        return False
     exact = _EXACT_ROLE_PAGES.get(page)
     if exact is not None:
         return role in exact
@@ -315,7 +325,26 @@ def render_sidebar(user: dict) -> str:
         st.divider()
 
         role_meta = ROLES.get(role, {"icon": "?", "label": role, "color": TEXT_MUTED})
-        site_id  = user.get("site_id", "HQ") or "HQ"
+        # Global roles (admin / logistics / warehouse_user) intentionally
+        # have no Site_ID. Render a distinct "🌐 Global" chip for them and
+        # for any user whose site is empty/None.
+        _GLOBAL_ROLES = {"admin", "logistics", "warehouse_user"}
+        site_raw = (user.get("site_id") or "").strip()
+        is_global = role in _GLOBAL_ROLES or not site_raw
+        if is_global:
+            chip_html = (
+                f"<span style='background:rgba(99,102,241,0.18);"
+                f"border:1px solid rgba(99,102,241,0.40);"
+                f"color:#A5B4FC;font-size:0.62rem;font-weight:700;padding:1px 7px;"
+                f"border-radius:999px;letter-spacing:0.05em;'>🌐 Global</span>"
+            )
+        else:
+            chip_html = (
+                f"<span style='background:rgba(212,175,55,0.18);"
+                f"border:1px solid rgba(212,175,55,0.40);"
+                f"color:{BRAND_GOLD};font-size:0.62rem;font-weight:700;padding:1px 7px;"
+                f"border-radius:999px;letter-spacing:0.05em;'>📍 {site_raw}</span>"
+            )
         st.markdown(
             f"<div style='background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);"
             f"border-radius:10px;padding:0.55rem 0.75rem;margin-bottom:0.75rem;"
@@ -329,10 +358,7 @@ def render_sidebar(user: dict) -> str:
             f"<span style='color:{role_meta['color']};font-size:0.7rem;font-weight:600;"
             f"text-transform:uppercase;letter-spacing:0.07em;'>"
             f"{role_meta['label']}</span>"
-            f"<span style='background:rgba(212,175,55,0.18);border:1px solid rgba(212,175,55,0.40);"
-            f"color:{BRAND_GOLD};font-size:0.62rem;font-weight:700;padding:1px 7px;"
-            f"border-radius:999px;letter-spacing:0.05em;'>"
-            f"📍 {site_id}</span>"
+            f"{chip_html}"
             f"</div>"
             f"</div>"
             f"</div>",
@@ -350,6 +376,14 @@ def render_sidebar(user: dict) -> str:
                 if p == "📋 HOD Portal" and role == "admin":
                     continue
                 visible_pages.append(p)
+
+        # Defensive: if the user switched roles (logged out → logged back in
+        # as a different role), the cached nav_radio value can point at a
+        # page that's no longer in visible_pages. Streamlit then renders the
+        # radio with no selection AND keeps the stale key, so the user sees
+        # an empty / wrong page list. Reset it to the first allowed page.
+        if visible_pages and st.session_state.get("nav_radio") not in visible_pages:
+            st.session_state["nav_radio"] = visible_pages[0]
 
         page = st.radio("Navigate to:", visible_pages, key="nav_radio")
         st.divider()

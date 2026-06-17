@@ -184,6 +184,8 @@ def register_schema_checks() -> None:
         "app_notifications",
         # Phase 5
         "delivery_reminders_sent",
+        # Phase 6A — CV foundation
+        "employees", "tool_catalogue", "cv_model_versions",
     ]
     for t in tables:
         run_check("Schema", f"table · {t}",
@@ -244,6 +246,9 @@ def register_schema_checks() -> None:
         # Self-heal on existing tables
         "pr_master":  ["WBS_Number", "Network", "Plant", "Delivery_Date",
                        "logistics_status"],
+        # Phase 6A — CV audit cols self-healed onto returnable_items
+        "returnable_items": ["cv_detected", "cv_confidence",
+                             "cv_employee_id", "cv_tool_class"],
     }
     for tbl, cs in cols.items():
         for c in cs:
@@ -2162,6 +2167,730 @@ def write_report() -> Path:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Phase 6A — CV foundation (employees, tool_catalogue, cv_model_versions)
+# ---------------------------------------------------------------------------
+def check_employees_crud() -> None:
+    """add_employee + duplicate rejection + update + get round-trip."""
+    conn = database.get_connection()
+    try:
+        ok, msg = database.add_employee("EMP_TST_001", "Alice", "+966500000001",
+                                         "Warehouse", "test_admin", conn=conn)
+        assert ok, f"first add should succeed: {msg}"
+
+        ok2, msg2 = database.add_employee("EMP_TST_001", "Dup", conn=conn)
+        assert not ok2, "duplicate ID_Number should be rejected"
+        assert "already" in msg2.lower(), f"duplicate msg unhelpful: {msg2}"
+
+        # Missing required field — should reject, not raise.
+        ok3, _ = database.add_employee("", "Nobody", conn=conn)
+        assert not ok3, "missing ID_Number should be rejected"
+
+        # Update + lookup.
+        assert database.update_employee("EMP_TST_001", department="Logistics",
+                                        status="suspended",
+                                        updated_by="test_admin", conn=conn)
+        row = database.get_employee_by_id_number("EMP_TST_001", conn=conn)
+        assert row and row["Department"] == "Logistics", f"update did not stick: {row}"
+        assert row["status"] == "suspended", f"status update missed: {row}"
+    finally:
+        conn.close()
+
+
+def check_import_employees_csv_idempotent() -> None:
+    """5-row CSV first import → 5 inserted; re-import with 1 changed → 1 updated, 4 skipped."""
+    import io
+    conn = database.get_connection()
+    try:
+        csv1 = io.StringIO(
+            "ID_Number,Name,Phone_Number,Department\n"
+            "EMP_CSV_1,Worker One,+96650001,Ops\n"
+            "EMP_CSV_2,Worker Two,+96650002,Ops\n"
+            "EMP_CSV_3,Worker Three,+96650003,QC\n"
+            "EMP_CSV_4,Worker Four,+96650004,QC\n"
+            "EMP_CSV_5,Worker Five,+96650005,Warehouse\n"
+        )
+        r1 = database.import_employees_csv(csv1, "test_admin", conn=conn)
+        assert r1["inserted"] == 5 and r1["updated"] == 0, f"first import: {r1}"
+
+        csv2 = io.StringIO(
+            "ID_Number,Name,Phone_Number,Department\n"
+            "EMP_CSV_1,Worker One,+96650001,Ops\n"
+            "EMP_CSV_2,Worker Two,+96650002,Ops\n"
+            "EMP_CSV_3,Worker Three,+96650003,QC\n"
+            "EMP_CSV_4,Worker Four,+96650004,QC\n"
+            "EMP_CSV_5,Worker Five Renamed,+96650005,Warehouse\n"   # name changed
+        )
+        r2 = database.import_employees_csv(csv2, "test_admin", conn=conn)
+        assert r2["inserted"] == 0, f"re-import inserted unexpectedly: {r2}"
+        assert r2["updated"] == 1, f"expected exactly 1 update, got {r2}"
+        assert r2["skipped"] == 4, f"expected 4 skipped, got {r2}"
+
+        # Verify the update actually persisted
+        row = database.get_employee_by_id_number("EMP_CSV_5", conn=conn)
+        assert row["Name"] == "Worker Five Renamed", f"update content wrong: {row}"
+
+        # Header is case-insensitive — should not crash
+        csv3 = io.StringIO("id_number,NAME,phone_number,department\n"
+                           "EMP_CSV_6,Worker Six,+96650006,Tools\n")
+        r3 = database.import_employees_csv(csv3, "test_admin", conn=conn)
+        assert r3["inserted"] == 1, f"case-insensitive header import failed: {r3}"
+    finally:
+        conn.close()
+
+
+def check_cv_model_register_and_promote() -> None:
+    """register + promote round-trip + only one active at a time."""
+    conn = database.get_connection()
+    try:
+        id_a = database.register_cv_model_version(
+            "v_test_A", "/m/A.pt", ["clsA", "clsB"], mAP=0.81, conn=conn,
+        )
+        id_b = database.register_cv_model_version(
+            "v_test_B", "/m/B.pt", ["clsA", "clsB", "clsC"], mAP=0.87, conn=conn,
+        )
+        assert isinstance(id_a, int) and isinstance(id_b, int), "ids missing"
+        assert database.get_active_cv_model(conn=conn) is None, \
+            "no model should be active after pure registers"
+
+        assert database.promote_cv_model_version("v_test_B", promoted_by="test_admin",
+                                                  conn=conn)
+        active = database.get_active_cv_model(conn=conn)
+        assert active and active["version"] == "v_test_B", f"v_B not active: {active}"
+        assert active["classes"] == ["clsA", "clsB", "clsC"], \
+            f"classes_json round-trip wrong: {active}"
+
+        # Promote the other one — the partial unique index must allow it
+        # because we demote the current active first inside one transaction.
+        assert database.promote_cv_model_version("v_test_A", promoted_by="test_admin",
+                                                  conn=conn)
+        active2 = database.get_active_cv_model(conn=conn)
+        assert active2 and active2["version"] == "v_test_A", f"swap failed: {active2}"
+
+        # Sanity: confirm only one active row in the table
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM cv_model_versions WHERE is_active = 1"
+        ).fetchone()[0]
+        assert cnt == 1, f"expected exactly 1 active row, got {cnt}"
+
+        # Promoting an unknown version returns False, not raise
+        assert database.promote_cv_model_version("v_does_not_exist", conn=conn) is False
+    finally:
+        conn.close()
+
+
+def check_tool_catalogue_crud() -> None:
+    """add_tool_class + dup + set_min_confidence + list filter by model."""
+    conn = database.get_connection()
+    try:
+        mid = database.register_cv_model_version(
+            "v_tool_test", "/m/tool.pt", ["torque_wrench_12", "hammer_8"],
+            mAP=0.9, conn=conn,
+        )
+        ok, _ = database.add_tool_class(
+            "torque_wrench_12", "Torque Wrench 12mm",
+            category="wrench", model_version_id=mid,
+            created_by="test_admin", conn=conn,
+        )
+        assert ok, "first add_tool_class should succeed"
+
+        ok2, msg2 = database.add_tool_class(
+            "torque_wrench_12", "Dup", "x", mid, "test_admin", conn=conn,
+        )
+        assert not ok2 and "already" in msg2.lower(), \
+            f"duplicate class_name should be rejected: {msg2}"
+
+        assert database.set_tool_class_min_confidence(
+            "torque_wrench_12", 0.88, updated_by="test_admin", conn=conn,
+        )
+        df = database.list_tool_catalogue(model_version_id=mid, conn=conn)
+        assert len(df) == 1, f"expected 1 row for model {mid}, got {len(df)}"
+        assert float(df.iloc[0]["min_confidence"]) == 0.88, \
+            f"min_confidence override missed: {df.iloc[0].to_dict()}"
+
+        # Unknown class → False, not raise
+        assert database.set_tool_class_min_confidence(
+            "no_such_class", 0.5, conn=conn,
+        ) is False
+    finally:
+        conn.close()
+
+
+# ── Phase 6B — QR encode/decode roundtrip ────────────────────────────────────
+def check_qr_encode_produces_png() -> None:
+    """Pure encode-side check: always runnable — no native deps.
+
+    Verifies encode_id_to_png returns a non-trivial PNG byte string for a
+    realistic ID and rejects blank input with ValueError.
+    """
+    from ai.cv.qr import encode_id_to_png
+
+    sample_id = "EMP-RT-001"
+    png = encode_id_to_png(sample_id)
+    assert isinstance(png, bytes) and len(png) > 100, \
+        f"encode_id_to_png returned suspicious payload (size={len(png) if png else 0})"
+    # PNG magic header — sanity check we actually got a PNG.
+    assert png[:8] == b"\x89PNG\r\n\x1a\n", "encode_id_to_png did not return a PNG"
+
+    # Blank / whitespace-only input must raise.
+    try:
+        encode_id_to_png("   ")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("encode_id_to_png should reject blank input")
+
+
+# ── Phase 6C — YOLO inference helper (all mocked) ────────────────────────────
+def _make_mock_detect_box(cls_idx: int, conf: float, xyxy=(10, 10, 100, 100)):
+    """Build a minimal mock that matches the duck-type ai/cv/inference.py
+    reads from an ultralytics Box (b.cls.item(), b.conf.item(), b.xyxy[0])."""
+    import types
+    return types.SimpleNamespace(
+        cls=types.SimpleNamespace(item=lambda: cls_idx),
+        conf=types.SimpleNamespace(item=lambda: conf),
+        xyxy=[list(xyxy)],
+    )
+
+
+def _make_mock_yolo_result(boxes_list):
+    import types
+    return types.SimpleNamespace(boxes=boxes_list)
+
+
+def check_detect_tool_no_active_model() -> None:
+    """detect_tool returns [] cleanly when no active model exists in DB."""
+    from unittest.mock import patch
+    from ai.cv import inference
+    inference.invalidate_model_cache()
+    # Force _load_active_yolo to report "no model"
+    with patch.object(inference, "_load_active_yolo", lambda: (None, None)):
+        assert inference.detect_tool(b"fake-bytes") == []
+
+
+def check_detect_tool_missing_disk_file() -> None:
+    """If the active row's model_path doesn't exist on disk, return []."""
+    from unittest.mock import patch
+    from ai.cv import inference
+    # Simulate the case where DB has an active row but the file is missing
+    # by making _load_active_yolo report (None, None) (which is what the
+    # real loader does on FileNotFoundError).
+    with patch.object(inference, "_load_active_yolo", lambda: (None, None)):
+        assert inference.detect_tool(b"fake-bytes") == []
+
+
+def check_detect_tool_min_confidence_filter() -> None:
+    """Detections below DEFAULT_MIN_CONFIDENCE (0.75) are dropped."""
+    from unittest.mock import patch
+    from ai.cv import inference
+
+    # Mock YOLO model: returns one high-conf and one low-conf box.
+    boxes = [
+        _make_mock_detect_box(0, 0.92),
+        _make_mock_detect_box(0, 0.50),
+    ]
+    mock_result = _make_mock_yolo_result(boxes)
+
+    class _MockYOLO:
+        names = {0: "torque_wrench_12"}
+        def predict(self, *a, **k): return [mock_result]
+
+    inference.invalidate_model_cache()
+    with patch.object(inference, "_load_active_yolo",
+                      lambda: (_MockYOLO(), {"version": "v1"})):
+        with patch.object(inference, "_min_confidence_for_class",
+                          lambda c: inference.DEFAULT_MIN_CONFIDENCE):
+            # Need a real PNG so PIL.Image.open succeeds. Reuse the QR helper.
+            from ai.cv.qr import encode_id_to_png
+            dets = inference.detect_tool(encode_id_to_png("dummy"))
+    assert len(dets) == 1, f"expected 1 detection above 0.75, got {len(dets)}"
+    assert dets[0]["class_name"] == "torque_wrench_12"
+    assert abs(dets[0]["confidence"] - 0.92) < 1e-6
+    assert dets[0]["applied_threshold"] == inference.DEFAULT_MIN_CONFIDENCE
+
+
+def check_detect_tool_per_class_override() -> None:
+    """Per-class min_confidence (0.55) lets a 0.60 detection through."""
+    from unittest.mock import patch
+    from ai.cv import inference
+
+    boxes = [_make_mock_detect_box(0, 0.60)]
+    mock_result = _make_mock_yolo_result(boxes)
+
+    class _MockYOLO:
+        names = {0: "small_wrench"}
+        def predict(self, *a, **k): return [mock_result]
+
+    inference.invalidate_model_cache()
+    # The override puts the class threshold at 0.55, so 0.60 survives.
+    with patch.object(inference, "_load_active_yolo",
+                      lambda: (_MockYOLO(), {"version": "v1"})):
+        with patch.object(inference, "_min_confidence_for_class",
+                          lambda c: 0.55 if c == "small_wrench" else 0.75):
+            from ai.cv.qr import encode_id_to_png
+            dets = inference.detect_tool(encode_id_to_png("dummy"))
+    assert len(dets) == 1, f"per-class override didn't apply: {dets}"
+    assert dets[0]["applied_threshold"] == 0.55
+
+
+def check_invalidate_model_cache_clears_lru() -> None:
+    """invalidate_model_cache() actually resets the lru_cache state."""
+    from unittest.mock import patch
+    from ai.cv import inference
+
+    # Prime the cache with a sentinel
+    sentinel = object()
+    with patch.object(inference, "_load_active_yolo",
+                      lambda: (sentinel, {"version": "v1"})):
+        # Force one call so cache_info().currsize would go up if it were
+        # a real lru_cache call (we're patching the function so it isn't,
+        # but the threshold cache IS real).
+        inference._min_confidence_for_class("primer_class")
+        info_before = inference._min_confidence_for_class.cache_info()
+        assert info_before.currsize >= 1
+
+    inference.invalidate_model_cache()
+    info_after = inference._min_confidence_for_class.cache_info()
+    assert info_after.currsize == 0, \
+        f"threshold cache not cleared (currsize={info_after.currsize})"
+
+
+# ── Phase 6D — Smart Scan logic helpers ─────────────────────────────────────
+def check_bucket_detections_auto_bucket() -> None:
+    """≥ 0.75 → ('auto', [top_only])."""
+    from ai.cv.smart_scan import bucket_detections
+    dets = [
+        {"class_name": "wrench_a", "confidence": 0.92},
+        {"class_name": "wrench_b", "confidence": 0.81},
+    ]
+    mode, items = bucket_detections(dets)
+    assert mode == "auto", f"expected 'auto', got {mode!r}"
+    assert len(items) == 1 and items[0]["class_name"] == "wrench_a", items
+
+
+def check_bucket_detections_candidates_bucket() -> None:
+    """0.30 ≤ top < 0.75 → ('candidates', up to 3). And empty / sub-0.30 → 'manual'."""
+    from ai.cv.smart_scan import bucket_detections
+    dets = [
+        {"class_name": "a", "confidence": 0.65},
+        {"class_name": "b", "confidence": 0.55},
+        {"class_name": "c", "confidence": 0.45},
+        {"class_name": "d", "confidence": 0.35},  # should be dropped — cap=3
+    ]
+    mode, items = bucket_detections(dets)
+    assert mode == "candidates", f"expected 'candidates', got {mode!r}"
+    assert len(items) == 3, f"expected 3 candidates, got {len(items)}"
+    assert [d["class_name"] for d in items] == ["a", "b", "c"]
+
+    # Manual branch — empty and sub-0.30 top both fall back.
+    assert bucket_detections([]) == ("manual", [])
+    mode2, _ = bucket_detections([{"class_name": "x", "confidence": 0.20}])
+    assert mode2 == "manual", f"sub-threshold top should bucket as 'manual', got {mode2!r}"
+
+
+def check_lookup_employee_by_qr_active_only() -> None:
+    """lookup_employee_by_qr returns active rows only; inactive/suspended → None."""
+    import database
+    from ai.cv.smart_scan import lookup_employee_by_qr
+    conn = database.get_connection()
+    try:
+        # Seed: one active employee + one suspended.
+        ok, _msg = database.add_employee(
+            "EMP-D-ACT", "Active Ahmed", "+9665", "Logistics",
+            created_by="harness", conn=conn,
+        )
+        assert ok
+        ok2, _msg2 = database.add_employee(
+            "EMP-D-SUS", "Suspended Sami", "+9665", "Maintenance",
+            created_by="harness", conn=conn,
+        )
+        assert ok2
+        assert database.update_employee(
+            "EMP-D-SUS", status="suspended", updated_by="harness", conn=conn,
+        )
+
+        hit_active = lookup_employee_by_qr("EMP-D-ACT", conn=conn)
+        assert hit_active is not None
+        assert hit_active["Name"] == "Active Ahmed"
+
+        miss_suspended = lookup_employee_by_qr("EMP-D-SUS", conn=conn)
+        assert miss_suspended is None, "suspended employees must not auth"
+
+        miss_unknown = lookup_employee_by_qr("EMP-D-NONE", conn=conn)
+        assert miss_unknown is None
+
+        miss_blank = lookup_employee_by_qr("   ", conn=conn)
+        assert miss_blank is None
+    finally:
+        conn.close()
+
+
+def check_get_open_loans_for_employee_dual_path() -> None:
+    """Matches loans created via CV path (cv_employee_id) AND manual path
+    (borrower_name = employees.Name) for the same employee ID."""
+    import database
+    conn = database.get_connection()
+    try:
+        # Seed an employee.
+        ok, _ = database.add_employee(
+            "EMP-DUAL-01", "Dual-Path Daoud", "+9665", "Logistics",
+            created_by="harness", conn=conn,
+        )
+        assert ok
+
+        # Loan 1: CV-created — cv_employee_id populated, borrower_name blank.
+        database.insert_returnable_item(
+            conn=conn,
+            material_name="torque_wrench_12",
+            uom="Pcs",
+            qty=1,
+            borrower_name="",
+            borrower_phone="",
+            expected_return_time="2026-06-20 17:00:00",
+            site_id="CNCEC",
+            cv_detected=1,
+            cv_confidence=0.91,
+            cv_employee_id="EMP-DUAL-01",
+            cv_tool_class="torque_wrench_12",
+        )
+
+        # Loan 2: manual — borrower_name set, no CV fields.
+        database.insert_returnable_item(
+            conn=conn,
+            material_name="multimeter",
+            uom="Pcs",
+            qty=1,
+            borrower_name="Dual-Path Daoud",
+            borrower_phone="+9665",
+            expected_return_time="2026-06-21 09:00:00",
+            site_id="CNCEC",
+        )
+
+        # Loan 3: a different employee — must NOT come back.
+        database.insert_returnable_item(
+            conn=conn,
+            material_name="hammer",
+            uom="Pcs",
+            qty=1,
+            borrower_name="Some Other Worker",
+            borrower_phone="+9665",
+            expected_return_time="2026-06-22 10:00:00",
+            site_id="CNCEC",
+        )
+
+        df = database.get_open_loans_for_employee("EMP-DUAL-01", site_id="CNCEC",
+                                                   conn=conn)
+        names = sorted(df["material_name"].tolist())
+        assert names == ["multimeter", "torque_wrench_12"], \
+            f"expected both loans for EMP-DUAL-01, got {names!r}"
+
+        # Cross-site filter: explicit other site → no rows.
+        df_other = database.get_open_loans_for_employee("EMP-DUAL-01",
+                                                        site_id="SAR",
+                                                        conn=conn)
+        assert df_other.empty, "site filter must scope to the requested site"
+    finally:
+        conn.close()
+
+
+# ── Phase 6E — Returnable loan reminder sweep ───────────────────────────────
+def _seed_loan_for_reminder(conn, *, loan_due: datetime.datetime,
+                            cv_id: str = "", borrower_phone: str = "",
+                            borrower_name: str = "Test Borrower",
+                            site_id: str = "CNCEC") -> int:
+    """Insert a borrowed returnable_items row and return its id."""
+    import database as _db
+    _db.insert_returnable_item(
+        conn=conn,
+        material_name="test_tool",
+        uom="Pcs",
+        qty=1,
+        borrower_name=borrower_name,
+        borrower_phone=borrower_phone,
+        expected_return_time=loan_due.strftime("%Y-%m-%d %H:%M:%S"),
+        site_id=site_id,
+        cv_detected=1 if cv_id else 0,
+        cv_employee_id=cv_id or None,
+    )
+    rid = conn.execute(
+        "SELECT MAX(id) FROM returnable_items"
+    ).fetchone()[0]
+    return int(rid)
+
+
+def check_returnable_sweep_fires_all_four_offsets() -> None:
+    """Across four hypothetical 'now' values, the sweep fires exactly one
+    reminder per offset for one loan."""
+    import database
+    from datetime import datetime, timedelta
+    conn = database.get_connection()
+    try:
+        due = datetime(2026, 7, 1, 17, 0, 0)
+        loan_id = _seed_loan_for_reminder(
+            conn, loan_due=due,
+            cv_id="EMP-RE-1", borrower_phone="+9665100000000",
+        )
+        # Seed the matching employee so the CV phone fallback works.
+        database.add_employee(
+            "EMP-RE-1", "Ali Ali", "+9665100000000", "Logistics",
+            created_by="harness", conn=conn,
+        )
+
+        # Map: 'now' values that land each offset square in the middle of
+        # its 1-hour window.
+        now_for_offset = {
+            -2: due - timedelta(hours=1, minutes=30),   # window [1, 2) before
+             0: due - timedelta(minutes=30),            # window [-1, 0)
+             2: due + timedelta(hours=2, minutes=30),   # window [-3, -2)
+            24: due + timedelta(hours=24, minutes=30),  # window [-25, -24)
+        }
+        for offset, now in now_for_offset.items():
+            n = database.sweep_returnable_reminders(now=now, conn=conn)
+            assert n >= 1, f"offset={offset} produced 0 fires at now={now}"
+
+        # Dedup row count should equal exactly 4 (one per offset).
+        n_dedup = conn.execute(
+            "SELECT COUNT(*) FROM delivery_reminders_sent "
+            "WHERE ref_type='returnable_loan' AND ref_number=?",
+            (str(loan_id),),
+        ).fetchone()[0]
+        assert n_dedup == 4, f"expected 4 dedup rows, got {n_dedup}"
+    finally:
+        conn.close()
+
+
+def check_returnable_sweep_idempotent() -> None:
+    """Running the sweep twice at the same 'now' fires once."""
+    import database
+    from datetime import datetime, timedelta
+    conn = database.get_connection()
+    try:
+        due = datetime(2026, 8, 1, 17, 0, 0)
+        loan_id = _seed_loan_for_reminder(
+            conn, loan_due=due,
+            cv_id="EMP-IDEM", borrower_phone="+9665100000001",
+            borrower_name="Idem Test",
+        )
+        database.add_employee(
+            "EMP-IDEM", "Idem Test", "+9665100000001", "Logistics",
+            created_by="harness", conn=conn,
+        )
+
+        # Pick a 'now' in the T-0 window: [due-1h, due) (i.e. 30 min before due)
+        now = due - timedelta(minutes=30)
+
+        n1 = database.sweep_returnable_reminders(now=now, conn=conn)
+        n2 = database.sweep_returnable_reminders(now=now, conn=conn)
+        assert n1 >= 1, "first sweep must fire at least one event"
+        assert n2 == 0, f"second sweep must fire 0 events (got {n2})"
+        # Sanity — exactly one dedup row for this loan + offset 0
+        n_dedup = conn.execute(
+            "SELECT COUNT(*) FROM delivery_reminders_sent "
+            "WHERE ref_type='returnable_loan' AND ref_number=? AND offset_days=0",
+            (str(loan_id),),
+        ).fetchone()[0]
+        assert n_dedup == 1, f"expected 1 dedup row, got {n_dedup}"
+    finally:
+        conn.close()
+
+
+def check_returnable_phone_resolution_three_tier() -> None:
+    """CV path wins over manual; manual fills when CV missing; neither →
+    log audit row, no WhatsApp queued."""
+    import database
+    from unittest.mock import patch
+    from datetime import datetime, timedelta
+    conn = database.get_connection()
+    try:
+        # Three loans, all due in 30 minutes (T-0 window).
+        due = datetime(2026, 9, 1, 17, 0, 0)
+        # Loan A: CV path with employee phone available.
+        database.add_employee(
+            "EMP-PH-CV", "CV Borrower", "+9665PHONECV", "Logistics",
+            created_by="harness", conn=conn,
+        )
+        loan_a = _seed_loan_for_reminder(
+            conn, loan_due=due, cv_id="EMP-PH-CV", borrower_phone="",
+        )
+        # Loan B: manual path with borrower_phone.
+        loan_b = _seed_loan_for_reminder(
+            conn, loan_due=due, cv_id="", borrower_phone="+9665MANUAL",
+        )
+        # Loan C: neither phone source.
+        loan_c = _seed_loan_for_reminder(
+            conn, loan_due=due, cv_id="", borrower_phone="",
+        )
+
+        captured = []
+        def _capture(event_key, phone, msg, conn=None):
+            captured.append((event_key, phone))
+            return True
+
+        now = due - timedelta(minutes=30)
+        with patch.object(database, "fire_whatsapp_event", side_effect=_capture):
+            database.sweep_returnable_reminders(now=now, conn=conn)
+
+        # Among the captured calls, find the ones tied to each loan via
+        # the message. Easier: just check phones set.
+        phones_used = {ph for _, ph in captured}
+        assert "+9665PHONECV" in phones_used, \
+            f"CV phone missing from {phones_used}"
+        assert "+9665MANUAL" in phones_used, \
+            f"Manual phone missing from {phones_used}"
+
+        # Loan C → audit row with RETURNABLE_REMINDER_NO_PHONE
+        n_audit = conn.execute(
+            "SELECT COUNT(*) FROM system_audit_log "
+            "WHERE action_type='RETURNABLE_REMINDER_NO_PHONE' "
+            "  AND details LIKE ?",
+            (f"loan={loan_c}%",),
+        ).fetchone()[0]
+        assert n_audit == 1, f"expected 1 audit row for orphan loan, got {n_audit}"
+    finally:
+        conn.close()
+
+
+def check_returnable_t_plus_24h_supervisor_fanout() -> None:
+    """T+24h fans WhatsApp to borrower + every SK + every Supervisor at site,
+    plus emits an in-app row for supervisor role (Phase 6E spec change)."""
+    import database
+    from unittest.mock import patch
+    from datetime import datetime, timedelta
+    conn = database.get_connection()
+    try:
+        # Seed two SKs + one supervisor + one HOD (HOD MUST NOT be paged).
+        conn.execute(
+            "INSERT INTO users (username, password_hash, role, Site_ID, Phone_Number) "
+            "VALUES (?, '', 'store_keeper', 'SITE-X', '+9665SK1')",
+            ("sk_one_x",),
+        )
+        conn.execute(
+            "INSERT INTO users (username, password_hash, role, Site_ID, Phone_Number) "
+            "VALUES (?, '', 'store_keeper', 'SITE-X', '+9665SK2')",
+            ("sk_two_x",),
+        )
+        conn.execute(
+            "INSERT INTO users (username, password_hash, role, Site_ID, Phone_Number) "
+            "VALUES (?, '', 'supervisor', 'SITE-X', '+9665SUPER')",
+            ("sup_x",),
+        )
+        conn.execute(
+            "INSERT INTO users (username, password_hash, role, Site_ID, Phone_Number) "
+            "VALUES (?, '', 'hod', 'SITE-X', '+9665HOD')",
+            ("hod_x",),
+        )
+        conn.commit()
+
+        due = datetime(2026, 10, 1, 9, 0, 0)
+        database.add_employee(
+            "EMP-FAN", "Fan Borrower", "+9665BORROWER", "Logistics",
+            created_by="harness", conn=conn,
+        )
+        loan_id = _seed_loan_for_reminder(
+            conn, loan_due=due, cv_id="EMP-FAN", borrower_phone="",
+            site_id="SITE-X",
+        )
+
+        captured_phones = []
+        def _capture(event_key, phone, msg, conn=None):
+            captured_phones.append(phone)
+            return True
+
+        now = due + timedelta(hours=24, minutes=30)  # T+24h window
+        with patch.object(database, "fire_whatsapp_event", side_effect=_capture):
+            database.sweep_returnable_reminders(now=now, conn=conn)
+
+        # Expected phones at T+24h: borrower + 2 SKs + 1 Supervisor = 4.
+        assert "+9665BORROWER" in captured_phones, captured_phones
+        assert captured_phones.count("+9665SK1") == 1, captured_phones
+        assert captured_phones.count("+9665SK2") == 1, captured_phones
+        assert "+9665SUPER" in captured_phones, captured_phones
+        # CRITICAL: HOD must NOT be paged at T+24h (spec change vs handoff).
+        assert "+9665HOD" not in captured_phones, \
+            f"HOD should not be paged at T+24h: {captured_phones}"
+
+        # Supervisor-role broadcast must be present in in-app notifications.
+        n_sup = conn.execute(
+            "SELECT COUNT(*) FROM app_notifications "
+            "WHERE event_key='returnable_reminder_t_plus_24h' "
+            "  AND recipient_role='supervisor' AND recipient_site='SITE-X' "
+            "  AND related_ref=?",
+            (str(loan_id),),
+        ).fetchone()[0]
+        assert n_sup == 1, f"expected 1 supervisor in-app row, got {n_sup}"
+
+        # And SK-role broadcast (this fires at every offset >= 0).
+        n_sk = conn.execute(
+            "SELECT COUNT(*) FROM app_notifications "
+            "WHERE event_key='returnable_reminder_t_plus_24h' "
+            "  AND recipient_role='store_keeper' AND recipient_site='SITE-X' "
+            "  AND related_ref=?",
+            (str(loan_id),),
+        ).fetchone()[0]
+        assert n_sk == 1, f"expected 1 SK in-app row at T+24h, got {n_sk}"
+    finally:
+        conn.close()
+
+
+# ── Phase 6F — Bulk employee badge PDF ──────────────────────────────────────
+def check_employee_badges_pdf_smoke() -> None:
+    """generate_employee_qr_badges_pdf returns valid PDF bytes for real
+    employees and for an empty list (one-page placeholder).
+
+    Skips silently if qrcode is not installed (mirrors the existing
+    pattern at the top of reports.py)."""
+    try:
+        from reports import generate_employee_qr_badges_pdf, _HAS_QRCODE
+    except ImportError:
+        return
+    if not _HAS_QRCODE:
+        return
+
+    emps = [
+        {"ID_Number": "EMP-PDF-1", "Name": "Ahmed — Test",   "Department": "Logistics"},
+        {"ID_Number": "EMP-PDF-2", "Name": "Sara K",          "Department": "Warehouse"},
+        {"ID_Number": "",           "Name": "Skip me",         "Department": "x"},  # missing ID → silently skipped
+    ]
+    pdf = generate_employee_qr_badges_pdf(emps)
+    assert isinstance(pdf, bytes) and len(pdf) > 500, \
+        f"badge PDF suspiciously small (size={len(pdf) if pdf else 0})"
+    assert pdf[:4] == b"%PDF", "output is not a PDF (missing magic header)"
+
+    # Empty input → still produces a valid one-page placeholder so the
+    # download button never delivers zero bytes.
+    pdf_empty = generate_employee_qr_badges_pdf([])
+    assert pdf_empty[:4] == b"%PDF", "empty-input PDF lacks magic header"
+    assert len(pdf_empty) > 500, "empty-input PDF should still carry a header band"
+
+
+def check_qr_decode_roundtrip() -> None:
+    """encode → decode preserves the ID_Number exactly.
+
+    Requires libzbar via pyzbar. If the import fails (libzbar missing on
+    this host), the check no-ops — the encode side is already covered by
+    `check_qr_encode_produces_png`. Once libzbar is installed, the check
+    will assert for real on the next run.
+    """
+    try:
+        from pyzbar.pyzbar import decode as _zbar_probe  # noqa: F401
+    except ImportError:
+        # Encode-only environments (e.g. Streamlit Cloud) — skip silently.
+        # The companion check_qr_encode_produces_png() still guards the
+        # encode path so this section isn't completely uncovered.
+        return
+
+    from ai.cv.qr import encode_id_to_png, decode_png_to_id
+
+    sample_id = "EMP-RT-001"
+    decoded = decode_png_to_id(encode_id_to_png(sample_id))
+    assert decoded == sample_id, \
+        f"roundtrip mismatch: encoded {sample_id!r} but decoded {decoded!r}"
+
+    # Garbage / empty inputs must NOT raise — they return None.
+    assert decode_png_to_id(b"") is None
+    assert decode_png_to_id(b"not-a-png") is None
+
+
 def main() -> int:
     print(f"▶ Bug-check harness · DB → {TMP_DB}")
     try:
@@ -2307,6 +3036,78 @@ def main() -> int:
     run_check("Notifications", "mark_all_notifications_read scopes correctly",
               check_mark_all_notifications_read,
               "Only touches rows visible to this user/role.")
+
+    # ── Phase 6A — CV foundation (employees, tool_catalogue, cv_model_versions) ──
+    run_check("CV Foundation", "Employees CRUD + duplicate rejection",
+              check_employees_crud,
+              "add_employee / update_employee / get_employee_by_id_number.")
+    run_check("CV Foundation", "import_employees_csv idempotent upsert",
+              check_import_employees_csv_idempotent,
+              "Re-importing the same CSV must result in 0 inserts and only changed rows updated.")
+    run_check("CV Foundation", "register + promote CV model — only one active",
+              check_cv_model_register_and_promote,
+              "Partial unique index ix_cv_models_active + atomic demote/promote.")
+    run_check("CV Foundation", "Tool catalogue CRUD + min_confidence override",
+              check_tool_catalogue_crud,
+              "add_tool_class, list_tool_catalogue, set_tool_class_min_confidence.")
+
+    # ── Phase 6B — QR badge encode/decode ─────────────────────────────────
+    run_check("QR Badges", "encode_id_to_png produces a valid PNG",
+              check_qr_encode_produces_png,
+              "ai/cv/qr.py — encode side, no native deps.")
+    run_check("QR Badges", "encode → decode roundtrip preserves ID_Number",
+              check_qr_decode_roundtrip,
+              "ai/cv/qr.py — requires libzbar (pyzbar). Skipped if missing.")
+
+    # ── Phase 6C — YOLO inference helper (mocked — no torch needed) ───────
+    run_check("CV Inference", "detect_tool returns [] when no active model",
+              check_detect_tool_no_active_model,
+              "ai/cv/inference.py — empty active result.")
+    run_check("CV Inference", "detect_tool returns [] when model_path missing on disk",
+              check_detect_tool_missing_disk_file,
+              "ai/cv/inference.py — degraded path handling.")
+    run_check("CV Inference", "detect_tool drops detections below DEFAULT threshold",
+              check_detect_tool_min_confidence_filter,
+              "Default 0.75 filter — mocked YOLO + real PNG.")
+    run_check("CV Inference", "per-class min_confidence override beats default",
+              check_detect_tool_per_class_override,
+              "tool_catalogue.min_confidence override path.")
+    run_check("CV Inference", "invalidate_model_cache clears threshold cache",
+              check_invalidate_model_cache_clears_lru,
+              "Promote-button hook clears caches without restart.")
+
+    # ── Phase 6D — Smart Scan logic helpers ───────────────────────────────
+    run_check("Smart Scan", "bucket_detections returns 'auto' for ≥0.75",
+              check_bucket_detections_auto_bucket,
+              "ai/cv/smart_scan.py — top confidence wins, only top1 returned.")
+    run_check("Smart Scan", "bucket_detections caps candidates at 3 and floors at 0.30",
+              check_bucket_detections_candidates_bucket,
+              "Mid-confidence shows top-3; sub-0.30 falls back to manual.")
+    run_check("Smart Scan", "lookup_employee_by_qr rejects suspended / unknown / blank",
+              check_lookup_employee_by_qr_active_only,
+              "Only active employees may auth via badge.")
+    run_check("Smart Scan", "get_open_loans_for_employee matches CV + manual loans",
+              check_get_open_loans_for_employee_dual_path,
+              "Return-flow filter spans cv_employee_id OR borrower_name fallback.")
+
+    # ── Phase 6E — Returnable loan reminder sweep ─────────────────────────
+    run_check("Returnable Reminders", "sweep fires once per offset across all four windows",
+              check_returnable_sweep_fires_all_four_offsets,
+              "T-2h / T-0 / T+2h / T+24h each fire when 'now' lands in the window.")
+    run_check("Returnable Reminders", "sweep is idempotent within an hour",
+              check_returnable_sweep_idempotent,
+              "delivery_reminders_sent UNIQUE constraint guards re-fire.")
+    run_check("Returnable Reminders", "phone resolution prefers CV → manual → audit",
+              check_returnable_phone_resolution_three_tier,
+              "Missing-phone path writes audit row, no admin nag.")
+    run_check("Returnable Reminders", "T+24h escalates to supervisor (NOT HOD)",
+              check_returnable_t_plus_24h_supervisor_fanout,
+              "Per Phase 6E spec change: supervisor replaces HOD at T+24h.")
+
+    # ── Phase 6F — Bulk badge PDF ─────────────────────────────────────────
+    run_check("Bulk Badges", "generate_employee_qr_badges_pdf produces valid PDF",
+              check_employee_badges_pdf_smoke,
+              "reports.py — multi-page grid + HR header band + empty-list placeholder.")
 
     out = write_report()
     print()

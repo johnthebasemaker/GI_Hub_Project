@@ -227,17 +227,24 @@ def ollama_stream(
     temperature: float = 0.3,
     num_predict: int = 768,
     timeout_s: int = OLLAMA_TIMEOUT_S,
+    keep_alive: str = "30m",
 ) -> Iterator[str]:
     """
     Yields text chunks as they arrive from Ollama. Compatible with
     `st.write_stream(...)`. Raises RuntimeError on transport failure
     BEFORE the first yield; per-chunk errors are swallowed silently to
     avoid breaking a stream mid-display.
+
+    `keep_alive` tells Ollama how long to keep the model + its KV cache
+    resident after the request finishes. Default 30 minutes — keeps the
+    system-prompt KV state warm so follow-up questions get near-instant
+    prompt-eval. Set to "0" to evict immediately (saves RAM, slower).
     """
     payload = {
         "model": model,
         "prompt": prompt,
         "stream": True,
+        "keep_alive": keep_alive,
         "options": {
             "temperature": temperature,
             "num_predict": num_predict,

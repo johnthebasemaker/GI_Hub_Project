@@ -153,6 +153,11 @@ WHATSAPP_TRIGGERS = {
     "delivery_reminder_t_minus_2": True,
     "delivery_reminder_t_minus_1": True,
     "delivery_reminder_t_zero":    True,
+    # Phase 6E — Returnable-loan reminders (hourly sweep, signed-hour offsets)
+    "returnable_reminder_t_minus_2h": True,   # info     — 2h before due (borrower)
+    "returnable_reminder_t_zero":     True,   # warning  — due now (borrower)
+    "returnable_reminder_t_plus_2h":  True,   # warning  — 2h overdue (borrower + site SK)
+    "returnable_reminder_t_plus_24h": True,   # critical — 24h overdue (+ site supervisor)
 }
 
 # Allowed attachment MIME suffixes (PDF, JPEG, JPG, XLSX per 2026-06 spec).

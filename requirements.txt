@@ -14,3 +14,14 @@ pywhatkit; sys_platform == 'win32' or sys_platform == 'darwin'
 fastapi
 uvicorn[standard]
 httpx  # for pytest TestClient
+
+# Phase 6B — Employee QR badges (encode) + decode for camera scanning (6D)
+# pyzbar wraps the native `libzbar` library — on macOS run `brew install zbar`,
+# on Debian/Ubuntu `apt install libzbar0` before pip install.
+qrcode[pil]
+pyzbar
+
+# Phase 6C — YOLOv8 training + inference (lazy-imported by ai/cv/train.py and
+# ai/cv/inference.py — Streamlit and bug_check never pay torch's import cost).
+ultralytics>=8.1
+opencv-python-headless>=4.9

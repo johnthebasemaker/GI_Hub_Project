@@ -30,7 +30,7 @@ from collections import defaultdict
 import pandas as pd
 import streamlit as st
 
-from config import SYSTEM_COLS, AI_ENABLED
+from config import SYSTEM_COLS, AI_ENABLED, BRAND_GOLD, TEXT_MUTED
 from database import (
     get_connection,
     get_pending_requests,
@@ -44,6 +44,19 @@ from database import (
     get_whatsapp_log,
     list_bug_reports,
     update_bug_report,
+    # Phase 6B — Employee master CRUD
+    add_employee,
+    update_employee,
+    list_employees,
+    get_employee_by_id_number,
+    import_employees_csv,
+    # Phase 6C — CV model + tool catalogue
+    add_tool_class,
+    list_tool_catalogue,
+    set_tool_class_min_confidence,
+    register_cv_model_version,
+    promote_cv_model_version,
+    get_active_cv_model,
 )
 from cache_layer import (
     cached_work_types,
@@ -198,6 +211,10 @@ def page_admin_portal(user: dict) -> None:
         "💬 Reports & Bugs",
         # Phase 5 — cross-site oversight of the procurement chain
         "🚚 Logistics Oversight",
+        # Phase 6B — Employee master + QR badge generator
+        "👷 Employees",
+        # Phase 6C — YOLO tool catalogue + model version manager
+        "🛠️ Tool Catalogue",
     ]
     tabs = st.tabs(tab_labels)
     with tabs[0]: _render_overview_tab(user)
@@ -211,6 +228,8 @@ def page_admin_portal(user: dict) -> None:
     with tabs[8]: _render_access_control_tab(user)
     with tabs[9]: _render_bugs_tab(user)
     with tabs[10]: _render_logistics_oversight_tab(user)
+    with tabs[11]: _render_employees_tab(user)
+    with tabs[12]: _render_tool_catalogue_tab(user)
 
 
 # ===========================================================================
@@ -2102,3 +2121,485 @@ def _render_logistics_oversight_tab(user: dict) -> None:
                                title="No pending reschedule requests")
         else:
             st.dataframe(rs_df, use_container_width=True, hide_index=True)
+
+
+# ===========================================================================
+# Phase 6B — 👷 Employees tab
+# ===========================================================================
+def _render_employees_tab(user: dict) -> None:
+    """Admin-only employee master + per-employee QR badge generator.
+
+    Three sub-tabs:
+      ➕ Add / Edit — single-row CRUD via existing 6A helpers
+      📥 Bulk Import — CSV upsert via import_employees_csv (idempotent)
+      👥 Roster + Badges — read-only table + selectbox-driven PNG download
+    """
+    st.markdown(
+        f'<h3 style="color:{BRAND_GOLD};font-weight:700;'
+        f'margin:0 0 4px 0;">👷 Employee Master</h3>'
+        f'<p style="color:{TEXT_MUTED};margin:0 0 14px 0;font-size:13px;">'
+        f'CRUD for the physical-labour employee directory. QR badges '
+        f'embed only the ID_Number — no PII on the printable label.</p>',
+        unsafe_allow_html=True,
+    )
+
+    sub_add, sub_csv, sub_roster = st.tabs([
+        "➕ Add / Edit Employee",
+        "📥 Bulk Import (CSV)",
+        "👥 Roster + Badges",
+    ])
+
+    actor = (user or {}).get("username", "admin")
+
+    # ── ➕ Add / Edit ────────────────────────────────────────────────────────
+    with sub_add:
+        col_add, col_edit = st.columns(2)
+
+        with col_add:
+            st.markdown("**➕ Add New Employee**")
+            with st.form("emp_add_form", clear_on_submit=True):
+                new_id = st.text_input("ID Number", placeholder="e.g. EMP-1042").strip()
+                new_name = st.text_input("Full Name", placeholder="e.g. Ahmed Ali").strip()
+                new_phone = st.text_input(
+                    "Phone (WhatsApp)",
+                    placeholder="+9665XXXXXXXX",
+                ).strip()
+                new_dept = st.text_input("Department", placeholder="e.g. Logistics").strip()
+                if st.form_submit_button("Add Employee", type="primary"):
+                    ok, msg = add_employee(
+                        new_id, new_name, new_phone, new_dept, created_by=actor,
+                    )
+                    if ok:
+                        st.success(f"✅ {msg}")
+                        st.rerun()
+                    else:
+                        st.error(f"🚫 {msg}")
+
+        with col_edit:
+            st.markdown("**✏️ Edit Existing Employee**")
+            roster_df = list_employees()
+            if roster_df.empty:
+                st.info("No employees yet — add one on the left.")
+            else:
+                edit_id = st.selectbox(
+                    "Pick employee to edit",
+                    roster_df["ID_Number"].tolist(),
+                    format_func=lambda i: f"{i} — {roster_df[roster_df['ID_Number']==i].iloc[0]['Name']}",
+                    key="emp_edit_pick",
+                )
+                _row = roster_df[roster_df["ID_Number"] == edit_id].iloc[0]
+                with st.form("emp_edit_form", clear_on_submit=False):
+                    e_name = st.text_input("Full Name", value=_row["Name"] or "").strip()
+                    e_phone = st.text_input("Phone", value=_row["Phone_Number"] or "").strip()
+                    e_dept = st.text_input("Department", value=_row["Department"] or "").strip()
+                    e_status = st.selectbox(
+                        "Status",
+                        ["active", "inactive", "suspended"],
+                        index=["active", "inactive", "suspended"].index(
+                            (_row["status"] or "active")
+                        ),
+                    )
+                    if st.form_submit_button("Save Changes"):
+                        changed = update_employee(
+                            edit_id,
+                            name=e_name or None,
+                            phone=e_phone if e_phone != "" else None,
+                            department=e_dept if e_dept != "" else None,
+                            status=e_status,
+                            updated_by=actor,
+                        )
+                        if changed:
+                            st.success(f"✅ Updated {edit_id}.")
+                            st.rerun()
+                        else:
+                            st.info("No changes detected.")
+
+    # ── 📥 Bulk Import ──────────────────────────────────────────────────────
+    with sub_csv:
+        st.markdown("**📥 Import Employees from CSV**")
+        st.caption(
+            "Header row required (case-insensitive): "
+            "`ID_Number, Name, Phone_Number, Department`. "
+            "Re-importing the same file is safe — rows with unchanged data "
+            "are skipped, changed rows update in place."
+        )
+        up = st.file_uploader(
+            "Choose CSV file",
+            type=["csv"],
+            key="emp_csv_uploader",
+            help="HR export. UTF-8 encoded, comma-delimited.",
+        )
+        if up is not None:
+            if st.button("🚀 Import now", type="primary", key="emp_csv_go"):
+                with st.spinner("Importing…"):
+                    result = import_employees_csv(up, created_by=actor)
+                inserted = result.get("inserted", 0)
+                updated = result.get("updated", 0)
+                skipped = result.get("skipped", 0)
+                errors = result.get("errors", []) or []
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Inserted", inserted)
+                c2.metric("Updated", updated)
+                c3.metric("Skipped", skipped)
+                if errors:
+                    with st.expander(f"⚠️ {len(errors)} row error(s)", expanded=True):
+                        for e in errors:
+                            st.warning(e)
+                else:
+                    st.success("✅ Import complete with no row errors.")
+
+    # ── 👥 Roster + Badges ──────────────────────────────────────────────────
+    with sub_roster:
+        status_filter = st.selectbox(
+            "Status filter",
+            ["All", "active", "inactive", "suspended"],
+            key="emp_roster_status",
+        )
+        df = list_employees(
+            status_filter=None if status_filter == "All" else status_filter,
+        )
+        if df.empty:
+            render_empty_state(
+                icon="👷", title="No employees yet",
+                hint="Add employees in the first sub-tab, or bulk-import a CSV.",
+            )
+        else:
+            display = df[
+                ["ID_Number", "Name", "Phone_Number", "Department", "status",
+                 "created_by", "created_at", "updated_at"]
+            ].rename(columns={
+                "Phone_Number": "Phone",
+                "status": "Status",
+                "created_by": "Added By",
+                "created_at": "Created",
+                "updated_at": "Updated",
+            })
+            st.dataframe(display, use_container_width=True, hide_index=True)
+            st.caption(f"{len(df)} employee(s) shown.")
+
+            st.divider()
+            st.markdown("**📥 Download QR Badge**")
+            st.caption(
+                "QR payload is strictly the ID_Number — no PII embedded. "
+                "Print one badge per employee or stick to the digital file."
+            )
+            badge_pick = st.selectbox(
+                "Employee",
+                df["ID_Number"].tolist(),
+                format_func=lambda i: f"{i} — {df[df['ID_Number']==i].iloc[0]['Name']}",
+                key="emp_badge_pick",
+            )
+            try:
+                from ai.cv.qr import encode_id_to_png
+                png_bytes = encode_id_to_png(badge_pick)
+                preview_col, btn_col = st.columns([1, 2])
+                with preview_col:
+                    st.image(png_bytes, caption=f"QR · {badge_pick}", width=220)
+                with btn_col:
+                    st.download_button(
+                        label="📥 Download PNG Badge",
+                        data=png_bytes,
+                        file_name=f"badge_{badge_pick}.png",
+                        mime="image/png",
+                        type="primary",
+                        key=f"emp_badge_dl_{badge_pick}",
+                    )
+                    st.markdown(
+                        f"<p style='color:{TEXT_MUTED};font-size:0.78rem;"
+                        f"margin-top:0.5rem;'>The PNG is ~330×330 px at "
+                        f"default size — fits a 50 mm × 50 mm badge "
+                        f"sticker at 150 DPI.</p>",
+                        unsafe_allow_html=True,
+                    )
+            except Exception as e:
+                st.error(f"🚫 QR generation failed: {type(e).__name__}: {e}")
+
+            # ── 📥 Bulk PDF (Phase 6F) ─────────────────────────────────
+            st.divider()
+            st.markdown("**📥 Download All Badges (PDF)**")
+            st.caption(
+                "Print every active employee's badge in one go — A4 grid, "
+                "12 badges per page. Use the toggle to also include "
+                "inactive / suspended employees for one-off reprints."
+            )
+            include_inactive = st.checkbox(
+                "Also include inactive / suspended employees",
+                value=False,
+                key="emp_bulk_include_inactive",
+                help="Off by default — inactive/suspended employees shouldn't "
+                     "be issuing new loans. Toggle for migration reprints.",
+            )
+            from database import list_employees as _list_all_emps
+            _full_df = _list_all_emps()
+            if include_inactive:
+                _emp_for_pdf = _full_df.copy()
+            else:
+                _emp_for_pdf = _full_df[_full_df["status"] == "active"].copy()
+            n_for_pdf = len(_emp_for_pdf)
+            st.caption(f"📄 {n_for_pdf} badge(s) will be printed.")
+            if n_for_pdf == 0:
+                st.info("No employees to print at the current filter setting.")
+            else:
+                try:
+                    from reports import generate_employee_qr_badges_pdf
+                    _rows = _emp_for_pdf[["ID_Number", "Name", "Department"]] \
+                        .fillna("").to_dict(orient="records")
+                    _pdf_bytes = generate_employee_qr_badges_pdf(_rows)
+                    import datetime as _dt
+                    _suffix = "all" if include_inactive else "active"
+                    st.download_button(
+                        label=f"📥 Download {n_for_pdf} Badge(s) (PDF)",
+                        data=_pdf_bytes,
+                        file_name=f"badges_{_suffix}_{_dt.date.today().isoformat()}.pdf",
+                        mime="application/pdf",
+                        type="primary",
+                        key="emp_bulk_pdf_dl",
+                    )
+                except Exception as e:
+                    st.error(f"🚫 Bulk PDF failed: {type(e).__name__}: {e}")
+
+
+# ===========================================================================
+# Phase 6C — 🛠️ Tool Catalogue tab
+# ===========================================================================
+def _render_tool_catalogue_tab(user: dict) -> None:
+    """Manage YOLO tool classes + CV model versions + on-disk storage."""
+    st.markdown(
+        f'<h3 style="color:{BRAND_GOLD};font-weight:700;'
+        f'margin:0 0 4px 0;">🛠️ Tool Catalogue & Models</h3>'
+        f'<p style="color:{TEXT_MUTED};margin:0 0 14px 0;font-size:13px;">'
+        f'Define detectable tool classes, manage trained model versions, '
+        f'and inspect on-disk training artifacts. Promotion is a separate '
+        f'action — admin reviews mAP before flipping a model active.</p>',
+        unsafe_allow_html=True,
+    )
+
+    sub_classes, sub_models, sub_storage = st.tabs([
+        "🏷️ Classes",
+        "📦 Model Versions",
+        "📂 Storage Inspector",
+    ])
+    actor = (user or {}).get("username", "admin")
+
+    # ── 🏷️ Classes ─────────────────────────────────────────────────────────
+    with sub_classes:
+        # Load model-version options for the "tied to" selector.
+        import sqlite3 as _sqlite3
+        conn_tc = get_connection()
+        try:
+            mv_rows = list(conn_tc.execute(
+                "SELECT id, version FROM cv_model_versions ORDER BY id DESC"
+            ))
+        finally:
+            conn_tc.close()
+        mv_options = [(mid, ver) for (mid, ver) in mv_rows]
+        mv_labels  = ["(none — register class first)"] + [f"{v} (id={i})" for (i, v) in mv_options]
+
+        st.markdown("**➕ Add Tool Class**")
+        st.caption(
+            "`class_name` must match the YOLO class id used during training "
+            "(no spaces, lowercase + underscores). `display_name` is what "
+            "store keepers see in the UI."
+        )
+        with st.form("tc_add_class_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                new_class = st.text_input("class_name", placeholder="torque_wrench_12").strip()
+                new_display = st.text_input("display_name", placeholder="Torque Wrench (12mm)").strip()
+            with c2:
+                new_cat = st.text_input("category", placeholder="Hand Tools").strip()
+                new_thresh = st.slider("min_confidence", 0.50, 0.99, 0.75, 0.01)
+            mv_pick_label = st.selectbox("Tied to model version", mv_labels, key="tc_add_mv_pick")
+            if st.form_submit_button("Add class", type="primary"):
+                if mv_pick_label.startswith("(none"):
+                    st.error("🚫 Register a model version first via `python ai/cv/train.py`.")
+                else:
+                    pick_idx = mv_labels.index(mv_pick_label) - 1
+                    mv_id, _mv_ver = mv_options[pick_idx]
+                    ok, msg = add_tool_class(
+                        new_class, new_display, new_cat,
+                        model_version_id=mv_id,
+                        created_by=actor,
+                        min_confidence=float(new_thresh),
+                    )
+                    (st.success if ok else st.error)(("✅ " if ok else "🚫 ") + msg)
+                    if ok:
+                        st.rerun()
+
+        st.divider()
+        st.markdown("**📋 Existing Classes**")
+        df_classes = list_tool_catalogue()
+        if df_classes.empty:
+            render_empty_state(
+                icon="🏷️", title="No tool classes registered yet",
+                hint="Train a model with `python ai/cv/train.py` first, then add classes here.",
+            )
+        else:
+            st.dataframe(
+                df_classes.rename(columns={
+                    "class_name": "Class ID",
+                    "display_name": "Display Name",
+                    "category": "Category",
+                    "model_version_id": "Model #",
+                    "min_confidence": "Threshold",
+                    "created_by": "Added By",
+                    "created_at": "Created",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+
+            # Quick threshold tweak (single class at a time).
+            st.markdown("**🎚️ Adjust threshold for one class**")
+            adj_class = st.selectbox(
+                "Class", df_classes["class_name"].tolist(), key="tc_adj_class_pick",
+            )
+            adj_row = df_classes[df_classes["class_name"] == adj_class].iloc[0]
+            adj_val = st.slider(
+                "New min_confidence",
+                0.50, 0.99,
+                float(adj_row["min_confidence"]),
+                0.01,
+                key=f"tc_adj_val_{adj_class}",
+            )
+            if st.button("Save threshold", key=f"tc_adj_save_{adj_class}"):
+                if set_tool_class_min_confidence(adj_class, adj_val, updated_by=actor):
+                    st.success(f"✅ {adj_class} → {adj_val:.2f}")
+                    st.rerun()
+                else:
+                    st.error("🚫 No row updated — class may have been removed.")
+
+    # ── 📦 Model Versions ──────────────────────────────────────────────────
+    with sub_models:
+        import pandas as _pd
+        conn_mv = get_connection()
+        try:
+            mv_df = _pd.read_sql(
+                "SELECT id, version, mAP, trained_at, is_active, model_path "
+                "FROM cv_model_versions ORDER BY id DESC",
+                conn_mv,
+            )
+        finally:
+            conn_mv.close()
+
+        if mv_df.empty:
+            render_empty_state(
+                icon="📦", title="No model versions yet",
+                hint="Train your first model with `python ai/cv/train.py --epochs 50`. "
+                     "It will appear here automatically.",
+            )
+        else:
+            mv_df_display = mv_df.copy()
+            mv_df_display["Active"] = mv_df_display["is_active"].apply(
+                lambda v: "✅" if int(v or 0) == 1 else "—"
+            )
+            mv_df_display["mAP@0.5"] = mv_df_display["mAP"].apply(
+                lambda v: f"{float(v):.3f}" if v is not None else "—"
+            )
+            st.dataframe(
+                mv_df_display[["id", "version", "mAP@0.5", "trained_at",
+                               "Active", "model_path"]].rename(columns={
+                    "id": "DB id",
+                    "version": "Version",
+                    "trained_at": "Trained at",
+                    "model_path": "Path",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+
+            st.markdown("**✅ Promote a version to active**")
+            promote_pick = st.selectbox(
+                "Version to promote",
+                mv_df["version"].tolist(),
+                key="tc_promote_pick",
+            )
+            if st.button("✅ Promote", type="primary", key="tc_promote_btn"):
+                if promote_cv_model_version(promote_pick, promoted_by=actor):
+                    # Invalidate the inference cache so the next detect_tool()
+                    # picks up the new weights without restart.
+                    try:
+                        from ai.cv.inference import invalidate_model_cache
+                        invalidate_model_cache()
+                    except Exception:
+                        pass
+                    st.success(f"✅ Promoted {promote_pick} to active. Inference cache cleared.")
+                    st.rerun()
+                else:
+                    st.error(f"🚫 No version named {promote_pick} found.")
+
+            st.divider()
+            st.markdown("**🧠 Currently loaded in memory**")
+            try:
+                from ai.cv.inference import get_loaded_model_info
+                info = get_loaded_model_info()
+            except Exception:
+                info = None
+            if info is None:
+                st.caption("(no model loaded yet — runs on first detection)")
+            else:
+                st.caption(
+                    f"Version **{info.get('version')}** · "
+                    f"{len(info.get('classes', []))} classes · "
+                    f"mAP@0.5 = {info.get('mAP')}"
+                )
+
+    # ── 📂 Storage Inspector ───────────────────────────────────────────────
+    with sub_storage:
+        from pathlib import Path as _Path
+        repo_root = _Path(__file__).resolve().parent.parent
+        model_root = repo_root / "models" / "cv_returnable"
+        st.caption(f"Scanning: `{model_root}`")
+
+        # Disk side
+        disk_versions = {}
+        if model_root.exists():
+            for p in sorted(model_root.iterdir()):
+                if p.is_dir() and p.name.startswith("v") and p.name[1:].isdigit():
+                    weights = p / "best.pt"
+                    size_mb = (weights.stat().st_size / 1024 / 1024) if weights.exists() else 0.0
+                    disk_versions[p.name] = {
+                        "dir": str(p),
+                        "weights_path": str(weights) if weights.exists() else None,
+                        "size_mb": round(size_mb, 1),
+                    }
+
+        # DB side
+        conn_si = get_connection()
+        try:
+            db_rows = list(conn_si.execute(
+                "SELECT version, model_path FROM cv_model_versions ORDER BY id DESC"
+            ))
+        finally:
+            conn_si.close()
+        db_versions = {ver: path for (ver, path) in db_rows}
+
+        all_versions = sorted(set(disk_versions) | set(db_versions),
+                              key=lambda s: int(s[1:]) if s[1:].isdigit() else 0,
+                              reverse=True)
+        if not all_versions:
+            render_empty_state(
+                icon="📂", title="No model artifacts on disk and no DB rows",
+                hint="Run training to create both.",
+            )
+        else:
+            rows = []
+            for ver in all_versions:
+                on_disk = ver in disk_versions
+                in_db   = ver in db_versions
+                if on_disk and in_db:
+                    status = "✅ in sync"
+                    # also verify the path in DB matches disk
+                    if disk_versions[ver]["weights_path"] != db_versions[ver]:
+                        status = "⚠️ path mismatch"
+                elif in_db and not on_disk:
+                    status = "⚠️ orphan (DB row, no disk file)"
+                else:
+                    status = "👻 untracked (disk dir, no DB row)"
+                rows.append({
+                    "Version": ver,
+                    "Status":  status,
+                    "DB path": db_versions.get(ver, "—"),
+                    "Disk best.pt": disk_versions.get(ver, {}).get("weights_path") or "—",
+                    "Size (MB)":     disk_versions.get(ver, {}).get("size_mb", 0.0),
+                })
+            import pandas as _pd2
+            st.dataframe(_pd2.DataFrame(rows), use_container_width=True, hide_index=True)

@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-06-16T12:46:33`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_ahopuxdn/bug_check.db`  
-**Total checks:** 241  
-**Passing:** 241  
+**Run at:** `2026-06-17T12:51:26`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_aijhxwva/bug_check.db`  
+**Total checks:** 268  
+**Passing:** 268  
 **Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -19,6 +19,22 @@ _None — every check passed._
 
 ### Audit — 1/1
 - ✅ log_audit_action writes row
+
+### Bulk Badges — 1/1
+- ✅ generate_employee_qr_badges_pdf produces valid PDF
+
+### CV Foundation — 4/4
+- ✅ Employees CRUD + duplicate rejection
+- ✅ import_employees_csv idempotent upsert
+- ✅ register + promote CV model — only one active
+- ✅ Tool catalogue CRUD + min_confidence override
+
+### CV Inference — 5/5
+- ✅ detect_tool returns [] when no active model
+- ✅ detect_tool returns [] when model_path missing on disk
+- ✅ detect_tool drops detections below DEFAULT threshold
+- ✅ per-class min_confidence override beats default
+- ✅ invalidate_model_cache clears threshold cache
 
 ### Consumption — 1/1
 - ✅ Stage → commit_eod
@@ -61,6 +77,10 @@ _None — every check passed._
 ### QR — 1/1
 - ✅ Submit → approve / reject
 
+### QR Badges — 2/2
+- ✅ encode_id_to_png produces a valid PNG
+- ✅ encode → decode roundtrip preserves ID_Number
+
 ### RBAC — 24/24
 - ✅ store_keeper allow 📝 Entry Log
 - ✅ hod block 📝 Entry Log
@@ -101,11 +121,17 @@ _None — every check passed._
 ### Returnable — 1/1
 - ✅ Tool loan → mark returned
 
+### Returnable Reminders — 4/4
+- ✅ sweep fires once per offset across all four windows
+- ✅ sweep is idempotent within an hour
+- ✅ phone resolution prefers CV → manual → audit
+- ✅ T+24h escalates to supervisor (NOT HOD)
+
 ### Returns — 2/2
 - ✅ Submit → approve → ledger row
 - ✅ Reject removes from pending list
 
-### Schema — 173/173
+### Schema — 180/180
 - ✅ table · inventory
 - ✅ table · consumption
 - ✅ table · receipts
@@ -142,6 +168,9 @@ _None — every check passed._
 - ✅ table · po_force_closures
 - ✅ table · app_notifications
 - ✅ table · delivery_reminders_sent
+- ✅ table · employees
+- ✅ table · tool_catalogue
+- ✅ table · cv_model_versions
 - ✅ column · inventory.SAP_Code
 - ✅ column · inventory.Material_Code
 - ✅ column · inventory.Equipment_Description
@@ -278,6 +307,10 @@ _None — every check passed._
 - ✅ column · pr_master.Plant
 - ✅ column · pr_master.Delivery_Date
 - ✅ column · pr_master.logistics_status
+- ✅ column · returnable_items.cv_detected
+- ✅ column · returnable_items.cv_confidence
+- ✅ column · returnable_items.cv_employee_id
+- ✅ column · returnable_items.cv_tool_class
 - ✅ init_db() is idempotent
 
 ### Site Visibility — 3/3
@@ -287,6 +320,12 @@ _None — every check passed._
 
 ### Sites — 1/1
 - ✅ HQ visible to get_sites()
+
+### Smart Scan — 4/4
+- ✅ bucket_detections returns 'auto' for ≥0.75
+- ✅ bucket_detections caps candidates at 3 and floors at 0.30
+- ✅ lookup_employee_by_qr rejects suspended / unknown / blank
+- ✅ get_open_loans_for_employee matches CV + manual loans
 
 ### Warehouse — 6/6
 - ✅ Acknowledge + receive (partial + over-deliver guard)

@@ -384,6 +384,43 @@ def _maybe_run_delivery_reminders() -> None:
         print(f"❌ delivery_reminders crashed: {e}")
 
 
+def _maybe_run_returnable_reminders() -> None:
+    """Run sweep_returnable_reminders() at most once per local HOUR.
+
+    Phase 6E. The sweep is hour-window based so each event must fire on
+    the correct hour bucket; calling it more frequently than 1/hour is
+    wasteful and could miss boundaries. Marker key:
+    `app_settings.returnable_reminders_last_run_hour` stores the current
+    "YYYY-MM-DDTHH" stamp. Worker restart mid-hour is safe — same marker
+    means no re-fire.
+    """
+    try:
+        import datetime as _dt
+        import database as _db
+        marker = _dt.datetime.now().strftime("%Y-%m-%dT%H")
+        conn = _db.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_settings "
+                "WHERE key='returnable_reminders_last_run_hour'").fetchone()
+            if row and row[0] == marker:
+                return
+            n = _db.sweep_returnable_reminders(conn=conn)
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES "
+                "  ('returnable_reminders_last_run_hour', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (marker,),
+            )
+            conn.commit()
+            if n:
+                print(f"🛠️ Returnable reminders: fired {n} fresh event(s) for {marker}")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"❌ returnable_reminders crashed: {e}")
+
+
 def run_worker_loop() -> None:
     """Infinite poll loop. Safe to run as a daemon thread."""
     print("🟢 WhatsApp worker loop started")
@@ -398,6 +435,8 @@ def run_worker_loop() -> None:
             print(f"❌ check_overdue crashed: {e}")
         # Phase 5 — T-2 / T-1 / T-0 reminders, idempotent within a day
         _maybe_run_delivery_reminders()
+        # Phase 6E — Returnable loan reminders, idempotent within an hour
+        _maybe_run_returnable_reminders()
         time.sleep(60)
 
 

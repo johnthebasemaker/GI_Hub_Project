@@ -465,6 +465,45 @@ This is the FINAL step in the procurement chain. After you click Mark as Receive
 
 For tools, gauges, fittings temporarily handed to personnel — items that should come back.
 
+### 4.5.0 📷 Smart Scan workflow (new — 2026-06)
+
+A two-step camera flow sits at the top of the tab. Use it to skip typing borrower + tool details by hand; the existing manual form still works exactly as before and stays visible underneath.
+
+**Step 1 — Scan the employee badge**
+
+1. Click into the **📷 Smart Scan (Beta)** expander.
+2. Hold the borrower's printed badge in front of the camera. (Badges are generated in **Admin Portal → 👷 Employees → Roster + Badges** — see §7.6.)
+3. The system decodes the QR (which carries only the ID_Number, no PII), looks it up in the Employees master, and shows:
+   - ✅ **Green success card** — `EMP-1042 · Ahmed Ali (+9665…)` — the borrower's name + phone are now staged.
+   - 🚫 **Red error card** — Badge couldn't be read OR the employee is inactive/suspended. Re-snap or use the manual form.
+
+**Step 2 — Scan the tool**
+
+4. After a successful badge scan, a second camera input appears. Point it at the tool.
+5. The active YOLO model (managed in **Admin Portal → 🛠️ Tool Catalogue**, see also `docs/cv_training_guide.md` for how the model gets trained and promoted) classifies the image. Three outcomes:
+   - **Confidence ≥ 0.75** → ✅ Auto-fill. The detected tool name + borrower details flow into the manual form below; review and click "Issue Item 📤".
+   - **Confidence 0.30–0.74** → ⚠️ A "Top candidates" radio appears. Pick the right one and click "Use this tool". The form pre-fills.
+   - **No active CV model** OR **confidence < 0.30** → 🤖 An info banner explains the fallback. Borrower fields stay pre-filled; type the tool name into the manual form yourself.
+
+**Click "🔄 Start over (clear scan)"** any time to reset and scan a different borrower.
+
+**What happens if the AI is wrong**
+
+You're never locked in. Every Smart Scan write-through goes into the *manual* form's fields — Name, Phone, Material name. Edit anything that's wrong before clicking "Issue Item 📤". The submitted record stores `cv_detected=1` and `cv_confidence` so admin reports can later show adoption + accuracy telemetry. Manually-corrected loans don't get tagged as CV — that's intentional, see §10 for the data model details.
+
+**Automatic WhatsApp reminders (Phase 6E)**
+
+Once a loan is in the system, the WhatsApp worker fires four reminders automatically. The cadence and recipient list is:
+
+| Offset | Severity | In-app | WhatsApp |
+|---|---|---|---|
+| **T−2h** (2 hours before due) | info | Site SK badge | Borrower |
+| **T−0** (due now) | warning | Site SK badge | Borrower |
+| **T+2h** (2 hours overdue) | warning | Site SK badge | Borrower + every Site SK |
+| **T+24h** (24 hours overdue) | critical | Site SK + Supervisor badges | Borrower + every Site SK + every Site Supervisor |
+
+The borrower's phone is resolved first from the Employees master (CV-scanned loans) and falls back to the manually-typed `borrower_phone` column for legacy/manual loans. The system de-dupes per loan + offset so restarting the worker mid-day never causes double-fires. Admins can mute any of the four events via `config.WHATSAPP_TRIGGERS` if a particular escalation gets too noisy.
+
 ### 4.5.1 ➕ Issue a Returnable Item — expander (expanded by default)
 
 | Field | Type | Purpose |

@@ -493,6 +493,7 @@ Use sparingly — this is invasive. Better: communicate the reversal verbally an
 **On delivery day:** 📝 Entry Log → 📦 Receipt Staging → 🚚 Incoming DN expander → inspect → ✅ Mark as Received.
 **On every day:** Consumption Log → record issues; Receipt Staging for direct deliveries; Stock Count for cycle counts; QR Label Request for new labels.
 **Don't:** Mark received without physical inspection. Mix Returnable (tool loans) with Return Items (real returns).
+**📷 Smart Scan — when CV detection is wrong:** the green "Auto-filled" card can be edited before submit. If a yellow "Top candidates" radio appears, pick the right one or override the tool name in the manual form. If no candidates show (or no active model), just type it manually — borrower fields stay pre-filled from the badge scan. The submitted loan records which path (CV vs manual) was used so adoption telemetry stays honest. Full workflow: `USER_MANUAL.md` §4.5.0. Trainer guide: `docs/cv_training_guide.md`.
 
 ### §7.5 Admin — One-page summary
 

@@ -31,9 +31,9 @@ from typing import Iterator
 
 from ai.client import (
     MODEL_CHAT,
-    OLLAMA_AVAILABLE,
     OLLAMA_HOST,
     list_ollama_models,
+    ollama_health,
     ollama_stream,
 )
 
@@ -100,14 +100,25 @@ def _load_sections() -> dict[int, str]:
     return out
 
 
+_PER_SECTION_CHAR_CAP = 800   # was 3000 — keeps total prompt under ~3K tokens
+
+
+@lru_cache(maxsize=8)
 def _context_for_role(role: str) -> str:
     """
     Build the RAG context: concatenation of allowed sections, each prefixed
     with a clear delimiter and section label so the LLM knows what's what.
 
-    Truncates each section to ~3000 chars so we stay within llama3.1:8b's
-    practical context window when combined with the question + system
-    prompt.
+    Caps each section at `_PER_SECTION_CHAR_CAP` chars so prompt-eval stays
+    fast on llama3.1:8b (full sections were costing 30s+ of prompt-eval per
+    question). The role-gate is preserved — we just send the head of each
+    allowed section. If a user asks a deep question and the answer isn't in
+    the truncated head, the model is instructed to fall back to "ask your
+    HOD or Admin", which is the documented behaviour.
+
+    Cached per-role so the string is computed once per process — combined
+    with Ollama's keep_alive KV cache (see ai/client.py) this means the
+    system prompt's KV state is reused across messages.
     """
     allowed = _ROLE_ALLOWED.get(role, _ROLE_ALLOWED["store_keeper"])
     sections = _load_sections()
@@ -119,10 +130,39 @@ def _context_for_role(role: str) -> str:
         body = sections.get(num)
         if not body:
             continue
-        if len(body) > 3000:
-            body = body[:3000] + "\n[... section truncated for context window ...]"
+        if len(body) > _PER_SECTION_CHAR_CAP:
+            body = body[:_PER_SECTION_CHAR_CAP] + "\n[... truncated — ask for specifics if you need more ...]"
         chunks.append(f"=== Section {num}: {_SECTION_TITLES.get(num, '')} ===\n{body}")
     return "\n\n".join(chunks)
+
+
+# ---------------------------------------------------------------------------
+# Greeting fast-path — never call the LLM for trivial pleasantries.
+# Saves ~30s of prompt-eval for every "Hi" / "thanks" message.
+# ---------------------------------------------------------------------------
+_GREETING_TOKENS = {
+    "hi", "hii", "hello", "hey", "heya", "yo", "hola",
+    "thanks", "thank you", "ty", "thx",
+    "ok", "okay", "cool", "great", "nice",
+    "bye", "goodbye", "cya", "see you",
+    "good morning", "good afternoon", "good evening", "morning", "evening",
+}
+
+
+def _greeting_reply(question: str) -> str | None:
+    """Return a canned reply if the question is a trivial greeting, else None."""
+    q = re.sub(r"[!?.,…]+$", "", (question or "").strip().lower())
+    if not q or len(q) > 24:
+        return None
+    if q in _GREETING_TOKENS:
+        if q.startswith("thank") or q in {"ty", "thx"}:
+            return "You're welcome — ask me anything from your section of the manual."
+        if q in {"bye", "goodbye", "cya", "see you"}:
+            return "Goodbye! I'll be here when you need me."
+        if q in {"ok", "okay", "cool", "great", "nice"}:
+            return "👍 Anything else from the manual you'd like me to look up?"
+        return "Hi! I'm the Hub Assistant. Ask me anything about your role's section of the manual."
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -168,8 +208,19 @@ def _build_system_prompt(role: str) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 def health() -> tuple[bool, str]:
-    """Used by the sidebar widget to render the right empty state."""
-    if not OLLAMA_AVAILABLE:
+    """Used by the sidebar widget to render the right empty state.
+
+    Probes Ollama LIVE on every call (via the Streamlit-cached
+    `ollama_health()` helper) so users who start `ollama serve` AFTER
+    Streamlit launched are picked up on the next rerun. The previous
+    implementation read the module-load constant `OLLAMA_AVAILABLE`,
+    which never refreshed once Streamlit was running.
+    """
+    try:
+        ollama_health.clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    if not ollama_health():
         return False, (
             f"Local AI server unreachable at `{OLLAMA_HOST}`. "
             "Start `ollama serve` locally, or set `[ollama] host = \"...\"` "
@@ -203,6 +254,13 @@ def answer_manual_question(
         yield "Type a question above and I'll answer from your section of the manual."
         return
 
+    # Optimisation #1 — greeting fast-path. Skip the 30s prompt-eval entirely
+    # for "Hi", "thanks", "ok" etc. and reply in-process.
+    canned = _greeting_reply(question)
+    if canned is not None:
+        yield canned
+        return
+
     system = _build_system_prompt(role)
     prompt = f"User question: {question}\n\nAnswer:"
 
@@ -213,6 +271,7 @@ def answer_manual_question(
             system=system,
             temperature=0.2,        # factual, not creative
             num_predict=512,
+            keep_alive="30m",       # keep system-prompt KV cache warm
         ):
             yield chunk
     except RuntimeError as e:

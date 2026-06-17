@@ -132,7 +132,14 @@ def _safe_date(v):
 def _resolve_warehouse(user: dict) -> str | None:
     """Determine which warehouse this user is bound to. warehouse_user
     inherits the Warehouse_ID from their user profile. Admin is allowed to
-    pick any active warehouse for shadow access."""
+    pick any active warehouse for shadow access.
+
+    Returns None for warehouse_user with no binding (triggers the
+    "not bound" banner in page_warehouse_portal). Returns the marker
+    string ``"__NO_WAREHOUSES__"`` for admin when the warehouses table is
+    empty so the caller can show a setup-help message instead of the
+    generic binding error.
+    """
     role = user.get("role")
     if role == "warehouse_user":
         wh = user.get("warehouse_id") or _user_warehouse_from_db(user["username"])
@@ -140,7 +147,7 @@ def _resolve_warehouse(user: dict) -> str | None:
     if role == "admin":
         wh_df = list_warehouses()
         if wh_df.empty:
-            return None
+            return "__NO_WAREHOUSES__"
         # Cached pick across the session
         key = "_wh_admin_shadow_wh"
         pick = st.sidebar.selectbox(
@@ -617,6 +624,36 @@ def page_warehouse_portal(user: dict) -> None:
     render_brand_header("Warehouse — Receive · Prepare DN · Ship to Site")
 
     wh_id = _resolve_warehouse(user)
+    # Admin lands here when the warehouses table is empty — show a clear
+    # setup-help message and a one-click seed button instead of the
+    # generic "not bound" red banner (which is meant for warehouse_user).
+    if wh_id == "__NO_WAREHOUSES__":
+        st.info(
+            "🏭 No warehouses exist yet. Add one in **Admin Portal → "
+            "🚚 Logistics Oversight** or seed a dummy via the button "
+            "below."
+        )
+        with st.expander("➕ Quick-add a starter warehouse", expanded=False):
+            with st.form("_wh_quick_add_form", clear_on_submit=True):
+                qa_id = st.text_input("Warehouse ID", value="WH-01")
+                qa_name = st.text_input("Display name", value="Main Warehouse")
+                qa_loc = st.text_input("Location", value="CNCEC")
+                if st.form_submit_button("Create warehouse", type="primary"):
+                    conn_qa = get_connection()
+                    try:
+                        conn_qa.execute(
+                            "INSERT OR IGNORE INTO warehouses "
+                            "(Warehouse_ID, Name, Location, status, created_by) "
+                            "VALUES (?, ?, ?, 'active', ?)",
+                            (qa_id.strip(), qa_name.strip(), qa_loc.strip(),
+                             user.get("username", "admin")),
+                        )
+                        conn_qa.commit()
+                    finally:
+                        conn_qa.close()
+                    st.success(f"✅ Created {qa_id}. Reload the page.")
+                    st.rerun()
+        return
     if not wh_id:
         st.error(
             "🛑 Your account is not bound to a warehouse. Ask Admin to set "

@@ -16,3 +16,9 @@ __pycache__/
 
 # Attachment store — DB BLOBs are authoritative; disk mirror is local-only.
 uploads/
+
+# Phase 6C — CV training artifacts (kept out of git; backed up separately)
+models/
+data/cv_training/
+runs/
+yolov8*.pt

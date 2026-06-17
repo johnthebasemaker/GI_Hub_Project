@@ -1092,6 +1092,42 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         )
     """)
 
+    # Phase 6E — widen delivery_reminders_sent so the same table can dedup
+    # the new 'returnable_loan' reminder events too. The original schema had
+    # CHECK(ref_type IN ('po','dn')) which blocks the new ref_type. We
+    # rebuild the table without the CHECK if (and only if) the probe insert
+    # fails — idempotent + no data loss.
+    try:
+        c.execute(
+            "INSERT INTO delivery_reminders_sent "
+            "(ref_type, ref_number, target_date, offset_days) "
+            "VALUES ('__probe_returnable_loan__', '__probe__', '1970-01-01', -9999)"
+        )
+        c.execute(
+            "DELETE FROM delivery_reminders_sent WHERE ref_number = '__probe__'"
+        )
+    except sqlite3.IntegrityError:
+        # CHECK constraint is still narrow → rebuild.
+        c.execute("ALTER TABLE delivery_reminders_sent RENAME TO _delivery_reminders_sent_old")
+        c.execute("""
+            CREATE TABLE delivery_reminders_sent (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                ref_type    TEXT    NOT NULL,
+                ref_number  TEXT    NOT NULL,
+                target_date TEXT    NOT NULL,
+                offset_days INTEGER NOT NULL,
+                fired_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(ref_type, ref_number, target_date, offset_days)
+            )
+        """)
+        c.execute(
+            "INSERT INTO delivery_reminders_sent "
+            "(ref_type, ref_number, target_date, offset_days, fired_at) "
+            "SELECT ref_type, ref_number, target_date, offset_days, fired_at "
+            "FROM _delivery_reminders_sent_old"
+        )
+        c.execute("DROP TABLE _delivery_reminders_sent_old")
+
     # app_notifications — in-app inbox (bell icon in sidebar). The same event
     # may also fire a WhatsApp via WHATSAPP_TRIGGERS in config.py; in-app
     # notifications always fire regardless of WhatsApp toggle.
@@ -1228,6 +1264,69 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     # rebuilt every init so they stay in lockstep with self-healing schema drift.
     # Views are inherently read-only; creating them mutates schema, not data.
     _build_stock_views(c)
+
+    # ── Phase 6A: CV foundation (employees, tool_catalogue, cv_model_versions) ──
+    # Pure schema. No UI yet. CRUD helpers live at the bottom of this file in
+    # the "Phase 6A helpers" section. Tables here are additive only.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS employees (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            ID_Number     TEXT UNIQUE NOT NULL,
+            Name          TEXT NOT NULL,
+            Phone_Number  TEXT,
+            Department    TEXT,
+            status        TEXT DEFAULT 'active'
+                          CHECK(status IN ('active','inactive','suspended')),
+            created_by    TEXT,
+            created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS cv_model_versions (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            version      TEXT UNIQUE NOT NULL,
+            model_path   TEXT NOT NULL,
+            classes_json TEXT NOT NULL,
+            mAP          REAL,
+            trained_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+            is_active    INTEGER DEFAULT 0
+        )
+    """)
+    # Partial unique index — guarantees AT MOST one active model version at a
+    # time. promote_cv_model_version() handles the demote-then-promote dance
+    # atomically inside a single transaction.
+    c.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_cv_models_active "
+        "ON cv_model_versions(is_active) WHERE is_active = 1"
+    )
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS tool_catalogue (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            class_name        TEXT UNIQUE NOT NULL,
+            display_name      TEXT NOT NULL,
+            category          TEXT,
+            model_version_id  INTEGER REFERENCES cv_model_versions(id),
+            min_confidence    REAL DEFAULT 0.75,
+            created_by        TEXT,
+            created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Self-heal: 4 CV-audit cols on returnable_items so existing loans get
+    # NULL/0 defaults and the Smart Scan flow (Phase 6D) has somewhere to write.
+    c.execute("PRAGMA table_info(returnable_items)")
+    _ri_cols_6a = {row[1] for row in c.fetchall()}
+    for _col, _ddl in (
+        ("cv_detected",    "INTEGER DEFAULT 0"),
+        ("cv_confidence",  "REAL"),
+        ("cv_employee_id", "TEXT"),
+        ("cv_tool_class",  "TEXT"),
+    ):
+        if _col not in _ri_cols_6a:
+            c.execute(f"ALTER TABLE returnable_items ADD COLUMN {_col} {_ddl}")
 
     conn.commit()
     if _owns_conn:
@@ -3566,21 +3665,30 @@ def log_audit_action(username: str, action_type: str, target_table: str, details
         conn.close()
 
 def submit_registration_request(username: str, password_hash: str, role: str, site_id: str, phone: str) -> tuple[bool, str]:
-    """Puts a new user into the pending queue for Admin approval (Now includes Phone Number)."""
+    """Puts a new user into the pending queue for Admin approval (Now includes Phone Number).
+
+    Procurement roles (`logistics`, `warehouse_user`) are global — they are not
+    tied to a single site. For those, `site_id` may arrive as None or empty;
+    we normalise to "" so the NOT NULL constraint on pending_users.Site_ID is
+    satisfied without a schema change. The Admin grid renders empty Site_ID
+    as blank, which is the intended UX.
+    """
+    site_id = (site_id or "").strip()
     conn = get_connection()
     try:
         c = conn.cursor()
         c.execute("SELECT id FROM users WHERE username = ?", (username,))
         if c.fetchone():
             return False, "Username already exists in the system."
-            
+
         c.execute(
             "INSERT INTO pending_users (username, password_hash, role, Site_ID, Phone_Number) VALUES (?, ?, ?, ?, ?)",
             (username, password_hash, role, site_id, phone)
         )
         conn.commit()
-        
-        log_audit_action(username, "REGISTRATION_REQUEST", "pending_users", f"Requested role: {role} for site: {site_id}")
+
+        audit_site = site_id if site_id else "N/A (global role)"
+        log_audit_action(username, "REGISTRATION_REQUEST", "pending_users", f"Requested role: {role} for site: {audit_site}")
         return True, "Registration submitted successfully! Please wait for Admin approval."
     except sqlite3.IntegrityError:
         return False, "You already have a pending request under this username."
@@ -3777,22 +3885,92 @@ def insert_returnable_item(
     borrower_phone: str = "",
     expected_return_time: str = "",
     site_id: str = "HQ",
+    *,
+    cv_detected: int = 0,
+    cv_confidence: float | None = None,
+    cv_employee_id: str | None = None,
+    cv_tool_class: str | None = None,
 ) -> None:
-    """Inserts a new borrowed-item record with status='borrowed'."""
+    """Inserts a new borrowed-item record with status='borrowed'.
+
+    Phase 6D adds four optional CV-audit columns. Manual entries leave
+    them at the SQL NULL / 0 defaults so adoption reporting can honestly
+    distinguish Smart-Scan loans from manual ones.
+    """
     _owns = conn is None
     if _owns:
         conn = get_connection()
     conn.execute(
         """INSERT INTO returnable_items
                (material_name, uom, qty, borrower_name, borrower_phone,
-                expected_return_time, status, Site_ID)
-           VALUES (?, ?, ?, ?, ?, ?, 'borrowed', ?)""",
+                expected_return_time, status, Site_ID,
+                cv_detected, cv_confidence, cv_employee_id, cv_tool_class)
+           VALUES (?, ?, ?, ?, ?, ?, 'borrowed', ?, ?, ?, ?, ?)""",
         (material_name, uom, qty, borrower_name, borrower_phone,
-         expected_return_time, site_id),
+         expected_return_time, site_id,
+         int(cv_detected or 0),
+         (float(cv_confidence) if cv_confidence is not None else None),
+         cv_employee_id,
+         cv_tool_class),
     )
     conn.commit()
     if _owns:
         conn.close()
+
+
+def get_open_loans_for_employee(
+    id_number: str,
+    site_id: str = "",
+    *,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Return borrowed returnable_items rows attributable to one employee.
+
+    Matches BOTH paths a loan can be created by:
+      - CV path:     returnable_items.cv_employee_id = id_number
+      - Manual path: returnable_items.borrower_name = employees.Name
+                     (look up the employee record by ID first)
+
+    `site_id` filter is optional — pass "" to search across all sites
+    (matches the cross-site semantics of the existing return tab when
+    the caller is on a global account).
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        emp_row = conn.execute(
+            "SELECT Name FROM employees WHERE ID_Number = ?",
+            (id_number,),
+        ).fetchone()
+        emp_name = emp_row[0] if emp_row else None
+
+        # Build a single SQL with the union of both match paths.
+        params: list = [id_number]
+        clauses = ["cv_employee_id = ?"]
+        if emp_name:
+            clauses.append("borrower_name = ?")
+            params.append(emp_name)
+        where_match = " OR ".join(clauses)
+
+        q = (
+            f"""SELECT id, material_name, uom, qty, borrower_name,
+                       borrower_phone, given_time, expected_return_time,
+                       Site_ID, cv_detected, cv_confidence,
+                       cv_employee_id, cv_tool_class
+                FROM returnable_items
+                WHERE status = 'borrowed'
+                  AND ({where_match})"""
+        )
+        if site_id:
+            q += " AND Site_ID = ?"
+            params.append(site_id)
+        q += " ORDER BY expected_return_time ASC"
+        df = pd.read_sql_query(q, conn, params=params)
+        return _localize(df)
+    finally:
+        if _owns:
+            conn.close()
 
 
 def mark_item_returned(
@@ -8227,3 +8405,626 @@ def list_force_closures_for_site(
     finally:
         if _owns:
             conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 6A helpers — CV foundation (employees, tool_catalogue, cv_model_versions)
+# ═══════════════════════════════════════════════════════════════════════════
+# All helpers accept an optional `conn` so the pytest harness + bug_check can
+# inject an in-memory connection (matches the convention every other helper
+# in this file already follows). Mutations write to `system_audit_log` via
+# log_audit_action() so admins have a trail of who created what.
+import json as _json_6a
+
+
+def _conn_ctx_6a(conn):
+    """Internal: return (conn, owns_conn) — caller-owns vs auto-open."""
+    if conn is None:
+        return get_connection(), True
+    return conn, False
+
+
+# ── Employees ──────────────────────────────────────────────────────────────
+def add_employee(
+    id_number: str,
+    name: str,
+    phone: str = "",
+    department: str = "",
+    created_by: str = "system",
+    *,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Insert one employee. Returns (False, msg) on duplicate ID_Number — never raises."""
+    id_number = (id_number or "").strip()
+    name = (name or "").strip()
+    if not id_number or not name:
+        return False, "ID_Number and Name are required."
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        _c.execute(
+            "INSERT INTO employees (ID_Number, Name, Phone_Number, Department, created_by) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (id_number, name, (phone or "").strip(), (department or "").strip(), created_by),
+        )
+        _c.commit()
+        log_audit_action(created_by, "EMPLOYEE_ADD", "employees", f"{id_number} ({name})")
+        return True, f"Employee {id_number} added."
+    except sqlite3.IntegrityError:
+        return False, f"Employee with ID_Number '{id_number}' already exists."
+    finally:
+        if _owns:
+            _c.close()
+
+
+def update_employee(
+    id_number: str,
+    *,
+    name: str = None,
+    phone: str = None,
+    department: str = None,
+    status: str = None,
+    updated_by: str = "system",
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Update any subset of fields for an existing employee. True if a row changed."""
+    sets, params = [], []
+    if name is not None:
+        sets.append("Name = ?"); params.append(name.strip())
+    if phone is not None:
+        sets.append("Phone_Number = ?"); params.append(phone.strip())
+    if department is not None:
+        sets.append("Department = ?"); params.append(department.strip())
+    if status is not None:
+        if status not in ("active", "inactive", "suspended"):
+            return False
+        sets.append("status = ?"); params.append(status)
+    if not sets:
+        return False
+    sets.append("updated_at = CURRENT_TIMESTAMP")
+    params.append(id_number)
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        cur = _c.execute(f"UPDATE employees SET {', '.join(sets)} WHERE ID_Number = ?", params)
+        _c.commit()
+        if cur.rowcount:
+            log_audit_action(updated_by, "EMPLOYEE_UPDATE", "employees", id_number)
+            return True
+        return False
+    finally:
+        if _owns:
+            _c.close()
+
+
+def list_employees(
+    *,
+    status_filter: str = None,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Return all employees (optionally filter by status) as a DataFrame."""
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        q = ("SELECT id, ID_Number, Name, Phone_Number, Department, status, "
+             "created_by, created_at, updated_at FROM employees")
+        params = ()
+        if status_filter:
+            q += " WHERE status = ?"
+            params = (status_filter,)
+        q += " ORDER BY Name COLLATE NOCASE ASC"
+        return pd.read_sql_query(q, _c, params=params)
+    finally:
+        if _owns:
+            _c.close()
+
+
+def get_employee_by_id_number(
+    id_number: str,
+    *,
+    conn: sqlite3.Connection = None,
+) -> dict | None:
+    """Single-employee lookup. Returns dict or None."""
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        cur = _c.execute(
+            "SELECT id, ID_Number, Name, Phone_Number, Department, status "
+            "FROM employees WHERE ID_Number = ?",
+            (id_number,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [d[0] for d in cur.description]
+        return dict(zip(cols, row))
+    finally:
+        if _owns:
+            _c.close()
+
+
+def import_employees_csv(
+    file_or_path,
+    created_by: str = "system",
+    *,
+    conn: sqlite3.Connection = None,
+) -> dict:
+    """Bulk-import HR CSV with idempotent upsert on ID_Number.
+
+    Header schema (case-insensitive): ID_Number, Name, Phone_Number, Department.
+    Re-importing the same CSV is a no-op except where any non-key field
+    changed — those rows go through ON CONFLICT UPDATE.
+
+    Returns {"inserted": N, "updated": N, "skipped": N, "errors": [str, ...]}.
+    """
+    try:
+        df = pd.read_csv(file_or_path, dtype=str).fillna("")
+    except Exception as e:
+        return {"inserted": 0, "updated": 0, "skipped": 0, "errors": [f"CSV parse failed: {e}"]}
+
+    # Normalise header case so HR can send any case (`id_number`, `ID_NUMBER`, etc.)
+    lower_map = {c.lower(): c for c in df.columns}
+    required = ["id_number", "name", "phone_number", "department"]
+    missing = [r for r in required if r not in lower_map]
+    if missing:
+        return {"inserted": 0, "updated": 0, "skipped": 0,
+                "errors": [f"CSV missing required column(s): {', '.join(missing)}"]}
+
+    _c, _owns = _conn_ctx_6a(conn)
+    result = {"inserted": 0, "updated": 0, "skipped": 0, "errors": []}
+    try:
+        for idx, row in df.iterrows():
+            id_number = str(row[lower_map["id_number"]]).strip()
+            name = str(row[lower_map["name"]]).strip()
+            phone = str(row[lower_map["phone_number"]]).strip()
+            dept = str(row[lower_map["department"]]).strip()
+            if not id_number or not name:
+                result["skipped"] += 1
+                result["errors"].append(f"Row {idx + 2}: missing ID_Number or Name.")
+                continue
+            # Check whether row exists AND whether any non-key field would change.
+            cur = _c.execute(
+                "SELECT Name, Phone_Number, Department FROM employees WHERE ID_Number = ?",
+                (id_number,),
+            )
+            existing = cur.fetchone()
+            if existing is None:
+                _c.execute(
+                    "INSERT INTO employees (ID_Number, Name, Phone_Number, Department, created_by) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (id_number, name, phone, dept, created_by),
+                )
+                result["inserted"] += 1
+            else:
+                ex_name, ex_phone, ex_dept = existing
+                if (ex_name, ex_phone or "", ex_dept or "") == (name, phone, dept):
+                    result["skipped"] += 1
+                else:
+                    _c.execute(
+                        "UPDATE employees SET Name=?, Phone_Number=?, Department=?, "
+                        "updated_at=CURRENT_TIMESTAMP WHERE ID_Number = ?",
+                        (name, phone, dept, id_number),
+                    )
+                    result["updated"] += 1
+        _c.commit()
+        log_audit_action(
+            created_by, "EMPLOYEE_CSV_IMPORT", "employees",
+            f"inserted={result['inserted']} updated={result['updated']} skipped={result['skipped']}",
+        )
+        return result
+    finally:
+        if _owns:
+            _c.close()
+
+
+# ── CV model versions ──────────────────────────────────────────────────────
+def register_cv_model_version(
+    version: str,
+    model_path: str,
+    classes: list,
+    mAP: float = None,
+    *,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Register a new YOLO model artifact. Inserts with is_active=0.
+
+    Returns the new row id. Promotion to active is a separate explicit step
+    via promote_cv_model_version() so admins never accidentally activate an
+    un-validated model just by uploading it.
+    """
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        cur = _c.execute(
+            "INSERT INTO cv_model_versions (version, model_path, classes_json, mAP, is_active) "
+            "VALUES (?, ?, ?, ?, 0)",
+            (version, model_path, _json_6a.dumps(list(classes or [])), mAP),
+        )
+        _c.commit()
+        return int(cur.lastrowid)
+    finally:
+        if _owns:
+            _c.close()
+
+
+def promote_cv_model_version(
+    version: str,
+    *,
+    promoted_by: str = "system",
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Atomically promote `version` to active; demote whatever was active.
+
+    The partial unique index on (is_active WHERE is_active=1) makes this safe
+    against partial failure — if the second UPDATE fails the transaction
+    rolls back and we stay in the previous active state.
+    """
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        cur = _c.execute("SELECT id FROM cv_model_versions WHERE version = ?", (version,))
+        row = cur.fetchone()
+        if not row:
+            return False
+        try:
+            _c.execute("BEGIN")
+            _c.execute("UPDATE cv_model_versions SET is_active = 0 WHERE is_active = 1")
+            _c.execute("UPDATE cv_model_versions SET is_active = 1 WHERE version = ?", (version,))
+            _c.commit()
+        except Exception:
+            _c.rollback()
+            raise
+        log_audit_action(promoted_by, "CV_MODEL_PROMOTE", "cv_model_versions", version)
+        return True
+    finally:
+        if _owns:
+            _c.close()
+
+
+def get_active_cv_model(*, conn: sqlite3.Connection = None) -> dict | None:
+    """Return the active model row as a dict (with `classes` parsed from JSON), or None."""
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        cur = _c.execute(
+            "SELECT id, version, model_path, classes_json, mAP, trained_at "
+            "FROM cv_model_versions WHERE is_active = 1 LIMIT 1"
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [d[0] for d in cur.description]
+        out = dict(zip(cols, row))
+        try:
+            out["classes"] = _json_6a.loads(out.pop("classes_json") or "[]")
+        except Exception:
+            out["classes"] = []
+        return out
+    finally:
+        if _owns:
+            _c.close()
+
+
+# ── Tool catalogue ─────────────────────────────────────────────────────────
+def add_tool_class(
+    class_name: str,
+    display_name: str,
+    category: str = "",
+    model_version_id: int = None,
+    created_by: str = "system",
+    min_confidence: float = 0.75,
+    *,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Register a YOLO class in the tool catalogue. Duplicates rejected, not raised."""
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        _c.execute(
+            "INSERT INTO tool_catalogue "
+            "(class_name, display_name, category, model_version_id, min_confidence, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (class_name, display_name, category, model_version_id, float(min_confidence), created_by),
+        )
+        _c.commit()
+        log_audit_action(created_by, "TOOL_CLASS_ADD", "tool_catalogue", class_name)
+        return True, f"Tool class '{class_name}' added."
+    except sqlite3.IntegrityError:
+        return False, f"Tool class '{class_name}' already exists."
+    finally:
+        if _owns:
+            _c.close()
+
+
+def list_tool_catalogue(
+    *,
+    model_version_id: int = None,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Return tool catalogue rows, optionally restricted to one model version."""
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        q = ("SELECT id, class_name, display_name, category, model_version_id, "
+             "min_confidence, created_by, created_at FROM tool_catalogue")
+        params = ()
+        if model_version_id is not None:
+            q += " WHERE model_version_id = ?"
+            params = (int(model_version_id),)
+        q += " ORDER BY display_name COLLATE NOCASE ASC"
+        return pd.read_sql_query(q, _c, params=params)
+    finally:
+        if _owns:
+            _c.close()
+
+
+def set_tool_class_min_confidence(
+    class_name: str,
+    min_confidence: float,
+    *,
+    updated_by: str = "system",
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Override the 0.75 default for one tool class. True if a row was updated."""
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        cur = _c.execute(
+            "UPDATE tool_catalogue SET min_confidence = ? WHERE class_name = ?",
+            (float(min_confidence), class_name),
+        )
+        _c.commit()
+        if cur.rowcount:
+            log_audit_action(
+                updated_by, "TOOL_CLASS_CONF", "tool_catalogue",
+                f"{class_name} → {min_confidence}",
+            )
+            return True
+        return False
+    finally:
+        if _owns:
+            _c.close()
+
+
+# ===========================================================================
+# Phase 6E — Returnable loan reminder sweep (hourly cadence)
+# ===========================================================================
+# Four offsets, encoded as signed HOURS in the existing
+# `delivery_reminders_sent` table with ref_type='returnable_loan':
+#
+#   offset_days = -2 → T-2h (info,     before due — borrower only)
+#   offset_days =  0 → T-0  (warning,  due now — borrower only)
+#   offset_days =  2 → T+2h (warning,  2h overdue — borrower + site SK)
+#   offset_days = 24 → T+24h (critical, 24h overdue — borrower + SK + supervisor)
+#
+# In-app notifications ALWAYS fire (queue_app_notification). WhatsApp is
+# gated by config.WHATSAPP_TRIGGERS per event_key.
+#
+# Phone resolution for the borrower has a 3-tier fallback:
+#   1. CV-loan path: returnable_items.cv_employee_id → employees.Phone_Number
+#   2. Manual-loan path: returnable_items.borrower_phone column directly
+#   3. Neither → log an "RETURNABLE_REMINDER_NO_PHONE" audit row + skip
+#      WhatsApp for the borrower (in-app still fires to site SKs).
+
+# Public so the worker + bug_check can introspect them.
+RETURNABLE_REMINDER_OFFSETS: tuple[tuple[int, str, str, str], ...] = (
+    # (offset_hours, event_key, severity, label)
+    (-2, "returnable_reminder_t_minus_2h", "info",     "in 2 hours"),
+    ( 0, "returnable_reminder_t_zero",     "warning",  "due now"),
+    ( 2, "returnable_reminder_t_plus_2h",  "warning",  "2 hours overdue"),
+    (24, "returnable_reminder_t_plus_24h", "critical", "24 hours overdue"),
+)
+
+
+def _resolve_borrower_phone_for_loan(row: dict, *, conn=None) -> str | None:
+    """3-tier fallback. Returns the phone string or None."""
+    cv_emp_id = row.get("cv_employee_id")
+    if cv_emp_id:
+        emp = get_employee_by_id_number(cv_emp_id, conn=conn)
+        if emp and emp.get("Phone_Number"):
+            return emp["Phone_Number"]
+    phone = row.get("borrower_phone")
+    if phone and str(phone).strip():
+        return str(phone).strip()
+    return None
+
+
+def get_site_role_phones(
+    role: str,
+    site_id: str,
+    *,
+    conn: sqlite3.Connection = None,
+) -> list[str]:
+    """Return the non-empty Phone_Number values for users with this role
+    at this site. Empty list if none. Used by the reminder sweep to fan
+    WhatsApp to every SK / Supervisor at a site.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT Phone_Number FROM users "
+            "WHERE role = ? AND Site_ID = ? "
+            "  AND Phone_Number IS NOT NULL AND TRIM(Phone_Number) != ''",
+            (role, site_id),
+        ).fetchall()
+        return [str(r[0]).strip() for r in rows if r and r[0]]
+    finally:
+        if _owns:
+            conn.close()
+
+
+def _try_dedup_returnable(conn, loan_id: int, target_iso: str, offset: int) -> bool:
+    """Atomic INSERT into delivery_reminders_sent. Returns True if this is
+    the first fire for this (loan_id, target, offset); False if already fired."""
+    try:
+        conn.execute(
+            "INSERT INTO delivery_reminders_sent "
+            "(ref_type, ref_number, target_date, offset_days) "
+            "VALUES ('returnable_loan', ?, ?, ?)",
+            (str(loan_id), target_iso, offset),
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def _hour_window_matches(offset_hours: int, hours_to_due: float) -> bool:
+    """True iff a sweep running 'now' should fire this offset for a loan
+    whose due time is `hours_to_due` away.
+
+    Sign convention: hours_to_due > 0 = still future, < 0 = overdue.
+    Each window is exactly one hour wide so the hourly sweep fires
+    each event at most once per loan.
+
+      offset = -2  → fires when hours_to_due ∈ [ 1,   2)   (between 2h and 1h before due)
+      offset =  0  → fires when hours_to_due ∈ [ 0,   1)   (within the hour leading up to due)
+      offset =  2  → fires when hours_to_due ∈ [-3,  -2)   (between 2h and 3h overdue)
+      offset = 24  → fires when hours_to_due ∈ [-25,-24)   (between 24h and 25h overdue)
+    """
+    if offset_hours < 0:
+        # T-Nh — N hours before due. Window [N-1, N).
+        n = -offset_hours
+        return (n - 1) <= hours_to_due < n
+    if offset_hours == 0:
+        # T-0 — "due now": fires in the hour leading up to due time.
+        return 0 <= hours_to_due < 1
+    # T+Nh — N hours past due. Window [-(N+1), -N).
+    n = offset_hours
+    return -(n + 1) <= hours_to_due < -n
+
+
+def sweep_returnable_reminders(
+    now: datetime.datetime | None = None,
+    *,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Fire returnable-loan reminders at the four configured offsets.
+
+    Called by the WhatsApp worker at most once per local hour (gated by
+    `app_settings.returnable_reminders_last_run_hour`). Idempotent across
+    runs via the `delivery_reminders_sent` UNIQUE constraint.
+
+    Returns the count of newly-fired events.
+    """
+    now = now or datetime.datetime.now()
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    fired = 0
+    try:
+        rows = conn.execute(
+            "SELECT id, material_name, borrower_name, borrower_phone, "
+            "       cv_employee_id, expected_return_time, Site_ID "
+            "FROM returnable_items "
+            "WHERE status = 'borrowed' "
+            "  AND expected_return_time IS NOT NULL "
+            "  AND expected_return_time != ''"
+        ).fetchall()
+        cols = ["id", "material_name", "borrower_name", "borrower_phone",
+                "cv_employee_id", "expected_return_time", "Site_ID"]
+
+        for r in rows:
+            row = dict(zip(cols, r))
+            # Parse the due timestamp robustly — accept "YYYY-MM-DD HH:MM:SS"
+            # or pure date with HH:MM:SS appended, the two forms the SK form
+            # writes today.
+            raw = str(row["expected_return_time"])
+            try:
+                due = datetime.datetime.fromisoformat(raw.replace(" ", "T"))
+            except ValueError:
+                continue
+            hours_to_due = (due - now).total_seconds() / 3600.0
+
+            for offset, event_key, severity, label in RETURNABLE_REMINDER_OFFSETS:
+                if not _hour_window_matches(offset, hours_to_due):
+                    continue
+                if not _try_dedup_returnable(conn, row["id"], raw, offset):
+                    continue
+                _fire_one_returnable_reminder(
+                    conn, row, offset, event_key, severity, label,
+                )
+                fired += 1
+        return fired
+    finally:
+        if _owns:
+            conn.close()
+
+
+def _fire_one_returnable_reminder(
+    conn, row: dict, offset: int, event_key: str, severity: str, label: str,
+) -> None:
+    """Send the in-app + WhatsApp set for one (loan, offset) tuple.
+
+    Recipient policy:
+      offset == -2 → borrower only
+      offset ==  0 → borrower only
+      offset ==  2 → borrower + every SK at the site
+      offset == 24 → borrower + every SK + every Supervisor at the site
+    """
+    loan_id = row["id"]
+    material = row.get("material_name") or "(unknown tool)"
+    borrower_name = row.get("borrower_name") or row.get("cv_employee_id") or "borrower"
+    site_id = row.get("Site_ID") or ""
+
+    title = f"Returnable: {material} — {label}"
+    body  = (
+        f"Loan #{loan_id} · {material} · borrower: {borrower_name} · "
+        f"due {row.get('expected_return_time', '?')}"
+    )
+    related_ref = str(loan_id)
+
+    # ── In-app: borrower (broadcast to site SKs since borrowers may not
+    #     be system users) — always queued ────────────────────────────────
+    # We broadcast to store_keeper@site for the borrower's "their site"
+    # bell badge. At T+2 / T+24, we ALSO add the supervisor at site to the
+    # recipient list (supervisor instead of HOD per the Phase 6E spec).
+    queue_app_notification(
+        event_key=event_key,
+        title=title,
+        body=body,
+        severity=severity,
+        recipient_role="store_keeper",
+        recipient_site=site_id,
+        related_table="returnable_items",
+        related_ref=related_ref,
+        link_page="📝 Entry Log",
+        conn=conn,
+    )
+    if offset == 24:
+        queue_app_notification(
+            event_key=event_key,
+            title=title,
+            body=body,
+            severity=severity,
+            recipient_role="supervisor",
+            recipient_site=site_id,
+            related_table="returnable_items",
+            related_ref=related_ref,
+            link_page="📝 Entry Log",
+            conn=conn,
+        )
+
+    # ── WhatsApp: gated by per-event toggle ──────────────────────────────
+    msg = (
+        f"🛠️ *Returnable item reminder*\n"
+        f"Item: {material}\n"
+        f"Borrower: {borrower_name}\n"
+        f"Status: {label}\n"
+        f"Loan #{loan_id}"
+    )
+
+    # Borrower phone — 3-tier fallback.
+    borrower_phone = _resolve_borrower_phone_for_loan(row, conn=conn)
+    if borrower_phone:
+        fire_whatsapp_event(event_key, borrower_phone, msg, conn=conn)
+    else:
+        # Phone unresolvable → log only, no admin nag (per Phase 6E spec).
+        log_audit_action(
+            "system",
+            "RETURNABLE_REMINDER_NO_PHONE",
+            "returnable_items",
+            f"loan={loan_id} offset={offset}h — no phone via CV or manual path",
+        )
+
+    # SK fan-out at T+2h and T+24h
+    if offset in (2, 24):
+        for ph in get_site_role_phones("store_keeper", site_id, conn=conn):
+            fire_whatsapp_event(event_key, ph, msg, conn=conn)
+
+    # Supervisor fan-out at T+24h only (per user spec)
+    if offset == 24:
+        for ph in get_site_role_phones("supervisor", site_id, conn=conn):
+            fire_whatsapp_event(event_key, ph, msg, conn=conn)

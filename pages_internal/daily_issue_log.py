@@ -1016,6 +1016,12 @@ def page_daily_issue_log(user: dict) -> None:
     with tab_returnables:
         st.caption("Track tools and equipment borrowed from the store on a temporary basis.")
 
+        # ── 📷 Smart Scan (Phase 6D) ───────────────────────────────────────────
+        # New flow at the top of the tab. The existing manual form below
+        # is UNCHANGED — Smart Scan writes results into the manual form's
+        # session_state keys so the SK can review + confirm before issue.
+        _render_smart_scan_expander(site_id)
+
         with st.expander("➕ Issue a Returnable Item", expanded=True):
             ri1, ri2 = st.columns(2)
             with ri1:
@@ -1067,6 +1073,11 @@ def page_daily_issue_log(user: dict) -> None:
             'margin:0.9rem 0 0.4rem 0;">Currently Borrowed Items</div>',
             unsafe_allow_html=True,
         )
+        # ── 📷 Return-by-scan filter (Phase 6D) ────────────────────────────
+        # Scanning a badge here filters the grid below to ONLY that
+        # employee's open loans. Clear-filter button restores the full grid.
+        _render_return_scan_filter(site_id)
+
         conn_ri = get_connection()
         ri_df = get_returnable_items(conn_ri, site_id=site_id)
         conn_ri.close()
@@ -1075,6 +1086,19 @@ def page_daily_issue_log(user: dict) -> None:
         ri_df = auto_localize_timestamps(ri_df)
 
         borrowed_df = ri_df[ri_df["status"] == "borrowed"].copy()
+
+        # Apply the return-flow filter if a badge was scanned + locked.
+        _filter_emp_id = st.session_state.get("_rs_filter_employee_id")
+        if _filter_emp_id and not borrowed_df.empty:
+            from database import get_open_loans_for_employee as _gol
+            try:
+                _filtered = _gol(_filter_emp_id, site_id=site_id)
+                _allowed_ids = set(_filtered["id"].tolist()) if not _filtered.empty else set()
+                borrowed_df = borrowed_df[borrowed_df["id"].isin(_allowed_ids)].copy()
+            except Exception:
+                # If the filter helper trips, fail open (show full grid)
+                # rather than blocking the SK from acting.
+                pass
 
         if borrowed_df.empty:
             st.success("✅ No items currently on loan.")
@@ -2090,3 +2114,269 @@ def _submit_receipt_ocr(edited_df, user, site_id, header):
     st.toast(f"✅ Staged {n} receipt row(s)", icon="📦")
     st.success(f"{n} row(s) staged to draft. HOD will see them in the Pending Receipts tab.")
     st.rerun()
+
+
+# ===========================================================================
+# Phase 6D — 📷 Smart Scan helpers
+# ===========================================================================
+_SS_KEYS = (
+    "_ss_step", "_ss_employee_id", "_ss_employee_name",
+    "_ss_employee_phone", "_ss_employee_img_hash",
+    "_ss_tool_detections", "_ss_tool_class", "_ss_tool_display_name",
+    "_ss_tool_confidence", "_ss_tool_img_hash",
+    "_ss_cam_employee", "_ss_cam_tool",
+)
+
+
+def _ss_reset() -> None:
+    """Clear every Smart Scan session_state key. Used by 🔄 Start over."""
+    for k in _SS_KEYS:
+        st.session_state.pop(k, None)
+
+
+def _hash_image_bytes(b: bytes) -> str:
+    """Short stable hash so we only re-decode when the captured image
+    actually changed (Streamlit reruns on every interaction)."""
+    import hashlib
+    return hashlib.md5(b).hexdigest()[:12] if b else ""
+
+
+def _render_smart_scan_expander(site_id: str) -> None:
+    """Two-step camera flow: scan badge → scan tool → write to manual form.
+
+    The expander is opt-in (collapsed by default). Once a badge is locked,
+    Step 2's camera renders. Detections are bucketed via
+    `bucket_detections` and written through to the existing manual form's
+    session_state keys (ri_mat, ri_borrower, ri_phone).
+    """
+    expanded_default = st.session_state.get("_ss_step", "idle") != "idle"
+    with st.expander("📷 Smart Scan (Beta)", expanded=expanded_default):
+        st.caption(
+            "Scan the borrower's badge first; then scan the tool. Detections "
+            "above 0.75 confidence auto-fill the form below — anything lower "
+            "shows candidates for you to pick."
+        )
+
+        # ── Step 1 — Scan Employee Badge ───────────────────────────────────
+        st.markdown("**Step 1 — Scan Employee Badge**")
+        img = st.camera_input(
+            "📸 Point camera at the employee's QR badge",
+            key="_ss_cam_employee",
+        )
+        if img is not None:
+            raw = img.getvalue()
+            h = _hash_image_bytes(raw)
+            # Only decode + lookup when the image actually changed.
+            if h != st.session_state.get("_ss_employee_img_hash"):
+                from ai.cv.qr import decode_png_to_id
+                from ai.cv.smart_scan import lookup_employee_by_qr
+                payload = decode_png_to_id(raw)
+                emp = lookup_employee_by_qr(payload) if payload else None
+                st.session_state["_ss_employee_img_hash"] = h
+                if emp:
+                    st.session_state["_ss_employee_id"]    = emp["ID_Number"]
+                    st.session_state["_ss_employee_name"]  = emp["Name"]
+                    st.session_state["_ss_employee_phone"] = emp.get("Phone_Number") or ""
+                    st.session_state["_ss_step"]           = "employee_locked"
+                else:
+                    # Reset employee state but keep the captured image so
+                    # the user can retry without re-snapping.
+                    for k in ("_ss_employee_id", "_ss_employee_name",
+                              "_ss_employee_phone"):
+                        st.session_state.pop(k, None)
+                    st.session_state["_ss_step"] = "idle"
+
+        emp_id = st.session_state.get("_ss_employee_id")
+        if emp_id:
+            st.success(
+                f"✅ **{emp_id}** · {st.session_state.get('_ss_employee_name','')} "
+                f"({st.session_state.get('_ss_employee_phone','—')})"
+            )
+        elif img is not None:
+            st.error(
+                "🚫 Badge not recognised. Either the QR couldn't be read or "
+                "the employee isn't active in the Employees master. "
+                "Re-snap or use the manual entry form below."
+            )
+
+        # ── Step 2 — Scan Tool (only after Step 1 succeeds) ────────────────
+        if not emp_id:
+            return
+
+        st.markdown("---")
+        st.markdown("**Step 2 — Scan Tool**")
+
+        # Check whether a CV model is active. If none, show clear message
+        # and skip tool scan but still pre-fill borrower details.
+        try:
+            from database import get_active_cv_model
+            active_model = get_active_cv_model()
+        except Exception:
+            active_model = None
+
+        if not active_model:
+            st.info(
+                "🤖 No active CV model — ask Admin to train and promote one. "
+                "You can still confirm the employee above and fill the tool "
+                "field manually below."
+            )
+            # Pre-fill borrower fields only.
+            _smart_scan_fill_borrower_only()
+        else:
+            tool_img = st.camera_input(
+                "📸 Point camera at the tool",
+                key="_ss_cam_tool",
+            )
+            if tool_img is not None:
+                raw = tool_img.getvalue()
+                h = _hash_image_bytes(raw)
+                if h != st.session_state.get("_ss_tool_img_hash"):
+                    from ai.cv.inference import detect_tool
+                    from ai.cv.smart_scan import bucket_detections
+                    dets = detect_tool(raw, top_k=5)
+                    st.session_state["_ss_tool_detections"] = dets
+                    st.session_state["_ss_tool_img_hash"]   = h
+                    # Reset prior pick so a new image doesn't carry over.
+                    for k in ("_ss_tool_class", "_ss_tool_display_name",
+                              "_ss_tool_confidence"):
+                        st.session_state.pop(k, None)
+
+            dets = st.session_state.get("_ss_tool_detections") or []
+            from ai.cv.smart_scan import bucket_detections
+            mode, items = bucket_detections(dets)
+
+            if mode == "auto":
+                top = items[0]
+                _accept_tool_pick(top["class_name"], top["confidence"])
+                st.success(
+                    f"✅ Detected **{top['class_name']}** "
+                    f"(confidence {top['confidence']:.2f}) — auto-filled below."
+                )
+            elif mode == "candidates":
+                st.warning(
+                    "⚠️ Multiple candidates — pick the correct tool, "
+                    "or type a new name manually below."
+                )
+                labels = [
+                    f"{d['class_name']} · {d['confidence']:.2f}"
+                    for d in items
+                ]
+                pick = st.radio("Top candidates", labels, key="_ss_candidate_pick")
+                if st.button("Use this tool", type="primary", key="_ss_use_candidate"):
+                    idx = labels.index(pick)
+                    chosen = items[idx]
+                    _accept_tool_pick(chosen["class_name"], chosen["confidence"])
+                    st.rerun()
+            else:
+                if dets is not None and tool_img is not None and not items:
+                    st.info(
+                        "🚫 No confident match. Borrower details have been "
+                        "pre-filled — fill the tool field manually in the form "
+                        "below."
+                    )
+                _smart_scan_fill_borrower_only()
+
+        # ── Start-over reset ───────────────────────────────────────────────
+        st.markdown("---")
+        if st.button("🔄 Start over (clear scan)", key="_ss_reset_btn"):
+            _ss_reset()
+            st.rerun()
+
+
+def _smart_scan_fill_borrower_only() -> None:
+    """Write only the borrower details from Step 1 into the manual form's
+    session_state keys. No tool fields touched."""
+    name  = st.session_state.get("_ss_employee_name", "")
+    phone = st.session_state.get("_ss_employee_phone", "")
+    if name:
+        st.session_state["ri_borrower"] = name
+    if phone:
+        st.session_state["ri_phone"] = phone
+
+
+def _accept_tool_pick(class_name: str, conf: float) -> None:
+    """Record the chosen tool class + write through to the manual form."""
+    st.session_state["_ss_tool_class"]        = class_name
+    st.session_state["_ss_tool_display_name"] = _display_name_for_class(class_name)
+    st.session_state["_ss_tool_confidence"]   = float(conf)
+    st.session_state["_ss_step"]              = "tool_picked"
+
+    # Write through to the existing manual form's keys so the SK sees
+    # everything pre-filled in the "➕ Issue a Returnable Item" expander.
+    _smart_scan_fill_borrower_only()
+    st.session_state["ri_mat"] = st.session_state["_ss_tool_display_name"]
+
+
+def _display_name_for_class(class_name: str) -> str:
+    """Look up tool_catalogue.display_name for a class; fallback to the
+    raw class_name if no row exists."""
+    try:
+        from database import get_connection
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT display_name FROM tool_catalogue WHERE class_name = ?",
+                (class_name,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row and row[0]:
+            return str(row[0])
+    except Exception:
+        pass
+    return class_name
+
+
+def _render_return_scan_filter(site_id: str) -> None:
+    """Above the Currently Borrowed grid: scan badge → filter grid to one
+    employee's open loans. Clear-filter button restores the full grid."""
+    active_filter = st.session_state.get("_rs_filter_employee_id")
+    title = "📷 Return by Badge Scan"
+    if active_filter:
+        emp_name = st.session_state.get("_rs_filter_employee_name", "")
+        title = f"📷 Return by Badge Scan — filtering: {active_filter} · {emp_name}"
+
+    with st.expander(title, expanded=bool(active_filter)):
+        st.caption(
+            "Scan an employee's badge to filter the borrowed list below to "
+            "ONLY their open loans. Speeds up the 'mark returned' flow when "
+            "an employee comes back with multiple tools."
+        )
+
+        col_cam, col_btn = st.columns([2, 1])
+        with col_cam:
+            img = st.camera_input(
+                "📸 Scan badge",
+                key="_rs_cam",
+                label_visibility="collapsed",
+            )
+        with col_btn:
+            if active_filter:
+                if st.button("🔄 Clear filter", key="_rs_clear_btn"):
+                    for k in ("_rs_filter_employee_id",
+                              "_rs_filter_employee_name",
+                              "_rs_img_hash",
+                              "_rs_cam"):
+                        st.session_state.pop(k, None)
+                    st.rerun()
+
+        if img is not None:
+            raw = img.getvalue()
+            h = _hash_image_bytes(raw)
+            if h != st.session_state.get("_rs_img_hash"):
+                from ai.cv.qr import decode_png_to_id
+                from ai.cv.smart_scan import lookup_employee_by_qr
+                payload = decode_png_to_id(raw)
+                emp = lookup_employee_by_qr(payload) if payload else None
+                st.session_state["_rs_img_hash"] = h
+                if emp:
+                    st.session_state["_rs_filter_employee_id"]   = emp["ID_Number"]
+                    st.session_state["_rs_filter_employee_name"] = emp["Name"]
+                    st.rerun()
+                else:
+                    st.session_state.pop("_rs_filter_employee_id", None)
+                    st.session_state.pop("_rs_filter_employee_name", None)
+                    st.error(
+                        "🚫 Badge not recognised. Re-snap or clear and pick "
+                        "the item manually from the full grid."
+                    )

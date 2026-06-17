@@ -1,10 +1,10 @@
 # GI Hub ERP — Handoff
 
-**Last update:** 2026-06 round 3 — v3.0 Procurement Chain Architecture. Adds two new role-locked portals (Logistics 🚚, Warehouse 🏭), a full PR→PO→DN→Receipt SQL-driven chain, RL/BL strict-separation enforcement, in-app notifications bell, T-2/T-1/T-0 delivery reminders, three new procurement reports, and Admin Logistics Oversight.
-**Test status:** 315/315 pytest · 241/241 in `bug_check.py` (run `python bug_check.py` any time).
+**Last update:** 2026-06 round 4 — **Phase 6A–F (Workstream A) SHIPPED.** CV/QR foundation, employee master + bulk badge PDF, Smart Scan camera flow with adoption telemetry, YOLOv8 training pipeline + Tool Catalogue manager, hourly returnable-loan reminder sweep with Borrower → SK → Supervisor escalation. Plus emergency fixes: HOD Portal `fillna` crash, Live Dashboard visibility for global roles, warehouse binding for admin shadow.
+**Test status:** **268/268 in `bug_check.py` · 16/16 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`).
 **Production hosting:** Self-host on `giinventory.com` via Cloudflare Tunnel + Access (email allow-list `@generalindustries.net`). Turnkey installer at `host_setup/scripts/install.sh`. See §4 "Run / Develop" and the "Production hosting" chapter.
 **Purpose:** Get the next session productive in <5 minutes — architecture, what changed, what's next.
-**Companion docs:** `USER_MANUAL.md` (every page/tab/button), `SOP.md` (Logistics + Warehouse operating procedure with cadences, decision trees, escalation matrix).
+**Companion docs:** `USER_MANUAL.md` (every page/tab/button), `SOP.md` (Logistics + Warehouse operating procedure with cadences, decision trees, escalation matrix), `docs/cv_training_guide.md` (Phase 6C — capture → label → train → promote walkthrough).
 
 ---
 
@@ -952,6 +952,17 @@ Caveats: AI features only work while your Mac is on, awake, and connected. Put `
 - Receipts: `DN_No`, `Serial_No`, `PR`, `Location`, `Vehicle_No`, `Driver_Name`, `Pallet_No`, `Mob_From`, `Prepared_by`, `Mob_To`, `Received_by`, `DN_Copy` — closes the silent-drop bug
 - `whatsapp_queue`: `error_message`, `attempts` columns for failure visibility + retry
 
+**2026-06 round 4 — Phase 6A–F (Workstream A):**
+- New tables:
+  - `employees` — physical-labour master (`ID_Number` UNIQUE, `Name`, `Phone_Number`, `Department`, `status IN ('active','inactive','suspended')`, `created_by`, `created_at`, `updated_at`). NOT a login — separate from `users`.
+  - `cv_model_versions` — YOLO model registry (`version` UNIQUE, `model_path`, `classes_json`, `mAP`, `trained_at`, `is_active`). Partial unique index `ix_cv_active` guarantees ≤1 active row.
+  - `tool_catalogue` — class registry (`class_name` UNIQUE, `display_name`, `category`, `model_version_id` FK, `min_confidence` REAL default 0.75, `created_by`).
+- `returnable_items` self-heal — `cv_detected` (INTEGER 0/1), `cv_confidence` (REAL), `cv_employee_id` (TEXT), `cv_tool_class` (TEXT). Manual entries leave them NULL so adoption telemetry stays honest.
+- `delivery_reminders_sent` — `CHECK(ref_type IN ('po','dn'))` constraint **dropped** via self-heal table rebuild so Phase 6E can reuse the dedup table with `ref_type='returnable_loan'` + signed-hour `offset_days` ∈ {−2, 0, 2, 24}. UNIQUE(ref_type, ref_number, target_date, offset_days) preserved. Existing rows carried over verbatim.
+- `app_settings` keys: `returnable_reminders_last_run_hour` (worker hourly-gate marker, format `YYYY-MM-DDTHH`).
+- `users` (legacy, no migration): admin / logistics / warehouse_user rows now allowed to carry empty `Site_ID = ""` (global roles). The existing seeded `admin` row was migrated from `"CNCEC"` → `""`.
+- Inventory data cleanup (one-off, via `scripts/clean_inventory_sites.py`): all `Site_ID = "HQ"` rows across `inventory` / `receipts` / `pending_receipts` / `users` flipped to `"CNCEC"` (357 rows); `system_settings` `("Site","HQ")` row deleted.
+
 **2026-06 round 2:**
 - New tables:
   - `wbs_master` — per-site allowed WBS numbers; UNIQUE(WBS_Number, Site_ID); `active`/`closed` status
@@ -1026,11 +1037,19 @@ New roles (2): `logistics` (icon 🚚, hierarchy=3), `warehouse_user` (icon 🏭
 
 ## Phase 6 — Enterprise Deployment & Computer Vision (forward roadmap)
 
-> **Status as of this handoff:** PLANNED, not yet started. Phases 1–5 (procurement chain) are shipped and stable at 241/241 bug_check + 315/315 pytest. Phase 6 is a fresh-session execution plan.
+> **Status as of this handoff:** **Workstream A (Phase 6A–F) SHIPPED 2026-06.** Phases 1–5 (procurement chain) and Phase 6A–F (CV + Smart Scan + reminders) are stable at **268/268 bug_check + 16/16 UI crawler**. Workstream B (Phase 6G–K — Docker, dynamic WhatsApp provider, Ollama containerization, NAS backups, deployment playbook) remains PLANNED.
+>
+> **What shipped in Workstream A (one-line each):**
+> - **6A** — `employees`, `tool_catalogue`, `cv_model_versions` tables + CRUD helpers + `returnable_items.cv_*` self-heal columns.
+> - **6B** — `ai/cv/qr.py` (encode + decode with macOS Homebrew libzbar patch) + 👷 Employees admin tab (Add/Edit · CSV import · Roster + per-badge PNG).
+> - **6C** — `ai/cv/train.py` CLI (auto-versioning, mAP harvest, DB registration) + `ai/cv/inference.py` (lazy YOLO, per-class min_confidence, cache invalidation) + 🛠️ Tool Catalogue admin tab. Companion: `docs/cv_training_guide.md`.
+> - **6D** — Smart Scan in SK Returnable Items tab (badge → tool → write-through to manual form, session-state hash dedup, auto/candidates/manual buckets) + return-by-scan grid filter.
+> - **6E** — `sweep_returnable_reminders` (T−2h / T−0 / T+2h / T+24h with Borrower → SK → Supervisor escalation; signed-hour `offset_days`; hourly worker gate via `app_settings.returnable_reminders_last_run_hour`).
+> - **6F** — `reports.generate_employee_qr_badges_pdf` (multi-page A4 grid with HR header band) + Admin Portal bulk download + documentation rollup (this section, `USER_MANUAL.md` §4.5.0, `SOP.md` §7.4 SK card).
 >
 > **Read first if you are picking this up cold:** This entire chapter is self-contained. You do not need any prior chat context — every decision is recorded here, every file path is named, every env var is documented.
 >
-> **Start here:** Read §Phase 6.0 (preflight) carefully — it lists external dependencies (Twilio creds, HR CSV format, badge convention, pilot site) that must be resolved BEFORE writing any code. Then proceed serially through Workstream A on the current Mac setup, then Workstream B for Docker.
+> **Start here for Workstream B (Phase 6G+):** Read §Phase 6.0 (preflight) — Twilio creds, NAS path, Docker layer cache. Then proceed serially through Phase 6G→K.
 
 ### Phase 6 — Why this exists
 

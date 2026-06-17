@@ -171,6 +171,142 @@ def generate_universal_pdf(report_title: str, df: pd.DataFrame, username: str) -
     return bytes(pdf.output())
 
 
+def generate_employee_qr_badges_pdf(
+    employees: list,
+    cols: int = 3,
+    rows_per_page: int = 4,
+) -> bytes:
+    """Multi-page A4 PDF of employee QR badges (Phase 6F).
+
+    Each cell carries: Name (top) · QR code (encodes raw ID_Number, no PII) ·
+    ID_Number · Department. Sibling to `generate_qr_labels_pdf` — same FPDF
+    backbone, different cell layout.
+
+    Parameters
+    ----------
+    employees : list[dict]
+        Rows with keys "ID_Number", "Name", "Department". Rows with no
+        ID_Number are skipped silently.
+    cols / rows_per_page : int
+        Grid dimensions; default 3×4 = 12 badges per A4 page.
+
+    Returns
+    -------
+    bytes
+        PDF document ready to download.
+    """
+    if not _HAS_QRCODE:
+        raise ImportError("Badge PDF requires: pip install qrcode[pil]")
+
+    # ── Layout constants (all in mm, A4 portrait) ───────────────────────────
+    PAGE_W, PAGE_H = 210, 297
+    MARGIN_LR = 8
+    HEADER_H = 14                                       # page-top branding band
+    MARGIN_T = MARGIN_LR + HEADER_H
+    MARGIN_B = MARGIN_LR
+    CELL_W = (PAGE_W - 2 * MARGIN_LR) / cols
+    CELL_H = (PAGE_H - MARGIN_T - MARGIN_B) / rows_per_page
+    QR_SIZE = 38                                        # mm
+    labels_per_page = cols * rows_per_page
+
+    # Filter out rows with no ID_Number — they can't QR-encode.
+    rows = [e for e in employees if str(e.get("ID_Number", "")).strip()]
+    n_active = len(rows)
+    today = datetime.date.today().isoformat()
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_margins(MARGIN_LR, MARGIN_LR, MARGIN_LR)
+    pdf.set_auto_page_break(auto=False)
+
+    def _draw_page_header():
+        # Three-line band: brand strip · print metadata · spacer
+        pdf.set_xy(MARGIN_LR, MARGIN_LR)
+        pdf.set_font("helvetica", "B", 11)
+        pdf.set_text_color(10, 25, 47)                  # brand navy
+        pdf.cell(PAGE_W - 2 * MARGIN_LR, 5,
+                 txt=_latin1_safe("GENERAL INDUSTRIES — Employee Badges"),
+                 align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("helvetica", "", 8)
+        pdf.set_text_color(120, 120, 120)
+        pdf.cell(PAGE_W - 2 * MARGIN_LR, 4,
+                 txt=_latin1_safe(f"Printed {today}  ·  {n_active} active badge(s) in this run"),
+                 align="C", new_x="LMARGIN", new_y="NEXT")
+        # Hairline under the header
+        pdf.set_line_width(0.2)
+        pdf.set_draw_color(200, 200, 200)
+        pdf.line(MARGIN_LR, MARGIN_LR + HEADER_H - 1,
+                 PAGE_W - MARGIN_LR, MARGIN_LR + HEADER_H - 1)
+
+    for idx, emp in enumerate(rows):
+        if idx % labels_per_page == 0:
+            pdf.add_page()
+            _draw_page_header()
+
+        page_idx = idx % labels_per_page
+        col_idx = page_idx % cols
+        row_idx = page_idx // cols
+
+        cell_x = MARGIN_LR + col_idx * CELL_W
+        cell_y = MARGIN_T + row_idx * CELL_H
+
+        # Cell border
+        pdf.set_line_width(0.3)
+        pdf.set_draw_color(180, 180, 180)
+        pdf.rect(cell_x, cell_y, CELL_W, CELL_H)
+
+        id_number = str(emp.get("ID_Number", ""))
+        name      = _latin1_safe(str(emp.get("Name", "")))[:32]
+        dept      = _latin1_safe(str(emp.get("Department", "") or ""))[:32]
+
+        # ── Name (top) ────────────────────────────────────────────────────
+        pdf.set_font("helvetica", "B", 9)
+        pdf.set_text_color(10, 25, 47)
+        pdf.set_xy(cell_x + 1, cell_y + 3)
+        pdf.cell(CELL_W - 2, 5, txt=name, align="C")
+
+        # ── QR code (center) ─────────────────────────────────────────────
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=8,
+            border=2,
+        )
+        qr.add_data(id_number)
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="black", back_color="white")
+        buf = BytesIO()
+        qr_img.save(buf, format="PNG")
+        buf.seek(0)
+        qr_x = cell_x + (CELL_W - QR_SIZE) / 2
+        qr_y = cell_y + 10
+        pdf.image(buf, x=qr_x, y=qr_y, w=QR_SIZE, h=QR_SIZE)
+
+        # ── ID_Number (below QR, bold) ────────────────────────────────────
+        pdf.set_font("helvetica", "B", 9)
+        pdf.set_text_color(10, 25, 47)
+        pdf.set_xy(cell_x + 1, qr_y + QR_SIZE + 2)
+        pdf.cell(CELL_W - 2, 4.5, txt=id_number, align="C")
+
+        # ── Department (bottom, gray, small) ─────────────────────────────
+        pdf.set_font("helvetica", "", 7)
+        pdf.set_text_color(110, 110, 110)
+        pdf.set_xy(cell_x + 1, qr_y + QR_SIZE + 7)
+        pdf.cell(CELL_W - 2, 4, txt=dept, align="C")
+
+    # If no rows were drawn (empty employees list), still emit a one-page
+    # placeholder so the download doesn't return zero bytes.
+    if n_active == 0:
+        pdf.add_page()
+        _draw_page_header()
+        pdf.set_font("helvetica", "I", 11)
+        pdf.set_text_color(120, 120, 120)
+        pdf.set_xy(MARGIN_LR, MARGIN_T + 40)
+        pdf.cell(PAGE_W - 2 * MARGIN_LR, 8,
+                 txt="No active employees to print.", align="C")
+
+    return bytes(pdf.output())
+
+
 def generate_qr_labels_pdf(items: list, cols: int = 3, rows_per_page: int = 4) -> bytes:
     """
     Generates a printable PDF grid of QR code labels.

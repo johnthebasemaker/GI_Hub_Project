@@ -117,7 +117,10 @@ def authenticate_user(
 
     try:
         row = pd.read_sql(
-            "SELECT username, password_hash, role, COALESCE(Site_ID,'HQ') AS Site_ID "
+            # NOTE: no COALESCE here. Global roles (admin / logistics /
+            # warehouse_user) intentionally carry an empty / NULL Site_ID;
+            # rendering as "Global" happens at the UI layer.
+            "SELECT username, password_hash, role, Site_ID "
             "FROM users WHERE username = ?",
             conn,
             params=(username.strip(),),
@@ -137,12 +140,15 @@ def authenticate_user(
 
     role = row.iloc[0]["role"]
     role_meta = ROLES.get(role, {"label": role, "icon": "?"})
+    raw_site = row.iloc[0]["Site_ID"]
+    # Normalise NULL / empty / whitespace → "" so callers can check truthiness.
+    site_id = (raw_site or "").strip() if isinstance(raw_site, str) else (raw_site or "")
     return {
         "username":      row.iloc[0]["username"],
         "role":          role,
         "display_label": role_meta["label"],
         "icon":          role_meta["icon"],
-        "site_id":       row.iloc[0]["Site_ID"],   # Used for data isolation throughout the app
+        "site_id":       site_id,   # "" for global roles; real site for site-bound roles
     }
 
 
@@ -152,7 +158,7 @@ def get_all_users(conn: sqlite3.Connection = None) -> pd.DataFrame:
     if _owns:
         conn = get_connection()
     df = pd.read_sql(
-        "SELECT id, username, role, COALESCE(Site_ID,'HQ') AS Site_ID, created_at "
+        "SELECT id, username, role, Site_ID, created_at "
         "FROM users ORDER BY role, username",
         conn,
     )
@@ -165,13 +171,17 @@ def add_user(
     username: str,
     plain_password: str,
     role: str,
-    site_id: str = "HQ",
+    site_id: str = "",
     conn: sqlite3.Connection = None,
 ) -> bool:
     """
     Adds a new user. Returns True on success, False if username already exists.
     Raises ValueError for invalid roles.
-    site_id defaults to 'HQ' — pass the actual site when creating workers/HODs.
+
+    site_id defaults to "" — pass the actual site for site-bound roles
+    (store_keeper, supervisor, hod). Global roles (admin, logistics,
+    warehouse_user) should be created with site_id="" so the sidebar
+    renders them as 🌐 Global.
     """
     if role not in ROLE_HIERARCHY:
         raise ValueError(f"Invalid role '{role}'. Must be one of: {list(ROLE_HIERARCHY)}")
@@ -363,14 +373,25 @@ def login_form() -> None:
                 )
                 st.markdown(f"<p style='text-align:center; color:{TEXT_MUTED}; font-size:0.85rem; margin-bottom:1.25rem;'>Submit your details. An Admin will review your access request.</p>", unsafe_allow_html=True)
 
+                # Role selector lives OUTSIDE the form so changing it triggers
+                # a rerun and the Site selectbox can be disabled in real time
+                # for procurement roles (Logistics, Warehouse) that are not
+                # tied to a specific site.
+                new_role = st.selectbox(
+                    "Requested Role",
+                    ["Store Keeper", "Supervisor", "Head of Department", "Logistics", "Warehouse"],
+                    key="register_role_select",
+                )
+                _SITELESS_ROLES = {"Logistics", "Warehouse"}
+                _is_siteless = new_role in _SITELESS_ROLES
+
                 with st.form("register_form", clear_on_submit=True):
                     new_user = st.text_input("Desired Username").strip()
                     new_pass = st.text_input("Password", type="password").strip()
-                    
+
                     # Ensure formatting matches global standards, defaulting to the +966 region format
                     new_phone = st.text_input("WhatsApp Number (Include Country Code, e.g., +9665...)").strip()
-                    new_role = st.selectbox("Requested Role", ["Store Keeper", "Supervisor", "Head of Department"])
-                    
+
                     conn = get_connection()
                     import pandas as pd
                     try:
@@ -379,9 +400,18 @@ def login_form() -> None:
                     except:
                         site_options = ["HQ"]
                     conn.close()
-                    
-                    new_site = st.selectbox("Assigned Site", site_options)
-                    
+
+                    if _is_siteless:
+                        st.selectbox(
+                            "Assigned Site",
+                            ["— Not applicable for this role —"],
+                            disabled=True,
+                            help="Logistics and Warehouse roles are global and not bound to a single site.",
+                        )
+                        new_site = ""
+                    else:
+                        new_site = st.selectbox("Assigned Site", site_options)
+
                     if st.form_submit_button("Submit Access Request", type="primary", use_container_width=True):
                         if not new_user or not new_pass or not new_phone:
                             st.error("All fields (including WhatsApp number) are required.")
@@ -391,22 +421,25 @@ def login_form() -> None:
                             role_map = {
                                 "Store Keeper": "store_keeper",
                                 "Supervisor": "supervisor",
-                                "Head of Department": "hod"
+                                "Head of Department": "hod",
+                                "Logistics": "logistics",
+                                "Warehouse": "warehouse_user",
                             }
                             ok, msg = submit_registration_request(new_user, hash_password(new_pass), role_map[new_role], new_site, new_phone)
                             if ok:
                                 st.success(msg)
-                                
+
                                 # --- 📱 WHATSAPP AUTOMATION INJECTION ---
                                 from database import queue_whatsapp_alert, get_phone_by_username
-                                
+
                                 # Fetch the Admin's phone number
                                 admin_phone = get_phone_by_username("admin")
                                 if admin_phone:
-                                    alert_msg = f"🔔 *NEW ACCESS REQUEST*\n👤 User: {new_user}\n🏢 Site: {new_site}\n🛠️ Role: {new_role}\n\nPlease review in the Admin Portal."
+                                    site_line = new_site if new_site else "N/A"
+                                    alert_msg = f"🔔 *NEW ACCESS REQUEST*\n👤 User: {new_user}\n🏢 Site: {site_line}\n🛠️ Role: {new_role}\n\nPlease review in the Admin Portal."
                                     queue_whatsapp_alert(admin_phone, alert_msg)
                                 # ----------------------------------------
-                                
+
                             else:
                                 st.error(msg)
 
@@ -481,6 +514,52 @@ def render_user_management_tab(current_username: str) -> None:
             hide_index=True,
         )
 
+        # Retroactive bind tool — surfaces any warehouse_user whose
+        # Warehouse_ID is still NULL/empty (legacy approvals or pre-fix
+        # rows). Hidden when nothing needs fixing.
+        try:
+            _stranded = pd.read_sql(
+                "SELECT username FROM users "
+                "WHERE role = 'warehouse_user' "
+                "  AND (Warehouse_ID IS NULL OR Warehouse_ID = '')",
+                conn,
+            )
+        except Exception:
+            _stranded = pd.DataFrame()
+        if not _stranded.empty:
+            with st.expander(
+                f"🏭 Bind Warehouse to {len(_stranded)} stranded warehouse user(s)",
+                expanded=False,
+            ):
+                from database import list_warehouses
+                _wh_df_retro = list_warehouses()
+                _wh_opts_retro = _wh_df_retro["Warehouse_ID"].tolist() if not _wh_df_retro.empty else []
+                if not _wh_opts_retro:
+                    st.warning("No warehouses exist yet — create one before binding users.")
+                else:
+                    with st.form("retro_bind_wh_form", clear_on_submit=True):
+                        retro_user = st.selectbox(
+                            "Warehouse user", _stranded["username"].tolist(),
+                            key="retro_bind_user",
+                        )
+                        retro_wh = st.selectbox(
+                            "Assign Warehouse", _wh_opts_retro,
+                            key="retro_bind_wh",
+                        )
+                        if st.form_submit_button("🔗 Bind", type="primary"):
+                            conn.execute(
+                                "UPDATE users SET Warehouse_ID = ? WHERE username = ?",
+                                (retro_wh, retro_user),
+                            )
+                            conn.commit()
+                            from database import log_audit_action
+                            log_audit_action(
+                                current_username, "BIND_WAREHOUSE", "users",
+                                f"{retro_user} → {retro_wh}",
+                            )
+                            st.success(f"Bound {retro_user} to {retro_wh}.")
+                            st.rerun()
+
     # --- PHASE 7A: PENDING REGISTRATIONS ---
     st.divider()
     st.subheader("⏳ Pending Access Requests")
@@ -497,26 +576,81 @@ def render_user_management_tab(current_username: str) -> None:
         st.dataframe(pending_df, hide_index=True, use_container_width=True)
         col_approve, col_reject = st.columns(2)
         with col_approve:
+            # ID picker lives OUTSIDE the form so the conditional
+            # Warehouse_ID picker can react to the selected user's role
+            # without waiting for form submit.
+            target_id = st.selectbox(
+                "Select ID to Approve",
+                pending_df["id"].tolist(),
+                key="approve_pick_id",
+            )
+            _pending_row = pending_df[pending_df["id"] == target_id].iloc[0]
+            _pending_role = str(_pending_row["role"])
+
+            # warehouse_user accounts must be bound to a warehouse at
+            # approval time — otherwise they hit the "not bound" lockout
+            # in pages_internal/warehouse_portal.py.
+            _wh_id_for_insert = None
+            if _pending_role == "warehouse_user":
+                from database import list_warehouses
+                _wh_df = list_warehouses()
+                _wh_options = _wh_df["Warehouse_ID"].tolist() if not _wh_df.empty else []
+                if not _wh_options:
+                    st.warning(
+                        "⚠️ Cannot approve a Warehouse user — no warehouses exist yet. "
+                        "Add one in the Logistics Oversight tab first."
+                    )
+                else:
+                    _wh_id_for_insert = st.selectbox(
+                        "🏭 Assign Warehouse (required for Warehouse role)",
+                        _wh_options,
+                        key="approve_pick_wh",
+                    )
+
             with st.form("approve_user_form"):
-                target_id = st.selectbox("Select ID to Approve", pending_df["id"].tolist())
-                if st.form_submit_button("✅ Approve User", type="primary"):
+                _can_submit = (_pending_role != "warehouse_user") or bool(_wh_id_for_insert)
+                if st.form_submit_button(
+                    "✅ Approve User",
+                    type="primary",
+                    disabled=not _can_submit,
+                ):
                     target_row = pd.read_sql("SELECT * FROM pending_users WHERE id = ?", conn, params=(target_id,))
                     if not target_row.empty:
                         t_user = target_row.iloc[0]
-                        c.execute("INSERT INTO users (username, password_hash, role, Site_ID, Phone_Number) VALUES (?, ?, ?, ?, ?)",
-                                  (t_user["username"], t_user["password_hash"], t_user["role"], t_user["Site_ID"], t_user["Phone_Number"]))
+                        c.execute(
+                            "INSERT INTO users (username, password_hash, role, Site_ID, Phone_Number, Warehouse_ID) "
+                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            (
+                                t_user["username"], t_user["password_hash"], t_user["role"],
+                                # Preserve whatever Site_ID was on the pending row (empty
+                                # for global roles, real site for site-bound roles).
+                                t_user["Site_ID"],
+                                t_user["Phone_Number"],
+                                _wh_id_for_insert,
+                            ),
+                        )
                         c.execute("UPDATE pending_users SET status = 'approved' WHERE id = ?", (target_id,))
                         conn.commit()
-                        
+
                         # --- 📱 WHATSAPP INJECTION: Welcome Message ---
                         from database import queue_whatsapp_alert
                         if t_user.get("Phone_Number"):
-                            welcome_msg = f"🎉 *ACCESS GRANTED*\nWelcome to the General Industries HUB, {t_user['username']}!\n\nYour request for the '{t_user['role']}' role at {t_user['Site_ID']} has been approved by the Admin. You may now log in to the system."
+                            site_line = t_user["Site_ID"] if t_user["Site_ID"] else "Global"
+                            wh_line = f" (Warehouse: {_wh_id_for_insert})" if _wh_id_for_insert else ""
+                            welcome_msg = (
+                                f"🎉 *ACCESS GRANTED*\nWelcome to the General Industries HUB, "
+                                f"{t_user['username']}!\n\nYour request for the '{t_user['role']}' "
+                                f"role at {site_line}{wh_line} has been approved by the Admin. "
+                                f"You may now log in to the system."
+                            )
                             queue_whatsapp_alert(t_user["Phone_Number"], welcome_msg)
                         # ----------------------------------------------
-                        
+
                         from database import log_audit_action
-                        log_audit_action(current_username, "APPROVE_USER", "users", f"Approved access for {t_user['username']}")
+                        details = f"Approved access for {t_user['username']}"
+                        if _wh_id_for_insert:
+                            details += f" → bound to warehouse {_wh_id_for_insert}"
+                        log_audit_action(current_username, "APPROVE_USER", "users", details)
                         st.success(f"User {t_user['username']} approved and activated!")
                         st.rerun()
                         
@@ -553,29 +687,71 @@ def render_user_management_tab(current_username: str) -> None:
     # ── Add User ──────────────────────────────────────────────────────────
     with col_add:
         st.markdown("**➕ Add New User**")
+        # Role selector OUTSIDE the form so the conditional Site selector
+        # below can react in real time (form widgets only flush on submit).
+        new_role = st.selectbox(
+            "Role",
+            options=list(ROLE_HIERARCHY.keys()),
+            format_func=lambda r: f"{ROLES[r]['icon']} {ROLES[r]['label']}",
+            key="add_user_role_pick",
+        )
+        _GLOBAL_ROLES_ADD = {"admin", "logistics", "warehouse_user"}
+        _is_global_role = new_role in _GLOBAL_ROLES_ADD
+
+        # warehouse_user must also get a Warehouse_ID at creation time.
+        new_wh_id = None
+        if new_role == "warehouse_user":
+            from database import list_warehouses
+            _wh_df_add = list_warehouses()
+            _wh_opts_add = _wh_df_add["Warehouse_ID"].tolist() if not _wh_df_add.empty else []
+            if not _wh_opts_add:
+                st.warning("⚠️ Add a warehouse before creating warehouse users.")
+            else:
+                new_wh_id = st.selectbox(
+                    "🏭 Assign Warehouse", _wh_opts_add, key="add_user_wh_pick",
+                )
+
         with st.form("form_add_user", clear_on_submit=True):
             new_user = st.text_input("Username", placeholder="e.g. jsmith")
             new_pass = st.text_input("Password", type="password")
-            new_role = st.selectbox(
-                "Role",
-                options=list(ROLE_HIERARCHY.keys()),
-                format_func=lambda r: f"{ROLES[r]['icon']} {ROLES[r]['label']}",
-            )
-            
-            # --- NEW: Site Selection Dropdown ---
-            new_site = st.selectbox("Assign to Site", active_sites)
-            # ------------------------------------
+            if _is_global_role:
+                st.selectbox(
+                    "Assign to Site",
+                    ["— Not applicable for this role —"],
+                    disabled=True,
+                    help="Admin / Logistics / Warehouse roles are global — no Site_ID.",
+                )
+                new_site = ""
+            else:
+                new_site = st.selectbox("Assign to Site", active_sites)
 
-            if st.form_submit_button("Create User", type="primary", use_container_width=True):
+            _block_submit = (new_role == "warehouse_user") and not new_wh_id
+            if st.form_submit_button(
+                "Create User",
+                type="primary",
+                use_container_width=True,
+                disabled=_block_submit,
+            ):
                 if not new_user.strip() or not new_pass:
                     st.error("Username and password are required.")
                 elif len(new_pass) < 6:
                     st.error("Password must be at least 6 characters.")
                 else:
-                    # --- NEW: Pass new_site to add_user ---
                     ok = add_user(new_user.strip(), new_pass, new_role, site_id=new_site)
                     if ok:
-                        st.success(f"✅ User **{new_user}** created as {new_role} at {new_site}.")
+                        # Bind warehouse user immediately after insert.
+                        if new_role == "warehouse_user" and new_wh_id:
+                            conn_wh = get_connection()
+                            try:
+                                conn_wh.execute(
+                                    "UPDATE users SET Warehouse_ID = ? WHERE username = ?",
+                                    (new_wh_id, new_user.strip()),
+                                )
+                                conn_wh.commit()
+                            finally:
+                                conn_wh.close()
+                        where = new_site if new_site else ("Global" if _is_global_role else "—")
+                        st.success(f"✅ User **{new_user}** created as {new_role} at {where}.")
                         st.rerun()
                     else:
                         st.error(f"Username **{new_user}** already exists.")

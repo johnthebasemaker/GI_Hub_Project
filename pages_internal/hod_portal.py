@@ -1288,7 +1288,12 @@ def _render_pr_tab(user: dict, site_id: str) -> None:
                     AND Site_ID = p.Site_ID
               ), 0)) AS Pending_Qty,
               p.status, p.workflow_state, p.Supplier, p.Est_Cost_SAR,
-              p.created_at
+              p.created_at,
+              -- Phase C: logistics_status was missing from this SELECT, which
+              -- forced the downstream filter into a brittle pr_df.get()
+              -- fallback that crashed with str.fillna(). Coalesce to the
+              -- documented default so the filter works uniformly.
+              COALESCE(p.logistics_status, 'site_draft') AS logistics_status
            FROM pr_master p
            LEFT JOIN inventory i ON p.SAP_Code = i.SAP_Code
            WHERE p.Site_ID = ?
@@ -1342,11 +1347,17 @@ def _render_pr_tab(user: dict, site_id: str) -> None:
     # This step hands the PR off to the Logistics Portal queue. The
     # existing email + PDF block below is preserved as an alternative
     # "manual" path — both can coexist.
+    # Defensive: pr_df.get(col, default) returns the *scalar default* when
+    # the column is missing — which then has no .fillna(). Materialise a
+    # column-shaped Series instead so the filter works in both cases.
+    if "logistics_status" in pr_df.columns:
+        _ls = pr_df["logistics_status"].fillna("site_draft")
+    else:
+        _ls = pd.Series(["site_draft"] * len(pr_df), index=pr_df.index)
     site_prs_open = sorted(set(
         pr_df[
             (pr_df["status"] == "open")
-            & (pr_df.get("logistics_status", "site_draft").fillna("site_draft")
-               .isin(["site_draft", "submitted"]))
+            & (_ls.isin(["site_draft", "submitted"]))
         ]["PR_Number"].tolist()
     ))
     if site_prs_open:
