@@ -2489,3 +2489,287 @@ def render_burn_alert_banner(forecast_df: pd.DataFrame) -> None:
             "Current_Stock", "Daily_Burn_Rate", "Days_Remaining",
         ] if c in alert_df.columns]
         st.dataframe(alert_df[cols_to_show], hide_index=True, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 7E — draft_bus: client-side + server-side form draft recovery
+# ═══════════════════════════════════════════════════════════════════════════
+# Two-tier safety net for in-flight form data in low-connectivity sites:
+#   1. Client localStorage via streamlit-local-storage (per-browser, per-device).
+#      Survives WebSocket drops, page reloads, browser tab crashes.
+#   2. Server-side form_drafts table (cross-device + manual Save Draft).
+#      1/min throttle for server-side writes per spec Q4(a).
+#
+# If the streamlit-local-storage package fails to import (corporate proxy,
+# air-gapped env), helpers fall through to SERVER-SIDE-ONLY mode with NO
+# user-visible error (spec Q6(a)) — drafts still recover across sessions.
+# ═══════════════════════════════════════════════════════════════════════════
+import json as _json_7e
+import time as _time_7e
+from datetime import datetime as _dt_7e
+
+# Optional dependency. Silent fallback per spec Q6(a).
+try:
+    from streamlit_local_storage import LocalStorage as _LocalStorage  # type: ignore
+    _HAS_LOCAL_STORAGE = True
+except Exception:
+    _LocalStorage = None  # type: ignore
+    _HAS_LOCAL_STORAGE = False
+
+
+def _draft_ls():
+    """Lazy singleton — instantiated once per Streamlit session."""
+    if not _HAS_LOCAL_STORAGE:
+        return None
+    if "_draft_ls_singleton" not in st.session_state:
+        try:
+            st.session_state["_draft_ls_singleton"] = _LocalStorage()
+        except Exception:
+            return None
+    return st.session_state["_draft_ls_singleton"]
+
+
+def _draft_local_key(form_id: str, username: str) -> str:
+    return f"gi_draft::{username}::{form_id}"
+
+
+def _draft_throttle_key(form_id: str) -> str:
+    return f"_draft_last_server_save::{form_id}"
+
+
+def _draft_capture_payload(state_keys: list[str]) -> dict:
+    """Snapshot the current values of st.session_state[k] for every k in
+    state_keys that exists. Missing keys are silently skipped — a form with
+    optional widgets stays serialisable."""
+    payload = {}
+    for k in state_keys or ():
+        if k in st.session_state:
+            v = st.session_state[k]
+            # Streamlit widgets can hold non-JSON types; coerce via default=str.
+            payload[k] = v
+    return payload
+
+
+def _draft_rehydrate(payload: dict, state_keys: list[str]) -> None:
+    """Write payload values back into st.session_state for each known key.
+    Streamlit picks them up on the next rerun's widget render."""
+    if not isinstance(payload, dict):
+        return
+    for k in state_keys or ():
+        if k in payload:
+            st.session_state[k] = payload[k]
+
+
+def render_form_recovery_banner(
+    form_id: str,
+    username: str,
+    site_id: str,
+    state_keys: list[str],
+) -> None:
+    """Mount-time check. Renders the 🛟 Restore draft banner if a draft is
+    available from either localStorage OR the server-side form_drafts table.
+
+    Spec Q3(a) — when both layers have a draft, show a comparison dialog so
+    the user picks (Local vs Cloud + timestamps).
+    """
+    from database import get_form_draft as _db_get_draft
+
+    # Skip if user has already chosen this session.
+    decided_key = f"_draft_decided::{form_id}::{username}"
+    if st.session_state.get(decided_key):
+        return
+
+    # ── Pull both sides ──────────────────────────────────────────────────
+    local_payload = None
+    local_ts = None
+    ls = _draft_ls()
+    if ls is not None:
+        try:
+            raw = ls.getItem(_draft_local_key(form_id, username))
+            if raw:
+                blob = _json_7e.loads(raw)
+                local_payload = blob.get("payload")
+                local_ts      = blob.get("updated_at")
+        except Exception:
+            local_payload = None
+
+    server_payload = None
+    server_ts = None
+    try:
+        srv = _db_get_draft(username, form_id)
+        if srv:
+            server_payload = srv.get("payload")
+            server_ts      = srv.get("updated_at")
+    except Exception:
+        server_payload = None
+
+    if not local_payload and not server_payload:
+        return  # nothing to restore
+
+    # ── Conflict dialog (both present) ───────────────────────────────────
+    if local_payload and server_payload:
+        st.markdown(
+            f'<div style="background:{BRAND_GOLD}14;'
+            f'border:1px solid {BRAND_GOLD}66;border-radius:8px;'
+            f'padding:12px 16px;margin:8px 0;">'
+            f'<b style="color:{BRAND_GOLD};">🛟 Two drafts available — '
+            f'pick one to restore</b><br>'
+            f'<span style="color:{TEXT_SECONDARY};font-size:12.5px;">'
+            f'Both this browser and the server have a saved draft. '
+            f'Pick whichever you trust.</span></div>',
+            unsafe_allow_html=True,
+        )
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            if st.button(f"🖥️ Restore Local · {local_ts or '—'}",
+                         key=f"_draft_restore_local::{form_id}",
+                         use_container_width=True):
+                _draft_rehydrate(local_payload, state_keys)
+                st.session_state[decided_key] = True
+                st.toast("🛟 Local draft restored.", icon="✅")
+                st.rerun()
+        with col_b:
+            if st.button(f"☁️ Restore Cloud · {server_ts or '—'}",
+                         key=f"_draft_restore_server::{form_id}",
+                         use_container_width=True):
+                _draft_rehydrate(server_payload, state_keys)
+                st.session_state[decided_key] = True
+                st.toast("☁️ Cloud draft restored.", icon="✅")
+                st.rerun()
+        with col_c:
+            if st.button("🗑️ Discard both",
+                         key=f"_draft_discard_both::{form_id}",
+                         use_container_width=True):
+                clear_form_draft(form_id, username)
+                st.session_state[decided_key] = True
+                st.rerun()
+        return
+
+    # ── Single-side restore banner ───────────────────────────────────────
+    picked_payload = local_payload or server_payload
+    picked_ts = local_ts or server_ts
+    picked_src = "browser" if local_payload else "server"
+    st.markdown(
+        f'<div style="background:{BRAND_GOLD}14;'
+        f'border:1px solid {BRAND_GOLD}66;border-radius:8px;'
+        f'padding:10px 14px;margin:8px 0;">'
+        f'<b style="color:{BRAND_GOLD};">🛟 Saved draft found</b> '
+        f'<span style="color:{TEXT_SECONDARY};font-size:12.5px;">'
+        f'({picked_src}, updated {picked_ts or "—"})</span></div>',
+        unsafe_allow_html=True,
+    )
+    col_r, col_d = st.columns(2)
+    with col_r:
+        if st.button("✅ Restore draft",
+                     key=f"_draft_restore::{form_id}",
+                     type="primary",
+                     use_container_width=True):
+            _draft_rehydrate(picked_payload, state_keys)
+            st.session_state[decided_key] = True
+            st.toast("🛟 Draft restored.", icon="✅")
+            st.rerun()
+    with col_d:
+        if st.button("🗑️ Discard",
+                     key=f"_draft_discard::{form_id}",
+                     use_container_width=True):
+            clear_form_draft(form_id, username)
+            st.session_state[decided_key] = True
+            st.rerun()
+
+
+def auto_save_form_draft(
+    form_id: str,
+    username: str,
+    site_id: str,
+    state_keys: list[str],
+) -> None:
+    """Per-rerun snapshot. Always writes to localStorage; throttles server-side
+    writes to 1/min per spec Q4(a). Idempotent — empty payload → no-op."""
+    payload = _draft_capture_payload(state_keys)
+    if not payload:
+        return
+
+    blob = {
+        "payload":    payload,
+        "updated_at": _dt_7e.utcnow().isoformat(timespec="seconds"),
+    }
+
+    # ── Layer 1: localStorage (every rerun) ──────────────────────────────
+    ls = _draft_ls()
+    if ls is not None:
+        try:
+            ls.setItem(
+                _draft_local_key(form_id, username),
+                _json_7e.dumps(blob, default=str),
+            )
+        except Exception:
+            pass  # silent fallback per spec Q6(a)
+
+    # ── Layer 2: server-side (throttled to 1/min) ────────────────────────
+    last = st.session_state.get(_draft_throttle_key(form_id), 0.0)
+    now = _time_7e.time()
+    if now - last >= 60.0:
+        try:
+            from database import upsert_form_draft as _db_upsert
+            _db_upsert(username, form_id, payload, site_id=site_id)
+            st.session_state[_draft_throttle_key(form_id)] = now
+        except Exception:
+            pass
+
+
+def render_manual_save_draft_button(
+    form_id: str,
+    username: str,
+    site_id: str,
+    state_keys: list[str],
+    *,
+    label: str = "💾 Save Draft",
+    key_suffix: str = "",
+) -> None:
+    """Explicit Save Draft button — bypasses the 1/min throttle. Placed next
+    to Submit by callers (spec Q5)."""
+    btn_key = f"_draft_manual_save::{form_id}::{key_suffix or 'default'}"
+    if st.button(label, key=btn_key, use_container_width=True):
+        payload = _draft_capture_payload(state_keys)
+        if not payload:
+            st.toast("Nothing to save yet.", icon="ℹ️")
+            return
+        ls = _draft_ls()
+        if ls is not None:
+            try:
+                blob = {
+                    "payload":    payload,
+                    "updated_at": _dt_7e.utcnow().isoformat(timespec="seconds"),
+                }
+                ls.setItem(
+                    _draft_local_key(form_id, username),
+                    _json_7e.dumps(blob, default=str),
+                )
+            except Exception:
+                pass
+        try:
+            from database import upsert_form_draft as _db_upsert
+            _db_upsert(username, form_id, payload, site_id=site_id)
+            # Reset throttle so the next auto-save isn't immediate.
+            st.session_state[_draft_throttle_key(form_id)] = _time_7e.time()
+            st.toast("💾 Draft saved.", icon="✅")
+        except Exception as e:
+            st.toast(f"Couldn't save server-side: {type(e).__name__}", icon="⚠️")
+
+
+def clear_form_draft(form_id: str, username: str) -> None:
+    """Called after successful submit. Clears local AND server. Idempotent
+    on missing entries — never raises."""
+    ls = _draft_ls()
+    if ls is not None:
+        try:
+            ls.deleteItem(_draft_local_key(form_id, username))
+        except Exception:
+            pass
+    try:
+        from database import delete_form_draft as _db_del
+        _db_del(username, form_id)
+    except Exception:
+        pass
+    # Reset the once-this-session "decided" flag so a fresh draft can start.
+    st.session_state.pop(f"_draft_decided::{form_id}::{username}", None)

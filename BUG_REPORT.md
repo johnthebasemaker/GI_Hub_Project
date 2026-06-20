@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-06-17T12:51:26`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_aijhxwva/bug_check.db`  
-**Total checks:** 268  
-**Passing:** 268  
+**Run at:** `2026-06-20T10:45:26`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_sbq4ccri/bug_check.db`  
+**Total checks:** 398  
+**Passing:** 398  
 **Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -64,6 +64,112 @@ _None — every check passed._
 
 ### Notifications — 1/1
 - ✅ mark_all_notifications_read scopes correctly
+
+### Phase 7A — 15/15
+- ✅ employees.Site_ID column self-heals
+- ✅ ix_employees_site index exists
+- ✅ add_employee(site_id=) persists binding
+- ✅ add_employee() without site_id writes NULL (back-compat)
+- ✅ update_employee(site_id=) reassigns site
+- ✅ update_employee(site_id='') clears binding to NULL
+- ✅ update_employee(site_id=None) leaves binding untouched
+- ✅ list_employees() returns Site_ID column
+- ✅ list_employees(site_id_filter='HQ') filters
+- ✅ list_employees(site_id_filter='__UNASSIGNED__') gets NULL rows
+- ✅ list_employees_for_site(site, status='active') excludes inactive
+- ✅ import_employees_csv with Site_ID column persists site
+- ✅ import_employees_csv without Site_ID column is back-compat
+- ✅ import_employees_csv preserves existing binding when col absent
+- ✅ bulk_assign_employees_to_site sets Site_ID for N rows
+
+### Phase 7B — 21/21
+- ✅ generate_smr_request_no returns SMR-YYYYMMDD-0001 day-empty
+- ✅ generate_smr_request_no increments on same day
+- ✅ create_supervisor_request happy path inserts header + items
+- ✅ rejects worker not bound to site
+- ✅ rejects empty item list
+- ✅ rejects PPE=No without reason
+- ✅ rejects unknown SAP_Code
+- ✅ Stock_At_Request snapshot is captured
+- ✅ Available_Flag = 0 when requested qty > stock
+- ✅ approve mirrors lines → pending_issues pending_hod
+- ✅ approve flips status + captures posted_pending_ids JSON
+- ✅ approve is idempotent (refuses second call)
+- ✅ approve drops SK_Adjusted_Qty=0 lines
+- ✅ reject requires reason + flips status, no pending_issues
+- ✅ end-to-end: approve → commit_eod → consumption row with Source_Ref
+- ✅ update_supervisor_request_item only works while pending_sk
+- ✅ cancel_supervisor_request only works while pending_sk
+- ✅ delete_supervisor_request_item drops a pending line
+- ✅ report_supervisor_intent_vs_actual joins on Source_Ref
+- ✅ get_open_returnables_for_employee finds matching loans
+- ✅ config.WHATSAPP_TRIGGERS has 4 smr_* keys
+
+### Phase 7C — 14/14
+- ✅ ix_csv_target_date index exists
+- ✅ ix_csv_viewer_date index exists
+- ✅ UNIQUE(viewer,target,date) enforced
+- ✅ record_cross_site_view first call returns True
+- ✅ record_cross_site_view dedupe returns False
+- ✅ different target same day returns True
+- ✅ different viewer same target returns True
+- ✅ self-view returns False
+- ✅ blank inputs return False
+- ✅ notify_cross_site_view admin role → silent
+- ✅ notify_cross_site_view queues notification on first fire
+- ✅ notify_cross_site_view writes audit row on first fire
+- ✅ notify_cross_site_view dedupe → no new notification
+- ✅ config.WHATSAPP_TRIGGERS['cross_site_viewed'] = False
+
+### Phase 7D — 16/16
+- ✅ PO_VENDOR_MASK_FIELDS has 17 entries
+- ✅ get_po_detail() default returns commercial fields populated
+- ✅ get_po_detail(hide_vendor=True) blanks all 17 fields
+- ✅ get_po_detail(hide_vendor=True) preserves PO_Type + PO_Date
+- ✅ get_po_detail combines hide_prices + hide_vendor
+- ✅ build_po_site_notification — title + site_id correct
+- ✅ build_po_site_notification — PR list deduped from items
+- ✅ build_po_site_notification — Expected_Delivery surfaced
+- ✅ build_po_site_notification — body has top 5 lines + 'and N more'
+- ✅ build_po_site_notification body has NO Vendor_Name
+- ✅ build_po_site_notification body has NO financial figure
+- ✅ build_po_site_notification — WhatsApp body mirrors in-app
+- ✅ create_po_manual queues notification to site HOD
+- ✅ create_po_manual queues notification to site SK
+- ✅ create_po_manual notifications NEVER contain Vendor_Name
+- ✅ create_po_manual with Site_ID=NULL queues NO notification
+
+### Phase 7E — 16/16
+- ✅ ix_form_drafts_expires index exists
+- ✅ ix_form_drafts_user index exists
+- ✅ UNIQUE(username, form_id) enforced
+- ✅ upsert_form_draft writes a new row
+- ✅ upsert_form_draft updates on duplicate (user, form)
+- ✅ upsert_form_draft default TTL is 7 days
+- ✅ upsert_form_draft honours custom ttl_days
+- ✅ upsert_form_draft rejects non-JSON payload
+- ✅ get_form_draft returns roundtripped payload
+- ✅ get_form_draft returns None for missing entry
+- ✅ get_form_draft hides expired entries
+- ✅ delete_form_draft removes row + returns True
+- ✅ delete_form_draft on missing entry returns False
+- ✅ prune_expired_form_drafts deletes expired rows only
+- ✅ list_user_drafts returns multi-form DataFrame
+- ✅ requirements.txt declares streamlit-local-storage
+
+### Phase 7F — 12/12
+- ✅ ROLE_MANUAL_RECIPES covers all 6 production roles
+- ✅ slice_markdown_for_role('store_keeper') keeps SK chapter
+- ✅ slice_markdown_for_role('store_keeper') drops Logistics
+- ✅ slice_markdown_for_role('supervisor') keeps Supervisor chapter
+- ✅ slice_markdown_for_role('hod') keeps Reports chapter
+- ✅ slice_markdown_for_role('admin') returns full markdown
+- ✅ parse_markdown recognises image syntax
+- ✅ render_image handles missing file (placeholder)
+- ✅ build_role_manual_pdf returns valid PDF bytes
+- ✅ build_role_manual_pdf('admin') == build_manual_pdf
+- ✅ build_role_manual_pdf(unknown role) falls back to master
+- ✅ docs/screenshots/ has the seed placeholder PNGs
 
 ### Procurement — 7/7
 - ✅ RL/BL strict-separation classifier
@@ -131,7 +237,7 @@ _None — every check passed._
 - ✅ Submit → approve → ledger row
 - ✅ Reject removes from pending list
 
-### Schema — 180/180
+### Schema — 216/216
 - ✅ table · inventory
 - ✅ table · consumption
 - ✅ table · receipts
@@ -171,6 +277,10 @@ _None — every check passed._
 - ✅ table · employees
 - ✅ table · tool_catalogue
 - ✅ table · cv_model_versions
+- ✅ table · supervisor_material_requests
+- ✅ table · supervisor_material_request_items
+- ✅ table · cross_site_views
+- ✅ table · form_drafts
 - ✅ column · inventory.SAP_Code
 - ✅ column · inventory.Material_Code
 - ✅ column · inventory.Equipment_Description
@@ -180,13 +290,7 @@ _None — every check passed._
 - ✅ column · inventory.Category
 - ✅ column · inventory.Opening_Stock
 - ✅ column · inventory.Site_ID
-- ✅ column · consumption.Date
-- ✅ column · consumption.SAP_Code
-- ✅ column · consumption.Quantity
-- ✅ column · consumption.Work_Type
-- ✅ column · consumption.Remarks
-- ✅ column · consumption.Site_ID
-- ✅ column · consumption.Tank_No
+- ✅ column · consumption.Source_Ref
 - ✅ column · receipts.Date
 - ✅ column · receipts.SAP_Code
 - ✅ column · receipts.Quantity
@@ -311,6 +415,44 @@ _None — every check passed._
 - ✅ column · returnable_items.cv_confidence
 - ✅ column · returnable_items.cv_employee_id
 - ✅ column · returnable_items.cv_tool_class
+- ✅ column · employees.Site_ID
+- ✅ column · supervisor_material_requests.request_no
+- ✅ column · supervisor_material_requests.Site_ID
+- ✅ column · supervisor_material_requests.Worker_ID
+- ✅ column · supervisor_material_requests.Worker_Name
+- ✅ column · supervisor_material_requests.Job_Tank_Place
+- ✅ column · supervisor_material_requests.Old_PPE_Returned
+- ✅ column · supervisor_material_requests.No_Return_Reason
+- ✅ column · supervisor_material_requests.requested_by
+- ✅ column · supervisor_material_requests.requested_at
+- ✅ column · supervisor_material_requests.status
+- ✅ column · supervisor_material_requests.sk_decided_by
+- ✅ column · supervisor_material_requests.sk_decided_at
+- ✅ column · supervisor_material_requests.sk_reject_reason
+- ✅ column · supervisor_material_requests.posted_pending_ids
+- ✅ column · supervisor_material_request_items.request_id
+- ✅ column · supervisor_material_request_items.SAP_Code
+- ✅ column · supervisor_material_request_items.Material_Code
+- ✅ column · supervisor_material_request_items.Equipment_Description
+- ✅ column · supervisor_material_request_items.UOM
+- ✅ column · supervisor_material_request_items.Requested_Qty
+- ✅ column · supervisor_material_request_items.Stock_At_Request
+- ✅ column · supervisor_material_request_items.Available_Flag
+- ✅ column · supervisor_material_request_items.SK_Adjusted_Qty
+- ✅ column · supervisor_material_request_items.Notes
+- ✅ column · pending_issues.Source_Ref
+- ✅ column · cross_site_views.viewer_username
+- ✅ column · cross_site_views.viewer_site_id
+- ✅ column · cross_site_views.target_site_id
+- ✅ column · cross_site_views.view_date
+- ✅ column · cross_site_views.first_seen_at
+- ✅ column · form_drafts.username
+- ✅ column · form_drafts.form_id
+- ✅ column · form_drafts.site_id
+- ✅ column · form_drafts.payload_json
+- ✅ column · form_drafts.created_at
+- ✅ column · form_drafts.updated_at
+- ✅ column · form_drafts.expires_at
 - ✅ init_db() is idempotent
 
 ### Site Visibility — 3/3

@@ -384,6 +384,38 @@ def _maybe_run_delivery_reminders() -> None:
         print(f"❌ delivery_reminders crashed: {e}")
 
 
+def _maybe_run_form_drafts_prune() -> None:
+    """Phase 7E — prune expired form_drafts rows at most once per local day.
+
+    Marker key: app_settings.form_drafts_last_prune. Cheaper than running
+    the DELETE every 60-sec poll tick; idempotent across worker restarts."""
+    try:
+        import datetime as _dt
+        import database as _db
+        today = _dt.date.today().isoformat()
+        conn = _db.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_settings "
+                "WHERE key='form_drafts_last_prune'").fetchone()
+            if row and row[0] == today:
+                return
+            n = _db.prune_expired_form_drafts(conn=conn)
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES "
+                "  ('form_drafts_last_prune', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (today,),
+            )
+            conn.commit()
+            if n:
+                print(f"🧹 Form drafts prune: removed {n} expired draft(s) on {today}")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"❌ form_drafts prune crashed: {e}")
+
+
 def _maybe_run_returnable_reminders() -> None:
     """Run sweep_returnable_reminders() at most once per local HOUR.
 
@@ -437,6 +469,8 @@ def run_worker_loop() -> None:
         _maybe_run_delivery_reminders()
         # Phase 6E — Returnable loan reminders, idempotent within an hour
         _maybe_run_returnable_reminders()
+        # Phase 7E — Form drafts prune, idempotent within a day
+        _maybe_run_form_drafts_prune()
         time.sleep(60)
 
 

@@ -56,6 +56,7 @@ from pages_internal import (
     page_reports,
     page_logistics_portal,
     page_warehouse_portal,
+    page_supervisor_portal,
 )
 
 # ===========================================================================
@@ -69,6 +70,36 @@ st.set_page_config(
 )
 inject_custom_css()
 inject_keyboard_shortcuts()  # Phase 4 — `/` focus search, Esc blur, Enter submit
+
+# Phase 7E — Passive offline indicator. Pure browser-native (navigator.onLine
+# + 'online' / 'offline' events) — no Python coupling. Hidden when online;
+# shows a fixed-position red pill in the top-left when the browser is offline,
+# setting user expectation that the Streamlit WebSocket may be reconnecting.
+# Pairs with the streamlit-local-storage draft auto-save (form_drafts table
+# + localStorage) so in-flight entries are protected during the drop.
+st.markdown(
+    """
+<div id="gi-offline-pill"
+     style="display:none;position:fixed;top:72px;left:22px;
+            background:#EF4444;color:#fff;padding:6px 12px;
+            border-radius:14px;font-weight:700;font-size:11.5px;
+            z-index:999;box-shadow:0 2px 8px rgba(0,0,0,0.35);
+            letter-spacing:0.02em;">
+  🔴 Reconnecting…
+</div>
+<script>
+  (function () {
+    const _p = document.getElementById('gi-offline-pill');
+    if (!_p) return;
+    const _set = () => { _p.style.display = navigator.onLine ? 'none' : 'block'; };
+    window.addEventListener('online',  _set);
+    window.addEventListener('offline', _set);
+    _set();
+  })();
+</script>
+""",
+    unsafe_allow_html=True,
+)
 
 # ===========================================================================
 # DATABASE INIT + SEED DEFAULT USERS
@@ -134,16 +165,22 @@ _EXACT_ROLE_PAGES = {
     # land there via shadow — see the hide-from-sidebar rule below — but
     # logistics + warehouse_user must NEVER see it.
     "📋 HOD Portal":        {"hod", "admin"},
+    # Phase 7B — Supervisor Portal exact-locked so HODs / Logistics /
+    # Admin don't inherit a "Request Material" surface they shouldn't have
+    # (admin lands here via shadow per the same pattern as other portals).
+    "🛡️ Supervisor Portal": {"supervisor", "admin"},
     "🚚 Logistics Portal":  {"logistics", "admin"},
     "🏭 Warehouse Portal":  {"warehouse_user", "admin"},
 }
 
 # Per-page deny-list. Used when a role would otherwise pass the hierarchy
 # check but should be excluded by policy. Keeps PAGE_ACCESS untouched.
-# warehouse_user shares hierarchy level 1 with supervisor → would inherit
-# Reports access by default. Policy: warehouse staff don't get Reports.
+# - warehouse_user shares hierarchy level 1 with supervisor → would inherit
+#   Reports access by default. Policy: warehouse staff don't get Reports.
+# - Phase 7B: supervisor loses Reports nav. They request material via
+#   🛡️ Supervisor Portal. Reports remains visible to HOD + Admin.
 _PAGE_BLOCKED_ROLES = {
-    "📊 Reports": {"warehouse_user"},
+    "📊 Reports": {"warehouse_user", "supervisor"},
 }
 
 
@@ -554,6 +591,8 @@ def main() -> None:
         page_daily_issue_log(user)
     elif page == "📋 HOD Portal":
         page_hod_portal(user)
+    elif page == "🛡️ Supervisor Portal":
+        page_supervisor_portal(user)
     elif page == "🛡️ Admin Portal":
         page_admin_portal(user)
     elif page == "📊 Reports":

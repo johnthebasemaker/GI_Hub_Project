@@ -100,6 +100,9 @@ _REPORT_TYPES = [
     ("warehouse_throughput", "🏭", "Warehouse Throughput",
      "DN counts by warehouse, split by state and RL/BL family"),
     ("force_closures", "🛑", "Force-Closures",   "Audit of every PR/PO/line closed by Logistics"),
+    # Phase 7B — Supervisor request oversight
+    ("smr_intent_actual", "🛡️", "Supervisor Intent vs Actual",
+     "Approved supervisor requests vs eventually-consumed qty + variance %"),
 ]
 _REPORT_TYPE_MAP = {t[0]: t for t in _REPORT_TYPES}
 
@@ -275,6 +278,44 @@ def _run_report_raw(
     if report_type == "force_closures":
         from database import report_force_closures
         return report_force_closures(df_from, df_to, site_id=site_id)
+    if report_type == "smr_intent_actual":
+        # Phase 7B — date-range filter is honoured via the `days` derived
+        # window. Pick the wider of "last N days" computed from the picker
+        # vs "since df_from" so the report always covers the user's choice.
+        from database import report_supervisor_intent_vs_actual
+        if df_from:
+            try:
+                _start = pd.to_datetime(df_from).date()
+                window_days = max(1, (datetime.date.today() - _start).days + 1)
+            except Exception:
+                window_days = 90
+        else:
+            window_days = 90
+        df = report_supervisor_intent_vs_actual(site_id=site_id, days=window_days)
+        # Apply df_to clamp manually since the helper takes only `days`.
+        if df_to and not df.empty:
+            try:
+                _end = pd.to_datetime(df_to).date()
+                df = df[pd.to_datetime(df["Requested_At"]).dt.date <= _end]
+            except Exception:
+                pass
+        if df.empty:
+            return pd.DataFrame(), {"Lines": 0, "Avg_Variance_Pct": 0,
+                                    "Lines_Over_10pct": 0,
+                                    "Lines_Not_Yet_Committed": 0}
+        committed = df[df["Actual_Qty"].notna()]
+        avg_var = (
+            float(committed["Variance_Pct"].dropna().abs().mean())
+            if not committed.empty else 0.0
+        )
+        over_10 = int((committed["Variance_Pct"].abs() > 10).sum()) if not committed.empty else 0
+        not_yet = int(df["Actual_Qty"].isna().sum())
+        return df, {
+            "Lines":                len(df),
+            "Avg_Variance_Pct":      round(avg_var, 1),
+            "Lines_Over_10pct":      over_10,
+            "Lines_Not_Yet_Committed": not_yet,
+        }
     if report_type == "valuation":
         # Standard-cost inventory valuation. Date filter is informational
         # only (live snapshot — we don't have point-in-time stock history).

@@ -195,6 +195,10 @@ Available to every user from the sidebar:
 
 Sits between the role card and the navigation radio. Every signed-in user sees their own personalised inbox of procurement-chain events.
 
+![Sidebar — Notifications bell with unread badge + inbox modal](docs/screenshots/notification_bell.png)
+
+![Connectivity — offline indicator pill appears top-left when the browser loses network (Phase 7E)](docs/screenshots/offline_pill.png)
+
 **The button:**
 - **No unread:** `"Open inbox"` (secondary button, no badge)
 - **1+ unread:** `"Open inbox (N unread)"` (primary button, red pill badge with the count, capped at "99+")
@@ -237,6 +241,8 @@ When a Store Keeper logs in and there are overdue returnable items at their site
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.
 
+![Store Keeper Consumption Log entry — main daily workflow](docs/screenshots/sk_consumption_log.png)
+
 ## 4.1 Pages visible
 
 - 📝 Entry Log (only)
@@ -255,6 +261,10 @@ The Entry Log has **four tabs**:
 ## 4.3 Entry Log → 📋 Consumption Log
 
 This is where every material consumed by site operations is recorded.
+
+![Receipt Staging queue — review incoming materials before submitting to HOD](docs/screenshots/sk_receipt_staging.png)
+
+![Supervisor Requests tab — approve / reject worker material requests](docs/screenshots/sk_supervisor_requests.png)
 
 ### 4.3.1 Top section: Bulk OCR upload (expander)
 
@@ -683,11 +693,17 @@ A: Submitted/approved items don't show on your screen. Ask HOD or Admin to filte
 
 The Supervisor monitors a single site's stock, generates reports, and provides oversight. They cannot approve transactions (that's HOD).
 
+![Supervisor Portal — New Material Request form for workers](docs/screenshots/supervisor_new_request.png)
+
 ## 5.1 Pages visible
 
 - 📦 Live Dashboard
+- 🛡️ Supervisor Portal — Request Material for workers
 - 📝 Entry Log (same interface as Store Keeper — see §4)
-- 📊 Reports
+
+![Supervisor Portal — My Requests history with cancel option](docs/screenshots/supervisor_my_requests.png)
+
+![Supervisor Portal — Intent vs Actual variance report](docs/screenshots/supervisor_intent_vs_actual.png)
 
 ## 5.2 Live Dashboard
 
@@ -805,7 +821,13 @@ A: Yes — AgGrid has a built-in CSV export (right-click the grid). For a formal
 
 # 6. HOD (Head of Department) Manual
 
-The HOD owns their site's inventory ledger. Every transaction flows through their approval. The HOD Portal has **15 tabs** as of v3.0 — the original 13 (covering EOD, Cross-Site, Burn Rate, Receipts, Returns, Adjustments, PRs, Shelf-Life, Notifications, My Requests, Site Config, DOC, QR Approval) plus two new procurement-chain tabs: 🚚 DN Approvals and 🚚 In-Transit. Existing tabs are unchanged; the new tabs are documented in §6.15 and §6.16 below.
+The HOD owns their site's inventory ledger. Every transaction flows through their approval. The HOD Portal has **16 tabs** as of v3.0 — covering EOD, Cross-Site, Burn Rate, Receipts, Returns, Adjustments, PRs, Shelf-Life, Notifications, My Requests, Site Config, the new 👷 Employees tab (Phase 7A), DOC, QR Approval, 🚚 DN Approvals, 🚚 In-Transit.
+
+![HOD Portal — End-of-Day Commit review with negative-stock guard](docs/screenshots/hod_eod_commit.png)
+
+![HOD Portal — Cross-Site Inquiry with the Phase 7C "you are viewing" notification banner](docs/screenshots/hod_cross_site_inquiry.png)
+
+![HOD Portal — Site Employees roster with add/edit form (Phase 7A)](docs/screenshots/hod_employees_tab.png)
 
 ## 6.1 Pages visible
 
@@ -2617,6 +2639,12 @@ The largest single feature batch since launch. Fully additive — no edits to ex
 
 The Logistics Portal sits between Site HOD (who creates PRs) and Warehouse (which physically receives goods). Role-locked to `{logistics, admin}` — exact-role lock means no other role inherits access via the hierarchy. Eight tabs.
 
+![Logistics Portal — Create PO from PDF upload or manual entry](docs/screenshots/logistics_create_po.png)
+
+![Logistics Portal — Open POs dashboard with status pills](docs/screenshots/logistics_open_pos.png)
+
+![Logistics Portal — Assign PO to a Warehouse](docs/screenshots/logistics_assign_warehouse.png)
+
 ## 14.1 Pages visible to Logistics
 
 - 📦 Live Dashboard (read-only — all sites)
@@ -2890,6 +2918,12 @@ A: Not yet. Once force-closed, you'd have to either raise a Vendor Return (reope
 # 15. Warehouse Portal Manual
 
 The Warehouse Portal is the physical-receiving and DN-preparation side. Role-locked to `{warehouse_user, admin}`. Six tabs. **Prices are completely hidden in every view** — three independent enforcement layers guarantee `Unit_Price`, `Total_Price`, `Total_Amount`, `Freight_Charges`, `Handling_Charges`, `Discount_Amount`, `Amount_In_Words` are never visible to a warehouse user.
+
+![Warehouse Portal — Receive Goods workflow](docs/screenshots/warehouse_receive_goods.png)
+
+![Warehouse Portal — Prepare Delivery Note with RL/BL strict separation](docs/screenshots/warehouse_prepare_dn.png)
+
+![Warehouse Portal — Outbound DN tracking](docs/screenshots/warehouse_outbound_dns.png)
 
 ## 15.1 Pages visible to Warehouse User
 

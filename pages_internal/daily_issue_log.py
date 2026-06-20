@@ -11,7 +11,7 @@ import html
 import pandas as pd
 import streamlit as st
 
-from config import SYSTEM_COLS, OPTIONAL_ISSUE_COLS
+from config import SYSTEM_COLS, OPTIONAL_ISSUE_COLS, BRAND_GOLD, TEXT_MUTED
 from database import (
     get_connection,
     queue_whatsapp_alert,
@@ -21,6 +21,14 @@ from database import (
     get_user_last_entry_defaults,
     pwa_stage_pending_issues,
     stage_pending_receipts_bulk,
+    # Phase 7B — Supervisor Material Request workflow
+    list_supervisor_requests,
+    get_supervisor_request,
+    update_supervisor_request_item,
+    delete_supervisor_request_item,
+    approve_supervisor_request,
+    reject_supervisor_request,
+    get_open_returnables_for_employee,
 )
 from cache_layer import (
     cached_work_types,
@@ -40,7 +48,26 @@ from ui_components import (
     render_stock_badge,
     render_aggrid,
     LOAN_STATUS_BADGE_JS,
+    # Phase 7E — form draft recovery
+    render_form_recovery_banner,
+    auto_save_form_draft,
+    render_manual_save_draft_button,
+    clear_form_draft,
 )
+
+# Phase 7E — state keys per form. File-uploader widget keys are intentionally
+# EXCLUDED (UploadedFile objects can't be JSON-serialised). The staging queue
+# itself lives in pending_issues / pending_receipts so it's already durable.
+# These keys cover the in-flight row a user might be building when the
+# network drops — restoring them lets them pick up exactly where they left off.
+_SK_CONSUMPTION_STATE_KEYS = [
+    "item_selectbox", "tank_no_select", "wbs_consumption_select",
+    "override_expiry_ck", "cons_attach_scope",
+]
+_SK_RECEIPT_STATE_KEYS = [
+    "rcpt_pr_link", "rcpt_item_selectbox", "rcpt_mtc_number",
+    "rcpt_attach_scope", "rcpt_attach_dn",
+]
 
 # Phase 5 — OCR upload pipeline. Lazy-imported inside the helper functions
 # below so the ai module's Ollama probe doesn't fire when the page renders
@@ -80,14 +107,22 @@ def page_daily_issue_log(user: dict) -> None:
     conn.close()
 
     (tab_issue, tab_receipt_stage, tab_return_items,
-     tab_returnables, tab_adjust, tab_qr) = st.tabs([
+     tab_returnables, tab_adjust, tab_qr, tab_smr) = st.tabs([
         "📋 Consumption Log", "📦 Receipt Staging", "↩️ Return Items",
         "🔄 Returnable Items", "🧮 Stock Count",
         "🏷️ QR Label Request",
+        "🛒 Supervisor Requests",   # Phase 7B
     ])
 
     # ── TAB 1: Daily Issue Log ─────────────────────────────────────────────────
     with tab_issue:
+        # Phase 7E — restore in-flight row selections (Tank/WBS/material/etc.)
+        # if a draft exists in either localStorage or the server-side table.
+        render_form_recovery_banner(
+            "sk_consumption", user.get("username", "sk"),
+            site_id, _SK_CONSUMPTION_STATE_KEYS,
+        )
+
         # Phase 5 — bulk OCR upload (handwritten consumption list)
         with st.expander("📷 Upload Handwritten Consumption List (OCR)", expanded=False):
             _render_consumption_ocr(user=user, site_id=site_id, inv_list=inv_list, work_types=work_types)
@@ -522,7 +557,15 @@ def page_daily_issue_log(user: dict) -> None:
                     key="cons_attach_files",
                 )
 
-            btn_save, btn_submit = st.columns([1, 2])
+            btn_save, btn_draft, btn_submit = st.columns([1, 1, 2])
+            with btn_draft:
+                # Phase 7E — manual Save Draft (bypasses 1/min server throttle).
+                render_manual_save_draft_button(
+                    "sk_consumption", user.get("username", "sk"),
+                    site_id, _SK_CONSUMPTION_STATE_KEYS,
+                    label="🛟 Save Form Draft",
+                    key_suffix="sk_cons_main",
+                )
             with btn_save:
                 if st.button("💾 Save Draft Edits", use_container_width=True):
                     save_cols = [col for col in edited_df.columns if col not in {"Material_Name", "UOM", "Timestamp"}]
@@ -595,14 +638,33 @@ def page_daily_issue_log(user: dict) -> None:
                             queue_whatsapp_alert(hod_q.iloc[0]["Phone_Number"], msg)
 
                         st.success(f"✅ {len(items_df)} item(s) submitted to HOD for review!")
+                        # Phase 7E — staging queue has been moved to
+                        # status='pending_hod'; wipe the in-flight row draft.
+                        clear_form_draft(
+                            "sk_consumption", user.get("username", "sk"),
+                        )
                         st.rerun()
 
         conn3.close()
+
+        # Phase 7E — per-rerun auto-save (every run → localStorage;
+        # server-side throttled to 1/min inside the helper).
+        auto_save_form_draft(
+            "sk_consumption", user.get("username", "sk"),
+            site_id, _SK_CONSUMPTION_STATE_KEYS,
+        )
 
     # ── TAB 2: Receipt Staging ─────────────────────────────────────────────────
     with tab_receipt_stage:
         st.subheader("📦 Stage Inbound Receipts")
         st.caption("Add received materials to the draft queue, then submit to HOD for approval.")
+
+        # Phase 7E — restore in-flight row selections (PR link / SAP /
+        # MTC number / attachment metadata) if a draft exists.
+        render_form_recovery_banner(
+            "sk_receipt_staging", user.get("username", "sk"),
+            site_id, _SK_RECEIPT_STATE_KEYS,
+        )
 
         # Phase 3 — Procurement chain. DNs that already passed Logistics +
         # HOD approval land here as ready-to-confirm rows. Confirming
@@ -920,7 +982,15 @@ def page_daily_issue_log(user: dict) -> None:
                     key="rcpt_attach_files",
                 )
 
-            rbtn_save, rbtn_submit = st.columns([1, 2])
+            rbtn_save, rbtn_draft, rbtn_submit = st.columns([1, 1, 2])
+            with rbtn_draft:
+                # Phase 7E — manual Save Draft (bypasses 1/min server throttle).
+                render_manual_save_draft_button(
+                    "sk_receipt_staging", user.get("username", "sk"),
+                    site_id, _SK_RECEIPT_STATE_KEYS,
+                    label="🛟 Save Form Draft",
+                    key_suffix="sk_rcpt_main",
+                )
             with rbtn_save:
                 if st.button("💾 Save Draft Edits", key="rcpt_save_btn", use_container_width=True):
                     save_rc = [c for c in edited_rcpt.columns if c not in {"Material_Name", "UOM"}]
@@ -1008,9 +1078,19 @@ def page_daily_issue_log(user: dict) -> None:
                             )
 
                         st.success(f"✅ {count_q} receipt(s) submitted to HOD for approval!")
+                        # Phase 7E — wipe the in-flight row draft.
+                        clear_form_draft(
+                            "sk_receipt_staging", user.get("username", "sk"),
+                        )
                         st.rerun()
 
         conn_rq.close()
+
+        # Phase 7E — per-rerun auto-save.
+        auto_save_form_draft(
+            "sk_receipt_staging", user.get("username", "sk"),
+            site_id, _SK_RECEIPT_STATE_KEYS,
+        )
 
     # ── TAB 3: Returnable Items ────────────────────────────────────────────────
     with tab_returnables:
@@ -1178,6 +1258,10 @@ def page_daily_issue_log(user: dict) -> None:
     with tab_qr:
         _render_qr_request_tab(user=user, site_id=site_id, inv_list=inv_list,
                                search_options=search_options)
+
+    # ── TAB 6: Supervisor Material Requests (Phase 7B) ────────────────────────
+    with tab_smr:
+        _render_supervisor_requests_tab(user=user, site_id=site_id)
 
 
 def _render_return_items_tab(user: dict, site_id: str) -> None:
@@ -2380,3 +2464,217 @@ def _render_return_scan_filter(site_id: str) -> None:
                         "🚫 Badge not recognised. Re-snap or clear and pick "
                         "the item manually from the full grid."
                     )
+
+
+# ===========================================================================
+# Phase 7B — 🛒 Supervisor Requests tab (Store Keeper side)
+# ===========================================================================
+def _render_supervisor_requests_tab(user: dict, site_id: str) -> None:
+    """SK queue for pending supervisor material requests.
+
+    SK can: edit Requested_Qty / SK_Adjusted_Qty / Notes, delete a line, view
+    the worker's open returnable loans (side-panel), then Approve or Reject
+    the whole request.
+
+    On Approve: approve_supervisor_request() mirrors each non-zero line into
+    pending_issues with Work_Type='SUPERVISOR_REQUEST' and Source_Ref set —
+    HOD sees them in the existing EOD Commit tab. No edits to commit_eod.
+    """
+    actor = user.get("username", "store_keeper")
+
+    st.markdown(
+        f'<h3 style="color:{BRAND_GOLD};font-weight:700;margin:0 0 4px 0;">'
+        f'🛒 Supervisor Material Requests</h3>'
+        f'<p style="color:{TEXT_MUTED};margin:0 0 14px 0;font-size:13px;">'
+        f'Pending requests submitted by Supervisors at <b>{html.escape(site_id)}</b>. '
+        f'Edit qty / notes / drop lines as needed, then Approve. Approved lines '
+        f'land in the HOD EOD Commit queue automatically.</p>',
+        unsafe_allow_html=True,
+    )
+
+    pending = list_supervisor_requests(
+        site_id=site_id, status="pending_sk",
+    )
+    if pending.empty:
+        render_empty_state(
+            icon="📭",
+            title="Nothing in the queue",
+            hint="When a Supervisor submits a material request, it appears here.",
+        )
+        return
+
+    for _, hdr in pending.iterrows():
+        req_id = int(hdr["id"])
+        with st.container(border=True):
+            top = st.columns([2, 2, 2, 1])
+            top[0].markdown(
+                f'<b style="color:{BRAND_GOLD};font-family:monospace;">{hdr["request_no"]}</b><br>'
+                f'<span style="color:{TEXT_MUTED};font-size:12px;">'
+                f'Submitted: {hdr["requested_at"]}<br>By: {html.escape(hdr["requested_by"])}'
+                f'</span>',
+                unsafe_allow_html=True,
+            )
+            top[1].markdown(
+                f'<span style="color:{TEXT_MUTED};font-size:12px;">Worker</span><br>'
+                f'<b>{html.escape(hdr["Worker_Name"])}</b><br>'
+                f'<code style="font-size:11.5px;">{html.escape(hdr["Worker_ID"])}</code>',
+                unsafe_allow_html=True,
+            )
+            top[2].markdown(
+                f'<span style="color:{TEXT_MUTED};font-size:12px;">Job / Tank / Place</span><br>'
+                f'<b>{html.escape(hdr["Job_Tank_Place"])}</b>',
+                unsafe_allow_html=True,
+            )
+            ppe = "Yes ✓" if int(hdr["Old_PPE_Returned"]) else "No ✗"
+            ppe_color = "#22C55E" if int(hdr["Old_PPE_Returned"]) else "#EF4444"
+            top[3].markdown(
+                f'<span style="color:{TEXT_MUTED};font-size:12px;">Old PPE returned</span><br>'
+                f'<b style="color:{ppe_color};">{ppe}</b>',
+                unsafe_allow_html=True,
+            )
+            if not int(hdr["Old_PPE_Returned"]) and hdr.get("No_Return_Reason"):
+                st.caption(f"📝 Supervisor's reason: {hdr['No_Return_Reason']}")
+
+            # ── Open returnable loans side-panel for the worker ──────────
+            loans_df = get_open_returnables_for_employee(hdr["Worker_ID"])
+            with st.expander(
+                f"🔄 Worker's open returnable loans ({len(loans_df)})",
+                expanded=False,
+            ):
+                if loans_df.empty:
+                    st.caption("No open tool / equipment loans for this worker.")
+                else:
+                    st.dataframe(
+                        loans_df.rename(columns={
+                            "material_name": "Tool / Equipment",
+                            "qty": "Qty",
+                            "uom": "UOM",
+                            "borrower_name": "Borrower",
+                            "given_time": "Given",
+                            "expected_return_time": "Due",
+                        }),
+                        use_container_width=True, hide_index=True,
+                    )
+
+            # ── Editable items grid ──────────────────────────────────────
+            _h, items = get_supervisor_request(req_id)
+            if items.empty:
+                st.warning("No line items.")
+                continue
+
+            edit_df = items[["id", "SAP_Code", "Material_Code",
+                             "Equipment_Description", "UOM",
+                             "Requested_Qty", "Stock_At_Request",
+                             "SK_Adjusted_Qty", "Notes"]].copy()
+            edit_df = edit_df.rename(columns={
+                "Equipment_Description": "Description",
+                "Stock_At_Request": "Stock@Req",
+                "SK_Adjusted_Qty": "Approved_Qty (blank = use Requested)",
+            })
+            edited = st.data_editor(
+                edit_df,
+                key=f"smr_edit_{req_id}",
+                use_container_width=True,
+                hide_index=True,
+                disabled=["id", "SAP_Code", "Material_Code",
+                          "Description", "UOM", "Stock@Req"],
+                num_rows="fixed",
+                column_config={
+                    "id": st.column_config.NumberColumn(
+                        "ID", help="Line ID (read-only)", disabled=True,
+                    ),
+                    "Requested_Qty": st.column_config.NumberColumn(
+                        "Requested", min_value=0.0, step=1.0,
+                    ),
+                    "Approved_Qty (blank = use Requested)":
+                        st.column_config.NumberColumn(
+                            "Approved",
+                            help="Set 0 to drop the line. Blank = approve as requested.",
+                            min_value=0.0, step=1.0,
+                        ),
+                    "Notes": st.column_config.TextColumn(
+                        "Notes", help="Optional SK note saved with the line.",
+                    ),
+                },
+            )
+
+            # Live banner if any line's effective qty exceeds current stock.
+            effective = edited[[
+                "SAP_Code", "Requested_Qty", "Stock@Req",
+                "Approved_Qty (blank = use Requested)",
+            ]].copy()
+            effective["__eff__"] = effective.apply(
+                lambda r: (
+                    float(r["Approved_Qty (blank = use Requested)"])
+                    if pd.notna(r["Approved_Qty (blank = use Requested)"])
+                    else float(r["Requested_Qty"])
+                ),
+                axis=1,
+            )
+            short = effective[effective["__eff__"] > effective["Stock@Req"]]
+            if not short.empty:
+                st.warning(
+                    f"⚠️ {len(short)} line(s) exceed current stock-at-request. "
+                    f"You can still approve — but consider adjusting quantities "
+                    f"OR rejecting, since the HOD's negative-stock guard will "
+                    f"block commit if stock has not improved."
+                )
+
+            # ── Action row ───────────────────────────────────────────────
+            col_save, col_appr, col_rej = st.columns([1, 1, 1])
+            with col_save:
+                if st.button("💾 Save edits", key=f"smr_save_{req_id}",
+                             use_container_width=True):
+                    saved = 0
+                    for _, row in edited.iterrows():
+                        adj = row["Approved_Qty (blank = use Requested)"]
+                        ok = update_supervisor_request_item(
+                            int(row["id"]),
+                            requested_qty=float(row["Requested_Qty"]),
+                            sk_adjusted_qty=(
+                                float(adj) if pd.notna(adj) else None
+                            ),
+                            notes=row["Notes"] or "",
+                        )
+                        if ok:
+                            saved += 1
+                    st.toast(f"💾 Saved {saved} line(s).", icon="✅")
+                    st.rerun()
+            with col_appr:
+                if st.button("✅ Approve", key=f"smr_appr_{req_id}",
+                             type="primary", use_container_width=True):
+                    # First persist any pending edits so the approval picks
+                    # them up — same write path as the Save button.
+                    for _, row in edited.iterrows():
+                        adj = row["Approved_Qty (blank = use Requested)"]
+                        update_supervisor_request_item(
+                            int(row["id"]),
+                            requested_qty=float(row["Requested_Qty"]),
+                            sk_adjusted_qty=(
+                                float(adj) if pd.notna(adj) else None
+                            ),
+                            notes=row["Notes"] or "",
+                        )
+                    ok, msg = approve_supervisor_request(req_id, actor)
+                    if ok:
+                        st.success(f"✅ {msg}")
+                        st.rerun()
+                    else:
+                        st.error(f"🚫 {msg}")
+            with col_rej:
+                with st.popover("❌ Reject", use_container_width=True):
+                    reason = st.text_area(
+                        "Rejection reason (required)",
+                        key=f"smr_rej_reason_{req_id}",
+                        height=80,
+                    ).strip()
+                    if st.button("Confirm reject",
+                                 key=f"smr_rej_go_{req_id}",
+                                 type="primary",
+                                 use_container_width=True):
+                        ok, msg = reject_supervisor_request(req_id, actor, reason)
+                        if ok:
+                            st.success("Rejected.")
+                            st.rerun()
+                        else:
+                            st.error(f"🚫 {msg}")

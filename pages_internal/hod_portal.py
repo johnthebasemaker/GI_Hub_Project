@@ -55,6 +55,12 @@ from database import (
     get_tank_nos,
     add_site_dropdown_value,
     delete_site_dropdown_value,
+    # Phase 7A — Employee Site Binding
+    add_employee,
+    update_employee,
+    list_employees_for_site,
+    # Phase 7C — Cross-Site view notification + indicator
+    notify_cross_site_view,
 )
 from cache_layer import (
     cached_work_types,
@@ -597,6 +603,53 @@ def _render_crosssite_tab(user: dict, site_id: str) -> None:
         if target_site and item_selection:
             sap_code = item_selection.split("]")[0].replace("[", "").strip()
             live_target_df = cached_live_inventory(site_id=target_site)
+
+            # ── Phase 7C — Cross-Site view notification + dual indicator ──
+            # Fires once per (viewer, target_site, calendar day) via the
+            # UNIQUE constraint on cross_site_views. Admin shadowing → silent
+            # (gated inside notify_cross_site_view by role check).
+            # The "viewed item" weaves into the message body to give the
+            # target HOD context about what may be coming in a request.
+            _viewed_item_label = item_selection
+            _just_fired = notify_cross_site_view(
+                user, target_site, viewed_item=_viewed_item_label,
+            )
+            _is_admin_shadow = (user.get("role") or "").lower() == "admin"
+            if not _is_admin_shadow:
+                _banner_tail = (
+                    "has been notified of your view today."
+                    if _just_fired
+                    else "was already notified earlier today."
+                )
+                # (a) Top-of-tab persistent banner — sticky while a target
+                #     is picked; no dismiss button (compliance indicator).
+                st.markdown(
+                    f'<div style="background:{_C["gold"]}14;'
+                    f'border:1px solid {_C["gold"]}66;border-radius:8px;'
+                    f'padding:10px 14px;margin:6px 0 12px 0;">'
+                    f'<span style="color:{_C["gold"]};font-weight:700;">'
+                    f'👁️ You are viewing <code style="color:{_C["gold"]};">'
+                    f'{html.escape(str(target_site))}</code> inventory.</span><br>'
+                    f'<span style="color:{_C["text"]};font-size:12.5px;">'
+                    f'The HOD of <b>{html.escape(str(target_site))}</b> '
+                    f'{_banner_tail}</span></div>',
+                    unsafe_allow_html=True,
+                )
+                # (b) Fixed-position corner pill — survives scroll. Uses
+                #     position:fixed so it sits above Streamlit layout
+                #     without disturbing it. z-index keeps it under modal
+                #     overlays (1000) but above the page chrome.
+                st.markdown(
+                    f'<div style="position:fixed;top:72px;right:22px;'
+                    f'background:{_C["gold"]};color:#0A1628;'
+                    f'font-size:11.5px;font-weight:700;'
+                    f'padding:6px 12px;border-radius:14px;'
+                    f'box-shadow:0 2px 8px rgba(0,0,0,0.35);'
+                    f'z-index:999;letter-spacing:0.02em;">'
+                    f'👁️ Viewing {html.escape(str(target_site))}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
             match = live_target_df[live_target_df["SAP_Code"] == sap_code]
             avail_qty = float(match.iloc[0]["Current_Stock"]) if not match.empty else 0.0
             suggested = min(req_qty, avail_qty)
@@ -2470,6 +2523,134 @@ def _render_qr_approval_tab(user: dict, site_id: str) -> None:
 
 
 # ===========================================================================
+# Phase 7A — 👷 Employees tab  (HOD site-scoped roster)
+# ===========================================================================
+def _render_employees_tab(user: dict, site_id: str) -> None:
+    """Site-scoped employee roster + add/edit forms for the HOD.
+
+    Strict scope: this HOD sees only employees bound to their own site_id.
+    They can add new workers (auto-bound to their site), edit basic info,
+    and change status (active / inactive / suspended). They CANNOT move an
+    employee to another site — that's an Admin-only operation.
+    """
+    actor = (user or {}).get("username", "hod")
+
+    st.markdown(
+        f'<h3 style="color:{BRAND_GOLD};font-weight:700;'
+        f'margin:0 0 4px 0;">👷 Site Employees — <span style="color:{COLOR_OK};">{html.escape(str(site_id))}</span></h3>'
+        f'<p style="color:{TEXT_MUTED};margin:0 0 14px 0;font-size:13px;">'
+        f'Workers bound to this site. Supervisors can only issue material to '
+        f'employees listed here. To transfer an employee to a different site, '
+        f'contact the Admin.</p>',
+        unsafe_allow_html=True,
+    )
+
+    sub_add, sub_roster = st.tabs(["➕ Add / Edit Employee", "👥 Site Roster"])
+
+    # ── ➕ Add / Edit ──────────────────────────────────────────────────────
+    with sub_add:
+        col_add, col_edit = st.columns(2)
+
+        with col_add:
+            st.markdown(f"**➕ Add New Employee to `{site_id}`**")
+            with st.form(f"hod_emp_add_{site_id}", clear_on_submit=True):
+                new_id = st.text_input("ID Number", placeholder="e.g. EMP-1042").strip()
+                new_name = st.text_input("Full Name", placeholder="e.g. Ahmed Ali").strip()
+                new_phone = st.text_input("Phone (WhatsApp)", placeholder="+9665XXXXXXXX").strip()
+                new_dept = st.text_input("Department", placeholder="e.g. Logistics").strip()
+                st.caption(f"📍 Auto-bound to Site: **{site_id}**")
+                if st.form_submit_button("Add Employee", type="primary"):
+                    ok, msg = add_employee(
+                        new_id, new_name, new_phone, new_dept,
+                        created_by=actor, site_id=site_id,
+                    )
+                    if ok:
+                        st.success(f"✅ {msg}")
+                        st.rerun()
+                    else:
+                        st.error(f"🚫 {msg}")
+
+        with col_edit:
+            st.markdown(f"**✏️ Edit Employee at `{site_id}`**")
+            site_roster = list_employees_for_site(site_id, status_filter=None)
+            if site_roster.empty:
+                st.info("No employees bound to this site yet — add one on the left.")
+            else:
+                edit_id = st.selectbox(
+                    "Pick employee to edit",
+                    site_roster["ID_Number"].tolist(),
+                    format_func=lambda i: (
+                        f"{i} — {site_roster[site_roster['ID_Number']==i].iloc[0]['Name']}"
+                    ),
+                    key=f"hod_emp_edit_pick_{site_id}",
+                )
+                _row = site_roster[site_roster["ID_Number"] == edit_id].iloc[0]
+                with st.form(f"hod_emp_edit_{site_id}", clear_on_submit=False):
+                    e_name = st.text_input("Full Name", value=_row["Name"] or "").strip()
+                    e_phone = st.text_input("Phone", value=_row["Phone_Number"] or "").strip()
+                    e_dept = st.text_input("Department", value=_row["Department"] or "").strip()
+                    e_status = st.selectbox(
+                        "Status",
+                        ["active", "inactive", "suspended"],
+                        index=["active", "inactive", "suspended"].index(
+                            (_row["status"] or "active")
+                        ),
+                        help="Mark inactive when a worker leaves your site. "
+                             "Admin handles cross-site transfers.",
+                    )
+                    st.caption(
+                        f"🔒 Site binding (`{site_id}`) cannot be changed by HOD. "
+                        f"Contact Admin for transfers."
+                    )
+                    if st.form_submit_button("Save Changes"):
+                        # Site_ID intentionally NOT passed — HOD cannot move
+                        # an employee out of their own site.
+                        changed = update_employee(
+                            edit_id,
+                            name=e_name or None,
+                            phone=e_phone if e_phone != "" else None,
+                            department=e_dept if e_dept != "" else None,
+                            status=e_status,
+                            updated_by=actor,
+                        )
+                        if changed:
+                            st.success(f"✅ Updated {edit_id}.")
+                            st.rerun()
+                        else:
+                            st.info("No changes detected.")
+
+    # ── 👥 Site Roster ────────────────────────────────────────────────────
+    with sub_roster:
+        status_filter = st.selectbox(
+            "Status filter",
+            ["All", "active", "inactive", "suspended"],
+            key=f"hod_emp_roster_status_{site_id}",
+        )
+        df = list_employees_for_site(
+            site_id,
+            status_filter=None if status_filter == "All" else status_filter,
+        )
+        if df.empty:
+            render_empty_state(
+                icon="👷", title=f"No employees bound to {site_id} yet",
+                hint="Use the ➕ Add tab to add the first worker.",
+            )
+        else:
+            display = df[
+                ["ID_Number", "Name", "Phone_Number", "Department", "status",
+                 "created_by", "created_at", "updated_at"]
+            ].rename(columns={
+                "Phone_Number": "Phone",
+                "status": "Status",
+                "created_by": "Added By",
+                "created_at": "Created",
+                "updated_at": "Updated",
+            })
+            st.dataframe(display, use_container_width=True, hide_index=True)
+            st.caption(f"{len(df)} employee(s) at {site_id}.")
+
+
+# ===========================================================================
 # PAGE  — top-level routing
 # ===========================================================================
 def page_hod_portal(user: dict) -> None:
@@ -2541,7 +2722,10 @@ def page_hod_portal(user: dict) -> None:
         "📬 Pending Receipts", "↩️ Returns", "🧮 Adjustments",
         "📋 Purchase Requests",
         "⚠️ Shelf-Life", "🔔 Notifications",
-        "✅ My Requests", "⚙️ Site Config", "📎 DOC", "🏷️ QR Approval",
+        "✅ My Requests", "⚙️ Site Config",
+        # Phase 7A — site-scoped employee roster (sits next to Site Config)
+        "👷 Employees",
+        "📎 DOC", "🏷️ QR Approval",
         # Phase 3 — Procurement chain: DNs arriving from Warehouse
         "🚚 DN Approvals",
         # Phase 4 — read-only visibility into the procurement chain for this site
@@ -2559,10 +2743,11 @@ def page_hod_portal(user: dict) -> None:
     with tabs[8]: _render_notifications_tab(user, site_id)
     with tabs[9]: _render_my_requests_tab(user, site_id)
     with tabs[10]: _render_site_config_tab(user, site_id)
-    with tabs[11]: _render_doc_tab(user, site_id)
-    with tabs[12]: _render_qr_approval_tab(user, site_id)
-    with tabs[13]: _render_dn_approvals_tab(user, site_id)
-    with tabs[14]: _render_in_transit_tab(user, site_id)
+    with tabs[11]: _render_employees_tab(user, site_id)   # Phase 7A
+    with tabs[12]: _render_doc_tab(user, site_id)
+    with tabs[13]: _render_qr_approval_tab(user, site_id)
+    with tabs[14]: _render_dn_approvals_tab(user, site_id)
+    with tabs[15]: _render_in_transit_tab(user, site_id)
 
 
 # ===========================================================================

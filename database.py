@@ -1328,6 +1328,116 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         if _col not in _ri_cols_6a:
             c.execute(f"ALTER TABLE returnable_items ADD COLUMN {_col} {_ddl}")
 
+    # ── Phase 7A: Employee Site Binding ──────────────────────────────────────
+    # Self-heal Site_ID on employees so the Supervisor Material Request flow
+    # (Phase 7B) can filter the worker dropdown to the supervisor's site.
+    # NULL = legacy / unassigned; Admin backfills via the bulk-assign widget.
+    c.execute("PRAGMA table_info(employees)")
+    _emp_cols_7a = {row[1] for row in c.fetchall()}
+    if "Site_ID" not in _emp_cols_7a:
+        c.execute("ALTER TABLE employees ADD COLUMN Site_ID TEXT")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_employees_site ON employees(Site_ID)")
+
+    # ── Phase 7B: Supervisor Material Request Workflow ───────────────────────
+    # Two new tables (Intent) + Source_Ref self-heal on the consumption ledger
+    # (Actual). The SK approval helper mirrors approved lines into pending_issues
+    # so commit_eod() and the negative-stock guard handle the rest unchanged.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS supervisor_material_requests (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_no           TEXT UNIQUE,
+            Site_ID              TEXT NOT NULL,
+            Worker_ID            TEXT NOT NULL,
+            Worker_Name          TEXT NOT NULL,
+            Job_Tank_Place       TEXT NOT NULL,
+            Old_PPE_Returned     INTEGER NOT NULL,
+            No_Return_Reason     TEXT,
+            requested_by         TEXT NOT NULL,
+            requested_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+            status               TEXT NOT NULL DEFAULT 'pending_sk'
+                                 CHECK(status IN ('pending_sk','approved','rejected','cancelled')),
+            sk_decided_by        TEXT,
+            sk_decided_at        DATETIME,
+            sk_reject_reason     TEXT,
+            posted_pending_ids   TEXT
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS ix_smr_site_status "
+              "ON supervisor_material_requests(Site_ID, status)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_smr_requested_at "
+              "ON supervisor_material_requests(requested_at)")
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS supervisor_material_request_items (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id            INTEGER NOT NULL
+                                  REFERENCES supervisor_material_requests(id),
+            SAP_Code              TEXT NOT NULL,
+            Material_Code         TEXT,
+            Equipment_Description TEXT,
+            UOM                   TEXT,
+            Requested_Qty         REAL NOT NULL,
+            Stock_At_Request      REAL,
+            Available_Flag        INTEGER,
+            SK_Adjusted_Qty       REAL,
+            Notes                 TEXT
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS ix_smr_items_req "
+              "ON supervisor_material_request_items(request_id)")
+
+    # Self-heal Source_Ref on the consumption ledger so intent-vs-actual joins
+    # work even on legacy rows (those just get NULL → not Source_Ref-traceable,
+    # which is correct — they were SK-typed manual entries).
+    for _tbl in ("pending_issues", "consumption"):
+        c.execute(f"PRAGMA table_info({_tbl})")
+        _src_cols = {row[1] for row in c.fetchall()}
+        if "Source_Ref" not in _src_cols:
+            c.execute(f"ALTER TABLE {_tbl} ADD COLUMN Source_Ref TEXT")
+
+    # ── Phase 7C: HOD Cross-Site View notification debounce ──────────────────
+    # UNIQUE(viewer, target_site, view_date) is the entire debounce — INSERT
+    # OR IGNORE returns rowcount=0 on duplicate same-day attempts. No timers,
+    # no race conditions across browser tabs.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS cross_site_views (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            viewer_username TEXT NOT NULL,
+            viewer_site_id  TEXT,
+            target_site_id  TEXT NOT NULL,
+            view_date       TEXT NOT NULL,
+            first_seen_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(viewer_username, target_site_id, view_date)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS ix_csv_target_date "
+              "ON cross_site_views(target_site_id, view_date)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_csv_viewer_date "
+              "ON cross_site_views(viewer_username, view_date)")
+
+    # ── Phase 7E: Form draft recovery (server-side secondary layer) ──────────
+    # Per-user, per-form snapshot of in-flight values. UNIQUE(username, form_id)
+    # → re-save overwrites in place. The client-side localStorage layer
+    # (streamlit-local-storage) is the primary; this table protects against
+    # device swap + browser data wipe + explicit "💾 Save Draft" clicks.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS form_drafts (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            username      TEXT NOT NULL,
+            form_id       TEXT NOT NULL,
+            site_id       TEXT,
+            payload_json  TEXT NOT NULL,
+            created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            expires_at    DATETIME,
+            UNIQUE(username, form_id)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS ix_form_drafts_expires "
+              "ON form_drafts(expires_at)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_form_drafts_user "
+              "ON form_drafts(username)")
+
     conn.commit()
     if _owns_conn:
         conn.close()
@@ -6095,20 +6205,34 @@ def create_po_manual(
 
         conn.commit()
 
-        # Notify Site HOD (in-app + WhatsApp via gate)
+        # Phase 7D — Site-bound PO notification with strict vendor/financial
+        # data masking. Build the payload through build_po_site_notification
+        # which internally enforces hide_prices=True + hide_vendor=True so
+        # there is no leak path. Fan out to BOTH HOD and SK at the
+        # destination site (in-app + WhatsApp via existing po_issued gate).
         try:
-            queue_app_notification(
-                event_key="po_issued",
-                title=f"PO {po_number} issued",
-                body=f"Vendor: {header.get('Vendor_Name') or header.get('Vendor_Code') or '—'}",
-                severity="success",
-                recipient_role="hod",
-                recipient_site=header.get("Site_ID"),
-                link_page="📋 HOD Portal",
-                related_table="purchase_orders",
-                related_ref=po_number,
-                conn=conn,
-            )
+            site_for_notif = header.get("Site_ID")
+            if site_for_notif:
+                summary = build_po_site_notification(po_number, conn=conn)
+                for _role, _link in (("hod", "📋 HOD Portal"),
+                                     ("store_keeper", "📝 Entry Log")):
+                    queue_app_notification(
+                        event_key="po_issued",
+                        title=summary["title"],
+                        body=summary["app_body"],
+                        severity="success",
+                        recipient_role=_role,
+                        recipient_site=site_for_notif,
+                        link_page=_link,
+                        related_table="purchase_orders",
+                        related_ref=po_number,
+                        conn=conn,
+                    )
+                    for _ph in get_site_role_phones(_role, site_for_notif,
+                                                    conn=conn):
+                        fire_whatsapp_event("po_issued", _ph,
+                                            summary["whatsapp_body"],
+                                            conn=conn)
         except Exception:
             pass
 
@@ -6385,9 +6509,23 @@ def list_pos(
             conn.close()
 
 
+PO_VENDOR_MASK_FIELDS = (
+    # Identity
+    "Vendor_Code", "Vendor_Name", "Contact_Person", "Contact_Email",
+    "Mobile", "Our_Email",
+    # Commercial terms
+    "Inco_Terms", "Payment_Terms", "Quotation_No", "Quotation_Date",
+    "Your_Reference", "Our_Reference",
+    # Financial totals
+    "Freight_Charges", "Handling_Charges", "Discount_Amount",
+    "Total_Amount", "Amount_In_Words",
+)
+
+
 def get_po_detail(
     po_number: str,
     hide_prices: bool = False,
+    hide_vendor: bool = False,
     conn: sqlite3.Connection = None,
 ) -> dict:
     """Return {'header': dict, 'items': DataFrame, 'shipments': DataFrame,
@@ -6395,7 +6533,15 @@ def get_po_detail(
 
     hide_prices=True blanks Unit_Price + Total_Price columns on items —
     that's what the Warehouse Portal must see (per spec: warehouse never
-    sees prices)."""
+    sees prices).
+
+    Phase 7D — hide_vendor=True additionally blanks the 17 commercial /
+    vendor / financial header fields listed in PO_VENDOR_MASK_FIELDS. Used
+    by build_po_site_notification() so the destination-site notification
+    never leaks supplier identity or commercial agreement details.
+    PO_Type and PO_Date are intentionally kept visible — operational
+    tracking, not commercial.
+    """
     _owns = conn is None
     if _owns:
         conn = get_connection()
@@ -6408,6 +6554,11 @@ def get_po_detail(
         # Don't return the heavy attachment_blob in the dict — caller fetches it
         # separately if it needs it.
         header.pop("attachment_blob", None)
+
+        if hide_vendor and header:
+            for _f in PO_VENDOR_MASK_FIELDS:
+                if _f in header:
+                    header[_f] = None
 
         items = pd.read_sql_query(
             "SELECT id, line_no, Material_Code, Description, Qty, UOM, "
@@ -6445,6 +6596,113 @@ def get_po_detail(
     finally:
         if _owns:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 7D — Site-bound PO notification builder (strict data masking)
+# ---------------------------------------------------------------------------
+PO_SITE_NOTIFY_MAX_LINES = 5  # top-N items shown; rest rolled into "and N more"
+
+
+def build_po_site_notification(po_number: str, *,
+                               conn: sqlite3.Connection = None) -> dict:
+    """Build the masked operational summary for site-bound PO notifications.
+
+    Internally enforces BOTH masks (hide_prices=True, hide_vendor=True) so
+    the message body can never leak vendor identity, commercial terms, or
+    financial figures — even if the caller forgets to pass the flags.
+
+    Returns {
+        "site_id":           str | None,
+        "title":             str,
+        "app_body":          str,   # multi-line, used by in-app notification
+        "whatsapp_body":     str,   # spec Q4(a): mirrors app_body line-for-line
+        "pr_numbers":        str,   # distinct PRs across items, comma-joined
+        "expected_delivery": str,
+        "item_count":        int,
+        "total_qty":         float,
+    }
+
+    Caller is responsible for skipping notifications when site_id is falsy.
+    """
+    detail = get_po_detail(po_number, hide_prices=True, hide_vendor=True,
+                           conn=conn)
+    header = detail.get("header") or {}
+    items  = detail.get("items")
+    site_id = header.get("Site_ID") or None
+    expected_delivery = header.get("Expected_Delivery") or "—"
+
+    # Distinct list of PR_Numbers across line items (spec Q2(b)).
+    pr_set: list[str] = []
+    if items is not None and not items.empty:
+        for v in items["PR_Number"].dropna().astype(str).tolist():
+            v = v.strip()
+            if v and v not in pr_set:
+                pr_set.append(v)
+    pr_numbers = ", ".join(pr_set) if pr_set else (header.get("PR_Number") or "—")
+
+    item_count = int(0 if items is None else len(items))
+    total_qty = float(0.0 if items is None or items.empty
+                      else items["Qty"].fillna(0).sum())
+
+    # Per-line summary: top 5 lines, then "… and N more" overflow.
+    line_strs: list[str] = []
+    if items is not None and not items.empty:
+        head = items.head(PO_SITE_NOTIFY_MAX_LINES)
+        for _, row in head.iterrows():
+            mc  = str(row.get("Material_Code") or "—").strip() or "—"
+            desc = str(row.get("Description") or "").strip()
+            qty = row.get("Qty") or 0
+            uom = str(row.get("UOM") or "").strip()
+            try:
+                qty_str = f"{float(qty):g}"
+            except (TypeError, ValueError):
+                qty_str = str(qty)
+            head_line = f"• {mc} — {desc} — {qty_str}"
+            if uom:
+                head_line += f" {uom}"
+            line_strs.append(head_line)
+        overflow = item_count - len(head)
+        if overflow > 0:
+            line_strs.append(f"… and {overflow} more line(s)")
+
+    title = f"PO {po_number} issued for delivery to {site_id or '—'}"
+
+    app_body_lines = [
+        f"PO Number: {po_number}",
+        f"PR Number(s): {pr_numbers}",
+        f"Expected Delivery: {expected_delivery}",
+        f"Items: {item_count} line(s) · Total Qty: {total_qty:g}",
+    ]
+    if line_strs:
+        app_body_lines.append("")
+        app_body_lines.extend(line_strs)
+    app_body = "\n".join(app_body_lines)
+
+    # Spec Q4(a): WhatsApp mirrors line-for-line. Add a 🧾 header + bolden
+    # the title field with WhatsApp's *asterisk* convention; everything else
+    # stays identical so warehouse staff get the exact item breakdown.
+    wa_body_lines = [
+        f"🧾 *PO {po_number} issued — delivery to {site_id or '—'}*",
+        f"PR Number(s): {pr_numbers}",
+        f"Expected Delivery: {expected_delivery}",
+        f"Items: *{item_count}* line(s) · Total Qty: *{total_qty:g}*",
+    ]
+    if line_strs:
+        wa_body_lines.append("")
+        wa_body_lines.extend(line_strs)
+    whatsapp_body = "\n".join(wa_body_lines)
+
+    return {
+        "site_id":           site_id,
+        "title":             title,
+        "app_body":          app_body,
+        "whatsapp_body":     whatsapp_body,
+        "pr_numbers":        pr_numbers,
+        "expected_delivery": expected_delivery,
+        "item_count":        item_count,
+        "total_qty":         total_qty,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -8432,22 +8690,32 @@ def add_employee(
     department: str = "",
     created_by: str = "system",
     *,
+    site_id: str = None,
     conn: sqlite3.Connection = None,
 ) -> tuple[bool, str]:
-    """Insert one employee. Returns (False, msg) on duplicate ID_Number — never raises."""
+    """Insert one employee. Returns (False, msg) on duplicate ID_Number — never raises.
+
+    Phase 7A: optional `site_id` binds the employee to a Site. NULL = unassigned
+    (legacy default; Admin backfills via the bulk-assign widget).
+    """
     id_number = (id_number or "").strip()
     name = (name or "").strip()
     if not id_number or not name:
         return False, "ID_Number and Name are required."
+    site_clean = (site_id or "").strip() or None
     _c, _owns = _conn_ctx_6a(conn)
     try:
         _c.execute(
-            "INSERT INTO employees (ID_Number, Name, Phone_Number, Department, created_by) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (id_number, name, (phone or "").strip(), (department or "").strip(), created_by),
+            "INSERT INTO employees (ID_Number, Name, Phone_Number, Department, Site_ID, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (id_number, name, (phone or "").strip(), (department or "").strip(),
+             site_clean, created_by),
         )
         _c.commit()
-        log_audit_action(created_by, "EMPLOYEE_ADD", "employees", f"{id_number} ({name})")
+        log_audit_action(
+            created_by, "EMPLOYEE_ADD", "employees",
+            f"{id_number} ({name}) site={site_clean or '—'}",
+        )
         return True, f"Employee {id_number} added."
     except sqlite3.IntegrityError:
         return False, f"Employee with ID_Number '{id_number}' already exists."
@@ -8463,10 +8731,16 @@ def update_employee(
     phone: str = None,
     department: str = None,
     status: str = None,
+    site_id: str = None,
     updated_by: str = "system",
     conn: sqlite3.Connection = None,
 ) -> bool:
-    """Update any subset of fields for an existing employee. True if a row changed."""
+    """Update any subset of fields for an existing employee. True if a row changed.
+
+    Phase 7A: pass `site_id=""` (empty string) to clear the site binding back
+    to NULL. Any non-empty string sets the binding. Pass `site_id=None` (the
+    default) to leave Site_ID untouched.
+    """
     sets, params = [], []
     if name is not None:
         sets.append("Name = ?"); params.append(name.strip())
@@ -8478,6 +8752,9 @@ def update_employee(
         if status not in ("active", "inactive", "suspended"):
             return False
         sets.append("status = ?"); params.append(status)
+    if site_id is not None:
+        sets.append("Site_ID = ?")
+        params.append(site_id.strip() or None)
     if not sets:
         return False
     sets.append("updated_at = CURRENT_TIMESTAMP")
@@ -8498,19 +8775,82 @@ def update_employee(
 def list_employees(
     *,
     status_filter: str = None,
+    site_id_filter: str = None,
     conn: sqlite3.Connection = None,
 ) -> pd.DataFrame:
-    """Return all employees (optionally filter by status) as a DataFrame."""
+    """Return all employees (optionally filter by status and/or Site_ID) as a DataFrame.
+
+    Phase 7A: `site_id_filter` matches Site_ID exactly. Pass the literal string
+    `"__UNASSIGNED__"` to fetch employees whose Site_ID IS NULL — used by the
+    Admin bulk-assign banner.
+    """
     _c, _owns = _conn_ctx_6a(conn)
     try:
-        q = ("SELECT id, ID_Number, Name, Phone_Number, Department, status, "
+        q = ("SELECT id, ID_Number, Name, Phone_Number, Department, Site_ID, status, "
              "created_by, created_at, updated_at FROM employees")
-        params = ()
+        clauses, params = [], []
         if status_filter:
-            q += " WHERE status = ?"
-            params = (status_filter,)
+            clauses.append("status = ?"); params.append(status_filter)
+        if site_id_filter is not None:
+            if site_id_filter == "__UNASSIGNED__":
+                clauses.append("Site_ID IS NULL")
+            else:
+                clauses.append("Site_ID = ?"); params.append(site_id_filter)
+        if clauses:
+            q += " WHERE " + " AND ".join(clauses)
         q += " ORDER BY Name COLLATE NOCASE ASC"
-        return pd.read_sql_query(q, _c, params=params)
+        return pd.read_sql_query(q, _c, params=tuple(params))
+    finally:
+        if _owns:
+            _c.close()
+
+
+def list_employees_for_site(
+    site_id: str,
+    *,
+    status_filter: str = "active",
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Convenience wrapper used by Phase 7B's Supervisor Material Request form.
+
+    Returns only employees bound to `site_id`. Default status_filter='active'
+    excludes deactivated/suspended workers from the supervisor's picker.
+    """
+    return list_employees(
+        status_filter=status_filter,
+        site_id_filter=site_id,
+        conn=conn,
+    )
+
+
+def bulk_assign_employees_to_site(
+    id_numbers: list[str],
+    site_id: str,
+    *,
+    updated_by: str = "system",
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Phase 7A — Admin bulk-assigns N employees to a single Site_ID.
+
+    Returns the number of rows updated. Used by the red "unassigned" banner.
+    """
+    if not id_numbers or not site_id:
+        return 0
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        placeholders = ",".join("?" * len(id_numbers))
+        cur = _c.execute(
+            f"UPDATE employees SET Site_ID = ?, updated_at = CURRENT_TIMESTAMP "
+            f"WHERE ID_Number IN ({placeholders})",
+            (site_id.strip(), *id_numbers),
+        )
+        _c.commit()
+        if cur.rowcount:
+            log_audit_action(
+                updated_by, "EMPLOYEE_BULK_SITE_ASSIGN", "employees",
+                f"site={site_id} count={cur.rowcount}",
+            )
+        return cur.rowcount
     finally:
         if _owns:
             _c.close()
@@ -8566,6 +8906,9 @@ def import_employees_csv(
         return {"inserted": 0, "updated": 0, "skipped": 0,
                 "errors": [f"CSV missing required column(s): {', '.join(missing)}"]}
 
+    # Phase 7A — optional Site_ID column. Absent column = legacy CSV; rows get NULL.
+    site_col = lower_map.get("site_id")
+
     _c, _owns = _conn_ctx_6a(conn)
     result = {"inserted": 0, "updated": 0, "skipped": 0, "errors": []}
     try:
@@ -8574,32 +8917,38 @@ def import_employees_csv(
             name = str(row[lower_map["name"]]).strip()
             phone = str(row[lower_map["phone_number"]]).strip()
             dept = str(row[lower_map["department"]]).strip()
+            site = str(row[site_col]).strip() if site_col else ""
+            site = site or None
             if not id_number or not name:
                 result["skipped"] += 1
                 result["errors"].append(f"Row {idx + 2}: missing ID_Number or Name.")
                 continue
             # Check whether row exists AND whether any non-key field would change.
             cur = _c.execute(
-                "SELECT Name, Phone_Number, Department FROM employees WHERE ID_Number = ?",
+                "SELECT Name, Phone_Number, Department, Site_ID FROM employees WHERE ID_Number = ?",
                 (id_number,),
             )
             existing = cur.fetchone()
             if existing is None:
                 _c.execute(
-                    "INSERT INTO employees (ID_Number, Name, Phone_Number, Department, created_by) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (id_number, name, phone, dept, created_by),
+                    "INSERT INTO employees (ID_Number, Name, Phone_Number, Department, Site_ID, created_by) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (id_number, name, phone, dept, site, created_by),
                 )
                 result["inserted"] += 1
             else:
-                ex_name, ex_phone, ex_dept = existing
-                if (ex_name, ex_phone or "", ex_dept or "") == (name, phone, dept):
+                ex_name, ex_phone, ex_dept, ex_site = existing
+                # CSV without a Site_ID column never overwrites an existing binding.
+                effective_site = site if site_col else ex_site
+                if (ex_name, ex_phone or "", ex_dept or "", ex_site) == (
+                    name, phone, dept, effective_site,
+                ):
                     result["skipped"] += 1
                 else:
                     _c.execute(
                         "UPDATE employees SET Name=?, Phone_Number=?, Department=?, "
-                        "updated_at=CURRENT_TIMESTAMP WHERE ID_Number = ?",
-                        (name, phone, dept, id_number),
+                        "Site_ID=?, updated_at=CURRENT_TIMESTAMP WHERE ID_Number = ?",
+                        (name, phone, dept, effective_site, id_number),
                     )
                     result["updated"] += 1
         _c.commit()
@@ -9028,3 +9377,991 @@ def _fire_one_returnable_reminder(
     if offset == 24:
         for ph in get_site_role_phones("supervisor", site_id, conn=conn):
             fire_whatsapp_event(event_key, ph, msg, conn=conn)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 7B — Supervisor Material Request workflow
+# ═══════════════════════════════════════════════════════════════════════════
+# Intent vs Actual ledger pattern:
+#   1. Supervisor submits → INSERT supervisor_material_requests (header) +
+#      supervisor_material_request_items (lines, with stock snapshot).
+#   2. SK reviews → may edit / delete / add notes on lines.
+#   3. SK approves → mirror each (non-zero adjusted-qty) line into the
+#      existing pending_issues table with status='pending_hod'. The HOD's
+#      existing EOD commit flow handles the rest — zero changes to commit_eod
+#      or the negative-stock validator. Source_Ref ties the consumption row
+#      back to the originating request line for intent-vs-actual reports.
+#   4. Header row is NEVER deleted — preserves the original supervisor intent
+#      forever for variance analysis.
+# ═══════════════════════════════════════════════════════════════════════════
+import json as _json_7b
+
+
+def generate_smr_request_no(conn: sqlite3.Connection = None) -> str:
+    """Generate SMR-YYYYMMDD-NNNN. NNNN resets per local-day, global across sites."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        today = datetime.date.today().strftime("%Y%m%d")
+        prefix = f"SMR-{today}-"
+        row = conn.execute(
+            "SELECT request_no FROM supervisor_material_requests "
+            "WHERE request_no LIKE ? ORDER BY id DESC LIMIT 1",
+            (f"{prefix}%",),
+        ).fetchone()
+        next_n = 1
+        if row and row[0]:
+            try:
+                next_n = int(str(row[0]).split("-")[-1]) + 1
+            except (ValueError, IndexError):
+                next_n = 1
+        return f"{prefix}{next_n:04d}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def _smr_snapshot_stock(site_id: str, sap_code: str,
+                        conn: sqlite3.Connection) -> float:
+    """Inline stock lookup at request-time. Returns 0.0 if item not in inventory
+    or no rows. Uses the same identity math as load_live_inventory but scoped
+    to a single SAP_Code for speed."""
+    row = conn.execute("""
+        SELECT
+            COALESCE(i.Opening_Stock, 0)
+          + COALESCE((SELECT SUM(Quantity) FROM receipts
+                       WHERE SAP_Code = i.SAP_Code AND Site_ID = ?), 0)
+          - COALESCE((SELECT SUM(Quantity) FROM consumption
+                       WHERE SAP_Code = i.SAP_Code AND Site_ID = ?), 0)
+          - COALESCE((SELECT SUM(Quantity) FROM returns
+                       WHERE SAP_Code = i.SAP_Code AND Site_ID = ?), 0)
+              AS stock
+        FROM inventory i
+        WHERE TRIM(i.SAP_Code) = TRIM(?)
+        LIMIT 1
+    """, (site_id, site_id, site_id, sap_code)).fetchone()
+    return float(row[0]) if row and row[0] is not None else 0.0
+
+
+def create_supervisor_request(
+    *,
+    site_id: str,
+    worker_id: str,
+    job_tank_place: str,
+    old_ppe_returned: int,
+    no_return_reason: str,
+    items: list[dict],
+    supervisor_username: str,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Insert SMR header + N item rows in a single transaction.
+
+    items: list of {"SAP_Code": str, "Requested_Qty": float, "Notes": str (opt)}.
+    Returns (True, request_no) or (False, error_message).
+    """
+    job_tank_place = (job_tank_place or "").strip()
+    if not site_id:
+        return False, "Site is required."
+    if not worker_id:
+        return False, "Worker is required."
+    if not job_tank_place:
+        return False, "Job / Tank / Place is required."
+    if old_ppe_returned not in (0, 1):
+        return False, "Old PPE Returned must be Yes or No."
+    if old_ppe_returned == 0 and not (no_return_reason or "").strip():
+        return False, "Please give a reason — Old PPE not returned."
+    if not items:
+        return False, "Add at least one item."
+
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        # Worker must exist AND be bound to this site AND be active.
+        wrow = conn.execute(
+            "SELECT Name, status, Site_ID FROM employees WHERE ID_Number = ?",
+            (worker_id,),
+        ).fetchone()
+        if not wrow:
+            return False, f"Worker '{worker_id}' not in employee master."
+        worker_name, worker_status, worker_site = wrow
+        if worker_status != "active":
+            return False, f"Worker '{worker_id}' is {worker_status}, not active."
+        if worker_site != site_id:
+            return False, (
+                f"Worker '{worker_id}' is bound to site {worker_site or '—'}, "
+                f"not {site_id}. Ask Admin to transfer."
+            )
+
+        # Pre-fetch inventory rows for all SAP_Codes referenced (single query).
+        sap_codes = [str(it.get("SAP_Code") or "").strip() for it in items]
+        if any(not s for s in sap_codes):
+            return False, "Every item needs an SAP_Code."
+        placeholders = ",".join("?" * len(sap_codes))
+        inv_rows = conn.execute(
+            f"SELECT SAP_Code, Material_Code, Equipment_Description, UOM "
+            f"FROM inventory WHERE SAP_Code IN ({placeholders})",
+            sap_codes,
+        ).fetchall()
+        inv_lookup = {str(r[0]).strip(): r for r in inv_rows}
+        missing = [s for s in sap_codes if s not in inv_lookup]
+        if missing:
+            return False, f"Unknown SAP_Code(s): {', '.join(missing)}"
+
+        request_no = generate_smr_request_no(conn=conn)
+        cur = conn.execute(
+            "INSERT INTO supervisor_material_requests "
+            "(request_no, Site_ID, Worker_ID, Worker_Name, Job_Tank_Place, "
+            " Old_PPE_Returned, No_Return_Reason, requested_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (request_no, site_id, worker_id, worker_name, job_tank_place,
+             int(old_ppe_returned), (no_return_reason or "").strip() or None,
+             supervisor_username),
+        )
+        req_id = cur.lastrowid
+
+        for it in items:
+            sap = str(it.get("SAP_Code") or "").strip()
+            qty = float(it.get("Requested_Qty") or 0)
+            if qty <= 0:
+                conn.rollback()
+                return False, f"Quantity for {sap} must be > 0."
+            inv = inv_lookup[sap]
+            stock = _smr_snapshot_stock(site_id, sap, conn)
+            available = 1 if stock >= qty else 0
+            conn.execute(
+                "INSERT INTO supervisor_material_request_items "
+                "(request_id, SAP_Code, Material_Code, Equipment_Description, "
+                " UOM, Requested_Qty, Stock_At_Request, Available_Flag, Notes) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (req_id, sap, inv[1], inv[2], inv[3],
+                 qty, stock, available, (it.get("Notes") or "").strip() or None),
+            )
+
+        conn.commit()
+        log_audit_action(
+            supervisor_username, "SMR_SUBMIT",
+            "supervisor_material_requests",
+            f"{request_no} site={site_id} worker={worker_id} items={len(items)}",
+        )
+
+        # Notify every SK at this site.
+        queue_app_notification(
+            event_key="smr_submitted",
+            title=f"New material request — {request_no}",
+            body=(f"Supervisor {supervisor_username} requested {len(items)} item(s) "
+                  f"for worker {worker_name} ({worker_id}) at {job_tank_place}."),
+            severity="info",
+            recipient_role="store_keeper",
+            recipient_site=site_id,
+            related_table="supervisor_material_requests",
+            related_ref=request_no,
+            conn=conn,
+        )
+        for ph in get_site_role_phones("store_keeper", site_id, conn=conn):
+            fire_whatsapp_event(
+                "smr_submitted", ph,
+                (f"📦 *NEW MATERIAL REQUEST*\n"
+                 f"Ref: *{request_no}*\n"
+                 f"Site: {site_id}\n"
+                 f"Worker: {worker_name} ({worker_id})\n"
+                 f"Job/Tank: {job_tank_place}\n"
+                 f"Items: {len(items)}\n\n"
+                 f"Open the Store Keeper Portal → 🛒 Supervisor Requests."),
+                conn=conn,
+            )
+        return True, request_no
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_supervisor_requests(
+    site_id: str = None,
+    status: str = None,
+    requested_by: str = None,
+    days: int = None,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Return SMR headers as a DataFrame, auto-localized timestamps."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        q = ("SELECT id, request_no, Site_ID, Worker_ID, Worker_Name, "
+             "       Job_Tank_Place, Old_PPE_Returned, No_Return_Reason, "
+             "       requested_by, requested_at, status, "
+             "       sk_decided_by, sk_decided_at, sk_reject_reason, "
+             "       posted_pending_ids "
+             "FROM supervisor_material_requests")
+        clauses, params = [], []
+        if site_id:
+            clauses.append("Site_ID = ?"); params.append(site_id)
+        if status:
+            clauses.append("status = ?"); params.append(status)
+        if requested_by:
+            clauses.append("requested_by = ?"); params.append(requested_by)
+        if days:
+            clauses.append("requested_at >= datetime('now', ?)")
+            params.append(f"-{int(days)} days")
+        if clauses:
+            q += " WHERE " + " AND ".join(clauses)
+        q += " ORDER BY requested_at DESC"
+        df = pd.read_sql_query(q, conn, params=tuple(params))
+        from config import auto_localize_timestamps as _atz
+        return _atz(df)
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_supervisor_request(
+    request_id: int,
+    conn: sqlite3.Connection = None,
+) -> tuple[dict | None, pd.DataFrame]:
+    """Return (header_dict, items_df). header_dict is None if missing."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT * FROM supervisor_material_requests WHERE id = ?",
+            (request_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None, pd.DataFrame()
+        header = dict(zip([d[0] for d in cur.description], row))
+        items = pd.read_sql_query(
+            "SELECT * FROM supervisor_material_request_items "
+            "WHERE request_id = ? ORDER BY id ASC",
+            conn, params=(request_id,),
+        )
+        return header, items
+    finally:
+        if _owns:
+            conn.close()
+
+
+def update_supervisor_request_item(
+    item_id: int,
+    *,
+    requested_qty: float = None,
+    sk_adjusted_qty: float = None,
+    notes: str = None,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """SK edits a single item BEFORE approval. Refuses if parent request
+    is no longer pending_sk."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT r.status FROM supervisor_material_request_items i "
+            "JOIN supervisor_material_requests r ON r.id = i.request_id "
+            "WHERE i.id = ?",
+            (item_id,),
+        ).fetchone()
+        if not row or row[0] != "pending_sk":
+            return False
+        sets, params = [], []
+        if requested_qty is not None:
+            sets.append("Requested_Qty = ?"); params.append(float(requested_qty))
+        if sk_adjusted_qty is not None:
+            sets.append("SK_Adjusted_Qty = ?"); params.append(float(sk_adjusted_qty))
+        if notes is not None:
+            sets.append("Notes = ?"); params.append((notes or "").strip() or None)
+        if not sets:
+            return False
+        params.append(item_id)
+        conn.execute(
+            f"UPDATE supervisor_material_request_items SET {', '.join(sets)} "
+            f"WHERE id = ?", params,
+        )
+        conn.commit()
+        return True
+    finally:
+        if _owns:
+            conn.close()
+
+
+def delete_supervisor_request_item(
+    item_id: int,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """SK drops a line pre-approval. Refuses if request no longer pending_sk."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT r.status FROM supervisor_material_request_items i "
+            "JOIN supervisor_material_requests r ON r.id = i.request_id "
+            "WHERE i.id = ?",
+            (item_id,),
+        ).fetchone()
+        if not row or row[0] != "pending_sk":
+            return False
+        conn.execute("DELETE FROM supervisor_material_request_items WHERE id = ?",
+                     (item_id,))
+        conn.commit()
+        return True
+    finally:
+        if _owns:
+            conn.close()
+
+
+def cancel_supervisor_request(
+    request_id: int,
+    by_username: str,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Supervisor cancels their own pending request. Refuses if not pending_sk."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE supervisor_material_requests "
+            "SET status = 'cancelled', sk_decided_by = ?, "
+            "    sk_decided_at = CURRENT_TIMESTAMP "
+            "WHERE id = ? AND status = 'pending_sk'",
+            (by_username, request_id),
+        )
+        conn.commit()
+        if cur.rowcount:
+            log_audit_action(by_username, "SMR_CANCEL",
+                             "supervisor_material_requests", str(request_id))
+            return True
+        return False
+    finally:
+        if _owns:
+            conn.close()
+
+
+def approve_supervisor_request(
+    request_id: int,
+    sk_username: str,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Mirror approved lines into pending_issues (status='pending_hod') and
+    flip the SMR header to 'approved'. Idempotent — second call refused.
+
+    SK_Adjusted_Qty=0 → line skipped (auto-delete semantics, per spec).
+    Returns (True, msg) or (False, err)."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        header, items = get_supervisor_request(request_id, conn=conn)
+        if not header:
+            return False, "Request not found."
+        if header["status"] != "pending_sk":
+            return False, f"Request already {header['status']} — cannot approve."
+        if items.empty:
+            return False, "No items to approve."
+
+        c = conn.cursor()
+        c.execute("PRAGMA table_info(pending_issues)")
+        existing_cols = {r[1] for r in c.fetchall()}
+
+        site_id     = header["Site_ID"]
+        worker_name = header["Worker_Name"]
+        job_tank    = header["Job_Tank_Place"]
+        ppe_flag    = "Y" if int(header["Old_PPE_Returned"]) else "N"
+        ppe_reason  = (header.get("No_Return_Reason") or "").strip()
+        today_iso   = datetime.date.today().isoformat()
+        request_no  = header["request_no"]
+
+        posted_ids = []
+        for _, it in items.iterrows():
+            # Auto-exclude SK_Adjusted_Qty == 0 (treated as delete).
+            adj = it.get("SK_Adjusted_Qty")
+            if adj is not None and not pd.isna(adj) and float(adj) == 0.0:
+                continue
+            qty = float(adj if (adj is not None and not pd.isna(adj))
+                        else it["Requested_Qty"])
+            if qty <= 0:
+                continue
+
+            remarks = (
+                f"SMR {request_no} · {job_tank} · PPE returned: {ppe_flag}"
+                + (f" · Reason: {ppe_reason}" if ppe_flag == "N" and ppe_reason else "")
+            )
+            payload = {
+                "Date":       today_iso,
+                "SAP_Code":   it["SAP_Code"],
+                "Quantity":   qty,
+                "Work_Type":  "SUPERVISOR_REQUEST",
+                "Remarks":    remarks,
+                "Issued_By":  sk_username,
+                "Issued_To":  worker_name,
+                "Tank_No":    job_tank,
+                "Site_ID":    site_id,
+                "status":     "pending_hod",
+                "Source_Ref": f"SMR:{request_no}:{int(it['id'])}",
+            }
+            payload = {k: v for k, v in payload.items() if k in existing_cols}
+            cols = list(payload.keys())
+            phs  = ", ".join(["?"] * len(cols))
+            cur = c.execute(
+                f"INSERT INTO pending_issues ({', '.join(cols)}) VALUES ({phs})",
+                [payload[k] for k in cols],
+            )
+            posted_ids.append(int(cur.lastrowid))
+
+        if not posted_ids:
+            conn.rollback()
+            return False, "Nothing to post — every line was zeroed-out or invalid."
+
+        conn.execute(
+            "UPDATE supervisor_material_requests "
+            "SET status = 'approved', sk_decided_by = ?, "
+            "    sk_decided_at = CURRENT_TIMESTAMP, posted_pending_ids = ? "
+            "WHERE id = ?",
+            (sk_username, _json_7b.dumps(posted_ids), request_id),
+        )
+        conn.commit()
+
+        log_audit_action(
+            sk_username, "SMR_APPROVE",
+            "supervisor_material_requests",
+            f"{request_no} → {len(posted_ids)} pending_issues rows",
+        )
+
+        # Notify HOD at site + the originating supervisor.
+        queue_app_notification(
+            event_key="smr_approved",
+            title=f"Material request approved — {request_no}",
+            body=f"SK {sk_username} posted {len(posted_ids)} line(s) to EOD review.",
+            severity="success",
+            recipient_role="hod",
+            recipient_site=site_id,
+            related_table="supervisor_material_requests",
+            related_ref=request_no,
+            conn=conn,
+        )
+        queue_app_notification(
+            event_key="smr_approved",
+            title=f"Your request was approved — {request_no}",
+            body=f"SK {sk_username} approved {len(posted_ids)} item(s) for {worker_name}.",
+            severity="success",
+            recipient_user=header["requested_by"],
+            related_table="supervisor_material_requests",
+            related_ref=request_no,
+            conn=conn,
+        )
+        for ph in get_site_role_phones("hod", site_id, conn=conn):
+            fire_whatsapp_event(
+                "smr_approved", ph,
+                (f"✅ *MATERIAL REQUEST APPROVED*\n"
+                 f"Ref: *{request_no}*\n"
+                 f"Site: {site_id} · Worker: {worker_name}\n"
+                 f"Lines posted to EOD queue: {len(posted_ids)}\n"
+                 f"Open HOD Portal → 📤 EOD Commit when ready."),
+                conn=conn,
+            )
+        sup_phone = get_phone_by_username(header["requested_by"])
+        if sup_phone:
+            fire_whatsapp_event(
+                "smr_approved", sup_phone,
+                (f"✅ *YOUR REQUEST {request_no} APPROVED*\n"
+                 f"{len(posted_ids)} line(s) approved by SK {sk_username}."),
+                conn=conn,
+            )
+
+        return True, f"Approved — {len(posted_ids)} line(s) posted to EOD queue."
+    finally:
+        if _owns:
+            conn.close()
+
+
+def reject_supervisor_request(
+    request_id: int,
+    sk_username: str,
+    reason: str,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Flip the SMR header to 'rejected'. Mandatory reason. Idempotent."""
+    reason = (reason or "").strip()
+    if not reason:
+        return False, "Rejection reason is required."
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        header, _ = get_supervisor_request(request_id, conn=conn)
+        if not header:
+            return False, "Request not found."
+        if header["status"] != "pending_sk":
+            return False, f"Request already {header['status']}."
+        conn.execute(
+            "UPDATE supervisor_material_requests "
+            "SET status = 'rejected', sk_decided_by = ?, "
+            "    sk_decided_at = CURRENT_TIMESTAMP, sk_reject_reason = ? "
+            "WHERE id = ?",
+            (sk_username, reason, request_id),
+        )
+        conn.commit()
+        log_audit_action(
+            sk_username, "SMR_REJECT",
+            "supervisor_material_requests",
+            f"{header['request_no']} reason={reason[:80]}",
+        )
+        # Notify supervisor.
+        queue_app_notification(
+            event_key="smr_rejected",
+            title=f"Material request rejected — {header['request_no']}",
+            body=f"SK {sk_username}: {reason}",
+            severity="warning",
+            recipient_user=header["requested_by"],
+            related_table="supervisor_material_requests",
+            related_ref=header["request_no"],
+            conn=conn,
+        )
+        sup_phone = get_phone_by_username(header["requested_by"])
+        if sup_phone:
+            fire_whatsapp_event(
+                "smr_rejected", sup_phone,
+                (f"❌ *REQUEST REJECTED — {header['request_no']}*\n"
+                 f"By: SK {sk_username}\nReason: {reason}"),
+                conn=conn,
+            )
+        return True, "Request rejected."
+    finally:
+        if _owns:
+            conn.close()
+
+
+def report_supervisor_intent_vs_actual(
+    site_id: str | None = None,
+    days: int = 30,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Intent vs Actual report — joins approved SMR lines back to the
+    consumption ledger via Source_Ref. Variance column is computed as
+    (Actual - Requested) / Requested.
+
+    Each row = one approved SMR line, with the eventually-consumed qty.
+    Lines staged but not yet committed (still in pending_issues) show
+    Actual_Qty = NULL → 'Not yet committed' downstream.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        clauses = ["r.status = 'approved'"]
+        params = []
+        if site_id:
+            clauses.append("r.Site_ID = ?"); params.append(site_id)
+        if days:
+            clauses.append("r.requested_at >= datetime('now', ?)")
+            params.append(f"-{int(days)} days")
+        where = " AND ".join(clauses)
+
+        q = f"""
+            SELECT
+              r.request_no                                AS Request_No,
+              r.Site_ID                                   AS Site_ID,
+              r.requested_by                              AS Supervisor,
+              r.Worker_Name                               AS Worker,
+              r.Job_Tank_Place                            AS Job_Tank,
+              r.requested_at                              AS Requested_At,
+              r.sk_decided_at                             AS Approved_At,
+              i.SAP_Code                                  AS SAP_Code,
+              i.Material_Code                             AS Material_Code,
+              i.Equipment_Description                     AS Description,
+              i.UOM                                       AS UOM,
+              i.Requested_Qty                             AS Requested_Qty,
+              COALESCE(i.SK_Adjusted_Qty, i.Requested_Qty) AS Approved_Qty,
+              i.Stock_At_Request                          AS Stock_At_Request,
+              ('SMR:' || r.request_no || ':' || i.id)    AS Source_Ref,
+              (
+                SELECT SUM(c.Quantity) FROM consumption c
+                WHERE c.Source_Ref = ('SMR:' || r.request_no || ':' || i.id)
+              )                                           AS Actual_Qty
+            FROM supervisor_material_requests r
+            JOIN supervisor_material_request_items i ON i.request_id = r.id
+            WHERE {where}
+            ORDER BY r.requested_at DESC, i.id ASC
+        """
+        df = pd.read_sql_query(q, conn, params=tuple(params))
+        if not df.empty:
+            df["Variance_Pct"] = df.apply(
+                lambda r: (
+                    None if pd.isna(r["Actual_Qty"]) or not r["Requested_Qty"]
+                    else round(100.0 * (float(r["Actual_Qty"]) - float(r["Requested_Qty"]))
+                               / float(r["Requested_Qty"]), 1)
+                ),
+                axis=1,
+            )
+        from config import auto_localize_timestamps as _atz
+        return _atz(df)
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_open_returnables_for_employee(
+    employee_id: str,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Phase 7B side-panel — SK reviewing an SMR sees the worker's open tool
+    loans (returnable items not yet returned). Spans BOTH the CV-loan path
+    (cv_employee_id) and the manual-loan path (borrower_name match by name).
+    Empty df if none."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        # Resolve worker name once so we can match the manual-loan path too.
+        nrow = conn.execute(
+            "SELECT Name FROM employees WHERE ID_Number = ?", (employee_id,),
+        ).fetchone()
+        worker_name = nrow[0] if nrow else None
+        df = pd.read_sql_query(
+            """
+            SELECT id, material_name, qty, uom, borrower_name,
+                   given_time, expected_return_time
+            FROM returnable_items
+            WHERE COALESCE(status, 'borrowed') = 'borrowed'
+              AND (cv_employee_id = ?
+                   OR (? IS NOT NULL AND borrower_name = ?))
+            ORDER BY given_time DESC
+            """,
+            conn, params=(employee_id, worker_name, worker_name),
+        )
+        from config import auto_localize_timestamps as _atz
+        return _atz(df)
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 7C — HOD Cross-Site View notifications + indicator
+# ═══════════════════════════════════════════════════════════════════════════
+# Debounce contract:
+#   - Notification fires once per (viewer_username, target_site_id, calendar
+#     local day). Second+ views same day are silently deduped by the UNIQUE
+#     constraint on cross_site_views.
+#   - Admin shadowing the HOD Portal NEVER fires a notification (per spec
+#     Q2(b)). HODs already know admin has global oversight.
+#   - Self-view (viewer_site == target_site) NEVER fires — also impossible
+#     via the UI flow which excludes the viewer's own site from the picker.
+# ═══════════════════════════════════════════════════════════════════════════
+def record_cross_site_view(
+    viewer_username: str,
+    viewer_site_id: str | None,
+    target_site_id: str,
+    *,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Idempotent per (viewer_username, target_site_id, view_date).
+
+    Returns True if this insert created a NEW row — caller should fire the
+    notification. Returns False on duplicate (already viewed today) or on
+    invalid inputs (blank / self-view).
+    """
+    viewer_username = (viewer_username or "").strip()
+    target_site_id  = (target_site_id or "").strip()
+    if not viewer_username or not target_site_id:
+        return False
+    viewer_site_id = (viewer_site_id or "").strip() or None
+    # Defensive self-view skip — UI already filters it out.
+    if viewer_site_id and viewer_site_id == target_site_id:
+        return False
+
+    today = datetime.date.today().isoformat()
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO cross_site_views "
+            "(viewer_username, viewer_site_id, target_site_id, view_date) "
+            "VALUES (?, ?, ?, ?)",
+            (viewer_username, viewer_site_id, target_site_id, today),
+        )
+        conn.commit()
+        return bool(cur.rowcount)
+    finally:
+        if _owns:
+            conn.close()
+
+
+def notify_cross_site_view(
+    viewer_user: dict,
+    target_site_id: str,
+    viewed_item: str | None = None,
+    *,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Records the view; if first-of-day, fires app notification + audit +
+    optional WhatsApp to the target site's HOD.
+
+    Returns True if a notification was actually fired (drives the corner
+    indicator's 'has been notified' phrasing). Returns False on:
+      - admin viewers (admin oversight is implicit, never notify)
+      - dedupe (already viewed today)
+      - self-view / blank inputs
+
+    `viewed_item` is optional — when present, it's woven into the body
+    ("looking at <item>") to give the target HOD context about what may be
+    coming in a transfer request. The dedupe is per-site-per-day so the
+    item shown is whatever was selected at first fire time.
+    """
+    if not isinstance(viewer_user, dict):
+        return False
+    role = (viewer_user.get("role") or "").strip().lower()
+    if role == "admin":
+        return False  # admin shadowing → silent (spec Q2(b))
+
+    viewer_username = (viewer_user.get("username") or "").strip()
+    viewer_site_id  = (viewer_user.get("site_id") or "").strip() or None
+    target_site_id  = (target_site_id or "").strip()
+    if not viewer_username or not target_site_id:
+        return False
+
+    is_first = record_cross_site_view(
+        viewer_username, viewer_site_id, target_site_id, conn=conn,
+    )
+    if not is_first:
+        return False
+
+    today = datetime.date.today().isoformat()
+    viewer_site_label = viewer_site_id or "—"
+    item_clause = ""
+    if viewed_item:
+        item_clause = f" (looking at {str(viewed_item).strip()})"
+
+    title = f"HOD of {viewer_site_label} is viewing your stock"
+    body = (
+        f"{viewer_username} from {viewer_site_label}{item_clause} "
+        f"is checking your stock — they may submit a transfer request shortly."
+    )
+
+    queue_app_notification(
+        event_key="cross_site_viewed",
+        title=title,
+        body=body,
+        severity="info",
+        recipient_role="hod",
+        recipient_site=target_site_id,
+        related_table="cross_site_views",
+        related_ref=f"{viewer_username}|{viewer_site_label}|{target_site_id}|{today}",
+        conn=conn,
+    )
+    log_audit_action(
+        viewer_username, "CROSS_SITE_VIEW", "cross_site_views",
+        f"viewer={viewer_username} target={target_site_id} date={today}",
+    )
+    for ph in get_site_role_phones("hod", target_site_id, conn=conn):
+        fire_whatsapp_event(
+            "cross_site_viewed", ph,
+            (f"👁️ *CROSS-SITE VIEW*\n"
+             f"{viewer_username} from *{viewer_site_label}* "
+             f"is checking your stock{item_clause}.\n"
+             f"They may submit a transfer request shortly."),
+            conn=conn,
+        )
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 7E — Form draft recovery (server-side layer)
+# ═══════════════════════════════════════════════════════════════════════════
+# Per-user, per-form snapshot of in-flight values. The streamlit-local-storage
+# layer is the primary safety net; this server-side table covers the cases
+# localStorage cannot (device swap, browser-data wipe, explicit Save Draft).
+#
+# Auto-save is throttled to 1/min server-side per Phase 7E spec Q4(a) — the
+# UI layer enforces the throttle since it owns the cadence; helpers here are
+# raw UPSERT primitives.
+# ═══════════════════════════════════════════════════════════════════════════
+import json as _json_7e
+
+DRAFT_DEFAULT_TTL_DAYS = 7  # spec Q2 — covers Fri/Sat weekend cycle
+
+
+def upsert_form_draft(
+    username: str,
+    form_id: str,
+    payload: dict,
+    *,
+    site_id: str = None,
+    ttl_days: int = DRAFT_DEFAULT_TTL_DAYS,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """UPSERT a draft for (username, form_id). Returns True on success.
+
+    Raises ValueError if payload is not JSON-serialisable. Non-dict payloads
+    are accepted but discouraged — keep them dict-shaped so the recovery
+    banner can show meaningful fields.
+
+    expires_at defaults to now + DRAFT_DEFAULT_TTL_DAYS. Pass ttl_days=None
+    for a never-expiring draft.
+    """
+    username = (username or "").strip()
+    form_id  = (form_id or "").strip()
+    if not username or not form_id:
+        return False
+    try:
+        payload_json = _json_7e.dumps(payload, default=str)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"Draft payload is not JSON-serialisable: {e}") from e
+
+    if ttl_days is None:
+        expires_at = None
+    else:
+        expires_at = (
+            datetime.datetime.utcnow() + datetime.timedelta(days=int(ttl_days))
+        ).isoformat(timespec="seconds")
+
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO form_drafts "
+            "(username, form_id, site_id, payload_json, expires_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(username, form_id) DO UPDATE SET "
+            "  payload_json = excluded.payload_json, "
+            "  site_id      = excluded.site_id, "
+            "  expires_at   = excluded.expires_at, "
+            "  updated_at   = CURRENT_TIMESTAMP",
+            (username, form_id, site_id, payload_json, expires_at),
+        )
+        conn.commit()
+        return True
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_form_draft(
+    username: str,
+    form_id: str,
+    *,
+    conn: sqlite3.Connection = None,
+) -> dict | None:
+    """Return {'payload': dict, 'updated_at': str, 'expires_at': str | None}
+    or None if missing / expired. Expired rows are NOT auto-deleted here —
+    the daily prune does that. We simply hide them from the caller."""
+    username = (username or "").strip()
+    form_id  = (form_id or "").strip()
+    if not username or not form_id:
+        return None
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT payload_json, updated_at, expires_at "
+            "FROM form_drafts WHERE username = ? AND form_id = ?",
+            (username, form_id),
+        ).fetchone()
+        if not row:
+            return None
+        payload_json, updated_at, expires_at = row
+        if expires_at:
+            try:
+                exp = datetime.datetime.fromisoformat(expires_at)
+                if exp < datetime.datetime.utcnow():
+                    return None  # treat expired as missing
+            except (ValueError, TypeError):
+                pass  # unparseable → trust it
+        try:
+            payload = _json_7e.loads(payload_json)
+        except (TypeError, ValueError):
+            return None
+        return {
+            "payload":    payload,
+            "updated_at": updated_at,
+            "expires_at": expires_at,
+        }
+    finally:
+        if _owns:
+            conn.close()
+
+
+def delete_form_draft(
+    username: str,
+    form_id: str,
+    *,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Delete a draft. Returns True if a row was removed."""
+    username = (username or "").strip()
+    form_id  = (form_id or "").strip()
+    if not username or not form_id:
+        return False
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "DELETE FROM form_drafts WHERE username = ? AND form_id = ?",
+            (username, form_id),
+        )
+        conn.commit()
+        return bool(cur.rowcount)
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_user_drafts(
+    username: str,
+    *,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Per-user multi-form draft listing — feeds a future Admin 'Active
+    Drafts' view (deferred to 7E.1). Hides expired rows."""
+    username = (username or "").strip()
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        df = pd.read_sql_query(
+            "SELECT id, form_id, site_id, updated_at, expires_at, "
+            "       LENGTH(payload_json) AS payload_bytes "
+            "FROM form_drafts WHERE username = ? "
+            "  AND (expires_at IS NULL OR expires_at > ?) "
+            "ORDER BY updated_at DESC",
+            conn,
+            params=(username, datetime.datetime.utcnow().isoformat(timespec="seconds")),
+        )
+        from config import auto_localize_timestamps as _atz
+        return _atz(df)
+    finally:
+        if _owns:
+            conn.close()
+
+
+def prune_expired_form_drafts(
+    *,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Delete every row where expires_at < now. Returns rowcount.
+
+    Idempotent — called from whatsapp_worker's poll loop, day-gated via
+    app_settings.form_drafts_last_prune.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "DELETE FROM form_drafts "
+            "WHERE expires_at IS NOT NULL AND expires_at < ?",
+            (datetime.datetime.utcnow().isoformat(timespec="seconds"),),
+        )
+        conn.commit()
+        return cur.rowcount or 0
+    finally:
+        if _owns:
+            conn.close()

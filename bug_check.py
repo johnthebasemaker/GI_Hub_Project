@@ -186,6 +186,13 @@ def register_schema_checks() -> None:
         "delivery_reminders_sent",
         # Phase 6A — CV foundation
         "employees", "tool_catalogue", "cv_model_versions",
+        # Phase 7B — Supervisor Material Request workflow
+        "supervisor_material_requests",
+        "supervisor_material_request_items",
+        # Phase 7C — HOD Cross-Site view notification debounce
+        "cross_site_views",
+        # Phase 7E — Form draft recovery
+        "form_drafts",
     ]
     for t in tables:
         run_check("Schema", f"table · {t}",
@@ -249,6 +256,34 @@ def register_schema_checks() -> None:
         # Phase 6A — CV audit cols self-healed onto returnable_items
         "returnable_items": ["cv_detected", "cv_confidence",
                              "cv_employee_id", "cv_tool_class"],
+        # Phase 7A — Employee Site Binding
+        "employees": ["Site_ID"],
+        # Phase 7B — Supervisor Material Request workflow
+        "supervisor_material_requests": [
+            "request_no", "Site_ID", "Worker_ID", "Worker_Name",
+            "Job_Tank_Place", "Old_PPE_Returned", "No_Return_Reason",
+            "requested_by", "requested_at", "status",
+            "sk_decided_by", "sk_decided_at", "sk_reject_reason",
+            "posted_pending_ids",
+        ],
+        "supervisor_material_request_items": [
+            "request_id", "SAP_Code", "Material_Code", "Equipment_Description",
+            "UOM", "Requested_Qty", "Stock_At_Request", "Available_Flag",
+            "SK_Adjusted_Qty", "Notes",
+        ],
+        # Self-heal on existing ledger tables
+        "pending_issues": ["Source_Ref"],
+        "consumption":    ["Source_Ref"],
+        # Phase 7C — Cross-Site view notification debounce
+        "cross_site_views": [
+            "viewer_username", "viewer_site_id", "target_site_id",
+            "view_date", "first_seen_at",
+        ],
+        # Phase 7E — Form draft recovery
+        "form_drafts": [
+            "username", "form_id", "site_id", "payload_json",
+            "created_at", "updated_at", "expires_at",
+        ],
     }
     for tbl, cs in cols.items():
         for c in cs:
@@ -2891,6 +2926,1579 @@ def check_qr_decode_roundtrip() -> None:
     assert decode_png_to_id(b"not-a-png") is None
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 7A — Employee Site Binding checks
+# ═══════════════════════════════════════════════════════════════════════════
+def _7a_emp(prefix: str) -> str:
+    """Generate a unique ID_Number per check so tests don't collide."""
+    import uuid as _u
+    return f"{prefix}_{_u.uuid4().hex[:8]}"
+
+
+def check_7a_site_id_column_present() -> None:
+    conn = database.get_connection()
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(employees)").fetchall()}
+        assert "Site_ID" in cols, f"Site_ID missing from employees: {cols}"
+    finally:
+        conn.close()
+
+
+def check_7a_site_id_index_present() -> None:
+    conn = database.get_connection()
+    try:
+        idx = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='employees'"
+        ).fetchall()}
+        assert "ix_employees_site" in idx, f"ix_employees_site missing: {idx}"
+    finally:
+        conn.close()
+
+
+def check_7a_add_with_site_persists() -> None:
+    conn = database.get_connection()
+    try:
+        eid = _7a_emp("7A_ADD_SITE")
+        ok, _ = database.add_employee(eid, "Site Bound", site_id="HQ", conn=conn)
+        assert ok
+        row = conn.execute(
+            "SELECT Site_ID FROM employees WHERE ID_Number=?", (eid,)
+        ).fetchone()
+        assert row[0] == "HQ", f"Site_ID not persisted: {row}"
+    finally:
+        conn.close()
+
+
+def check_7a_add_without_site_is_null() -> None:
+    conn = database.get_connection()
+    try:
+        eid = _7a_emp("7A_ADD_NO_SITE")
+        ok, _ = database.add_employee(eid, "Unbound", conn=conn)
+        assert ok
+        row = conn.execute(
+            "SELECT Site_ID FROM employees WHERE ID_Number=?", (eid,)
+        ).fetchone()
+        assert row[0] is None, f"expected NULL Site_ID, got {row[0]!r}"
+    finally:
+        conn.close()
+
+
+def check_7a_update_site_reassigns() -> None:
+    conn = database.get_connection()
+    try:
+        eid = _7a_emp("7A_UPD_REASSIGN")
+        database.add_employee(eid, "Mover", site_id="HQ", conn=conn)
+        assert database.update_employee(eid, site_id="Site_B", conn=conn)
+        row = conn.execute(
+            "SELECT Site_ID FROM employees WHERE ID_Number=?", (eid,)
+        ).fetchone()
+        assert row[0] == "Site_B", f"reassign failed: {row}"
+    finally:
+        conn.close()
+
+
+def check_7a_update_site_clears() -> None:
+    conn = database.get_connection()
+    try:
+        eid = _7a_emp("7A_UPD_CLEAR")
+        database.add_employee(eid, "Toggle", site_id="HQ", conn=conn)
+        assert database.update_employee(eid, site_id="", conn=conn)
+        row = conn.execute(
+            "SELECT Site_ID FROM employees WHERE ID_Number=?", (eid,)
+        ).fetchone()
+        assert row[0] is None, f"empty-string should clear binding; got {row[0]!r}"
+    finally:
+        conn.close()
+
+
+def check_7a_update_site_none_untouched() -> None:
+    conn = database.get_connection()
+    try:
+        eid = _7a_emp("7A_UPD_NONE")
+        database.add_employee(eid, "Sticky", site_id="HQ", conn=conn)
+        # Only update Name — Site_ID untouched.
+        assert database.update_employee(eid, name="Sticky Renamed", conn=conn)
+        row = conn.execute(
+            "SELECT Site_ID, Name FROM employees WHERE ID_Number=?", (eid,)
+        ).fetchone()
+        assert row[0] == "HQ", f"Site_ID should be preserved, got {row[0]!r}"
+        assert row[1] == "Sticky Renamed"
+    finally:
+        conn.close()
+
+
+def check_7a_list_employees_has_site_column() -> None:
+    conn = database.get_connection()
+    try:
+        df = database.list_employees(conn=conn)
+        assert "Site_ID" in df.columns, f"Site_ID missing from list_employees df: {list(df.columns)}"
+    finally:
+        conn.close()
+
+
+def check_7a_list_employees_site_filter() -> None:
+    conn = database.get_connection()
+    try:
+        e1 = _7a_emp("7A_FLT_HQ")
+        e2 = _7a_emp("7A_FLT_B")
+        database.add_employee(e1, "HQ Person", site_id="HQ", conn=conn)
+        database.add_employee(e2, "Site B Person", site_id="Site_B", conn=conn)
+        df = database.list_employees(site_id_filter="HQ", conn=conn)
+        ids = set(df["ID_Number"].tolist())
+        assert e1 in ids, f"HQ filter missed HQ employee: {ids}"
+        assert e2 not in ids, f"HQ filter leaked Site_B employee: {ids}"
+    finally:
+        conn.close()
+
+
+def check_7a_list_employees_unassigned_sentinel() -> None:
+    conn = database.get_connection()
+    try:
+        eid = _7a_emp("7A_UNASSIGNED")
+        database.add_employee(eid, "Floater", conn=conn)  # no site
+        df = database.list_employees(site_id_filter="__UNASSIGNED__", conn=conn)
+        assert eid in set(df["ID_Number"].tolist()), \
+            f"__UNASSIGNED__ sentinel did not return NULL-site employee"
+        # And the same employee MUST NOT appear under a concrete site filter.
+        df_hq = database.list_employees(site_id_filter="HQ", conn=conn)
+        assert eid not in set(df_hq["ID_Number"].tolist())
+    finally:
+        conn.close()
+
+
+def check_7a_list_employees_for_site_active_only() -> None:
+    conn = database.get_connection()
+    try:
+        e_active = _7a_emp("7A_FS_ACT")
+        e_susp = _7a_emp("7A_FS_SUSP")
+        database.add_employee(e_active, "Active One", site_id="HQ", conn=conn)
+        database.add_employee(e_susp, "Suspended One", site_id="HQ", conn=conn)
+        database.update_employee(e_susp, status="suspended", conn=conn)
+        df = database.list_employees_for_site("HQ", conn=conn)  # default active
+        ids = set(df["ID_Number"].tolist())
+        assert e_active in ids, "active employee dropped"
+        assert e_susp not in ids, "suspended leaked into active-only list"
+    finally:
+        conn.close()
+
+
+def check_7a_csv_with_site_id_column() -> None:
+    import io
+    conn = database.get_connection()
+    try:
+        eid = _7a_emp("7A_CSV_SITE")
+        csv = io.StringIO(
+            "ID_Number,Name,Phone_Number,Department,Site_ID\n"
+            f"{eid},CSV With Site,+96650999,Ops,Site_C\n"
+        )
+        r = database.import_employees_csv(csv, "test_admin", conn=conn)
+        assert r["inserted"] == 1, f"unexpected import counts: {r}"
+        row = conn.execute(
+            "SELECT Site_ID FROM employees WHERE ID_Number=?", (eid,)
+        ).fetchone()
+        assert row[0] == "Site_C", f"CSV Site_ID not persisted: {row}"
+    finally:
+        conn.close()
+
+
+def check_7a_csv_without_site_id_column() -> None:
+    """Legacy CSV (no Site_ID column) must still import successfully."""
+    import io
+    conn = database.get_connection()
+    try:
+        eid = _7a_emp("7A_CSV_LEGACY")
+        csv = io.StringIO(
+            "ID_Number,Name,Phone_Number,Department\n"
+            f"{eid},Legacy CSV,+96650777,Ops\n"
+        )
+        r = database.import_employees_csv(csv, "test_admin", conn=conn)
+        assert r["inserted"] == 1, f"legacy CSV import failed: {r}"
+        row = conn.execute(
+            "SELECT Site_ID FROM employees WHERE ID_Number=?", (eid,)
+        ).fetchone()
+        assert row[0] is None, f"legacy CSV should leave Site_ID NULL, got {row[0]!r}"
+    finally:
+        conn.close()
+
+
+def check_7a_csv_omitted_col_preserves_binding() -> None:
+    """Re-importing a CSV without the Site_ID column must NOT wipe an existing binding."""
+    import io
+    conn = database.get_connection()
+    try:
+        eid = _7a_emp("7A_CSV_PRESERVE")
+        # First import: with Site_ID column → binds to HQ
+        csv1 = io.StringIO(
+            "ID_Number,Name,Phone_Number,Department,Site_ID\n"
+            f"{eid},Preserve Me,+96650888,Ops,HQ\n"
+        )
+        database.import_employees_csv(csv1, "test_admin", conn=conn)
+        # Second import: same row WITHOUT Site_ID col → must preserve HQ
+        csv2 = io.StringIO(
+            "ID_Number,Name,Phone_Number,Department\n"
+            f"{eid},Preserve Me,+96650888,Ops\n"
+        )
+        r2 = database.import_employees_csv(csv2, "test_admin", conn=conn)
+        assert r2["skipped"] == 1, f"expected skipped (no change), got: {r2}"
+        row = conn.execute(
+            "SELECT Site_ID FROM employees WHERE ID_Number=?", (eid,)
+        ).fetchone()
+        assert row[0] == "HQ", f"binding wiped by legacy re-import: {row[0]!r}"
+    finally:
+        conn.close()
+
+
+def check_7a_bulk_assign_helper() -> None:
+    conn = database.get_connection()
+    try:
+        e1 = _7a_emp("7A_BULK_1")
+        e2 = _7a_emp("7A_BULK_2")
+        e3 = _7a_emp("7A_BULK_3")
+        for e in (e1, e2, e3):
+            database.add_employee(e, f"Bulk {e}", conn=conn)
+        n = database.bulk_assign_employees_to_site(
+            [e1, e2, e3], "Site_X", updated_by="test_admin", conn=conn,
+        )
+        assert n == 3, f"bulk-assign rowcount wrong: {n}"
+        rows = conn.execute(
+            f"SELECT Site_ID FROM employees WHERE ID_Number IN ({','.join('?'*3)})",
+            (e1, e2, e3),
+        ).fetchall()
+        assert all(r[0] == "Site_X" for r in rows), f"binding not applied: {rows}"
+    finally:
+        conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 7B — Supervisor Material Request workflow checks
+# ═══════════════════════════════════════════════════════════════════════════
+def _7b_seed_worker(site_id: str = "TEST_7B_SITE", suffix: str = "") -> str:
+    """Insert an active employee bound to site_id. Returns ID_Number."""
+    import uuid as _u
+    conn = database.get_connection()
+    try:
+        eid = f"7B_EMP_{_u.uuid4().hex[:8]}{suffix}"
+        conn.execute(
+            "INSERT INTO employees (ID_Number, Name, Phone_Number, Department, Site_ID, status) "
+            "VALUES (?, ?, ?, ?, ?, 'active')",
+            (eid, f"Worker {eid}", "+966500000001", "Ops", site_id),
+        )
+        conn.commit()
+        return eid
+    finally:
+        conn.close()
+
+
+def _7b_seed_inventory(site_id: str = "TEST_7B_SITE",
+                       sap: str = None, stock: float = 100.0,
+                       suffix: str = "") -> str:
+    """Insert an inventory item with Opening_Stock=stock at site_id. Returns SAP_Code."""
+    import uuid as _u
+    sap = sap or f"7B-SAP-{_u.uuid4().hex[:6]}{suffix}"
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO inventory "
+            "(SAP_Code, Material_Code, Equipment_Description, UOM, "
+            " Minimum_Qty, Unit_Cost, Site_ID, Category, Opening_Stock) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (sap, f"MC-{sap}", f"Material {sap}", "PCS",
+             10, 5.0, site_id, "Consumable", stock),
+        )
+        conn.commit()
+        return sap
+    finally:
+        conn.close()
+
+
+def check_7b_generate_request_no_first() -> None:
+    """First SMR of the day starts at 0001 (deterministic regardless of test order)."""
+    no = database.generate_smr_request_no()
+    today = datetime.date.today().strftime("%Y%m%d")
+    assert no.startswith(f"SMR-{today}-"), f"prefix wrong: {no}"
+    # Format must always be 4-digit padded sequence.
+    seq = no.split("-")[-1]
+    assert len(seq) == 4 and seq.isdigit(), f"sequence format wrong: {no}"
+
+
+def check_7b_generate_request_no_increments() -> None:
+    """generate_smr_request_no inspects the highest existing row and returns N+1."""
+    site = "TEST_7B_INCR"
+    worker = _7b_seed_worker(site, suffix="_INCR")
+    sap = _7b_seed_inventory(site, suffix="_INCR")
+    ok, no1 = database.create_supervisor_request(
+        site_id=site, worker_id=worker, job_tank_place="Tank-A",
+        old_ppe_returned=1, no_return_reason="",
+        items=[{"SAP_Code": sap, "Requested_Qty": 5}],
+        supervisor_username="test_sup_1",
+    )
+    assert ok, no1
+    no2 = database.generate_smr_request_no()
+    # Both share same date prefix; no2 must be at least 1 higher than no1.
+    n1 = int(no1.split("-")[-1])
+    n2 = int(no2.split("-")[-1])
+    assert n2 == n1 + 1, f"expected {n1+1}, got {n2}"
+
+
+def check_7b_create_happy_path() -> None:
+    site = "TEST_7B_HAPPY"
+    worker = _7b_seed_worker(site, suffix="_HAPPY")
+    sap1 = _7b_seed_inventory(site, suffix="_HAPPY1")
+    sap2 = _7b_seed_inventory(site, suffix="_HAPPY2")
+    ok, no = database.create_supervisor_request(
+        site_id=site, worker_id=worker, job_tank_place="Tank-99",
+        old_ppe_returned=0, no_return_reason="Old set damaged",
+        items=[
+            {"SAP_Code": sap1, "Requested_Qty": 3, "Notes": "urgent"},
+            {"SAP_Code": sap2, "Requested_Qty": 1},
+        ],
+        supervisor_username="test_sup",
+    )
+    assert ok, no
+    conn = database.get_connection()
+    try:
+        hdr = conn.execute(
+            "SELECT Site_ID, Worker_ID, status, Old_PPE_Returned, No_Return_Reason "
+            "FROM supervisor_material_requests WHERE request_no = ?", (no,),
+        ).fetchone()
+        assert hdr == (site, worker, "pending_sk", 0, "Old set damaged"), hdr
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM supervisor_material_request_items i "
+            "JOIN supervisor_material_requests r ON r.id = i.request_id "
+            "WHERE r.request_no = ?", (no,),
+        ).fetchone()[0]
+        assert cnt == 2, f"expected 2 items, got {cnt}"
+    finally:
+        conn.close()
+
+
+def check_7b_create_rejects_wrong_site_worker() -> None:
+    site_a = "TEST_7B_RSA"
+    site_b = "TEST_7B_RSB"
+    worker = _7b_seed_worker(site_a, suffix="_RSA")
+    sap = _7b_seed_inventory(site_b, suffix="_RSB")
+    ok, msg = database.create_supervisor_request(
+        site_id=site_b, worker_id=worker, job_tank_place="Tank-1",
+        old_ppe_returned=1, no_return_reason="",
+        items=[{"SAP_Code": sap, "Requested_Qty": 1}],
+        supervisor_username="test_sup",
+    )
+    assert not ok and "bound to site" in msg, f"expected site-binding rejection: {msg}"
+
+
+def check_7b_create_rejects_empty_items() -> None:
+    site = "TEST_7B_EMPTY"
+    worker = _7b_seed_worker(site, suffix="_EMPTY")
+    ok, msg = database.create_supervisor_request(
+        site_id=site, worker_id=worker, job_tank_place="Tank-1",
+        old_ppe_returned=1, no_return_reason="",
+        items=[],
+        supervisor_username="test_sup",
+    )
+    assert not ok and "at least one item" in msg.lower(), msg
+
+
+def check_7b_create_rejects_no_ppe_no_reason() -> None:
+    site = "TEST_7B_PPE"
+    worker = _7b_seed_worker(site, suffix="_PPE")
+    sap = _7b_seed_inventory(site, suffix="_PPE")
+    ok, msg = database.create_supervisor_request(
+        site_id=site, worker_id=worker, job_tank_place="Tank-1",
+        old_ppe_returned=0, no_return_reason="",
+        items=[{"SAP_Code": sap, "Requested_Qty": 1}],
+        supervisor_username="test_sup",
+    )
+    assert not ok and "reason" in msg.lower(), msg
+
+
+def check_7b_create_rejects_unknown_sap() -> None:
+    site = "TEST_7B_SAP"
+    worker = _7b_seed_worker(site, suffix="_SAP")
+    _ = _7b_seed_inventory(site, suffix="_SAP_GOOD")
+    ok, msg = database.create_supervisor_request(
+        site_id=site, worker_id=worker, job_tank_place="Tank-1",
+        old_ppe_returned=1, no_return_reason="",
+        items=[{"SAP_Code": "NO-SUCH-SAP-7B", "Requested_Qty": 1}],
+        supervisor_username="test_sup",
+    )
+    assert not ok and "unknown sap_code" in msg.lower(), msg
+
+
+def check_7b_stock_snapshot_captured() -> None:
+    site = "TEST_7B_SNAP"
+    worker = _7b_seed_worker(site, suffix="_SNAP")
+    sap = _7b_seed_inventory(site, stock=42.0, suffix="_SNAP")
+    ok, no = database.create_supervisor_request(
+        site_id=site, worker_id=worker, job_tank_place="Tank-1",
+        old_ppe_returned=1, no_return_reason="",
+        items=[{"SAP_Code": sap, "Requested_Qty": 5}],
+        supervisor_username="test_sup",
+    )
+    assert ok, no
+    conn = database.get_connection()
+    try:
+        snap = conn.execute(
+            "SELECT i.Stock_At_Request FROM supervisor_material_request_items i "
+            "JOIN supervisor_material_requests r ON r.id = i.request_id "
+            "WHERE r.request_no = ? LIMIT 1", (no,),
+        ).fetchone()[0]
+        assert float(snap) == 42.0, f"snapshot wrong: {snap}"
+    finally:
+        conn.close()
+
+
+def check_7b_available_flag_zero_when_short() -> None:
+    site = "TEST_7B_FLAG"
+    worker = _7b_seed_worker(site, suffix="_FLAG")
+    sap = _7b_seed_inventory(site, stock=2.0, suffix="_FLAG")
+    ok, no = database.create_supervisor_request(
+        site_id=site, worker_id=worker, job_tank_place="Tank-1",
+        old_ppe_returned=1, no_return_reason="",
+        items=[{"SAP_Code": sap, "Requested_Qty": 5}],  # > stock 2
+        supervisor_username="test_sup",
+    )
+    assert ok, no
+    conn = database.get_connection()
+    try:
+        flag = conn.execute(
+            "SELECT i.Available_Flag FROM supervisor_material_request_items i "
+            "JOIN supervisor_material_requests r ON r.id = i.request_id "
+            "WHERE r.request_no = ? LIMIT 1", (no,),
+        ).fetchone()[0]
+        assert flag == 0, f"Available_Flag should be 0 (short), got {flag}"
+    finally:
+        conn.close()
+
+
+def _7b_make_pending(site: str, suffix: str, qty: float = 5,
+                    sap_stock: float = 100) -> tuple[int, str, str, str]:
+    """Helper: seed worker + sap, create pending SMR; returns (req_id, no, worker, sap)."""
+    worker = _7b_seed_worker(site, suffix=suffix)
+    sap = _7b_seed_inventory(site, stock=sap_stock, suffix=suffix)
+    ok, no = database.create_supervisor_request(
+        site_id=site, worker_id=worker, job_tank_place="Tank-X",
+        old_ppe_returned=1, no_return_reason="",
+        items=[{"SAP_Code": sap, "Requested_Qty": qty}],
+        supervisor_username="test_sup",
+    )
+    assert ok, no
+    conn = database.get_connection()
+    try:
+        rid = conn.execute(
+            "SELECT id FROM supervisor_material_requests WHERE request_no = ?",
+            (no,),
+        ).fetchone()[0]
+        return int(rid), no, worker, sap
+    finally:
+        conn.close()
+
+
+def check_7b_approve_mirrors_to_pending_issues() -> None:
+    rid, no, worker, sap = _7b_make_pending("TEST_7B_APPR", "_APPR", qty=7)
+    ok, msg = database.approve_supervisor_request(rid, "test_sk")
+    assert ok, msg
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT SAP_Code, Quantity, Work_Type, Tank_No, Issued_By, "
+            "       Issued_To, status, Source_Ref "
+            "FROM pending_issues WHERE Source_Ref LIKE ?",
+            (f"SMR:{no}:%",),
+        ).fetchone()
+        assert row is not None, "no pending_issues row mirrored"
+        (sap_got, qty, work, tank, by, to, status, src) = row
+        assert sap_got == sap
+        assert float(qty) == 7.0, qty
+        assert work == "SUPERVISOR_REQUEST", work
+        assert tank == "Tank-X", tank
+        assert by == "test_sk", by
+        assert to.startswith("Worker "), to
+        assert status == "pending_hod", status
+        assert src.startswith(f"SMR:{no}:"), src
+    finally:
+        conn.close()
+
+
+def check_7b_approve_captures_posted_ids() -> None:
+    rid, no, *_ = _7b_make_pending("TEST_7B_IDS", "_IDS")
+    ok, _ = database.approve_supervisor_request(rid, "test_sk")
+    assert ok
+    conn = database.get_connection()
+    try:
+        status, posted = conn.execute(
+            "SELECT status, posted_pending_ids FROM supervisor_material_requests "
+            "WHERE id = ?", (rid,),
+        ).fetchone()
+        assert status == "approved"
+        import json
+        ids = json.loads(posted or "[]")
+        assert len(ids) == 1, f"expected 1 mirrored row id, got {ids}"
+    finally:
+        conn.close()
+
+
+def check_7b_approve_idempotent() -> None:
+    rid, _, *_ = _7b_make_pending("TEST_7B_IDEM", "_IDEM")
+    ok1, _ = database.approve_supervisor_request(rid, "test_sk")
+    assert ok1
+    ok2, msg = database.approve_supervisor_request(rid, "test_sk")
+    assert not ok2 and "already" in msg.lower(), msg
+
+
+def check_7b_approve_drops_zero_adjusted() -> None:
+    site = "TEST_7B_ZERO"
+    worker = _7b_seed_worker(site, suffix="_ZERO")
+    sap1 = _7b_seed_inventory(site, suffix="_ZERO1")
+    sap2 = _7b_seed_inventory(site, suffix="_ZERO2")
+    ok, no = database.create_supervisor_request(
+        site_id=site, worker_id=worker, job_tank_place="Tank-Z",
+        old_ppe_returned=1, no_return_reason="",
+        items=[
+            {"SAP_Code": sap1, "Requested_Qty": 3},
+            {"SAP_Code": sap2, "Requested_Qty": 4},
+        ],
+        supervisor_username="test_sup",
+    )
+    assert ok, no
+    conn = database.get_connection()
+    try:
+        rid, item_ids = conn.execute(
+            "SELECT id FROM supervisor_material_requests WHERE request_no = ?",
+            (no,),
+        ).fetchone()[0], [r[0] for r in conn.execute(
+            "SELECT i.id FROM supervisor_material_request_items i "
+            "JOIN supervisor_material_requests r ON r.id = i.request_id "
+            "WHERE r.request_no = ? ORDER BY i.id", (no,),
+        ).fetchall()]
+    finally:
+        conn.close()
+    # Set the SECOND line's SK_Adjusted_Qty to 0 — should be dropped at approval.
+    database.update_supervisor_request_item(item_ids[1], sk_adjusted_qty=0)
+    ok2, _ = database.approve_supervisor_request(rid, "test_sk")
+    assert ok2
+    conn = database.get_connection()
+    try:
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM pending_issues WHERE Source_Ref LIKE ?",
+            (f"SMR:{no}:%",),
+        ).fetchone()[0]
+        assert cnt == 1, f"expected 1 mirrored row (other dropped), got {cnt}"
+    finally:
+        conn.close()
+
+
+def check_7b_reject_blocks_without_reason() -> None:
+    rid, no, *_ = _7b_make_pending("TEST_7B_REJ", "_REJ")
+    ok, msg = database.reject_supervisor_request(rid, "test_sk", "")
+    assert not ok and "required" in msg.lower(), msg
+    ok2, _ = database.reject_supervisor_request(rid, "test_sk", "no stock")
+    assert ok2
+    conn = database.get_connection()
+    try:
+        status = conn.execute(
+            "SELECT status FROM supervisor_material_requests WHERE id = ?",
+            (rid,),
+        ).fetchone()[0]
+        assert status == "rejected"
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM pending_issues WHERE Source_Ref LIKE ?",
+            (f"SMR:{no}:%",),
+        ).fetchone()[0]
+        assert cnt == 0, "reject must not write to pending_issues"
+    finally:
+        conn.close()
+
+
+def check_7b_e2e_commit_eod_preserves_source_ref() -> None:
+    rid, no, *_ = _7b_make_pending("TEST_7B_E2E", "_E2E", qty=2, sap_stock=50)
+    ok, _ = database.approve_supervisor_request(rid, "test_sk")
+    assert ok
+    n = database.commit_eod()
+    assert n >= 1, f"commit_eod should commit ≥1 row, got {n}"
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT Quantity, Work_Type, Source_Ref FROM consumption "
+            "WHERE Source_Ref LIKE ?", (f"SMR:{no}:%",),
+        ).fetchone()
+        assert row is not None, "consumption row missing after commit_eod"
+        qty, work, src = row
+        assert float(qty) == 2.0
+        assert work == "SUPERVISOR_REQUEST"
+        assert src.startswith(f"SMR:{no}:")
+    finally:
+        conn.close()
+
+
+def check_7b_update_item_locked_post_approval() -> None:
+    rid, _, *_ = _7b_make_pending("TEST_7B_LOCK", "_LOCK")
+    conn = database.get_connection()
+    try:
+        item_id = conn.execute(
+            "SELECT i.id FROM supervisor_material_request_items i "
+            "JOIN supervisor_material_requests r ON r.id = i.request_id "
+            "WHERE r.id = ? LIMIT 1", (rid,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    # While pending_sk, update succeeds.
+    assert database.update_supervisor_request_item(item_id, notes="early note")
+    # After approval, update refused.
+    ok, _ = database.approve_supervisor_request(rid, "test_sk")
+    assert ok
+    assert not database.update_supervisor_request_item(item_id, notes="too late")
+
+
+def check_7b_cancel_locked_post_decision() -> None:
+    rid, _, *_ = _7b_make_pending("TEST_7B_CANC", "_CANC")
+    assert database.cancel_supervisor_request(rid, "test_sup")
+    # Second cancel refused (no longer pending_sk).
+    assert not database.cancel_supervisor_request(rid, "test_sup")
+
+
+def check_7b_delete_item_works() -> None:
+    site = "TEST_7B_DEL"
+    worker = _7b_seed_worker(site, suffix="_DEL")
+    sap1 = _7b_seed_inventory(site, suffix="_DEL1")
+    sap2 = _7b_seed_inventory(site, suffix="_DEL2")
+    ok, no = database.create_supervisor_request(
+        site_id=site, worker_id=worker, job_tank_place="Tank-D",
+        old_ppe_returned=1, no_return_reason="",
+        items=[
+            {"SAP_Code": sap1, "Requested_Qty": 1},
+            {"SAP_Code": sap2, "Requested_Qty": 2},
+        ],
+        supervisor_username="test_sup",
+    )
+    assert ok, no
+    conn = database.get_connection()
+    try:
+        item_id_to_drop = conn.execute(
+            "SELECT i.id FROM supervisor_material_request_items i "
+            "JOIN supervisor_material_requests r ON r.id = i.request_id "
+            "WHERE r.request_no = ? ORDER BY i.id DESC LIMIT 1", (no,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert database.delete_supervisor_request_item(item_id_to_drop)
+    conn = database.get_connection()
+    try:
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM supervisor_material_request_items i "
+            "JOIN supervisor_material_requests r ON r.id = i.request_id "
+            "WHERE r.request_no = ?", (no,),
+        ).fetchone()[0]
+        assert cnt == 1, f"expected 1 line after delete, got {cnt}"
+    finally:
+        conn.close()
+
+
+def check_7b_report_joins_on_source_ref() -> None:
+    rid, no, *_ = _7b_make_pending("TEST_7B_RPT", "_RPT", qty=3, sap_stock=50)
+    database.approve_supervisor_request(rid, "test_sk")
+    database.commit_eod()
+    df = database.report_supervisor_intent_vs_actual(site_id="TEST_7B_RPT", days=7)
+    assert not df.empty, "report should have at least one row"
+    matched = df[df["Request_No"] == no]
+    assert not matched.empty, f"report missing approved request {no}"
+    row = matched.iloc[0]
+    assert float(row["Requested_Qty"]) == 3.0
+    assert float(row["Actual_Qty"]) == 3.0
+    assert row["Variance_Pct"] == 0.0
+
+
+def check_7b_open_returnables_for_employee() -> None:
+    site = "TEST_7B_LOAN"
+    worker = _7b_seed_worker(site, suffix="_LOAN")
+    # Seed a returnable loan for this worker.
+    conn = database.get_connection()
+    try:
+        nrow = conn.execute(
+            "SELECT Name FROM employees WHERE ID_Number = ?", (worker,),
+        ).fetchone()
+        worker_name = nrow[0]
+        conn.execute(
+            "INSERT INTO returnable_items "
+            "(material_name, uom, qty, borrower_name, borrower_phone, "
+            " given_time, expected_return_time, status, Site_ID, cv_employee_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'borrowed', ?, ?)",
+            ("Test Drill", "PCS", 1, worker_name, "+96650",
+             datetime.datetime.utcnow().isoformat(),
+             (datetime.datetime.utcnow() + datetime.timedelta(hours=1)).isoformat(),
+             site, worker),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    df = database.get_open_returnables_for_employee(worker)
+    assert not df.empty, "open-loan side-panel should find the seeded loan"
+    assert "Test Drill" in df["material_name"].tolist()
+
+
+def check_7b_config_smr_triggers() -> None:
+    from config import WHATSAPP_TRIGGERS
+    for key in ("smr_submitted", "smr_approved",
+                "smr_rejected", "smr_cancelled"):
+        assert key in WHATSAPP_TRIGGERS, f"{key} missing from WHATSAPP_TRIGGERS"
+        assert WHATSAPP_TRIGGERS[key] is True, f"{key} should default True"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 7C — HOD Cross-Site View notification + indicator checks
+# ═══════════════════════════════════════════════════════════════════════════
+def _7c_tag(prefix: str) -> str:
+    """Generate a unique viewer/site tag per check so tests don't collide."""
+    import uuid as _u
+    return f"{prefix}_{_u.uuid4().hex[:8]}"
+
+
+def check_7c_index_target_date() -> None:
+    conn = database.get_connection()
+    try:
+        idx = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND tbl_name='cross_site_views'"
+        ).fetchall()}
+        assert "ix_csv_target_date" in idx, f"missing: {idx}"
+    finally:
+        conn.close()
+
+
+def check_7c_index_viewer_date() -> None:
+    conn = database.get_connection()
+    try:
+        idx = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND tbl_name='cross_site_views'"
+        ).fetchall()}
+        assert "ix_csv_viewer_date" in idx, f"missing: {idx}"
+    finally:
+        conn.close()
+
+
+def check_7c_unique_constraint() -> None:
+    """The UNIQUE constraint is the entire debounce — second INSERT silently
+    no-ops via INSERT OR IGNORE; equivalent raw INSERT would raise."""
+    import sqlite3 as _sqlite3
+    viewer = _7c_tag("UNQ_V")
+    conn = database.get_connection()
+    try:
+        today = datetime.date.today().isoformat()
+        conn.execute(
+            "INSERT INTO cross_site_views "
+            "(viewer_username, viewer_site_id, target_site_id, view_date) "
+            "VALUES (?, ?, ?, ?)",
+            (viewer, "A", "B", today),
+        )
+        conn.commit()
+        # Same triple must raise on a raw INSERT (no OR IGNORE).
+        raised = False
+        try:
+            conn.execute(
+                "INSERT INTO cross_site_views "
+                "(viewer_username, viewer_site_id, target_site_id, view_date) "
+                "VALUES (?, ?, ?, ?)",
+                (viewer, "A", "B", today),
+            )
+            conn.commit()
+        except _sqlite3.IntegrityError:
+            raised = True
+            conn.rollback()
+        assert raised, "UNIQUE constraint not enforced on (viewer, target, date)"
+    finally:
+        conn.close()
+
+
+def check_7c_record_first_returns_true() -> None:
+    viewer = _7c_tag("REC_FIRST")
+    assert database.record_cross_site_view(viewer, "A", "B") is True
+    conn = database.get_connection()
+    try:
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM cross_site_views WHERE viewer_username = ?",
+            (viewer,),
+        ).fetchone()[0]
+        assert cnt == 1, f"expected 1 row, got {cnt}"
+    finally:
+        conn.close()
+
+
+def check_7c_record_dedupe_returns_false() -> None:
+    viewer = _7c_tag("REC_DUPE")
+    assert database.record_cross_site_view(viewer, "A", "B") is True
+    assert database.record_cross_site_view(viewer, "A", "B") is False
+    conn = database.get_connection()
+    try:
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM cross_site_views WHERE viewer_username = ?",
+            (viewer,),
+        ).fetchone()[0]
+        assert cnt == 1, f"dedupe failed — got {cnt} rows"
+    finally:
+        conn.close()
+
+
+def check_7c_different_target_returns_true() -> None:
+    viewer = _7c_tag("REC_TGT")
+    assert database.record_cross_site_view(viewer, "A", "B") is True
+    assert database.record_cross_site_view(viewer, "A", "C") is True
+
+
+def check_7c_different_viewer_returns_true() -> None:
+    v1 = _7c_tag("REC_V1")
+    v2 = _7c_tag("REC_V2")
+    assert database.record_cross_site_view(v1, "A", "B") is True
+    assert database.record_cross_site_view(v2, "A", "B") is True
+
+
+def check_7c_self_view_skipped() -> None:
+    viewer = _7c_tag("REC_SELF")
+    assert database.record_cross_site_view(viewer, "B", "B") is False
+    conn = database.get_connection()
+    try:
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM cross_site_views WHERE viewer_username = ?",
+            (viewer,),
+        ).fetchone()[0]
+        assert cnt == 0, f"self-view should not insert; got {cnt} rows"
+    finally:
+        conn.close()
+
+
+def check_7c_blank_inputs_skipped() -> None:
+    assert database.record_cross_site_view("", "A", "B") is False
+    assert database.record_cross_site_view("user", "A", "") is False
+    # None should be safely coerced via .strip("" or None) pattern.
+    assert database.record_cross_site_view(None, "A", "B") is False
+
+
+def check_7c_admin_role_suppressed() -> None:
+    """notify_cross_site_view: admin viewer never records or fires."""
+    viewer = _7c_tag("NTF_ADM")
+    fired = database.notify_cross_site_view(
+        {"username": viewer, "role": "admin", "site_id": "A"},
+        "B",
+        viewed_item="Test Item",
+    )
+    assert fired is False
+    conn = database.get_connection()
+    try:
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM cross_site_views WHERE viewer_username = ?",
+            (viewer,),
+        ).fetchone()[0]
+        assert cnt == 0, f"admin shadowing should not record; got {cnt} rows"
+    finally:
+        conn.close()
+
+
+def check_7c_notify_queues_app_notification() -> None:
+    viewer = _7c_tag("NTF_APP")
+    fired = database.notify_cross_site_view(
+        {"username": viewer, "role": "hod", "site_id": "A"},
+        "B_NTF_APP",
+        viewed_item="[SAP-001] Widget",
+    )
+    assert fired is True
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT event_key, recipient_role, recipient_site, severity, body "
+            "FROM app_notifications "
+            "WHERE event_key = 'cross_site_viewed' "
+            "  AND recipient_site = 'B_NTF_APP' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row is not None, "no app_notifications row queued"
+        assert row[0] == "cross_site_viewed", row
+        assert row[1] == "hod", row
+        assert row[2] == "B_NTF_APP", row
+        assert row[3] == "info", row
+        # Item context must appear in the body.
+        assert "Widget" in (row[4] or ""), f"item not woven into body: {row[4]}"
+    finally:
+        conn.close()
+
+
+def check_7c_notify_writes_audit_row() -> None:
+    viewer = _7c_tag("NTF_AUD")
+    fired = database.notify_cross_site_view(
+        {"username": viewer, "role": "hod", "site_id": "A"},
+        "B_AUD",
+    )
+    assert fired is True
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT username, action_type, target_table FROM system_audit_log "
+            "WHERE username = ? AND action_type = 'CROSS_SITE_VIEW' "
+            "ORDER BY id DESC LIMIT 1",
+            (viewer,),
+        ).fetchone()
+        assert row is not None, "no audit row written"
+        assert row[2] == "cross_site_views", row
+    finally:
+        conn.close()
+
+
+def check_7c_notify_dedupe_no_double_send() -> None:
+    viewer = _7c_tag("NTF_DUPE")
+    target = "B_DUPE"
+    first = database.notify_cross_site_view(
+        {"username": viewer, "role": "hod", "site_id": "A"}, target,
+    )
+    second = database.notify_cross_site_view(
+        {"username": viewer, "role": "hod", "site_id": "A"}, target,
+    )
+    assert first is True and second is False
+    conn = database.get_connection()
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM app_notifications "
+            "WHERE event_key = 'cross_site_viewed' "
+            "  AND recipient_site = ? AND related_ref LIKE ?",
+            (target, f"{viewer}|%"),
+        ).fetchone()[0]
+        assert n == 1, f"expected exactly 1 notification, got {n}"
+    finally:
+        conn.close()
+
+
+def check_7c_whatsapp_trigger_default_false() -> None:
+    from config import WHATSAPP_TRIGGERS
+    assert "cross_site_viewed" in WHATSAPP_TRIGGERS, "key missing"
+    assert WHATSAPP_TRIGGERS["cross_site_viewed"] is False, \
+        "spec Q6(b): cross_site_viewed defaults False"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 7D — Site-bound PO notification with strict data masking
+# ═══════════════════════════════════════════════════════════════════════════
+def _7d_tag(prefix: str) -> str:
+    import uuid as _u
+    return f"{prefix}_{_u.uuid4().hex[:8]}"
+
+
+def _7d_seed_po(
+    site_id: str = "TEST_7D_SITE",
+    *,
+    pr_numbers: list | None = None,
+    items: list | None = None,
+    with_site: bool = True,
+) -> str:
+    """Seed a PO via create_po_manual and return its PO_Number.
+
+    Returns the PO number on success — raises AssertionError on failure
+    so the calling check surfaces a clear cause.
+    """
+    po_no = _7d_tag("PO_7D")
+    header = {
+        "PO_Number":         po_no,
+        "PR_Number":         (pr_numbers or ["PR-1"])[0],
+        "Site_ID":           site_id if with_site else None,
+        "Vendor_Code":       "V-XYZ",
+        "Vendor_Name":       "Acme Supplies Ltd",
+        "Contact_Person":    "Bob Vendor",
+        "Contact_Email":     "bob@acme.test",
+        "Mobile":            "+966509999999",
+        "Our_Email":         "buyer@gi.test",
+        "Inco_Terms":        "DDP Riyadh",
+        "Payment_Terms":     "Net 30",
+        "PO_Date":           "2026-06-15",
+        "PO_Type":           "Capex",
+        "Quotation_No":      "Q-555",
+        "Quotation_Date":    "2026-06-10",
+        "Your_Reference":    "REF-VEN",
+        "Our_Reference":     "REF-GI",
+        "Expected_Delivery": "2026-06-25",
+        "Freight_Charges":   500.0,
+        "Handling_Charges":  150.0,
+        "Discount_Amount":   100.0,
+        "Total_Amount":      9876.54,
+        "Amount_In_Words":   "Nine thousand eight hundred…",
+    }
+    if items is None:
+        items = [{
+            "Material_Code": "MAT-1",
+            "Description":   "Widget A",
+            "Qty":           5,
+            "UOM":           "PCS",
+            "Unit_Price":    100.0,
+            "Total_Price":   500.0,
+            "PR_Number":     (pr_numbers or ["PR-1"])[0],
+        }]
+    ok, msg = database.create_po_manual(
+        header, items, created_by="test_logistics",
+    )
+    assert ok, f"create_po_manual failed: {msg}"
+    return po_no
+
+
+def check_7d_mask_field_count() -> None:
+    from database import PO_VENDOR_MASK_FIELDS
+    assert len(PO_VENDOR_MASK_FIELDS) == 17, \
+        f"expected 17 mask fields, got {len(PO_VENDOR_MASK_FIELDS)}"
+
+
+def check_7d_default_no_mask() -> None:
+    po = _7d_seed_po(site_id="TEST_7D_DEF")
+    detail = database.get_po_detail(po)
+    h = detail["header"]
+    assert h.get("Vendor_Name") == "Acme Supplies Ltd", h.get("Vendor_Name")
+    assert h.get("Total_Amount") not in (None, 0, 0.0), h.get("Total_Amount")
+
+
+def check_7d_hide_vendor_strips_all() -> None:
+    from database import PO_VENDOR_MASK_FIELDS
+    po = _7d_seed_po(site_id="TEST_7D_HV")
+    detail = database.get_po_detail(po, hide_vendor=True)
+    h = detail["header"]
+    for f in PO_VENDOR_MASK_FIELDS:
+        assert h.get(f) is None, f"{f} should be None when hide_vendor=True, got {h.get(f)!r}"
+
+
+def check_7d_hide_vendor_keeps_operational() -> None:
+    po = _7d_seed_po(site_id="TEST_7D_KEEP")
+    h = database.get_po_detail(po, hide_vendor=True)["header"]
+    assert h.get("PO_Type") == "Capex", h.get("PO_Type")
+    assert h.get("PO_Date") == "2026-06-15", h.get("PO_Date")
+    assert h.get("Expected_Delivery") == "2026-06-25"
+    assert h.get("Site_ID") == "TEST_7D_KEEP"
+
+
+def check_7d_combined_masks() -> None:
+    po = _7d_seed_po(site_id="TEST_7D_COMB")
+    detail = database.get_po_detail(po, hide_prices=True, hide_vendor=True)
+    h = detail["header"]
+    assert h.get("Vendor_Name") is None
+    assert h.get("Total_Amount") is None
+    items = detail["items"]
+    assert not items.empty
+    assert items["Unit_Price"].isna().all(), items["Unit_Price"].tolist()
+    assert items["Total_Price"].isna().all(), items["Total_Price"].tolist()
+
+
+def check_7d_summary_title_and_site() -> None:
+    po = _7d_seed_po(site_id="TEST_7D_TITLE")
+    s = database.build_po_site_notification(po)
+    assert s["site_id"] == "TEST_7D_TITLE", s
+    assert s["title"] == f"PO {po} issued for delivery to TEST_7D_TITLE", s["title"]
+
+
+def check_7d_summary_pr_list_dedup() -> None:
+    items = [
+        {"Material_Code": "M-A", "Description": "A", "Qty": 1, "UOM": "PCS",
+         "Unit_Price": 10, "Total_Price": 10, "PR_Number": "PR-100"},
+        {"Material_Code": "M-B", "Description": "B", "Qty": 2, "UOM": "PCS",
+         "Unit_Price": 10, "Total_Price": 20, "PR_Number": "PR-100"},
+        {"Material_Code": "M-C", "Description": "C", "Qty": 3, "UOM": "PCS",
+         "Unit_Price": 10, "Total_Price": 30, "PR_Number": "PR-200"},
+    ]
+    po = _7d_seed_po(site_id="TEST_7D_PR", items=items, pr_numbers=["PR-100"])
+    s = database.build_po_site_notification(po)
+    # Distinct list, comma-joined.
+    assert "PR-100" in s["pr_numbers"], s["pr_numbers"]
+    assert "PR-200" in s["pr_numbers"], s["pr_numbers"]
+    # No dupes — split + dedupe check.
+    parts = [p.strip() for p in s["pr_numbers"].split(",")]
+    assert len(parts) == len(set(parts)), parts
+
+
+def check_7d_summary_expected_delivery() -> None:
+    po = _7d_seed_po(site_id="TEST_7D_ED")
+    s = database.build_po_site_notification(po)
+    assert "2026-06-25" in s["app_body"], s["app_body"]
+
+
+def check_7d_summary_line_truncation() -> None:
+    items = [
+        {"Material_Code": f"M-{i}", "Description": f"Desc {i}",
+         "Qty": i + 1, "UOM": "PCS",
+         "Unit_Price": 10, "Total_Price": 10 * (i + 1),
+         "PR_Number": "PR-LONG"}
+        for i in range(8)
+    ]
+    po = _7d_seed_po(site_id="TEST_7D_TRUNC", items=items,
+                     pr_numbers=["PR-LONG"])
+    s = database.build_po_site_notification(po)
+    body = s["app_body"]
+    # First 5 SAP codes present (M-0..M-4); M-7 must NOT appear (truncated).
+    for i in range(5):
+        assert f"M-{i}" in body, f"M-{i} missing in body"
+    assert "M-7" not in body, "8th item should be in overflow"
+    assert "and 3 more line(s)" in body, f"overflow caption missing: {body}"
+
+
+def check_7d_summary_no_vendor_in_body() -> None:
+    po = _7d_seed_po(site_id="TEST_7D_NV")
+    s = database.build_po_site_notification(po)
+    blob = s["app_body"] + "\n" + s["whatsapp_body"]
+    # Vendor identifiers must not appear anywhere.
+    for needle in ("Acme Supplies", "V-XYZ", "Bob Vendor",
+                   "bob@acme.test", "+966509999999"):
+        assert needle not in blob, f"vendor leak: {needle!r} in body"
+
+
+def check_7d_summary_no_financials_in_body() -> None:
+    po = _7d_seed_po(site_id="TEST_7D_NF")
+    s = database.build_po_site_notification(po)
+    blob = s["app_body"] + "\n" + s["whatsapp_body"]
+    # Financial figures from the seed (9876.54, 500.0, 150.0, 100.0).
+    for needle in ("9876.54", "9876", "Nine thousand"):
+        assert needle not in blob, f"financial leak: {needle!r} in body"
+    # Commercial terms strings must not appear.
+    for needle in ("DDP Riyadh", "Net 30", "Q-555"):
+        assert needle not in blob, f"terms leak: {needle!r} in body"
+
+
+def check_7d_summary_whatsapp_mirrors_app() -> None:
+    po = _7d_seed_po(site_id="TEST_7D_WA")
+    s = database.build_po_site_notification(po)
+    # Same item bullet lines must appear in both bodies.
+    for line in s["app_body"].splitlines():
+        if line.startswith("• "):
+            assert line in s["whatsapp_body"], \
+                f"item line missing from WhatsApp body: {line}"
+
+
+def _7d_seed_user(role: str, site_id: str) -> str:
+    """Insert a user row so get_site_role_phones() returns a phone."""
+    import uuid as _u
+    uname = f"7d_{role}_{_u.uuid4().hex[:6]}"
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO users "
+            "(username, password_hash, role, Site_ID, Phone_Number) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (uname, "hash", role, site_id, "+966500001234"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return uname
+
+
+def check_7d_create_po_notifies_hod() -> None:
+    site = "TEST_7D_HOD_NTF"
+    _7d_seed_user("hod", site)
+    po = _7d_seed_po(site_id=site)
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT title, body FROM app_notifications "
+            "WHERE event_key='po_issued' AND recipient_role='hod' "
+            "  AND recipient_site=? AND related_ref=? "
+            "ORDER BY id DESC LIMIT 1",
+            (site, po),
+        ).fetchone()
+        assert row is not None, "no HOD notification queued"
+        assert po in (row[0] or ""), f"PO# missing in title: {row[0]}"
+        assert "Expected Delivery" in (row[1] or ""), \
+            f"operational summary missing: {row[1]}"
+    finally:
+        conn.close()
+
+
+def check_7d_create_po_notifies_sk() -> None:
+    site = "TEST_7D_SK_NTF"
+    _7d_seed_user("store_keeper", site)
+    po = _7d_seed_po(site_id=site)
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT title, body FROM app_notifications "
+            "WHERE event_key='po_issued' AND recipient_role='store_keeper' "
+            "  AND recipient_site=? AND related_ref=? "
+            "ORDER BY id DESC LIMIT 1",
+            (site, po),
+        ).fetchone()
+        assert row is not None, "no SK notification queued (fan-out missing)"
+    finally:
+        conn.close()
+
+
+def check_7d_create_po_no_vendor_leak() -> None:
+    """Regression guard against the pre-7D body=f'Vendor: …' leak."""
+    site = "TEST_7D_LEAK"
+    po = _7d_seed_po(site_id=site)
+    conn = database.get_connection()
+    try:
+        bodies = [r[0] for r in conn.execute(
+            "SELECT body FROM app_notifications "
+            "WHERE related_ref=? AND event_key='po_issued'", (po,),
+        ).fetchall()]
+        assert bodies, "no notifications written"
+        for b in bodies:
+            assert "Acme Supplies" not in (b or ""), b
+            assert "V-XYZ" not in (b or ""), b
+            assert "Vendor:" not in (b or ""), b  # the exact leaky prefix
+    finally:
+        conn.close()
+
+
+def check_7d_create_po_no_site_no_notif() -> None:
+    """PO with Site_ID=NULL → notification block must be skipped entirely."""
+    po = _7d_seed_po(with_site=False)
+    conn = database.get_connection()
+    try:
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM app_notifications "
+            "WHERE event_key='po_issued' AND related_ref=?", (po,),
+        ).fetchone()[0]
+        assert cnt == 0, f"expected 0 notifications for site-less PO, got {cnt}"
+    finally:
+        conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 7E — Form draft recovery checks
+# ═══════════════════════════════════════════════════════════════════════════
+def _7e_tag(prefix: str) -> str:
+    import uuid as _u
+    return f"{prefix}_{_u.uuid4().hex[:8]}"
+
+
+def check_7e_index_expires() -> None:
+    conn = database.get_connection()
+    try:
+        idx = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='form_drafts'"
+        ).fetchall()}
+        assert "ix_form_drafts_expires" in idx, f"missing: {idx}"
+    finally:
+        conn.close()
+
+
+def check_7e_index_user() -> None:
+    conn = database.get_connection()
+    try:
+        idx = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='form_drafts'"
+        ).fetchall()}
+        assert "ix_form_drafts_user" in idx, f"missing: {idx}"
+    finally:
+        conn.close()
+
+
+def check_7e_unique_constraint() -> None:
+    """Raw INSERT with same (username, form_id) must raise IntegrityError."""
+    import sqlite3 as _sqlite3
+    u = _7e_tag("U")
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO form_drafts (username, form_id, payload_json) "
+            "VALUES (?, ?, ?)", (u, "f1", "{}"),
+        )
+        conn.commit()
+        raised = False
+        try:
+            conn.execute(
+                "INSERT INTO form_drafts (username, form_id, payload_json) "
+                "VALUES (?, ?, ?)", (u, "f1", "{}"),
+            )
+            conn.commit()
+        except _sqlite3.IntegrityError:
+            raised = True
+            conn.rollback()
+        assert raised, "UNIQUE(username, form_id) not enforced"
+    finally:
+        conn.close()
+
+
+def check_7e_upsert_new() -> None:
+    u = _7e_tag("UPN")
+    ok = database.upsert_form_draft(u, "sk_consumption", {"a": 1}, site_id="HQ")
+    assert ok is True
+    conn = database.get_connection()
+    try:
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM form_drafts WHERE username=?", (u,),
+        ).fetchone()[0]
+        assert cnt == 1, f"expected 1 row, got {cnt}"
+    finally:
+        conn.close()
+
+
+def check_7e_upsert_updates() -> None:
+    u = _7e_tag("UPD")
+    database.upsert_form_draft(u, "sk_consumption", {"v": 1})
+    database.upsert_form_draft(u, "sk_consumption", {"v": 2})
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT payload_json FROM form_drafts WHERE username=?", (u,),
+        ).fetchone()
+        import json as _j
+        assert _j.loads(row[0]) == {"v": 2}, row
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM form_drafts WHERE username=?", (u,),
+        ).fetchone()[0]
+        assert cnt == 1, f"expected upsert (1 row), got {cnt}"
+    finally:
+        conn.close()
+
+
+def check_7e_default_ttl_seven_days() -> None:
+    import datetime as _dt
+    u = _7e_tag("TTL7")
+    database.upsert_form_draft(u, "f", {"k": "v"})
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT expires_at FROM form_drafts WHERE username=?", (u,),
+        ).fetchone()
+        exp = _dt.datetime.fromisoformat(row[0])
+        delta = exp - _dt.datetime.utcnow()
+        # 7 days ± 5s for clock skew during test execution.
+        assert _dt.timedelta(days=7) - _dt.timedelta(seconds=5) <= delta <= \
+               _dt.timedelta(days=7) + _dt.timedelta(seconds=5), \
+            f"expected ~7d TTL, got {delta}"
+    finally:
+        conn.close()
+
+
+def check_7e_custom_ttl() -> None:
+    import datetime as _dt
+    u = _7e_tag("TTL30")
+    database.upsert_form_draft(u, "f", {"k": "v"}, ttl_days=30)
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT expires_at FROM form_drafts WHERE username=?", (u,),
+        ).fetchone()
+        exp = _dt.datetime.fromisoformat(row[0])
+        delta = exp - _dt.datetime.utcnow()
+        assert _dt.timedelta(days=30) - _dt.timedelta(seconds=5) <= delta <= \
+               _dt.timedelta(days=30) + _dt.timedelta(seconds=5), delta
+    finally:
+        conn.close()
+
+
+def check_7e_rejects_non_json() -> None:
+    """Truly unserialisable payloads (circular refs) must raise ValueError.
+
+    The helper intentionally uses default=str so widgets carrying Decimal /
+    datetime / UploadedFile remnants persist as strings — drafts MUST succeed
+    or we defeat the purpose. But a circular reference is the one shape
+    `json.dumps(default=str)` cannot rescue, so we test that path."""
+    u = _7e_tag("BAD")
+    circular: dict = {}
+    circular["self"] = circular
+    raised = False
+    try:
+        database.upsert_form_draft(u, "f", circular)
+    except ValueError:
+        raised = True
+    assert raised, "circular-reference payload should raise ValueError"
+
+
+def check_7e_get_returns_payload() -> None:
+    u = _7e_tag("GETP")
+    payload = {"cart": [{"sap": "S-1", "qty": 5}], "tank": "T-9"}
+    database.upsert_form_draft(u, "supervisor_request", payload, site_id="HQ")
+    got = database.get_form_draft(u, "supervisor_request")
+    assert got is not None, "draft should be readable"
+    assert got["payload"] == payload, got["payload"]
+
+
+def check_7e_get_missing_returns_none() -> None:
+    u = _7e_tag("MISS")
+    assert database.get_form_draft(u, "supervisor_request") is None
+
+
+def check_7e_get_expired_returns_none() -> None:
+    """Manually insert an expired row; get_form_draft must treat as missing."""
+    import datetime as _dt
+    u = _7e_tag("EXP")
+    conn = database.get_connection()
+    try:
+        past = (_dt.datetime.utcnow() - _dt.timedelta(days=1)).isoformat(timespec="seconds")
+        conn.execute(
+            "INSERT INTO form_drafts (username, form_id, payload_json, expires_at) "
+            "VALUES (?, ?, ?, ?)",
+            (u, "f", "{}", past),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert database.get_form_draft(u, "f") is None, \
+        "expired draft should be hidden from get_form_draft"
+
+
+def check_7e_delete_works() -> None:
+    u = _7e_tag("DEL")
+    database.upsert_form_draft(u, "f", {"k": "v"})
+    assert database.delete_form_draft(u, "f") is True
+    assert database.get_form_draft(u, "f") is None
+
+
+def check_7e_delete_missing_returns_false() -> None:
+    u = _7e_tag("DELM")
+    assert database.delete_form_draft(u, "f") is False
+
+
+def check_7e_prune_drops_expired() -> None:
+    import datetime as _dt
+    u_live = _7e_tag("PRN_L")
+    u_dead = _7e_tag("PRN_D")
+    database.upsert_form_draft(u_live, "f", {"k": 1})       # 7d TTL, alive
+    # Insert manually-expired row.
+    conn = database.get_connection()
+    try:
+        past = (_dt.datetime.utcnow() - _dt.timedelta(days=1)).isoformat(timespec="seconds")
+        conn.execute(
+            "INSERT INTO form_drafts (username, form_id, payload_json, expires_at) "
+            "VALUES (?, ?, ?, ?)",
+            (u_dead, "f", "{}", past),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    n = database.prune_expired_form_drafts()
+    assert n >= 1, f"prune should remove ≥1 expired row, got {n}"
+    # Live row survives.
+    assert database.get_form_draft(u_live, "f") is not None
+
+
+def check_7e_list_user_drafts() -> None:
+    u = _7e_tag("LST")
+    database.upsert_form_draft(u, "supervisor_request", {"k": 1})
+    database.upsert_form_draft(u, "sk_consumption", {"k": 2})
+    df = database.list_user_drafts(u)
+    assert len(df) == 2, f"expected 2 drafts, got {len(df)}"
+    forms = set(df["form_id"].tolist())
+    assert forms == {"supervisor_request", "sk_consumption"}, forms
+
+
+def check_7e_requirements_has_local_storage() -> None:
+    """requirements.txt must declare streamlit-local-storage so the
+    client-side primary draft layer ships with the app."""
+    import pathlib
+    text = pathlib.Path(REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "streamlit-local-storage" in text.lower(), \
+        "streamlit-local-storage missing from requirements.txt"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 7F — Role-segregated manual PDFs + screenshot embedding
+# ═══════════════════════════════════════════════════════════════════════════
+def _7f_load_real_md() -> str:
+    """Read the actual USER_MANUAL.md from the repo root. Slicer tests rely
+    on the real chapter titles being present, so we don't use a fixture."""
+    import pathlib
+    return pathlib.Path(REPO_ROOT / "USER_MANUAL.md").read_text(encoding="utf-8")
+
+
+def check_7f_recipes_cover_all_roles() -> None:
+    from build_manual_pdf import ROLE_MANUAL_RECIPES
+    expected = {"store_keeper", "supervisor", "hod", "logistics",
+                "warehouse_user", "admin"}
+    got = set(ROLE_MANUAL_RECIPES.keys())
+    missing = expected - got
+    assert not missing, f"recipes missing for roles: {missing}"
+
+
+def check_7f_slice_sk_keeps_own() -> None:
+    from build_manual_pdf import slice_markdown_for_role
+    sliced = slice_markdown_for_role("store_keeper", _7f_load_real_md())
+    assert "# 4. Store Keeper Manual" in sliced, \
+        "SK chapter heading missing from sliced output"
+
+
+def check_7f_slice_sk_drops_logistics() -> None:
+    from build_manual_pdf import slice_markdown_for_role
+    sliced = slice_markdown_for_role("store_keeper", _7f_load_real_md())
+    assert "# 14. Logistics Portal Manual" not in sliced, \
+        "Logistics chapter leaked into SK booklet"
+    assert "# 15. Warehouse Portal Manual" not in sliced, \
+        "Warehouse chapter leaked into SK booklet"
+
+
+def check_7f_slice_supervisor_keeps_own() -> None:
+    from build_manual_pdf import slice_markdown_for_role
+    sliced = slice_markdown_for_role("supervisor", _7f_load_real_md())
+    assert "# 5. Supervisor Manual" in sliced
+    assert "# 4. Store Keeper Manual" not in sliced, "SK chapter leaked into supervisor booklet"
+
+
+def check_7f_slice_hod_keeps_reports() -> None:
+    from build_manual_pdf import slice_markdown_for_role
+    sliced = slice_markdown_for_role("hod", _7f_load_real_md())
+    assert "# 6. HOD (Head of Department) Manual" in sliced
+    assert "# 8. Reports Module" in sliced, "Reports chapter missing from HOD booklet"
+
+
+def check_7f_slice_admin_full() -> None:
+    from build_manual_pdf import slice_markdown_for_role
+    md = _7f_load_real_md()
+    sliced = slice_markdown_for_role("admin", md)
+    assert sliced == md, "admin recipe should be a passthrough"
+
+
+def check_7f_parse_image_block() -> None:
+    from build_manual_pdf import parse_markdown
+    md = "Intro paragraph.\n\n![Hero shot](docs/screenshots/foo.png)\n\nMore text."
+    blocks = parse_markdown(md)
+    img_blocks = [b for b in blocks if b.kind == "img"]
+    assert len(img_blocks) == 1, f"expected 1 image block, got {len(img_blocks)}"
+    b = img_blocks[0]
+    assert b.text == "docs/screenshots/foo.png", b.text
+    assert b.items == ["Hero shot"], b.items
+
+
+def check_7f_render_image_missing_no_crash() -> None:
+    """Missing screenshot file must render a placeholder, not raise."""
+    from build_manual_pdf import ManualPDF
+    pdf = ManualPDF()
+    pdf.render_cover()       # need at least one page so render_image has context
+    # Force a placeholder by referencing a nonexistent path.
+    pdf.render_image("docs/screenshots/__definitely_missing_7f__.png",
+                     caption="placeholder caption")
+    out = bytes(pdf.output())
+    assert out.startswith(b"%PDF-"), "PDF magic bytes missing"
+
+
+def check_7f_role_pdf_starts_with_magic() -> None:
+    from build_manual_pdf import build_role_manual_pdf
+    pdf = build_role_manual_pdf("store_keeper", _7f_load_real_md())
+    assert isinstance(pdf, (bytes, bytearray))
+    assert pdf.startswith(b"%PDF-"), "Output does not start with %PDF-"
+    assert len(pdf) > 5_000, f"PDF too small to be valid: {len(pdf)} bytes"
+
+
+def check_7f_admin_equals_master() -> None:
+    """Admin recipe == 'ALL' falls through to build_manual_pdf.
+
+    PDF byte equality is unreliable across runs (timestamps inside PDF
+    metadata), so we assert both PDFs render the same chapter set by
+    comparing their byte-length within ±5%."""
+    from build_manual_pdf import build_manual_pdf, build_role_manual_pdf
+    md = _7f_load_real_md()
+    a = build_role_manual_pdf("admin", md)
+    b = build_manual_pdf(md)
+    ratio = abs(len(a) - len(b)) / max(len(b), 1)
+    assert ratio < 0.05, f"admin PDF differs from master by {ratio*100:.1f}% (len {len(a)} vs {len(b)})"
+
+
+def check_7f_unknown_role_falls_back() -> None:
+    from build_manual_pdf import build_role_manual_pdf
+    pdf = build_role_manual_pdf("nonexistent_role_xyz", _7f_load_real_md())
+    assert pdf.startswith(b"%PDF-"), "Unknown role should silently fall back to master PDF"
+
+
+def check_7f_screenshot_placeholders_exist() -> None:
+    """The seed set produced by scripts/generate_screenshot_placeholders.py
+    must be present on disk so the manual PDF doesn't render all-placeholder
+    cards in production. (CI / fresh-clone owners run the script once.)"""
+    import pathlib
+    d = pathlib.Path(REPO_ROOT / "docs" / "screenshots")
+    assert d.exists(), f"directory missing: {d}"
+    pngs = list(d.glob("*.png"))
+    assert len(pngs) >= 10, f"expected >=10 seed placeholders, found {len(pngs)}"
+
+
 def main() -> int:
     print(f"▶ Bug-check harness · DB → {TMP_DB}")
     try:
@@ -3108,6 +4716,300 @@ def main() -> int:
     run_check("Bulk Badges", "generate_employee_qr_badges_pdf produces valid PDF",
               check_employee_badges_pdf_smoke,
               "reports.py — multi-page grid + HR header band + empty-list placeholder.")
+
+    # ── Phase 7A — Employee Site Binding ──────────────────────────────────
+    run_check("Phase 7A", "employees.Site_ID column self-heals",
+              check_7a_site_id_column_present,
+              "init_db() ALTER TABLE ADD COLUMN Site_ID block.")
+    run_check("Phase 7A", "ix_employees_site index exists",
+              check_7a_site_id_index_present,
+              "CREATE INDEX ix_employees_site ON employees(Site_ID).")
+    run_check("Phase 7A", "add_employee(site_id=) persists binding",
+              check_7a_add_with_site_persists,
+              "add_employee writes Site_ID into the new column.")
+    run_check("Phase 7A", "add_employee() without site_id writes NULL (back-compat)",
+              check_7a_add_without_site_is_null,
+              "Phase 6A call sites that don't pass site_id keep working.")
+    run_check("Phase 7A", "update_employee(site_id=) reassigns site",
+              check_7a_update_site_reassigns,
+              "Admin path can move employees between sites.")
+    run_check("Phase 7A", "update_employee(site_id='') clears binding to NULL",
+              check_7a_update_site_clears,
+              "Empty-string sentinel maps to NULL.")
+    run_check("Phase 7A", "update_employee(site_id=None) leaves binding untouched",
+              check_7a_update_site_none_untouched,
+              "None means 'don't write Site_ID' — preserves existing binding.")
+    run_check("Phase 7A", "list_employees() returns Site_ID column",
+              check_7a_list_employees_has_site_column,
+              "Roster df must expose Site_ID for the Admin grid.")
+    run_check("Phase 7A", "list_employees(site_id_filter='HQ') filters",
+              check_7a_list_employees_site_filter,
+              "Per-site filter behind the Roster Site dropdown.")
+    run_check("Phase 7A", "list_employees(site_id_filter='__UNASSIGNED__') gets NULL rows",
+              check_7a_list_employees_unassigned_sentinel,
+              "Powers the red 'unassigned' banner in Admin Portal.")
+    run_check("Phase 7A", "list_employees_for_site(site, status='active') excludes inactive",
+              check_7a_list_employees_for_site_active_only,
+              "Convenience wrapper used by Phase 7B Supervisor form.")
+    run_check("Phase 7A", "import_employees_csv with Site_ID column persists site",
+              check_7a_csv_with_site_id_column,
+              "Optional CSV column drives the binding on insert.")
+    run_check("Phase 7A", "import_employees_csv without Site_ID column is back-compat",
+              check_7a_csv_without_site_id_column,
+              "Legacy CSVs continue to work; binding stays NULL.")
+    run_check("Phase 7A", "import_employees_csv preserves existing binding when col absent",
+              check_7a_csv_omitted_col_preserves_binding,
+              "Re-importing legacy CSV must NOT wipe Site_ID set by Admin.")
+    run_check("Phase 7A", "bulk_assign_employees_to_site sets Site_ID for N rows",
+              check_7a_bulk_assign_helper,
+              "Drives the Admin red-banner bulk-assign widget.")
+
+    # ── Phase 7B — Supervisor Material Request workflow ──────────────────
+    run_check("Phase 7B", "generate_smr_request_no returns SMR-YYYYMMDD-0001 day-empty",
+              check_7b_generate_request_no_first,
+              "First request of the day must start at 0001.")
+    run_check("Phase 7B", "generate_smr_request_no increments on same day",
+              check_7b_generate_request_no_increments,
+              "Second call same day returns -0002.")
+    run_check("Phase 7B", "create_supervisor_request happy path inserts header + items",
+              check_7b_create_happy_path,
+              "Single-transaction insert across both tables.")
+    run_check("Phase 7B", "rejects worker not bound to site",
+              check_7b_create_rejects_wrong_site_worker,
+              "Worker must be active at requesting site.")
+    run_check("Phase 7B", "rejects empty item list",
+              check_7b_create_rejects_empty_items,
+              "Need ≥1 item.")
+    run_check("Phase 7B", "rejects PPE=No without reason",
+              check_7b_create_rejects_no_ppe_no_reason,
+              "Mandatory reason when Old_PPE_Returned=0.")
+    run_check("Phase 7B", "rejects unknown SAP_Code",
+              check_7b_create_rejects_unknown_sap,
+              "SAP_Code must exist in inventory.")
+    run_check("Phase 7B", "Stock_At_Request snapshot is captured",
+              check_7b_stock_snapshot_captured,
+              "Each line records the stock value at insert time.")
+    run_check("Phase 7B", "Available_Flag = 0 when requested qty > stock",
+              check_7b_available_flag_zero_when_short,
+              "Flag drives the Supervisor's amber 'short' warning.")
+    run_check("Phase 7B", "approve mirrors lines → pending_issues pending_hod",
+              check_7b_approve_mirrors_to_pending_issues,
+              "Work_Type=SUPERVISOR_REQUEST, Source_Ref set, Issued_To/Tank_No populated.")
+    run_check("Phase 7B", "approve flips status + captures posted_pending_ids JSON",
+              check_7b_approve_captures_posted_ids,
+              "Header status → approved, JSON rowid list persists.")
+    run_check("Phase 7B", "approve is idempotent (refuses second call)",
+              check_7b_approve_idempotent,
+              "Second approval refused: 'already approved'.")
+    run_check("Phase 7B", "approve drops SK_Adjusted_Qty=0 lines",
+              check_7b_approve_drops_zero_adjusted,
+              "Zero-out semantic per user spec: SK delete with no extra clicks.")
+    run_check("Phase 7B", "reject requires reason + flips status, no pending_issues",
+              check_7b_reject_blocks_without_reason,
+              "Reject path never writes to consumption ledger.")
+    run_check("Phase 7B", "end-to-end: approve → commit_eod → consumption row with Source_Ref",
+              check_7b_e2e_commit_eod_preserves_source_ref,
+              "commit_eod is unchanged; auto-syncs Source_Ref column.")
+    run_check("Phase 7B", "update_supervisor_request_item only works while pending_sk",
+              check_7b_update_item_locked_post_approval,
+              "Cannot edit a request after SK approves or rejects.")
+    run_check("Phase 7B", "cancel_supervisor_request only works while pending_sk",
+              check_7b_cancel_locked_post_decision,
+              "Cancel refused after SK decides.")
+    run_check("Phase 7B", "delete_supervisor_request_item drops a pending line",
+              check_7b_delete_item_works,
+              "SK can drop lines pre-approval.")
+    run_check("Phase 7B", "report_supervisor_intent_vs_actual joins on Source_Ref",
+              check_7b_report_joins_on_source_ref,
+              "Each row = one approved line; Actual_Qty sums via Source_Ref.")
+    run_check("Phase 7B", "get_open_returnables_for_employee finds matching loans",
+              check_7b_open_returnables_for_employee,
+              "SK side-panel — matches by cv_employee_id OR borrower_name.")
+    run_check("Phase 7B", "config.WHATSAPP_TRIGGERS has 4 smr_* keys",
+              check_7b_config_smr_triggers,
+              "smr_submitted/approved/rejected/cancelled — default True.")
+
+    # ── Phase 7C — HOD Cross-Site View notifications + indicator ─────────
+    run_check("Phase 7C", "ix_csv_target_date index exists",
+              check_7c_index_target_date,
+              "Drives the target-side lookup of who-viewed-today.")
+    run_check("Phase 7C", "ix_csv_viewer_date index exists",
+              check_7c_index_viewer_date,
+              "Drives the viewer-side lookup for the audit panel.")
+    run_check("Phase 7C", "UNIQUE(viewer,target,date) enforced",
+              check_7c_unique_constraint,
+              "Second INSERT same triple → rowcount 0.")
+    run_check("Phase 7C", "record_cross_site_view first call returns True",
+              check_7c_record_first_returns_true,
+              "First view of the day → notification should fire.")
+    run_check("Phase 7C", "record_cross_site_view dedupe returns False",
+              check_7c_record_dedupe_returns_false,
+              "Second call same day → silently no-op.")
+    run_check("Phase 7C", "different target same day returns True",
+              check_7c_different_target_returns_true,
+              "Same viewer browsing two targets gets two notifications.")
+    run_check("Phase 7C", "different viewer same target returns True",
+              check_7c_different_viewer_returns_true,
+              "Two HODs at different sites can both fire today.")
+    run_check("Phase 7C", "self-view returns False",
+              check_7c_self_view_skipped,
+              "Defensive — UI flow already excludes own site from picker.")
+    run_check("Phase 7C", "blank inputs return False",
+              check_7c_blank_inputs_skipped,
+              "Helper never raises on missing username / site.")
+    run_check("Phase 7C", "notify_cross_site_view admin role → silent",
+              check_7c_admin_role_suppressed,
+              "Spec Q2(b): admin shadowing never fires the notification.")
+    run_check("Phase 7C", "notify_cross_site_view queues notification on first fire",
+              check_7c_notify_queues_app_notification,
+              "queue_app_notification called with recipient_role=hod + target site.")
+    run_check("Phase 7C", "notify_cross_site_view writes audit row on first fire",
+              check_7c_notify_writes_audit_row,
+              "system_audit_log: action=CROSS_SITE_VIEW with viewer/target/date.")
+    run_check("Phase 7C", "notify_cross_site_view dedupe → no new notification",
+              check_7c_notify_dedupe_no_double_send,
+              "Second call same day must not add app_notifications row.")
+    run_check("Phase 7C", "config.WHATSAPP_TRIGGERS['cross_site_viewed'] = False",
+              check_7c_whatsapp_trigger_default_false,
+              "Per spec Q6(b): default off; admin can flip later.")
+
+    # ── Phase 7D — Site-bound PO notification with strict masking ────────
+    run_check("Phase 7D", "PO_VENDOR_MASK_FIELDS has 17 entries",
+              check_7d_mask_field_count,
+              "Identity + commercial terms + financial totals.")
+    run_check("Phase 7D", "get_po_detail() default returns commercial fields populated",
+              check_7d_default_no_mask,
+              "Back-compat: callers without hide_vendor see all data.")
+    run_check("Phase 7D", "get_po_detail(hide_vendor=True) blanks all 17 fields",
+              check_7d_hide_vendor_strips_all,
+              "Every PO_VENDOR_MASK_FIELDS entry becomes None.")
+    run_check("Phase 7D", "get_po_detail(hide_vendor=True) preserves PO_Type + PO_Date",
+              check_7d_hide_vendor_keeps_operational,
+              "Spec Q1: PO_Type + PO_Date are operational, not commercial.")
+    run_check("Phase 7D", "get_po_detail combines hide_prices + hide_vendor",
+              check_7d_combined_masks,
+              "Items prices blank AND header vendor fields blank.")
+    run_check("Phase 7D", "build_po_site_notification — title + site_id correct",
+              check_7d_summary_title_and_site,
+              "'PO {n} issued for delivery to {site}'.")
+    run_check("Phase 7D", "build_po_site_notification — PR list deduped from items",
+              check_7d_summary_pr_list_dedup,
+              "Spec Q2(b): distinct PRs across line items, comma-joined.")
+    run_check("Phase 7D", "build_po_site_notification — Expected_Delivery surfaced",
+              check_7d_summary_expected_delivery,
+              "Operational tracking field, always shown.")
+    run_check("Phase 7D", "build_po_site_notification — body has top 5 lines + 'and N more'",
+              check_7d_summary_line_truncation,
+              "Spec Q3: 5-line ceiling with overflow caption.")
+    run_check("Phase 7D", "build_po_site_notification body has NO Vendor_Name",
+              check_7d_summary_no_vendor_in_body,
+              "Strict masking — regression guard.")
+    run_check("Phase 7D", "build_po_site_notification body has NO financial figure",
+              check_7d_summary_no_financials_in_body,
+              "Total_Amount / Freight_Charges / Discount_Amount excluded.")
+    run_check("Phase 7D", "build_po_site_notification — WhatsApp body mirrors in-app",
+              check_7d_summary_whatsapp_mirrors_app,
+              "Spec Q4(a): line-for-line match modulo bold + emoji header.")
+    run_check("Phase 7D", "create_po_manual queues notification to site HOD",
+              check_7d_create_po_notifies_hod,
+              "Replaces leaky 'Vendor: …' body.")
+    run_check("Phase 7D", "create_po_manual queues notification to site SK",
+              check_7d_create_po_notifies_sk,
+              "Spec Q5: fan out to all SKs at site.")
+    run_check("Phase 7D", "create_po_manual notifications NEVER contain Vendor_Name",
+              check_7d_create_po_no_vendor_leak,
+              "Regression guard against the pre-7D 'Vendor: …' body leak.")
+    run_check("Phase 7D", "create_po_manual with Site_ID=NULL queues NO notification",
+              check_7d_create_po_no_site_no_notif,
+              "Defensive: no destination → no broadcast.")
+
+    # ── Phase 7E — Form draft recovery (server-side layer) ───────────────
+    run_check("Phase 7E", "ix_form_drafts_expires index exists",
+              check_7e_index_expires,
+              "Powers the daily prune.")
+    run_check("Phase 7E", "ix_form_drafts_user index exists",
+              check_7e_index_user,
+              "Powers per-user draft listing.")
+    run_check("Phase 7E", "UNIQUE(username, form_id) enforced",
+              check_7e_unique_constraint,
+              "One draft per (user, form) — upsert overwrites in place.")
+    run_check("Phase 7E", "upsert_form_draft writes a new row",
+              check_7e_upsert_new,
+              "First save → INSERT.")
+    run_check("Phase 7E", "upsert_form_draft updates on duplicate (user, form)",
+              check_7e_upsert_updates,
+              "Second save → ON CONFLICT UPDATE.")
+    run_check("Phase 7E", "upsert_form_draft default TTL is 7 days",
+              check_7e_default_ttl_seven_days,
+              "Spec Q2 — covers Fri/Sat weekend.")
+    run_check("Phase 7E", "upsert_form_draft honours custom ttl_days",
+              check_7e_custom_ttl,
+              "ttl_days=30 → expires_at = now + 30d.")
+    run_check("Phase 7E", "upsert_form_draft rejects non-JSON payload",
+              check_7e_rejects_non_json,
+              "Raises ValueError; never persists garbage.")
+    run_check("Phase 7E", "get_form_draft returns roundtripped payload",
+              check_7e_get_returns_payload,
+              "JSON encode/decode preserves nested dicts + lists.")
+    run_check("Phase 7E", "get_form_draft returns None for missing entry",
+              check_7e_get_missing_returns_none,
+              "No row → None, never raises.")
+    run_check("Phase 7E", "get_form_draft hides expired entries",
+              check_7e_get_expired_returns_none,
+              "Expired rows aren't auto-deleted; helper masks them.")
+    run_check("Phase 7E", "delete_form_draft removes row + returns True",
+              check_7e_delete_works,
+              "Called after successful submit.")
+    run_check("Phase 7E", "delete_form_draft on missing entry returns False",
+              check_7e_delete_missing_returns_false,
+              "Idempotent — never raises.")
+    run_check("Phase 7E", "prune_expired_form_drafts deletes expired rows only",
+              check_7e_prune_drops_expired,
+              "Daily prune via WhatsApp worker poll loop.")
+    run_check("Phase 7E", "list_user_drafts returns multi-form DataFrame",
+              check_7e_list_user_drafts,
+              "For future Admin Active Drafts view (deferred to 7E.1).")
+    run_check("Phase 7E", "requirements.txt declares streamlit-local-storage",
+              check_7e_requirements_has_local_storage,
+              "Browser-side primary layer for draft recovery.")
+
+    # ── Phase 7F — Role-segregated manual PDFs ───────────────────────────
+    run_check("Phase 7F", "ROLE_MANUAL_RECIPES covers all 6 production roles",
+              check_7f_recipes_cover_all_roles,
+              "Every role from config.ROLES must have an entry.")
+    run_check("Phase 7F", "slice_markdown_for_role('store_keeper') keeps SK chapter",
+              check_7f_slice_sk_keeps_own,
+              "Slicer extracts chapter 4 for the SK booklet.")
+    run_check("Phase 7F", "slice_markdown_for_role('store_keeper') drops Logistics",
+              check_7f_slice_sk_drops_logistics,
+              "Cross-role chapters must NOT bleed into SK booklet.")
+    run_check("Phase 7F", "slice_markdown_for_role('supervisor') keeps Supervisor chapter",
+              check_7f_slice_supervisor_keeps_own,
+              "Chapter 5 must appear in supervisor booklet.")
+    run_check("Phase 7F", "slice_markdown_for_role('hod') keeps Reports chapter",
+              check_7f_slice_hod_keeps_reports,
+              "HOD booklet must include chapter 8 per recipe.")
+    run_check("Phase 7F", "slice_markdown_for_role('admin') returns full markdown",
+              check_7f_slice_admin_full,
+              "Admin recipe == 'ALL' → unchanged passthrough.")
+    run_check("Phase 7F", "parse_markdown recognises image syntax",
+              check_7f_parse_image_block,
+              "![alt](path) on its own line → Block(kind='img').")
+    run_check("Phase 7F", "render_image handles missing file (placeholder)",
+              check_7f_render_image_missing_no_crash,
+              "Missing PNG renders the grey placeholder card; never raises.")
+    run_check("Phase 7F", "build_role_manual_pdf returns valid PDF bytes",
+              check_7f_role_pdf_starts_with_magic,
+              "Output must start with %PDF- magic bytes.")
+    run_check("Phase 7F", "build_role_manual_pdf('admin') == build_manual_pdf",
+              check_7f_admin_equals_master,
+              "Admin recipe is the master full PDF — identical chapter content.")
+    run_check("Phase 7F", "build_role_manual_pdf(unknown role) falls back to master",
+              check_7f_unknown_role_falls_back,
+              "Unknown role_key → master PDF, no exception.")
+    run_check("Phase 7F", "docs/screenshots/ has the seed placeholder PNGs",
+              check_7f_screenshot_placeholders_exist,
+              "Verifies the placeholder generator was run for the seed set.")
 
     out = write_report()
     print()

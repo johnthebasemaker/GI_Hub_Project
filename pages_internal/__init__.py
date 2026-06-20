@@ -25,6 +25,7 @@ from .hod_portal import page_hod_portal
 from .admin_portal import page_admin_portal
 from .logistics_portal import page_logistics_portal
 from .warehouse_portal import page_warehouse_portal
+from .supervisor_portal import page_supervisor_portal
 
 __all__ = [
     "page_live_dashboard",
@@ -34,4 +35,5 @@ __all__ = [
     "page_admin_portal",
     "page_logistics_portal",
     "page_warehouse_portal",
+    "page_supervisor_portal",
 ]

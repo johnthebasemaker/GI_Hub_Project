@@ -1,7 +1,9 @@
 # GI Hub ERP — Handoff
 
-**Last update:** 2026-06 round 4 — **Phase 6A–F (Workstream A) SHIPPED.** CV/QR foundation, employee master + bulk badge PDF, Smart Scan camera flow with adoption telemetry, YOLOv8 training pipeline + Tool Catalogue manager, hourly returnable-loan reminder sweep with Borrower → SK → Supervisor escalation. Plus emergency fixes: HOD Portal `fillna` crash, Live Dashboard visibility for global roles, warehouse binding for admin shadow.
-**Test status:** **268/268 in `bug_check.py` · 16/16 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`).
+**Last update:** 2026-06 round 10 — **Phase 7F SHIPPED · WORKSTREAM A.5 COMPLETE.** Role-Based User Manual PDFs with Screenshots: `build_manual_pdf.py` extended with `ROLE_MANUAL_RECIPES` (6 role-scoped chapter lists), `slice_markdown_for_role` (line-based slicer, deterministic), Markdown image block parser, `ManualPDF.render_image` (scales + page-break guard + grey placeholder for missing files), `ManualPDF.render_cover_for_role` (personalised "Store Keeper Manual 🗝️"-style cover), `build_role_manual_pdf` public API, CLI `--role <key>` + `--role all` flags. New `docs/screenshots/` directory seeded with 18 PIL placeholder PNGs via `scripts/generate_screenshot_placeholders.py`. USER_MANUAL.md gains ~18 `![alt](docs/screenshots/...)` references at the most-explained role-chapter sections + the shared notifications/offline-pill sub-sections so every booklet picks them up via the universal preamble. Admin Portal Settings → renamed expander "📥 Download Role Manuals" with master at the top and a 2-column grid of 5 role booklets (icon + audience caption + 🛠️ Build / ⬇️ Download). Admin-only access per spec Q9.
+**WORKSTREAM A.5 ROADMAP COMPLETE.** All 6 enhancement points shipped (Phases 7A–7F).
+**Prior rounds:** 7E Network Resilience / Form Recovery · 7D PO Notifications with Strict Data Masking · 7C HOD Cross-Site View Notification + Indicator · 7B Supervisor Material Request workflow · 7A Employee Site Binding · 6A–F (Workstream A) CV/QR foundation, employee master + bulk badge PDF, Smart Scan, YOLOv8 pipeline, Tool Catalogue, returnable-loan reminder sweep.
+**Test status:** **398/398 in `bug_check.py` · 17/17 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`). +12 Phase 7F checks.
 **Production hosting:** Self-host on `giinventory.com` via Cloudflare Tunnel + Access (email allow-list `@generalindustries.net`). Turnkey installer at `host_setup/scripts/install.sh`. See §4 "Run / Develop" and the "Production hosting" chapter.
 **Purpose:** Get the next session productive in <5 minutes — architecture, what changed, what's next.
 **Companion docs:** `USER_MANUAL.md` (every page/tab/button), `SOP.md` (Logistics + Warehouse operating procedure with cadences, decision trees, escalation matrix), `docs/cv_training_guide.md` (Phase 6C — capture → label → train → promote walkthrough).
@@ -388,6 +390,539 @@ All three honour the existing site + date filters and export as PDF/Excel/CSV th
 - **Double TZ removed** in Admin Pending Requests, HOD My Requests, and Admin WhatsApp Console: `get_pending_requests()` and `get_whatsapp_log()` already pass results through the `_localize()` boundary helper. Page-level `localize_timestamps_df` / `auto_localize_timestamps` / `timedelta(+3)` calls were stacking. Removed.
 - **Pending Requests now joins inventory.** `get_pending_requests()` LEFT JOINs `inventory` so each row carries `Material_Code` + `Material_Name` + `UOM`. Admin Pending Requests editor reorders columns + uses `column_config` to relabel headers.
 - **Ollama unreachable now graceful.** `main.py` Hub Assistant pre-flights `manual_qa.health()` before streaming. Unreachable → clean `st.warning("🤖 Local AI is offline. Please run 'ollama serve' in your terminal to enable the AI assistant.")`. Mid-stream connection drops caught by `(ConnectionError, OSError, TimeoutError)`. No more raw `http://localhost:11434` strings leaking into chat.
+
+---
+
+## 2F. Tuning Round 4 (2026-06) — Workstream A.5 step 1: Phase 7A Employee Site Binding
+
+First slice of the operational-polish arc that precedes Workstream B (Docker/Deployment). Six features in this arc; this round delivers feature #5 (Employee Site Binding), which is the prerequisite for Phase 7B (Supervisor Material Request workflow).
+
+### Schema (self-heal in `init_db()`)
+
+- `employees.Site_ID TEXT` — nullable; legacy rows backfill to NULL until Admin assigns them.
+- `CREATE INDEX IF NOT EXISTS ix_employees_site ON employees(Site_ID)` — supports per-site lookups in Phase 7B's supervisor form.
+
+### Helper changes — `database.py`
+
+- `add_employee(... , *, site_id=None, conn=None)` — kwarg added. NULL = unbound.
+- `update_employee(... , *, site_id=None, ...)` — three-valued sentinel: `None` = leave untouched, `""` = clear to NULL, `"<site>"` = set binding.
+- `list_employees(... , *, site_id_filter=None, ...)` — `"__UNASSIGNED__"` sentinel returns NULL-binding rows (powers the red banner).
+- `list_employees_for_site(site_id, *, status_filter="active", conn=None)` — convenience wrapper (used by Phase 7B's supervisor form).
+- `bulk_assign_employees_to_site(id_numbers, site_id, *, updated_by, conn)` — N-row UPDATE behind the Admin red-banner widget. Audited as `EMPLOYEE_BULK_SITE_ASSIGN`.
+- `import_employees_csv` — optional `Site_ID` CSV column. **Absent column never overwrites an existing binding** (back-compat).
+
+### UI — `pages_internal/admin_portal.py`
+
+- **➕ Add form** gains a Site picker (`— Unassigned —` + every site).
+- **✏️ Edit form** gains a Site picker; this is the **only** path that can move an employee between sites.
+- **📥 CSV caption** updated to mention the optional `Site_ID` column.
+- **👥 Roster sub-tab**:
+  - Red banner above the filter row listing all NULL-binding employees, with a bulk-assign expander (multi-select + Site dropdown + Apply).
+  - New Site filter dropdown with "All Sites" / individual sites / `— Unassigned —`. Default "All Sites".
+  - New `Site` column in the displayed dataframe.
+
+### UI — `pages_internal/hod_portal.py`
+
+- New `_render_employees_tab(user, site_id)` function (inserted before `page_hod_portal`).
+- Tab labels list gains `"👷 Employees"` at **index 11** (right after `⚙️ Site Config`). Indices 12–15 shifted +1: `📎 DOC`=12, `🏷️ QR Approval`=13, `🚚 DN Approvals`=14, `🚚 In-Transit`=15.
+- HOD-side roster is strictly site-scoped via `list_employees_for_site(site_id)`.
+- HOD can: add (auto-bound), edit name/phone/department, change status (active/inactive/suspended).
+- HOD CANNOT: move an employee to a different site (no Site picker on the HOD edit form) or CSV-import (Admin-only).
+
+### Tests
+
+- `bug_check.py` +16 checks (1 schema column + 15 Phase 7A behaviour checks). **Total now 284/284.**
+- UI crawler unchanged (16/16) — it indexes pages not tabs, so the new HOD tab is exercised on every HOD Portal render automatically.
+
+### Contracts (don't break these in Phase 7B)
+
+- `Site_ID = NULL` semantics: legacy / unassigned. The Phase 7B supervisor form will use `list_employees_for_site(site)` and therefore never see NULL-binding workers. Phase 7B depends on Admins clearing the unassigned banner before going live.
+- `update_employee(site_id=None)` MUST remain "leave untouched" — `_render_employees_tab` in HOD Portal relies on this to enforce the no-cross-site-transfer rule by simply not passing `site_id`.
+- `ID_Number` remains globally UNIQUE. Cross-site transfer is a single-row Site_ID update by Admin — never delete-and-recreate (would break QR badges + Smart Scan history).
+
+---
+
+## 2G. Tuning Round 5 (2026-06) — Workstream A.5 step 2: Phase 7B Supervisor Material Request
+
+The user-spec "Point #4" of Workstream A.5: Supervisor specifies what a worker needs → SK approves → entries flow into the existing pending_issues / EOD commit pipeline. The original request stays around forever as the **intent** ledger, so management can compare against **actual** consumption via the new report card.
+
+### Schema (self-heal in `init_db()`)
+
+- `supervisor_material_requests` — header. UNIQUE `request_no` (format `SMR-YYYYMMDD-NNNN`, global per-day counter). Status FSM: `pending_sk → {approved|rejected|cancelled}`. CHECK constraint enforces it. `posted_pending_ids` is a JSON list of rowids in `pending_issues` written at approval — single-source-of-truth back-trace.
+- `supervisor_material_request_items` — line rows. Captures `Stock_At_Request` snapshot + `Available_Flag` (0/1) at insert. `SK_Adjusted_Qty` is filled by the SK at approval time; `0` semantically means "drop this line" per user-approved Spec Q6.
+- Two indices: `ix_smr_site_status(Site_ID, status)`, `ix_smr_requested_at(requested_at)`.
+- Self-heal `Source_Ref TEXT` on both `pending_issues` and `consumption`. Format: `SMR:{request_no}:{line_id}`. NULL on all SK-typed manual rows (back-compat).
+
+### Helpers — `database.py` (new "Phase 7B" section, ~600 LOC)
+
+- `generate_smr_request_no()` — `SELECT MAX → +1` per-day, returns formatted string.
+- `create_supervisor_request(*, site_id, worker_id, job_tank_place, old_ppe_returned, no_return_reason, items, supervisor_username)` — single-transaction insert. Validations (each returns `(False, msg)`, never raises): worker must exist + be active + bound to `site_id`; `Job_Tank_Place` required; PPE flag in `{0,1}`; reason required when `PPE=0`; ≥1 item; every SAP_Code must exist in inventory. Snapshots stock per line via `_smr_snapshot_stock()`. Fires `queue_app_notification(event_key="smr_submitted")` + `fire_whatsapp_event("smr_submitted", …)` to every SK at the site.
+- `list_supervisor_requests(site_id=None, status=None, requested_by=None, days=None)` — header DataFrame, auto-localized timestamps.
+- `get_supervisor_request(request_id)` → `(header_dict, items_df)`.
+- `update_supervisor_request_item(item_id, *, requested_qty, sk_adjusted_qty, notes)` — only while parent status = `pending_sk`.
+- `delete_supervisor_request_item(item_id)` — same lock.
+- `cancel_supervisor_request(request_id, by_username)` — supervisor self-cancel only while `pending_sk`.
+- `approve_supervisor_request(request_id, sk_username)` — **the critical transaction**. Mirror payload per line:
+  - `Quantity = COALESCE(SK_Adjusted_Qty, Requested_Qty)` (zero auto-drops the line)
+  - `Work_Type = "SUPERVISOR_REQUEST"` (new sentinel)
+  - `Issued_To = Worker_Name`, `Tank_No = Job_Tank_Place`
+  - `Source_Ref = "SMR:{request_no}:{item_id}"`
+  - `status = "pending_hod"` → lands in HOD's EOD Commit, gated by the existing `validate_eod_no_negative_stock` safety net
+  - Allow-list pattern (same shape as `pwa_stage_pending_issues`) → forward-compat with any future `pending_issues` column addition.
+- `reject_supervisor_request(request_id, sk_username, reason)` — mandatory reason. No pending_issues writes.
+- `report_supervisor_intent_vs_actual(site_id=None, days=30)` — joins approved lines to `consumption.Source_Ref` via correlated subquery; computes `Variance_Pct`. Blank `Actual_Qty` = approved but HOD hasn't committed yet.
+- `get_open_returnables_for_employee(employee_id)` — drives the SK side-panel. Matches both the CV-loan path (`cv_employee_id`) AND the legacy manual-loan path (`borrower_name`) so older loans still surface.
+
+### config.py
+
+- `PAGE_ACCESS` gains `"🛡️ Supervisor Portal": "supervisor"`.
+- `WHATSAPP_TRIGGERS` gains 4 keys: `smr_submitted`, `smr_approved`, `smr_rejected`, `smr_cancelled`. All default `True`.
+
+### main.py
+
+- New import `page_supervisor_portal`.
+- `_EXACT_ROLE_PAGES` gains `"🛡️ Supervisor Portal": {"supervisor", "admin"}` — same lock pattern as the procurement portals.
+- `_PAGE_BLOCKED_ROLES["📊 Reports"]` now includes `"supervisor"` — Reports nav is hard-hidden for the supervisor per Spec Q1.
+- New route branch `elif page == "🛡️ Supervisor Portal": page_supervisor_portal(user)`.
+
+### UI — `pages_internal/supervisor_portal.py` (NEW, ~310 LOC)
+
+One top-level tab `📦 Request Material` with three sub-tabs:
+
+1. **🆕 New Request:** worker picker (name-first format `Ahmed Ali (EMP-1042)`, active employees bound to site only), Job/Tank/Place text input, Old PPE radio + reason text area (reason only appears when "No"). Item picker uses the same search-and-add cart pattern as HOD Cross-Site (Spec Q3). Each cart row shows live stock with red/amber/green colouring and a ⚠️ short warning when stock < qty. Submit calls `create_supervisor_request`.
+2. **📋 My Requests:** status + window filter, per-card status pill, view-items expander, Cancel button while pending. SK rejection reason is surfaced inline.
+3. **📊 Intent vs Actual:** calls `report_supervisor_intent_vs_actual` and renders with formatted Variance %.
+
+If the site has no active employees, a red empty-state banner directs the supervisor to ask the HOD to add workers via the Phase 7A `👷 Employees` tab.
+
+### UI — `pages_internal/daily_issue_log.py` (SK Portal)
+
+- New 7th tab `🛒 Supervisor Requests` (preserves all 6 existing tab indices).
+- Per-request card: header info, PPE flag with reason, **open-loan side-panel** showing the worker's active returnable items (Spec Q5).
+- `st.data_editor` over the line items: SK can adjust `Requested_Qty` / `Approved_Qty` (the `SK_Adjusted_Qty` column) / `Notes`. Live banner if any effective qty exceeds Stock@Req.
+- Three action buttons:
+  - **💾 Save edits** — persists row-by-row via `update_supervisor_request_item`.
+  - **✅ Approve** — auto-saves edits first, then calls `approve_supervisor_request`.
+  - **❌ Reject** — popover with mandatory reason text area → `reject_supervisor_request`.
+
+### UI — `pages_internal/reports_page.py`
+
+- New report type `("smr_intent_actual", "🛡️", "Supervisor Intent vs Actual", …)` appended to `_REPORT_TYPES`.
+- Dispatch in `_run_report_raw`: converts the date picker into a `days` window for `report_supervisor_intent_vs_actual`, then clamps via `df_to`. Summary card: Lines, Avg_Variance_Pct, Lines_Over_10pct, Lines_Not_Yet_Committed.
+- Inherits the existing site filter — HOD locked to their site, Admin can pick All Sites.
+
+### Tests — `bug_check.py`
+
++21 Phase 7B checks. Existing 268 + Phase 7A 16 + Phase 7B 21 + schema column hits = **326/326**. Coverage:
+- Schema (tables + every column).
+- request_no generation (day-empty + increment).
+- Happy-path insert.
+- Five validation rejection paths (wrong-site worker, empty items, PPE-no-without-reason, unknown SAP, etc).
+- Stock snapshot + Available_Flag mechanics.
+- Approval mirror — column mapping, posted_pending_ids JSON, idempotency, zero-adjusted drop semantics.
+- Reject path — reason required, no pending_issues writes.
+- End-to-end: approve → `commit_eod()` → consumption row with Source_Ref preserved.
+- Lock-out: update_item / cancel refused after decision.
+- delete_item works while pending.
+- Report joins on Source_Ref.
+- Open-returnables side-panel finds CV-path matches.
+- WHATSAPP_TRIGGERS has the 4 new keys defaulted True.
+
+UI crawler picks up the new Supervisor Portal page automatically → **17/17**.
+
+### Contracts (don't break in Phase 7C+)
+
+- `Work_Type = 'SUPERVISOR_REQUEST'` is a sentinel — never overwrite it with manual SK edits; reports filter on it for SMR-sourced consumption.
+- `Source_Ref` format is `SMR:{request_no}:{line_id}` — Phase 7C's variance / drift reports already join on this exact string. Don't trim, don't change separators.
+- `posted_pending_ids` is JSON-encoded — if you ever back-out an SMR approval, those rowids are the rollback target.
+- `pending_issues` mirror writes `status='pending_hod'` so the HOD's EOD Commit + negative-stock guard catches them — never bypass to `pending_hod` skipping the validator.
+- `approve_supervisor_request` is idempotent by design — second call refused with "already approved". Don't relax this; it's the only thing preventing a click-spammer double-debiting stock.
+
+---
+
+## 2H. Tuning Round 6 (2026-06) — Workstream A.5 step 3: Phase 7C HOD Cross-Site View Notification
+
+Spec Point #1 of Workstream A.5: when a HOD opens another site's stock view, the target site's HOD must know. Without spamming. With a visible indicator that compliance trail was created.
+
+### Schema (self-heal in `init_db()`)
+
+```sql
+CREATE TABLE IF NOT EXISTS cross_site_views (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    viewer_username TEXT NOT NULL,
+    viewer_site_id  TEXT,
+    target_site_id  TEXT NOT NULL,
+    view_date       TEXT NOT NULL,
+    first_seen_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(viewer_username, target_site_id, view_date)
+);
+CREATE INDEX ix_csv_target_date ON cross_site_views(target_site_id, view_date);
+CREATE INDEX ix_csv_viewer_date ON cross_site_views(viewer_username, view_date);
+```
+
+The UNIQUE constraint **is the entire debounce mechanism**. `INSERT OR IGNORE` returns `rowcount=0` on duplicate same-day attempts. No Streamlit-session coupling, no timer code, no race conditions across browser tabs or simultaneous AppTest reruns.
+
+### Helpers — `database.py` (new "Phase 7C" section, ~120 LOC)
+
+- `record_cross_site_view(viewer_username, viewer_site_id, target_site_id, *, conn=None) → bool` — pure debounce. Returns True on first-of-day insert, False on duplicate / blank inputs / self-view. **Never raises.**
+- `notify_cross_site_view(viewer_user: dict, target_site_id, viewed_item=None, *, conn=None) → bool` — the orchestrator. Skips silently when:
+  - `viewer_user['role'] == 'admin'` (admin shadowing → silent per Spec Q2(b))
+  - `record_cross_site_view` returned False (dedupe / invalid)
+  
+  On first-of-day fire:
+  - `queue_app_notification(event_key='cross_site_viewed', recipient_role='hod', recipient_site=target_site_id, severity='info', ...)`
+  - `log_audit_action(viewer, 'CROSS_SITE_VIEW', 'cross_site_views', 'viewer={X} target={Y} date={Z}')`
+  - `fire_whatsapp_event('cross_site_viewed', phone, msg)` per HOD at target site — gated by `WHATSAPP_TRIGGERS['cross_site_viewed']` (default False)
+  
+  Returns True iff a notification actually fired. Drives the UI banner's "has been notified" vs "already notified earlier today" wording.
+
+### Message tone (spec Q3(b) — context-rich)
+
+- **Title:** `"HOD of {viewer_site} is viewing your stock"`
+- **Body:** `"{viewer_username} from {viewer_site} (looking at {item}) is checking your stock — they may submit a transfer request shortly."`
+- `viewed_item` is whatever the supervisor selected in the SAP picker at fire time. Subsequent item changes same day do NOT re-fire (dedupe per spec Q1) and do NOT update the message body.
+
+### config.py
+
+`WHATSAPP_TRIGGERS` gains `"cross_site_viewed": False`. **Default off** per spec Q6(b) — in-app bell badge is enough; flip later if HODs explicitly want phone pings.
+
+### UI — `pages_internal/hod_portal.py`
+
+Modify `_render_crosssite_tab` only. Hook lives inside the existing `if target_site and item_selection:` block (right-column live-stock render) — that's the **moment of actual data view**, not bare tab-open. Spec Q1.
+
+Two indicators rendered side-by-side (spec Q4(c) — both):
+
+1. **Top-of-tab persistent banner** — gold-bordered card with two lines:
+   - "👁️ You are viewing `{target_site}` inventory."
+   - "The HOD of **{target_site}** has been notified of your view today." OR "...was already notified earlier today." (dedupe wording per spec Q7)
+   No dismiss button — sticky while a target is picked (spec Q5).
+
+2. **Fixed-position corner pill** — `position:fixed; top:72px; right:22px; z-index:999;` gold background, dark text. Survives scroll. Compact label: "👁️ Viewing {target_site}".
+
+Both indicators are **suppressed** when the user role is admin (admin shadowing → silent, mirrors the notification suppression).
+
+### Tests
+
+- `bug_check.py` +14 Phase 7C checks (+6 schema column existence). **Total now 346/346.**
+- UI crawler unchanged at 17/17 — same HOD Portal page count, no new top-level routes.
+
+Coverage:
+- Schema (table + every column + both indices).
+- UNIQUE constraint enforced at the DB layer (raw INSERT raises).
+- `record_cross_site_view` returns True on first call, False on dedupe.
+- Different target same day → True (new (viewer,target) tuple).
+- Different viewer same target → True.
+- Self-view never records (skipped).
+- Blank username/target → False, never raises.
+- Admin role → notify silent, no row written.
+- First fire → app_notifications row queued with correct recipient_role/site, item context in body.
+- First fire → audit row written with correct columns (`username`/`action_type`/`target_table`).
+- Dedupe → exactly 1 app_notifications row (no double-send).
+- `WHATSAPP_TRIGGERS['cross_site_viewed']` defaults False.
+
+### Contracts (don't break in Phase 7D+)
+
+- The UNIQUE tuple is `(viewer_username, target_site_id, view_date)` where `view_date` is **local ISO date** (`datetime.date.today().isoformat()`). Don't switch to UTC — the spec says "calendar day" and HOD-perspective dedupe must match wall-clock day at site.
+- `notify_cross_site_view` is the ONLY entry point for cross-site view side-effects — never call `queue_app_notification(event_key='cross_site_viewed')` directly from a page.
+- Admin role check is `(role or "").lower() == "admin"`. Don't tighten this to `== "admin"` without lowercase — users can theoretically write `"Admin"` casing in legacy seed data.
+- The fixed-pill `z-index:999` sits BELOW the notification bell modal (`@st.dialog` ≥ 1050) but ABOVE page chrome. Don't raise it past 1000 or it'll cover the bell.
+
+---
+
+## 2I. Tuning Round 7 (2026-06) — Workstream A.5 step 4: Phase 7D PO Notifications with Strict Masking
+
+Spec Point #6 of Workstream A.5: when Logistics issues a PO, the destination site's HOD and SK must learn about it **without ever seeing vendor or financial data**. Operational tracking only.
+
+### The leak we fixed (regression guard now in bug_check.py)
+
+Pre-7D, `create_po_manual` queued one notification with the literal body `f"Vendor: {Vendor_Name}"` — every site-level user could see who Logistics was buying from. Closed by Phase 7D's mandatory masker.
+
+### Helper extensions — `database.py`
+
+**`PO_VENDOR_MASK_FIELDS`** (module-level tuple, 17 entries) — the canonical list of header fields blanked when `hide_vendor=True`:
+
+- **Vendor identity** (6): `Vendor_Code`, `Vendor_Name`, `Contact_Person`, `Contact_Email`, `Mobile`, `Our_Email`
+- **Commercial terms** (6): `Inco_Terms`, `Payment_Terms`, `Quotation_No`, `Quotation_Date`, `Your_Reference`, `Our_Reference`
+- **Financial totals** (5): `Freight_Charges`, `Handling_Charges`, `Discount_Amount`, `Total_Amount`, `Amount_In_Words`
+
+Intentionally **kept visible** (operational tracking, not commercial): `PO_Type`, `PO_Date`, `Expected_Delivery`, `Site_ID`, `PR_Number`, plus everything in `po_items` except `Unit_Price` + `Total_Price` (those gate behind `hide_prices=True`).
+
+**`get_po_detail(po_number, hide_prices=False, hide_vendor=False, conn=None)`** — added the `hide_vendor` axis orthogonal to `hide_prices`. Back-compat: all existing callers behave identically. The warehouse-side three-layer price defence is untouched.
+
+**`build_po_site_notification(po_number, *, conn=None)`** — single entry point for every site-bound PO notification payload. Internally calls `get_po_detail(hide_prices=True, hide_vendor=True)` so future callers cannot accidentally bypass the masker. Returns:
+
+```python
+{
+    "site_id":           str | None,
+    "title":             "PO {n} issued for delivery to {site}",
+    "app_body":          "...",          # multi-line, in-app body
+    "whatsapp_body":     "...",          # mirrors app_body line-for-line
+    "pr_numbers":        "PR-100, PR-200",  # distinct PRs across items
+    "expected_delivery": "2026-06-25" or "—",
+    "item_count":        int,
+    "total_qty":         float,
+}
+```
+
+Body shape: header lines (PO Number, PR Number(s), Expected Delivery, Items/Total Qty) + top-5 line items as `• {Material_Code} — {Description} — {Qty} {UOM}` + `… and N more line(s)` overflow caption when `> 5`. WhatsApp version adds a `🧾` emoji header and `*bold*` markers around the title line; everything else is identical.
+
+### `create_po_manual` notification refactor
+
+Old leaky block (15 LOC, queued one notification, leaked Vendor_Name in body) → replaced with:
+
+```python
+if site_for_notif:
+    summary = build_po_site_notification(po_number, conn=conn)
+    for _role, _link in (("hod", "📋 HOD Portal"),
+                         ("store_keeper", "📝 Entry Log")):
+        queue_app_notification(event_key="po_issued", ..., body=summary["app_body"], ...)
+        for _ph in get_site_role_phones(_role, site_for_notif, conn=conn):
+            fire_whatsapp_event("po_issued", _ph, summary["whatsapp_body"], conn=conn)
+```
+
+Defensive: `if site_for_notif` guards against `Site_ID=NULL` POs — no recipient, no notification queued.
+
+### config.py — unchanged
+
+Existing `WHATSAPP_TRIGGERS["po_issued"]: True` covers the upgraded behaviour. The trigger key is reused for both HOD and SK fan-outs. No new key added — keeps the trigger table clean and avoids per-channel toggles for the same event.
+
+### Tests
+
+- `bug_check.py` +16 Phase 7D checks. **Total now 362/362.**
+- Categories: mask field count + signature; default no-mask back-compat; `hide_vendor=True` strips all 17 fields; PO_Type + PO_Date preserved; combined masks; summary title/site/PR-list dedup/Expected_Delivery/line truncation; vendor + financial leak regression guards; WhatsApp mirrors in-app; HOD fan-out; SK fan-out; site-less PO → no notification.
+
+UI crawler unchanged (no UI changes in 7D).
+
+### Contracts (don't break in Phase 7E+)
+
+- `PO_VENDOR_MASK_FIELDS` is the single source of truth for what counts as "commercial". If you add a new commercial column to `purchase_orders`, append it to this tuple — otherwise the masker silently misses it.
+- `build_po_site_notification` is the ONLY entry point for site-bound PO bodies. Don't construct PO notification bodies inline anywhere else — the masker would be bypassed.
+- The existing warehouse-side call `get_po_detail(po_number, hide_prices=True, conn=conn)` continues to NOT pass `hide_vendor=True`. Warehouses NEED the vendor info to receive goods correctly — the three-layer price defence is what protects them from seeing prices, and `hide_vendor` is opt-in per call.
+- `create_po_manual` notification block lives inside a `try/except: pass` so a build error never blocks PO creation. Don't move the build call outside that guard — the PO write must always succeed even if notification fan-out fails.
+- The `po_issued` WhatsApp trigger fan-out hits HOD phones AND SK phones. If a site needs different on-off control per role, split the key into `po_issued_to_hod` / `po_issued_to_sk` — don't condition inline.
+
+---
+
+## 2J. Tuning Round 8 (2026-06) — Workstream A.5 step 5: Phase 7E Network Resilience / Form Recovery
+
+Spec Point #3 of Workstream A.5. Streamlit is server-rendered HTTP/WebSocket — true offline operation isn't possible without a separate FastAPI queue (out of scope). What we can do is shield in-flight form data from network drops so users don't lose typed entries when the WebSocket reconnects.
+
+### Two-tier safety net + passive indicator
+
+| Tier | Layer | Purpose |
+|---|---|---|
+| 1 | Browser localStorage via `streamlit-local-storage` | Per-browser, per-device. Survives WS drops, page reloads, tab crashes. Auto-save every Streamlit rerun. |
+| 2 | Server-side `form_drafts` table | Cross-device recovery (phone ↔ laptop). Explicit "💾 Save Form Draft" button writes here immediately. Auto-save throttled to 1/min. |
+| Passive | Top-left red pill, `navigator.onLine`-driven | Sets user expectation when the browser detects an offline state. No button disabling — pure information. |
+
+### Schema (self-heal in `init_db()`)
+
+```sql
+CREATE TABLE IF NOT EXISTS form_drafts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL,
+    form_id       TEXT NOT NULL,         -- 'supervisor_request' | 'sk_consumption' | 'sk_receipt_staging'
+    site_id       TEXT,
+    payload_json  TEXT NOT NULL,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at    DATETIME,              -- now + 7d default
+    UNIQUE(username, form_id)
+);
+CREATE INDEX ix_form_drafts_expires ON form_drafts(expires_at);
+CREATE INDEX ix_form_drafts_user    ON form_drafts(username);
+```
+
+UNIQUE(username, form_id) → one draft per (user, form). UPSERT via `ON CONFLICT … DO UPDATE` overwrites in place. No race conditions across browser tabs.
+
+### Helpers — `database.py` (Phase 7E block, ~150 LOC)
+
+| Helper | Purpose |
+|---|---|
+| `upsert_form_draft(username, form_id, payload, *, site_id, ttl_days=7, conn=None)` | UPSERT. JSON-encodes via `default=str` so widgets carrying Decimal / datetime persist as strings (drafts MUST succeed). Truly unserialisable inputs (circular refs) raise ValueError. |
+| `get_form_draft(username, form_id, *, conn=None)` | Returns `{payload, updated_at, expires_at}` or None. Hides expired rows even before prune runs. |
+| `delete_form_draft(username, form_id, *, conn=None)` | Called after successful submit. Idempotent on missing entries. |
+| `list_user_drafts(username, *, conn=None)` | Multi-form listing. Feeds a future Admin "Active Drafts" view (deferred to 7E.1). |
+| `prune_expired_form_drafts(*, conn=None) → int` | Daily prune. Wired into `whatsapp_worker._maybe_run_form_drafts_prune()` with `app_settings.form_drafts_last_prune` day-marker. |
+
+`DRAFT_DEFAULT_TTL_DAYS = 7` — covers the Fri/Sat weekend cycle.
+
+### draft_bus — `ui_components.py` (~200 LOC)
+
+```python
+render_form_recovery_banner(form_id, username, site_id, state_keys)
+auto_save_form_draft(form_id, username, site_id, state_keys)
+render_manual_save_draft_button(form_id, username, site_id, state_keys, *, label, key_suffix)
+clear_form_draft(form_id, username)
+```
+
+**Conflict resolution dialog (spec Q3(a)):** when BOTH local and server drafts exist, three buttons — Restore Local · Restore Cloud · Discard both — each with its updated_at timestamp visible. Single-side restore drops a simpler banner.
+
+**Auto-save cadence (spec Q4(a)):** localStorage write on every Streamlit rerun (cheap), server-side UPSERT throttled to once per 60s via `st.session_state["_draft_last_server_save::<form_id>"]`. Manual button bypasses throttle.
+
+**Silent fallback (spec Q6(a)):** `streamlit-local-storage` import is try/except wrapped at module load. If unavailable, all four helpers run server-side only — no banner, no error to field workers.
+
+**Sensitive fields (spec Q8):** drafts persist Worker_ID / Tank_No etc. in localStorage (OS disk encryption protects) and in `gi_database.db` (inside production hosting perimeter). No additional encryption layer added.
+
+### Form wiring pattern (4 lines per form)
+
+```python
+state_keys = ["smr_worker_pick", "smr_job_tank", "smr_ppe_radio", "smr_ppe_reason", "_smr_cart"]
+render_form_recovery_banner(form_id, user["username"], site_id, state_keys)
+# … existing form body unchanged …
+render_manual_save_draft_button(form_id, user["username"], site_id, state_keys, key_suffix="…")
+# inside the submit-success block:
+clear_form_draft(form_id, user["username"])
+# at the tail of the tab:
+auto_save_form_draft(form_id, user["username"], site_id, state_keys)
+```
+
+**File-uploader keys are intentionally excluded from `state_keys`** — `UploadedFile` objects can't be JSON-serialised. The staging queue rows themselves (which contain the bulk of "in-flight" data) live in `pending_issues` / `pending_receipts` with `status='draft'` and are already durable; the form draft preserves the currently-being-built row's selections so users can pick up exactly where they left off after a WS drop.
+
+### Forms wired in 7E (3)
+
+| Form | Module | form_id | state_keys |
+|---|---|---|---|
+| Supervisor → 🆕 New Request | `supervisor_portal.py` | `supervisor_request` | `smr_worker_pick`, `smr_job_tank`, `smr_ppe_radio`, `smr_ppe_reason`, `_smr_cart` |
+| SK → 📋 Consumption Log | `daily_issue_log.py` | `sk_consumption` | `item_selectbox`, `tank_no_select`, `wbs_consumption_select`, `override_expiry_ck`, `cons_attach_scope` |
+| SK → 📦 Receipt Staging | `daily_issue_log.py` | `sk_receipt_staging` | `rcpt_pr_link`, `rcpt_item_selectbox`, `rcpt_mtc_number`, `rcpt_attach_scope`, `rcpt_attach_dn` |
+
+**Deferred to a Phase 7E.1 follow-up** (not in scope today): SK Return Items, HOD Cross-Site cart, SK Stock Count, HOD/Admin PR forms. The draft_bus is form-agnostic — adding more forms later is the 4-line wrapper above.
+
+### Offline indicator — `main.py`
+
+Pure browser-native HTML/JS rendered via `st.markdown(unsafe_allow_html=True)` right after the existing `inject_keyboard_shortcuts()` call. Top-left at `top:72px; left:22px` (mirrors the 7C corner pill in the top-right, no collision). Hidden by default; flips on `window.addEventListener('offline')`, flips back on `'online'`. No Python coupling.
+
+### Worker prune — `whatsapp_worker.py`
+
+New `_maybe_run_form_drafts_prune()` follows the same idiom as `_maybe_run_delivery_reminders()`. Marker key: `app_settings.form_drafts_last_prune`. Called once per 60-sec poll tick → 1 actual prune per local day. Idempotent across worker restarts.
+
+### Tests
+
+`bug_check.py` +16 Phase 7E checks (+8 schema column-existence). **Total now 386/386.** Coverage: schema, indices, UNIQUE enforcement, upsert insert vs update, default + custom TTL, circular-ref rejection, payload roundtrip, missing/expired hiding, delete, prune-only-expired, list_user_drafts, `requirements.txt` declaration.
+
+The browser-side localStorage layer and the offline-pill JS can't be exercised in `bug_check.py` (no DOM) or `AppTest` (no `navigator.onLine` simulation). Manual verification via `streamlit run main.py` + browser DevTools throttling.
+
+### Contracts (don't break in Phase 7F or later)
+
+- `default=str` on the JSON encoder is INTENTIONAL — drafts MUST succeed for widgets carrying Decimal / datetime / similar. Tighten this and SK forms will start losing data silently.
+- The `clear_form_draft` call lives inside the submit-success branch ONLY. Don't call it from the tab body unconditionally — that would wipe the user's draft on every rerun.
+- `state_keys` lists must NEVER include file-uploader widget keys (`UploadedFile` is opaque). The wired forms already follow this rule; new wrappings must too.
+- The 1/min server-side throttle is enforced inside `auto_save_form_draft` via `st.session_state` — bypassing it means hitting SQLite ~60× per rerun in active typing.
+- `streamlit-local-storage` is an OPTIONAL dependency. The try/except at module load is the contract — don't lift the import to the top of `ui_components.py` or air-gapped deployments will crash.
+
+---
+
+## 2K. Tuning Round 9 (2026-06) — Workstream A.5 step 6 (FINAL): Phase 7F Role-Based User Manual PDFs
+
+Spec Point #2 of Workstream A.5 — the last piece. Each team prints its own focused booklet from the same source markdown, no maintenance of parallel docs. Screenshots embed inline.
+
+### Architecture — one engine, role-aware slicer + image renderer on top
+
+`build_manual_pdf.py` keeps its existing public API and rendering for the master PDF. Three additions:
+
+1. **`ROLE_MANUAL_RECIPES`** — dict mapping `role_key → {title, icon, audience, chapters[]}`. `chapters` is matched literally against trimmed `# N. Title` lines. `"ALL"` means full master.
+2. **`slice_markdown_for_role(role_key, md_text) → str`** — pure-Python line walker. Enables/disables an `include` flag at each `# ` line based on the recipe. Deterministic; no regex magic.
+3. **`build_role_manual_pdf(role_key, md_text=None) → bytes`** — slices the markdown, calls a personalised cover (`render_cover_for_role`), then runs the same two-pass TOC build the master uses. Falls through to `build_manual_pdf()` for `role_key in {"admin", unknown}`.
+
+The existing `build_manual_pdf(md_text)` signature is unchanged — the existing Admin Settings call site still works.
+
+### Markdown image syntax — extension to the IR
+
+`parse_markdown` now recognises standalone lines matching `^!\[(.*?)\]\((.+?)\)\s*$` and emits `Block(kind="img", text=path, items=[alt_text])`. Inline-mid-paragraph images are intentionally ignored — only own-line images render as captioned screenshots.
+
+**`ManualPDF.render_image(path, caption)`** — scales image to 80% of body width, max 90mm tall (keeps two images per page comfortable), uses PIL to read the intrinsic aspect ratio for distortion-free placement. Page-break guard: if the image won't fit in the remaining page, `add_page()` first. Missing file → renders a neutral grey placeholder card with `[Screenshot pending: <path>]` so the PDF never crashes on incomplete asset sets.
+
+### Personalised covers
+
+`ManualPDF.render_cover_for_role(recipe)` — mirrors the master `render_cover` layout (navy panel + gold accent strip + white app title block) but swaps `DOC_TITLE` for the role-specific title ("Store Keeper Manual") and surfaces the `audience` line in italic body text. The footer band shows the role title instead of the generic GI-Hub tagline so a printed booklet is identifiable at a glance.
+
+### Recipe chapter assignments (spec Q3)
+
+| Role | Chapters included |
+|---|---|
+| Store Keeper | 1, 2, 3, 4, 10, 11, 12 |
+| Supervisor | 1, 3, 5, 11, 12 |
+| HOD | 1, 2, 3, 6, 8, 10, 11, 12 |
+| Logistics | 1, 3, 14, 16, 11 |
+| Warehouse | 1, 3, 15, 16, 11 |
+| Admin | ALL (full master) |
+
+Excluded from every site-level booklet (admin-only): §13 "What Changed" release notes, §17 "Operations & Hosting" chapter.
+
+### Screenshot library
+
+`docs/screenshots/` (new directory). 18 placeholder PNGs generated by `scripts/generate_screenshot_placeholders.py` — 1280×720 brand-themed cards labeled with the target filename + audience hint. Replace any file with a real capture from the running app at any time; PDF builder picks it up on next render.
+
+Seed file list (stable contract — names are referenced from USER_MANUAL.md):
+- SK chapter (3): `sk_consumption_log.png`, `sk_receipt_staging.png`, `sk_supervisor_requests.png`
+- Supervisor chapter (3): `supervisor_new_request.png`, `supervisor_my_requests.png`, `supervisor_intent_vs_actual.png`
+- HOD chapter (3): `hod_eod_commit.png`, `hod_cross_site_inquiry.png`, `hod_employees_tab.png`
+- Logistics chapter (3): `logistics_create_po.png`, `logistics_assign_warehouse.png`, `logistics_open_pos.png`
+- Warehouse chapter (3): `warehouse_receive_goods.png`, `warehouse_prepare_dn.png`, `warehouse_outbound_dns.png`
+- Shared / universal preamble (3): `notification_bell.png`, `live_dashboard_hero.png`, `offline_pill.png`
+
+### Admin Portal download UX
+
+Renamed expander from "📄 Download User Manual" → **"📥 Download Role Manuals"**. Layout:
+
+```
+📕 Master Manual — full reference, every chapter:
+    [🛠️ Build Master PDF]    [⬇️ Download GI_Hub_User_Manual_v2.0_<date>.pdf]
+─────────────────────────────────────────────────────────────────
+📘 Role Booklets — print one per team, personalised cover + that role's chapters:
+    ┌────────────────────────────────┐  ┌────────────────────────────────┐
+    │ 🗝️ Store Keeper Manual         │  │ 🛡️ Supervisor Manual           │
+    │ <audience>                     │  │ <audience>                     │
+    │ [🛠️ Build]  [⬇️ GI_SK_…]       │  │ [🛠️ Build]  [⬇️ GI_Supervisor…]│
+    └────────────────────────────────┘  └────────────────────────────────┘
+    ┌────────────────────────────────┐  ┌────────────────────────────────┐
+    │ 🏛️ HOD Manual                  │  │ 🚚 Logistics Portal Manual     │
+    ...
+```
+
+Generation on-demand (no caching). Each Build audits via `log_audit_action(BUILD_MANUAL_PDF, role=<key>, size=<bytes>)`. File naming: `GI_<Role>_Manual_<YYYY-MM-DD>.pdf` per spec Q7. Admin-only per spec Q9.
+
+### CLI
+
+```bash
+python build_manual_pdf.py                              # master only (unchanged)
+python build_manual_pdf.py --role store_keeper          # SK booklet
+python build_manual_pdf.py --role all                   # master + every role
+```
+
+### Tests
+
+`bug_check.py` +12 Phase 7F checks. **Total now 398/398.** Coverage: recipe completeness, per-role slicer keeps own/drops others, admin recipe == master passthrough, image syntax parsed correctly, missing-file placeholder doesn't crash, role PDFs start with `%PDF-` magic, admin equals master within ±5% byte tolerance, unknown role falls back gracefully, seed placeholders exist on disk.
+
+UI crawler unchanged (no UI page-count changes — additions live inside an existing expander).
+
+### Contracts (don't break in any future round)
+
+- Adding a new top-level chapter to USER_MANUAL.md → update every relevant role's `chapters` list, otherwise the chapter silently drops from that booklet. Test #2-5 catch role-specific regressions on the SK/Supervisor/HOD slices.
+- Renaming an existing chapter heading → update the matching recipe entry; the slicer matches on the trimmed exact string.
+- Screenshot filenames are a contract surface — referenced from USER_MANUAL.md. Renaming a placeholder PNG breaks the manual's image block silently (placeholder renders instead of the picture).
+- `render_image` must continue to render the placeholder card on PIL/disk failure — site rollouts ship with incomplete screenshot sets, and an exception here would brick PDF generation entirely.
+- The existing `build_manual_pdf(md_text)` signature is the master entry point — never break its signature.
+
+---
+
+## 2L. Workstream A.5 — COMPLETE
+
+Six enhancement points → six phases → all shipped:
+
+| # | Phase | Title | Test delta |
+|---|---|---|---|
+| 1 | 7C | HOD Cross-Site View Notifications + Indicator | +14 |
+| 2 | 7F | Role-Based User Manual PDFs with Screenshots | +12 |
+| 3 | 7E | Network Resilience / Form Recovery | +16 |
+| 4 | 7B | Supervisor Material Request Workflow | +21 |
+| 5 | 7A | Employee Site Binding | +16 |
+| 6 | 7D | Automated PO Notifications with Strict Data Masking | +16 |
+
+Net test growth across A.5: **268 → 398** (`+95 helper checks + 35 schema/column self-heals`). UI crawler grew from 16 → 17 (new Supervisor Portal page in 7B). Zero regressions. Zero edits to identity math, EOD commit, RL/BL separator, RBAC hierarchy, mailer, or any pre-existing form-submit logic.
+
+**Ready for Workstream B: Docker / Deployment.**
 
 ---
 

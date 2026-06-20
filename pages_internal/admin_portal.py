@@ -30,7 +30,10 @@ from collections import defaultdict
 import pandas as pd
 import streamlit as st
 
-from config import SYSTEM_COLS, AI_ENABLED, BRAND_GOLD, TEXT_MUTED
+from config import (
+    SYSTEM_COLS, AI_ENABLED, BRAND_GOLD, TEXT_MUTED,
+    TEXT_SECONDARY, COLOR_CRITICAL,
+)
 from database import (
     get_connection,
     get_pending_requests,
@@ -50,6 +53,8 @@ from database import (
     list_employees,
     get_employee_by_id_number,
     import_employees_csv,
+    # Phase 7A — Site binding
+    bulk_assign_employees_to_site,
     # Phase 6C — CV model + tool catalogue
     add_tool_class,
     list_tool_catalogue,
@@ -1352,15 +1357,17 @@ def _render_settings_tab(user: dict) -> None:
     )
 
     # ── User Manual PDF download ──────────────────────────────────────────
-    with st.expander("📄 Download User Manual (Branded PDF)", expanded=False):
+    with st.expander("📥 Download Role Manuals (Branded PDFs)", expanded=False):
         st.caption(
-            "Builds a designed PDF from `USER_MANUAL.md` — cover page, "
-            "table of contents, page headers, navy + gold brand. "
-            "Suitable for printing or sharing with management."
+            "Builds designed PDFs from `USER_MANUAL.md` — cover page, "
+            "table of contents, page headers, navy + gold brand. Screenshots "
+            "embedded from `docs/screenshots/`. Use the master for archival; "
+            "use the role booklets to print and physically distribute to each "
+            "team. Generation is on-demand and takes a few seconds per file."
         )
         manual_src = "USER_MANUAL.md"
         try:
-            import os, datetime
+            import datetime
             from pathlib import Path
             src = Path(manual_src)
             if not src.exists():
@@ -1374,35 +1381,111 @@ def _render_settings_tab(user: dict) -> None:
                               datetime.datetime.fromtimestamp(src.stat().st_mtime)
                               .strftime("%Y-%m-%d %H:%M"))
 
-                if st.button("🛠️ Build PDF now", key="_adm_manual_build"):
-                    with st.spinner("Rendering branded PDF…"):
+                today_iso = datetime.date.today().isoformat()
+                md_cached_key = "_adm_manual_md_cache"
+                if md_cached_key not in st.session_state:
+                    st.session_state[md_cached_key] = src.read_text(encoding="utf-8")
+                md = st.session_state[md_cached_key]
+
+                # ── Master manual (full, all chapters) ───────────────────
+                st.markdown("**📕 Master Manual** — full reference, every chapter:")
+                if st.button("🛠️ Build Master PDF",
+                             key="_adm_manual_build_master"):
+                    with st.spinner("Rendering branded master PDF…"):
                         from build_manual_pdf import build_manual_pdf
-                        md = src.read_text(encoding="utf-8")
                         pdf_bytes = build_manual_pdf(md)
-                    st.session_state["_adm_manual_pdf"] = pdf_bytes
+                    st.session_state["_adm_manual_pdf_master"] = pdf_bytes
                     st.session_state["_adm_manual_built_at"] = datetime.datetime.now()
                     log_audit_action(
-                        user["username"], "BUILD_MANUAL_PDF", "documentation",
-                        f"size={len(pdf_bytes)}",
+                        user["username"], "BUILD_MANUAL_PDF",
+                        "documentation",
+                        f"role=master size={len(pdf_bytes)}",
                     )
                     st.toast(f"📄 Built {len(pdf_bytes):,} bytes", icon="📄")
-
-                pdf_bytes = st.session_state.get("_adm_manual_pdf")
-                if pdf_bytes:
+                master_bytes = st.session_state.get("_adm_manual_pdf_master")
+                if master_bytes:
                     built_at = st.session_state.get("_adm_manual_built_at")
                     st.success(
-                        f"Ready — {len(pdf_bytes):,} bytes "
+                        f"Ready — {len(master_bytes):,} bytes "
                         + (f"(built {built_at.strftime('%H:%M:%S')})"
                            if built_at else "")
                     )
                     st.download_button(
                         "⬇️ Download GI_Hub_User_Manual.pdf",
-                        data=pdf_bytes,
-                        file_name=f"GI_Hub_User_Manual_v2.0_"
-                                  f"{datetime.date.today().isoformat()}.pdf",
+                        data=master_bytes,
+                        file_name=f"GI_Hub_User_Manual_v2.0_{today_iso}.pdf",
                         mime="application/pdf",
                         type="primary",
+                        key="_adm_manual_dl_master",
                     )
+
+                st.divider()
+
+                # ── Phase 7F — role-segregated booklets ──────────────────
+                st.markdown("**📘 Role Booklets** — print one per team, "
+                            "personalised cover + only that role's chapters:")
+
+                from build_manual_pdf import (
+                    ROLE_MANUAL_RECIPES, build_role_manual_pdf,
+                )
+                _role_filename_short = {
+                    "store_keeper":   "SK",
+                    "supervisor":     "Supervisor",
+                    "hod":            "HOD",
+                    "logistics":      "Logistics",
+                    "warehouse_user": "Warehouse",
+                }
+                # Render in fixed order so the UI doesn't reorder per dict-iteration.
+                _ordered = [
+                    "store_keeper", "supervisor", "hod",
+                    "logistics", "warehouse_user",
+                ]
+
+                # Render as a 2-column grid per spec Q6.
+                for i in range(0, len(_ordered), 2):
+                    cA, cB = st.columns(2)
+                    for col, rk in zip((cA, cB), _ordered[i:i + 2]):
+                        recipe = ROLE_MANUAL_RECIPES.get(rk, {})
+                        with col:
+                            with st.container(border=True):
+                                st.markdown(
+                                    f"**{recipe.get('icon', '')} "
+                                    f"{recipe.get('title', rk)}**"
+                                )
+                                st.caption(recipe.get("audience", ""))
+                                short = _role_filename_short.get(rk, rk)
+                                fname = f"GI_{short}_Manual_{today_iso}.pdf"
+                                build_key = f"_adm_role_build_{rk}"
+                                cache_key = f"_adm_role_pdf_{rk}"
+                                if st.button("🛠️ Build",
+                                             key=build_key,
+                                             use_container_width=True):
+                                    with st.spinner(
+                                        f"Rendering {recipe.get('title', rk)}…"
+                                    ):
+                                        pdf = build_role_manual_pdf(rk, md)
+                                    st.session_state[cache_key] = pdf
+                                    log_audit_action(
+                                        user["username"],
+                                        "BUILD_MANUAL_PDF",
+                                        "documentation",
+                                        f"role={rk} size={len(pdf)}",
+                                    )
+                                    st.toast(
+                                        f"📄 {recipe.get('icon', '')} "
+                                        f"{len(pdf):,} bytes",
+                                        icon="📄",
+                                    )
+                                rpdf = st.session_state.get(cache_key)
+                                if rpdf:
+                                    st.download_button(
+                                        f"⬇️ {fname}",
+                                        data=rpdf,
+                                        file_name=fname,
+                                        mime="application/pdf",
+                                        key=f"_adm_role_dl_{rk}",
+                                        use_container_width=True,
+                                    )
         except Exception as e:
             st.error(f"PDF build failed: {type(e).__name__}: {e}")
 
@@ -2165,9 +2248,19 @@ def _render_employees_tab(user: dict) -> None:
                     placeholder="+9665XXXXXXXX",
                 ).strip()
                 new_dept = st.text_input("Department", placeholder="e.g. Logistics").strip()
+                _site_opts_add = ["— Unassigned —"] + cached_sites()
+                new_site_pick = st.selectbox(
+                    "Site",
+                    _site_opts_add,
+                    index=0,
+                    help="Bind this employee to a site. Required before "
+                         "supervisors can issue material to them.",
+                )
+                new_site = None if new_site_pick == "— Unassigned —" else new_site_pick
                 if st.form_submit_button("Add Employee", type="primary"):
                     ok, msg = add_employee(
-                        new_id, new_name, new_phone, new_dept, created_by=actor,
+                        new_id, new_name, new_phone, new_dept,
+                        created_by=actor, site_id=new_site,
                     )
                     if ok:
                         st.success(f"✅ {msg}")
@@ -2199,6 +2292,19 @@ def _render_employees_tab(user: dict) -> None:
                             (_row["status"] or "active")
                         ),
                     )
+                    _site_opts_edit = ["— Unassigned —"] + cached_sites()
+                    _curr_site = _row.get("Site_ID") or ""
+                    _curr_pick = _curr_site if _curr_site in _site_opts_edit else "— Unassigned —"
+                    e_site_pick = st.selectbox(
+                        "Site",
+                        _site_opts_edit,
+                        index=_site_opts_edit.index(_curr_pick),
+                        help="Admin-only field. HODs cannot move employees between sites.",
+                    )
+                    # site_id="" → clear binding to NULL; site_id="HQ" → set to HQ
+                    # site_id=None on the helper means "leave untouched", so we
+                    # always pass a string (empty or value) when the user submits.
+                    e_site_arg = "" if e_site_pick == "— Unassigned —" else e_site_pick
                     if st.form_submit_button("Save Changes"):
                         changed = update_employee(
                             edit_id,
@@ -2206,6 +2312,7 @@ def _render_employees_tab(user: dict) -> None:
                             phone=e_phone if e_phone != "" else None,
                             department=e_dept if e_dept != "" else None,
                             status=e_status,
+                            site_id=e_site_arg,
                             updated_by=actor,
                         )
                         if changed:
@@ -2220,8 +2327,10 @@ def _render_employees_tab(user: dict) -> None:
         st.caption(
             "Header row required (case-insensitive): "
             "`ID_Number, Name, Phone_Number, Department`. "
+            "Optional column: `Site_ID` — when present, binds employees to a site. "
             "Re-importing the same file is safe — rows with unchanged data "
-            "are skipped, changed rows update in place."
+            "are skipped, changed rows update in place. Existing Site bindings "
+            "are preserved if the CSV omits the `Site_ID` column."
         )
         up = st.file_uploader(
             "Choose CSV file",
@@ -2250,13 +2359,83 @@ def _render_employees_tab(user: dict) -> None:
 
     # ── 👥 Roster + Badges ──────────────────────────────────────────────────
     with sub_roster:
-        status_filter = st.selectbox(
-            "Status filter",
-            ["All", "active", "inactive", "suspended"],
-            key="emp_roster_status",
-        )
+        # Phase 7A — banner for employees with no Site_ID yet.
+        # Renders ABOVE the filter row so admins can't miss it on first load.
+        _unassigned = list_employees(site_id_filter="__UNASSIGNED__")
+        if not _unassigned.empty:
+            st.markdown(
+                f'<div style="background:{COLOR_CRITICAL}1A;'
+                f'border:1px solid {COLOR_CRITICAL};border-radius:8px;'
+                f'padding:12px 16px;margin-bottom:14px;">'
+                f'<span style="color:{COLOR_CRITICAL};font-weight:700;">'
+                f'⚠️ {len(_unassigned)} employee(s) have no Site assigned.</span>'
+                f'<br><span style="color:{TEXT_SECONDARY};font-size:12.5px;">'
+                f'Bind them to a site before Phase 7B (Supervisor Material '
+                f'Requests) goes live — supervisors can only see employees '
+                f'mapped to their own site.</span></div>',
+                unsafe_allow_html=True,
+            )
+            with st.expander(f"🛠️ Bulk-assign {len(_unassigned)} unassigned employee(s) to a Site",
+                             expanded=False):
+                _u_display = _unassigned[["ID_Number", "Name", "Department"]].rename(
+                    columns={"Phone_Number": "Phone"})
+                st.dataframe(_u_display, use_container_width=True, hide_index=True)
+                col_pick, col_target, col_go = st.columns([2, 2, 1])
+                with col_pick:
+                    _picked = st.multiselect(
+                        "Select employees",
+                        _unassigned["ID_Number"].tolist(),
+                        default=_unassigned["ID_Number"].tolist(),
+                        format_func=lambda i: (
+                            f"{i} — {_unassigned[_unassigned['ID_Number']==i].iloc[0]['Name']}"
+                        ),
+                        key="emp_bulk_assign_pick",
+                    )
+                with col_target:
+                    _target_site = st.selectbox(
+                        "Bind to Site",
+                        cached_sites(),
+                        key="emp_bulk_assign_site",
+                    )
+                with col_go:
+                    st.write("")
+                    if st.button("✅ Apply", type="primary", key="emp_bulk_assign_go",
+                                 use_container_width=True):
+                        if not _picked:
+                            st.warning("Pick at least one employee.")
+                        else:
+                            n = bulk_assign_employees_to_site(
+                                _picked, _target_site, updated_by=actor,
+                            )
+                            st.success(f"✅ Assigned {n} employee(s) to {_target_site}.")
+                            st.rerun()
+
+        col_st, col_site = st.columns(2)
+        with col_st:
+            status_filter = st.selectbox(
+                "Status filter",
+                ["All", "active", "inactive", "suspended"],
+                key="emp_roster_status",
+            )
+        with col_site:
+            _site_opts = ["All Sites"] + cached_sites() + ["— Unassigned —"]
+            site_pick = st.selectbox(
+                "Site filter",
+                _site_opts,
+                index=0,  # default to All Sites per spec
+                key="emp_roster_site",
+            )
+
+        if site_pick == "All Sites":
+            _site_arg = None
+        elif site_pick == "— Unassigned —":
+            _site_arg = "__UNASSIGNED__"
+        else:
+            _site_arg = site_pick
+
         df = list_employees(
             status_filter=None if status_filter == "All" else status_filter,
+            site_id_filter=_site_arg,
         )
         if df.empty:
             render_empty_state(
@@ -2265,15 +2444,17 @@ def _render_employees_tab(user: dict) -> None:
             )
         else:
             display = df[
-                ["ID_Number", "Name", "Phone_Number", "Department", "status",
+                ["ID_Number", "Name", "Phone_Number", "Department", "Site_ID", "status",
                  "created_by", "created_at", "updated_at"]
             ].rename(columns={
                 "Phone_Number": "Phone",
+                "Site_ID": "Site",
                 "status": "Status",
                 "created_by": "Added By",
                 "created_at": "Created",
                 "updated_at": "Updated",
             })
+            display["Site"] = display["Site"].fillna("— Unassigned —")
             st.dataframe(display, use_container_width=True, hide_index=True)
             st.caption(f"{len(df)} employee(s) shown.")
 

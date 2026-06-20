@@ -67,13 +67,14 @@ ROLE_HIERARCHY = {
 
 # Minimum role required to VIEW each page
 PAGE_ACCESS = {
-    "📦 Live Dashboard":   "supervisor",
-    "📝 Entry Log":        "store_keeper",
-    "📋 HOD Portal":       "hod",          # HOD + Admin; EOD Commit lives here
-    "🚚 Logistics Portal": "logistics",    # exact-locked in main.py (admin shadow allowed)
-    "🏭 Warehouse Portal": "warehouse_user", # exact-locked in main.py (admin shadow allowed)
-    "🛡️ Admin Portal":     "admin",
-    "📊 Reports":          "supervisor",
+    "📦 Live Dashboard":      "supervisor",
+    "📝 Entry Log":           "store_keeper",
+    "📋 HOD Portal":          "hod",            # HOD + Admin; EOD Commit lives here
+    "🛡️ Supervisor Portal":  "supervisor",     # Phase 7B — exact-locked in main.py
+    "🚚 Logistics Portal":    "logistics",      # exact-locked in main.py (admin shadow allowed)
+    "🏭 Warehouse Portal":    "warehouse_user", # exact-locked in main.py (admin shadow allowed)
+    "🛡️ Admin Portal":        "admin",
+    "📊 Reports":             "supervisor",
 }
 
 # Cross-site request status FSM: pending → approved|rejected → fulfilled
@@ -158,6 +159,15 @@ WHATSAPP_TRIGGERS = {
     "returnable_reminder_t_zero":     True,   # warning  — due now (borrower)
     "returnable_reminder_t_plus_2h":  True,   # warning  — 2h overdue (borrower + site SK)
     "returnable_reminder_t_plus_24h": True,   # critical — 24h overdue (+ site supervisor)
+    # Phase 7B — Supervisor Material Request workflow
+    "smr_submitted": True,   # supervisor → site SKs
+    "smr_approved":  True,   # SK → site HOD + originating supervisor
+    "smr_rejected":  True,   # SK → originating supervisor
+    "smr_cancelled": True,   # supervisor → site SKs (request withdrawn)
+    # Phase 7C — HOD Cross-Site view notification (debounced once-per-day)
+    # Default OFF — in-app notification + bell badge is sufficient. Flip to
+    # True if HODs explicitly want a WhatsApp ping per first-of-day view.
+    "cross_site_viewed": False,
 }
 
 # Allowed attachment MIME suffixes (PDF, JPEG, JPG, XLSX per 2026-06 spec).

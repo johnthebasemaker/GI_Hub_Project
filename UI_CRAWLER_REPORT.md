@@ -1,12 +1,13 @@
 # UI Crawler Report
-_Generated 2026-06-17T12:51:29_
+_Generated 2026-06-20T10:45:41_
 
-**16 passed · 0 failed · 0 skipped**
+**17 passed · 0 failed · 0 skipped**
 
 | Role | Page | Status | Detail |
 |---|---|---|---|
 | admin | 📦 Live Dashboard | ✅ PASS |  |
 | admin | 📋 HOD Portal | ✅ PASS |  |
+| admin | 🛡️ Supervisor Portal | ✅ PASS |  |
 | admin | 🚚 Logistics Portal | ✅ PASS |  |
 | admin | 🏭 Warehouse Portal | ✅ PASS |  |
 | admin | 🛡️ Admin Portal | ✅ PASS |  |

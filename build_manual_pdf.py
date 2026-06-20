@@ -64,6 +64,92 @@ MARGIN_MM   = 18
 
 
 # ---------------------------------------------------------------------------
+# Phase 7F — Role-segregated manual recipes
+# ---------------------------------------------------------------------------
+# Each entry tells slice_markdown_for_role() which top-level chapters
+# (matched against the literal text after "# " on top-level headings) to
+# keep when building that role's booklet. Universal preamble (chapters 1–3)
+# is included in every site-level role so the printed booklet stands alone.
+# Admin = "ALL" → falls through to the master full PDF behaviour.
+ROLE_MANUAL_RECIPES = {
+    "store_keeper": {
+        "title":    "Store Keeper Manual",
+        "icon":     "🗝️",
+        "audience": "Site-level material handling, daily entries, returnables.",
+        "chapters": [
+            "1. Introduction & System Overview",
+            "2. Roles, Permissions & Page Access",
+            "3. Login, Sidebar & Common Elements",
+            "4. Store Keeper Manual",
+            "10. Data Model & Concept Reference",
+            "11. Status Codes, Reason Codes & Glossary",
+            "12. FAQ — Master Index by Role",
+        ],
+    },
+    "supervisor": {
+        "title":    "Supervisor Manual",
+        "icon":     "🛡️",
+        "audience": "Field supervision, material requests for workers.",
+        "chapters": [
+            "1. Introduction & System Overview",
+            "3. Login, Sidebar & Common Elements",
+            "5. Supervisor Manual",
+            "11. Status Codes, Reason Codes & Glossary",
+            "12. FAQ — Master Index by Role",
+        ],
+    },
+    "hod": {
+        "title":    "HOD Manual",
+        "icon":     "🏛️",
+        "audience": "Head of Department oversight: approvals, EOD, reports.",
+        "chapters": [
+            "1. Introduction & System Overview",
+            "2. Roles, Permissions & Page Access",
+            "3. Login, Sidebar & Common Elements",
+            "6. HOD (Head of Department) Manual",
+            "8. Reports Module — Detailed Reference",
+            "10. Data Model & Concept Reference",
+            "11. Status Codes, Reason Codes & Glossary",
+            "12. FAQ — Master Index by Role",
+        ],
+    },
+    "logistics": {
+        "title":    "Logistics Portal Manual",
+        "icon":     "🚚",
+        "audience": "Purchase orders, vendor management, procurement chain.",
+        "chapters": [
+            "1. Introduction & System Overview",
+            "3. Login, Sidebar & Common Elements",
+            "14. Logistics Portal Manual",
+            "16. Cross-Role Procurement Walk-through",
+            "11. Status Codes, Reason Codes & Glossary",
+        ],
+    },
+    "warehouse_user": {
+        "title":    "Warehouse Portal Manual",
+        "icon":     "🏭",
+        "audience": "Receive goods, prepare delivery notes, returns to vendor.",
+        "chapters": [
+            "1. Introduction & System Overview",
+            "3. Login, Sidebar & Common Elements",
+            "15. Warehouse Portal Manual",
+            "16. Cross-Role Procurement Walk-through",
+            "11. Status Codes, Reason Codes & Glossary",
+        ],
+    },
+    "admin": {
+        "title":    "Admin Manual (Full)",
+        "icon":     "👑",
+        "audience": "Full reference — every chapter, every page, every workflow.",
+        "chapters": "ALL",
+    },
+}
+
+# Default screenshot library location (relative to repo root).
+SCREENSHOTS_DIR = "docs/screenshots"
+
+
+# ---------------------------------------------------------------------------
 # Block types — internal IR after Markdown is parsed
 # ---------------------------------------------------------------------------
 @dataclass
@@ -82,6 +168,8 @@ _BULLET_RE  = re.compile(r"^\s*[-*]\s+(.+)$")
 _NUMLI_RE   = re.compile(r"^\s*\d+\.\s+(.+)$")
 _RULE_RE    = re.compile(r"^\s*-{3,}\s*$|^\s*\*{3,}\s*$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$")
+# Phase 7F — standalone Markdown image line: ![alt](path)
+_IMAGE_RE   = re.compile(r"^!\[(.*?)\]\((.+?)\)\s*$")
 
 
 def _is_table_row(line: str) -> bool:
@@ -148,6 +236,17 @@ def parse_markdown(md: str) -> list[Block]:
             blocks.append(Block("table", items=[header] + rows))
             continue
 
+        # Phase 7F — standalone image line: ![alt](docs/screenshots/foo.png)
+        # Inline image references (mid-paragraph) are ignored — only own-line
+        # images render as captioned screenshots in the PDF.
+        im = _IMAGE_RE.match(line)
+        if im:
+            alt  = im.group(1).strip()
+            path = im.group(2).strip()
+            blocks.append(Block("img", text=path, items=[alt]))
+            i += 1
+            continue
+
         # bullet list (collect contiguous bullets)
         if _BULLET_RE.match(line) or _NUMLI_RE.match(line):
             items = []
@@ -179,6 +278,41 @@ def parse_markdown(md: str) -> list[Block]:
         blocks.append(Block("p", " ".join(b.strip() for b in buf)))
 
     return blocks
+
+
+# ---------------------------------------------------------------------------
+# Phase 7F — Markdown slicer for role-segregated booklets
+# ---------------------------------------------------------------------------
+def slice_markdown_for_role(role_key: str, md_text: str) -> str:
+    """Return only the chapters listed in ROLE_MANUAL_RECIPES[role_key].
+
+    "Chapter" = a top-level `# N. Title` heading. The slicer walks the
+    source line-by-line:
+      - When a `# Title` line matches the recipe → enable "include" mode.
+      - When the next `# ` line is encountered → re-evaluate.
+      - Non-numbered top-level headings (e.g., `# Table of Contents`)
+        are silently skipped — the rebuilt PDF gets its own TOC anyway.
+
+    role_key == "admin" or unknown → returns md_text unchanged so the
+    caller drops through to the existing full-PDF behaviour.
+    """
+    recipe = ROLE_MANUAL_RECIPES.get(role_key)
+    if not recipe or recipe.get("chapters") == "ALL":
+        return md_text
+    wanted = set(recipe["chapters"])
+
+    out_lines: list[str] = []
+    include = False
+    for line in md_text.splitlines():
+        if line.startswith("# ") and not line.startswith("## "):
+            title = line[2:].strip()
+            include = title in wanted
+            if include:
+                out_lines.append(line)
+            continue
+        if include:
+            out_lines.append(line)
+    return "\n".join(out_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +458,75 @@ class ManualPDF(FPDF):
         self.cell(0, 5, _ascii("GI Hub  ·  Streamlit + SQLite + Twilio + Ollama  ·  Multi-Site ERP"), align="L")
         self.skip_header = False
         # Re-enable auto-break for subsequent pages
+        self.set_auto_page_break(auto=True, margin=22)
+
+    # ── Role-personalised cover (Phase 7F) ─────────────────────────────────
+    def render_cover_for_role(self, recipe: dict) -> None:
+        """Variant of render_cover that swaps DOC_TITLE for the role-specific
+        title ("Store Keeper Manual") and surfaces an audience subtitle. Same
+        navy/gold visual treatment so booklets look like one family."""
+        title = recipe.get("title") or DOC_TITLE
+        audience = recipe.get("audience") or ""
+        # Strip emoji from the title body (latin-1 sanitiser would drop them
+        # anyway, but doing it explicitly keeps spacing clean).
+        title_clean = _ascii(title)
+
+        self.skip_header = True
+        self.set_auto_page_break(auto=False)
+        self.add_page()
+        # Top navy panel
+        self.set_fill_color(*BRAND_NAVY)
+        self.rect(0, 0, PAGE_W_MM, 110, "F")
+        # Gold accent strip
+        self.set_fill_color(*BRAND_GOLD)
+        self.rect(0, 110, PAGE_W_MM, 3, "F")
+        # Bottom subtle navy
+        self.set_fill_color(*BRAND_NAVY_DARK)
+        self.rect(0, PAGE_H_MM - 30, PAGE_W_MM, 30, "F")
+
+        # Brand text
+        self.set_text_color(255, 255, 255)
+        self.set_xy(MARGIN_MM, 40)
+        self.set_font("helvetica", "B", 28)
+        self.cell(0, 14, APP_NAME, align="L")
+        self.ln(16)
+        self.set_x(MARGIN_MM)
+        self.set_font("helvetica", "", 14)
+        self.set_text_color(*BRAND_GOLD_LIGHT)
+        self.cell(0, 8, "Enterprise Inventory Management", align="L")
+
+        # Role-specific title
+        self.set_xy(MARGIN_MM, 140)
+        self.set_text_color(*BRAND_NAVY)
+        self.set_font("helvetica", "B", 26)
+        self.multi_cell(0, 13, title_clean, align="L")
+        if audience:
+            self.ln(2)
+            self.set_x(MARGIN_MM)
+            self.set_font("helvetica", "I", 12)
+            self.set_text_color(*TEXT_BODY)
+            self.multi_cell(0, 6, _ascii(audience), align="L")
+        self.ln(4)
+        self.set_x(MARGIN_MM)
+        self.set_font("helvetica", "", 11)
+        self.set_text_color(*TEXT_MUTED)
+        self.cell(0, 6, _ascii(f"Version {APP_VERSION}  ·  "
+                                f"Generated {datetime.date.today().isoformat()}"),
+                  align="L")
+
+        # Footer band text
+        self.set_xy(MARGIN_MM, PAGE_H_MM - 20)
+        self.set_text_color(*BRAND_GOLD_LIGHT)
+        self.set_font("helvetica", "I", 10)
+        self.cell(0, 6, _ascii("Confidential — for authorized personnel only"),
+                  align="L")
+        self.set_x(MARGIN_MM)
+        self.set_y(PAGE_H_MM - 14)
+        self.set_text_color(255, 255, 255)
+        self.set_font("helvetica", "", 9)
+        self.cell(0, 5, _ascii(f"GI Hub  ·  Role booklet  ·  {title_clean}"),
+                  align="L")
+        self.skip_header = False
         self.set_auto_page_break(auto=True, margin=22)
 
     # ── TOC (rendered after content with resolved page numbers) ────────────
@@ -572,6 +775,85 @@ class ManualPDF(FPDF):
         self.line(MARGIN_MM, self.get_y(), PAGE_W_MM - MARGIN_MM, self.get_y())
         self.ln(4)
 
+    # ── Phase 7F — screenshot rendering ────────────────────────────────────
+    def render_image(self, path: str, caption: str = "") -> None:
+        """Render a screenshot scaled to 80% of body width with a caption.
+
+        Missing files (or any other PIL/fpdf error) render a small grey
+        placeholder card rather than crashing the build — lets us ship
+        the recipes + chapter refs before every screenshot exists on disk.
+        """
+        usable_w  = PAGE_W_MM - 2 * MARGIN_MM
+        img_w     = usable_w * 0.8
+        max_h     = 90  # mm — keeps two images per page comfortable
+
+        # Page-break guard: estimate target height and break early if needed.
+        target_h = max_h + 12  # image + caption + spacing
+        if self.get_y() + target_h > (PAGE_H_MM - 25):
+            self.add_page()
+
+        x_start = MARGIN_MM + (usable_w - img_w) / 2
+        y_start = self.get_y()
+
+        from pathlib import Path as _P
+        ok = False
+        try:
+            if path and _P(path).exists():
+                # Determine intrinsic aspect via PIL so the image doesn't
+                # distort — fpdf accepts h=0 to preserve aspect, but we
+                # also want to clamp to max_h.
+                try:
+                    from PIL import Image as _PILImage
+                    with _PILImage.open(path) as _im:
+                        iw, ih = _im.size
+                    if iw > 0 and ih > 0:
+                        h_at_w = img_w * (ih / iw)
+                        if h_at_w > max_h:
+                            scale = max_h / h_at_w
+                            draw_w = img_w * scale
+                            draw_h = max_h
+                            x_draw = MARGIN_MM + (usable_w - draw_w) / 2
+                        else:
+                            draw_w = img_w
+                            draw_h = h_at_w
+                            x_draw = x_start
+                        self.image(path, x=x_draw, y=y_start,
+                                   w=draw_w, h=draw_h)
+                        self.set_y(y_start + draw_h)
+                        ok = True
+                except Exception:
+                    pass
+                if not ok:
+                    # PIL probe failed — let fpdf size it natively, clamped width.
+                    self.image(path, x=x_start, y=y_start, w=img_w)
+                    self.set_y(y_start + max_h)
+                    ok = True
+        except Exception:
+            ok = False
+
+        if not ok:
+            # Placeholder card — neutral grey rectangle with the missing path.
+            self.set_fill_color(244, 246, 248)
+            self.set_draw_color(*RULE_LINE)
+            self.set_line_width(0.3)
+            box_h = 40
+            self.rect(x_start, y_start, img_w, box_h, "DF")
+            self.set_xy(x_start, y_start + box_h / 2 - 6)
+            self.set_font("helvetica", "I", 9)
+            self.set_text_color(*TEXT_MUTED)
+            label = f"[Screenshot pending: {path}]"
+            self.cell(img_w, 5, _ascii(label), align="C")
+            self.set_y(y_start + box_h)
+
+        # Caption — italic + muted + centred
+        if caption:
+            self.ln(1)
+            self.set_x(MARGIN_MM)
+            self.set_font("helvetica", "I", 9)
+            self.set_text_color(*TEXT_MUTED)
+            self.multi_cell(usable_w, 4.5, _ascii(caption), align="C")
+        self.ln(4)
+
 
 # ---------------------------------------------------------------------------
 # Latin-1 sanitiser — fpdf2 core fonts don't support Unicode glyphs like
@@ -662,6 +944,10 @@ def build_manual_pdf(md_text: str) -> bytes:
                 pdf.render_table(blk.items)
             elif blk.kind == "hr":
                 pdf.render_hr()
+            elif blk.kind == "img":
+                # Phase 7F — caption = first item in items list (alt text)
+                pdf.render_image(blk.text,
+                                 caption=(blk.items[0] if blk.items else ""))
             # blank → ignored (paragraphs already have ln(8))
         return bytes(pdf.output()), toc
 
@@ -678,6 +964,73 @@ def build_manual_pdf(md_text: str) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# Phase 7F — Role-segregated booklet builder
+# ---------------------------------------------------------------------------
+def build_role_manual_pdf(
+    role_key: str,
+    md_text: str | None = None,
+) -> bytes:
+    """Render the role-specific manual booklet.
+
+    role_key=='admin' or unknown → falls through to the master full PDF
+    (existing build_manual_pdf behaviour). All others get a personalised
+    cover ("Store Keeper Manual 🗝️" style) + only their chapters per
+    ROLE_MANUAL_RECIPES.
+
+    md_text=None → loads USER_MANUAL.md from the repo root. Pass the string
+    explicitly in unit tests so the harness can inject minimal fixtures.
+    """
+    if md_text is None:
+        src = Path("USER_MANUAL.md")
+        md_text = src.read_text(encoding="utf-8") if src.exists() else ""
+
+    recipe = ROLE_MANUAL_RECIPES.get(role_key)
+    if not recipe or recipe.get("chapters") == "ALL":
+        return build_manual_pdf(md_text)
+
+    sliced = slice_markdown_for_role(role_key, md_text)
+    blocks = parse_markdown(sliced)
+
+    def render(insert_toc: Optional[list] = None) -> tuple[bytes, list]:
+        pdf = ManualPDF()
+        pdf.render_cover_for_role(recipe)   # personalised cover
+        toc: list[tuple[int, str, int]] = []
+        if insert_toc is not None:
+            pdf.render_toc(insert_toc)
+
+        for blk in blocks:
+            if blk.kind == "h1":
+                pdf.render_h1(blk.text)
+                toc.append((1, blk.text, pdf.page_no()))
+            elif blk.kind == "h2":
+                pdf.render_h2(blk.text)
+                toc.append((2, blk.text, pdf.page_no()))
+            elif blk.kind == "h3":
+                pdf.render_h3(blk.text)
+            elif blk.kind == "h4":
+                pdf.render_h4(blk.text)
+            elif blk.kind == "p":
+                pdf.render_paragraph(blk.text)
+            elif blk.kind == "ul":
+                pdf.render_list(blk.items)
+            elif blk.kind == "code":
+                pdf.render_code(blk.text)
+            elif blk.kind == "table":
+                pdf.render_table(blk.items)
+            elif blk.kind == "hr":
+                pdf.render_hr()
+            elif blk.kind == "img":
+                pdf.render_image(blk.text,
+                                 caption=(blk.items[0] if blk.items else ""))
+        return bytes(pdf.output()), toc
+
+    _, toc_entries = render(insert_toc=None)
+    shifted = [(lvl, title, pg + 1) for (lvl, title, pg) in toc_entries]
+    final_bytes, _ = render(insert_toc=shifted)
+    return final_bytes
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def main(argv: list[str] | None = None) -> int:
@@ -686,6 +1039,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="Markdown source (default: USER_MANUAL.md)")
     parser.add_argument("--out", dest="dst", default="GI_Hub_User_Manual.pdf",
                         help="PDF output path (default: GI_Hub_User_Manual.pdf)")
+    parser.add_argument("--role", dest="role", default=None,
+                        choices=list(ROLE_MANUAL_RECIPES.keys()) + ["all"],
+                        help="Role-segregated booklet. 'all' regenerates "
+                             "every role PDF + master in one run.")
     args = parser.parse_args(argv)
 
     src = Path(args.src)
@@ -696,7 +1053,34 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Reading  {src} ({src.stat().st_size:,} bytes)")
     md = src.read_text(encoding="utf-8")
     print(f"Parsing  {len(md.splitlines()):,} lines …")
-    pdf_bytes = build_manual_pdf(md)
+
+    today = datetime.date.today().isoformat()
+
+    if args.role == "all":
+        # Master + every role booklet in one run.
+        master_path = Path(args.dst)
+        master_bytes = build_manual_pdf(md)
+        master_path.write_bytes(master_bytes)
+        print(f"Written  {master_path} ({len(master_bytes):,} bytes)")
+        for rk in ROLE_MANUAL_RECIPES:
+            short = {
+                "store_keeper":   "SK",
+                "supervisor":     "Supervisor",
+                "hod":            "HOD",
+                "logistics":      "Logistics",
+                "warehouse_user": "Warehouse",
+                "admin":          "Admin",
+            }.get(rk, rk)
+            out = Path(f"GI_{short}_Manual_{today}.pdf")
+            pdf = build_role_manual_pdf(rk, md)
+            out.write_bytes(pdf)
+            print(f"Written  {out} ({len(pdf):,} bytes)")
+        return 0
+
+    if args.role:
+        pdf_bytes = build_role_manual_pdf(args.role, md)
+    else:
+        pdf_bytes = build_manual_pdf(md)
     out = Path(args.dst)
     out.write_bytes(pdf_bytes)
     print(f"Written  {out} ({len(pdf_bytes):,} bytes)")

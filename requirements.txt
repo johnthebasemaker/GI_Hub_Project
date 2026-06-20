@@ -25,3 +25,9 @@ pyzbar
 # ai/cv/inference.py — Streamlit and bug_check never pay torch's import cost).
 ultralytics>=8.1
 opencv-python-headless>=4.9
+
+# Phase 7E — Network resilience / form draft recovery for low-connectivity sites.
+# Wraps browser localStorage so multi-step form data survives Streamlit WS drops.
+# ui_components/draft_bus silently falls through to server-side-only when this
+# package is unavailable (corporate proxy / air-gapped env).
+streamlit-local-storage>=0.0.20
