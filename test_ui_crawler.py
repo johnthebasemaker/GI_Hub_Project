@@ -51,6 +51,10 @@ TMP_UPLOADS.mkdir(parents=True, exist_ok=True)
 # Tell main.py NOT to spawn the WhatsApp worker thread — it would race against
 # AppTest's reruns and (on macOS) hit the Cocoa-main-thread guard.
 os.environ["GI_SUPPRESS_EMBEDDED_WORKER"] = "1"
+# Tell draft_bus (Phase 7E) NOT to instantiate streamlit-local-storage. That
+# component renders a JS iframe which AppTest doesn't drive, causing the
+# script run to hang past the 30s timeout. Production behaviour unchanged.
+os.environ["GI_SUPPRESS_LOCAL_STORAGE"] = "1"
 
 import database  # noqa: E402
 database.DB_FILE = str(TMP_DB)

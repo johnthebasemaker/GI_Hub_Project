@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -45,14 +46,38 @@ from ai.client import (
     ollama_vision_generate,
 )
 
+logger = logging.getLogger("gi.ocr")
+
+# Once-per-process flag so the missing-model warning logs once, not on every
+# OCR attempt. Cleared by `reset_preflight_warning_for_tests` (see bug_check).
+_MISSING_MODEL_LOGGED: set[str] = set()
+
+
+def reset_preflight_warning_for_tests() -> None:
+    """Test hook — bug_check uses this between checks so the once-per-process
+    warning fires deterministically per test run."""
+    _MISSING_MODEL_LOGGED.clear()
+
 
 def _vision_preflight(model: str) -> Optional[str]:
     """
     Return a friendly error string if image OCR can't run; None if good to go.
     Catches the two common setup mistakes: server unreachable, vision model
     not pulled.
+
+    Phase 8A — missing-model paths now emit a once-per-process logger.warning
+    so ops can spot a missing qwen2.5vl:7b in the journal without having to
+    reproduce the UI flow. The runtime behaviour is unchanged — the UI still
+    surfaces the friendly error string as a clean `st.warning(...)`.
     """
     if not OLLAMA_AVAILABLE:
+        if "__server_unreachable__" not in _MISSING_MODEL_LOGGED:
+            logger.warning(
+                "Ollama server unreachable at %s — OCR features disabled "
+                "until `ollama serve` is up.",
+                OLLAMA_HOST,
+            )
+            _MISSING_MODEL_LOGGED.add("__server_unreachable__")
         return (
             f"Ollama server not reachable at `{OLLAMA_HOST}`. "
             "Locally: run `ollama serve` (or it's already running — check `ollama ps`). "
@@ -61,6 +86,14 @@ def _vision_preflight(model: str) -> Optional[str]:
         )
     installed = list_ollama_models()
     if installed and model not in installed:
+        if model not in _MISSING_MODEL_LOGGED:
+            logger.warning(
+                "Vision model %r not installed on %s. Installed models: %s. "
+                "OCR runtime falls back gracefully (UI shows a clean hint); "
+                "run `ollama pull %s` to enable handwriting OCR.",
+                model, OLLAMA_HOST, installed, model,
+            )
+            _MISSING_MODEL_LOGGED.add(model)
         # Suggest a close match if user has a similar one.
         suggestion = next(
             (m for m in installed if "vl" in m.lower() or "vision" in m.lower()),

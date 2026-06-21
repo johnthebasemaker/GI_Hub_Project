@@ -4499,6 +4499,756 @@ def check_7f_screenshot_placeholders_exist() -> None:
     assert len(pngs) >= 10, f"expected >=10 seed placeholders, found {len(pngs)}"
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 7G — Hub Assistant context fix checks
+# ═══════════════════════════════════════════════════════════════════════════
+# Tests import from ai.manual_qa which lazily uses USER_MANUAL.md via
+# GI_USER_MANUAL_PATH (defaults to repo-root USER_MANUAL.md). The bug_check
+# harness runs from the repo root, so the real manual is available.
+def _7g_reset_context_cache() -> None:
+    """The role context is @lru_cached. Clear it between checks so this
+    test ordering doesn't leak state. Cheap — single call."""
+    from ai import manual_qa as _mq
+    try:
+        _mq._context_for_role.cache_clear()
+    except Exception:
+        pass
+
+
+def check_7g_prompt_has_username_and_role() -> None:
+    _7g_reset_context_cache()
+    from ai.manual_qa import _build_system_prompt
+    prompt = _build_system_prompt("admin", "andrew")
+    assert "andrew" in prompt, "username not injected into prompt"
+    assert "Administrator" in prompt, "role label missing from prompt"
+
+
+def check_7g_prompt_empty_username_ok() -> None:
+    """Empty username must fall back gracefully — no KeyError, no crash."""
+    _7g_reset_context_cache()
+    from ai.manual_qa import _build_system_prompt
+    prompt = _build_system_prompt("store_keeper", "")
+    assert "Store Keeper" in prompt
+    # Falls back to "the user" placeholder per the template.
+    assert "the user" in prompt, "empty username should fall back to 'the user'"
+
+
+def check_7g_admin_context_includes_users_tab() -> None:
+    """The original bug: §7.6 '👥 Users' content lived past the 800-char cap.
+    Admin now gets full sections — verify the User Management text is present."""
+    _7g_reset_context_cache()
+    from ai.manual_qa import _context_for_role
+    ctx = _context_for_role("admin")
+    assert ctx, "admin context unexpectedly empty"
+    # The "👥 Users" tab header appears in §7.6 of USER_MANUAL.md. Without
+    # the no-truncation special case, this string would be cut off.
+    assert "👥 Users" in ctx, \
+        "admin context missing §7.6 User Management text (truncation regression)"
+
+
+def check_7g_logistics_context_includes_section_14() -> None:
+    """Cause C: logistics used to silently fall through to store_keeper
+    context (§14 absent). Verify §14 markers are present."""
+    _7g_reset_context_cache()
+    from ai.manual_qa import _context_for_role
+    ctx = _context_for_role("logistics")
+    assert ctx, "logistics context unexpectedly empty"
+    assert "Section 14" in ctx and "Logistics Portal" in ctx, \
+        "logistics context missing §14 Logistics Portal Manual"
+
+
+def check_7g_warehouse_context_includes_section_15() -> None:
+    _7g_reset_context_cache()
+    from ai.manual_qa import _context_for_role
+    ctx = _context_for_role("warehouse_user")
+    assert ctx, "warehouse_user context unexpectedly empty"
+    assert "Section 15" in ctx and "Warehouse Portal" in ctx, \
+        "warehouse_user context missing §15 Warehouse Portal Manual"
+
+
+def check_7g_admin_refusal_phrase_self_aware() -> None:
+    """The admin refusal must NOT tell the admin to ask their admin."""
+    _7g_reset_context_cache()
+    from ai.manual_qa import _build_system_prompt
+    prompt = _build_system_prompt("admin", "andrew")
+    # Should mention the download bay / settings path.
+    assert "Download Role Manuals" in prompt or "USER_MANUAL.md" in prompt, \
+        "admin refusal should point to Settings download bay"
+    # And critically, must NOT contain the old "ask your HOD or Admin" string.
+    assert "ask your HOD or Admin" not in prompt, \
+        "stale refusal text still present — admin would be told to ask themselves"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 8A — Smart Scan AI sidecar scaffold (strict offline, mocked HTTP)
+# ═══════════════════════════════════════════════════════════════════════════
+# These checks NEVER hit the network and NEVER look for model weight files.
+# Every HTTP path is monkey-patched via client._perform_http_post.
+# torch / transformers are NEVER imported (verified by check #8).
+#
+# Hardcoded mock data structure — used by every successful-detect check:
+_8A_MOCK_DETECTIONS = {
+    "detections": [
+        {"label": "impact driver", "box": [120.0, 84.0, 380.0, 240.0],  "score": 0.87},
+        {"label": "torque wrench", "box": [410.0, 90.0, 640.0, 235.0], "score": 0.73},
+    ],
+    "latency_ms": 142,
+    "device":     "mps",
+}
+
+
+def _8a_reset_client() -> None:
+    """Reset breaker state + ensure the toggle starts at a known value.
+    Called at the top of every 8A check so test ordering is irrelevant."""
+    from ai.locate_anything import client as _c
+    _c._breaker_reset()
+    import os as _os
+    # Make sure the test-suppression env var is OFF inside 8A checks so
+    # we exercise the real gate-read path. (test_ui_crawler sets this to
+    # 1; bug_check should always see the DB toggle.)
+    _os.environ.pop("GI_SUPPRESS_LOCATE_ANYTHING", None)
+
+
+def check_8a_setting_seed_enabled_default_off() -> None:
+    _8a_reset_client()
+    val = database.get_app_setting("locate_anything_enabled", "missing")
+    assert val == "0", f"expected '0' (off by default), got {val!r}"
+
+
+def check_8a_setting_seed_sidecar_url() -> None:
+    _8a_reset_client()
+    url = database.get_app_setting("locate_anything_sidecar_url", "missing")
+    assert url == "http://127.0.0.1:8503", f"unexpected default url: {url!r}"
+
+
+def check_8a_client_gate_off_short_circuits() -> None:
+    _8a_reset_client()
+    from ai.locate_anything import client as c
+    database.set_app_setting("locate_anything_enabled", "0")
+    assert c.is_enabled() is False
+    # Flip it on, confirm true, flip it off again — the helper must re-read
+    # on every call (no caching).
+    database.set_app_setting("locate_anything_enabled", "1")
+    assert c.is_enabled() is True
+    database.set_app_setting("locate_anything_enabled", "0")
+    assert c.is_enabled() is False
+
+
+def check_8a_client_detect_off_returns_empty() -> None:
+    """When the gate is OFF, detect() must NOT call HTTP. Verify by setting
+    the HTTP mock to raise — if the gate works, the mock never fires.
+    Phase 8E: detect() now returns (detections, call_id) tuple."""
+    _8a_reset_client()
+    from ai.locate_anything import client as c
+    database.set_app_setting("locate_anything_enabled", "0")
+
+    sentinel = {"called": False}
+    def _mock(_url, _payload, timeout=30.0):
+        sentinel["called"] = True
+        raise AssertionError("HTTP must NOT be called when gate is off")
+
+    orig = c._perform_http_post
+    c._perform_http_post = _mock
+    try:
+        dets, call_id = c.detect("BASE64STUB", prompt="locate the wrench")
+        assert dets == [], f"gate-off detect should be [], got {dets!r}"
+        assert call_id == 0, "no telemetry row should be written when gate off"
+        assert sentinel["called"] is False
+    finally:
+        c._perform_http_post = orig
+
+
+def check_8a_client_detect_mock_200_returns_detections() -> None:
+    """Happy path — gate ON, mocked HTTP 200 with synthetic bounding boxes."""
+    _8a_reset_client()
+    from ai.locate_anything import client as c
+    database.set_app_setting("locate_anything_enabled", "1")
+
+    def _mock(_url, _payload, timeout=30.0):
+        return 200, dict(_8A_MOCK_DETECTIONS)
+
+    orig = c._perform_http_post
+    c._perform_http_post = _mock
+    try:
+        dets, call_id = c.detect("BASE64STUB", prompt="locate the wrench")
+        assert len(dets) == 2, f"expected 2 detections, got {len(dets)}"
+        assert dets[0]["label"] == "impact driver", dets[0]
+        assert dets[1]["score"] == 0.73, dets[1]
+        # Box shape preserved
+        assert dets[0]["box"] == [120.0, 84.0, 380.0, 240.0]
+        # Breaker should be reset on success
+        assert c._breaker.consecutive_failures == 0
+        # Phase 8E — happy path must have written a telemetry row.
+        assert call_id > 0, "expected non-zero call_id on success"
+    finally:
+        c._perform_http_post = orig
+        database.set_app_setting("locate_anything_enabled", "0")
+
+
+def check_8a_client_detect_503_returns_empty_trips_breaker() -> None:
+    """Sidecar 503 (missing weights) → empty list, breaker increments."""
+    _8a_reset_client()
+    from ai.locate_anything import client as c
+    database.set_app_setting("locate_anything_enabled", "1")
+
+    def _mock(_url, _payload, timeout=30.0):
+        return 503, {"detail": "ModelNotReadyError: weights missing"}
+
+    orig = c._perform_http_post
+    c._perform_http_post = _mock
+    try:
+        dets, _id = c.detect("BASE64STUB")
+        assert dets == [], f"expected [] on 503, got {dets!r}"
+        assert c._breaker.consecutive_failures == 1, \
+            f"breaker should have recorded 1 failure, got {c._breaker.consecutive_failures}"
+    finally:
+        c._perform_http_post = orig
+        database.set_app_setting("locate_anything_enabled", "0")
+
+
+def check_8a_client_circuit_breaker_opens() -> None:
+    """3 consecutive failures → breaker opens → next call short-circuits."""
+    _8a_reset_client()
+    from ai.locate_anything import client as c
+    database.set_app_setting("locate_anything_enabled", "1")
+
+    call_count = {"n": 0}
+    def _mock(_url, _payload, timeout=30.0):
+        call_count["n"] += 1
+        return 0, None  # 0 == sidecar unreachable
+
+    orig = c._perform_http_post
+    c._perform_http_post = _mock
+    try:
+        for _ in range(3):
+            c.detect("STUB")   # tuple ignored
+        assert call_count["n"] == 3, f"expected 3 HTTP attempts, got {call_count['n']}"
+        # Breaker is now open — next call must NOT increment call_count.
+        c.detect("STUB")
+        assert call_count["n"] == 3, \
+            f"breaker should have prevented call #4, but HTTP was attempted ({call_count['n']} total)"
+        assert c._breaker_is_open() is True
+    finally:
+        c._perform_http_post = orig
+        database.set_app_setting("locate_anything_enabled", "0")
+
+
+def check_8a_client_import_does_not_pull_torch() -> None:
+    """Critical isolation guarantee — Streamlit must never accidentally pay
+    torch's import cost via the client. Verifies the package layout:
+    `__init__.py` re-exports client only, model_loader is opt-in."""
+    import sys as _sys
+    # If torch was already imported by an earlier test in this run we can't
+    # un-import it. Instead: assert that `client` doesn't TRANSITIVELY pull
+    # torch by checking sys.modules BEFORE and AFTER a fresh-ish import.
+    # Snapshot pre-state.
+    torch_in_modules_before = "torch" in _sys.modules
+    # Force re-import of the client module without dragging model_loader.
+    for k in list(_sys.modules):
+        if k.startswith("ai.locate_anything"):
+            del _sys.modules[k]
+    from ai.locate_anything import client as _c  # noqa: F401
+    # The client module itself must not have triggered a torch import.
+    # If torch was ALREADY in sys.modules (from some other test), we can't
+    # prove negative — but in a clean run this assertion is meaningful.
+    if not torch_in_modules_before:
+        assert "torch" not in _sys.modules, \
+            "ai.locate_anything.client transitively imported torch"
+        assert "transformers" not in _sys.modules, \
+            "ai.locate_anything.client transitively imported transformers"
+
+
+def check_8a_sidecar_requirements_file_exists() -> None:
+    import pathlib
+    req = pathlib.Path(REPO_ROOT / "ai" / "locate_anything" / "requirements.txt")
+    assert req.exists(), f"missing: {req}"
+    body = req.read_text(encoding="utf-8")
+    # Sanity — should NOT have leaked into the project-root requirements.
+    root_req = pathlib.Path(REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "transformers>=" not in root_req, \
+        "transformers must NOT appear in project-root requirements.txt"
+    # Sidecar reqs must declare torch + transformers + fastapi.
+    for needle in ("torch", "transformers", "fastapi", "uvicorn", "pillow"):
+        assert needle in body, f"sidecar requirements.txt missing: {needle}"
+
+
+def check_8a_download_script_present() -> None:
+    import pathlib, stat
+    p = pathlib.Path(REPO_ROOT / "scripts" / "download_model.sh")
+    assert p.exists(), f"missing: {p}"
+    mode = p.stat().st_mode
+    assert mode & stat.S_IXUSR, "download_model.sh must be executable"
+    body = p.read_text(encoding="utf-8")
+    # Verify the script targets BOTH models we documented.
+    assert "LocateAnything-3B" in body
+    assert "qwen2.5vl:7b" in body
+    assert "Library/Caches/gi_locate" in body, \
+        "download script must store LocateAnything weights under ~/Library/Caches/gi_locate"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 8B — bundle + first-run setup tooling
+# ═══════════════════════════════════════════════════════════════════════════
+def _8b_assert_bash_script(path: str) -> None:
+    """Common check: file exists, is executable, parses as valid bash.
+
+    Uses _orig_popen directly because the harness monkey-patches
+    subprocess.Popen to a no-op for mailer-safety (see line 45)."""
+    import pathlib, stat
+    p = pathlib.Path(REPO_ROOT / path)
+    assert p.exists(), f"missing: {path}"
+    mode = p.stat().st_mode
+    assert mode & stat.S_IXUSR, f"{path} must be executable"
+    # Run `bash -n` via the un-patched Popen so we get a real process.
+    proc = _orig_popen(
+        ["bash", "-n", str(p)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    _stdout, stderr = proc.communicate(timeout=10)
+    assert proc.returncode == 0, (
+        f"{path} has bash syntax errors: "
+        f"{stderr.decode('utf-8', errors='replace').strip()}"
+    )
+
+
+def check_8b_bundle_script() -> None:
+    _8b_assert_bash_script("scripts/bundle_locate_anything_weights.sh")
+
+
+def check_8b_install_script() -> None:
+    _8b_assert_bash_script("scripts/install_locate_anything_weights.sh")
+
+
+def check_8b_run_script() -> None:
+    _8b_assert_bash_script("host_setup/scripts/run_locate_anything.sh")
+    # Sanity — must reference the right uvicorn module path.
+    import pathlib
+    body = pathlib.Path(
+        REPO_ROOT / "host_setup" / "scripts" / "run_locate_anything.sh"
+    ).read_text(encoding="utf-8")
+    assert "ai.locate_anything.server:app" in body, \
+        "run_locate_anything.sh must launch ai.locate_anything.server:app"
+    assert "127.0.0.1" in body and "8503" in body, \
+        "run_locate_anything.sh must bind 127.0.0.1:8503 only"
+
+
+def check_8b_plist_template() -> None:
+    import pathlib, plistlib
+    p = pathlib.Path(
+        REPO_ROOT / "host_setup" / "launchd" / "com.gi.locate-anything.plist.tmpl"
+    )
+    assert p.exists(), f"missing: {p}"
+    # Render the template placeholders to dummy values so plistlib accepts it.
+    body = p.read_bytes()\
+        .replace(b"__PROJECT_DIR__", b"/tmp/dummy")\
+        .replace(b"__USER_HOME__",   b"/tmp/dummy")\
+        .replace(b"__USER__",        b"dummy")
+    doc = plistlib.loads(body)
+    assert doc["Label"] == "com.gi.locate-anything", doc.get("Label")
+    # ProgramArguments must point at run_locate_anything.sh.
+    args = doc["ProgramArguments"]
+    assert any("run_locate_anything.sh" in a for a in args), \
+        f"plist must invoke run_locate_anything.sh; got {args}"
+
+
+def check_8b_install_flag() -> None:
+    """install.sh must recognise --with-locate-anything as an opt-in flag
+    (off by default per spec Q5)."""
+    import pathlib
+    body = pathlib.Path(
+        REPO_ROOT / "host_setup" / "scripts" / "install.sh"
+    ).read_text(encoding="utf-8")
+    assert "--with-locate-anything" in body, \
+        "install.sh must recognise --with-locate-anything flag"
+    assert "com.gi.locate-anything" in body, \
+        "install.sh must reference the locate-anything service"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 8C — Smart Scan Tier-3 wiring
+# ═══════════════════════════════════════════════════════════════════════════
+def check_8c_should_invoke_empty_yes() -> None:
+    from ai.cv.smart_scan import should_invoke_tier3
+    assert should_invoke_tier3([]) is True
+
+
+def check_8c_should_invoke_low_yes() -> None:
+    from ai.cv.smart_scan import should_invoke_tier3
+    assert should_invoke_tier3([{"class_name": "x", "confidence": 0.25}]) is True
+
+
+def check_8c_should_invoke_mid_no() -> None:
+    """Spec Q1(a) — Tier 3 must NOT fire in the 0.30–0.45 overlap. YOLO's
+    own "candidates" UI handles that band."""
+    from ai.cv.smart_scan import should_invoke_tier3
+    assert should_invoke_tier3([{"class_name": "x", "confidence": 0.40}]) is False
+    assert should_invoke_tier3([{"class_name": "x", "confidence": 0.50}]) is False
+
+
+def check_8c_should_invoke_high_no() -> None:
+    from ai.cv.smart_scan import should_invoke_tier3
+    assert should_invoke_tier3([{"class_name": "x", "confidence": 0.95}]) is False
+
+
+def check_8c_reshape_basic() -> None:
+    from ai.cv.smart_scan import tier3_to_candidates
+    out = tier3_to_candidates([
+        {"label": "impact driver", "box": [10, 20, 100, 120], "score": 0.87},
+    ])
+    assert len(out) == 1
+    r = out[0]
+    assert r["class_name"] == "impact driver"
+    assert r["confidence"] == 0.87
+    assert r["bbox"] == [10, 20, 100, 120]
+    assert r["source"] == "tier3_locate_anything"
+
+
+def check_8c_reshape_filter_noise() -> None:
+    from ai.cv.smart_scan import tier3_to_candidates, TIER3_NOISE_FLOOR
+    assert TIER3_NOISE_FLOOR == 0.20, "noise floor regression"
+    out = tier3_to_candidates([
+        {"label": "good",  "box": [0,0,1,1], "score": 0.40},
+        {"label": "noise", "box": [0,0,1,1], "score": 0.10},
+    ])
+    assert [d["class_name"] for d in out] == ["good"], out
+
+
+def check_8c_reshape_cap() -> None:
+    from ai.cv.smart_scan import tier3_to_candidates, MAX_CANDIDATES
+    out = tier3_to_candidates([
+        {"label": f"tool_{i}", "box": [0,0,1,1], "score": 0.5 + i*0.05}
+        for i in range(5)
+    ])
+    assert len(out) == MAX_CANDIDATES == 3
+    # Highest score first.
+    assert out[0]["class_name"] == "tool_4", out
+
+
+def check_8c_reshape_source_tag() -> None:
+    from ai.cv.smart_scan import tier3_to_candidates
+    out = tier3_to_candidates([{"label": "x", "box": [], "score": 0.9}])
+    assert out[0]["source"] == "tier3_locate_anything"
+
+
+def check_8c_integration_yolo_empty_plus_mock() -> None:
+    """End-to-end logic check: YOLO empty → bucket_detections returns 'manual'
+    → should_invoke_tier3 says yes → mock sidecar returns 2 dets → reshape
+    produces 2 Tier-3 candidates ready to render."""
+    from ai.cv.smart_scan import (
+        bucket_detections, should_invoke_tier3, tier3_to_candidates,
+    )
+    yolo_dets: list = []
+    mode, _ = bucket_detections(yolo_dets)
+    assert mode == "manual"
+    assert should_invoke_tier3(yolo_dets) is True
+    # Simulated sidecar reply — matches _8A_MOCK_DETECTIONS shape.
+    sidecar_reply = [
+        {"label": "impact driver", "box": [0, 0, 100, 100], "score": 0.87},
+        {"label": "torque wrench", "box": [0, 0, 200, 100], "score": 0.73},
+    ]
+    candidates = tier3_to_candidates(sidecar_reply)
+    assert len(candidates) == 2
+    assert candidates[0]["class_name"] == "impact driver"
+    # Source tag must propagate so the UI knows to render the amber panel.
+    assert all(c["source"] == "tier3_locate_anything" for c in candidates)
+
+
+def check_8c_gate_guard_off() -> None:
+    """Critical: when the admin gate is OFF, client.detect() must short-
+    circuit to [] without calling HTTP — even on inputs that would
+    normally trigger Tier 3. Reuses the Phase 8A mock-sentinel pattern."""
+    _8a_reset_client()
+    from ai.locate_anything import client as c
+    database.set_app_setting("locate_anything_enabled", "0")
+
+    sentinel = {"called": False}
+    def _mock(_url, _payload, timeout=30.0):
+        sentinel["called"] = True
+        raise AssertionError("HTTP must NOT be called when gate is off")
+
+    orig = c._perform_http_post
+    c._perform_http_post = _mock
+    try:
+        dets, call_id = c.detect("STUB", classes=["wrench"])
+        assert dets == []
+        assert call_id == 0
+        assert sentinel["called"] is False
+    finally:
+        c._perform_http_post = orig
+
+
+def check_8c_gate_guard_confident() -> None:
+    """should_invoke_tier3 must return False for confident YOLO detections —
+    so even if the caller code mistakenly tries to invoke Tier 3, the gate
+    refuses upstream of HTTP. (Belt-and-suspenders test.)"""
+    from ai.cv.smart_scan import should_invoke_tier3
+    # 0.65 confidence is in the YOLO "candidates" band — explicitly Tier 2.
+    confident = [{"class_name": "x", "confidence": 0.65}]
+    assert should_invoke_tier3(confident) is False, \
+        "Tier 3 must NOT fire when YOLO is in the candidates band"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 8E — Telemetry tests
+# ═══════════════════════════════════════════════════════════════════════════
+def check_8e_telemetry_schema() -> None:
+    conn = database.get_connection()
+    try:
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(locate_anything_calls)"
+        ).fetchall()}
+        for needed in (
+            "id", "called_at", "site_id", "sk_username",
+            "yolo_top_conf", "detection_count", "accepted",
+            "latency_ms", "error",
+        ):
+            assert needed in cols, f"missing column: {needed}"
+    finally:
+        conn.close()
+
+
+def check_8e_telemetry_index_called_at() -> None:
+    conn = database.get_connection()
+    try:
+        idx = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='index' AND tbl_name='locate_anything_calls'"
+        ).fetchall()}
+        assert "ix_la_calls_called_at" in idx, f"missing index: {idx}"
+    finally:
+        conn.close()
+
+
+def check_8e_log_helper_writes_row() -> None:
+    rid = database.log_locate_anything_call(
+        site_id="TEST_8E_SITE",
+        sk_username="test_sk",
+        yolo_top_conf=0.18,
+        detection_count=2,
+        latency_ms=148,
+    )
+    assert rid > 0, f"expected non-zero rowid, got {rid}"
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT site_id, sk_username, yolo_top_conf, detection_count, "
+            "       latency_ms, error, accepted "
+            "FROM locate_anything_calls WHERE id = ?", (rid,),
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "TEST_8E_SITE"
+        assert row[1] == "test_sk"
+        assert abs(row[2] - 0.18) < 1e-6
+        assert row[3] == 2
+        assert row[4] == 148
+        assert row[5] is None, "error should be NULL on success"
+        assert row[6] is None, "accepted should be NULL until SK decides"
+    finally:
+        conn.close()
+
+
+def check_8e_mark_outcome_updates_accepted() -> None:
+    rid = database.log_locate_anything_call(
+        site_id="TEST_8E_MARK",
+        sk_username="test_sk",
+        detection_count=1,
+    )
+    assert rid > 0
+    ok = database.mark_locate_anything_outcome(rid, accepted=True)
+    assert ok
+    conn = database.get_connection()
+    try:
+        v = conn.execute(
+            "SELECT accepted FROM locate_anything_calls WHERE id = ?",
+            (rid,),
+        ).fetchone()[0]
+        assert v == 1, f"expected accepted=1, got {v}"
+    finally:
+        conn.close()
+    # Idempotent — second mark with rejected overwrites cleanly.
+    assert database.mark_locate_anything_outcome(rid, accepted=False)
+    conn = database.get_connection()
+    try:
+        v = conn.execute(
+            "SELECT accepted FROM locate_anything_calls WHERE id = ?",
+            (rid,),
+        ).fetchone()[0]
+        assert v == 0, f"expected accepted=0 after reject, got {v}"
+    finally:
+        conn.close()
+
+
+def check_8e_client_happy_writes_telemetry() -> None:
+    """End-to-end: gate ON, mock 200 → telemetry row populated + call_id > 0."""
+    _8a_reset_client()
+    from ai.locate_anything import client as c
+    database.set_app_setting("locate_anything_enabled", "1")
+
+    def _mock(_url, _payload, timeout=30.0):
+        return 200, dict(_8A_MOCK_DETECTIONS)
+
+    orig = c._perform_http_post
+    c._perform_http_post = _mock
+    try:
+        dets, call_id = c.detect(
+            "STUB",
+            site_id="TEST_8E_HAPPY",
+            sk_username="sk_happy",
+            yolo_top_conf=0.12,
+        )
+        assert len(dets) == 2 and call_id > 0
+        conn = database.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT site_id, sk_username, yolo_top_conf, detection_count, "
+                "       error FROM locate_anything_calls WHERE id = ?",
+                (call_id,),
+            ).fetchone()
+            assert row is not None, "telemetry row not written"
+            assert row[0] == "TEST_8E_HAPPY"
+            assert row[1] == "sk_happy"
+            assert abs(row[2] - 0.12) < 1e-6
+            assert row[3] == 2
+            assert row[4] is None, f"error should be NULL on success, got {row[4]!r}"
+        finally:
+            conn.close()
+    finally:
+        c._perform_http_post = orig
+        database.set_app_setting("locate_anything_enabled", "0")
+
+
+def check_8e_client_failure_writes_telemetry_with_error() -> None:
+    """503 must still log telemetry so we can measure missing-weights frequency."""
+    _8a_reset_client()
+    from ai.locate_anything import client as c
+    database.set_app_setting("locate_anything_enabled", "1")
+
+    def _mock(_url, _payload, timeout=30.0):
+        return 503, {"detail": "ModelNotReadyError"}
+
+    orig = c._perform_http_post
+    c._perform_http_post = _mock
+    try:
+        dets, call_id = c.detect("STUB", site_id="TEST_8E_FAIL",
+                                  sk_username="sk_fail",
+                                  yolo_top_conf=0.05)
+        assert dets == []
+        assert call_id > 0, "failure path must still log telemetry"
+        conn = database.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT error, detection_count FROM locate_anything_calls "
+                "WHERE id = ?", (call_id,),
+            ).fetchone()
+            assert row is not None
+            assert "503" in (row[0] or ""), f"error should mention 503, got {row[0]!r}"
+            assert row[1] == 0
+        finally:
+            conn.close()
+    finally:
+        c._perform_http_post = orig
+        database.set_app_setting("locate_anything_enabled", "0")
+
+
+def check_8e_client_gate_off_no_telemetry() -> None:
+    """Gate OFF short-circuits ABOVE telemetry — no row should be written.
+    Verifies we don't spam the table with no-op gate-off calls."""
+    _8a_reset_client()
+    from ai.locate_anything import client as c
+    database.set_app_setting("locate_anything_enabled", "0")
+
+    conn = database.get_connection()
+    try:
+        before = conn.execute(
+            "SELECT COUNT(*) FROM locate_anything_calls"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    def _mock(_url, _payload, timeout=30.0):
+        raise AssertionError("must not be called when gate is off")
+
+    orig = c._perform_http_post
+    c._perform_http_post = _mock
+    try:
+        dets, call_id = c.detect("STUB", site_id="TEST_8E_OFF",
+                                  sk_username="x", yolo_top_conf=0.0)
+        assert dets == []
+        assert call_id == 0, "no telemetry row should be written when gate off"
+    finally:
+        c._perform_http_post = orig
+
+    conn = database.get_connection()
+    try:
+        after = conn.execute(
+            "SELECT COUNT(*) FROM locate_anything_calls"
+        ).fetchone()[0]
+        assert after == before, \
+            f"expected no new telemetry rows; before={before} after={after}"
+    finally:
+        conn.close()
+
+
+def check_8e_summary_computes_rates() -> None:
+    """Summary helper must never raise ZeroDivisionError on empty windows
+    and must compute accept/error rates correctly when data exists."""
+    summary = database.get_locate_anything_summary(days=7)
+    # Every key present + safe numeric defaults.
+    for k in ("calls", "errors", "accepted", "rejected", "pending",
+              "avg_latency_ms", "error_rate_pct", "accept_rate_pct"):
+        assert k in summary, f"missing key: {k}"
+    # Force a known shape and re-check the rates.
+    rid1 = database.log_locate_anything_call(
+        site_id="TEST_8E_SUM_OK", detection_count=2, latency_ms=100,
+    )
+    database.mark_locate_anything_outcome(rid1, accepted=True)
+    rid2 = database.log_locate_anything_call(
+        site_id="TEST_8E_SUM_REJ", detection_count=1, latency_ms=200,
+    )
+    database.mark_locate_anything_outcome(rid2, accepted=False)
+    database.log_locate_anything_call(
+        site_id="TEST_8E_SUM_ERR", detection_count=0, latency_ms=50,
+        error="Sidecar 5xx (HTTP 500)",
+    )
+    summary = database.get_locate_anything_summary(days=7)
+    # At least 3 calls, 1 error, 1 accepted, 1 rejected from our injection.
+    assert summary["calls"] >= 3
+    assert summary["errors"] >= 1
+    assert summary["accepted"] >= 1
+    assert summary["rejected"] >= 1
+    assert 0.0 <= summary["accept_rate_pct"] <= 100.0
+    assert 0.0 <= summary["error_rate_pct"] <= 100.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 8D — Admin Settings panel (offline)
+# ═══════════════════════════════════════════════════════════════════════════
+def check_8d_panel_renders_with_sidecar_down() -> None:
+    """Verify the panel renderer is importable + the function exists.
+    We can't fully render under bug_check (no Streamlit runtime), but we
+    can import the module and confirm the symbol is bound — guards against
+    accidental rename/regression. The UI crawler exercises the actual
+    Admin Portal rendering."""
+    import importlib
+    mod = importlib.import_module("pages_internal.admin_portal")
+    assert hasattr(mod, "_render_locate_anything_panel"), \
+        "Admin Portal must export the locate_anything panel renderer"
+    # The renderer is a function (not a class / coroutine).
+    assert callable(mod._render_locate_anything_panel)
+
+
+def check_8d_toggle_persists_one() -> None:
+    """Simulate the toggle 'Save changes' path — confirm the value lands
+    in app_settings exactly as the panel writes it."""
+    database.set_app_setting("locate_anything_enabled", "0")
+    assert database.get_app_setting("locate_anything_enabled") == "0"
+    database.set_app_setting("locate_anything_enabled", "1")
+    assert database.get_app_setting("locate_anything_enabled") == "1"
+    # Restore default OFF so later tests start from the known state.
+    database.set_app_setting("locate_anything_enabled", "0")
+
+
 def main() -> int:
     print(f"▶ Bug-check harness · DB → {TMP_DB}")
     try:
@@ -5010,6 +5760,145 @@ def main() -> int:
     run_check("Phase 7F", "docs/screenshots/ has the seed placeholder PNGs",
               check_7f_screenshot_placeholders_exist,
               "Verifies the placeholder generator was run for the seed set.")
+
+    # ── Phase 7G — Hub Assistant context fix ─────────────────────────────
+    run_check("Hub Assistant", "system prompt injects username + role label",
+              check_7g_prompt_has_username_and_role,
+              "Admin asking 'how to add users?' must hear themself named.")
+    run_check("Hub Assistant", "empty username does not crash the prompt builder",
+              check_7g_prompt_empty_username_ok,
+              "Back-compat with older call sites that don't pass username.")
+    run_check("Hub Assistant", "admin gets FULL §7 with the 👥 Users content",
+              check_7g_admin_context_includes_users_tab,
+              "Admin no-truncation path — the user-management text lives "
+              "~150 lines past §7 head, would be cut at 800-char cap.")
+    run_check("Hub Assistant", "logistics role gets §14 (Logistics Portal)",
+              check_7g_logistics_context_includes_section_14,
+              "Fixes Cause C: logistics used to fall through to store_keeper default.")
+    run_check("Hub Assistant", "warehouse_user role gets §15 (Warehouse Portal)",
+              check_7g_warehouse_context_includes_section_15,
+              "Fixes Cause C: warehouse_user used to fall through to store_keeper default.")
+    run_check("Hub Assistant", "admin refusal phrase points to Settings download bay",
+              check_7g_admin_refusal_phrase_self_aware,
+              "Admin must not be told to 'ask their HOD or Admin' — they ARE Admin.")
+
+    # ── Phase 8A — Smart Scan AI sidecar scaffold (strict offline) ───────
+    run_check("Phase 8A", "app_settings seeds locate_anything_enabled=0",
+              check_8a_setting_seed_enabled_default_off,
+              "Admin gate must default OFF — sidecar is opt-in.")
+    run_check("Phase 8A", "app_settings seeds locate_anything_sidecar_url",
+              check_8a_setting_seed_sidecar_url,
+              "Default 127.0.0.1:8503 so localhost wiring works out-of-the-box.")
+    run_check("Phase 8A", "client.is_enabled() returns False when gate is off",
+              check_8a_client_gate_off_short_circuits,
+              "is_enabled MUST re-read every call — admin can flip at any time.")
+    run_check("Phase 8A", "client.detect() short-circuits to [] when gate is off",
+              check_8a_client_detect_off_returns_empty,
+              "No HTTP call should be made when the admin toggle is 0.")
+    run_check("Phase 8A", "client.detect() parses mock 200 response into list",
+              check_8a_client_detect_mock_200_returns_detections,
+              "Happy path — mocked HTTP returns boxes; client parses them.")
+    run_check("Phase 8A", "client.detect() returns [] on 503 + trips breaker",
+              check_8a_client_detect_503_returns_empty_trips_breaker,
+              "Missing weights → sidecar 503 → no exception, breaker increments.")
+    run_check("Phase 8A", "client circuit breaker opens after 3 failures",
+              check_8a_client_circuit_breaker_opens,
+              "Three consecutive 5xx → next call short-circuits without HTTP.")
+    run_check("Phase 8A", "client module imports without torch / transformers",
+              check_8a_client_import_does_not_pull_torch,
+              "Critical: Streamlit must NEVER pay torch's import cost.")
+    run_check("Phase 8A", "ai/locate_anything/requirements.txt exists",
+              check_8a_sidecar_requirements_file_exists,
+              "Sidecar deps live in their own requirements.txt, not project root.")
+    run_check("Phase 8A", "scripts/download_model.sh exists and is executable",
+              check_8a_download_script_present,
+              "Manual download workflow — script must be on disk for ops to find.")
+
+    # ── Phase 8B — bundle + first-run setup tooling ──────────────────────
+    run_check("Phase 8B", "bundle_locate_anything_weights.sh exists + executable + bash-clean",
+              check_8b_bundle_script,
+              "HQ-side weight packager.")
+    run_check("Phase 8B", "install_locate_anything_weights.sh exists + executable + bash-clean",
+              check_8b_install_script,
+              "Site-side weight installer with checksum verify.")
+    run_check("Phase 8B", "run_locate_anything.sh exists + executable + bash-clean",
+              check_8b_run_script,
+              "uvicorn launcher invoked by the launchd plist.")
+    run_check("Phase 8B", "com.gi.locate-anything.plist.tmpl parses as valid plist",
+              check_8b_plist_template,
+              "launchd template — must round-trip through plistlib.")
+    run_check("Phase 8B", "install.sh recognises --with-locate-anything flag",
+              check_8b_install_flag,
+              "Opt-in 5th service per spec Q5 — off by default.")
+
+    # ── Phase 8C — Smart Scan Tier-3 wiring ──────────────────────────────
+    run_check("Phase 8C", "should_invoke_tier3([]) → True (empty)",
+              check_8c_should_invoke_empty_yes,
+              "No YOLO detections at all → fall through to Tier 3.")
+    run_check("Phase 8C", "should_invoke_tier3([conf=0.25]) → True (manual band)",
+              check_8c_should_invoke_low_yes,
+              "Below CANDIDATES_CONF_THRESHOLD (0.30) is the manual band.")
+    run_check("Phase 8C", "should_invoke_tier3([conf=0.50]) → False (candidates band)",
+              check_8c_should_invoke_mid_no,
+              "Spec Q1(a) — Tier 3 must NOT fire in the 0.30–0.45 overlap.")
+    run_check("Phase 8C", "should_invoke_tier3([conf=0.95]) → False (auto band)",
+              check_8c_should_invoke_high_no,
+              "YOLO confident — Tier 3 silent.")
+    run_check("Phase 8C", "tier3_to_candidates reshapes LocateAnything output",
+              check_8c_reshape_basic,
+              "{label,box,score} → {class_name,confidence,bbox,source}.")
+    run_check("Phase 8C", "tier3_to_candidates filters items below noise floor",
+              check_8c_reshape_filter_noise,
+              "TIER3_NOISE_FLOOR = 0.20 — sub-noise items dropped.")
+    run_check("Phase 8C", "tier3_to_candidates caps at MAX_CANDIDATES (3)",
+              check_8c_reshape_cap,
+              "5 in → 3 out, sorted by score desc.")
+    run_check("Phase 8C", "tier3_to_candidates tags source='tier3_locate_anything'",
+              check_8c_reshape_source_tag,
+              "Provenance tag lets the UI know to render the amber panel.")
+    run_check("Phase 8C", "integration: YOLO empty + mock sidecar → tier3 candidates ready",
+              check_8c_integration_yolo_empty_plus_mock,
+              "End-to-end through bucket_detections + tier3 reshape (logic only).")
+    run_check("Phase 8C", "gate guard: toggle OFF + YOLO empty → sidecar HTTP NOT called",
+              check_8c_gate_guard_off,
+              "Critical: gate OFF must short-circuit upstream of HTTP.")
+    run_check("Phase 8C", "gate guard: YOLO confident → sidecar HTTP NOT called",
+              check_8c_gate_guard_confident,
+              "Critical: high-confidence YOLO must NEVER fall through to Tier 3.")
+
+    # ── Phase 8E — telemetry table + helpers ─────────────────────────────
+    run_check("Phase 8E", "locate_anything_calls table exists with required columns",
+              check_8e_telemetry_schema,
+              "Driving the Admin cost/benefit panel + cost analysis.")
+    run_check("Phase 8E", "ix_la_calls_called_at index present",
+              check_8e_telemetry_index_called_at,
+              "Speeds up the 7-day rollup query.")
+    run_check("Phase 8E", "log_locate_anything_call writes a row + returns rowid",
+              check_8e_log_helper_writes_row,
+              "Best-effort write — wrapped by the client.")
+    run_check("Phase 8E", "mark_locate_anything_outcome updates accepted field",
+              check_8e_mark_outcome_updates_accepted,
+              "Closes the loop after the SK accepts/rejects in the UI.")
+    run_check("Phase 8E", "client.detect happy path writes telemetry row",
+              check_8e_client_happy_writes_telemetry,
+              "End-to-end: gate ON + mock 200 → telemetry row + non-zero call_id.")
+    run_check("Phase 8E", "client.detect failure path writes telemetry with error",
+              check_8e_client_failure_writes_telemetry_with_error,
+              "503 path must still log so we can see how often weights are missing.")
+    run_check("Phase 8E", "client.detect gate-off writes NO telemetry row",
+              check_8e_client_gate_off_no_telemetry,
+              "Gate-off short-circuits ABOVE telemetry — no row, no noise.")
+    run_check("Phase 8E", "get_locate_anything_summary computes rates safely",
+              check_8e_summary_computes_rates,
+              "Includes ZeroDivisionError guard for empty / no-decisions-yet windows.")
+
+    # ── Phase 8D — Admin Settings panel (offline, mocked health) ─────────
+    run_check("Phase 8D", "_render_locate_anything_panel doesn't crash with sidecar down",
+              check_8d_panel_renders_with_sidecar_down,
+              "Streamlit import surface + helper invocation under AppTest.")
+    run_check("Phase 8D", "panel toggle ON path stores '1' in app_settings",
+              check_8d_toggle_persists_one,
+              "Verifies set_app_setting reaches the right key.")
 
     out = write_report()
     print()

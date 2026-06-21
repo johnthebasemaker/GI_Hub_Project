@@ -15,9 +15,18 @@
 #   - gi_database.db exists (run a one-off `streamlit run main.py` first)
 #
 # Usage:
-#   ./host_setup/scripts/install.sh           # install + load
-#   ./host_setup/scripts/install.sh --status  # show launchctl status
-#   ./host_setup/scripts/install.sh --logs    # tail all four log files
+#   ./host_setup/scripts/install.sh                           # install + load (no AI sidecar)
+#   ./host_setup/scripts/install.sh --with-locate-anything    # also install Smart Scan AI sidecar
+#   ./host_setup/scripts/install.sh --status                  # show launchctl status
+#   ./host_setup/scripts/install.sh --logs                    # tail all log files
+#
+# Phase 8B note on --with-locate-anything:
+#   - The LocateAnything sidecar (com.gi.locate-anything) is OPT-IN per
+#     site. Run the install with this flag ONLY on pilot sites that have
+#     the LocateAnything-3B weights bundle deployed under
+#     ~/Library/Caches/gi_locate/LocateAnything-3B/.
+#   - Sites without the flag never load the plist — no sidecar process,
+#     no resource cost. Smart Scan keeps working on its two-tier YOLO path.
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -27,12 +36,32 @@ PROJECT_DIR="${SCRIPT_DIR:h:h}"
 LAUNCHD_DIR="$PROJECT_DIR/host_setup/launchd"
 TARGET_DIR="$HOME/Library/LaunchAgents"
 
+# Default service set — unchanged from pre-Phase 8B installs.
 SERVICES=(
     com.gi.streamlit
     com.gi.whatsapp-worker
     com.gi.cloudflared
     com.gi.backup
 )
+
+# Phase 8B — optional 5th service added when --with-locate-anything is passed.
+WITH_LOCATE_ANYTHING=0
+NEW_ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --with-locate-anything)
+            WITH_LOCATE_ANYTHING=1
+            ;;
+        *)
+            NEW_ARGS+=("$arg")
+            ;;
+    esac
+done
+set -- "${NEW_ARGS[@]}"
+
+if [[ $WITH_LOCATE_ANYTHING -eq 1 ]]; then
+    SERVICES+=(com.gi.locate-anything)
+fi
 
 print_header() {
     print -P "%F{cyan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━%f"

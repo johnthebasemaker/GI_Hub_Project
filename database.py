@@ -363,9 +363,14 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         )
     """)
     # Seed the three threshold defaults if they don't exist yet.
+    # Phase 8A — Smart Scan AI sidecar gate. Default OFF (0).
+    # When ON, the Smart Scan Tier-3 path POSTs frames to the sidecar URL
+    # below. Off means the existing two-tier YOLO flow is unchanged.
     for _k, _v in [("low_stock_days", "5"),
                    ("burn_alert_days", "7"),
-                   ("expiry_warn_days", "30")]:
+                   ("expiry_warn_days", "30"),
+                   ("locate_anything_enabled",     "0"),
+                   ("locate_anything_sidecar_url", "http://127.0.0.1:8503")]:
         c.execute(
             "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
             (_k, _v),
@@ -1414,6 +1419,30 @@ def init_db(conn: sqlite3.Connection = None) -> None:
               "ON cross_site_views(target_site_id, view_date)")
     c.execute("CREATE INDEX IF NOT EXISTS ix_csv_viewer_date "
               "ON cross_site_views(viewer_username, view_date)")
+
+    # ── Phase 8E: LocateAnything sidecar telemetry ───────────────────────────
+    # One row per /detect HTTP call (success OR failure). Drives the Admin
+    # cost/benefit panel + lets us decide whether Tier-3 is actually helping
+    # SKs vs adding latency. error TEXT is non-empty when the call failed.
+    # accepted INTEGER is filled later by the SK side (0=rejected/dropped,
+    # 1=accepted via "Use this tool"); NULL while the SK hasn't decided yet.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS locate_anything_calls (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            called_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+            site_id         TEXT,
+            sk_username     TEXT,
+            yolo_top_conf   REAL,
+            detection_count INTEGER,
+            accepted        INTEGER,
+            latency_ms      INTEGER,
+            error           TEXT
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS ix_la_calls_called_at "
+              "ON locate_anything_calls(called_at)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_la_calls_site "
+              "ON locate_anything_calls(site_id, called_at)")
 
     # ── Phase 7E: Form draft recovery (server-side secondary layer) ──────────
     # Per-user, per-form snapshot of in-flight values. UNIQUE(username, form_id)
@@ -10362,6 +10391,152 @@ def prune_expired_form_drafts(
         )
         conn.commit()
         return cur.rowcount or 0
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 8E — LocateAnything sidecar telemetry
+# ═══════════════════════════════════════════════════════════════════════════
+def log_locate_anything_call(
+    *,
+    site_id: str | None = None,
+    sk_username: str | None = None,
+    yolo_top_conf: float | None = None,
+    detection_count: int | None = None,
+    latency_ms: int | None = None,
+    error: str | None = None,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Insert one telemetry row. Returns the new rowid.
+
+    Best-effort — never raises. The client wraps this in try/except so a
+    DB hiccup never bubbles up to the user. `accepted` is intentionally
+    NOT a kwarg here: it's filled later by mark_locate_anything_outcome()
+    when the SK clicks accept/reject in the UI.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT INTO locate_anything_calls "
+            "(site_id, sk_username, yolo_top_conf, detection_count, "
+            " latency_ms, error) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (site_id, sk_username,
+             (None if yolo_top_conf is None else float(yolo_top_conf)),
+             (None if detection_count is None else int(detection_count)),
+             (None if latency_ms is None else int(latency_ms)),
+             (error or None)),
+        )
+        conn.commit()
+        return int(cur.lastrowid or 0)
+    finally:
+        if _owns:
+            conn.close()
+
+
+def mark_locate_anything_outcome(
+    call_id: int,
+    accepted: bool,
+    *,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Update an earlier telemetry row with the SK's accept/reject decision.
+
+    Returns True if a row was updated. Idempotent — second call with the
+    same call_id is harmless (overwrites). Used by the SK Tier-3 panel
+    AFTER the user picks "Use this tool" or "None of these".
+    """
+    if not call_id:
+        return False
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE locate_anything_calls SET accepted = ? WHERE id = ?",
+            (1 if accepted else 0, int(call_id)),
+        )
+        conn.commit()
+        return bool(cur.rowcount)
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_locate_anything_summary(
+    *,
+    days: int = 7,
+    conn: sqlite3.Connection = None,
+) -> dict:
+    """Roll-up for the Admin Settings panel. Returns:
+      {calls, errors, accepted, rejected, pending, avg_latency_ms,
+       error_rate_pct, accept_rate_pct}.
+    All counts default to 0 when there's no data; rates are 0.0 when
+    the denominator is 0 (avoid ZeroDivisionError).
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT "
+            "  COUNT(*)                                 AS calls, "
+            "  SUM(CASE WHEN error IS NOT NULL AND error != '' THEN 1 ELSE 0 END) AS errors, "
+            "  SUM(CASE WHEN accepted = 1 THEN 1 ELSE 0 END) AS accepted, "
+            "  SUM(CASE WHEN accepted = 0 THEN 1 ELSE 0 END) AS rejected, "
+            "  SUM(CASE WHEN accepted IS NULL THEN 1 ELSE 0 END) AS pending, "
+            "  AVG(latency_ms) AS avg_latency "
+            "FROM locate_anything_calls "
+            "WHERE called_at >= datetime('now', ?)",
+            (f"-{int(days)} days",),
+        ).fetchone()
+        calls    = int(row[0] or 0)
+        errors   = int(row[1] or 0)
+        accepted = int(row[2] or 0)
+        rejected = int(row[3] or 0)
+        pending  = int(row[4] or 0)
+        avg_lat  = float(row[5] or 0.0)
+        decided  = accepted + rejected
+        return {
+            "calls":            calls,
+            "errors":           errors,
+            "accepted":         accepted,
+            "rejected":         rejected,
+            "pending":          pending,
+            "avg_latency_ms":   round(avg_lat, 1),
+            "error_rate_pct":   round(100.0 * errors / calls, 1) if calls else 0.0,
+            "accept_rate_pct":  round(100.0 * accepted / decided, 1) if decided else 0.0,
+        }
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_recent_locate_anything_calls(
+    *,
+    limit: int = 20,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Recent telemetry table for the Admin Settings panel. Localised
+    timestamps so display matches the rest of the site."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        df = pd.read_sql_query(
+            "SELECT id, called_at, site_id, sk_username, "
+            "       yolo_top_conf, detection_count, accepted, "
+            "       latency_ms, error "
+            "FROM locate_anything_calls "
+            "ORDER BY called_at DESC LIMIT ?",
+            conn, params=(int(limit),),
+        )
+        from config import auto_localize_timestamps as _atz
+        return _atz(df)
     finally:
         if _owns:
             conn.close()

@@ -1,0 +1,30 @@
+# ai/locate_anything/requirements.txt — Phase 8A sidecar deps
+# ============================================================
+# These deps live in the SIDECAR process only. NEVER add them to the
+# project-root requirements.txt — sites without the AI sidecar should
+# never pay the ~3 GB torch wheel install cost.
+#
+# Install with:
+#     pip install -r ai/locate_anything/requirements.txt
+# (run from the project root, in the same venv as the Streamlit app
+#  OR in a dedicated venv if you want full process isolation).
+
+# ── Inference engine ────────────────────────────────────────────────
+# torch>=2.5 is required for stable MPS Float16 ops on Apple Silicon.
+torch>=2.5
+transformers>=4.45
+
+# ── HTTP / app server ───────────────────────────────────────────────
+fastapi>=0.115
+uvicorn[standard]>=0.32
+pydantic>=2.5
+
+# ── Image handling ──────────────────────────────────────────────────
+pillow>=10.0
+
+# ── Optional: int8 quantisation on CUDA. Skip on MPS (not supported). ─
+# Uncomment when deploying on a CUDA host:
+# bitsandbytes>=0.43
+
+# ── Optional: accelerate helps with device placement for big models ──
+accelerate>=0.34

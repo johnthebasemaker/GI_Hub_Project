@@ -1,9 +1,15 @@
 # GI Hub ERP — Handoff
 
-**Last update:** 2026-06 round 10 — **Phase 7F SHIPPED · WORKSTREAM A.5 COMPLETE.** Role-Based User Manual PDFs with Screenshots: `build_manual_pdf.py` extended with `ROLE_MANUAL_RECIPES` (6 role-scoped chapter lists), `slice_markdown_for_role` (line-based slicer, deterministic), Markdown image block parser, `ManualPDF.render_image` (scales + page-break guard + grey placeholder for missing files), `ManualPDF.render_cover_for_role` (personalised "Store Keeper Manual 🗝️"-style cover), `build_role_manual_pdf` public API, CLI `--role <key>` + `--role all` flags. New `docs/screenshots/` directory seeded with 18 PIL placeholder PNGs via `scripts/generate_screenshot_placeholders.py`. USER_MANUAL.md gains ~18 `![alt](docs/screenshots/...)` references at the most-explained role-chapter sections + the shared notifications/offline-pill sub-sections so every booklet picks them up via the universal preamble. Admin Portal Settings → renamed expander "📥 Download Role Manuals" with master at the top and a 2-column grid of 5 role booklets (icon + audience caption + 🛠️ Build / ⬇️ Download). Admin-only access per spec Q9.
-**WORKSTREAM A.5 ROADMAP COMPLETE.** All 6 enhancement points shipped (Phases 7A–7F).
-**Prior rounds:** 7E Network Resilience / Form Recovery · 7D PO Notifications with Strict Data Masking · 7C HOD Cross-Site View Notification + Indicator · 7B Supervisor Material Request workflow · 7A Employee Site Binding · 6A–F (Workstream A) CV/QR foundation, employee master + bulk badge PDF, Smart Scan, YOLOv8 pipeline, Tool Catalogue, returnable-loan reminder sweep.
-**Test status:** **398/398 in `bug_check.py` · 17/17 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`). +12 Phase 7F checks.
+**Last update:** 2026-06 round 11 — **Phase 8 SHIPPED · WORKSTREAM B (Smart Scan AI) COMPLETE.** Smart Scan Tier-3 fallback via a separately-deployed FastAPI sidecar wrapping NVIDIA LocateAnything-3B (MPS, fp16 on Apple Silicon). Phases 8A–8E:
+- **8A**: `ai/locate_anything/` package — stdlib-HTTP client (gate check, circuit breaker, 30s timeout), `model_loader.py` (MPS + lazy single-load + ModelNotReadyError), `server.py` (FastAPI POST /detect, GET /health), sidecar-only `requirements.txt`. Admin gate `app_settings.locate_anything_enabled` default OFF. `scripts/download_model.sh` (manual).
+- **8B**: `scripts/bundle_locate_anything_weights.sh` + `scripts/install_locate_anything_weights.sh` (overwrite-always, SHA-256 verified) for air-gapped sites. `host_setup/launchd/com.gi.locate-anything.plist.tmpl` + `host_setup/scripts/run_locate_anything.sh`. `host_setup/scripts/install.sh --with-locate-anything` opt-in flag.
+- **8C**: `ai/cv/smart_scan.py:should_invoke_tier3 / tier3_to_candidates`. SK Smart Scan gains amber-bordered "🤖 AI fallback" panel — "Use this tool" is the only accept path. Fires ONLY when YOLO is in "manual" mode (top conf < 0.30 OR empty). Audit events: TIER3_SHOWN / ACCEPTED / REJECTED.
+- **8D**: Admin Portal Settings → "🤖 Smart Scan AI (LocateAnything)" expander — toggle, sidecar URL, /health probe (reachable / device / model on disk), 7-day telemetry rollup, recent-calls table.
+- **8E**: `locate_anything_calls` telemetry table (auto-self-heal). `client.detect()` now returns `(detections, call_id)` and writes one row per HTTP attempt. SK panel calls `mark_locate_anything_outcome` on accept/reject to close the loop. `get_locate_anything_summary` powers the Admin metric strip.
+
+**Workstream B — Smart Scan AI module: COMPLETE.** All five phases shipped; the gate stays OFF in production until a pilot site explicitly opts in.
+**Prior rounds:** 7F Role-Based PDFs · 7E Network Resilience · 7D PO Masking · 7C Cross-Site Notifications · 7B Supervisor Material Request · 7A Employee Site Binding · 6A–F Workstream A.
+**Test status:** **440/440 in `bug_check.py` · 17/17 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`). +10 across Phase 8D+8E. **Zero network access · zero torch import in test path · zero weight files required on disk.**
 **Production hosting:** Self-host on `giinventory.com` via Cloudflare Tunnel + Access (email allow-list `@generalindustries.net`). Turnkey installer at `host_setup/scripts/install.sh`. See §4 "Run / Develop" and the "Production hosting" chapter.
 **Purpose:** Get the next session productive in <5 minutes — architecture, what changed, what's next.
 **Companion docs:** `USER_MANUAL.md` (every page/tab/button), `SOP.md` (Logistics + Warehouse operating procedure with cadences, decision trees, escalation matrix), `docs/cv_training_guide.md` (Phase 6C — capture → label → train → promote walkthrough).
@@ -922,7 +928,92 @@ Six enhancement points → six phases → all shipped:
 
 Net test growth across A.5: **268 → 398** (`+95 helper checks + 35 schema/column self-heals`). UI crawler grew from 16 → 17 (new Supervisor Portal page in 7B). Zero regressions. Zero edits to identity math, EOD commit, RL/BL separator, RBAC hierarchy, mailer, or any pre-existing form-submit logic.
 
-**Ready for Workstream B: Docker / Deployment.**
+~~**Ready for Workstream B: Docker / Deployment.**~~ — **Workstream B was redirected** to the Smart Scan AI module. See §2M below.
+
+---
+
+## 2M. Workstream B — Smart Scan AI (LocateAnything-3B) — COMPLETE
+
+**Important context:** the original "Workstream B = Docker/Deployment" placeholder from the post-A.5 close-out was redirected. Workstream B is now **the Smart Scan AI sidecar** (Phases 8A–8E). Docker/Deployment, if undertaken later, will be Workstream C.
+
+### Architecture at a glance
+
+```
+                                                    OPT-IN per site
+                                                    ────────────────
+[Streamlit · SK Smart Scan]                         [launchd]
+        │                                              │
+        │  YOLO (Tier 1+2 — unchanged)                 │ com.gi.locate-anything.plist
+        │  ──────────────────────────────              │
+        │  top conf ≥ 0.75 → auto-accept               │
+        │  top conf in [0.30, 0.75) → top-3 picker     │
+        │  else (manual mode) ───┐                     │
+        │                        ▼                     ▼
+        │              ai/locate_anything/client      [uvicorn 127.0.0.1:8503]
+        │              ──────────────────────         │ ai/locate_anything/server
+        │              gate check                     │ ───────────────────────
+        │              circuit breaker (3 fails/60s)  │ POST /detect → bboxes
+        │              POST /detect                   │ GET /health → status
+        │              writes telemetry row ─────┐    │
+        │              returns (dets, call_id)   │    │ MPS, fp16, lazy-load
+        │                                        │    │ ModelNotReadyError
+        │ amber "🤖 AI fallback" panel           │    │ → HTTP 503
+        │   "Use this tool" / "None of these"    │    │
+        │   marks accept/reject ─────────────────┘    │
+        │                                             │
+        ▼                                             ▼
+[SQLite: locate_anything_calls]              [~/Library/Caches/gi_locate/
+   id, called_at, site_id, sk_user,           LocateAnything-3B/]
+   yolo_top_conf, detection_count,                  ↑
+   accepted, latency_ms, error                bundled at HQ via
+                                              bundle_locate_anything_weights.sh
+                                              installed at site via
+                                              install_locate_anything_weights.sh
+```
+
+### Files of record
+
+| Layer | File | Purpose |
+|---|---|---|
+| Schema | `database.py:init_db` | Seeds `app_settings.locate_anything_enabled='0'` + `locate_anything_sidecar_url`. Self-heals `locate_anything_calls` table + 2 indices. |
+| Telemetry helpers | `database.py` (Phase 8E block) | `log_locate_anything_call`, `mark_locate_anything_outcome`, `get_locate_anything_summary`, `list_recent_locate_anything_calls`. |
+| Client | `ai/locate_anything/client.py` | Stdlib HTTP, gate check, circuit breaker, telemetry write. Returns `(detections, call_id)`. |
+| Server | `ai/locate_anything/server.py` | FastAPI `POST /detect` + `GET /health`. Torch imports deferred to endpoint handlers — module-import-safe for tests. |
+| Model | `ai/locate_anything/model_loader.py` | MPS device, fp16 fallback (bitsandbytes int8 path for future CUDA hosts), `@lru_cache(maxsize=1)`, raises `ModelNotReadyError` when bundle missing. |
+| Deps | `ai/locate_anything/requirements.txt` | torch, transformers, fastapi, uvicorn, pillow, accelerate. **NOT** in project root `requirements.txt`. |
+| Tier-3 logic | `ai/cv/smart_scan.py` | `should_invoke_tier3` (manual-mode-only), `tier3_to_candidates` (shape + noise filter + cap 3). |
+| SK UI | `pages_internal/daily_issue_log.py` | `_get_catalogue_class_names`, `_maybe_render_tier3_branch`, `_render_tier3_panel` (amber, no auto-accept). |
+| Admin UI | `pages_internal/admin_portal.py` | `_render_locate_anything_panel` — toggle + URL + health probe + 7-day rollup + recent calls. |
+| Bundle scripts | `scripts/download_model.sh`, `bundle_locate_anything_weights.sh`, `install_locate_anything_weights.sh` | One-time HF download, HQ packaging, site install with SHA-256. |
+| Service | `host_setup/launchd/com.gi.locate-anything.plist.tmpl`, `host_setup/scripts/run_locate_anything.sh` | launchd template + uvicorn launcher. Activated via `install.sh --with-locate-anything`. |
+
+### Contracts (do not break)
+
+- **Admin gate default OFF.** `app_settings.locate_anything_enabled='0'` ships in init_db. Sites get the YOLO 2-tier flow unchanged until an admin flips the toggle.
+- **`client.detect()` returns `(detections, call_id)`.** Phase 8E API contract. Old single-list return was retired. Every caller must unpack the tuple. The call_id is the rowid of the telemetry write — passing 0 to `mark_locate_anything_outcome` is a no-op (gate-off / breaker-open / DB write failed).
+- **Gate-off path writes NO telemetry row.** Verified by `check_8e_client_gate_off_no_telemetry`. Don't add a row here — it would spam the table with no-op events that distort the 7-day rollup.
+- **Tier-3 NEVER auto-accepts.** The amber panel exists precisely because LocateAnything is a less-trusted suggestion. The "Use this tool" button is the only accept path; there is no code branch that calls `_accept_tool_pick` directly off Tier-3 candidates.
+- **No torch import on the Streamlit side.** `ai/locate_anything/__init__.py` re-exports `client` symbols only. `bug_check.check_8a_client_import_does_not_pull_torch` enforces this.
+- **Test isolation honoured.** `GI_SUPPRESS_LOCATE_ANYTHING=1` env var short-circuits `client.is_enabled()` regardless of DB state — used by `test_ui_crawler.py`. `bug_check` monkey-patches `client._perform_http_post` for offline mocking; the harness's `_orig_popen` is required for `bash -n` script-syntax checks.
+
+### Operational quick-reference
+
+```bash
+# Pilot a site:
+./scripts/download_model.sh                            # at HQ
+./scripts/bundle_locate_anything_weights.sh            # at HQ
+# transport ~/Downloads/gi_locate_bundle_*.{tar.gz,sha256} to site
+./scripts/install_locate_anything_weights.sh gi_locate_bundle_*.tar.gz   # at site
+./host_setup/scripts/install.sh --with-locate-anything                   # at site
+# Admin Portal → Settings → "🤖 Smart Scan AI (LocateAnything)" → toggle ON, save.
+```
+
+```bash
+# Take a site OUT of the pilot:
+# Admin Portal → Settings → toggle OFF + save. Sidecar can keep running
+# (idle, ~50 MB RAM) or stop the service:
+launchctl unload ~/Library/LaunchAgents/com.gi.locate-anything.plist
+```
 
 ---
 

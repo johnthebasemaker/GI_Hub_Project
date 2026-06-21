@@ -507,7 +507,9 @@ def render_sidebar(user: dict) -> str:
                         try:
                             chunks: list[str] = []
                             placeholder = st.empty()
-                            for piece in answer_manual_question(question, role):
+                            for piece in answer_manual_question(
+                                question, role, user.get("username", ""),
+                            ):
                                 chunks.append(piece)
                                 placeholder.markdown(
                                     f"<div style='font-size:12.5px;color:#E0E6ED;'>"

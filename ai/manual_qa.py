@@ -44,10 +44,20 @@ from ai.client import (
 # roles' sections.
 # ---------------------------------------------------------------------------
 _ROLE_ALLOWED: dict[str, set[int]] = {
-    "store_keeper": {1, 2, 3, 4, 11, 13},
-    "supervisor":   {1, 2, 3, 4, 5, 8, 11, 13},
-    "hod":          {1, 2, 3, 4, 5, 6, 8, 9, 11, 13},
-    "admin":        {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13},
+    # Site-level roles see their own chapter + universal preamble + glossary/FAQ.
+    "store_keeper":   {1, 2, 3, 4, 10, 11, 12, 13},
+    "supervisor":     {1, 2, 3, 4, 5, 11, 12, 13},
+    "hod":            {1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 16},
+    # Procurement-chain roles — own portal + cross-role walkthrough.
+    # Strict isolation: Logistics never sees Warehouse internals (and vice versa);
+    # neither sees site-level chapters 4–6.
+    "logistics":      {1, 2, 3, 9, 11, 12, 13, 14, 16},
+    "warehouse_user": {1, 2, 3, 9, 11, 12, 13, 15, 16},
+    # Admin sees everything — full range §1..§17. Combined with the
+    # full-section (no-truncation) special case in _context_for_role, Admin
+    # gets deep-content answers (e.g. "how to add users" lives in §7.6, far
+    # past the 800-char head used for other roles).
+    "admin":          set(range(1, 18)),
 }
 
 # Section number → friendly title (used to label context in the prompt)
@@ -65,6 +75,10 @@ _SECTION_TITLES = {
     11: "Status Codes, Reason Codes & Glossary",
     12: "FAQ — Master Index",
     13: "2026-06 Feature Update",
+    14: "Logistics Portal Manual",
+    15: "Warehouse Portal Manual",
+    16: "Cross-Role Procurement Walk-through",
+    17: "Operations & Hosting",
 }
 
 
@@ -103,18 +117,19 @@ def _load_sections() -> dict[int, str]:
 _PER_SECTION_CHAR_CAP = 800   # was 3000 — keeps total prompt under ~3K tokens
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=16)
 def _context_for_role(role: str) -> str:
     """
     Build the RAG context: concatenation of allowed sections, each prefixed
     with a clear delimiter and section label so the LLM knows what's what.
 
-    Caps each section at `_PER_SECTION_CHAR_CAP` chars so prompt-eval stays
-    fast on llama3.1:8b (full sections were costing 30s+ of prompt-eval per
-    question). The role-gate is preserved — we just send the head of each
-    allowed section. If a user asks a deep question and the answer isn't in
-    the truncated head, the model is instructed to fall back to "ask your
-    HOD or Admin", which is the documented behaviour.
+    Truncation policy (Phase 7G — AI sidebar context fix):
+      - Admin: FULL sections, no truncation. Trade-off: ~20-30s slower first
+        response, fast after that (Ollama keep_alive caches the KV). Worth
+        it — Admin asks rare, deep operational questions like "how to add
+        users" where the answer lives 150 lines past the section head.
+      - Every other role: head-truncated at _PER_SECTION_CHAR_CAP. Site
+        users ask short workflow questions; the head covers them.
 
     Cached per-role so the string is computed once per process — combined
     with Ollama's keep_alive KV cache (see ai/client.py) this means the
@@ -125,12 +140,13 @@ def _context_for_role(role: str) -> str:
     if not sections:
         return ""
 
+    is_admin = role == "admin"
     chunks = []
     for num in sorted(allowed):
         body = sections.get(num)
         if not body:
             continue
-        if len(body) > _PER_SECTION_CHAR_CAP:
+        if not is_admin and len(body) > _PER_SECTION_CHAR_CAP:
             body = body[:_PER_SECTION_CHAR_CAP] + "\n[... truncated — ask for specifics if you need more ...]"
         chunks.append(f"=== Section {num}: {_SECTION_TITLES.get(num, '')} ===\n{body}")
     return "\n\n".join(chunks)
@@ -169,37 +185,58 @@ def _greeting_reply(question: str) -> str | None:
 # Prompt construction
 # ---------------------------------------------------------------------------
 _ROLE_LABEL = {
-    "store_keeper": "Store Keeper",
-    "supervisor":   "Supervisor",
-    "hod":          "Head of Department",
-    "admin":        "Administrator",
+    "store_keeper":   "Store Keeper",
+    "supervisor":     "Supervisor",
+    "hod":            "Head of Department",
+    "logistics":      "Logistics Coordinator",
+    "warehouse_user": "Warehouse Operator",
+    "admin":          "Administrator",
+}
+
+# Role-aware refusal phrasing — replaces the previous "ask your HOD or
+# Admin" boilerplate that read as condescending when Admin was the asker.
+# Each phrase quotes the user's role so the LLM stays grounded in who it
+# is talking to (reinforces the {username} / {role_label} prelude).
+_ROLE_REFUSAL = {
+    "store_keeper":   "That's not in your section of the manual — please escalate to your HOD.",
+    "supervisor":     "That's not in your section of the manual — please escalate to your HOD.",
+    "hod":            "That's in the Admin chapter — please ask your Admin.",
+    "logistics":      "That's outside the Logistics Portal — please ask your Admin.",
+    "warehouse_user": "That's outside the Warehouse Portal — please ask your Admin.",
+    "admin":          "I can't find that in the manual. Try Admin Portal → Settings → 📥 Download Role Manuals for the latest reference, or check the source markdown in USER_MANUAL.md.",
 }
 
 _SYSTEM_PROMPT_TMPL = """\
 You are the Hub Assistant, a documentation helper for the General \
-Industries Hub warehouse system. You are talking to a {role_label}.
+Industries Hub warehouse system. You are talking to {username}, a {role_label}.
 
 RULES:
 - Answer ONLY using the manual sections provided below as CONTEXT.
-- If the answer isn't in the CONTEXT, say "That isn't covered in your \
-section of the manual — please ask your HOD or Admin." Do NOT speculate.
+- If the answer is not in the CONTEXT, reply with exactly this sentence \
+and nothing else: "{refusal}"
 - Be concise. 2-4 short sentences for most questions. Bullet lists are \
 fine for steps.
 - Refer to UI elements using exact names from the manual (e.g. "Entry \
 Log → Consumption Log").
 - Do NOT reveal information about roles other than the user's own. \
 You can mention that "Admin can do X" only if §2 lists it as a permission, \
-never with operational steps from a higher-role section.
+never with operational steps from a higher-role section. (Admins themselves \
+have access to all sections — answer their questions fully.)
 - Output plain text. No markdown headings. No code fences.
 
-CONTEXT (manual sections this user is allowed to see):
+CONTEXT (manual sections {username} is allowed to see):
 {context}
 """
 
 
-def _build_system_prompt(role: str) -> str:
+def _build_system_prompt(role: str, username: str = "") -> str:
+    """Render the system prompt with the user's role + username + their
+    role-specific refusal phrase woven in. Empty username falls back to
+    "the user" so the template stays grammatical."""
     return _SYSTEM_PROMPT_TMPL.format(
-        role_label=_ROLE_LABEL.get(role, role.title()),
+        username=(username or "").strip() or "the user",
+        role_label=_ROLE_LABEL.get(role, role.title() if role else "user"),
+        refusal=_ROLE_REFUSAL.get(role, _ROLE_REFUSAL["store_keeper"]),
         context=_context_for_role(role) or "(manual not found on disk)",
     )
 
@@ -238,11 +275,15 @@ def health() -> tuple[bool, str]:
 
 
 def answer_manual_question(
-    question: str, role: str,
+    question: str, role: str, username: str = "",
 ) -> Iterator[str]:
     """
     Stream the model's answer token-by-token. On failure, yield a single
     string with a friendly explanation rather than raising.
+
+    `username` is woven into the system prompt so the model addresses the
+    user by name and never tells them to "ask your Admin" when they ARE
+    the Admin. Default empty for back-compat with older call sites.
     """
     ok, msg = health()
     if not ok:
@@ -261,7 +302,7 @@ def answer_manual_question(
         yield canned
         return
 
-    system = _build_system_prompt(role)
+    system = _build_system_prompt(role, username)
     prompt = f"User question: {question}\n\nAnswer:"
 
     try:

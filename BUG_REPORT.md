@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-06-20T10:45:26`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_sbq4ccri/bug_check.db`  
-**Total checks:** 398  
-**Passing:** 398  
+**Run at:** `2026-06-20T22:27:25`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_3oa5h4hx/bug_check.db`  
+**Total checks:** 440  
+**Passing:** 440  
 **Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -38,6 +38,14 @@ _None — every check passed._
 
 ### Consumption — 1/1
 - ✅ Stage → commit_eod
+
+### Hub Assistant — 6/6
+- ✅ system prompt injects username + role label
+- ✅ empty username does not crash the prompt builder
+- ✅ admin gets FULL §7 with the 👥 Users content
+- ✅ logistics role gets §14 (Logistics Portal)
+- ✅ warehouse_user role gets §15 (Warehouse Portal)
+- ✅ admin refusal phrase points to Settings download bay
 
 ### Logistics — 8/8
 - ✅ HOD submits PR → appears in Logistics queue
@@ -170,6 +178,52 @@ _None — every check passed._
 - ✅ build_role_manual_pdf('admin') == build_manual_pdf
 - ✅ build_role_manual_pdf(unknown role) falls back to master
 - ✅ docs/screenshots/ has the seed placeholder PNGs
+
+### Phase 8A — 10/10
+- ✅ app_settings seeds locate_anything_enabled=0
+- ✅ app_settings seeds locate_anything_sidecar_url
+- ✅ client.is_enabled() returns False when gate is off
+- ✅ client.detect() short-circuits to [] when gate is off
+- ✅ client.detect() parses mock 200 response into list
+- ✅ client.detect() returns [] on 503 + trips breaker
+- ✅ client circuit breaker opens after 3 failures
+- ✅ client module imports without torch / transformers
+- ✅ ai/locate_anything/requirements.txt exists
+- ✅ scripts/download_model.sh exists and is executable
+
+### Phase 8B — 5/5
+- ✅ bundle_locate_anything_weights.sh exists + executable + bash-clean
+- ✅ install_locate_anything_weights.sh exists + executable + bash-clean
+- ✅ run_locate_anything.sh exists + executable + bash-clean
+- ✅ com.gi.locate-anything.plist.tmpl parses as valid plist
+- ✅ install.sh recognises --with-locate-anything flag
+
+### Phase 8C — 11/11
+- ✅ should_invoke_tier3([]) → True (empty)
+- ✅ should_invoke_tier3([conf=0.25]) → True (manual band)
+- ✅ should_invoke_tier3([conf=0.50]) → False (candidates band)
+- ✅ should_invoke_tier3([conf=0.95]) → False (auto band)
+- ✅ tier3_to_candidates reshapes LocateAnything output
+- ✅ tier3_to_candidates filters items below noise floor
+- ✅ tier3_to_candidates caps at MAX_CANDIDATES (3)
+- ✅ tier3_to_candidates tags source='tier3_locate_anything'
+- ✅ integration: YOLO empty + mock sidecar → tier3 candidates ready
+- ✅ gate guard: toggle OFF + YOLO empty → sidecar HTTP NOT called
+- ✅ gate guard: YOLO confident → sidecar HTTP NOT called
+
+### Phase 8D — 2/2
+- ✅ _render_locate_anything_panel doesn't crash with sidecar down
+- ✅ panel toggle ON path stores '1' in app_settings
+
+### Phase 8E — 8/8
+- ✅ locate_anything_calls table exists with required columns
+- ✅ ix_la_calls_called_at index present
+- ✅ log_locate_anything_call writes a row + returns rowid
+- ✅ mark_locate_anything_outcome updates accepted field
+- ✅ client.detect happy path writes telemetry row
+- ✅ client.detect failure path writes telemetry with error
+- ✅ client.detect gate-off writes NO telemetry row
+- ✅ get_locate_anything_summary computes rates safely
 
 ### Procurement — 7/7
 - ✅ RL/BL strict-separation classifier

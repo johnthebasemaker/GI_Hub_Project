@@ -2320,9 +2320,15 @@ def _render_smart_scan_expander(site_id: str) -> None:
                     dets = detect_tool(raw, top_k=5)
                     st.session_state["_ss_tool_detections"] = dets
                     st.session_state["_ss_tool_img_hash"]   = h
+                    # Phase 8C — cache raw bytes so the Tier-3 path can reach
+                    # them across reruns (camera_input only exposes bytes on
+                    # the rerun that captured the image).
+                    st.session_state["_ss_tool_img_raw"]    = raw
                     # Reset prior pick so a new image doesn't carry over.
                     for k in ("_ss_tool_class", "_ss_tool_display_name",
-                              "_ss_tool_confidence"):
+                              "_ss_tool_confidence",
+                              "_ss_tier3_candidates",
+                              "_ss_tier3_shown_logged"):
                         st.session_state.pop(k, None)
 
             dets = st.session_state.get("_ss_tool_detections") or []
@@ -2352,13 +2358,11 @@ def _render_smart_scan_expander(site_id: str) -> None:
                     _accept_tool_pick(chosen["class_name"], chosen["confidence"])
                     st.rerun()
             else:
-                if dets is not None and tool_img is not None and not items:
-                    st.info(
-                        "🚫 No confident match. Borrower details have been "
-                        "pre-filled — fill the tool field manually in the form "
-                        "below."
-                    )
-                _smart_scan_fill_borrower_only()
+                # Phase 8C — mode == "manual" path. Before falling through to
+                # the borrower-only prefill, opportunistically invoke the
+                # LocateAnything sidecar IF the admin gate is on AND we have
+                # cached image bytes to send. Tier 3 NEVER auto-accepts.
+                _maybe_render_tier3_branch(site_id, dets)
 
         # ── Start-over reset ───────────────────────────────────────────────
         st.markdown("---")
@@ -2678,3 +2682,192 @@ def _render_supervisor_requests_tab(user: dict, site_id: str) -> None:
                             st.rerun()
                         else:
                             st.error(f"🚫 {msg}")
+
+
+# ===========================================================================
+# Phase 8C — Smart Scan Tier-3 (LocateAnything sidecar fallback)
+# ===========================================================================
+@st.cache_data(ttl=300, show_spinner=False)
+def _get_catalogue_class_names() -> list[str]:
+    """Return the list of class_name values from tool_catalogue. Used to
+    seed the LocateAnything prompt — catalogue-scoped per spec Q2(a).
+
+    Cached for 5 minutes — the catalogue rarely changes mid-day and
+    cutting the round-trip-per-scan saves ~30ms on every Tier-3 invocation.
+    """
+    try:
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT class_name FROM tool_catalogue "
+                "ORDER BY class_name COLLATE NOCASE ASC"
+            ).fetchall()
+        finally:
+            conn.close()
+        return [r[0] for r in rows if r and r[0]]
+    except Exception:
+        return []
+
+
+def _maybe_render_tier3_branch(site_id: str, yolo_dets: list) -> None:
+    """Phase 8C — bridge between YOLO "manual" outcome and the LocateAnything
+    sidecar. Gate-checked: admin toggle must be on AND we must have cached
+    image bytes. If anything is missing, falls through to the existing
+    borrower-only prefill behaviour (zero behaviour change vs pre-8C).
+    """
+    from ai.locate_anything import client as la_client
+    from ai.cv.smart_scan import should_invoke_tier3, tier3_to_candidates
+
+    raw = st.session_state.get("_ss_tool_img_raw")
+    if not la_client.is_enabled() or not raw or not should_invoke_tier3(yolo_dets):
+        # No Tier-3 path — preserve the original UX exactly.
+        if yolo_dets is not None and not yolo_dets:
+            st.info(
+                "🚫 No confident match. Borrower details have been "
+                "pre-filled — fill the tool field manually in the form "
+                "below."
+            )
+        _smart_scan_fill_borrower_only()
+        return
+
+    # Already fetched in a prior rerun? Skip the HTTP call and re-render.
+    cached = st.session_state.get("_ss_tier3_candidates")
+    if cached is None:
+        import base64
+        classes = _get_catalogue_class_names()
+        prompt_text = (
+            "locate: " + ", ".join(classes)
+            if classes else "locate the tool in the image"
+        )
+        # Pass through context for telemetry — client writes a row per call.
+        actor_user = st.session_state.get("gi_user", {}).get(
+            "username", "store_keeper"
+        )
+        yolo_top = (
+            float(yolo_dets[0].get("confidence", 0.0) or 0.0)
+            if yolo_dets else None
+        )
+        with st.spinner("🤖 Running AI fallback (LocateAnything)…"):
+            ai_dets, call_id = la_client.detect(
+                base64.b64encode(raw).decode("ascii"),
+                prompt=prompt_text,
+                classes=classes,
+                site_id=site_id,
+                sk_username=actor_user,
+                yolo_top_conf=yolo_top,
+            )
+        candidates = tier3_to_candidates(ai_dets)
+        st.session_state["_ss_tier3_candidates"] = candidates
+        st.session_state["_ss_tier3_call_id"]    = call_id
+    else:
+        candidates = cached
+
+    if not candidates:
+        # AI also came up empty — same friendly fallback as the manual path.
+        st.info(
+            "🤖 AI fallback found nothing either. Fill the tool manually in "
+            "the form below."
+        )
+        _smart_scan_fill_borrower_only()
+        return
+
+    _render_tier3_panel(candidates, site_id)
+
+
+def _render_tier3_panel(candidates: list[dict], site_id: str) -> None:
+    """Render the amber-bordered AI fallback panel. Spec Q4 — visually
+    distinct from the green Tier-2 panel so SKs understand this is a less-
+    trusted AI guess. CRITICAL CONTRACT: the "Use this tool" button is
+    the ONLY accept path — there is NO auto-fill code branch on this path.
+    """
+    # ── One-shot TIER3_SHOWN audit per scan ──────────────────────────────
+    actor_user = st.session_state.get("gi_user", {}).get("username", "store_keeper")
+    if not st.session_state.get("_ss_tier3_shown_logged"):
+        top_score = float(candidates[0]["confidence"]) if candidates else 0.0
+        try:
+            from database import log_audit_action
+            log_audit_action(
+                actor_user, "TIER3_SHOWN", "smart_scan",
+                f"site={site_id} n={len(candidates)} top_score={top_score:.3f}",
+            )
+        except Exception:
+            pass
+        st.session_state["_ss_tier3_shown_logged"] = True
+
+    # ── Amber-bordered panel ─────────────────────────────────────────────
+    st.markdown(
+        '<div style="background:#F59E0B14;border:1px solid #F59E0B66;'
+        'border-radius:8px;padding:14px 16px;margin:10px 0;">'
+        '<b style="color:#F59E0B;">🤖 AI fallback (LocateAnything)</b><br>'
+        '<span style="color:#C0CCD8;font-size:12.5px;">'
+        'YOLO was uncertain — the AI sees these candidates. '
+        '<b>Verify the physical tool before issuing.</b>'
+        '</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    labels = [
+        f"{d['class_name']} · confidence {d['confidence']:.2f}"
+        for d in candidates
+    ]
+    pick = st.radio(
+        "AI suggestions",
+        labels,
+        key="_ss_tier3_pick",
+        label_visibility="collapsed",
+    )
+
+    col_use, col_none = st.columns([1, 1])
+    with col_use:
+        # The ONLY accept path. Mirrors the Tier-2 "Use this tool" but tags
+        # the audit row distinctly so we can later measure Tier-3 vs Tier-2
+        # acceptance rates.
+        if st.button("✅ Use this tool", type="primary",
+                     key="_ss_tier3_use",
+                     use_container_width=True):
+            idx = labels.index(pick)
+            chosen = candidates[idx]
+            try:
+                from database import (
+                    log_audit_action, mark_locate_anything_outcome,
+                )
+                log_audit_action(
+                    actor_user, "TIER3_ACCEPTED", "smart_scan",
+                    f"site={site_id} class={chosen['class_name']} "
+                    f"conf={chosen['confidence']:.3f}",
+                )
+                # Phase 8E — close the loop on the telemetry row this scan
+                # generated, so the Admin cost/benefit panel can compute
+                # the accept rate accurately.
+                call_id = st.session_state.get("_ss_tier3_call_id", 0)
+                if call_id:
+                    mark_locate_anything_outcome(call_id, accepted=True)
+            except Exception:
+                pass
+            _accept_tool_pick(chosen["class_name"], chosen["confidence"])
+            st.rerun()
+    with col_none:
+        if st.button("🚫 None of these — manual entry",
+                     key="_ss_tier3_reject",
+                     use_container_width=True):
+            try:
+                from database import (
+                    log_audit_action, mark_locate_anything_outcome,
+                )
+                log_audit_action(
+                    actor_user, "TIER3_REJECTED", "smart_scan",
+                    f"site={site_id} n_shown={len(candidates)}",
+                )
+                call_id = st.session_state.get("_ss_tier3_call_id", 0)
+                if call_id:
+                    mark_locate_anything_outcome(call_id, accepted=False)
+            except Exception:
+                pass
+            # Clear cached candidates so a fresh scan doesn't re-render
+            # the panel from stale session state.
+            for k in ("_ss_tier3_candidates",
+                      "_ss_tier3_shown_logged",
+                      "_ss_tier3_call_id"):
+                st.session_state.pop(k, None)
+            _smart_scan_fill_borrower_only()
+            st.rerun()

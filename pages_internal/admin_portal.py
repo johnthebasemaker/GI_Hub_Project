@@ -1489,6 +1489,11 @@ def _render_settings_tab(user: dict) -> None:
         except Exception as e:
             st.error(f"PDF build failed: {type(e).__name__}: {e}")
 
+    # ── Phase 8D — Smart Scan AI (LocateAnything) sidecar panel ───────────
+    with st.expander("🤖 Smart Scan AI (LocateAnything) — sidecar control + telemetry",
+                     expanded=False):
+        _render_locate_anything_panel(user)
+
     # ── AI Connection panel (Ollama host + installed models) ──────────────
     with st.expander("🤖 AI Connection (Ollama)", expanded=False):
         from ai.client import (
@@ -2784,3 +2789,141 @@ def _render_tool_catalogue_tab(user: dict) -> None:
                 })
             import pandas as _pd2
             st.dataframe(_pd2.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+# ===========================================================================
+# Phase 8D — Smart Scan AI sidecar control + telemetry panel
+# ===========================================================================
+def _render_locate_anything_panel(user: dict) -> None:
+    """Admin-only Settings panel for the LocateAnything sidecar.
+
+    Three sections:
+      1. On/off toggle backed by app_settings.locate_anything_enabled.
+      2. Sidecar /health probe — reachable / device / model_loaded.
+      3. Telemetry summary + recent calls table (last 20).
+    """
+    actor = (user or {}).get("username", "admin")
+    st.caption(
+        "Tier-3 fallback for Smart Scan. When YOLO is uncertain, the SK "
+        "is offered AI-generated candidates from the LocateAnything sidecar. "
+        "Toggle stays OFF by default — flip it ON only on sites where the "
+        "weights bundle and sidecar service are installed."
+    )
+
+    # ── Section 1: toggle ──────────────────────────────────────────────
+    current = (get_app_setting("locate_anything_enabled", "0") or "0").strip() == "1"
+    sidecar_url_val = (
+        get_app_setting("locate_anything_sidecar_url",
+                        "http://127.0.0.1:8503") or ""
+    ).strip() or "http://127.0.0.1:8503"
+
+    col_t, col_url = st.columns([1, 2])
+    with col_t:
+        new_state = st.toggle(
+            "Enable Smart Scan AI",
+            value=current,
+            help="Writes to app_settings.locate_anything_enabled. "
+                 "Effective immediately — next Smart Scan reads the new value.",
+            key="_adm_la_toggle",
+        )
+    with col_url:
+        new_url = st.text_input(
+            "Sidecar URL",
+            value=sidecar_url_val,
+            help="Where the FastAPI sidecar listens. Default is "
+                 "http://127.0.0.1:8503 — change only if you've remapped "
+                 "the port in the launchd plist.",
+            key="_adm_la_url",
+        ).strip() or "http://127.0.0.1:8503"
+
+    if new_state != current or new_url != sidecar_url_val:
+        if st.button("💾 Save changes", type="primary",
+                     key="_adm_la_save"):
+            set_app_setting("locate_anything_enabled", "1" if new_state else "0")
+            set_app_setting("locate_anything_sidecar_url", new_url)
+            log_audit_action(
+                actor, "LOCATE_ANYTHING_CONFIG",
+                "app_settings",
+                f"enabled={new_state} url={new_url}",
+            )
+            st.toast("✅ Saved.", icon="✅")
+            st.rerun()
+
+    st.divider()
+
+    # ── Section 2: /health probe ───────────────────────────────────────
+    st.markdown("**Sidecar health**")
+    if not current:
+        st.info(
+            "Toggle is OFF — `/health` probe skipped. Flip the toggle ON "
+            "above and save to start probing."
+        )
+    else:
+        from ai.locate_anything import client as la_client
+        with st.spinner("Probing sidecar /health …"):
+            h = la_client.health()
+        ok = bool(h.get("ok"))
+        body = h.get("body") or {}
+        cols = st.columns(3)
+        # Reachable pill
+        with cols[0]:
+            if ok:
+                st.success("✓ Reachable")
+            else:
+                reason = body.get("reason") if isinstance(body, dict) else None
+                st.error(f"✗ Unreachable\n\n{reason or 'no response'}")
+        with cols[1]:
+            dev = body.get("device", "—") if isinstance(body, dict) else "—"
+            st.metric("Device", dev)
+        with cols[2]:
+            loaded = body.get("model_loaded") if isinstance(body, dict) else None
+            if loaded is True:
+                st.metric("Model on disk", "✓ Yes")
+            elif loaded is False:
+                st.metric("Model on disk", "✗ No (bundle missing)")
+            else:
+                st.metric("Model on disk", "—")
+
+    st.divider()
+
+    # ── Section 3: telemetry summary + recent calls ────────────────────
+    st.markdown("**Telemetry — last 7 days**")
+    try:
+        from database import (
+            get_locate_anything_summary,
+            list_recent_locate_anything_calls,
+        )
+        summary = get_locate_anything_summary(days=7)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Calls", summary["calls"])
+        m2.metric("Errors", summary["errors"],
+                  delta=f"{summary['error_rate_pct']}%" if summary["calls"] else None,
+                  delta_color="inverse")
+        m3.metric("Accept rate",
+                  f"{summary['accept_rate_pct']}%"
+                  if (summary["accepted"] + summary["rejected"]) else "—",
+                  help=f"{summary['accepted']} accepted / "
+                       f"{summary['rejected']} rejected / "
+                       f"{summary['pending']} pending SK decision")
+        m4.metric("Avg latency",
+                  f"{int(summary['avg_latency_ms'])} ms"
+                  if summary["calls"] else "—")
+
+        with st.expander("Recent calls (last 20)", expanded=False):
+            df = list_recent_locate_anything_calls(limit=20)
+            if df.empty:
+                st.caption("No /detect calls yet.")
+            else:
+                show = df.rename(columns={
+                    "called_at":       "When",
+                    "site_id":         "Site",
+                    "sk_username":     "SK",
+                    "yolo_top_conf":   "YOLO top conf",
+                    "detection_count": "AI dets",
+                    "accepted":        "Accepted",
+                    "latency_ms":      "Latency (ms)",
+                    "error":           "Error",
+                })
+                st.dataframe(show, use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.warning(f"Telemetry unavailable: {type(e).__name__}: {e}")

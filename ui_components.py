@@ -2518,7 +2518,15 @@ except Exception:
 
 
 def _draft_ls():
-    """Lazy singleton — instantiated once per Streamlit session."""
+    """Lazy singleton — instantiated once per Streamlit session.
+
+    Returns None when `GI_SUPPRESS_LOCAL_STORAGE=1` is set — the test
+    harness uses this because AppTest doesn't drive the component's
+    JS iframe and the script run hangs past the 30s timeout. Server-side
+    draft layer continues to function unchanged."""
+    import os as _os
+    if _os.environ.get("GI_SUPPRESS_LOCAL_STORAGE") == "1":
+        return None
     if not _HAS_LOCAL_STORAGE:
         return None
     if "_draft_ls_singleton" not in st.session_state:
