@@ -3401,20 +3401,23 @@ def check_7b_approve_mirrors_to_pending_issues() -> None:
     try:
         row = conn.execute(
             "SELECT SAP_Code, Quantity, Work_Type, Tank_No, Issued_By, "
-            "       Issued_To, status, Source_Ref "
+            "       Issued_To, status, Source_Ref, Requested_By "
             "FROM pending_issues WHERE Source_Ref LIKE ?",
             (f"SMR:{no}:%",),
         ).fetchone()
         assert row is not None, "no pending_issues row mirrored"
-        (sap_got, qty, work, tank, by, to, status, src) = row
+        (sap_got, qty, work, tank, by, to, status, src, req_by) = row
         assert sap_got == sap
         assert float(qty) == 7.0, qty
         assert work == "SUPERVISOR_REQUEST", work
         assert tank == "Tank-X", tank
         assert by == "test_sk", by
         assert to.startswith("Worker "), to
-        assert status == "pending_hod", status
+        # Round 12: lands in SK staging grid (draft), not HOD's EOD queue.
+        assert status == "draft", status
         assert src.startswith(f"SMR:{no}:"), src
+        # Round 12: supervisor's username auto-filled from header.
+        assert req_by == "test_sup", req_by
     finally:
         conn.close()
 
@@ -3513,19 +3516,36 @@ def check_7b_e2e_commit_eod_preserves_source_ref() -> None:
     rid, no, *_ = _7b_make_pending("TEST_7B_E2E", "_E2E", qty=2, sap_stock=50)
     ok, _ = database.approve_supervisor_request(rid, "test_sk")
     assert ok
-    n = database.commit_eod()
+    # Round 12 — after SK approval the row sits in pending_issues as draft.
+    # The SK Submit-Batch step flips it to pending_hod so commit_eod picks
+    # it up. Simulate that flip here.
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "UPDATE pending_issues SET status='pending_hod' "
+            "WHERE Source_Ref LIKE ?", (f"SMR:{no}:%",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    n = database.commit_eod(hod_username="test_hod")
     assert n >= 1, f"commit_eod should commit ≥1 row, got {n}"
     conn = database.get_connection()
     try:
         row = conn.execute(
-            "SELECT Quantity, Work_Type, Source_Ref FROM consumption "
-            "WHERE Source_Ref LIKE ?", (f"SMR:{no}:%",),
+            'SELECT Quantity, Work_Type, Source_Ref, Requested_By, '
+            '       Issued_By, "Approved By" '
+            'FROM consumption WHERE Source_Ref LIKE ?', (f"SMR:{no}:%",),
         ).fetchone()
         assert row is not None, "consumption row missing after commit_eod"
-        qty, work, src = row
+        qty, work, src, req_by, iss_by, appr_by = row
         assert float(qty) == 2.0
         assert work == "SUPERVISOR_REQUEST"
         assert src.startswith(f"SMR:{no}:")
+        # Round 12 — auto-attribution all three roles to the ledger.
+        assert req_by == "test_sup", req_by
+        assert iss_by == "test_sk", iss_by
+        assert appr_by == "test_hod", appr_by
     finally:
         conn.close()
 
@@ -3596,7 +3616,18 @@ def check_7b_delete_item_works() -> None:
 def check_7b_report_joins_on_source_ref() -> None:
     rid, no, *_ = _7b_make_pending("TEST_7B_RPT", "_RPT", qty=3, sap_stock=50)
     database.approve_supervisor_request(rid, "test_sk")
-    database.commit_eod()
+    # Round 12 — flip SMR draft rows to pending_hod (simulating SK Submit
+    # Batch) before commit_eod can pick them up.
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "UPDATE pending_issues SET status='pending_hod' "
+            "WHERE Source_Ref LIKE ?", (f"SMR:{no}:%",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    database.commit_eod(hod_username="test_hod")
     df = database.report_supervisor_intent_vs_actual(site_id="TEST_7B_RPT", days=7)
     assert not df.empty, "report should have at least one row"
     matched = df[df["Request_No"] == no]
@@ -3641,6 +3672,262 @@ def check_7b_config_smr_triggers() -> None:
                 "smr_rejected", "smr_cancelled"):
         assert key in WHATSAPP_TRIGGERS, f"{key} missing from WHATSAPP_TRIGGERS"
         assert WHATSAPP_TRIGGERS[key] is True, f"{key} should default True"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Round 12 — SMR-via-SK-Grid + Auto-Attribution checks
+# ═══════════════════════════════════════════════════════════════════════════
+def check_r12_schema_requested_by_columns() -> None:
+    """pending_issues + consumption carry the new Requested_By column."""
+    conn = database.get_connection()
+    try:
+        for tbl in ("pending_issues", "consumption"):
+            cols = {r[1] for r in conn.execute(
+                f"PRAGMA table_info({tbl})"
+            ).fetchall()}
+            assert "Requested_By" in cols, f"Requested_By missing from {tbl}"
+    finally:
+        conn.close()
+
+
+def check_r12_schema_line_status_column() -> None:
+    """supervisor_material_request_items.line_status exists and defaults to
+    'active' on freshly inserted lines."""
+    conn = database.get_connection()
+    try:
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(supervisor_material_request_items)"
+        ).fetchall()}
+        assert "line_status" in cols, f"line_status missing: {cols}"
+    finally:
+        conn.close()
+
+
+def check_r12_line_status_default_active() -> None:
+    """A newly-created SMR line carries line_status='active'."""
+    rid, no, *_ = _7b_make_pending("TEST_R12_LSDEF", "_LSDEF")
+    conn = database.get_connection()
+    try:
+        statuses = [r[0] for r in conn.execute(
+            "SELECT line_status FROM supervisor_material_request_items "
+            "WHERE request_id = ?", (rid,),
+        ).fetchall()]
+        assert statuses and all(s == "active" for s in statuses), statuses
+    finally:
+        conn.close()
+
+
+def check_r12_withdraw_smr_line_at_staging() -> None:
+    """SK deletes an SMR-draft row from the staging grid → the matching
+    supervisor_material_request_items row flips to 'withdrawn_at_staging'.
+    """
+    rid, no, *_ = _7b_make_pending("TEST_R12_WDR", "_WDR")
+    ok, _ = database.approve_supervisor_request(rid, "test_sk")
+    assert ok
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id, Source_Ref FROM pending_issues "
+            "WHERE Source_Ref LIKE ?", (f"SMR:{no}:%",),
+        ).fetchone()
+        assert row, "no SMR-sourced pending_issues row"
+        pi_id, _src = row
+    finally:
+        conn.close()
+    ok2, _ = database.withdraw_smr_line_at_staging(int(pi_id), "test_sk")
+    assert ok2
+    conn = database.get_connection()
+    try:
+        ls = conn.execute(
+            "SELECT line_status FROM supervisor_material_request_items "
+            "WHERE request_id = ?", (rid,),
+        ).fetchone()[0]
+        assert ls == "withdrawn_at_staging", ls
+    finally:
+        conn.close()
+
+
+def check_r12_commit_eod_writes_approved_by() -> None:
+    """commit_eod(hod_username=X) populates legacy 'Approved By' column."""
+    rid, no, *_ = _7b_make_pending("TEST_R12_APPR", "_APPR", qty=1, sap_stock=20)
+    ok, _ = database.approve_supervisor_request(rid, "test_sk")
+    assert ok
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "UPDATE pending_issues SET status='pending_hod' "
+            "WHERE Source_Ref LIKE ?", (f"SMR:{no}:%",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    n = database.commit_eod(hod_username="hod_alpha")
+    assert n >= 1
+    conn = database.get_connection()
+    try:
+        approved_by = conn.execute(
+            'SELECT "Approved By" FROM consumption '
+            'WHERE Source_Ref LIKE ?', (f"SMR:{no}:%",),
+        ).fetchone()[0]
+        assert approved_by == "hod_alpha", approved_by
+    finally:
+        conn.close()
+
+
+def check_r12_commit_eod_flips_line_status_committed() -> None:
+    """commit_eod flips the matching supervisor_material_request_items row to
+    line_status='committed'."""
+    rid, no, *_ = _7b_make_pending("TEST_R12_LSC", "_LSC", qty=1, sap_stock=20)
+    ok, _ = database.approve_supervisor_request(rid, "test_sk")
+    assert ok
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "UPDATE pending_issues SET status='pending_hod' "
+            "WHERE Source_Ref LIKE ?", (f"SMR:{no}:%",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    database.commit_eod(hod_username="hod_beta")
+    conn = database.get_connection()
+    try:
+        ls = conn.execute(
+            "SELECT line_status FROM supervisor_material_request_items "
+            "WHERE request_id = ?", (rid,),
+        ).fetchone()[0]
+        assert ls == "committed", ls
+    finally:
+        conn.close()
+
+
+def check_r12_commit_eod_carries_requested_by_to_consumption() -> None:
+    """Requested_By survives the pending_issues → consumption commit."""
+    rid, no, *_ = _7b_make_pending("TEST_R12_RB", "_RB", qty=1, sap_stock=20)
+    ok, _ = database.approve_supervisor_request(rid, "test_sk")
+    assert ok
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "UPDATE pending_issues SET status='pending_hod' "
+            "WHERE Source_Ref LIKE ?", (f"SMR:{no}:%",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    database.commit_eod(hod_username="hod_gamma")
+    conn = database.get_connection()
+    try:
+        req_by = conn.execute(
+            "SELECT Requested_By FROM consumption "
+            "WHERE Source_Ref LIKE ?", (f"SMR:{no}:%",),
+        ).fetchone()[0]
+        # Header.requested_by was 'test_sup' (set inside _7b_make_pending).
+        assert req_by == "test_sup", req_by
+    finally:
+        conn.close()
+
+
+def check_r12_hidden_form_cols_present() -> None:
+    """config.HIDDEN_FORM_COLS exists and covers the retired/auto-filled
+    columns the SK form must not render."""
+    from config import HIDDEN_FORM_COLS
+    must_hide = {
+        "Technician", "Issued_By", "Approved By", "Approved_By",
+        "Requested_By", "Source_Ref", "FEFO_Override", "Lot_Number",
+    }
+    missing = must_hide - set(HIDDEN_FORM_COLS)
+    assert not missing, f"HIDDEN_FORM_COLS missing: {missing}"
+
+
+def check_r12_list_smr_history_filters() -> None:
+    """list_smr_history honours date / supervisor / tank filters and the
+    decided-only default."""
+    import datetime as _dt
+    site = "TEST_R12_HIST"
+    # Seed three SMRs: one approved, one rejected, one still pending.
+    rid1, no1, *_ = _7b_make_pending(site, "_H1", qty=1, sap_stock=10)
+    database.approve_supervisor_request(rid1, "test_sk")
+    rid2, no2, *_ = _7b_make_pending(site, "_H2", qty=1, sap_stock=10)
+    database.reject_supervisor_request(rid2, "test_sk", "out of stock")
+    rid3, no3, *_ = _7b_make_pending(site, "_H3", qty=1, sap_stock=10)
+    # rid3 stays pending_sk.
+
+    # Decided-only by default (no status_in passed; days=180 to be safe).
+    df_dec = database.list_smr_history(
+        site_id=site,
+        status_in=("approved", "rejected", "cancelled"),
+        days=180,
+    )
+    nos = set(df_dec["request_no"].tolist())
+    assert no1 in nos and no2 in nos, f"decided missing: {nos}"
+    assert no3 not in nos, "pending should be excluded from decided-only"
+
+    # Include pending toggle equivalent: status_in covers all 4 states.
+    df_all = database.list_smr_history(
+        site_id=site,
+        status_in=("approved", "rejected", "cancelled", "pending_sk"),
+        days=180,
+    )
+    assert no3 in set(df_all["request_no"].tolist())
+
+    # Tank filter — Tank-X (default in _7b_make_pending).
+    df_tank = database.list_smr_history(
+        site_id=site, tank="Tank-X", days=180,
+    )
+    # Every row in this site is Tank-X, so count matches the all-status pull.
+    assert len(df_tank) >= 2
+
+    # Supervisor filter — 'test_sup'.
+    df_sup = database.list_smr_history(
+        site_id=site, supervisor="test_sup", days=180,
+    )
+    assert not df_sup.empty
+    assert df_sup["requested_by"].iloc[0] == "test_sup"
+
+
+def check_r12_e2e_full_pipeline_three_role_attribution() -> None:
+    """Supervisor → SK approve → SK submit batch → HOD commit → consumption
+    row carries Requested_By (sup) + Issued_By (sk) + 'Approved By' (hod)
+    + line_status='committed'."""
+    site = "TEST_R12_E2E"
+    rid, no, *_ = _7b_make_pending(site, "_FULL", qty=4, sap_stock=99)
+    ok, _ = database.approve_supervisor_request(rid, "sk_dave")
+    assert ok
+    # SK Submit-Batch step: flip draft → pending_hod.
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "UPDATE pending_issues SET status='pending_hod' "
+            "WHERE Source_Ref LIKE ?", (f"SMR:{no}:%",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    n = database.commit_eod(hod_username="hod_eve")
+    assert n >= 1
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            'SELECT Requested_By, Issued_By, "Approved By", '
+            'Work_Type, Source_Ref FROM consumption '
+            'WHERE Source_Ref LIKE ?', (f"SMR:{no}:%",),
+        ).fetchone()
+        assert row, "no consumption row"
+        req_by, iss_by, appr_by, work, src = row
+        assert req_by == "test_sup", req_by
+        assert iss_by == "sk_dave", iss_by
+        assert appr_by == "hod_eve", appr_by
+        assert work == "SUPERVISOR_REQUEST"
+        assert src.startswith(f"SMR:{no}:")
+        # line_status='committed' end-to-end contract.
+        ls = conn.execute(
+            "SELECT line_status FROM supervisor_material_request_items "
+            "WHERE request_id = ?", (rid,),
+        ).fetchone()[0]
+        assert ls == "committed", ls
+    finally:
+        conn.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -5542,7 +5829,7 @@ def main() -> int:
     run_check("Phase 7B", "Available_Flag = 0 when requested qty > stock",
               check_7b_available_flag_zero_when_short,
               "Flag drives the Supervisor's amber 'short' warning.")
-    run_check("Phase 7B", "approve mirrors lines → pending_issues pending_hod",
+    run_check("Phase 7B", "approve mirrors lines → pending_issues draft (Round 12)",
               check_7b_approve_mirrors_to_pending_issues,
               "Work_Type=SUPERVISOR_REQUEST, Source_Ref set, Issued_To/Tank_No populated.")
     run_check("Phase 7B", "approve flips status + captures posted_pending_ids JSON",
@@ -5578,6 +5865,38 @@ def main() -> int:
     run_check("Phase 7B", "config.WHATSAPP_TRIGGERS has 4 smr_* keys",
               check_7b_config_smr_triggers,
               "smr_submitted/approved/rejected/cancelled — default True.")
+
+    # ── Round 12 — SMR-via-SK-Grid + Auto-Attribution ────────────────────
+    run_check("Round 12", "Requested_By column on pending_issues + consumption",
+              check_r12_schema_requested_by_columns,
+              "Self-heal must add Requested_By to both ledger tables.")
+    run_check("Round 12", "line_status column on supervisor_material_request_items",
+              check_r12_schema_line_status_column,
+              "Self-heal must add line_status with default 'active'.")
+    run_check("Round 12", "new SMR lines default to line_status='active'",
+              check_r12_line_status_default_active,
+              "create_supervisor_request inserts must leave line_status='active'.")
+    run_check("Round 12", "withdraw_smr_line_at_staging flips line_status",
+              check_r12_withdraw_smr_line_at_staging,
+              "SK deletes SMR-draft row → line_status='withdrawn_at_staging'.")
+    run_check("Round 12", "commit_eod(hod_username=…) writes 'Approved By'",
+              check_r12_commit_eod_writes_approved_by,
+              "Auto-attribution of HOD into the legacy space-named column.")
+    run_check("Round 12", "commit_eod flips SMR line_status='committed'",
+              check_r12_commit_eod_flips_line_status_committed,
+              "Source_Ref → supervisor_material_request_items.line_status update.")
+    run_check("Round 12", "commit_eod carries Requested_By into consumption",
+              check_r12_commit_eod_carries_requested_by_to_consumption,
+              "pending_issues.Requested_By must survive the commit.")
+    run_check("Round 12", "HIDDEN_FORM_COLS covers Technician + auto-fields",
+              check_r12_hidden_form_cols_present,
+              "Single source of truth for retired/auto-filled column names.")
+    run_check("Round 12", "list_smr_history honours filters + decided-only default",
+              check_r12_list_smr_history_filters,
+              "Date / supervisor / tank composing AND-wise; decided-only default.")
+    run_check("Round 12", "E2E: sup → SK approve → SK submit → HOD commit",
+              check_r12_e2e_full_pipeline_three_role_attribution,
+              "Three-role auto-attribution + line_status='committed' end-to-end.")
 
     # ── Phase 7C — HOD Cross-Site View notifications + indicator ─────────
     run_check("Phase 7C", "ix_csv_target_date index exists",

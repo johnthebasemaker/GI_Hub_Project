@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-06-20T22:27:25`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_3oa5h4hx/bug_check.db`  
-**Total checks:** 440  
-**Passing:** 440  
+**Run at:** `2026-06-23T20:44:32`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_o0f6ibv1/bug_check.db`  
+**Total checks:** 450  
+**Passing:** 450  
 **Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -100,7 +100,7 @@ _None — every check passed._
 - ✅ rejects unknown SAP_Code
 - ✅ Stock_At_Request snapshot is captured
 - ✅ Available_Flag = 0 when requested qty > stock
-- ✅ approve mirrors lines → pending_issues pending_hod
+- ✅ approve mirrors lines → pending_issues draft (Round 12)
 - ✅ approve flips status + captures posted_pending_ids JSON
 - ✅ approve is idempotent (refuses second call)
 - ✅ approve drops SK_Adjusted_Qty=0 lines
@@ -290,6 +290,18 @@ _None — every check passed._
 ### Returns — 2/2
 - ✅ Submit → approve → ledger row
 - ✅ Reject removes from pending list
+
+### Round 12 — 10/10
+- ✅ Requested_By column on pending_issues + consumption
+- ✅ line_status column on supervisor_material_request_items
+- ✅ new SMR lines default to line_status='active'
+- ✅ withdraw_smr_line_at_staging flips line_status
+- ✅ commit_eod(hod_username=…) writes 'Approved By'
+- ✅ commit_eod flips SMR line_status='committed'
+- ✅ commit_eod carries Requested_By into consumption
+- ✅ HIDDEN_FORM_COLS covers Technician + auto-fields
+- ✅ list_smr_history honours filters + decided-only default
+- ✅ E2E: sup → SK approve → SK submit → HOD commit
 
 ### Schema — 216/216
 - ✅ table · inventory

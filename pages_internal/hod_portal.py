@@ -277,7 +277,13 @@ def _eod_commit_dialog() -> None:
                     if_exists="append", index=False,
                 )
                 conn.commit()
-                n = commit_eod(conn)
+                # Round 12 — pass HOD username so commit_eod populates the
+                # legacy "Approved By" column on every committed row AND
+                # flips SMR-sourced supervisor_material_request_items.line_status
+                # to 'committed'.
+                n = commit_eod(
+                    conn, hod_username=user.get("username", ""),
+                )
 
                 # --- 📱 WHATSAPP AUTOMATION (preserved) ---
                 low_df = get_low_stock_items(conn)
@@ -353,6 +359,37 @@ def _render_eod_tab(user: dict, site_id: str) -> None:
     pending_df["_status"] = pending_df["_status"].replace(
         {"pending_hod": "pending", "": "pending"}
     )
+
+    # Round 12 — SMR provenance flag for the triple-layer visibility:
+    # banner, dedicated grid column, and 🛡️ badge on the Material cell.
+    if "Source_Ref" in pending_df.columns:
+        pending_df["_is_smr"] = (
+            pending_df["Source_Ref"].fillna("").astype(str).str.startswith("SMR:")
+        )
+    else:
+        pending_df["_is_smr"] = False
+    _smr_n = int(pending_df["_is_smr"].sum())
+    if _smr_n:
+        _sup_names = sorted(set(
+            str(s) for s in
+            pending_df.loc[pending_df["_is_smr"], "Requested_By"].dropna().tolist()
+        )) if "Requested_By" in pending_df.columns else []
+        _sup_strip = (
+            "from " + ", ".join(html.escape(s) for s in _sup_names)
+            if _sup_names else ""
+        )
+        st.markdown(
+            f'<div style="background:rgba(212,175,55,0.10);'
+            f'border:1px solid rgba(212,175,55,0.40);'
+            f'border-left:4px solid {_C["gold"]};'
+            f'border-radius:8px;padding:10px 14px;margin:0 0 12px 0;">'
+            f'<span style="color:{_C["gold"]};font-weight:700;font-size:13px;">'
+            f'🛡️ {_smr_n} supervisor-requested line(s) in this commit</span>'
+            f'<span style="color:{_C["muted"]};font-size:12px;"> '
+            f'{_sup_strip}. Highlighted with 🛡️ in the Material column below '
+            f'and itemised in the "Requested By" column.</span></div>',
+            unsafe_allow_html=True,
+        )
 
     def _cnt(s: str) -> int:
         return int((pending_df["_status"] == s).sum())
@@ -440,6 +477,9 @@ def _render_eod_tab(user: dict, site_id: str) -> None:
         ("Serial_No", "Serial"),
         ("Issued_By", "Issued By"),
         ("Issued_To", "Issued To"),
+        # Round 12 — surface the supervisor who originated each SMR row.
+        # Blank for SK-direct rows.
+        ("Requested_By", "Requested By"),
         ("Remarks", "Remarks"),
         ("Status", "Status"),
     ]
@@ -471,10 +511,14 @@ def _render_eod_tab(user: dict, site_id: str) -> None:
                     f'{_esc(r.get(col))}</td>'
                 )
             elif col == "Material_Name":
+                # Round 12 — prepend 🛡️ glyph for SMR-sourced rows so the
+                # supervisor-requested lines are visually distinct at a glance.
+                _badge = "🛡️ " if bool(r.get("_is_smr")) else ""
                 cells.append(
                     f'<td style="padding:7px 10px;color:{_C["text"]};font-size:12px;'
                     f'max-width:220px;overflow:hidden;text-overflow:ellipsis;'
-                    f'white-space:nowrap;" title="{_esc(r.get(col))}">{_esc(r.get(col))}</td>'
+                    f'white-space:nowrap;" title="{_esc(r.get(col))}">'
+                    f'{_badge}{_esc(r.get(col))}</td>'
                 )
             elif col == "Quantity":
                 cells.append(
@@ -527,6 +571,8 @@ def _render_eod_tab(user: dict, site_id: str) -> None:
                     ("PR", "PR_Number"), ("Tank", "Tank_No"),
                     ("Serial", "Serial_No"),
                     ("By", "Issued_By"), ("To", "Issued_To"),
+                    # Round 12 — supervisor of origin (None for SK-direct rows).
+                    ("Requested By", "Requested_By"),
                     ("Remarks", "Remarks"),
                 ]:
                     v = r.get(key)

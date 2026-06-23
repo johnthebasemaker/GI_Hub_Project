@@ -11,7 +11,9 @@ import html
 import pandas as pd
 import streamlit as st
 
-from config import SYSTEM_COLS, OPTIONAL_ISSUE_COLS, BRAND_GOLD, TEXT_MUTED
+from config import (
+    SYSTEM_COLS, OPTIONAL_ISSUE_COLS, BRAND_GOLD, TEXT_MUTED, HIDDEN_FORM_COLS,
+)
 from database import (
     get_connection,
     queue_whatsapp_alert,
@@ -100,9 +102,12 @@ def page_daily_issue_log(user: dict) -> None:
 
     c = conn.cursor()
     c.execute("PRAGMA table_info(pending_issues)")
+    # Round 12: HIDDEN_FORM_COLS hides Technician, Issued_By, Source_Ref,
+    # Lot_Number, FEFO_Override, Requested_By, "Approved By", Approved_By —
+    # they are auto-filled server-side or set by dedicated UI affordances.
     form_cols = [
         row[1] for row in c.fetchall()
-        if row[1] not in (SYSTEM_COLS | {"SAP_Code"})
+        if row[1] not in (SYSTEM_COLS | {"SAP_Code"} | HIDDEN_FORM_COLS)
     ]
     conn.close()
 
@@ -473,6 +478,11 @@ def page_daily_issue_log(user: dict) -> None:
                                 )
                                 st.stop()
 
+                    # Round 12 — auto-fill Issued_By with the logged-in SK's
+                    # username (no manual textbox). Requested_By stays NULL
+                    # on SK-direct rows; SMR-sourced rows arrive via
+                    # approve_supervisor_request which sets it explicitly.
+                    input_data["Issued_By"] = user.get("username", "")
                     columns      = ["SAP_Code"] + list(input_data.keys())
                     placeholders = ", ".join(["?"] * len(columns))
                     values = [sap_code] + [
@@ -518,6 +528,27 @@ def page_daily_issue_log(user: dict) -> None:
                 hint="Scan or pick a material above and click **Add to Grid** to start your shift.",
             )
         else:
+            # Round 12 — surface how many lines in this batch came from a
+            # Supervisor Material Request. Helps the SK know what to enrich
+            # (batch numbers, final qty) before submitting to HOD.
+            _smr_mask = (
+                pending_df.get("Source_Ref", pd.Series([], dtype=object))
+                .fillna("").astype(str).str.startswith("SMR:")
+            )
+            _smr_count = int(_smr_mask.sum()) if not pending_df.empty else 0
+            if _smr_count:
+                st.markdown(
+                    f'<div style="background:rgba(212,175,55,0.10);'
+                    f'border:1px solid rgba(212,175,55,0.35);'
+                    f'border-left:3px solid {BRAND_GOLD};'
+                    f'border-radius:7px;padding:8px 12px;margin:0 0 10px 0;">'
+                    f'<span style="color:{BRAND_GOLD};font-weight:700;">🛡️ '
+                    f'{_smr_count} supervisor-requested line(s)</span>'
+                    f'<span style="color:{TEXT_MUTED};font-size:12px;"> '
+                    f'in this batch. Add batch numbers / adjust quantities '
+                    f'before submitting to HOD.</span></div>',
+                    unsafe_allow_html=True,
+                )
             view_df = pending_df.set_index("id")
             col_cfg = {
                 "SAP_Code":      st.column_config.TextColumn("SAP Code",      disabled=True),
@@ -568,6 +599,23 @@ def page_daily_issue_log(user: dict) -> None:
                 )
             with btn_save:
                 if st.button("💾 Save Draft Edits", use_container_width=True):
+                    # Round 12 — detect SMR-sourced rows the SK removed from
+                    # the editor BEFORE the wipe-and-reinsert. Each missing
+                    # row gets withdraw_smr_line_at_staging() so the SMR
+                    # record reflects 'withdrawn_at_staging' for that line.
+                    from database import withdraw_smr_line_at_staging
+                    _kept_ids = set(int(i) for i in edited_df.index.tolist())
+                    for _row_id in pending_df["id"].astype(int).tolist():
+                        if _row_id in _kept_ids:
+                            continue
+                        # Only call for SMR-sourced rows — the helper is
+                        # silent on SK-direct deletions.
+                        withdraw_smr_line_at_staging(
+                            pending_issue_id=_row_id,
+                            sk_username=user.get("username", ""),
+                            conn=conn3,
+                        )
+
                     save_cols = [col for col in edited_df.columns if col not in {"Material_Name", "UOM", "Timestamp"}]
                     ph = ", ".join(["?"] * (len(save_cols) + 1))
                     c2 = conn3.cursor()
@@ -597,6 +645,30 @@ def page_daily_issue_log(user: dict) -> None:
                     if items_df.empty:
                         st.warning("⚠️ No draft items to submit.")
                     else:
+                        # Round 12 — belt-and-suspenders: same negative-stock
+                        # validator that gates HOD's EOD commit now runs at
+                        # the SK Submit step too. Stock can still shift
+                        # between SK submit and HOD commit, so the HOD-side
+                        # check stays in place.
+                        from database import validate_eod_no_negative_stock
+                        _viol = validate_eod_no_negative_stock(
+                            conn3, site_id, items_df,
+                        )
+                        if _viol:
+                            _rows = "\n".join(
+                                f"• [{v['sap_code']}] {v['name']} — "
+                                f"current {v['current']:g} {v['uom']}, "
+                                f"to consume {v['to_consume']:g} → "
+                                f"deficit {v['deficit']:g}"
+                                for v in _viol
+                            )
+                            st.error(
+                                "🛑 **Insufficient stock for one or more lines.**\n\n"
+                                + _rows
+                                + "\n\nReduce quantities or receive more stock "
+                                + "before submitting."
+                            )
+                            st.stop()
                         conn3.execute(
                             "UPDATE pending_issues SET status = 'pending_hod' WHERE COALESCE(Site_ID,'HQ') = ? AND COALESCE(status,'draft') = 'draft'",
                             (site_id,)
@@ -685,7 +757,9 @@ def page_daily_issue_log(user: dict) -> None:
         # the SK should never see/fill it on the staging form.
         rcpt_form_cols = [
             row[1] for row in _rcpt_all_cols
-            if row[1] not in (SYSTEM_COLS | {"SAP_Code", "rejection_reason"})
+            if row[1] not in (
+                SYSTEM_COLS | {"SAP_Code", "rejection_reason"} | HIDDEN_FORM_COLS
+            )
         ]
         # All receipt fields mandatory per 2026-06 spec.
         OPTIONAL_RECEIPT_COLS: set[str] = set()
@@ -2480,9 +2554,11 @@ def _render_supervisor_requests_tab(user: dict, site_id: str) -> None:
     the worker's open returnable loans (side-panel), then Approve or Reject
     the whole request.
 
-    On Approve: approve_supervisor_request() mirrors each non-zero line into
-    pending_issues with Work_Type='SUPERVISOR_REQUEST' and Source_Ref set —
-    HOD sees them in the existing EOD Commit tab. No edits to commit_eod.
+    On Approve (Round 12): approve_supervisor_request() mirrors each non-zero
+    line into pending_issues with status='draft' (was 'pending_hod'), so the
+    SK enriches batch numbers / final qty in the Consumption Log grid before
+    submitting to HOD. Source_Ref + Requested_By carry the supervisor's
+    identity all the way to the consumption ledger.
     """
     actor = user.get("username", "store_keeper")
 
@@ -2492,7 +2568,8 @@ def _render_supervisor_requests_tab(user: dict, site_id: str) -> None:
         f'<p style="color:{TEXT_MUTED};margin:0 0 14px 0;font-size:13px;">'
         f'Pending requests submitted by Supervisors at <b>{html.escape(site_id)}</b>. '
         f'Edit qty / notes / drop lines as needed, then Approve. Approved lines '
-        f'land in the HOD EOD Commit queue automatically.</p>',
+        f'land in your <b>📋 Consumption Log</b> staging grid for batch-number '
+        f'/ final-qty entry before you submit the batch to the HOD.</p>',
         unsafe_allow_html=True,
     )
 
@@ -2505,6 +2582,7 @@ def _render_supervisor_requests_tab(user: dict, site_id: str) -> None:
             title="Nothing in the queue",
             hint="When a Supervisor submits a material request, it appears here.",
         )
+        _render_smr_history_panel(site_id)
         return
 
     for _, hdr in pending.iterrows():
@@ -2682,6 +2760,138 @@ def _render_supervisor_requests_tab(user: dict, site_id: str) -> None:
                             st.rerun()
                         else:
                             st.error(f"🚫 {msg}")
+
+    # ── Round 12 — Supervisor Request History (collapsed by default) ─────
+    _render_smr_history_panel(site_id)
+
+
+_SMR_HISTORY_STATUS_LABELS = {
+    "approved":  ("✅", "#22C55E"),
+    "rejected":  ("❌", "#EF4444"),
+    "cancelled": ("🚫", "#94A3B8"),
+    "pending_sk": ("⏳", "#F59E0B"),
+}
+
+
+def _render_smr_history_panel(site_id: str) -> None:
+    """Historical SMR table for the SK tab. Filters: Date range, Supervisor,
+    Tank/Job. Defaults to decided-only (approved + rejected + cancelled) over
+    the last 7 days. Toggle to include pending requests.
+    """
+    from database import list_smr_history
+    with st.expander("📜 Supervisor Request History", expanded=False):
+        st.caption(
+            "Decided requests at this site over the selected window. "
+            "Use filters to narrow by date, supervisor, or tank / job."
+        )
+        # ── Filter row ─────────────────────────────────────────────────
+        fc1, fc2, fc3, fc4 = st.columns([2, 2, 2, 2])
+        with fc1:
+            _today = datetime.date.today()
+            dr = st.date_input(
+                "Date range",
+                value=(_today - datetime.timedelta(days=7), _today),
+                key=f"_smr_hist_dr_{site_id}",
+            )
+            if isinstance(dr, tuple) and len(dr) == 2:
+                d_from, d_to = dr
+            else:
+                d_from = d_to = dr
+        # Pre-fetch a wide window for the supervisor + tank options so the
+        # dropdowns reflect actual history, not just the filtered slice.
+        opts_df = list_smr_history(site_id=site_id, days=180)
+        sup_opts = ["— Any —"] + sorted(
+            set(opts_df.get("requested_by", pd.Series(dtype=str)).dropna().tolist())
+        )
+        tank_opts = ["— Any —"] + sorted(
+            set(opts_df.get("Job_Tank_Place", pd.Series(dtype=str)).dropna().tolist())
+        )
+        with fc2:
+            sup = st.selectbox(
+                "Supervisor", sup_opts,
+                key=f"_smr_hist_sup_{site_id}",
+            )
+        with fc3:
+            tk = st.selectbox(
+                "Tank / Job", tank_opts,
+                key=f"_smr_hist_tank_{site_id}",
+            )
+        with fc4:
+            include_pending = st.toggle(
+                "Include pending",
+                value=False,
+                key=f"_smr_hist_pend_{site_id}",
+                help="Off (default): show only decided requests.",
+            )
+
+        status_in = (
+            None if include_pending
+            else ("approved", "rejected", "cancelled")
+        )
+        df = list_smr_history(
+            site_id=site_id,
+            status_in=status_in,
+            date_from=str(d_from) if d_from else None,
+            date_to=str(d_to) if d_to else None,
+            supervisor=(sup if sup != "— Any —" else None),
+            tank=(tk if tk != "— Any —" else None),
+        )
+        if df.empty:
+            st.info("No history matches these filters.")
+            return
+
+        # Compact summary row.
+        st.caption(
+            f"Showing {len(df)} request(s). "
+            f"Approved: {(df['status']=='approved').sum()} · "
+            f"Rejected: {(df['status']=='rejected').sum()} · "
+            f"Cancelled: {(df['status']=='cancelled').sum()} · "
+            f"Pending: {(df['status']=='pending_sk').sum()}"
+        )
+
+        for _, row in df.iterrows():
+            icon, colour = _SMR_HISTORY_STATUS_LABELS.get(
+                row["status"], ("•", TEXT_MUTED),
+            )
+            head = (
+                f'<b style="font-family:monospace;color:{BRAND_GOLD};">'
+                f'{html.escape(str(row["request_no"]))}</b> '
+                f'<span style="color:{colour};font-weight:700;">'
+                f'{icon} {row["status"]}</span> · '
+                f'<span style="color:{TEXT_MUTED};">'
+                f'{html.escape(str(row["requested_at"]))} · '
+                f'by {html.escape(str(row["requested_by"] or "—"))} · '
+                f'{int(row["line_count"] or 0)} line(s) · '
+                f'Worker {html.escape(str(row["Worker_Name"] or "—"))} · '
+                f'Job {html.escape(str(row["Job_Tank_Place"] or "—"))}'
+                f'</span>'
+            )
+            with st.expander(" ", expanded=False):
+                st.markdown(head, unsafe_allow_html=True)
+                if row.get("sk_reject_reason"):
+                    st.caption(
+                        f"❌ Reject reason: {row['sk_reject_reason']}"
+                    )
+                if row.get("sk_decided_by"):
+                    st.caption(
+                        f"Decided by {row['sk_decided_by']} "
+                        f"at {row.get('sk_decided_at') or '—'}"
+                    )
+                # Per-line drill-down with line_status chips.
+                try:
+                    _h, lines = get_supervisor_request(int(row["id"]))
+                except Exception:
+                    lines = pd.DataFrame()
+                if not lines.empty:
+                    show_cols = [c for c in [
+                        "SAP_Code", "Material_Code", "Equipment_Description",
+                        "UOM", "Requested_Qty", "SK_Adjusted_Qty",
+                        "Stock_At_Request", "line_status", "Notes",
+                    ] if c in lines.columns]
+                    st.dataframe(
+                        lines[show_cols],
+                        use_container_width=True, hide_index=True,
+                    )
 
 
 # ===========================================================================

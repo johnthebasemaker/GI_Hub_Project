@@ -1400,6 +1400,39 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         if "Source_Ref" not in _src_cols:
             c.execute(f"ALTER TABLE {_tbl} ADD COLUMN Source_Ref TEXT")
 
+    # ── Round 12 (SMR-via-SK-Grid + Auto-Attribution) self-heals ─────────────
+    # 1. `Requested_By` on pending_issues + consumption — supervisor's username
+    #    for SMR-sourced rows, NULL for SK-direct rows. Carried by commit_eod.
+    # 2. `line_status` on supervisor_material_request_items — tracks per-line
+    #    outcome after SK approval ('active' → 'withdrawn_at_staging' /
+    #    'committed'). Defaults to 'active'.
+    # 3. The legacy `"Approved By"` (space-named) column on `consumption` is
+    #    REUSED for HOD's username at commit_eod — no migration, the column
+    #    has been NULL on every existing row.
+    for _tbl in ("pending_issues", "consumption"):
+        c.execute(f"PRAGMA table_info({_tbl})")
+        _r12_cols = {row[1] for row in c.fetchall()}
+        if "Requested_By" not in _r12_cols:
+            c.execute(f"ALTER TABLE {_tbl} ADD COLUMN Requested_By TEXT")
+    c.execute("PRAGMA table_info(supervisor_material_request_items)")
+    _smr_item_cols = {row[1] for row in c.fetchall()}
+    if "line_status" not in _smr_item_cols:
+        c.execute(
+            "ALTER TABLE supervisor_material_request_items "
+            "ADD COLUMN line_status TEXT DEFAULT 'active'"
+        )
+        # Backfill existing rows so the column is never NULL.
+        c.execute(
+            "UPDATE supervisor_material_request_items "
+            "SET line_status = 'active' WHERE line_status IS NULL"
+        )
+    # Ensure consumption has the legacy "Approved By" column (some legacy DBs
+    # may lack it). Use the same space-named column the table already carries.
+    c.execute("PRAGMA table_info(consumption)")
+    _cons_cols = {row[1] for row in c.fetchall()}
+    if "Approved By" not in _cons_cols:
+        c.execute('ALTER TABLE consumption ADD COLUMN "Approved By" TEXT')
+
     # ── Phase 7C: HOD Cross-Site View notification debounce ──────────────────
     # UNIQUE(viewer, target_site, view_date) is the entire debounce — INSERT
     # OR IGNORE returns rowcount=0 on duplicate same-day attempts. No timers,
@@ -2455,12 +2488,20 @@ def load_live_inventory(
     return live_df
 
 
-def commit_eod(conn: sqlite3.Connection = None) -> int:
+def commit_eod(
+    conn: sqlite3.Connection = None,
+    *,
+    hod_username: str | None = None,
+) -> int:
     """
     Atomically commits all rows in pending_issues to the consumption table,
     then clears the staging queue.
 
     - Auto-syncs any extra columns from pending_issues into consumption first.
+    - Populates legacy `"Approved By"` (space-named column) with `hod_username`
+      for every committed row when provided.
+    - Flips `supervisor_material_request_items.line_status='committed'` for
+      every SMR-sourced row (matched via Source_Ref).
     - Returns the number of rows committed (0 if queue was empty).
     """
     _owns_conn = conn is None
@@ -2487,10 +2528,24 @@ def commit_eod(conn: sqlite3.Connection = None) -> int:
             except sqlite3.OperationalError:
                 pass  # Column already exists in a concurrent call — safe to ignore
 
-    col_names    = ", ".join(cols_to_commit)
-    placeholders = ", ".join(["?"] * len(cols_to_commit))
+    # Refresh consumption columns AFTER potential ALTERs so the "Approved By"
+    # presence check is accurate.
+    c.execute("PRAGMA table_info(consumption)")
+    cons_cols_final = {r[1] for r in c.fetchall()}
+    write_approved_by = (
+        hod_username is not None and "Approved By" in cons_cols_final
+    )
+
+    # Build a SQL-safe column list — every name quoted so spaces and reserved
+    # words (e.g. "Approved By") survive.
+    quoted_cols = [f'"{col}"' for col in cols_to_commit]
+    if write_approved_by:
+        quoted_cols.append('"Approved By"')
+    placeholders = ", ".join(["?"] * len(quoted_cols))
+    col_names    = ", ".join(quoted_cols)
 
     rows_committed = 0
+    smr_line_ids: list[int] = []
     for _, row in pending_df.iterrows():
         clean_values = []
         for col in cols_to_commit:
@@ -2499,6 +2554,8 @@ def commit_eod(conn: sqlite3.Connection = None) -> int:
             if isinstance(val, (list, tuple, set)):
                 val = ", ".join(map(str, val))
             clean_values.append(val)
+        if write_approved_by:
+            clean_values.append(hod_username)
 
         c.execute(
             f"INSERT INTO consumption ({col_names}) VALUES ({placeholders})",
@@ -2506,7 +2563,26 @@ def commit_eod(conn: sqlite3.Connection = None) -> int:
         )
         rows_committed += 1
 
+        # If this was an SMR-sourced row, remember the line_id to flip after
+        # the INSERT loop. Source_Ref shape: "SMR:{request_no}:{line_id}".
+        src_ref = row.get("Source_Ref") if "Source_Ref" in pending_df.columns else None
+        if isinstance(src_ref, str) and src_ref.startswith("SMR:"):
+            try:
+                smr_line_ids.append(int(src_ref.split(":")[-1]))
+            except (ValueError, IndexError):
+                pass
+
     c.execute("DELETE FROM pending_issues WHERE COALESCE(status,'pending_hod') = 'pending_hod'")
+
+    # Flip SMR line_status='committed' for every SMR-sourced row in this commit.
+    if smr_line_ids:
+        phs = ", ".join(["?"] * len(smr_line_ids))
+        c.execute(
+            f"UPDATE supervisor_material_request_items "
+            f"SET line_status='committed' WHERE id IN ({phs})",
+            smr_line_ids,
+        )
+
     conn.commit()
 
     if _owns_conn:
@@ -2656,6 +2732,10 @@ def get_pending_issues_for_site(
     """
     Returns pending_issues rows for a specific site only.
     Used by HOD and workers — never exposes other sites' staging queues.
+
+    Round 12: surfaces `Requested_By` (already on the row) so the HOD EOD
+    grid can render the triple-layer SMR visibility (banner + column + badge)
+    without a second roundtrip.
     """
     _owns = conn is None
     if _owns:
@@ -9775,8 +9855,14 @@ def approve_supervisor_request(
     sk_username: str,
     conn: sqlite3.Connection = None,
 ) -> tuple[bool, str]:
-    """Mirror approved lines into pending_issues (status='pending_hod') and
-    flip the SMR header to 'approved'. Idempotent — second call refused.
+    """Mirror approved lines into pending_issues (status='draft') so they
+    land in the SK's Consumption staging grid for batch-number / final-qty
+    edits. The SK's 'Submit Batch to HOD' flips them to pending_hod where
+    commit_eod + the negative-stock validator take over (Round 12 change —
+    previously this helper wrote pending_hod directly).
+
+    Each row carries Requested_By=<supervisor> and Issued_By=<sk> so the
+    auto-attribution pipeline propagates cleanly through commit_eod.
 
     SK_Adjusted_Qty=0 → line skipped (auto-delete semantics, per spec).
     Returns (True, msg) or (False, err)."""
@@ -9820,17 +9906,19 @@ def approve_supervisor_request(
                 + (f" · Reason: {ppe_reason}" if ppe_flag == "N" and ppe_reason else "")
             )
             payload = {
-                "Date":       today_iso,
-                "SAP_Code":   it["SAP_Code"],
-                "Quantity":   qty,
-                "Work_Type":  "SUPERVISOR_REQUEST",
-                "Remarks":    remarks,
-                "Issued_By":  sk_username,
-                "Issued_To":  worker_name,
-                "Tank_No":    job_tank,
-                "Site_ID":    site_id,
-                "status":     "pending_hod",
-                "Source_Ref": f"SMR:{request_no}:{int(it['id'])}",
+                "Date":         today_iso,
+                "SAP_Code":     it["SAP_Code"],
+                "Quantity":     qty,
+                "Work_Type":    "SUPERVISOR_REQUEST",
+                "Remarks":      remarks,
+                "Issued_By":    sk_username,
+                "Issued_To":    worker_name,
+                "Tank_No":      job_tank,
+                "Site_ID":      site_id,
+                # Round 12: land in SK draft grid, not HOD's EOD queue.
+                "status":       "draft",
+                "Source_Ref":   f"SMR:{request_no}:{int(it['id'])}",
+                "Requested_By": header.get("requested_by"),
             }
             payload = {k: v for k, v in payload.items() if k in existing_cols}
             cols = list(payload.keys())
@@ -9864,7 +9952,8 @@ def approve_supervisor_request(
         queue_app_notification(
             event_key="smr_approved",
             title=f"Material request approved — {request_no}",
-            body=f"SK {sk_username} posted {len(posted_ids)} line(s) to EOD review.",
+            body=(f"SK {sk_username} accepted {len(posted_ids)} line(s) into "
+                  f"the Consumption staging grid for final entry."),
             severity="success",
             recipient_role="hod",
             recipient_site=site_id,
@@ -9888,8 +9977,8 @@ def approve_supervisor_request(
                 (f"✅ *MATERIAL REQUEST APPROVED*\n"
                  f"Ref: *{request_no}*\n"
                  f"Site: {site_id} · Worker: {worker_name}\n"
-                 f"Lines posted to EOD queue: {len(posted_ids)}\n"
-                 f"Open HOD Portal → 📤 EOD Commit when ready."),
+                 f"Lines now in SK staging grid: {len(posted_ids)}\n"
+                 f"HOD will see them once SK submits the batch."),
                 conn=conn,
             )
         sup_phone = get_phone_by_username(header["requested_by"])
@@ -9901,7 +9990,11 @@ def approve_supervisor_request(
                 conn=conn,
             )
 
-        return True, f"Approved — {len(posted_ids)} line(s) posted to EOD queue."
+        return True, (
+            f"Approved — {len(posted_ids)} line(s) injected into the "
+            f"Consumption staging grid. Open the 📋 Consumption Log tab "
+            f"to add batch numbers and submit to HOD."
+        )
     finally:
         if _owns:
             conn.close()
@@ -9959,6 +10052,127 @@ def reject_supervisor_request(
                 conn=conn,
             )
         return True, "Request rejected."
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ─── Round 12 helpers ────────────────────────────────────────────────────────
+
+def withdraw_smr_line_at_staging(
+    pending_issue_id: int,
+    sk_username: str,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Mark a supervisor_material_request_items row as 'withdrawn_at_staging'
+    when the SK deletes/skips the corresponding pending_issues row from the
+    Consumption staging grid. Resolved via the pending row's Source_Ref.
+
+    Idempotent — second call on the same line is a no-op. SK-direct rows
+    (no SMR Source_Ref) return (True, '') without touching anything.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT Source_Ref FROM pending_issues WHERE id = ?",
+            (int(pending_issue_id),),
+        ).fetchone()
+        if not row or not row[0]:
+            return True, ""  # Not SMR-sourced — no SMR record to update.
+        src = str(row[0])
+        if not src.startswith("SMR:"):
+            return True, ""
+        try:
+            line_id = int(src.split(":")[-1])
+        except (ValueError, IndexError):
+            return False, f"Malformed Source_Ref: {src!r}"
+        conn.execute(
+            "UPDATE supervisor_material_request_items "
+            "SET line_status = 'withdrawn_at_staging' "
+            "WHERE id = ? AND line_status = 'active'",
+            (line_id,),
+        )
+        conn.commit()
+        log_audit_action(
+            sk_username, "SMR_LINE_WITHDRAWN",
+            "supervisor_material_request_items",
+            f"line_id={line_id} src={src}",
+        )
+        return True, "Line withdrawn at staging."
+    finally:
+        if _owns:
+            conn.close()
+
+
+def list_smr_history(
+    site_id: str | None = None,
+    *,
+    status_in: list[str] | tuple[str, ...] | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    supervisor: str | None = None,
+    tank: str | None = None,
+    days: int | None = None,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """SMR history table for the SK 'Supervisor Requests' tab.
+
+    Defaults: decided-only (approved + rejected + cancelled) over last
+    `days` days when status_in/dates not specified. Filters compose AND-wise.
+    Timestamps auto-localized to GMT+3 via _localize.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        clauses: list[str] = []
+        params: list = []
+        if site_id:
+            clauses.append("r.Site_ID = ?"); params.append(site_id)
+        if status_in:
+            phs = ", ".join(["?"] * len(status_in))
+            clauses.append(f"r.status IN ({phs})")
+            params.extend(list(status_in))
+        if date_from:
+            clauses.append("DATE(r.requested_at) >= DATE(?)")
+            params.append(date_from)
+        if date_to:
+            clauses.append("DATE(r.requested_at) <= DATE(?)")
+            params.append(date_to)
+        if supervisor:
+            clauses.append("r.requested_by = ?"); params.append(supervisor)
+        if tank:
+            clauses.append("r.Job_Tank_Place = ?"); params.append(tank)
+        if days and not (date_from or date_to):
+            clauses.append("r.requested_at >= datetime('now', ?)")
+            params.append(f"-{int(days)} days")
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
+        q = f"""
+            SELECT
+              r.id                  AS id,
+              r.request_no          AS request_no,
+              r.Site_ID             AS Site_ID,
+              r.requested_by        AS requested_by,
+              r.Worker_Name         AS Worker_Name,
+              r.Worker_ID           AS Worker_ID,
+              r.Job_Tank_Place      AS Job_Tank_Place,
+              r.requested_at        AS requested_at,
+              r.status              AS status,
+              r.sk_decided_by       AS sk_decided_by,
+              r.sk_decided_at       AS sk_decided_at,
+              r.sk_reject_reason    AS sk_reject_reason,
+              (SELECT COUNT(*) FROM supervisor_material_request_items i
+                 WHERE i.request_id = r.id) AS line_count
+            FROM supervisor_material_requests r
+            {where}
+            ORDER BY r.requested_at DESC
+            LIMIT 500
+        """
+        df = pd.read_sql(q, conn, params=tuple(params))
+        return _localize(df)
     finally:
         if _owns:
             conn.close()

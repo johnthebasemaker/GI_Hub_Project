@@ -85,8 +85,32 @@ DEFAULT_SITE     = "HQ"   # Site assigned to all legacy rows on schema upgrade
 # COLUMN CONSTANTS
 # ---------------------------------------------------------------------------
 SYSTEM_COLS         = {"id", "Timestamp", "created_at", "Site_ID", "status"}
-EXTENDED_ISSUE_COLS = ["Date", "Issued_By", "Issued_To", "Tank_No", "Serial_No", "PR_Number"]
+# EXTENDED_ISSUE_COLS — Round 12: dropped 'Issued_By' (now auto-filled
+# server-side from the logged-in user) and 'Technician' (retired field).
+EXTENDED_ISSUE_COLS = ["Date", "Issued_To", "Tank_No", "Serial_No", "PR_Number"]
 OPTIONAL_ISSUE_COLS: set[str] = set()  # All entry fields are mandatory (2026-06).
+
+# HIDDEN_FORM_COLS — single source of truth for "do not render this column
+# as a manual form field, even if it exists on pending_issues / receipts /
+# consumption schemas". Round 12:
+#   - Technician           (legacy column, kept in DB, no longer collected)
+#   - Issued_By            (auto-filled with SK username server-side)
+#   - "Approved By"        (legacy space-named column, HOD username at commit)
+#   - Approved_By          (defensive — alt spelling)
+#   - Requested_By         (auto-filled with supervisor username for SMR rows)
+#   - Source_Ref           (system bookkeeping, e.g. SMR:<request_no>:<id>)
+#   - FEFO_Override        (set via dedicated FEFO override expander only)
+#   - Lot_Number           (set via FEFO auto-pick / override flow)
+HIDDEN_FORM_COLS = {
+    "Technician",
+    "Issued_By",
+    "Approved By",
+    "Approved_By",
+    "Requested_By",
+    "Source_Ref",
+    "FEFO_Override",
+    "Lot_Number",
+}
 
 # Material categories — drive category-filtered reports and the MTC workflow.
 # Items in MTC_REQUIRED_CATEGORY are forced to supply a Material Test

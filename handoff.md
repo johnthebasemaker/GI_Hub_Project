@@ -1,6 +1,8 @@
 # GI Hub ERP — Handoff
 
-**Last update:** 2026-06 round 11 — **Phase 8 SHIPPED · WORKSTREAM B (Smart Scan AI) COMPLETE.** Smart Scan Tier-3 fallback via a separately-deployed FastAPI sidecar wrapping NVIDIA LocateAnything-3B (MPS, fp16 on Apple Silicon). Phases 8A–8E:
+**Last update:** 2026-06 round 12 — **WORKSTREAM C PAUSED · SMR-via-SK-Grid + Auto-Attribution SHIPPED.** Supervisor Material Request approvals now route through the SK Consumption staging grid (was: straight to HOD EOD), with `Requested_By` / `Issued_By` / `"Approved By"` auto-filled across all three ledger boundaries. Manual "Technician" + Issued_By + Approved_By textboxes retired via `config.HIDDEN_FORM_COLS`. Triple-layer SMR visibility (banner + column + 🛡️ badge) on the HOD EOD grid. Per-line `supervisor_material_request_items.line_status` tracks `active / withdrawn_at_staging / committed`. SK Submit-Batch now runs the negative-stock validator (belt + suspenders alongside HOD-side). See §2N. **Tests: 450/450 in `bug_check.py` · 17/17 in `test_ui_crawler.py`.**
+
+**Prior round:** 11 — **Phase 8 SHIPPED · WORKSTREAM B (Smart Scan AI) COMPLETE.** Smart Scan Tier-3 fallback via a separately-deployed FastAPI sidecar wrapping NVIDIA LocateAnything-3B (MPS, fp16 on Apple Silicon). Phases 8A–8E:
 - **8A**: `ai/locate_anything/` package — stdlib-HTTP client (gate check, circuit breaker, 30s timeout), `model_loader.py` (MPS + lazy single-load + ModelNotReadyError), `server.py` (FastAPI POST /detect, GET /health), sidecar-only `requirements.txt`. Admin gate `app_settings.locate_anything_enabled` default OFF. `scripts/download_model.sh` (manual).
 - **8B**: `scripts/bundle_locate_anything_weights.sh` + `scripts/install_locate_anything_weights.sh` (overwrite-always, SHA-256 verified) for air-gapped sites. `host_setup/launchd/com.gi.locate-anything.plist.tmpl` + `host_setup/scripts/run_locate_anything.sh`. `host_setup/scripts/install.sh --with-locate-anything` opt-in flag.
 - **8C**: `ai/cv/smart_scan.py:should_invoke_tier3 / tier3_to_candidates`. SK Smart Scan gains amber-bordered "🤖 AI fallback" panel — "Use this tool" is the only accept path. Fires ONLY when YOLO is in "manual" mode (top conf < 0.30 OR empty). Audit events: TIER3_SHOWN / ACCEPTED / REJECTED.
@@ -9,7 +11,7 @@
 
 **Workstream B — Smart Scan AI module: COMPLETE.** All five phases shipped; the gate stays OFF in production until a pilot site explicitly opts in.
 **Prior rounds:** 7F Role-Based PDFs · 7E Network Resilience · 7D PO Masking · 7C Cross-Site Notifications · 7B Supervisor Material Request · 7A Employee Site Binding · 6A–F Workstream A.
-**Test status:** **440/440 in `bug_check.py` · 17/17 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`). +10 across Phase 8D+8E. **Zero network access · zero torch import in test path · zero weight files required on disk.**
+**Test status:** **450/450 in `bug_check.py` · 17/17 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`). +10 across Round 12 (3 Phase 7B contracts updated for the new draft-grid routing, 10 new Round 12 checks for the auto-attribution + line_status pipeline). **Zero network access · zero torch import in test path · zero weight files required on disk.**
 **Production hosting:** Self-host on `giinventory.com` via Cloudflare Tunnel + Access (email allow-list `@generalindustries.net`). Turnkey installer at `host_setup/scripts/install.sh`. See §4 "Run / Develop" and the "Production hosting" chapter.
 **Purpose:** Get the next session productive in <5 minutes — architecture, what changed, what's next.
 **Companion docs:** `USER_MANUAL.md` (every page/tab/button), `SOP.md` (Logistics + Warehouse operating procedure with cadences, decision trees, escalation matrix), `docs/cv_training_guide.md` (Phase 6C — capture → label → train → promote walkthrough).
@@ -1014,6 +1016,80 @@ Net test growth across A.5: **268 → 398** (`+95 helper checks + 35 schema/colu
 # (idle, ~50 MB RAM) or stop the service:
 launchctl unload ~/Library/LaunchAgents/com.gi.locate-anything.plist
 ```
+
+---
+
+## 2N. Tuning Round 12 (2026-06) — Workstream C paused: SMR-via-SK-Grid + Auto-Attribution
+
+Workstream C (Docker / Deployment) paused for a high-value workflow tweak the operations team called for after the Smart Scan AI pilot opened. The supervisor-request approval path was bypassing the SK's own staging grid — Supervisor → SK → straight to HOD EOD queue — so SKs had no place to enrich batch numbers / lot info / final qty before the row hit the permanent ledger. Round 12 reroutes the flow through the SK Consumption staging grid and adds auto-attribution of all three roles (Supervisor / SK / HOD) directly into the ledger, retiring four manual textboxes.
+
+### The shift, in one paragraph
+
+**Before:** SMR Approve → `pending_issues.status='pending_hod'` → HOD EOD Commit → consumption (Issued_By = SK only, no record of supervisor or HOD on the row).
+
+**After:** SMR Approve → `pending_issues.status='draft'` with `Requested_By=<supervisor>` + `Issued_By=<sk>` → SK enriches batch / qty in the Consumption Log grid → SK Submit Batch (negative-stock validator runs here too) → `status='pending_hod'` → HOD EOD Commit (validator runs again) → `commit_eod(hod_username=…)` → consumption row carries `Issued_By` + `Requested_By` + `"Approved By"` simultaneously, and the matching `supervisor_material_request_items.line_status` flips `active` → `committed`.
+
+### Schema self-heal (`init_db`)
+
+```sql
+ALTER TABLE pending_issues  ADD COLUMN Requested_By TEXT;
+ALTER TABLE consumption     ADD COLUMN Requested_By TEXT;
+ALTER TABLE supervisor_material_request_items
+            ADD COLUMN line_status TEXT DEFAULT 'active';
+-- Defensive: backfill consumption."Approved By" if a legacy DB lacks it.
+ALTER TABLE consumption     ADD COLUMN "Approved By" TEXT;  -- if missing
+```
+
+The legacy `Technician` column on `pending_issues` + `consumption` is **NOT dropped** — existing rows preserve historical data. It is simply removed from the SK form via `HIDDEN_FORM_COLS` and never populated again.
+
+The legacy `"Approved By"` column (space-named, in place since launch but always NULL) is **reused** — `commit_eod` now writes the HOD username into it. No rename, no migration, zero data churn.
+
+### Database helper changes
+
+| Function | Change |
+|---|---|
+| `commit_eod(conn, *, hod_username=None)` | New kwarg. Populates legacy `"Approved By"` column on every committed row. Flips matching SMR items' `line_status='committed'` via `Source_Ref → line_id` decode. |
+| `approve_supervisor_request` | Mirror writes `status='draft'` (was `'pending_hod'`) + `Requested_By=<supervisor>`. Idempotency contract preserved. |
+| `withdraw_smr_line_at_staging(pending_issue_id, sk_username)` **NEW** | When SK deletes an SMR-draft row from the Consumption grid, decodes its `Source_Ref` and flips the SMR line to `line_status='withdrawn_at_staging'`. Audited as `SMR_LINE_WITHDRAWN`. Idempotent, silent on non-SMR rows. |
+| `list_smr_history(site_id, *, status_in, date_from, date_to, supervisor, tank, days=None)` **NEW** | Powers the SK Supervisor Requests history expander. Filters compose AND-wise. Decided-only default (`approved` + `rejected` + `cancelled`) over last 7 days. |
+| `get_pending_issues_for_site` | Surfaces `Requested_By` for the HOD EOD grid's triple-layer visibility. |
+
+### config.py
+
+`HIDDEN_FORM_COLS` (new): single source of truth for columns the SK forms must NOT render — `Technician`, `Issued_By`, `Approved By`, `Approved_By`, `Requested_By`, `Source_Ref`, `FEFO_Override`, `Lot_Number`. `EXTENDED_ISSUE_COLS` shrinks to drop `Issued_By` (auto-filled now).
+
+### UI — `pages_internal/daily_issue_log.py`
+
+- **Form column generator** for both Consumption Log + Receipt Staging now filters against `HIDDEN_FORM_COLS`. Removes the Technician + Issued_By textboxes in one move.
+- **Add to Grid** explicitly sets `Issued_By = user.username` server-side at INSERT.
+- **Staging queue banner** counts and surfaces "🛡️ N supervisor-requested line(s)" so the SK knows what to enrich.
+- **Save Draft Edits** detects SMR rows removed from the editor and calls `withdraw_smr_line_at_staging` for each before the wipe-and-reinsert.
+- **Submit Grid to HOD** runs `validate_eod_no_negative_stock` BEFORE flipping `status='draft' → 'pending_hod'` (belt + suspenders alongside HOD-side validation).
+- **🛒 Supervisor Requests tab** — new `📜 Supervisor Request History` expander at the bottom with Date / Supervisor / Tank filters + Include-pending toggle. Per-row drill-down shows lines + `line_status` chips.
+
+### UI — `pages_internal/hod_portal.py` (EOD Commit tab)
+
+Triple-layer SMR visibility:
+
+1. **Banner above the grid** — counts and lists distinct supervisors of origin.
+2. **New "Requested By" column** in the EOD HTML table (blank for SK-direct rows).
+3. **🛡️ glyph badge** prepended to the Material cell for SMR-sourced rows.
+
+The Confirm Commit button passes `user["username"]` into `commit_eod(hod_username=…)` so `"Approved By"` lands on every row.
+
+### Tests
+
+`bug_check.py` — Phase 7B's three SMR contract tests updated to assert the new `status='draft'` + `Requested_By` contract. **+10 Round 12 checks added** covering: Requested_By column on both ledger tables, line_status column + default, withdraw_smr_line_at_staging, commit_eod writes `"Approved By"`, commit_eod flips `line_status='committed'`, commit_eod carries Requested_By to consumption, `HIDDEN_FORM_COLS` content, `list_smr_history` filters + decided-only default, full three-role attribution end-to-end. **Total now 450/450.** UI crawler unchanged at **17/17** (no new pages).
+
+### Contracts (don't break in Round 13+)
+
+- **Phase 7B contract relaxed:** "approve mirrors to `pending_issues` with `status='pending_hod'`" → now `status='draft'`. The SK Submit Batch step is the new gate to `pending_hod`. Negative-stock validator runs at BOTH gates.
+- `approve_supervisor_request` remains idempotent — second-call refusal is the click-spam debit guard.
+- `commit_eod` is back-compat: callers passing no `hod_username` skip the `"Approved By"` write (the column stays NULL for those rows). All app-side callers pass it.
+- `Source_Ref` shape `SMR:{request_no}:{line_id}` unchanged — the line_id decoder in `withdraw_smr_line_at_staging` + `commit_eod` depends on it. Don't trim, don't reformat.
+- `HIDDEN_FORM_COLS` is the contract for "auto-filled / retired" columns. Adding a new auto-attributed column → put its name here so it stops appearing in forms.
+- `Technician` column lives on in the schema. Don't drop it — legacy rows carry data; SQLite ALTER DROP is risky on hosted instances.
+- `line_status` in `('active', 'withdrawn_at_staging', 'committed')`. Adding a 4th value → update `list_smr_history` callers + the test fixtures.
 
 ---
 
