@@ -1941,9 +1941,12 @@ def _render_consumption_ocr(user: dict, site_id: str, inv_list: pd.DataFrame,
 
     parsed = None
     if lane.startswith("📷"):
+        # Round 14 — accept HEIC/HEIF too. iPhone shares often arrive as
+        # HEIC even when renamed to .JPG; without these extensions Streamlit
+        # rejects them at the browser before our prep step can handle it.
         img = st.file_uploader(
             "Upload a photo of the handwritten list",
-            type=["png", "jpg", "jpeg", "webp"],
+            type=["png", "jpg", "jpeg", "webp", "heic", "heif"],
             key="cons_ocr_img",
         )
         if img is not None:
@@ -2146,9 +2149,10 @@ def _render_receipt_ocr(user: dict, site_id: str, inv_list: pd.DataFrame) -> Non
 
     parsed = None
     if lane.startswith("📷"):
+        # Round 14 — accept HEIC/HEIF; see consumption OCR uploader above.
         img = st.file_uploader(
             "Upload a photo of the delivery note",
-            type=["png", "jpg", "jpeg", "webp"],
+            type=["png", "jpg", "jpeg", "webp", "heic", "heif"],
             key="rcpt_ocr_img",
         )
         if img is not None:

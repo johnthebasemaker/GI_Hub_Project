@@ -4215,6 +4215,104 @@ def check_r13_smr_reject_flips_line_status() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Round 14 — Vision OCR image-prep pipeline hardening
+# ═══════════════════════════════════════════════════════════════════════════
+def _r14_synth_jpeg(width: int, height: int, *, mode: str = "RGB",
+                    quality: int = 95, exif_orientation: int | None = None) -> bytes:
+    """Build a synthetic JPEG/PNG in memory. Used by image-prep checks so
+    they never depend on a real photo being present on disk."""
+    from io import BytesIO
+    from PIL import Image
+    img = Image.new(mode, (width, height), color=(180, 180, 180) if mode == "RGB" else 200)
+    buf = BytesIO()
+    if exif_orientation is not None:
+        # Build a minimal EXIF block with just the Orientation tag (0x0112).
+        exif = img.getexif()
+        exif[0x0112] = int(exif_orientation)
+        img.save(buf, format="JPEG", quality=quality, exif=exif.tobytes())
+    else:
+        img.save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
+
+
+def check_r14_prep_caps_long_edge() -> None:
+    """prep_image_for_vision shrinks a 4032×3024 photo so its long edge
+    is ≤ 1600 px (Round 14 default)."""
+    from io import BytesIO
+    from PIL import Image
+    from ai.image_utils import prep_image_for_vision
+    raw = _r14_synth_jpeg(4032, 3024)
+    out = prep_image_for_vision(raw)
+    w, h = Image.open(BytesIO(out)).size
+    assert max(w, h) <= 1600, f"long edge not capped: {w}x{h}"
+    # Aspect ratio preserved within 1 px (rounding).
+    assert abs((w / h) - (4032 / 3024)) < 0.01, (
+        f"aspect mismatch: {w}/{h}"
+    )
+
+
+def check_r14_prep_converts_to_rgb() -> None:
+    """A grayscale-mode source comes back as RGB JPEG (Ollama's preprocessor
+    chokes on palette/alpha-mode encodings)."""
+    from io import BytesIO
+    from PIL import Image
+    from ai.image_utils import prep_image_for_vision
+    raw = _r14_synth_jpeg(800, 600, mode="L")
+    out = prep_image_for_vision(raw)
+    im = Image.open(BytesIO(out))
+    assert im.mode == "RGB", f"mode not RGB: {im.mode}"
+    assert im.format == "JPEG", f"format not JPEG: {im.format}"
+
+
+def check_r14_prep_shrinks_byte_size() -> None:
+    """A 4032×3024 quality-95 source must come back substantially smaller
+    after the 1600 px cap + quality-85 re-encode."""
+    from ai.image_utils import prep_image_for_vision
+    raw = _r14_synth_jpeg(4032, 3024, quality=95)
+    out = prep_image_for_vision(raw)
+    assert len(out) < len(raw), (
+        f"prep didn't shrink: {len(raw)} → {len(out)}"
+    )
+    # Sanity floor: at least 3× smaller for a 12-MP synthetic frame.
+    # (Solid-color synthetic JPEGs compress hard already, so any improvement
+    # at all on top is meaningful — bump the assertion if synthetic noise
+    # is added later.)
+    assert len(out) * 2 < len(raw), (
+        f"prep barely shrunk: {len(raw)} → {len(out)}"
+    )
+
+
+def check_r14_prep_honours_exif_orientation() -> None:
+    """EXIF orientation 6 = 'rotate 90° CW for display' — a 800×600 frame
+    flagged as orientation 6 should come back as 600×800 (width/height
+    swapped) once ImageOps.exif_transpose normalises it."""
+    from io import BytesIO
+    from PIL import Image
+    from ai.image_utils import prep_image_for_vision
+    raw = _r14_synth_jpeg(800, 600, exif_orientation=6)
+    out = prep_image_for_vision(raw)
+    w, h = Image.open(BytesIO(out)).size
+    # After transpose, the displayed dimensions swap.
+    assert (w, h) == (600, 800), (
+        f"EXIF transpose not applied: {w}x{h} (expected 600x800)"
+    )
+
+
+def check_r14_prep_raises_on_unreadable_bytes() -> None:
+    """Random / corrupt bytes raise ImagePrepError (not a raw PIL
+    exception, which would leak into the Streamlit error toast)."""
+    from ai.image_utils import prep_image_for_vision, ImagePrepError
+    bad = b"this is not an image - random text bytes"
+    try:
+        prep_image_for_vision(bad)
+    except ImagePrepError:
+        return
+    except Exception as e:  # pragma: no cover — wrong exception type
+        raise AssertionError(f"expected ImagePrepError, got {type(e).__name__}: {e}")
+    raise AssertionError("expected ImagePrepError on corrupt bytes; none raised")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Phase 7C — HOD Cross-Site View notification + indicator checks
 # ═══════════════════════════════════════════════════════════════════════════
 def _7c_tag(prefix: str) -> str:
@@ -6213,6 +6311,23 @@ def main() -> int:
     run_check("Round 13", "SMR reject at HOD flips line_status='rejected_at_hod'",
               check_r13_smr_reject_flips_line_status,
               "4th line_status value, distinct from withdrawn_at_staging.")
+
+    # ── Round 14 — Vision OCR image-prep pipeline ─────────────────────────
+    run_check("Round 14", "prep_image_for_vision caps long edge ≤ 1600 px",
+              check_r14_prep_caps_long_edge,
+              "Smartphone 12-MP photos must shrink before reaching Ollama.")
+    run_check("Round 14", "prep_image_for_vision converts to RGB JPEG",
+              check_r14_prep_converts_to_rgb,
+              "Non-RGB sources can crash Ollama's vision preprocessor.")
+    run_check("Round 14", "prep_image_for_vision shrinks byte size",
+              check_r14_prep_shrinks_byte_size,
+              "1600 px + quality=85 must materially shrink the upload.")
+    run_check("Round 14", "prep_image_for_vision honours EXIF orientation",
+              check_r14_prep_honours_exif_orientation,
+              "iPhone portraits arrive landscape-with-rotate-flag.")
+    run_check("Round 14", "prep_image_for_vision raises ImagePrepError on bad bytes",
+              check_r14_prep_raises_on_unreadable_bytes,
+              "Typed exception so OCR callers can show a clean message.")
 
     # ── Phase 7C — HOD Cross-Site View notifications + indicator ─────────
     run_check("Phase 7C", "ix_csv_target_date index exists",

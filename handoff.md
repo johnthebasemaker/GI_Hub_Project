@@ -1,6 +1,12 @@
 # GI Hub ERP — Handoff
 
-**Last update:** 2026-06 round 13 — **EOD STATE UNIFICATION + SCHEMA CLEANUP SHIPPED.** `commit_eod` filter widened from `pending_hod` only → `(pending_hod, approved, flagged)` via the new `_EOD_COMMIT_STATUSES` constant, so per-row ✓ approvals no longer strand rows. `↩️ Unapprove` button added to the HOD EOD per-row panel. Rejected rows now route to a new `rejected_issues_archive` table (copy-then-delete) so `pending_issues` stays lean while audit trail is preserved. `line_status` gains a 4th value `'rejected_at_hod'` for SMR-sourced rejections. Bogus `Approved` column (legacy parsing artifact, always NULL) dropped from `consumption`; the proper `"Approved By"` column stays as the single attribution slot. Admin DB Editor PDF export for consumption now uses the canonical `config.CONSUMPTION_EXPORT_COLS` list — no more legacy junk in operations PDFs. See §2O. **Tests: 460/460 in `bug_check.py` · 17/17 in `test_ui_crawler.py`.**
+**Last update:** 2026-06 round 14 — **VISION OCR IMAGE-PIPELINE HARDENING SHIPPED.** New `ai/image_utils.py` interposes EXIF auto-orient + RGB convert + 1600 px long-edge cap + JPEG quality-85 re-encode between every uploaded photo and the Ollama vision call. `pillow-heif>=0.16` added so iPhone HEIC files (often delivered with a `.JPG` extension) decode cleanly. `ollama_vision_generate` default timeout bumped 120 → 240 s + new `keep_alive='30m'` so cold-start no longer trips the request. Both SK OCR uploaders now accept `.heic` / `.heif`. See §2P. **Tests: 465/465 in `bug_check.py` · 17/17 in `test_ui_crawler.py`.**
+
+**Prior round:** 13 — EOD State Unification + Schema Cleanup. **Prior round 12:** SMR-via-SK-Grid + Auto-Attribution. **Round 11 prior:** Phase 8 · Workstream B (Smart Scan AI) COMPLETE.
+
+**Original round 13 last-update marker preserved below for context:**
+
+**Round 13 update:** **EOD STATE UNIFICATION + SCHEMA CLEANUP SHIPPED.** `commit_eod` filter widened from `pending_hod` only → `(pending_hod, approved, flagged)` via the new `_EOD_COMMIT_STATUSES` constant, so per-row ✓ approvals no longer strand rows. `↩️ Unapprove` button added to the HOD EOD per-row panel. Rejected rows now route to a new `rejected_issues_archive` table (copy-then-delete) so `pending_issues` stays lean while audit trail is preserved. `line_status` gains a 4th value `'rejected_at_hod'` for SMR-sourced rejections. Bogus `Approved` column (legacy parsing artifact, always NULL) dropped from `consumption`; the proper `"Approved By"` column stays as the single attribution slot. Admin DB Editor PDF export for consumption now uses the canonical `config.CONSUMPTION_EXPORT_COLS` list — no more legacy junk in operations PDFs. See §2O. **Tests: 460/460 in `bug_check.py` · 17/17 in `test_ui_crawler.py`.**
 
 **Prior round:** 12 — SMR-via-SK-Grid + Auto-Attribution. **Round 11 prior:** Phase 8 · Workstream B (Smart Scan AI) COMPLETE. Smart Scan Tier-3 fallback via a separately-deployed FastAPI sidecar wrapping NVIDIA LocateAnything-3B (MPS, fp16 on Apple Silicon). Phases 8A–8E:
 - **8A**: `ai/locate_anything/` package — stdlib-HTTP client (gate check, circuit breaker, 30s timeout), `model_loader.py` (MPS + lazy single-load + ModelNotReadyError), `server.py` (FastAPI POST /detect, GET /health), sidecar-only `requirements.txt`. Admin gate `app_settings.locate_anything_enabled` default OFF. `scripts/download_model.sh` (manual).
@@ -11,7 +17,7 @@
 
 **Workstream B — Smart Scan AI module: COMPLETE.** All five phases shipped; the gate stays OFF in production until a pilot site explicitly opts in.
 **Prior rounds:** 7F Role-Based PDFs · 7E Network Resilience · 7D PO Masking · 7C Cross-Site Notifications · 7B Supervisor Material Request · 7A Employee Site Binding · 6A–F Workstream A.
-**Test status:** **460/460 in `bug_check.py` · 17/17 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`). +10 across Round 13 (commit_eod widen, hod_reject→archive, hod_unapprove, bogus-Approved drop, canonical export list, SMR rejected_at_hod). **Zero network access · zero torch import in test path · zero weight files required on disk.**
+**Test status:** **465/465 in `bug_check.py` · 17/17 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`). +5 across Round 14 (vision image-prep pipeline: long-edge cap, RGB convert, byte shrink, EXIF transpose, typed error on bad bytes). **Zero network access · zero torch import in test path · zero weight files required on disk.**
 **Production hosting:** Self-host on `giinventory.com` via Cloudflare Tunnel + Access (email allow-list `@generalindustries.net`). Turnkey installer at `host_setup/scripts/install.sh`. See §4 "Run / Develop" and the "Production hosting" chapter.
 **Purpose:** Get the next session productive in <5 minutes — architecture, what changed, what's next.
 **Companion docs:** `USER_MANUAL.md` (every page/tab/button), `SOP.md` (Logistics + Warehouse operating procedure with cadences, decision trees, escalation matrix), `docs/cv_training_guide.md` (Phase 6C — capture → label → train → promote walkthrough).
@@ -1172,6 +1178,78 @@ cp gi_database.db gi_database.preR13_$(date +%Y%m%d).db
 ```
 
 The DROP COLUMN is irreversible. The pre-flight check makes data loss impossible, but the snapshot makes any "wait, what happened" investigation trivial.
+
+---
+
+## 2P. Tuning Round 14 (2026-06) — Vision OCR Image-Pipeline Hardening
+
+Store Keeper OCR was failing in the field on every iPhone smartphone upload. Two failure modes were intertwined:
+
+- `Ollama vision request failed: timed out` — the 120-second urllib timeout couldn't cover **cold start of `qwen2.5vl:7b` (30–90 s) + multi-megabyte JPEG upload + inference + JSON output**.
+- `Ollama vision request failed: HTTP Error 500: Internal Server Error` — Ollama's vision preprocessor blew up on 12-megapixel inputs (a 4032×3024 JPEG ≈ 3–6 MB).
+
+Underneath both, a third silent killer: **iPhone "Share as JPG" shares often deliver the raw HEIC file with a `.JPG` extension**. The browser hands Streamlit a HEIC byte stream; PIL throws `UnidentifiedImageError`; the OCR call path surfaces a generic "unsupported format" with no hint about what went wrong.
+
+Round 14 fixes all three at one boundary.
+
+### New module — `ai/image_utils.py`
+
+`prep_image_for_vision(raw_bytes, *, max_dim=1600, quality=85) -> bytes`
+
+Five operations, in order:
+
+1. **Decode** via PIL with pillow-heif's opener pre-registered (idempotent registration on first call). Magic-byte sniff (`ftyp{heic|heix|heif|mif1|msf1|hevc}`) backs a targeted error message when HEIC bytes arrive at a server without pillow-heif installed.
+2. **EXIF auto-orient** via `ImageOps.exif_transpose` — the iPhone portrait that arrives as `800×600 + orientation=6` comes out `600×800`, displayed the way the user shot it.
+3. **RGB convert** — strips alpha / palette modes; JPEG re-encode is then safe.
+4. **Long-edge cap** at 1600 px via `Image.thumbnail` (no-op if the input is already smaller). `qwen2.5vl`'s internal tile preprocessor caps in this range — larger uploads were wasted bandwidth.
+5. **JPEG re-encode** at `quality=85, optimize=True` — sharp enough for handwritten digits, ~5–10× smaller than the raw camera roll.
+
+Failures map to one typed exception, `ImagePrepError`, so OCR callers (`ai/ocr.py`) never have to catch a PIL internal.
+
+### `ai/client.py` — `ollama_vision_generate`
+
+| Param | Before | After |
+|---|---|---|
+| `timeout_s` | `120` | **`240`** (cold-start headroom) |
+| `keep_alive` | not sent | **`"30m"`** (subsequent uploads skip cold-load) |
+
+`keep_alive` is forwarded into Ollama's `/api/generate` payload alongside the existing `stream=False`, `options`, and `system` fields.
+
+### `ai/ocr.py`
+
+Both `extract_consumption_from_image` and `extract_delivery_note_from_image` now pipe `image_bytes` through `prep_image_for_vision` **before** base64 encoding. `ImagePrepError` is caught and surfaced as `ok=False` with the user-facing message — same contract the existing failure paths already use.
+
+### `pages_internal/daily_issue_log.py`
+
+Both file_uploader widgets (`cons_ocr_img`, `rcpt_ocr_img`) now accept `.heic` and `.heif` extensions alongside the existing `png / jpg / jpeg / webp`. Without these extensions Streamlit's browser-side filter rejects HEIC uploads before the prep step can even run.
+
+### `requirements.txt`
+
+Added `pillow-heif>=0.16`. Wheels ship for macOS (arm64 + x86_64) and manylinux; `libheif` bundled. On air-gapped sites without the wheel the module degrades gracefully — JPEG/PNG uploads keep working; HEIC inputs surface the targeted "share as JPEG instead" error.
+
+### Tests — `bug_check.py`
+
+**+5 Round 14 checks, target 465/465 — achieved.** All synthesised in-memory via PIL so they never touch a real photo on disk:
+
+1. 4032×3024 input comes back with long edge ≤ 1600 px, aspect ratio preserved within 1 px.
+2. Grayscale source returns RGB JPEG.
+3. High-quality 12-MP synthetic shrinks by at least 2× through prep.
+4. EXIF orientation 6 → `width/height` swap (display-correct).
+5. Corrupt bytes raise `ImagePrepError`, not a raw PIL exception.
+
+UI crawler stays at **17/17** (no new pages, just uploader-filter widening).
+
+### Contracts (don't break in Round 15+)
+
+- `prep_image_for_vision` is the **only** boundary that converts user-uploaded bytes to "ready-for-vision" bytes. New OCR callers must route through it; don't base64-encode raw `file_uploader().getvalue()` directly.
+- The `max_dim=1600` default is calibrated to qwen2.5vl's internal preprocessor. Bumping it past ~2048 reintroduces the HTTP 500 risk; below ~1000 hurts OCR accuracy on dense handwritten sheets.
+- `ImagePrepError` is the only exception `prep_image_for_vision` raises. Catching it gives callers a user-facing message; catching a broader `Exception` would mask bugs.
+- `keep_alive='30m'` keeps the model resident across uploads. Sites tight on RAM can set this to `"0"` per call, but the default stays generous because cold-start was the primary failure mode in the field.
+- The HEIC opener registers itself on first prep call (module-level state). Do not call `pillow_heif.register_heif_opener()` at module import — air-gapped sites without the wheel must still be able to import `ai.image_utils`.
+
+### Operational note
+
+After deploying this round, the first iPhone upload to a freshly-restarted host will still take ~30–60 s (model cold-load). The second upload within 30 minutes is the one that feels fast (~5–15 s). Communicate this expectation to SK rollout users.
 
 ---
 

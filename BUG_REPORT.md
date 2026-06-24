@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-06-24T00:36:33`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_rwewdmfu/bug_check.db`  
-**Total checks:** 460  
-**Passing:** 460  
+**Run at:** `2026-06-24T11:55:34`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_fm_v6pl7/bug_check.db`  
+**Total checks:** 465  
+**Passing:** 465  
 **Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -314,6 +314,13 @@ _None — every check passed._
 - ✅ rejected_issues_archive schema present
 - ✅ CONSUMPTION_EXPORT_COLS contains canonical set
 - ✅ SMR reject at HOD flips line_status='rejected_at_hod'
+
+### Round 14 — 5/5
+- ✅ prep_image_for_vision caps long edge ≤ 1600 px
+- ✅ prep_image_for_vision converts to RGB JPEG
+- ✅ prep_image_for_vision shrinks byte size
+- ✅ prep_image_for_vision honours EXIF orientation
+- ✅ prep_image_for_vision raises ImagePrepError on bad bytes
 
 ### Schema — 216/216
 - ✅ table · inventory
