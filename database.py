@@ -1661,6 +1661,91 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     c.execute("CREATE INDEX IF NOT EXISTS ix_form_drafts_user "
               "ON form_drafts(username)")
 
+    # ── Round 17: Smart Material Estimator (SME) merge ─────────────────────
+    # SME is a read-only projection engine driven by the ERP's ledger. The
+    # three tables below hold project master data — equipment with surface
+    # areas, lining-system recipes (qty per m²), and the running
+    # equipment-tag × system-code progress tally. Available_Qty / Ordered_Qty
+    # are NOT stored here — those come from load_live_inventory() and
+    # get_on_order_by_material() at read time. Site_ID scopes every row to a
+    # single ERP site so admin shadow / HOD per-site views work without
+    # cross-contamination. Locations + equipment types live in
+    # `system_settings` under categories 'sme_location' and 'sme_equipment_type'
+    # (no new tables needed — mirrors the existing Work_Type / Tank_No pattern).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS sme_equipment (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            Site_ID             TEXT    NOT NULL,
+            Equipment_Tag_No    TEXT    NOT NULL,
+            Name                TEXT,
+            Location            TEXT,
+            Type                TEXT,
+            Substrate           TEXT,
+            Lining_System_Code  TEXT    NOT NULL,
+            Surface_Area_SQM    REAL    NOT NULL DEFAULT 0,
+            created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(Site_ID, Equipment_Tag_No, Lining_System_Code)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS ix_sme_eq_site "
+              "ON sme_equipment(Site_ID)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_sme_eq_lsc "
+              "ON sme_equipment(Lining_System_Code)")
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS sme_recipe (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            Lining_System_Code  TEXT    NOT NULL,
+            Lining_System_Name  TEXT,
+            Material_Code       TEXT    NOT NULL,
+            Material_Name       TEXT,
+            UOM                 TEXT,
+            Nature              TEXT,
+            For_1_SQM           REAL    NOT NULL DEFAULT 0,
+            created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(Lining_System_Code, Material_Code)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS ix_sme_recipe_mc "
+              "ON sme_recipe(Material_Code)")
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS sme_sqm_progress (
+            Site_ID             TEXT    NOT NULL,
+            Equipment_Tag_No    TEXT    NOT NULL,
+            Lining_System_Code  TEXT    NOT NULL,
+            Original_SQM        REAL    NOT NULL DEFAULT 0,
+            Done_SQM            REAL    NOT NULL DEFAULT 0,
+            updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (Site_ID, Equipment_Tag_No, Lining_System_Code)
+        )
+    """)
+
+    # Seed default SME location / equipment-type values under system_settings
+    # for legacy site 'HQ' so the new portal has populated dropdowns on first
+    # render. Idempotent — INSERT OR IGNORE on (category, value, Site_ID).
+    # NB: system_settings has no UNIQUE constraint by default, so we guard
+    # with a SELECT-then-INSERT (safe across the cloud's parallel workers
+    # because the worst case is a duplicate value, which the UI dedupes).
+    _sme_seed_locations = ["Brown Field", "TRAIN J", "TRAIN K"]
+    _sme_seed_types     = ["Vessel", "Tank", "Column", "Pipe", "Reactor"]
+    for _val in _sme_seed_locations:
+        c.execute(
+            "INSERT INTO system_settings (category, value, Site_ID) "
+            "SELECT 'sme_location', ?, 'HQ' WHERE NOT EXISTS ("
+            "  SELECT 1 FROM system_settings "
+            "  WHERE category='sme_location' AND value=? AND Site_ID='HQ')",
+            (_val, _val),
+        )
+    for _val in _sme_seed_types:
+        c.execute(
+            "INSERT INTO system_settings (category, value, Site_ID) "
+            "SELECT 'sme_equipment_type', ?, 'HQ' WHERE NOT EXISTS ("
+            "  SELECT 1 FROM system_settings "
+            "  WHERE category='sme_equipment_type' AND value=? AND Site_ID='HQ')",
+            (_val, _val),
+        )
+
     conn.commit()
     if _owns_conn:
         conn.close()
@@ -11592,6 +11677,429 @@ def list_recent_locate_anything_calls(
         )
         from config import auto_localize_timestamps as _atz
         return _atz(df)
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Round 17 — Smart Material Estimator (SME) helpers
+# ---------------------------------------------------------------------------
+# Pure-Python adapters that bridge the ERP ledger to SME's allocation engine.
+# The engine consumes three DataFrames (equipment, recipe, inventory) and
+# returns allocation/feasibility/procurement DataFrames. It never touches
+# SQLite directly — these helpers shape the inputs.
+#
+# Contract:
+#   - `Available_Qty` is computed from receipts/consumption/returns via
+#     load_live_inventory(); it is NEVER a stored scalar.
+#   - `Ordered_Qty` is the open-PO outstanding quantity per Material_Code,
+#     summed across open / partially-delivered POs whose lines are still live.
+#   - All reads are site-scoped if a site_id is passed; global otherwise.
+
+def get_on_order_by_material(
+    site_id: str = None,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Open-PO outstanding quantity per Material_Code.
+
+    Outstanding = Qty − Delivered_Qty − Returned_Qty, summed over po_items
+    whose parent purchase_orders.status is 'open' or 'partially_delivered'
+    AND whose line_status is not 'closed' / 'force_closed'.
+
+    Returns columns: Material_Code, Ordered_Qty. Empty DataFrame if no rows.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        params: tuple = ()
+        site_pred = ""
+        if site_id:
+            site_pred = " AND po.Site_ID = ?"
+            params = (site_id,)
+        sql = (
+            "SELECT pi.Material_Code AS Material_Code, "
+            "       SUM(MAX("
+            "         COALESCE(pi.Qty,0) "
+            "         - COALESCE(pi.Delivered_Qty,0) "
+            "         - COALESCE(pi.Returned_Qty,0), 0)) AS Ordered_Qty "
+            "FROM po_items pi "
+            "JOIN purchase_orders po ON po.PO_Number = pi.PO_Number "
+            "WHERE po.status IN ('open','partially_delivered') "
+            "  AND COALESCE(pi.line_status,'open') "
+            "      NOT IN ('closed','force_closed') "
+            "  AND pi.Material_Code IS NOT NULL "
+            "  AND TRIM(pi.Material_Code) <> ''"
+            f"{site_pred} "
+            "GROUP BY pi.Material_Code"
+        )
+        df = pd.read_sql(sql, conn, params=params)
+        if df.empty:
+            return pd.DataFrame(columns=["Material_Code", "Ordered_Qty"])
+        df["Ordered_Qty"] = pd.to_numeric(
+            df["Ordered_Qty"], errors="coerce"
+        ).fillna(0.0)
+        df["Material_Code"] = df["Material_Code"].astype(str).str.strip()
+        return df
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_sme_inventory_view(
+    site_id: str = None,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Bridge ERP ledger → SME allocation-engine inventory contract.
+
+    Returns one row per Material_Code with columns:
+        Material_Code, Material_Name, UOM, Nature,
+        Available_Qty, Ordered_Qty
+
+    Drops rows where Material_Code is blank (SME engine needs Material_Code
+    as the join key; SAP_Codes without a Material_Code can't participate).
+    Material_Name falls back to the ERP's Equipment_Description if SME's
+    recipe master doesn't have a name for that code.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        live = load_live_inventory(conn=conn, site_id=site_id)
+        if live is None or live.empty:
+            return pd.DataFrame(columns=[
+                "Material_Code", "Material_Name", "UOM",
+                "Nature", "Available_Qty", "Ordered_Qty",
+            ])
+        live = live.copy()
+        if "Material_Code" not in live.columns:
+            live["Material_Code"] = ""
+        live["Material_Code"] = live["Material_Code"].astype(str).str.strip()
+        live = live[live["Material_Code"] != ""].copy()
+        live["Available_Qty"] = pd.to_numeric(
+            live.get("Current_Stock", 0), errors="coerce",
+        ).fillna(0.0)
+        # SAP_Codes may share a Material_Code; sum stock across them and
+        # pick the first non-empty description / UOM for display.
+        desc_col = ("Equipment_Description"
+                    if "Equipment_Description" in live.columns else None)
+        uom_col  = "UOM" if "UOM" in live.columns else None
+        agg_spec = {"Available_Qty": "sum"}
+        if desc_col:
+            agg_spec[desc_col] = "first"
+        if uom_col:
+            agg_spec[uom_col] = "first"
+        grouped = live.groupby("Material_Code", as_index=False).agg(agg_spec)
+        if desc_col and desc_col != "Material_Name":
+            grouped = grouped.rename(columns={desc_col: "Material_Name"})
+        if "Material_Name" not in grouped.columns:
+            grouped["Material_Name"] = ""
+
+        # Enrich with the SME recipe master's authoritative name / UOM / nature
+        # when present (the recipe table carries the project-specific labels).
+        try:
+            rec = pd.read_sql(
+                "SELECT DISTINCT Material_Code, "
+                "       Material_Name AS _rec_name, "
+                "       UOM           AS _rec_uom, "
+                "       Nature        AS _rec_nature "
+                "FROM sme_recipe",
+                conn,
+            )
+        except Exception:
+            rec = pd.DataFrame(columns=[
+                "Material_Code", "_rec_name", "_rec_uom", "_rec_nature",
+            ])
+        if not rec.empty:
+            rec["Material_Code"] = rec["Material_Code"].astype(str).str.strip()
+            rec = rec.drop_duplicates(subset=["Material_Code"], keep="first")
+            grouped = grouped.merge(rec, on="Material_Code", how="left")
+            # Prefer SME master name when present, else fall back to ERP desc.
+            grouped["Material_Name"] = (
+                grouped["_rec_name"].fillna(grouped["Material_Name"])
+                .replace({"": None}).fillna(grouped["Material_Name"])
+            )
+            if "UOM" in grouped.columns:
+                grouped["UOM"] = (
+                    grouped["_rec_uom"].fillna(grouped["UOM"])
+                    .replace({"": None}).fillna(grouped["UOM"])
+                )
+            else:
+                grouped["UOM"] = grouped["_rec_uom"]
+            grouped["Nature"] = grouped["_rec_nature"]
+            grouped = grouped.drop(
+                columns=["_rec_name", "_rec_uom", "_rec_nature"],
+                errors="ignore",
+            )
+        else:
+            if "UOM" not in grouped.columns:
+                grouped["UOM"] = ""
+            grouped["Nature"] = None
+
+        on_order = get_on_order_by_material(site_id=site_id, conn=conn)
+        if on_order.empty:
+            grouped["Ordered_Qty"] = 0.0
+        else:
+            grouped = grouped.merge(on_order, on="Material_Code", how="left")
+            grouped["Ordered_Qty"] = pd.to_numeric(
+                grouped["Ordered_Qty"], errors="coerce",
+            ).fillna(0.0)
+
+        return grouped[[
+            "Material_Code", "Material_Name", "UOM",
+            "Nature", "Available_Qty", "Ordered_Qty",
+        ]].sort_values("Material_Code").reset_index(drop=True)
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_sme_equipment(
+    site_id: str = None,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Return SME equipment master with allocation-engine column names.
+
+    The engine expects columns: Equipment_Tag_No., Name, Lining_System_Code,
+    Surface_Area_SQM. We also surface Location / Type for the Location and
+    Equipment reports (they don't break the engine).
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        params: tuple = ()
+        where = ""
+        if site_id:
+            where = " WHERE Site_ID = ?"
+            params = (site_id,)
+        df = pd.read_sql(
+            "SELECT Site_ID, Equipment_Tag_No, Name, Location, Type, "
+            "       Substrate, Lining_System_Code, "
+            "       COALESCE(Surface_Area_SQM,0) AS Surface_Area_SQM "
+            f"FROM sme_equipment{where}",
+            conn, params=params,
+        )
+        if df.empty:
+            return pd.DataFrame(columns=[
+                "Site_ID", "Equipment_Tag_No.", "Name", "Location", "Type",
+                "Substrate", "Lining_System_Code", "Surface_Area_SQM",
+            ])
+        # The engine joins on the exact label 'Equipment_Tag_No.' (with the
+        # trailing dot — see allocation_engine.py:57). Preserve that contract.
+        df = df.rename(columns={"Equipment_Tag_No": "Equipment_Tag_No."})
+        return df
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_sme_recipe(conn: sqlite3.Connection = None) -> pd.DataFrame:
+    """Return SME lining-system recipe master (global — recipes are not
+    site-scoped). Columns shaped for the allocation engine."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        df = pd.read_sql(
+            "SELECT Lining_System_Code, Lining_System_Name, "
+            "       Material_Code, Material_Name, UOM, Nature, "
+            "       COALESCE(For_1_SQM,0) AS For_1_SQM "
+            "FROM sme_recipe",
+            conn,
+        )
+        return df
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_sme_sqm_progress(
+    site_id: str = None,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Return per-equipment / per-system SQM progress for the given site."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        params: tuple = ()
+        where = ""
+        if site_id:
+            where = " WHERE Site_ID = ?"
+            params = (site_id,)
+        return pd.read_sql(
+            "SELECT Site_ID, Equipment_Tag_No AS \"Equipment_Tag_No.\", "
+            "       Lining_System_Code, Original_SQM, Done_SQM "
+            f"FROM sme_sqm_progress{where}",
+            conn, params=params,
+        )
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ── system_settings-backed SME dropdown helpers ─────────────────────────────
+# Mirror the get_work_types / get_tank_nos pattern. Site-specific values
+# take precedence; falls back to global (Site_ID IS NULL) values, then to
+# the seed-set on the 'HQ' site for first-run safety.
+
+def _sme_settings_get(
+    category: str,
+    site_id: str = None,
+    conn: sqlite3.Connection = None,
+) -> list[str]:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        if site_id:
+            rows = pd.read_sql(
+                "SELECT value FROM system_settings "
+                "WHERE category=? AND Site_ID=?",
+                conn, params=(category, site_id),
+            )["value"].tolist()
+            if rows:
+                return rows
+        rows = pd.read_sql(
+            "SELECT value FROM system_settings "
+            "WHERE category=? AND Site_ID IS NULL",
+            conn, params=(category,),
+        )["value"].tolist()
+        if rows:
+            return rows
+        # Last-resort: HQ seed values so a brand-new site always has a list.
+        return pd.read_sql(
+            "SELECT value FROM system_settings "
+            "WHERE category=? AND Site_ID='HQ'",
+            conn, params=(category,),
+        )["value"].tolist()
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_sme_locations(
+    site_id: str = None,
+    conn: sqlite3.Connection = None,
+) -> list[str]:
+    """Project-internal locations for the SME portal (Brown Field / TRAIN J
+    / TRAIN K-style values). NOT to be confused with ERP Site_ID."""
+    return _sme_settings_get("sme_location", site_id=site_id, conn=conn)
+
+
+def get_sme_equipment_types(
+    site_id: str = None,
+    conn: sqlite3.Connection = None,
+) -> list[str]:
+    """Equipment-type dropdown values (Vessel / Tank / Column / …)."""
+    return _sme_settings_get("sme_equipment_type", site_id=site_id, conn=conn)
+
+
+def add_sme_setting(
+    category: str,
+    value: str,
+    site_id: str,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Append a single SME dropdown value. Idempotent — refuses to insert a
+    duplicate (category, value, Site_ID) triple. Returns True on insert."""
+    if category not in ("sme_location", "sme_equipment_type"):
+        raise ValueError(f"Refusing to write unknown SME setting category: {category!r}")
+    value = (value or "").strip()
+    if not value:
+        return False
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        existing = conn.execute(
+            "SELECT 1 FROM system_settings "
+            "WHERE category=? AND value=? AND COALESCE(Site_ID,'')=? LIMIT 1",
+            (category, value, site_id or ""),
+        ).fetchone()
+        if existing:
+            return False
+        conn.execute(
+            "INSERT INTO system_settings (category, value, Site_ID) "
+            "VALUES (?, ?, ?)",
+            (category, value, site_id),
+        )
+        conn.commit()
+        return True
+    finally:
+        if _owns:
+            conn.close()
+
+
+def delete_sme_setting(
+    category: str,
+    value: str,
+    site_id: str,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Remove a single SME dropdown value scoped to a site. Returns the row
+    count deleted (0 if not found). Won't touch seed-set values on 'HQ'
+    because the bootstrap re-seeds them on every init_db — the UI exposes
+    this for site-specific deletions only."""
+    if category not in ("sme_location", "sme_equipment_type"):
+        raise ValueError(f"Refusing to delete unknown SME setting category: {category!r}")
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "DELETE FROM system_settings "
+            "WHERE category=? AND value=? AND COALESCE(Site_ID,'')=?",
+            (category, value, site_id or ""),
+        )
+        conn.commit()
+        return cur.rowcount or 0
+    finally:
+        if _owns:
+            conn.close()
+
+
+def upsert_sme_sqm_progress(
+    site_id: str,
+    equipment_tag: str,
+    lining_system_code: str,
+    *,
+    original_sqm: float | None = None,
+    done_sqm: float | None = None,
+    conn: sqlite3.Connection = None,
+) -> None:
+    """Update SME progress in place. NULL kwargs leave existing values
+    untouched (matches the bootstrap's preservation contract — done_sqm
+    survives recipe re-loads). Used by the bootstrap script and by future
+    HOD progress edits."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        existing = conn.execute(
+            "SELECT Original_SQM, Done_SQM FROM sme_sqm_progress "
+            "WHERE Site_ID=? AND Equipment_Tag_No=? AND Lining_System_Code=?",
+            (site_id, equipment_tag, lining_system_code),
+        ).fetchone()
+        new_orig = (float(original_sqm) if original_sqm is not None
+                    else (float(existing[0]) if existing else 0.0))
+        new_done = (float(done_sqm) if done_sqm is not None
+                    else (float(existing[1]) if existing else 0.0))
+        conn.execute(
+            "INSERT INTO sme_sqm_progress "
+            "(Site_ID, Equipment_Tag_No, Lining_System_Code, "
+            " Original_SQM, Done_SQM, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(Site_ID, Equipment_Tag_No, Lining_System_Code) "
+            "DO UPDATE SET "
+            "  Original_SQM = excluded.Original_SQM, "
+            "  Done_SQM     = excluded.Done_SQM, "
+            "  updated_at   = CURRENT_TIMESTAMP",
+            (site_id, equipment_tag, lining_system_code, new_orig, new_done),
+        )
+        conn.commit()
     finally:
         if _owns:
             conn.close()
