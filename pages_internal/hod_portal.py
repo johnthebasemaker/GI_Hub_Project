@@ -1596,13 +1596,21 @@ def _render_pr_tab(user: dict, site_id: str) -> None:
             st.write("")
             pr_data = pr_df[pr_df["PR_Number"] == pr_to_email]
             from reports import generate_pr_pdf
+            from database import get_pr_with_po_numbers
+            # Round 16 — inject per-line PO #s and rename the file:
+            # 'Record' → 'Status' so the download communicates the report's
+            # purpose (a live fulfillment status snapshot, not a frozen
+            # record).
+            po_map = get_pr_with_po_numbers(pr_to_email)
             pdf_bytes = generate_pr_pdf(
-                pr_to_email, site_id, pr_data, generated_by=user["username"],
+                pr_to_email, site_id, pr_data,
+                generated_by=user["username"],
+                po_map=po_map,
             )
             st.download_button(
                 label="📥 Download PR PDF",
                 data=pdf_bytes,
-                file_name=f"PR_{pr_to_email}_{site_id}_Record.pdf",
+                file_name=f"PR_{pr_to_email}_{site_id}_Status.pdf",
                 mime="application/pdf",
                 type="primary",
                 width="stretch",

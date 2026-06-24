@@ -1554,6 +1554,46 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         "('temp_material_seq', '0')"
     )
 
+    # ── Round 16: Logistics removed from the DN approval chain ──────────────
+    # New flow: Warehouse → HOD → SK (Logistics is out of the loop, except
+    # for the read-only Logistics Oversight tab). Any in-flight DN sitting at
+    # `pending_logistics` or `logistics_approved` is moved up to `pending_hod`
+    # so the HOD's queue surfaces them immediately on next page load. The
+    # CHECK constraint still permits those statuses for restore-from-backup
+    # scenarios, but no code path WRITES them anymore.
+    try:
+        cur_mig = c.execute(
+            "UPDATE delivery_notes "
+            "SET status='pending_hod', "
+            "    logistics_decided_at = COALESCE(logistics_decided_at, "
+            "                                    CURRENT_TIMESTAMP), "
+            "    logistics_decided_by = COALESCE(logistics_decided_by, "
+            "                                    'system_r16_migration'), "
+            "    logistics_decision   = COALESCE(logistics_decision, 'auto') "
+            "WHERE status IN ('pending_logistics','logistics_approved')"
+        )
+        n_migrated = cur_mig.rowcount or 0
+        if n_migrated > 0:
+            try:
+                c.execute(
+                    "INSERT INTO system_audit_log (username, action_type, "
+                    "target_table, details) VALUES (?, ?, ?, ?)",
+                    ("system", "DN_LEGACY_MIGRATION_R16",
+                     "delivery_notes",
+                     f"migrated {n_migrated} DN(s) from pending_logistics/"
+                     f"logistics_approved → pending_hod"),
+                )
+            except sqlite3.OperationalError:
+                # system_audit_log schema may differ on older installs —
+                # migration itself succeeds either way; the audit entry is
+                # best-effort.
+                pass
+    except sqlite3.OperationalError:
+        # delivery_notes may not exist on a brand-new DB before its CREATE
+        # TABLE runs in the same init_db pass. Self-heal completes safely
+        # on the next startup once the table is in place.
+        pass
+
     # ── Phase 7C: HOD Cross-Site View notification debounce ──────────────────
     # UNIQUE(viewer, target_site, view_date) is the entire debounce — INSERT
     # OR IGNORE returns rowcount=0 on duplicate same-day attempts. No timers,
@@ -8176,12 +8216,28 @@ def submit_dn_for_logistics(
     warehouse_user: str,
     conn: sqlite3.Connection = None,
 ) -> tuple[bool, str]:
+    """Round 16: Warehouse-prepared DNs now flow directly to the HOD,
+    bypassing the Logistics approval step. The function name is preserved
+    so the existing Warehouse Portal caller works unchanged, but the
+    behaviour is:
+
+      1. UPDATE delivery_notes SET status='pending_hod' WHERE status='draft'.
+      2. Action notification → HOD at the destination site (link to HOD's
+         DN Approvals tab).
+      3. Awareness notification → Logistics (`severity='info'`, no action
+         required) so they still know POs are flowing.
+
+    Legacy `logistics_decide_dn` remains in place as a safety net for any
+    DN rows still sitting at `pending_logistics` from before the cutover —
+    the Round 16 init_db migration sweeps those forward on first startup,
+    so this is belt-and-suspenders.
+    """
     _owns = conn is None
     if _owns:
         conn = get_connection()
     try:
         cur = conn.execute(
-            "UPDATE delivery_notes SET status='pending_logistics' "
+            "UPDATE delivery_notes SET status='pending_hod' "
             "WHERE DN_Number = ? AND status='draft'",
             (dn_number,),
         )
@@ -8192,10 +8248,38 @@ def submit_dn_for_logistics(
             row = conn.execute(
                 "SELECT PO_Number, Site_ID FROM delivery_notes "
                 "WHERE DN_Number = ?", (dn_number,)).fetchone()
+            po_no  = row[0] if row else "?"
+            target = row[1] if row else "?"
+
+            # Primary fan-out → the HOD at the destination site. This is the
+            # actionable notification — the HOD opens DN Approvals and
+            # decides. Severity is 'info' because the row is informational
+            # until the HOD acts on it; it appears in their bell with the
+            # ✅/❌ workflow buttons one tab away.
             queue_app_notification(
-                event_key="dn_logistics_approved",  # reuse channel for visibility
-                title=f"DN {dn_number} awaits Logistics approval",
-                body=f"PO {row[0] if row else '?'} → Site {row[1] if row else '?'}",
+                event_key="dn_logistics_approved",  # reuse existing channel key
+                title=f"DN {dn_number} awaiting your approval",
+                body=(f"PO {po_no} → Site {target}. "
+                      f"Prepared by {warehouse_user}."),
+                severity="info",
+                recipient_role="hod",
+                recipient_site=target if target != "?" else None,
+                link_page="📋 HOD Portal",
+                related_table="delivery_notes",
+                related_ref=dn_number,
+                conn=conn,
+            )
+
+            # Secondary fan-out → Logistics, awareness only. Logistics no
+            # longer approves DNs but still wants to know that POs they
+            # issued are flowing through to the sites. severity='info'
+            # keeps the bell quiet vs. action-required notifications.
+            queue_app_notification(
+                event_key="dn_logistics_approved",
+                title=f"DN {dn_number} prepared (info only)",
+                body=(f"PO {po_no} → Site {target}. "
+                      f"Awaiting HOD approval. No action required from "
+                      f"Logistics."),
                 severity="info",
                 recipient_role="logistics",
                 link_page="🚚 Logistics Portal",
@@ -8205,7 +8289,7 @@ def submit_dn_for_logistics(
             )
         except Exception:
             pass
-        return True, "DN submitted to Logistics"
+        return True, "DN submitted — pending HOD approval"
     finally:
         if _owns:
             conn.close()
@@ -8218,6 +8302,14 @@ def logistics_decide_dn(
     decision_notes: str = "",
     conn: sqlite3.Connection = None,
 ) -> tuple[bool, str]:
+    """DEPRECATED in Round 16. The DN approval workflow no longer routes
+    through Logistics — Warehouse-prepared DNs flow directly to the HOD
+    via `submit_dn_for_logistics`. This helper is retained ONLY as a
+    safety net for legacy rows at status `pending_logistics` that might
+    appear from a restore-from-backup. The Round 16 init_db migration
+    sweeps any such rows forward to `pending_hod` on first startup, so
+    this function should never see a matching row in normal operation.
+    """
     _owns = conn is None
     if _owns:
         conn = get_connection()
@@ -10733,6 +10825,74 @@ def get_min_qty_for(
             return float(row[0] or 0)
         except (TypeError, ValueError):
             return 0.0
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ─── Round 16 helper — PO numbers per PR line ───────────────────────────────
+
+def get_pr_with_po_numbers(
+    pr_number: str,
+    conn: sqlite3.Connection = None,
+) -> dict:
+    """Return {pr_line_id: 'PO-001, PO-002'} mapping for a PR.
+
+    A single PR can spawn multiple POs (split orders across vendors,
+    partial-fulfilment re-orders, etc.). The PR PDF generator uses this map
+    to display the PO numbers alongside each PR line.
+
+    Joins via po_items.PR_Number → pr_master so a PO line traces back to
+    the originating PR. Distinct PO_Number per line, comma-joined in
+    ascending order.
+
+    Returns an empty dict when the PR has no POs yet (the PDF shows blank
+    in the PO # column in that case).
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        # po_items doesn't carry SAP_Code (per the schema comment in
+        # init_db) — Logistics works with Material_Code, SAP joins in at
+        # the site-receipt step. So we link PR-lines to POs via Material_Code.
+        pr_rows = conn.execute(
+            "SELECT id, Material_Code FROM pr_master WHERE PR_Number = ?",
+            (pr_number,),
+        ).fetchall()
+        if not pr_rows:
+            return {}
+
+        # All POs issued against this PR, with the Material_Code on each PO line.
+        po_rows = conn.execute(
+            "SELECT DISTINCT po.PO_Number, pi.Material_Code "
+            "FROM purchase_orders po "
+            "JOIN po_items pi ON pi.PO_Number = po.PO_Number "
+            "WHERE po.PR_Number = ? "
+            "ORDER BY po.PO_Number",
+            (pr_number,),
+        ).fetchall()
+
+        # Group PO_Numbers per Material_Code so a PR line that asked for
+        # Material X maps to the POs that bought Material X.
+        po_by_mc: dict[str, list[str]] = {}
+        for po_no, mc in po_rows:
+            if not mc:
+                continue
+            po_by_mc.setdefault(str(mc).strip(), []).append(str(po_no))
+
+        # Map pr_line_id → comma-joined PO list (deduped, sorted).
+        out: dict[int, str] = {}
+        for line_id, mc in pr_rows:
+            key = str(mc or "").strip()
+            pos = sorted(set(po_by_mc.get(key, [])))
+            if pos:
+                out[int(line_id)] = ", ".join(pos)
+        return out
+    except sqlite3.OperationalError:
+        # po_items / purchase_orders might be missing on a very old DB.
+        # Return empty map — PDF renders blank in the PO column gracefully.
+        return {}
     finally:
         if _owns:
             conn.close()

@@ -1592,12 +1592,11 @@ def check_full_dn_flow_to_sk_receipt() -> None:
             created_by="wh1", conn=conn,
         )
         assert ok_dn and dn
-        # Submit → Logistics → HOD → SK
+        # Round 16 — DN flow simplified: Warehouse → HOD → SK (Logistics
+        # is no longer in the approval chain). submit_dn_for_logistics now
+        # writes status='pending_hod' directly, so the HOD decides next.
         ok1, _ = database.submit_dn_for_logistics(dn, "wh1", conn=conn)
         assert ok1
-        ok2, _ = database.logistics_decide_dn(
-            dn, approve=True, decided_by="logi", conn=conn)
-        assert ok2
         ok3, _ = database.hod_decide_dn(
             dn, approve=True, decided_by="hod", conn=conn)
         assert ok3
@@ -1843,16 +1842,18 @@ def check_in_transit_for_site() -> None:
                 int(aid2), {int(pid2): 5}, "wh1", conn=conn,
             )
 
+        # Round 16 — DN flow simplified: submit lands directly at
+        # pending_hod (no Logistics step). The test now seeds three DNs
+        # at different states to exercise the pipeline-order sort:
+        #   dn1 → pending_hod
+        #   dn2 → pending_hod
+        #   dn3 → pending_sk (HOD has approved)
         dn1 = _ship("4720070001", "SITE-A", 1)
         database.submit_dn_for_logistics(dn1, "wh1", conn=conn)
         dn2 = _ship("4720070003", "SITE-A", 1)
         database.submit_dn_for_logistics(dn2, "wh1", conn=conn)
-        database.logistics_decide_dn(dn2, approve=True,
-                                     decided_by="logi", conn=conn)
         dn3 = _ship("4720070004", "SITE-A", 1)
         database.submit_dn_for_logistics(dn3, "wh1", conn=conn)
-        database.logistics_decide_dn(dn3, approve=True,
-                                     decided_by="logi", conn=conn)
         database.hod_decide_dn(dn3, approve=True, decided_by="hod",
                                conn=conn)
         # SITE-OTHER DN — should NOT appear in SITE-A view
@@ -1865,11 +1866,11 @@ def check_in_transit_for_site() -> None:
         assert dn1 in dns_seen and dn2 in dns_seen and dn3 in dns_seen, dns_seen
         # Site isolation
         assert dn_other not in dns_seen, "Cross-site leak"
-        # Ordering: pending_sk should sort earlier than pending_logistics
+        # Ordering: pending_sk should sort earlier than pending_hod.
         order = df["status"].tolist()
-        idx_sk = order.index("pending_sk")
-        idx_log = order.index("pending_logistics")
-        assert idx_sk < idx_log, f"Ordering wrong: {order}"
+        idx_sk  = order.index("pending_sk")
+        idx_hod = order.index("pending_hod")
+        assert idx_sk < idx_hod, f"Ordering wrong: {order}"
     finally:
         conn.close()
 
@@ -4700,6 +4701,196 @@ def check_r15_pr_report_keeps_uom_column() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Round 16 — Logistics removed from DN chain + PR PDF polish
+# ═══════════════════════════════════════════════════════════════════════════
+def _r16_seed_dn(dn_no: str, site_id: str = "R16HOD") -> str:
+    """Insert a DN at status='draft' so submit_dn_for_logistics can flip it."""
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO delivery_notes "
+            "(DN_Number, PO_Number, Site_ID, Warehouse_ID, status, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (dn_no, "R16-PO-1", site_id, "WH-R16", "draft", "wh_r16"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return dn_no
+
+
+def check_r16_submit_dn_for_logistics_writes_pending_hod() -> None:
+    """Round 16 — submit_dn_for_logistics flips draft → pending_hod
+    (was pending_logistics). Logistics is no longer in the approval loop."""
+    _r16_seed_dn("R16-DN-001")
+    ok, msg = database.submit_dn_for_logistics("R16-DN-001", "wh_r16")
+    assert ok, msg
+    conn = database.get_connection()
+    try:
+        status = conn.execute(
+            "SELECT status FROM delivery_notes WHERE DN_Number = ?",
+            ("R16-DN-001",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert status == "pending_hod", (
+        f"Round 16 contract: status should be 'pending_hod', got {status!r}"
+    )
+
+
+def check_r16_submit_dn_dual_notification_fanout() -> None:
+    """submit_dn_for_logistics queues TWO notifications: the actionable one
+    to HOD at the destination site, and an awareness 'info' one to
+    Logistics (no action required)."""
+    _r16_seed_dn("R16-DN-002")
+    ok, _ = database.submit_dn_for_logistics("R16-DN-002", "wh_r16")
+    assert ok
+    conn = database.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT recipient_role, recipient_site, severity, title "
+            "FROM app_notifications WHERE related_ref = ? "
+            "ORDER BY id", ("R16-DN-002",),
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 2, (
+        f"expected 2 notifications (HOD + Logistics), got {len(rows)}: {rows}"
+    )
+    roles = sorted(r[0] for r in rows)
+    assert roles == ["hod", "logistics"], (
+        f"expected [hod, logistics], got {roles}"
+    )
+    # Both severities should be 'info' per Round 16 design.
+    for r in rows:
+        assert r[2] == "info", f"non-info severity: {r}"
+    # The HOD-targeted row carries the site; the Logistics row does not.
+    hod_row = next(r for r in rows if r[0] == "hod")
+    log_row = next(r for r in rows if r[0] == "logistics")
+    assert hod_row[1] == "R16HOD", hod_row
+    assert "awaiting your approval" in hod_row[3].lower(), hod_row[3]
+    assert "info only" in log_row[3].lower(), log_row[3]
+
+
+def check_r16_legacy_dn_migration_to_pending_hod() -> None:
+    """init_db migration sweeps any DN at pending_logistics or
+    logistics_approved forward to pending_hod (idempotent on re-runs)."""
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO delivery_notes "
+            "(DN_Number, PO_Number, Site_ID, Warehouse_ID, status, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("R16-LEGACY-001", "R16-PO-LEG", "R16HOD", "WH-R16",
+             "pending_logistics", "wh_r16"),
+        )
+        conn.execute(
+            "INSERT INTO delivery_notes "
+            "(DN_Number, PO_Number, Site_ID, Warehouse_ID, status, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("R16-LEGACY-002", "R16-PO-LEG", "R16HOD", "WH-R16",
+             "logistics_approved", "wh_r16"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    # Re-run init_db — the migration should pick up both rows.
+    database.init_db()
+    conn = database.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT DN_Number, status FROM delivery_notes "
+            "WHERE DN_Number IN (?, ?) ORDER BY DN_Number",
+            ("R16-LEGACY-001", "R16-LEGACY-002"),
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 2
+    for dn, status in rows:
+        assert status == "pending_hod", (
+            f"{dn} not migrated: status={status!r}"
+        )
+    # Idempotent: second call leaves rows alone (no integrity errors, no
+    # double-audit). Re-running here just must not raise.
+    database.init_db()
+
+
+def check_r16_get_pr_with_po_numbers_comma_joined() -> None:
+    """get_pr_with_po_numbers returns {pr_line_id: 'PO-1, PO-2, …'} for
+    PRs with multiple POs against the same SAP line."""
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO inventory (SAP_Code, Material_Code, "
+            " Equipment_Description, UOM) VALUES (?, ?, ?, ?)",
+            ("SAP-R16-MULTI", "MC-R16-M", "Multi-PO test", "PCS"),
+        )
+        conn.execute(
+            "INSERT INTO pr_master (PR_Number, SAP_Code, Material_Code, "
+            " Material_Name, UOM, Requested_Qty, Site_ID, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("PR-R16-M", "SAP-R16-MULTI", "MC-R16-M",
+             "Multi-PO test", "PCS", 100, "R16HOD", "open"),
+        )
+        line_id = conn.execute(
+            "SELECT id FROM pr_master WHERE PR_Number=?", ("PR-R16-M",),
+        ).fetchone()[0]
+        # Three POs split across the same PR line.
+        for po_no in ("PO-R16-A", "PO-R16-B", "PO-R16-C"):
+            conn.execute(
+                "INSERT INTO purchase_orders (PO_Number, PR_Number, Site_ID) "
+                "VALUES (?, ?, ?)", (po_no, "PR-R16-M", "R16HOD"),
+            )
+            conn.execute(
+                "INSERT INTO po_items (PO_Number, Material_Code, "
+                " Description, Qty, UOM) VALUES (?, ?, ?, ?, ?)",
+                (po_no, "MC-R16-M", "Multi-PO test", 33, "PCS"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = database.get_pr_with_po_numbers("PR-R16-M")
+    assert int(line_id) in out, out
+    poseq = out[int(line_id)]
+    assert poseq == "PO-R16-A, PO-R16-B, PO-R16-C", poseq
+
+
+def check_r16_generate_pr_pdf_has_new_columns() -> None:
+    """generate_pr_pdf renders PO # + UoM headers and accepts the po_map
+    kwarg. Output is a valid PDF byte stream."""
+    import pandas as pd
+    from reports import generate_pr_pdf
+
+    df = pd.DataFrame([
+        {"id": 1, "Material_Code": "MC-R16-A",
+         "Material_Name": "Test Material A",
+         "UOM": "PCS", "Requested_Qty": 10,
+         "Pending_Qty": 4, "status": "open"},
+        {"id": 2, "Material_Code": "MC-R16-B",
+         "Material_Name": "Test Material B",
+         "UOM": "KG", "Requested_Qty": 50,
+         "Pending_Qty": 0, "status": "closed"},
+    ])
+    po_map = {1: "PO-001, PO-002"}
+    pdf_bytes = generate_pr_pdf(
+        "PR-R16-PDF", "R16HOD", df,
+        generated_by="hod_r16", po_map=po_map,
+    )
+    # Valid PDF magic.
+    assert pdf_bytes[:4] == b"%PDF", pdf_bytes[:20]
+    # Reasonable size for a 2-row table (≥ 1 KB).
+    assert len(pdf_bytes) > 1024, len(pdf_bytes)
+    # The PDF stream is compressed so header literals aren't byte-greppable.
+    # The function must, however, not raise — and the back-compat kwarg
+    # path (no po_map) also has to succeed.
+    pdf_bytes_no_map = generate_pr_pdf(
+        "PR-R16-PDF", "R16HOD", df, generated_by="hod_r16",
+    )
+    assert pdf_bytes_no_map[:4] == b"%PDF"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Phase 7C — HOD Cross-Site View notification + indicator checks
 # ═══════════════════════════════════════════════════════════════════════════
 def _7c_tag(prefix: str) -> str:
@@ -6762,6 +6953,23 @@ def main() -> int:
     run_check("Round 15", "_ALWAYS_KEEP includes UOM for PR report",
               check_r15_pr_report_keeps_uom_column,
               "UoM column survives the strip-empty helper.")
+
+    # ── Round 16 — Logistics removed from DN approval chain + PR PDF ──────
+    run_check("Round 16", "submit_dn_for_logistics writes status='pending_hod'",
+              check_r16_submit_dn_for_logistics_writes_pending_hod,
+              "Round 16 contract: Warehouse → HOD (Logistics skipped).")
+    run_check("Round 16", "submit_dn_for_logistics fans out HOD + Logistics notifications",
+              check_r16_submit_dn_dual_notification_fanout,
+              "Two info-severity notifications: HOD actionable + Logistics awareness.")
+    run_check("Round 16", "legacy pending_logistics DNs migrate to pending_hod",
+              check_r16_legacy_dn_migration_to_pending_hod,
+              "init_db sweeps in-flight DNs forward; idempotent on re-run.")
+    run_check("Round 16", "get_pr_with_po_numbers comma-joins per PR line",
+              check_r16_get_pr_with_po_numbers_comma_joined,
+              "Powers the new PO # column in the PR PDF.")
+    run_check("Round 16", "generate_pr_pdf renders new PO # + UoM columns",
+              check_r16_generate_pr_pdf_has_new_columns,
+              "Back-compat path (no po_map kwarg) still produces a valid PDF.")
 
     # ── Phase 7C — HOD Cross-Site View notifications + indicator ─────────
     run_check("Phase 7C", "ix_csv_target_date index exists",

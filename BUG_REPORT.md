@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-06-24T16:12:37`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_1ayrvxkx/bug_check.db`  
-**Total checks:** 480  
-**Passing:** 480  
+**Run at:** `2026-06-24T21:35:44`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_5whz8upw/bug_check.db`  
+**Total checks:** 485  
+**Passing:** 485  
 **Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -338,6 +338,13 @@ _None — every check passed._
 - ✅ request_reschedule keeps logistics for PO-level
 - ✅ CONSUMPTION_EXPORT_COLS unchanged
 - ✅ _ALWAYS_KEEP includes UOM for PR report
+
+### Round 16 — 5/5
+- ✅ submit_dn_for_logistics writes status='pending_hod'
+- ✅ submit_dn_for_logistics fans out HOD + Logistics notifications
+- ✅ legacy pending_logistics DNs migrate to pending_hod
+- ✅ get_pr_with_po_numbers comma-joins per PR line
+- ✅ generate_pr_pdf renders new PO # + UoM columns
 
 ### Schema — 216/216
 - ✅ table · inventory

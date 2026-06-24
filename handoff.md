@@ -1,6 +1,10 @@
 # GI Hub ERP — Handoff
 
-**Last update:** 2026-06 round 15 — **MULTI-PORTAL POLISH + MATERIAL MASTER + PO PARSER FIX SHIPPED.** New Logistics `📦 Material Details` tab (manual entry + Excel upload + Temp-GI auto-codes + SAP auto-increment + duplicate rejection). PO PDF parser rewritten — three line-item layouts supported (code-on-own-line + 7-column row + legacy single-line). Per-site `Minimum_Qty` override via new `inventory_site_overrides` table (additive, no impact on identity math). HOD DN Approvals now uses a 3-way OR-join so legacy mismatched-Site_ID DNs surface to the right HOD. HOD reschedule routes directly to `warehouse_user` when the DN is post-receive (`pending_logistics → pending_sk`); PO-level reschedules still go to Logistics. Warehouse Prepare-DN destination site locked to the PO's originating site. Admin Live Dashboard KPI cards now click through to inline drill-downs; a single wide "Search across all columns" input replaces the cramped per-column filter strip on mobile/landscape. New `ui_components.render_confirm` helper wired to SK Submit Grid + HOD Approve All Pending + HOD In-Transit Reschedule. PR report `_ALWAYS_KEEP` now includes UOM so the column survives partial-row legacy data. See §2Q. **Tests: 480/480 in `bug_check.py` · 17/17 in `test_ui_crawler.py`.**
+**Last update:** 2026-06 round 16 — **DN ROUTING SIMPLIFICATION + PR PDF POLISH SHIPPED.** Logistics removed from the DN approval chain — Warehouse-prepared DNs now flow `draft → pending_hod → pending_sk → received` (was `… → pending_logistics → pending_hod → …`). `submit_dn_for_logistics` writes `pending_hod` directly and dual-notifies (HOD actionable + Logistics info-only awareness). Idempotent `init_db` migration sweeps any in-flight `pending_logistics`/`logistics_approved` DN forward to `pending_hod`. PR PDF gains two columns — `PO #` (comma-joined for multi-PO PRs, via new `get_pr_with_po_numbers` helper) and `UoM`. Filename renamed from `…_Record.pdf` to `…_Status.pdf`. See §2R. **Tests: 485/485 in `bug_check.py` · 17/17 in `test_ui_crawler.py`.**
+
+**Prior round:** 15 — Multi-Portal Polish + Material Master + PO Parser Fix.
+
+**Round 15 prior:** **MULTI-PORTAL POLISH + MATERIAL MASTER + PO PARSER FIX SHIPPED.** New Logistics `📦 Material Details` tab (manual entry + Excel upload + Temp-GI auto-codes + SAP auto-increment + duplicate rejection). PO PDF parser rewritten — three line-item layouts supported (code-on-own-line + 7-column row + legacy single-line). Per-site `Minimum_Qty` override via new `inventory_site_overrides` table (additive, no impact on identity math). HOD DN Approvals now uses a 3-way OR-join so legacy mismatched-Site_ID DNs surface to the right HOD. HOD reschedule routes directly to `warehouse_user` when the DN is post-receive (`pending_logistics → pending_sk`); PO-level reschedules still go to Logistics. Warehouse Prepare-DN destination site locked to the PO's originating site. Admin Live Dashboard KPI cards now click through to inline drill-downs; a single wide "Search across all columns" input replaces the cramped per-column filter strip on mobile/landscape. New `ui_components.render_confirm` helper wired to SK Submit Grid + HOD Approve All Pending + HOD In-Transit Reschedule. PR report `_ALWAYS_KEEP` now includes UOM so the column survives partial-row legacy data. See §2Q. **Tests: 480/480 in `bug_check.py` · 17/17 in `test_ui_crawler.py`.**
 
 **Prior round:** 14 — Vision OCR Image-Pipeline Hardening.
 
@@ -21,7 +25,7 @@
 
 **Workstream B — Smart Scan AI module: COMPLETE.** All five phases shipped; the gate stays OFF in production until a pilot site explicitly opts in.
 **Prior rounds:** 7F Role-Based PDFs · 7E Network Resilience · 7D PO Masking · 7C Cross-Site Notifications · 7B Supervisor Material Request · 7A Employee Site Binding · 6A–F Workstream A.
-**Test status:** **480/480 in `bug_check.py` · 17/17 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`). +15 across Round 15 (schema self-heal, SAP/Temp counters, bulk_upsert path, site Min Qty override, PO PDF regression + synthetic fixture, HOD DN visibility fallback, reschedule routing, PR UoM column). **Zero network access · zero torch import in test path · zero weight files required on disk.**
+**Test status:** **485/485 in `bug_check.py` · 17/17 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`). +5 across Round 16 (DN routing flip, dual notification fan-out, legacy DN migration idempotent, PO# comma-join helper, PR PDF column expansion). **Zero network access · zero torch import in test path · zero weight files required on disk.**
 **Production hosting:** Self-host on `giinventory.com` via Cloudflare Tunnel + Access (email allow-list `@generalindustries.net`). Turnkey installer at `host_setup/scripts/install.sh`. See §4 "Run / Develop" and the "Production hosting" chapter.
 **Purpose:** Get the next session productive in <5 minutes — architecture, what changed, what's next.
 **Companion docs:** `USER_MANUAL.md` (every page/tab/button), `SOP.md` (Logistics + Warehouse operating procedure with cadences, decision trees, escalation matrix), `docs/cv_training_guide.md` (Phase 6C — capture → label → train → promote walkthrough).
@@ -1394,6 +1398,96 @@ UI crawler stays at **17/17** — the new Material Details tab lives inside the 
 
 - Existing inventory rows are NOT migrated. New uploads through the Material Details tab populate Material_Code + SAP_Code; legacy rows with blank Material_Code remain (the partial UNIQUE index ignores them).
 - The `Temp-GI-NNNNNNN` counter starts at 1. To inspect or reset it manually: `SELECT value FROM app_settings WHERE key='temp_material_seq'`. Never decrement after live use — temp codes are referenced from POs and audit trails.
+
+---
+
+## 2R. Tuning Round 16 (2026-06) — DN Routing Simplification + PR PDF Polish
+
+Two field-driven changes shipped together:
+
+1. **HOD DN Approvals tab was empty.** Cause: legacy DNs sitting at `pending_logistics` after the Round 15 schema fix, and the entire Logistics approval step adding friction without business value.
+2. **PR PDF needed PO traceability + UoM.** The Notify-Logistics download was named `…_Record.pdf` and missing two columns the recipients (vendors, finance) needed to act on it.
+
+### DN state machine — before vs. after
+
+```
+BEFORE (Rounds 1–15):
+  draft → pending_logistics → pending_hod → pending_sk → received
+                      ▲              ▲
+                Warehouse         Logistics
+                submits           approves
+
+AFTER (Round 16):
+  draft → pending_hod → pending_sk → received
+                ▲
+        Warehouse submits (Logistics gets an info notification only)
+```
+
+`pending_logistics` and `logistics_approved` remain in the CHECK constraint (back-compat for restore-from-backup), but no code path writes them. `logistics_decide_dn` is retained as a safety net — marked deprecated in its docstring — to drain any leftover legacy row.
+
+### Schema migration (idempotent, in `init_db`)
+
+```sql
+UPDATE delivery_notes
+SET status = 'pending_hod',
+    logistics_decided_at = COALESCE(logistics_decided_at, CURRENT_TIMESTAMP),
+    logistics_decided_by = COALESCE(logistics_decided_by, 'system_r16_migration'),
+    logistics_decision   = COALESCE(logistics_decision, 'auto')
+WHERE status IN ('pending_logistics', 'logistics_approved');
+```
+
+Wrapped in try/except for `OperationalError` so a brand-new DB (where `delivery_notes` may not yet exist at the migration line) is safe. Logs a `DN_LEGACY_MIGRATION_R16` row to `system_audit_log` when N > 0.
+
+### `database.py` — behaviour changes
+
+| Function | Change |
+|---|---|
+| `submit_dn_for_logistics(dn, wh_user)` | Now writes `status='pending_hod'` (was `pending_logistics`). Fans out TWO notifications: **HOD** (actionable, scoped to destination Site_ID) + **Logistics** ("info only, no action required"). Function name kept so the Warehouse Portal caller works unchanged. |
+| `logistics_decide_dn(...)` | Docstring tagged DEPRECATED. Body unchanged — used only as a safety net for legacy rows the migration didn't catch (impossible in normal operation post-Round-16). |
+| `get_pr_with_po_numbers(pr_number)` **NEW** | Returns `{pr_line_id: 'PO-001, PO-002, …'}` map for the PR PDF. Joins `pr_master ↔ purchase_orders ↔ po_items` by Material_Code (per the schema's documented "no SAP_Code on po_items" contract). |
+
+### `reports.py` — `generate_pr_pdf` extension
+
+Two new columns added:
+- **PO #** (25 mm) — fed from the `po_map` kwarg; cells truncate to 14 chars + `…` so multi-PO PRs never overflow the column width.
+- **UoM** (12 mm) — read directly from `pr_master.UOM` (already projected by the HOD PR query).
+
+Column widths rebalanced to 25+55+25+12+18+18+18+19 = 190 mm (A4 portrait inside the existing margins). Row font tightened from 9 → 8 pt to fit the new layout.
+
+**Signature**: `generate_pr_pdf(..., *, po_map: dict[int, str] | None = None)` — keyword-only, default `None` keeps existing callers working with the PO column rendering blank.
+
+### `pages_internal/hod_portal.py`
+
+- Filename: `PR_{n}_{site}_Record.pdf` → **`PR_{n}_{site}_Status.pdf`**.
+- Before the `generate_pr_pdf` call, `get_pr_with_po_numbers(pr_to_email)` resolves the per-line PO map and passes it through.
+
+### Tests (`bug_check.py`)
+
+**+5 Round 16 checks · 485/485.** Coverage:
+
+1. `submit_dn_for_logistics` writes `status='pending_hod'`.
+2. `submit_dn_for_logistics` queues both an HOD-targeted (with site scope) and a Logistics-info notification.
+3. Legacy `pending_logistics` + `logistics_approved` DNs migrate to `pending_hod` on `init_db`; second call is a no-op.
+4. `get_pr_with_po_numbers` comma-joins POs per PR line (sorted, deduped).
+5. `generate_pr_pdf` produces a valid PDF byte stream with the new kwarg; back-compat path (no `po_map`) also works.
+
+**Two pre-existing tests updated for the new contract** (NOT new tests):
+- `check_full_dn_flow_to_sk_receipt` — removed the `logistics_decide_dn` call from the happy-path. Warehouse now submits straight to HOD.
+- `check_in_transit_dns_for_site_isolation_and_order` — was asserting `pending_sk` sorts before `pending_logistics`; now asserts it sorts before `pending_hod` (the new resting state for newly-submitted DNs).
+
+UI crawler stays at **17/17**.
+
+### Contracts (don't break in Round 17+)
+
+- The DN state machine still permits `pending_logistics` and `logistics_approved` in the CHECK constraint — keep them there. Removing those values from the constraint would break restore-from-backup of any DB snapshotted before Round 16.
+- `submit_dn_for_logistics` is now a misnomer. **Do not rename it** without updating the Warehouse Portal caller in lockstep; pick this up only if the cost of staring at the name daily exceeds the rename risk. The docstring documents the new behaviour clearly.
+- `get_pr_with_po_numbers` joins on `Material_Code` (not `SAP_Code`) because `po_items` deliberately lacks `SAP_Code`. New code introducing a SAP-Code-on-PO column should update this helper to prefer SAP when available.
+- The PR PDF filename is now `…_Status.pdf`. Any external tooling that grepped for `…_Record.pdf` needs the new pattern.
+- The PR PDF `po_map` kwarg is keyword-only. Don't promote it to a positional parameter — back-compat callers rely on signature stability.
+
+### Operational note
+
+After deploying Round 16, the first `init_db` call on a live DB will silently flip any in-flight `pending_logistics` DNs into the HOD's queue. Run the migration during a low-traffic window and notify the HODs that their DN Approvals tab will fill on the next refresh.
 
 ---
 
