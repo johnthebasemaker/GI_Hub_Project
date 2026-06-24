@@ -75,6 +75,7 @@ PAGE_ACCESS = {
     "🏭 Warehouse Portal":    "warehouse_user", # exact-locked in main.py (admin shadow allowed)
     "🛡️ Admin Portal":        "admin",
     "📊 Reports":             "supervisor",
+    "🧪 Material Estimator":  "hod",            # Round 17 — exact-locked to {hod, admin}
 }
 
 # Cross-site request status FSM: pending → approved|rejected → fulfilled

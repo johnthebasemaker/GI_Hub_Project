@@ -57,6 +57,7 @@ from pages_internal import (
     page_logistics_portal,
     page_warehouse_portal,
     page_supervisor_portal,
+    page_material_estimator,
 )
 
 # ===========================================================================
@@ -171,6 +172,11 @@ _EXACT_ROLE_PAGES = {
     "🛡️ Supervisor Portal": {"supervisor", "admin"},
     "🚚 Logistics Portal":  {"logistics", "admin"},
     "🏭 Warehouse Portal":  {"warehouse_user", "admin"},
+    # Round 17 — Material Estimator is the merged Smart Material Estimator
+    # portal. Exact-locked so SK / Supervisor / Logistics / Warehouse never
+    # see a planning surface they shouldn't act on. HOD edits the estimator
+    # scoped to their own site; Admin gets a sidebar site picker.
+    "🧪 Material Estimator": {"hod", "admin"},
 }
 
 # Per-page deny-list. Used when a role would otherwise pass the hierarchy
@@ -603,6 +609,8 @@ def main() -> None:
         page_logistics_portal(user)
     elif page == "🏭 Warehouse Portal":
         page_warehouse_portal(user)
+    elif page == "🧪 Material Estimator":
+        page_material_estimator(user)
 
 
 if __name__ == "__main__":
