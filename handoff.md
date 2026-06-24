@@ -1,8 +1,8 @@
 # GI Hub ERP — Handoff
 
-**Last update:** 2026-06 round 12 — **WORKSTREAM C PAUSED · SMR-via-SK-Grid + Auto-Attribution SHIPPED.** Supervisor Material Request approvals now route through the SK Consumption staging grid (was: straight to HOD EOD), with `Requested_By` / `Issued_By` / `"Approved By"` auto-filled across all three ledger boundaries. Manual "Technician" + Issued_By + Approved_By textboxes retired via `config.HIDDEN_FORM_COLS`. Triple-layer SMR visibility (banner + column + 🛡️ badge) on the HOD EOD grid. Per-line `supervisor_material_request_items.line_status` tracks `active / withdrawn_at_staging / committed`. SK Submit-Batch now runs the negative-stock validator (belt + suspenders alongside HOD-side). See §2N. **Tests: 450/450 in `bug_check.py` · 17/17 in `test_ui_crawler.py`.**
+**Last update:** 2026-06 round 13 — **EOD STATE UNIFICATION + SCHEMA CLEANUP SHIPPED.** `commit_eod` filter widened from `pending_hod` only → `(pending_hod, approved, flagged)` via the new `_EOD_COMMIT_STATUSES` constant, so per-row ✓ approvals no longer strand rows. `↩️ Unapprove` button added to the HOD EOD per-row panel. Rejected rows now route to a new `rejected_issues_archive` table (copy-then-delete) so `pending_issues` stays lean while audit trail is preserved. `line_status` gains a 4th value `'rejected_at_hod'` for SMR-sourced rejections. Bogus `Approved` column (legacy parsing artifact, always NULL) dropped from `consumption`; the proper `"Approved By"` column stays as the single attribution slot. Admin DB Editor PDF export for consumption now uses the canonical `config.CONSUMPTION_EXPORT_COLS` list — no more legacy junk in operations PDFs. See §2O. **Tests: 460/460 in `bug_check.py` · 17/17 in `test_ui_crawler.py`.**
 
-**Prior round:** 11 — **Phase 8 SHIPPED · WORKSTREAM B (Smart Scan AI) COMPLETE.** Smart Scan Tier-3 fallback via a separately-deployed FastAPI sidecar wrapping NVIDIA LocateAnything-3B (MPS, fp16 on Apple Silicon). Phases 8A–8E:
+**Prior round:** 12 — SMR-via-SK-Grid + Auto-Attribution. **Round 11 prior:** Phase 8 · Workstream B (Smart Scan AI) COMPLETE. Smart Scan Tier-3 fallback via a separately-deployed FastAPI sidecar wrapping NVIDIA LocateAnything-3B (MPS, fp16 on Apple Silicon). Phases 8A–8E:
 - **8A**: `ai/locate_anything/` package — stdlib-HTTP client (gate check, circuit breaker, 30s timeout), `model_loader.py` (MPS + lazy single-load + ModelNotReadyError), `server.py` (FastAPI POST /detect, GET /health), sidecar-only `requirements.txt`. Admin gate `app_settings.locate_anything_enabled` default OFF. `scripts/download_model.sh` (manual).
 - **8B**: `scripts/bundle_locate_anything_weights.sh` + `scripts/install_locate_anything_weights.sh` (overwrite-always, SHA-256 verified) for air-gapped sites. `host_setup/launchd/com.gi.locate-anything.plist.tmpl` + `host_setup/scripts/run_locate_anything.sh`. `host_setup/scripts/install.sh --with-locate-anything` opt-in flag.
 - **8C**: `ai/cv/smart_scan.py:should_invoke_tier3 / tier3_to_candidates`. SK Smart Scan gains amber-bordered "🤖 AI fallback" panel — "Use this tool" is the only accept path. Fires ONLY when YOLO is in "manual" mode (top conf < 0.30 OR empty). Audit events: TIER3_SHOWN / ACCEPTED / REJECTED.
@@ -11,7 +11,7 @@
 
 **Workstream B — Smart Scan AI module: COMPLETE.** All five phases shipped; the gate stays OFF in production until a pilot site explicitly opts in.
 **Prior rounds:** 7F Role-Based PDFs · 7E Network Resilience · 7D PO Masking · 7C Cross-Site Notifications · 7B Supervisor Material Request · 7A Employee Site Binding · 6A–F Workstream A.
-**Test status:** **450/450 in `bug_check.py` · 17/17 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`). +10 across Round 12 (3 Phase 7B contracts updated for the new draft-grid routing, 10 new Round 12 checks for the auto-attribution + line_status pipeline). **Zero network access · zero torch import in test path · zero weight files required on disk.**
+**Test status:** **460/460 in `bug_check.py` · 17/17 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`). +10 across Round 13 (commit_eod widen, hod_reject→archive, hod_unapprove, bogus-Approved drop, canonical export list, SMR rejected_at_hod). **Zero network access · zero torch import in test path · zero weight files required on disk.**
 **Production hosting:** Self-host on `giinventory.com` via Cloudflare Tunnel + Access (email allow-list `@generalindustries.net`). Turnkey installer at `host_setup/scripts/install.sh`. See §4 "Run / Develop" and the "Production hosting" chapter.
 **Purpose:** Get the next session productive in <5 minutes — architecture, what changed, what's next.
 **Companion docs:** `USER_MANUAL.md` (every page/tab/button), `SOP.md` (Logistics + Warehouse operating procedure with cadences, decision trees, escalation matrix), `docs/cv_training_guide.md` (Phase 6C — capture → label → train → promote walkthrough).
@@ -1090,6 +1090,88 @@ The Confirm Commit button passes `user["username"]` into `commit_eod(hod_usernam
 - `HIDDEN_FORM_COLS` is the contract for "auto-filled / retired" columns. Adding a new auto-attributed column → put its name here so it stops appearing in forms.
 - `Technician` column lives on in the schema. Don't drop it — legacy rows carry data; SQLite ALTER DROP is risky on hosted instances.
 - `line_status` in `('active', 'withdrawn_at_staging', 'committed')`. Adding a 4th value → update `list_smr_history` callers + the test fixtures.
+
+---
+
+## 2O. Tuning Round 13 (2026-06) — EOD State Unification + Schema Cleanup
+
+Two production bugs surfaced after Round 12 deployment: (a) per-row ✓ approvals on the HOD EOD tab were stranding rows — they vanished from the UI yet never reached the consumption ledger, and (b) the Admin Master DB Editor "Export as PDF" on the consumption table was leaking junk columns into operations PDFs (a bogus parsing-artifact column named `Approved` with type `By TEXT`, the retired `Technician` column, internal-only `Source_Ref` / `FEFO_Override` / `status`, etc.).
+
+Both fixed in this round, with two additional polish wins folded in: a `↩️ Unapprove` action on per-row approvals so HODs can change their mind, and an archive table for rejected rows so `pending_issues` stays lean while the audit trail is preserved.
+
+### Root causes
+
+**Bug 1 — three filters disagreed on what `commit_eod` should commit.** `hod_approve_pending_issue` (per-row ✓) and `hod_approve_all_pending_issues` (bulk Approve All) both wrote `status='approved'`, but `commit_eod` and `get_pending_issues_for_site` only matched `status='pending_hod'`. So a `✓`-clicked row dropped out of the HOD UI (filter) and never reached `consumption` (commit filter).
+
+**Bug 2 — two legacy column landmines on the consumption table.** Old code at some point ran `ALTER TABLE consumption ADD COLUMN Approved By TEXT` *without quotes*; SQLite parsed `Approved` as the column name and `By TEXT` as the type. The column has always been NULL — but it was still in `SELECT *` dumps. The Admin export ran `pd.read_sql(f"SELECT * FROM {selected_table}", conn)` straight into `generate_universal_pdf`, so the PDF carried both `Approved` (bogus) and `Approved By` (Round 12's proper column), plus the retired `Technician` field and several internal-only columns.
+
+### Schema self-heal (`init_db`)
+
+1. **DROP the bogus `Approved` column** on `consumption`. Pre-flight `SELECT COUNT(*) … WHERE "Approved" IS NOT NULL` confirms it's NULL-only (it always has been); then `ALTER TABLE consumption DROP COLUMN "Approved"`. Wrapped in a `try/except sqlite3.OperationalError` so older SQLite runtimes (< 3.35) silently skip the DROP — the canonical export list hides it from PDFs regardless.
+2. **`rejected_issues_archive`** new table — `original_id` + mirror of `pending_issues` business columns + `rejected_by` / `rejected_at` / `reject_reason`. Two indexes: `(Site_ID, rejected_at)` for per-site audits, `(Source_Ref)` for SMR back-resolution. The init script also forward-mirrors any new `pending_issues` column onto the archive automatically.
+3. **`supervisor_material_request_items.line_status`** gains a 4th value `'rejected_at_hod'` (semantics only — no enum constraint to migrate). Set by `hod_reject_pending_issue` when the source row was SMR-sourced. Distinct from `'withdrawn_at_staging'` (SK-side drop) so the supervisor's intent ledger reflects the actual lifecycle without forcing a join through the archive.
+
+### Database helper changes (`database.py`)
+
+| Change | Notes |
+|---|---|
+| New module constant `_EOD_COMMIT_STATUSES = ('pending_hod', 'approved', 'flagged')` + a SQL predicate alias `_EOD_PI_STATUS_PRED` | Single source of truth — every filter that asks "is this row eligible to commit?" reuses it. |
+| `commit_eod` SELECT + DELETE filters reuse the new predicate | Per-row ✓ rows (`approved`) and flagged rows now reach consumption. `rejected` is excluded — those rows live only in the archive. |
+| `get_pending_issues_for_site` filter widened to the same set | Approved rows stay visible in the HOD EOD grid until commit, so `↩️ Unapprove` is reachable. |
+| `hod_reject_pending_issue(issue_id, *, rejected_by=None, reason=None)` refactored | Copy-then-delete to `rejected_issues_archive` with metadata. Detects SMR `Source_Ref` and flips the matching SMR line to `line_status='rejected_at_hod'`. Audited as `REJECT_PENDING_ISSUE`. Idempotent on already-archived rows. |
+| **NEW `hod_unapprove_pending_issue(issue_id)`** | Flips `status='approved' → 'pending_hod'`. No-op on rows that aren't currently approved. |
+| `hod_approve_all_pending_issues` unchanged | Still bulk-sets `'approved'`; the widened `commit_eod` filter is what makes it actually reach the ledger now. |
+
+### config.py
+
+`CONSUMPTION_EXPORT_COLS` (new) — canonical `(db_col, display_label)` list for the Admin DB Editor's PDF export on the consumption table. 17 entries: Date, SAP Code, Material Code (joined), Material (joined), UOM (joined), Quantity, Work Type, PR Number, Tank No, Serial No, Lot Number, Issued By, Issued To, Requested By, Approved By, Remarks, Site. **Excludes** Technician, `Approved` (bogus), `status`, `Source_Ref`, `FEFO_Override`.
+
+### UI — `pages_internal/admin_portal.py`
+
+`_render_master_db_editor_tab` — when `selected_table == "consumption"`, the Export-as-PDF button now joins inventory for Material_Code / Equipment_Description / UOM, projects against `CONSUMPTION_EXPORT_COLS`, renames to the display labels in the canonical order, and feeds the cleaned dataframe to `generate_universal_pdf`. **All other tables continue to export `SELECT *`** — only consumption was buggy. The editable in-page `st.data_editor` grid still loads `SELECT *` because admins legitimately need the raw view to fix bad rows.
+
+### UI — `pages_internal/hod_portal.py`
+
+- **Actionable filter widened** from `["pending", "flagged"]` to `["pending", "flagged", "approved"]` so approved rows surface in the per-row action list.
+- **Per-row buttons branch on state:** approved rows show **↩️ Unapprove**; pending / flagged rows show the existing **✓ Approve**. Both states share the **✗ Reject** button.
+- **Reject is now reason-mandatory** via a popover (`text_input` + Confirm reject button, disabled until a reason is typed). The reason and HOD username pass through to `hod_reject_pending_issue(rejected_by=…, reason=…)`.
+- **New green banner** above the grid: `"✅ N row(s) already approved — they will commit to the master ledger on the next 📤 Commit EOD click."` Renders only when N > 0.
+- **Bulk Commit dialog DELETE widened** to match `_EOD_COMMIT_STATUSES` so the re-insert → `commit_eod` chain clears every commit-eligible status from `pending_issues`.
+
+### Tests (`bug_check.py`)
+
+**+10 Round 13 checks, target 460/460 — achieved.** Coverage:
+
+1. `commit_eod` commits status='approved' rows (and writes `"Approved By"`).
+2. `commit_eod` commits status='flagged' rows.
+3. `commit_eod` skips status='rejected' rows (and doesn't delete them either).
+4. `get_pending_issues_for_site` returns rows in all three commit-eligible statuses.
+5. `hod_reject_pending_issue` copies to `rejected_issues_archive` with metadata + deletes the source.
+6. `hod_unapprove_pending_issue` flips `approved → pending_hod`; idempotent no-op otherwise.
+7. Bogus `Approved` column gone from consumption post-`init_db`; proper `"Approved By"` retained.
+8. `rejected_issues_archive` table has the required column set + indexes.
+9. `CONSUMPTION_EXPORT_COLS` content: includes the canonical business columns, excludes the legacy/internal ones.
+10. SMR-sourced row rejected at HOD review → `line_status='rejected_at_hod'`, and the archive carries the original `Source_Ref` so intent-vs-actual reports can still resolve the line.
+
+UI crawler **17/17** still green.
+
+### Contracts (don't break in Round 14+)
+
+- `_EOD_COMMIT_STATUSES` is the canonical "commit-eligible" set. New status values must NOT be added to `pending_issues` without deciding whether they belong here. **`'rejected'` is intentionally absent**.
+- `hod_reject_pending_issue` is the **only** path that should remove a row from `pending_issues` to a terminal state. Direct UPDATE-to-rejected is treated as an inert legacy pattern (commit_eod ignores it, but no archive row exists for audit).
+- `line_status ∈ ('active', 'withdrawn_at_staging', 'committed', 'rejected_at_hod')`. SK-side withdraw and HOD-side reject are **distinct** terminal states — never collapse them into one value.
+- `CONSUMPTION_EXPORT_COLS` is the single source of truth for the canonical consumption export. When you add a new business-meaningful column to `consumption`, also add it here, otherwise the PDF will silently drop it.
+- The DROP of the bogus `Approved` column is gated by a NULL-only safety probe. If a non-NULL value ever appears in a fresh DB upgrade (it shouldn't — the column was always unused), the DROP is skipped and a manual review is required.
+
+### Operational note for live deployments
+
+Before the first init_db that includes this round runs against a long-lived production DB, take a one-line snapshot:
+
+```bash
+cp gi_database.db gi_database.preR13_$(date +%Y%m%d).db
+```
+
+The DROP COLUMN is irreversible. The pre-flight check makes data loss impossible, but the snapshot makes any "wait, what happened" investigation trivial.
 
 ---
 

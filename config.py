@@ -112,6 +112,33 @@ HIDDEN_FORM_COLS = {
     "Lot_Number",
 }
 
+# CONSUMPTION_EXPORT_COLS — canonical column list for the Admin Master DB
+# Editor's "Export as PDF" path on the consumption table. Each tuple is
+# (db_col, display_label). The export joins inventory for Material_Code +
+# Equipment_Description + UOM (those are NOT stored on the consumption row).
+# Excludes legacy / system columns: Technician, status, FEFO_Override,
+# Source_Ref, the bogus `Approved` (with type "By TEXT") legacy column.
+# Round 13.
+CONSUMPTION_EXPORT_COLS = [
+    ("Date",                  "Date"),
+    ("SAP_Code",              "SAP Code"),
+    ("Material_Code",         "Material Code"),       # joined from inventory
+    ("Equipment_Description", "Material"),            # joined from inventory
+    ("UOM",                   "UOM"),                 # joined from inventory
+    ("Quantity",              "Quantity"),
+    ("Work_Type",             "Work Type"),
+    ("PR_Number",             "PR Number"),
+    ("Tank_No",               "Tank No"),
+    ("Serial_No",             "Serial No"),
+    ("Lot_Number",            "Lot Number"),
+    ("Issued_By",             "Issued By"),
+    ("Issued_To",             "Issued To"),
+    ("Requested_By",          "Requested By"),
+    ("Approved By",           "Approved By"),         # legacy space-named col
+    ("Remarks",               "Remarks"),
+    ("Site_ID",               "Site"),
+]
+
 # Material categories — drive category-filtered reports and the MTC workflow.
 # Items in MTC_REQUIRED_CATEGORY are forced to supply a Material Test
 # Certificate (MTC) doc + number on receipt staging.

@@ -1433,6 +1433,84 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     if "Approved By" not in _cons_cols:
         c.execute('ALTER TABLE consumption ADD COLUMN "Approved By" TEXT')
 
+    # ── Round 13: EOD State Unification + Schema Cleanup ────────────────────
+    # 1. Drop the bogus `Approved` column (cid=16 on legacy DBs). It was
+    #    created when old code ran `ALTER TABLE consumption ADD COLUMN
+    #    Approved By TEXT` *without quotes* — SQLite parsed `Approved` as
+    #    the column name and `By TEXT` as the type. The column has always
+    #    been NULL on every row; the actual data lives in the properly-
+    #    quoted "Approved By" column added above (and now populated by
+    #    commit_eod). Drop is gated by a NULL-only safety probe so a
+    #    surprise non-NULL value never causes data loss.
+    c.execute("PRAGMA table_info(consumption)")
+    _cons_cols_after = {row[1] for row in c.fetchall()}
+    if "Approved" in _cons_cols_after:
+        try:
+            nn = c.execute(
+                'SELECT COUNT(*) FROM consumption WHERE "Approved" IS NOT NULL'
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            nn = -1  # broken column — fall through to DROP anyway
+        if nn == 0 or nn == -1:
+            try:
+                # ALTER TABLE DROP COLUMN requires SQLite ≥ 3.35 (Mar 2021).
+                # If unavailable we silently leave the column; the canonical
+                # export list hides it from PDF / CSV regardless.
+                c.execute('ALTER TABLE consumption DROP COLUMN "Approved"')
+            except sqlite3.OperationalError:
+                pass
+
+    # 2. rejected_issues_archive — terminal log for HOD-rejected pending
+    #    issues. Mirrors the pending_issues column set (auto-grown on each
+    #    init_db pass) plus reject metadata. Keeps pending_issues lean while
+    #    preserving full audit trail.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS rejected_issues_archive (
+            archive_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            original_id     INTEGER,
+            SAP_Code        TEXT,
+            Quantity        REAL,
+            Date            TEXT,
+            Site_ID         TEXT,
+            Work_Type       TEXT,
+            Issued_By       TEXT,
+            Issued_To       TEXT,
+            Tank_No         TEXT,
+            Serial_No       TEXT,
+            PR_Number       TEXT,
+            Remarks         TEXT,
+            Lot_Number      TEXT,
+            FEFO_Override   TEXT,
+            Source_Ref      TEXT,
+            Requested_By    TEXT,
+            rejected_by     TEXT NOT NULL,
+            rejected_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+            reject_reason   TEXT
+        )
+    """)
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS ix_rej_archive_site_date "
+        "ON rejected_issues_archive(Site_ID, rejected_at)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS ix_rej_archive_source "
+        "ON rejected_issues_archive(Source_Ref)"
+    )
+    # Forward-compat: if a new pending_issues column appears in a later
+    # round, mirror it onto the archive table so the row copy never drops
+    # data. (Same self-heal idiom as receipts.)
+    c.execute("PRAGMA table_info(pending_issues)")
+    _pi_cols = {row[1] for row in c.fetchall()}
+    c.execute("PRAGMA table_info(rejected_issues_archive)")
+    _arch_cols = {row[1] for row in c.fetchall()}
+    for _missing in _pi_cols - _arch_cols - {"id", "Timestamp", "status"}:
+        try:
+            c.execute(
+                f"ALTER TABLE rejected_issues_archive ADD COLUMN {_missing} TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass  # column may have been added by a concurrent init
+
     # ── Phase 7C: HOD Cross-Site View notification debounce ──────────────────
     # UNIQUE(viewer, target_site, view_date) is the entire debounce — INSERT
     # OR IGNORE returns rowcount=0 on duplicate same-day attempts. No timers,
@@ -2488,6 +2566,20 @@ def load_live_inventory(
     return live_df
 
 
+# ── Round 13: unified EOD commit-set ────────────────────────────────────────
+# Statuses that flow from pending_issues → consumption when commit_eod runs.
+# Round 12 contract was 'pending_hod' only; Round 13 widens to cover per-row
+# HOD approvals (so the per-row ✓ button no longer strands rows) AND the
+# 'flagged' status (it was always intended to be commit-eligible — the UI
+# pill exposes it, the backend just didn't honour it). 'rejected' is NOT in
+# this set; rejected rows live in rejected_issues_archive, never in the
+# permanent ledger. 'draft' is SK-side staging and never reaches the HOD.
+_EOD_COMMIT_STATUSES = ("pending_hod", "approved", "flagged")
+_EOD_PI_STATUS_PRED = (
+    "(COALESCE(status,'pending_hod') IN ('pending_hod','approved','flagged'))"
+)
+
+
 def commit_eod(
     conn: sqlite3.Connection = None,
     *,
@@ -2502,6 +2594,9 @@ def commit_eod(
       for every committed row when provided.
     - Flips `supervisor_material_request_items.line_status='committed'` for
       every SMR-sourced row (matched via Source_Ref).
+    - Round 13: commits rows in `_EOD_COMMIT_STATUSES` (pending_hod / approved
+      / flagged). Rejected rows are NOT touched here — they should already be
+      in rejected_issues_archive via hod_reject_pending_issue.
     - Returns the number of rows committed (0 if queue was empty).
     """
     _owns_conn = conn is None
@@ -2509,7 +2604,10 @@ def commit_eod(
         conn = get_connection()
 
     c = conn.cursor()
-    pending_df = pd.read_sql("SELECT * FROM pending_issues WHERE COALESCE(status,'pending_hod') = 'pending_hod'", conn)
+    pending_df = pd.read_sql(
+        f"SELECT * FROM pending_issues WHERE {_EOD_PI_STATUS_PRED}",
+        conn,
+    )
 
     if pending_df.empty:
         if _owns_conn:
@@ -2572,7 +2670,7 @@ def commit_eod(
             except (ValueError, IndexError):
                 pass
 
-    c.execute("DELETE FROM pending_issues WHERE COALESCE(status,'pending_hod') = 'pending_hod'")
+    c.execute(f"DELETE FROM pending_issues WHERE {_EOD_PI_STATUS_PRED}")
 
     # Flip SMR line_status='committed' for every SMR-sourced row in this commit.
     if smr_line_ids:
@@ -2736,13 +2834,20 @@ def get_pending_issues_for_site(
     Round 12: surfaces `Requested_By` (already on the row) so the HOD EOD
     grid can render the triple-layer SMR visibility (banner + column + badge)
     without a second roundtrip.
+
+    Round 13: filter widened from 'pending_hod' only to the full
+    _EOD_COMMIT_STATUSES set so per-row ✓ (approved) and ✗-converted-flagged
+    rows remain visible in the HOD EOD queue until commit. Rejected rows are
+    routed to rejected_issues_archive by hod_reject_pending_issue and never
+    appear here.
     """
     _owns = conn is None
     if _owns:
         conn = get_connection()
 
     df = pd.read_sql(
-        "SELECT * FROM pending_issues WHERE COALESCE(Site_ID,'HQ') = ? AND COALESCE(status,'pending_hod') = 'pending_hod'",
+        f"SELECT * FROM pending_issues "
+        f"WHERE COALESCE(Site_ID,'HQ') = ? AND {_EOD_PI_STATUS_PRED}",
         conn, params=(site_id,),
     )
     if _owns:
@@ -4526,15 +4631,119 @@ def hod_approve_pending_issue(issue_id: int,
             conn.close()
 
 
-def hod_reject_pending_issue(issue_id: int,
-                             conn: sqlite3.Connection = None) -> bool:
-    """Mark a single pending_issues row rejected (status='rejected')."""
+def hod_reject_pending_issue(
+    issue_id: int,
+    *,
+    rejected_by: str | None = None,
+    reason: str | None = None,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Round 13: archive-then-delete a single pending_issues row.
+
+    Copies the row into rejected_issues_archive with the HOD's username +
+    reason, then DELETEs from pending_issues so the queue stays lean. If the
+    row is SMR-sourced (Source_Ref starts with 'SMR:'), flips the matching
+    supervisor_material_request_items.line_status to 'rejected_at_hod' so the
+    intent ledger reflects the HOD-side outcome (distinct from the SK-side
+    'withdrawn_at_staging' flow).
+
+    Back-compat: callers passing positional issue_id only continue to work;
+    rejected_by + reason default to None and the archive row records that.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM pending_issues WHERE id = ?",
+            (int(issue_id),),
+        ).fetchone()
+        if not row:
+            return False
+
+        # Resolve column names so we copy by name (defensive against schema
+        # drift between pending_issues and rejected_issues_archive).
+        cur = conn.execute("SELECT * FROM pending_issues WHERE id = ? LIMIT 1",
+                           (int(issue_id),))
+        pi_col_names = [d[0] for d in cur.description]
+        row_dict = dict(zip(pi_col_names, row))
+
+        conn.execute("PRAGMA table_info(rejected_issues_archive)")
+        arch_cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(rejected_issues_archive)"
+        ).fetchall()}
+
+        # Build the archive payload — only columns that exist on the archive.
+        payload: dict = {}
+        for k, v in row_dict.items():
+            if k == "id":
+                if "original_id" in arch_cols:
+                    payload["original_id"] = v
+                continue
+            if k in arch_cols:
+                payload[k] = v
+        payload["rejected_by"] = (rejected_by or "").strip() or "unknown"
+        if reason is not None:
+            payload["reject_reason"] = (reason or "").strip() or None
+
+        cols = list(payload.keys())
+        phs  = ", ".join(["?"] * len(cols))
+        quoted = ", ".join(f'"{c}"' for c in cols)
+        conn.execute(
+            f"INSERT INTO rejected_issues_archive ({quoted}) VALUES ({phs})",
+            [payload[k] for k in cols],
+        )
+
+        # Round 13 — SMR-sourced row? Flip the matching SMR line to
+        # 'rejected_at_hod' so the supervisor's intent ledger reflects the
+        # HOD-side rejection without forcing a join through the archive.
+        src_ref = row_dict.get("Source_Ref")
+        if isinstance(src_ref, str) and src_ref.startswith("SMR:"):
+            try:
+                line_id = int(src_ref.split(":")[-1])
+                conn.execute(
+                    "UPDATE supervisor_material_request_items "
+                    "SET line_status = 'rejected_at_hod' "
+                    "WHERE id = ? AND line_status = 'active'",
+                    (line_id,),
+                )
+            except (ValueError, IndexError):
+                pass
+
+        conn.execute(
+            "DELETE FROM pending_issues WHERE id = ?", (int(issue_id),),
+        )
+        conn.commit()
+        try:
+            log_audit_action(
+                rejected_by or "unknown", "REJECT_PENDING_ISSUE",
+                "pending_issues",
+                f"id={issue_id} sap={row_dict.get('SAP_Code')} "
+                f"qty={row_dict.get('Quantity')} "
+                f"reason={(reason or '')[:80]!r}",
+            )
+        except Exception:
+            pass  # Audit failure must never block the reject.
+        return True
+    finally:
+        if _owns:
+            conn.close()
+
+
+def hod_unapprove_pending_issue(
+    issue_id: int,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Round 13: flip a per-row-approved pending_issues row back to
+    'pending_hod' so the HOD can change their mind before bulk commit.
+    No-op when the row isn't in 'approved' status."""
     _owns = conn is None
     if _owns:
         conn = get_connection()
     try:
         cur = conn.execute(
-            "UPDATE pending_issues SET status='rejected' WHERE id = ?",
+            "UPDATE pending_issues SET status='pending_hod' "
+            "WHERE id = ? AND status = 'approved'",
             (int(issue_id),),
         )
         conn.commit()

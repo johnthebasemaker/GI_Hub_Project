@@ -257,9 +257,13 @@ def _eod_commit_dialog() -> None:
             conn = get_connection()
             try:
                 c = conn.cursor()
+                # Round 13 — widen DELETE to match the commit_eod set so
+                # per-row ✓ rows (status='approved') and flagged rows are
+                # cleared alongside pending_hod before the re-insert.
                 c.execute(
                     "DELETE FROM pending_issues WHERE COALESCE(Site_ID,'HQ') = ? "
-                    "AND COALESCE(status,'pending_hod') = 'pending_hod'",
+                    "AND COALESCE(status,'pending_hod') "
+                    "IN ('pending_hod','approved','flagged')",
                     (site_id,),
                 )
                 # The EOD tab JOINs inventory (Material_Code/Material_Name/UOM)
@@ -359,6 +363,24 @@ def _render_eod_tab(user: dict, site_id: str) -> None:
     pending_df["_status"] = pending_df["_status"].replace(
         {"pending_hod": "pending", "": "pending"}
     )
+
+    # Round 13 — surface how many rows are already approved and queued for
+    # the next bulk Commit EOD. Helps the HOD see what's ready vs awaiting
+    # decision in mixed states.
+    _appr_ready = int((pending_df["_status"] == "approved").sum())
+    if _appr_ready:
+        st.markdown(
+            f'<div style="background:rgba(34,197,94,0.10);'
+            f'border:1px solid rgba(34,197,94,0.35);'
+            f'border-left:4px solid #22C55E;'
+            f'border-radius:8px;padding:10px 14px;margin:0 0 10px 0;">'
+            f'<span style="color:#22C55E;font-weight:700;font-size:13px;">'
+            f'✅ {_appr_ready} row(s) already approved</span>'
+            f'<span style="color:{_C["muted"]};font-size:12px;"> — they will '
+            f'commit to the master ledger on the next 📤 Commit EOD click. '
+            f'Use ↩️ on a row to un-approve.</span></div>',
+            unsafe_allow_html=True,
+        )
 
     # Round 12 — SMR provenance flag for the triple-layer visibility:
     # banner, dedicated grid column, and 🛡️ badge on the Material cell.
@@ -539,8 +561,12 @@ def _render_eod_tab(user: dict, site_id: str) -> None:
     st.markdown(_html_table("".join(rows_html), [h for _, h in display_cols]),
                 unsafe_allow_html=True)
 
-    # Per-row Approve / Reject panel — now shows the full entry details
-    actionable = view_df[view_df["_status"].isin(["pending", "flagged"])].head(20)
+    # Per-row Approve / Reject / Unapprove panel — now shows full entry details.
+    # Round 13 — 'approved' rows are actionable too (↩️ Unapprove) so the HOD
+    # can change their mind before bulk commit.
+    actionable = view_df[
+        view_df["_status"].isin(["pending", "flagged", "approved"])
+    ].head(20)
     if not actionable.empty:
         st.markdown(
             f'<div style="color:{_C["muted"]};font-size:11px;font-weight:700;'
@@ -591,14 +617,53 @@ def _render_eod_tab(user: dict, site_id: str) -> None:
                     f'</div>',
                     unsafe_allow_html=True,
                 )
+            _row_state = r.get("_status") or "pending"
             with cB:
-                if st.button("✓", key=f"_hod_eod_appr_{rid}", use_container_width=True):
-                    hod_approve_pending_issue(rid)
-                    st.rerun()
+                if _row_state == "approved":
+                    # Round 13 — already approved → offer the un-approve
+                    # action so the HOD can take it back before commit.
+                    if st.button(
+                        "↩️", key=f"_hod_eod_unappr_{rid}",
+                        use_container_width=True,
+                        help="Un-approve (back to pending)",
+                    ):
+                        from database import hod_unapprove_pending_issue
+                        hod_unapprove_pending_issue(rid)
+                        st.rerun()
+                else:
+                    if st.button(
+                        "✓", key=f"_hod_eod_appr_{rid}",
+                        use_container_width=True,
+                        help="Approve (queues for next Commit EOD)",
+                    ):
+                        hod_approve_pending_issue(rid)
+                        st.rerun()
             with cC:
-                if st.button("✗", key=f"_hod_eod_rej_{rid}", use_container_width=True):
-                    hod_reject_pending_issue(rid)
-                    st.rerun()
+                # Round 13 — reject now archives the row with a mandatory
+                # reason. Popover keeps the per-row UI dense while collecting
+                # the reason inline.
+                with st.popover("✗", use_container_width=True,
+                                help="Reject (archives the row)"):
+                    _rsn = st.text_input(
+                        "Reason for rejection",
+                        key=f"_hod_eod_rej_rsn_{rid}",
+                        placeholder="Required — e.g. wrong material, qty error…",
+                        max_chars=200,
+                    )
+                    if st.button(
+                        "Confirm reject",
+                        key=f"_hod_eod_rej_go_{rid}",
+                        type="primary", use_container_width=True,
+                        disabled=not (_rsn or "").strip(),
+                    ):
+                        ok = hod_reject_pending_issue(
+                            rid,
+                            rejected_by=user.get("username", ""),
+                            reason=_rsn.strip(),
+                        )
+                        if ok:
+                            st.toast("Rejected → archived", icon="🗑️")
+                            st.rerun()
 
     # Flagged banner (informational)
     if flag_n > 0:

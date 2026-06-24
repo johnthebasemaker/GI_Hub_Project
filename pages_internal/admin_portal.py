@@ -766,7 +766,46 @@ def _render_master_db_editor_tab(user: dict) -> None:
                 st.caption(f"{len(target_df):,} rows in `{selected_table}`")
             with col_export:
                 from reports import generate_universal_pdf
-                pdf_bytes = generate_universal_pdf(f"Master Data: {selected_table}", target_df, user["username"])
+                # Round 13 — consumption export uses the canonical column
+                # list (config.CONSUMPTION_EXPORT_COLS) so legacy / hidden
+                # columns (Technician, the bogus `Approved`, status,
+                # FEFO_Override, Source_Ref) never leak into the PDF.
+                # Other tables still get the raw SELECT * dump.
+                if selected_table == "consumption":
+                    from config import CONSUMPTION_EXPORT_COLS
+                    inv_df = pd.read_sql(
+                        "SELECT SAP_Code, Material_Code, "
+                        "Equipment_Description, UOM FROM inventory",
+                        conn,
+                    )
+                    export_df = target_df.merge(
+                        inv_df, on="SAP_Code", how="left",
+                        suffixes=("", "_inv"),
+                    )
+                    rename_map: dict = {}
+                    ordered: list = []
+                    for db_col, label in CONSUMPTION_EXPORT_COLS:
+                        if db_col in export_df.columns:
+                            rename_map[db_col] = label
+                            ordered.append(label)
+                    export_df = (
+                        export_df[list(rename_map.keys())]
+                        .rename(columns=rename_map)
+                    )
+                    # Re-order to match the canonical list, in case merge
+                    # shuffled.
+                    export_df = export_df[
+                        [c for c in ordered if c in export_df.columns]
+                    ]
+                    pdf_bytes = generate_universal_pdf(
+                        "Master Data: consumption", export_df,
+                        user["username"],
+                    )
+                else:
+                    pdf_bytes = generate_universal_pdf(
+                        f"Master Data: {selected_table}", target_df,
+                        user["username"],
+                    )
                 st.download_button(
                     label="📄 Export as PDF",
                     data=pdf_bytes,

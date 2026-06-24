@@ -3931,6 +3931,290 @@ def check_r12_e2e_full_pipeline_three_role_attribution() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Round 13 — EOD State Unification + Schema Cleanup checks
+# ═══════════════════════════════════════════════════════════════════════════
+def _r13_seed_pending_issue(site: str, sap: str, qty: float = 1.0,
+                            *, status: str = "pending_hod",
+                            issued_by: str = "test_sk",
+                            source_ref: str | None = None) -> int:
+    """Drop a single pending_issues row in the requested status. Returns id."""
+    conn = database.get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT INTO pending_issues "
+            "(SAP_Code, Quantity, Date, Site_ID, Work_Type, Issued_By, "
+            " Issued_To, Tank_No, status, Source_Ref) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (sap, qty,
+             datetime.date.today().isoformat(),
+             site, "Maintenance", issued_by, "Worker A", "Tank-A",
+             status, source_ref),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def _r13_seed_inventory(site: str, sap: str, opening: float = 100.0) -> None:
+    """Make sure inventory has the SAP row + decent opening stock so the
+    over-issue guard never blocks commit_eod in these tests."""
+    conn = database.get_connection()
+    try:
+        # inventory table is global keyed by SAP_Code (no site column on it).
+        existing = conn.execute(
+            "SELECT 1 FROM inventory WHERE SAP_Code = ?", (sap,),
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO inventory "
+                "(SAP_Code, Equipment_Description, UOM, Material_Code, "
+                " Opening_Stock, Minimum_Qty) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (sap, f"Mat {sap}", "PCS", f"MC-{sap}", opening, 0),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def check_r13_commit_eod_picks_up_approved_status() -> None:
+    """commit_eod commits status='approved' rows (Round 13 widen)."""
+    site, sap = "TEST_R13_APP", "R13APP-1"
+    _r13_seed_inventory(site, sap, opening=50)
+    pid = _r13_seed_pending_issue(site, sap, qty=3, status="approved")
+    n = database.commit_eod(hod_username="hod_r13")
+    assert n >= 1, f"commit_eod should commit approved rows, got {n}"
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            'SELECT Quantity, "Approved By" FROM consumption '
+            "WHERE SAP_Code = ?", (sap,),
+        ).fetchone()
+        assert row, "consumption row missing for approved → commit"
+        assert float(row[0]) == 3.0
+        assert row[1] == "hod_r13"
+    finally:
+        conn.close()
+
+
+def check_r13_commit_eod_picks_up_flagged_status() -> None:
+    """commit_eod commits status='flagged' rows too."""
+    site, sap = "TEST_R13_FLG", "R13FLG-1"
+    _r13_seed_inventory(site, sap, opening=50)
+    _r13_seed_pending_issue(site, sap, qty=2, status="flagged")
+    n = database.commit_eod(hod_username="hod_r13")
+    assert n >= 1
+    conn = database.get_connection()
+    try:
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM consumption WHERE SAP_Code = ?", (sap,),
+        ).fetchone()[0]
+        assert cnt == 1, f"flagged row didn't commit (got {cnt})"
+    finally:
+        conn.close()
+
+
+def check_r13_commit_eod_skips_rejected_status() -> None:
+    """commit_eod must NOT commit status='rejected' rows.
+
+    (In real use, rejection routes through hod_reject_pending_issue which
+    moves to archive — but a stray legacy row directly UPDATEd to 'rejected'
+    must still be ignored.)
+    """
+    site, sap = "TEST_R13_REJ", "R13REJ-1"
+    _r13_seed_inventory(site, sap, opening=50)
+    _r13_seed_pending_issue(site, sap, qty=1, status="rejected")
+    n = database.commit_eod(hod_username="hod_r13")
+    conn = database.get_connection()
+    try:
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM consumption WHERE SAP_Code = ?", (sap,),
+        ).fetchone()[0]
+        assert cnt == 0, "rejected rows must never reach consumption"
+        # Row itself stays in pending_issues (only archive moves it out).
+        still = conn.execute(
+            "SELECT COUNT(*) FROM pending_issues WHERE SAP_Code = ?",
+            (sap,),
+        ).fetchone()[0]
+        assert still == 1, "rejected row must NOT be deleted by commit_eod"
+    finally:
+        conn.close()
+
+
+def check_r13_get_pending_issues_for_site_widened() -> None:
+    """get_pending_issues_for_site returns approved + flagged + pending_hod."""
+    site = "TEST_R13_VIS"
+    _r13_seed_inventory(site, "R13VIS-1")
+    _r13_seed_inventory(site, "R13VIS-2")
+    _r13_seed_inventory(site, "R13VIS-3")
+    _r13_seed_pending_issue(site, "R13VIS-1", status="pending_hod")
+    _r13_seed_pending_issue(site, "R13VIS-2", status="approved")
+    _r13_seed_pending_issue(site, "R13VIS-3", status="flagged")
+    df = database.get_pending_issues_for_site(site_id=site)
+    sap_seen = set(df["SAP_Code"].tolist())
+    assert sap_seen == {"R13VIS-1", "R13VIS-2", "R13VIS-3"}, sap_seen
+
+
+def check_r13_hod_reject_moves_to_archive() -> None:
+    """hod_reject_pending_issue archives + deletes the source row."""
+    site, sap = "TEST_R13_ARCH", "R13ARCH-1"
+    _r13_seed_inventory(site, sap)
+    pid = _r13_seed_pending_issue(site, sap, qty=4, status="pending_hod")
+    ok = database.hod_reject_pending_issue(
+        pid, rejected_by="hod_r13", reason="wrong qty",
+    )
+    assert ok
+    conn = database.get_connection()
+    try:
+        # Source row gone.
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM pending_issues WHERE id = ?", (pid,),
+        ).fetchone()[0]
+        assert cnt == 0, "rejected row must be deleted from pending_issues"
+        # Archive row landed with the metadata.
+        arch = conn.execute(
+            "SELECT original_id, SAP_Code, Quantity, rejected_by, "
+            "       reject_reason FROM rejected_issues_archive "
+            "WHERE original_id = ?", (pid,),
+        ).fetchone()
+        assert arch is not None, "no archive row"
+        assert arch[1] == sap
+        assert float(arch[2]) == 4.0
+        assert arch[3] == "hod_r13"
+        assert arch[4] == "wrong qty"
+    finally:
+        conn.close()
+
+
+def check_r13_hod_unapprove_flips_back_to_pending() -> None:
+    """hod_unapprove_pending_issue moves status='approved' → 'pending_hod'."""
+    site, sap = "TEST_R13_UNA", "R13UNA-1"
+    _r13_seed_inventory(site, sap)
+    pid = _r13_seed_pending_issue(site, sap, status="approved")
+    ok = database.hod_unapprove_pending_issue(pid)
+    assert ok
+    conn = database.get_connection()
+    try:
+        st = conn.execute(
+            "SELECT status FROM pending_issues WHERE id = ?", (pid,),
+        ).fetchone()[0]
+        assert st == "pending_hod", st
+        # Idempotent no-op on a row that isn't approved.
+        ok2 = database.hod_unapprove_pending_issue(pid)
+        assert ok2 is False, "unapprove must be a no-op on non-approved rows"
+    finally:
+        conn.close()
+
+
+def check_r13_bogus_approved_column_dropped() -> None:
+    """The legacy bogus `Approved` column (with parsed type "By TEXT") must
+    not exist on consumption after init_db. Only the proper "Approved By"
+    column should remain.
+    """
+    conn = database.get_connection()
+    try:
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(consumption)"
+        ).fetchall()}
+        assert "Approved" not in cols, (
+            f"Bogus legacy 'Approved' column still present: {cols}"
+        )
+        assert "Approved By" in cols, (
+            f'Proper "Approved By" column missing: {cols}'
+        )
+    finally:
+        conn.close()
+
+
+def check_r13_rejected_issues_archive_table_exists() -> None:
+    """rejected_issues_archive table + minimum column set exist."""
+    conn = database.get_connection()
+    try:
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(rejected_issues_archive)"
+        ).fetchall()}
+        for must in ("archive_id", "original_id", "SAP_Code", "Quantity",
+                     "Site_ID", "Source_Ref", "Requested_By",
+                     "rejected_by", "rejected_at", "reject_reason"):
+            assert must in cols, f"archive missing {must}: {cols}"
+    finally:
+        conn.close()
+
+
+def check_r13_consumption_export_cols_constant() -> None:
+    """config.CONSUMPTION_EXPORT_COLS is shaped right and excludes the
+    legacy / hidden columns."""
+    from config import CONSUMPTION_EXPORT_COLS
+    assert isinstance(CONSUMPTION_EXPORT_COLS, list)
+    cols = {db for db, _label in CONSUMPTION_EXPORT_COLS}
+    must_include = {
+        "Date", "SAP_Code", "Material_Code", "Equipment_Description", "UOM",
+        "Quantity", "Work_Type", "Issued_By", "Issued_To",
+        "Requested_By", "Approved By", "Remarks", "Site_ID",
+    }
+    missing = must_include - cols
+    assert not missing, f"canonical export missing: {missing}"
+    must_exclude = {
+        "Technician", "Approved", "status",
+        "Source_Ref", "FEFO_Override",
+    }
+    leaked = must_exclude & cols
+    assert not leaked, f"canonical export leaks legacy cols: {leaked}"
+
+
+def check_r13_smr_reject_flips_line_status() -> None:
+    """Rejecting an SMR-sourced pending_issues row at HOD review must flip
+    the matching SMR line to line_status='rejected_at_hod' (distinct from
+    SK-side 'withdrawn_at_staging'). Source_Ref preserved in archive."""
+    rid, no, *_ = _7b_make_pending("TEST_R13_SMR", "_SMRREJ", qty=2,
+                                   sap_stock=20)
+    ok, _ = database.approve_supervisor_request(rid, "sk_r13")
+    assert ok
+    # Flip the draft row to pending_hod (simulates SK submit-batch).
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id, Source_Ref FROM pending_issues "
+            "WHERE Source_Ref LIKE ?", (f"SMR:{no}:%",),
+        ).fetchone()
+        assert row, "SMR draft row missing"
+        pi_id, src = int(row[0]), row[1]
+        conn.execute(
+            "UPDATE pending_issues SET status='pending_hod' WHERE id = ?",
+            (pi_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    # HOD rejects it at EOD review.
+    ok = database.hod_reject_pending_issue(
+        pi_id, rejected_by="hod_r13", reason="exceeds shift cap",
+    )
+    assert ok
+    conn = database.get_connection()
+    try:
+        ls = conn.execute(
+            "SELECT line_status FROM supervisor_material_request_items "
+            "WHERE request_id = ?", (rid,),
+        ).fetchone()[0]
+        assert ls == "rejected_at_hod", (
+            f"line_status should be 'rejected_at_hod', got {ls!r}"
+        )
+        # Archive carries the Source_Ref so SMR intent-vs-actual reports can
+        # still resolve the line.
+        arch_src = conn.execute(
+            "SELECT Source_Ref FROM rejected_issues_archive "
+            "WHERE original_id = ?", (pi_id,),
+        ).fetchone()
+        assert arch_src and arch_src[0] == src, (
+            f"archive Source_Ref mismatch: {arch_src}"
+        )
+    finally:
+        conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Phase 7C — HOD Cross-Site View notification + indicator checks
 # ═══════════════════════════════════════════════════════════════════════════
 def _7c_tag(prefix: str) -> str:
@@ -5897,6 +6181,38 @@ def main() -> int:
     run_check("Round 12", "E2E: sup → SK approve → SK submit → HOD commit",
               check_r12_e2e_full_pipeline_three_role_attribution,
               "Three-role auto-attribution + line_status='committed' end-to-end.")
+
+    # ── Round 13 — EOD State Unification + Schema Cleanup ────────────────
+    run_check("Round 13", "commit_eod commits 'approved' rows",
+              check_r13_commit_eod_picks_up_approved_status,
+              "Per-row ✓ rows must reach consumption on next bulk commit.")
+    run_check("Round 13", "commit_eod commits 'flagged' rows",
+              check_r13_commit_eod_picks_up_flagged_status,
+              "Flagged status was always meant to be commit-eligible.")
+    run_check("Round 13", "commit_eod skips 'rejected' rows",
+              check_r13_commit_eod_skips_rejected_status,
+              "Rejected rows route to archive — never to consumption.")
+    run_check("Round 13", "get_pending_issues_for_site returns approved + flagged",
+              check_r13_get_pending_issues_for_site_widened,
+              "Approved rows must stay visible until commit so HOD can ↩️.")
+    run_check("Round 13", "hod_reject_pending_issue moves to archive",
+              check_r13_hod_reject_moves_to_archive,
+              "Copy-then-delete with rejected_by + reject_reason metadata.")
+    run_check("Round 13", "hod_unapprove_pending_issue flips approved → pending_hod",
+              check_r13_hod_unapprove_flips_back_to_pending,
+              "HOD can change their mind before bulk Commit EOD.")
+    run_check("Round 13", "bogus 'Approved' column dropped from consumption",
+              check_r13_bogus_approved_column_dropped,
+              "Self-heal must DROP COLUMN \"Approved\" (always-NULL legacy).")
+    run_check("Round 13", "rejected_issues_archive schema present",
+              check_r13_rejected_issues_archive_table_exists,
+              "Mirror columns + rejected_by/at/reason metadata.")
+    run_check("Round 13", "CONSUMPTION_EXPORT_COLS contains canonical set",
+              check_r13_consumption_export_cols_constant,
+              "Includes business cols, excludes Technician / Source_Ref / etc.")
+    run_check("Round 13", "SMR reject at HOD flips line_status='rejected_at_hod'",
+              check_r13_smr_reject_flips_line_status,
+              "4th line_status value, distinct from withdrawn_at_staging.")
 
     # ── Phase 7C — HOD Cross-Site View notifications + indicator ─────────
     run_check("Phase 7C", "ix_csv_target_date index exists",

@@ -34,14 +34,27 @@ mkdir -p "${LOCATE_DEST}"
 if [ -f "${LOCATE_DEST}/config.json" ]; then
   echo "      ✓ Already on disk — skipping download."
 else
-  if ! command -v huggingface-cli >/dev/null 2>&1; then
+  # `huggingface-cli` was renamed to `hf` in huggingface_hub 1.x — the old
+  # binary still ships as a deprecation shim that prints a hint and exits 0
+  # WITHOUT downloading anything (silent no-op trap). Prefer `hf` and fall
+  # back only when missing.
+  HF_BIN=""
+  if command -v hf >/dev/null 2>&1; then
+    HF_BIN="hf"
+  elif command -v huggingface-cli >/dev/null 2>&1; then
+    HF_BIN="huggingface-cli"
+  else
     echo "      Installing huggingface_hub CLI ..."
-    pip install --quiet 'huggingface_hub[cli]>=0.24'
+    pip install --quiet 'huggingface_hub>=0.24'
+    if command -v hf >/dev/null 2>&1; then
+      HF_BIN="hf"
+    else
+      HF_BIN="huggingface-cli"
+    fi
   fi
+  echo "      Using CLI: ${HF_BIN}"
   echo "      Downloading ${LOCATE_REPO} (~6 GB, may take a while) ..."
-  huggingface-cli download "${LOCATE_REPO}" \
-    --local-dir "${LOCATE_DEST}" \
-    --local-dir-use-symlinks False
+  "${HF_BIN}" download "${LOCATE_REPO}" --local-dir "${LOCATE_DEST}"
   echo "      ✓ Downloaded to ${LOCATE_DEST}"
 fi
 

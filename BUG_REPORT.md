@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-06-23T20:44:32`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_o0f6ibv1/bug_check.db`  
-**Total checks:** 450  
-**Passing:** 450  
+**Run at:** `2026-06-24T00:36:33`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_rwewdmfu/bug_check.db`  
+**Total checks:** 460  
+**Passing:** 460  
 **Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -302,6 +302,18 @@ _None — every check passed._
 - ✅ HIDDEN_FORM_COLS covers Technician + auto-fields
 - ✅ list_smr_history honours filters + decided-only default
 - ✅ E2E: sup → SK approve → SK submit → HOD commit
+
+### Round 13 — 10/10
+- ✅ commit_eod commits 'approved' rows
+- ✅ commit_eod commits 'flagged' rows
+- ✅ commit_eod skips 'rejected' rows
+- ✅ get_pending_issues_for_site returns approved + flagged
+- ✅ hod_reject_pending_issue moves to archive
+- ✅ hod_unapprove_pending_issue flips approved → pending_hod
+- ✅ bogus 'Approved' column dropped from consumption
+- ✅ rejected_issues_archive schema present
+- ✅ CONSUMPTION_EXPORT_COLS contains canonical set
+- ✅ SMR reject at HOD flips line_status='rejected_at_hod'
 
 ### Schema — 216/216
 - ✅ table · inventory
