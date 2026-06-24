@@ -31,3 +31,9 @@ opencv-python-headless>=4.9
 # ui_components/draft_bus silently falls through to server-side-only when this
 # package is unavailable (corporate proxy / air-gapped env).
 streamlit-local-storage>=0.0.20
+
+# Round 14 — HEIC/HEIF decode support for the Ollama vision OCR pipeline.
+# iPhone shares often arrive as HEIC even when renamed to .JPG; without this
+# package the OCR uploader silently fails on every iPhone photo.
+# Wheels ship for darwin (arm64+x86_64) and manylinux; libheif bundled.
+pillow-heif>=0.16

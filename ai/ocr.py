@@ -216,6 +216,14 @@ def _b64(image_bytes: bytes) -> str:
 # ---------------------------------------------------------------------------
 # IMAGE LANE — vision LLM (Ollama)
 # ---------------------------------------------------------------------------
+# Round 14 — every uploaded photo runs through prep_image_for_vision BEFORE
+# base64 encoding: EXIF auto-orient, RGB convert, long-edge cap to 1600 px,
+# JPEG re-encode. Without this step iPhone HEIC uploads silently failed and
+# multi-megabyte JPEGs overran Ollama's vision preprocessor (HTTP 500) or
+# the urllib timeout (cold-start).
+from ai.image_utils import prep_image_for_vision, ImagePrepError
+
+
 def extract_consumption_from_image(
     image_bytes: bytes,
     model: str = None,
@@ -228,10 +236,14 @@ def extract_consumption_from_image(
     if err:
         return ConsumptionResult(ok=False, rows=[], message=err)
     try:
+        prepared = prep_image_for_vision(image_bytes)
+    except ImagePrepError as e:
+        return ConsumptionResult(ok=False, rows=[], message=str(e))
+    try:
         raw = ollama_vision_generate(
             model or MODEL_VISION,
             prompt="Extract the rows.",
-            image_b64_list=[_b64(image_bytes)],
+            image_b64_list=[_b64(prepared)],
             system=_CONSUMPTION_PROMPT,
         )
     except RuntimeError as e:
@@ -258,10 +270,14 @@ def extract_delivery_note_from_image(
     if err:
         return DeliveryNoteResult(ok=False, header={}, items=[], message=err)
     try:
+        prepared = prep_image_for_vision(image_bytes)
+    except ImagePrepError as e:
+        return DeliveryNoteResult(ok=False, header={}, items=[], message=str(e))
+    try:
         raw = ollama_vision_generate(
             model or MODEL_VISION,
             prompt="Extract the header and items.",
-            image_b64_list=[_b64(image_bytes)],
+            image_b64_list=[_b64(prepared)],
             system=_DN_PROMPT,
         )
     except RuntimeError as e:

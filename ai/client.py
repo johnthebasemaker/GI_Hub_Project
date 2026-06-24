@@ -174,7 +174,8 @@ def ollama_vision_generate(
     system: Optional[str] = None,
     temperature: float = 0.1,
     num_predict: int = 1024,
-    timeout_s: int = 120,
+    timeout_s: int = 240,
+    keep_alive: str = "30m",
 ) -> str:
     """
     Non-streaming vision request. `image_b64_list` is a list of base64
@@ -182,14 +183,18 @@ def ollama_vision_generate(
     assistant text. Raises RuntimeError on transport failure.
 
     Lower default temperature than text-only generate: OCR work wants
-    determinism, not creativity. Longer default timeout because vision
-    models take noticeably longer per token than the chat/coder models.
+    determinism, not creativity. Round 14: default timeout bumped from
+    120s → 240s to survive 7B vision cold-start (~30–90s) + upload +
+    inference + JSON output. `keep_alive='30m'` mirrors the text/chat path
+    so a second consecutive upload skips cold-load (~5–15s instead of
+    60–90s). Set to "0" if RAM headroom matters more than warm starts.
     """
     payload = {
         "model": model,
         "prompt": prompt,
         "images": list(image_b64_list or []),
         "stream": False,
+        "keep_alive": keep_alive,
         "options": {
             "temperature": temperature,
             "num_predict": num_predict,
