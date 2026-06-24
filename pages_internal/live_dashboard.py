@@ -97,39 +97,77 @@ def _render_dashboard_html_table(df: pd.DataFrame, columns: list[str]) -> None:
         _live_input = None
         _LIVE = False
 
+    # Round 15 — Filter UI redesign. The old per-column filter strip gave
+    # every column equal width, so the searchable inputs (SAP, Mat Code,
+    # Description, Category) were squeezed alongside ten unused spacers
+    # and unreadable on mobile. New layout:
+    #   1. ONE prominent live search box that filters across all four
+    #      searchable columns at once — works great in landscape AND mobile.
+    #   2. Existing per-column filter strip collapsed into an expander for
+    #      power users who want to filter on Description but not Category.
     st.markdown(
         f'<div style="color:{_C["dim"]};font-size:10.5px;font-weight:700;'
         f'text-transform:uppercase;letter-spacing:0.08em;margin:6px 0 4px 0;">'
-        f'Filters {"(live)" if _LIVE else "(press Enter)"} — '
-        f'searchable on SAP / Mat Code / Description / Category</div>',
+        f'Filter Live {"(typing-live)" if _LIVE else "(press Enter)"} — '
+        f'SAP / Material Code / Description / Category</div>',
         unsafe_allow_html=True,
     )
-    filter_cols = st.columns(len(columns))
+    if _LIVE:
+        global_needle = (_live_input(
+            label="Search across all columns",
+            key="_dash_keyup_global",
+            placeholder="🔎 Search across SAP, Material Code, Description, Category",
+            debounce=180,
+            label_visibility="collapsed",
+        ) or "").strip()
+    else:
+        global_needle = st.text_input(
+            "Search across all columns",
+            key="_dash_filter_global",
+            label_visibility="collapsed",
+            placeholder="🔎 Search across SAP, Material Code, Description, Category",
+        ).strip()
+
     filters: dict[str, str] = {}
-    for col_widget, col_name in zip(filter_cols, columns):
-        with col_widget:
-            if col_name not in LIVE_FILTER_COLS:
-                # Render an invisible spacer so the column widths stay aligned
-                # with the table header below.
-                st.markdown("&nbsp;", unsafe_allow_html=True)
-                continue
-            if _LIVE:
-                val = _live_input(
-                    label=col_name,
-                    key=f"_dash_keyup_{col_name}",
-                    placeholder=col_name,
-                    debounce=180,
-                    label_visibility="collapsed",
-                )
-            else:
-                val = st.text_input(
-                    col_name, key=f"_dash_filter_{col_name}",
-                    label_visibility="collapsed", placeholder=col_name,
-                )
-            filters[col_name] = (val or "").strip()
+    with st.expander(
+        "Advanced — filter per column",
+        expanded=False,
+    ):
+        filter_cols = st.columns(len(columns))
+        for col_widget, col_name in zip(filter_cols, columns):
+            with col_widget:
+                if col_name not in LIVE_FILTER_COLS:
+                    st.markdown("&nbsp;", unsafe_allow_html=True)
+                    continue
+                if _LIVE:
+                    val = _live_input(
+                        label=col_name,
+                        key=f"_dash_keyup_{col_name}",
+                        placeholder=col_name,
+                        debounce=180,
+                        label_visibility="collapsed",
+                    )
+                else:
+                    val = st.text_input(
+                        col_name, key=f"_dash_filter_{col_name}",
+                        label_visibility="collapsed", placeholder=col_name,
+                    )
+                filters[col_name] = (val or "").strip()
 
     # ── 2. Apply filters (case-insensitive substring per column) ──────────
     view = df.copy()
+    # Global search first: OR-match across all four searchable columns.
+    if global_needle:
+        cols_to_search = [c for c in LIVE_FILTER_COLS if c in view.columns]
+        if cols_to_search:
+            mask = False
+            for c in cols_to_search:
+                m = view[c].astype(str).str.contains(
+                    global_needle, case=False, na=False, regex=False,
+                )
+                mask = m if mask is False else (mask | m)
+            view = view[mask]
+    # Then per-column narrowing (AND across columns).
     for col_name, needle in filters.items():
         if needle and col_name in view.columns:
             view = view[
@@ -271,6 +309,87 @@ def _render_nl_search_panel() -> None:
                     st.code(sql, language="sql")
 
 
+def _render_kpi_drilldown_panel(
+    which: str,
+    live_df,
+    low_df,
+    expiry_df,
+    total_value: float,
+) -> None:
+    """Round 15 — inline drill-down for each KPI card. Renders a focused
+    table + a one-line takeaway. Caller toggles via `_live_kpi_drilldown`
+    in session_state."""
+    if which == "catalogue":
+        st.markdown("##### 📦 All catalogue items")
+        cols = [c for c in [
+            "SAP_Code", "Material_Code", "Equipment_Description", "UOM",
+            "Category", "Current_Stock",
+        ] if c in live_df.columns]
+        st.dataframe(
+            live_df[cols].head(500),
+            use_container_width=True, hide_index=True,
+        )
+        st.caption(
+            f"Showing {min(500, len(live_df)):,} of {len(live_df):,} items. "
+            f"Use the catalogue filters below for deeper search."
+        )
+        return
+
+    if which == "value":
+        st.markdown("##### 💰 Top-value items (by Stock_Value)")
+        val_df = cached_inventory_valuation()
+        if val_df is None or val_df.empty:
+            st.caption("Set Unit_Cost in Admin → DB Editor to populate this view.")
+            return
+        cols = [c for c in [
+            "SAP_Code", "Material_Code", "Equipment_Description", "UOM",
+            "Current_Stock", "Unit_Cost", "Stock_Value",
+        ] if c in val_df.columns]
+        top = val_df.sort_values("Stock_Value", ascending=False).head(20)
+        st.dataframe(top[cols], use_container_width=True, hide_index=True)
+        share = (
+            float(top["Stock_Value"].sum()) / float(val_df["Stock_Value"].sum())
+            if float(val_df["Stock_Value"].sum() or 0) > 0 else 0
+        )
+        st.caption(
+            f"Top 20 items represent {share:.1%} of total stock value "
+            f"({format_sar(total_value)})."
+        )
+        return
+
+    if which == "below_min":
+        st.markdown("##### ⚠️ Items below minimum threshold")
+        if low_df is None or low_df.empty:
+            st.success("All items above Minimum_Qty — nothing to reorder.")
+            return
+        cols = [c for c in [
+            "SAP_Code", "Material_Code", "Equipment_Description", "UOM",
+            "Current_Stock", "Minimum_Qty", "Shortage",
+        ] if c in low_df.columns]
+        st.dataframe(low_df[cols], use_container_width=True, hide_index=True)
+        st.caption(
+            f"{len(low_df):,} item(s) below minimum. Reorder via the PR flow "
+            f"in the HOD Portal."
+        )
+        return
+
+    if which == "expiring":
+        st.markdown("##### ⏳ Expiring or expired lots")
+        if expiry_df is None or expiry_df.empty:
+            st.success("Shelf-life clear — no items within the expiry window.")
+            return
+        cols = [c for c in [
+            "SAP_Code", "Equipment_Description", "Lot_Number", "Expiry_Date",
+            "Status", "Quantity",
+        ] if c in expiry_df.columns]
+        st.dataframe(expiry_df[cols], use_container_width=True, hide_index=True)
+        st.caption(
+            f"{len(expiry_df):,} item(s) require shelf-life review. "
+            f"HOD Portal → Shelf-Life tab for actions."
+        )
+        return
+
+
 def page_live_dashboard() -> None:
     render_brand_header("Live Warehouse Stock Dashboard")
     st.title("📦 Live Inventory Dashboard")
@@ -303,6 +422,38 @@ def page_live_dashboard() -> None:
          "tone": "ok" if expiry_count == 0 else ("low" if expiry_count < 10 else "critical"),
          "delta": "shelf-life clear" if expiry_count == 0 else "review HOD Portal"},
     ])
+
+    # Round 15 — KPI click-through. A row of subtle "Details" buttons under
+    # the hero strip toggles an inline drill-down panel below. State lives
+    # in st.session_state so the panel survives reruns and the same click
+    # collapses it.
+    _KPI_KEY = "_live_kpi_drilldown"
+    active = st.session_state.get(_KPI_KEY)
+    kpi_btn_cols = st.columns(4)
+    kpi_labels = ("catalogue", "value", "below_min", "expiring")
+    kpi_btn_labels = (
+        f"🔎 All items ({total_items:,})",
+        f"🔎 Stock value (SAR)",
+        f"🔎 Below minimum ({low_count})",
+        f"🔎 Expiring / expired ({expiry_count})",
+    )
+    for col, key, lbl in zip(kpi_btn_cols, kpi_labels, kpi_btn_labels):
+        with col:
+            is_active = (active == key)
+            if st.button(
+                ("✅ " if is_active else "") + lbl,
+                key=f"_live_kpi_btn_{key}",
+                type="primary" if is_active else "secondary",
+                use_container_width=True,
+            ):
+                # Same-click → collapse; different-click → swap.
+                st.session_state[_KPI_KEY] = None if is_active else key
+                st.rerun()
+
+    if active:
+        _render_kpi_drilldown_panel(
+            active, live_df, low_df, expiry_df, total_value,
+        )
 
     if AI_ENABLED:
         _render_nl_search_panel()

@@ -2055,6 +2055,83 @@ def render_ocr_review_grid(
 
 
 # ===========================================================================
+# CONFIRM HELPER (Round 15 — destructive-action two-step gate)
+# ===========================================================================
+def render_confirm(
+    button_key: str,
+    *,
+    action_label: str,
+    body: str,
+    danger: bool = False,
+    confirm_label: str | None = None,
+    cancel_label: str = "Cancel",
+) -> bool:
+    """Two-step confirmation pattern for destructive actions.
+
+    First call from the parent renders the initial primary-styled action
+    button. Clicking it sets `_confirm::{button_key}` in session_state and
+    reruns; on the next render the helper draws an inline confirmation card
+    plus Confirm + Cancel buttons. Returns True only when the user clicks
+    Confirm — caller wraps its destructive mutation in
+    `if render_confirm(...): do_the_thing()`.
+
+    Args:
+        button_key: stable widget key prefix. Must be unique per call site.
+        action_label: text on the initial action button (e.g. "🗑️ Reject").
+        body: short explanation rendered inside the confirmation card.
+        danger: red accent when True, gold otherwise.
+        confirm_label: text on the Confirm button. Defaults to action_label.
+    """
+    import streamlit as st
+    state_key = f"_confirm::{button_key}"
+    confirm_label = confirm_label or action_label
+
+    if not st.session_state.get(state_key):
+        if st.button(
+            action_label,
+            key=f"{button_key}::trigger",
+            type="primary",
+            use_container_width=True,
+        ):
+            st.session_state[state_key] = True
+            st.rerun()
+        return False
+
+    # Confirmation card.
+    accent = "#EF4444" if danger else "#F59E0B"
+    bg     = "rgba(239,68,68,0.10)" if danger else "rgba(245,158,11,0.10)"
+    border = "rgba(239,68,68,0.40)" if danger else "rgba(245,158,11,0.40)"
+    st.markdown(
+        f'<div style="background:{bg};border:1px solid {border};'
+        f'border-left:4px solid {accent};border-radius:8px;'
+        f'padding:10px 12px;margin:4px 0 6px 0;">'
+        f'<b style="color:{accent};">⚠️ Please confirm</b><br>'
+        f'<span style="color:#7A8FA0;font-size:12px;">{body}</span></div>',
+        unsafe_allow_html=True,
+    )
+    c1, c2 = st.columns(2)
+    confirmed = False
+    with c1:
+        if st.button(
+            confirm_label,
+            key=f"{button_key}::confirm",
+            type="primary",
+            use_container_width=True,
+        ):
+            confirmed = True
+            st.session_state.pop(state_key, None)
+    with c2:
+        if st.button(
+            cancel_label,
+            key=f"{button_key}::cancel",
+            use_container_width=True,
+        ):
+            st.session_state.pop(state_key, None)
+            st.rerun()
+    return confirmed
+
+
+# ===========================================================================
 # HERO METRIC STRIP (Phase 4 — at-a-glance KPIs for each portal page)
 # ===========================================================================
 def render_hero_metrics(metrics: list[dict]) -> None:

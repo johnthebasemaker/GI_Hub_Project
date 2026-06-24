@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-06-24T11:55:34`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_fm_v6pl7/bug_check.db`  
-**Total checks:** 465  
-**Passing:** 465  
+**Run at:** `2026-06-24T16:12:37`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_1ayrvxkx/bug_check.db`  
+**Total checks:** 480  
+**Passing:** 480  
 **Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -321,6 +321,23 @@ _None — every check passed._
 - ✅ prep_image_for_vision shrinks byte size
 - ✅ prep_image_for_vision honours EXIF orientation
 - ✅ prep_image_for_vision raises ImagePrepError on bad bytes
+
+### Round 15 — 15/15
+- ✅ inventory_site_overrides schema + UNIQUE
+- ✅ next_sap_code increments from max numeric tail
+- ✅ next_temp_material_code persists + increments
+- ✅ bulk_upsert_materials inserts + auto-codes blanks
+- ✅ bulk_upsert_materials rejects duplicates
+- ✅ bulk_upsert_materials overwrite path updates in place
+- ✅ set/get_site_min_qty COALESCEs override over default
+- ✅ inventory.Material_Code UNIQUE index enforced
+- ✅ process_po_pdf extracts 3 items from sample PDF
+- ✅ process_po_pdf synthetic two-line layout fixture
+- ✅ list_pending_hod_dns falls back via PO/PR Site_ID
+- ✅ request_reschedule routes to warehouse post-receive
+- ✅ request_reschedule keeps logistics for PO-level
+- ✅ CONSUMPTION_EXPORT_COLS unchanged
+- ✅ _ALWAYS_KEEP includes UOM for PR report
 
 ### Schema — 216/216
 - ✅ table · inventory

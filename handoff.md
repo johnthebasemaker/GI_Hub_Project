@@ -1,6 +1,10 @@
 # GI Hub ERP — Handoff
 
-**Last update:** 2026-06 round 14 — **VISION OCR IMAGE-PIPELINE HARDENING SHIPPED.** New `ai/image_utils.py` interposes EXIF auto-orient + RGB convert + 1600 px long-edge cap + JPEG quality-85 re-encode between every uploaded photo and the Ollama vision call. `pillow-heif>=0.16` added so iPhone HEIC files (often delivered with a `.JPG` extension) decode cleanly. `ollama_vision_generate` default timeout bumped 120 → 240 s + new `keep_alive='30m'` so cold-start no longer trips the request. Both SK OCR uploaders now accept `.heic` / `.heif`. See §2P. **Tests: 465/465 in `bug_check.py` · 17/17 in `test_ui_crawler.py`.**
+**Last update:** 2026-06 round 15 — **MULTI-PORTAL POLISH + MATERIAL MASTER + PO PARSER FIX SHIPPED.** New Logistics `📦 Material Details` tab (manual entry + Excel upload + Temp-GI auto-codes + SAP auto-increment + duplicate rejection). PO PDF parser rewritten — three line-item layouts supported (code-on-own-line + 7-column row + legacy single-line). Per-site `Minimum_Qty` override via new `inventory_site_overrides` table (additive, no impact on identity math). HOD DN Approvals now uses a 3-way OR-join so legacy mismatched-Site_ID DNs surface to the right HOD. HOD reschedule routes directly to `warehouse_user` when the DN is post-receive (`pending_logistics → pending_sk`); PO-level reschedules still go to Logistics. Warehouse Prepare-DN destination site locked to the PO's originating site. Admin Live Dashboard KPI cards now click through to inline drill-downs; a single wide "Search across all columns" input replaces the cramped per-column filter strip on mobile/landscape. New `ui_components.render_confirm` helper wired to SK Submit Grid + HOD Approve All Pending + HOD In-Transit Reschedule. PR report `_ALWAYS_KEEP` now includes UOM so the column survives partial-row legacy data. See §2Q. **Tests: 480/480 in `bug_check.py` · 17/17 in `test_ui_crawler.py`.**
+
+**Prior round:** 14 — Vision OCR Image-Pipeline Hardening.
+
+**Round 14 prior:** **VISION OCR IMAGE-PIPELINE HARDENING SHIPPED.** New `ai/image_utils.py` interposes EXIF auto-orient + RGB convert + 1600 px long-edge cap + JPEG quality-85 re-encode between every uploaded photo and the Ollama vision call. `pillow-heif>=0.16` added so iPhone HEIC files (often delivered with a `.JPG` extension) decode cleanly. `ollama_vision_generate` default timeout bumped 120 → 240 s + new `keep_alive='30m'` so cold-start no longer trips the request. Both SK OCR uploaders now accept `.heic` / `.heif`. See §2P. **Tests: 465/465 in `bug_check.py` · 17/17 in `test_ui_crawler.py`.**
 
 **Prior round:** 13 — EOD State Unification + Schema Cleanup. **Prior round 12:** SMR-via-SK-Grid + Auto-Attribution. **Round 11 prior:** Phase 8 · Workstream B (Smart Scan AI) COMPLETE.
 
@@ -17,7 +21,7 @@
 
 **Workstream B — Smart Scan AI module: COMPLETE.** All five phases shipped; the gate stays OFF in production until a pilot site explicitly opts in.
 **Prior rounds:** 7F Role-Based PDFs · 7E Network Resilience · 7D PO Masking · 7C Cross-Site Notifications · 7B Supervisor Material Request · 7A Employee Site Binding · 6A–F Workstream A.
-**Test status:** **465/465 in `bug_check.py` · 17/17 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`). +5 across Round 14 (vision image-prep pipeline: long-edge cap, RGB convert, byte shrink, EXIF transpose, typed error on bad bytes). **Zero network access · zero torch import in test path · zero weight files required on disk.**
+**Test status:** **480/480 in `bug_check.py` · 17/17 in `test_ui_crawler.py`** (run `python bug_check.py && python test_ui_crawler.py`). +15 across Round 15 (schema self-heal, SAP/Temp counters, bulk_upsert path, site Min Qty override, PO PDF regression + synthetic fixture, HOD DN visibility fallback, reschedule routing, PR UoM column). **Zero network access · zero torch import in test path · zero weight files required on disk.**
 **Production hosting:** Self-host on `giinventory.com` via Cloudflare Tunnel + Access (email allow-list `@generalindustries.net`). Turnkey installer at `host_setup/scripts/install.sh`. See §4 "Run / Develop" and the "Production hosting" chapter.
 **Purpose:** Get the next session productive in <5 minutes — architecture, what changed, what's next.
 **Companion docs:** `USER_MANUAL.md` (every page/tab/button), `SOP.md` (Logistics + Warehouse operating procedure with cadences, decision trees, escalation matrix), `docs/cv_training_guide.md` (Phase 6C — capture → label → train → promote walkthrough).
@@ -1250,6 +1254,146 @@ UI crawler stays at **17/17** (no new pages, just uploader-filter widening).
 ### Operational note
 
 After deploying this round, the first iPhone upload to a freshly-restarted host will still take ~30–60 s (model cold-load). The second upload within 30 minutes is the one that feels fast (~5–15 s). Communicate this expectation to SK rollout users.
+
+---
+
+## 2Q. Tuning Round 15 (2026-06) — Multi-Portal Polish + Material Master + PO Parser Fix
+
+Six surfaces touched in one coordinated round: Admin Live Dashboard polish, a new Material Master entry tab in Logistics, the PO PDF parser regression, the Warehouse Prepare-DN site lock, the HOD DN-visibility fallback + reschedule routing, and a confirm helper for destructive paths.
+
+### Findings recap (root causes worth keeping)
+
+| Issue | Root cause |
+|---|---|
+| Per-row HOD ✓ approval stranding rows | (Already fixed in Round 13) — `commit_eod` filter widened to `_EOD_COMMIT_STATUSES`. |
+| PO PDF "no line items" | The GI sample PDF (e.g. `PO#4710003114.pdf`) lays each item on **two** lines: `GI-NNNNNNN` on its own, then `<srno> <desc> <qty> <uom> <unit> <vat> <total>` on the next. The old regex assumed code+srno were paired. |
+| HOD DN Approvals empty after Logistics approves | DN's `Site_ID` historically came from the Warehouse Prepare-DN dropdown, which let the operator pick any site. Mismatch → HOD never saw the row. |
+| HOD reschedule always notified Logistics | `request_reschedule` had one notification target. Even for post-receive-at-warehouse reschedules, where Warehouse alone could swap the date. |
+| PR PDF report missing UoM | `_strip_empty_columns` dropped UOM whenever a legacy PR batch had it blank. |
+
+### Schema self-heal (`init_db`)
+
+```sql
+CREATE TABLE IF NOT EXISTS inventory_site_overrides (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    SAP_Code     TEXT NOT NULL,
+    Site_ID      TEXT NOT NULL,
+    Minimum_Qty  REAL NOT NULL,
+    updated_by   TEXT,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(SAP_Code, Site_ID)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_inventory_material_code
+  ON inventory(Material_Code)
+  WHERE Material_Code IS NOT NULL AND Material_Code <> '';
+INSERT OR IGNORE INTO app_settings (key, value) VALUES ('temp_material_seq', '0');
+```
+
+The partial UNIQUE index permits legacy NULL-Material_Code rows but blocks any future duplicate. The `temp_material_seq` counter persists the `Temp-GI-NNNNNNN` sequence across restarts.
+
+### `database.py` — new helpers
+
+| Helper | Purpose |
+|---|---|
+| `next_sap_code()` | `MAX(numeric tail) + 1` across `inventory.SAP_Code`, formatted `GI-NNNNNNN`. |
+| `next_temp_material_code()` | Atomic increment of `app_settings.temp_material_seq`, formatted `Temp-GI-NNNNNNN`. |
+| `bulk_upsert_materials(rows, *, created_by, overwrite_duplicates=False)` | Single-transaction upsert. Detects duplicate Material_Codes (within the batch AND against existing rows), auto-assigns SAP + Temp codes, returns `{inserted, updated, rejected}`. Audited as `MATERIAL_BULK_UPSERT`. |
+| `set_site_min_qty(sap, site, qty, *, updated_by)` | Upsert into the override table; negative qty deletes the override (falls back to global default). |
+| `get_min_qty_for(sap, site)` | `COALESCE(override, inventory.Minimum_Qty, 0)` lookup. |
+
+### `database.py` — behavioural changes
+
+- **`process_po_pdf` rewrite.** Items extractor walks the text line-by-line and recognises **three layouts**: code-on-own-line + 7-column row (the failing GI sample); single-line 6-column row (original sample); legacy `<srno> <code>` + desc-on-next-line. Header `PR_Number` / `PO_Number` regexes were tightened to allow the `Purch. Order.` variant.
+- **`list_pending_hod_dns` 3-way OR-join.** A DN surfaces for an HOD when ANY of (`delivery_notes.Site_ID`, `purchase_orders.Site_ID`, `pr_master.Site_ID`) matches the HOD's site. Legacy DNs created with `Site_ID='HQ'` now reach the right HOD.
+- **`request_reschedule` routing.** A new module constant `_RESCHEDULE_WAREHOUSE_DIRECT_STATUSES = ('pending_logistics', 'logistics_approved', 'pending_hod', 'hod_approved', 'pending_sk')` defines when the goods are physically with the Warehouse. DN-attached reschedules in those states notify `warehouse_user` at the receiving warehouse; everything else (PO-level, or DN already `received`) still notifies Logistics. Audit + success message reflect the route taken.
+
+### `config.py`
+
+Nothing changed in Round 15 — the existing `HIDDEN_FORM_COLS` already retired Technician. The Round 13 `CONSUMPTION_EXPORT_COLS` contract is preserved (a Round 15 test pins it).
+
+### Logistics Portal
+
+- **NEW 9-tab layout** — `📦 Material Details` inserted at position 8 (right before History).
+  - **Manual entry sub-tab**: 5 fields (Material_Code, Material_Description, UoM, Category, Minimum_Qty). Blank Material_Code triggers Temp-GI auto-assignment; SAP code always auto-generates.
+  - **Excel upload sub-tab**: case-insensitive header map onto canonical names, parsed preview, `Overwrite existing` toggle, inserted/updated/rejected metrics + rejection table.
+  - **Current register sub-tab**: read-only inventory grid in the spec column order (Material Code → Material Description → UoM → Category → Min Qty → SAP Code), Temp-GI codes sorted to the bottom.
+- **Create PO → PR dropdown.** Replaced the free-text input with a `selectbox` over open PRs (`pr_master.status='open'`). Site_ID auto-fills from the picked PR. A `➕ Add unlisted PR` expander remains for out-of-band entries.
+
+### Warehouse Portal
+
+- **Prepare DN destination site locked** to the PO's originating `Site_ID` (resolved via `get_po_detail`). Admin shadow gets a small "Override destination" expander for legitimate cross-site shipments. Falls back to the full dropdown only when the PO has no Site_ID at all.
+
+### HOD Portal
+
+- **DN Approvals visibility** — the 3-way join above lets legacy DNs land in the right HOD's queue (no code change to the tab itself).
+- **In-Transit `🔁 Request reschedule`** — two-step confirmation. First click → confirmation banner showing the route ("Warehouse" vs "Logistics") + new date + reason summary. Second click → fires `request_reschedule`. Cancel keeps the popover open.
+- **`✅ Approve All Pending`** — now uses the shared `render_confirm` helper. The disabled state still applies when nothing is pending.
+
+### SK Portal (daily_issue_log.py)
+
+- **`📨 Submit Grid to HOD`** — now requires explicit confirmation after the negative-stock validator passes. Attachments + WhatsApp + form-draft clear all happen inside the Yes branch, so a Cancel keeps the grid intact.
+
+### Admin Portal — Live Dashboard
+
+- **KPI click-through.** A row of 4 secondary buttons under the hero strip toggles inline drill-down panels for: all catalogue items, top-value items by Stock_Value (with concentration share), below-minimum items, expiring/expired lots. Session-state-driven so the panel survives reruns; click the same button again to collapse.
+- **Filter polish.** A single prominent **"🔎 Search across SAP, Material Code, Description, Category"** input replaces the old narrow per-column strip on landscape/mobile. The per-column strip is preserved inside an "Advanced — filter per column" expander for power users.
+
+### `ui_components.render_confirm`
+
+New helper. Two-step destructive-action gate driven by `st.session_state` and a stable key prefix. Returns `True` only when the user clicks Confirm.
+
+```python
+if render_confirm(
+    "_hod_eod_approve_all",
+    action_label=f"✅ Approve All Pending ({pend_n})",
+    body="This will move N pending row(s) to approved …",
+    confirm_label="✅ Yes — approve all pending",
+):
+    hod_approve_all_pending_issues(site_id=site_id)
+```
+
+Future destructive paths can adopt this incrementally (Logistics Force-Close, HOD Reject DN, etc.) — out of scope this round to keep blast radius small.
+
+### Reports
+
+- `_ALWAYS_KEEP` (in `reports_page._strip_empty_columns`) now includes `UOM`. The PR Status report — and every other UOM-bearing report — keeps the column even when partial rows have it blank.
+
+### Tests (`bug_check.py`)
+
+**+15 Round 15 checks · 480/480.** Coverage:
+
+1. `inventory_site_overrides` schema + UNIQUE(SAP, Site) enforcement.
+2. `next_sap_code` increments from max numeric tail.
+3. `next_temp_material_code` persists + increments.
+4. `bulk_upsert_materials` inserts with auto SAP + Temp-GI for blank Material_Code.
+5. `bulk_upsert_materials` rejects duplicate Material_Code.
+6. `bulk_upsert_materials` overwrite path updates in place.
+7. `set_site_min_qty` + `get_min_qty_for` round-trip + COALESCE override.
+8. `inventory.Material_Code` UNIQUE partial index rejects duplicate raw INSERTs.
+9. `process_po_pdf` extracts 3 items from `PO#4710003114.pdf` (regression guard).
+10. `process_po_pdf` two-line synthetic fixture (parses even on machines without the real PDF on disk).
+11. `list_pending_hod_dns` 3-way OR-join surfaces DNs with mismatched Site_ID.
+12. `request_reschedule` routes to warehouse_user when DN status ∈ post-receive set.
+13. `request_reschedule` routes to logistics for PO-level (no DN) — back-compat.
+14. Round 13 `CONSUMPTION_EXPORT_COLS` contract unchanged.
+15. `_ALWAYS_KEEP` includes UOM for PR report.
+
+UI crawler stays at **17/17** — the new Material Details tab lives inside the existing Logistics Portal page, no new top-level routes.
+
+### Contracts (don't break in Round 16+)
+
+- `inventory.Material_Code` is now UNIQUE (when non-NULL). Any new ingestion path **must** go through `bulk_upsert_materials` or honour the constraint manually.
+- `next_sap_code` derives the next SAP from the MAX numeric tail across the whole `inventory` table. Don't introduce non-numeric tails (e.g. `GI-7003A18`) without updating the helper's `int(...)` parse, or one bad row will reset the counter.
+- `Temp-GI-NNNNNNN` and `GI-NNNNNNN` share format width (7-digit tail). The Temp prefix is the only thing that distinguishes the two; downstream code that wants to count "real" SAP codes should filter on `NOT LIKE 'Temp-%'`.
+- `_RESCHEDULE_WAREHOUSE_DIRECT_STATUSES` is the contract for "Warehouse owns this DN now". Adding a new DN status without deciding which side it lives on will silently misroute reschedule notifications.
+- `list_pending_hod_dns` 3-way OR-join intentionally surfaces DNs where ANY Site_ID matches. The DN visibility bug came from an inflexible AND-style filter; don't tighten this back without re-introducing the legacy-row blind spot.
+- `render_confirm` keys are stable session-state strings. Don't generate them with `uuid` or timestamps — the helper toggles state across reruns and a fresh key every render would break the two-step flow.
+- The Logistics Material Details tab UI does NOT touch site overrides — that's the HOD's job from the HOD Portal. Round 15 ships the helpers; the HOD-side UI is left for a follow-up sprint (`set_site_min_qty` is callable from a small admin grid whenever you want to ship it).
+
+### Operational note
+
+- Existing inventory rows are NOT migrated. New uploads through the Material Details tab populate Material_Code + SAP_Code; legacy rows with blank Material_Code remain (the partial UNIQUE index ignores them).
+- The `Temp-GI-NNNNNNN` counter starts at 1. To inspect or reset it manually: `SELECT value FROM app_settings WHERE key='temp_material_seq'`. Never decrement after live use — temp codes are referenced from POs and audit trails.
 
 ---
 

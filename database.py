@@ -1511,6 +1511,49 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         except sqlite3.OperationalError:
             pass  # column may have been added by a concurrent init
 
+    # ── Round 15 (Multi-Portal Polish + Material Master) self-heals ─────────
+    # 1. inventory_site_overrides — per-site Minimum_Qty without touching the
+    #    global inventory row. UNIQUE(SAP_Code, Site_ID) makes the upsert
+    #    pattern straightforward. Lookups use COALESCE(override, default).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS inventory_site_overrides (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            SAP_Code     TEXT NOT NULL,
+            Site_ID      TEXT NOT NULL,
+            Minimum_Qty  REAL NOT NULL,
+            updated_by   TEXT,
+            updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(SAP_Code, Site_ID)
+        )
+    """)
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS ix_inv_site_override_site "
+        "ON inventory_site_overrides(Site_ID)"
+    )
+
+    # 2. UNIQUE partial index on inventory.Material_Code so duplicate codes
+    #    can't be inserted via the new Logistics Material Details upload.
+    #    Partial (WHERE NOT NULL) so legacy NULL-Material_Code rows aren't
+    #    rejected — only the populated ones must be unique.
+    try:
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_inventory_material_code "
+            "ON inventory(Material_Code) WHERE Material_Code IS NOT NULL "
+            "AND Material_Code <> ''"
+        )
+    except sqlite3.OperationalError:
+        # Partial indexes require SQLite ≥ 3.8.0 — every supported version
+        # has it. Swallowed as belt-and-suspenders.
+        pass
+
+    # 3. temp_material_seq counter in app_settings — persists the
+    #    Temp-GI-NNNNNNN counter across restarts. INSERT OR IGNORE is
+    #    idempotent on existing seeds.
+    c.execute(
+        "INSERT OR IGNORE INTO app_settings (key, value) VALUES "
+        "('temp_material_seq', '0')"
+    )
+
     # ── Phase 7C: HOD Cross-Site View notification debounce ──────────────────
     # UNIQUE(viewer, target_site, view_date) is the entire debounce — INSERT
     # OR IGNORE returns rowcount=0 on duplicate same-day attempts. No timers,
@@ -6624,8 +6667,9 @@ def process_po_pdf(
 
     # Patterns calibrated against the sample PO (Page 1 of 2 / Page 2 of 2).
     patterns = {
-        "PO_Number":      r"Purch\.?\s*Order\s*No\.?\s*[:\-]?\s*([A-Z0-9X]+)",
-        "PO_Date":        r"^\s*Date\s*[:\-]?\s*([0-9XA-Za-z][\d\.\-/A-Za-z]+)",
+        # Round 15 — `\.?` after Order|Req covers `Purch. Order. No.` variants.
+        "PO_Number":      r"Purch\.?\s*Order\.?\s*No\.?\s*[:\-]?\s*([A-Z0-9X]+)",
+        "PO_Date":        r"Purch\.?\s*Order\.?\s*Date\s*[:\-]?\s*([0-9XA-Za-z][\d\.\-/A-Za-z]+)",
         "PO_Type":        r"PO\s*Type\s*[:\-]?\s*(.+)",
         "Quotation_No":   r"Quotation\s*No\.?\s*[:\-]?\s*([^\n]*)",
         "Quotation_Date": r"Quotation\s*Date\s*[:\-]?\s*([^\n]*)",
@@ -6674,83 +6718,172 @@ def process_po_pdf(
             except ValueError:
                 pass
 
-    # ── Line items (table extraction) ───────────────────────────────────
-    # Sample format: rows like
-    #     001  GI-8003100  CUMIFURAN SYRUP LIQUID RESIN  5,025.00  KG  …
-    # extract_tables() typically returns this as a list with Sr.No / Material /
-    # QTY / UoM / Unit Price / Total Price columns. We accept either.
-    item_pat = re.compile(
-        r"^\s*(\d{1,3})\s+(GI-\d{6,8})\s+(.+?)\s+([\d,\.]+)\s+([A-Za-z]{1,5})"
-        r"(?:\s+([\d,\.]+))?(?:\s+([\d,\.]+))?\s*$",
-        re.MULTILINE,
-    )
-    # The "Material code on its own line then desc on next" variant in the
-    # sample wraps. We also try a 2-line fallback below.
-    seen_lines: set[int] = set()
-    for m in item_pat.finditer(full_text):
-        try:
-            line_no = int(m.group(1))
-        except ValueError:
-            continue
-        if line_no in seen_lines:
-            continue
-        seen_lines.add(line_no)
-        mat = m.group(2).strip()
-        desc = m.group(3).strip()
-        try:
-            qty = float(m.group(4).replace(",", ""))
-        except ValueError:
-            continue
-        uom = m.group(5).strip()
-        try:
-            unit  = float((m.group(6) or "0").replace(",", ""))
-            total = float((m.group(7) or "0").replace(",", ""))
-        except ValueError:
-            unit, total = 0.0, 0.0
-        extracted["items"].append({
-            "line_no": line_no,
-            "Material_Code": mat,
-            "Description": desc,
-            "Qty": qty,
-            "UOM": uom,
-            "Unit_Price": unit,
-            "Total_Price": total,
-            "rl_bl_family": classify_rl_bl_family(mat, desc),
-        })
+    # ── Line items (Round 15 rewrite) ───────────────────────────────────
+    # GI POs ship in one of three layouts:
+    #
+    #   Layout A — Code-on-own-line, 7-column item row (PO#4710003114.pdf):
+    #     GI-7002522
+    #     001 SS 316L FILLER WIRE , DIA 2.4 MM 20.00 KG 85.00 255.00 1,955.00
+    #     (srno → desc → qty → uom → unit_price → vat_amount → total_price)
+    #
+    #   Layout B — Single-line, 6-column item row (original sample):
+    #     001  GI-8003100  CUMIFURAN SYRUP …  5,025.00  KG  10.00  50,250.00
+    #
+    #   Layout C — Code+srno on first line, desc+nums on second (legacy):
+    #     001 GI-7002522
+    #     CUMIFURAN SYRUP …  5,025.00 KG  10.00  50,250.00
+    #
+    # The new scanner walks line-by-line and applies each pattern. seen_lines
+    # de-dupes across layouts so a row never enters the items list twice.
+    NUMBER = r"[\d,]+\.?\d*"
+    UOM_RE = r"[A-Za-z]{1,5}"
 
-    # Two-line fallback (Material_Code on one line, Description on next)
-    if not extracted["items"]:
-        two_line = re.compile(
-            r"^\s*(\d{1,3})\s+(GI-\d{6,8})\s*\n\s*([A-Z0-9][^\n]+?)\s+"
-            r"([\d,\.]+)\s+([A-Za-z]{1,5})(?:\s+([\d,\.]+))?(?:\s+([\d,\.]+))?",
-            re.MULTILINE,
-        )
-        for m in two_line.finditer(full_text):
+    # Layout A — code-only line, then srno + desc + numbers line.
+    re_code_only = re.compile(r"^\s*(GI-\d{6,8})\s*$")
+    # 7-column row: srno desc qty uom unit_price vat_amount total_price.
+    re_row_7col = re.compile(
+        rf"^\s*(\d{{1,3}})\s+(.+?)\s+({NUMBER})\s+({UOM_RE})\s+"
+        rf"({NUMBER})\s+({NUMBER})\s+({NUMBER})\s*$"
+    )
+    # 6-column row: srno desc qty uom unit_price total_price.
+    re_row_6col = re.compile(
+        rf"^\s*(\d{{1,3}})\s+(.+?)\s+({NUMBER})\s+({UOM_RE})\s+"
+        rf"({NUMBER})\s+({NUMBER})\s*$"
+    )
+    # Layout B — single-line with code in the middle.
+    re_inline = re.compile(
+        rf"^\s*(\d{{1,3}})\s+(GI-\d{{6,8}})\s+(.+?)\s+({NUMBER})\s+({UOM_RE})"
+        rf"(?:\s+({NUMBER}))?(?:\s+({NUMBER}))?\s*$"
+    )
+
+    def _f(s: str | None) -> float:
+        try:
+            return float((s or "0").replace(",", ""))
+        except (TypeError, ValueError):
+            return 0.0
+
+    seen_lines: set[int] = set()
+    lines = full_text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Try Layout A first: a bare code line, with a row on the very next line.
+        m_code = re_code_only.match(line)
+        if m_code and i + 1 < len(lines):
+            mat = m_code.group(1).strip()
+            nxt = lines[i + 1]
+            m7 = re_row_7col.match(nxt)
+            m6 = re_row_6col.match(nxt) if not m7 else None
+            picked = m7 or m6
+            if picked:
+                try:
+                    line_no = int(picked.group(1))
+                except ValueError:
+                    i += 1
+                    continue
+                if line_no not in seen_lines:
+                    desc = picked.group(2).strip()
+                    qty  = _f(picked.group(3))
+                    uom  = picked.group(4).strip()
+                    if m7:
+                        unit  = _f(picked.group(5))
+                        # group(6) is VAT — captured but not stored separately.
+                        total = _f(picked.group(7))
+                    else:  # m6 — no VAT column
+                        unit  = _f(picked.group(5))
+                        total = _f(picked.group(6))
+                    if qty > 0:
+                        seen_lines.add(line_no)
+                        extracted["items"].append({
+                            "line_no": line_no,
+                            "Material_Code": mat,
+                            "SAP_Code":      mat,  # GI POs use GI-NNNNNNN as the SAP code
+                            "Description":   desc,
+                            "Qty":           qty,
+                            "UOM":           uom,
+                            "Unit_Price":    unit,
+                            "Total_Price":   total,
+                            "rl_bl_family":  classify_rl_bl_family(mat, desc),
+                        })
+                        i += 2
+                        continue
+
+        # Layout B — single-line inline pattern.
+        m_inl = re_inline.match(line)
+        if m_inl:
             try:
-                line_no = int(m.group(1))
+                line_no = int(m_inl.group(1))
             except ValueError:
+                i += 1
                 continue
             if line_no in seen_lines:
+                i += 1
                 continue
-            seen_lines.add(line_no)
-            mat  = m.group(2).strip()
-            desc = m.group(3).strip()
+            mat   = m_inl.group(2).strip()
+            desc  = m_inl.group(3).strip()
+            qty   = _f(m_inl.group(4))
+            uom   = m_inl.group(5).strip()
+            unit  = _f(m_inl.group(6))
+            total = _f(m_inl.group(7))
+            if qty > 0:
+                seen_lines.add(line_no)
+                extracted["items"].append({
+                    "line_no":       line_no,
+                    "Material_Code": mat,
+                    "SAP_Code":      mat,
+                    "Description":   desc,
+                    "Qty":           qty,
+                    "UOM":           uom,
+                    "Unit_Price":    unit,
+                    "Total_Price":   total,
+                    "rl_bl_family":  classify_rl_bl_family(mat, desc),
+                })
+
+        # Layout C — `<srno> GI-NNNNNNN` followed by `<desc> <qty> <uom> ...`.
+        m_pair = re.match(r"^\s*(\d{1,3})\s+(GI-\d{6,8})\s*$", line)
+        if m_pair and i + 1 < len(lines):
             try:
-                qty = float(m.group(4).replace(",", ""))
+                line_no = int(m_pair.group(1))
             except ValueError:
+                i += 1
                 continue
-            uom = m.group(5).strip()
-            try:
-                unit  = float((m.group(6) or "0").replace(",", ""))
-                total = float((m.group(7) or "0").replace(",", ""))
-            except ValueError:
-                unit, total = 0.0, 0.0
-            extracted["items"].append({
-                "line_no": line_no, "Material_Code": mat,
-                "Description": desc, "Qty": qty, "UOM": uom,
-                "Unit_Price": unit, "Total_Price": total,
-                "rl_bl_family": classify_rl_bl_family(mat, desc),
-            })
+            if line_no in seen_lines:
+                i += 1
+                continue
+            mat = m_pair.group(2).strip()
+            nxt = lines[i + 1]
+            m_rest = re.match(
+                rf"^\s*(.+?)\s+({NUMBER})\s+({UOM_RE})"
+                rf"(?:\s+({NUMBER}))?(?:\s+({NUMBER}))?\s*$",
+                nxt,
+            )
+            if m_rest:
+                desc = m_rest.group(1).strip()
+                qty  = _f(m_rest.group(2))
+                uom  = m_rest.group(3).strip()
+                unit = _f(m_rest.group(4))
+                total = _f(m_rest.group(5))
+                if qty > 0:
+                    seen_lines.add(line_no)
+                    extracted["items"].append({
+                        "line_no":       line_no,
+                        "Material_Code": mat,
+                        "SAP_Code":      mat,
+                        "Description":   desc,
+                        "Qty":           qty,
+                        "UOM":           uom,
+                        "Unit_Price":    unit,
+                        "Total_Price":   total,
+                        "rl_bl_family":  classify_rl_bl_family(mat, desc),
+                    })
+                    i += 2
+                    continue
+
+        i += 1
+
+    # Stable sort by line_no so downstream UI displays the items in PO order.
+    extracted["items"].sort(key=lambda r: r.get("line_no", 0))
 
     # ── PO Annexure: Delivery Schedule ──────────────────────────────────
     # Sample format: SHIPMENT 01 / BRICK MATERIALS / 05.02.2026
@@ -7135,6 +7268,16 @@ def list_pending_reschedules(
             conn.close()
 
 
+# Round 15 — DN statuses where the goods are physically with the Warehouse
+# (post-receive-from-vendor, pre-receive-at-site). Reschedule requests in
+# these states route DIRECTLY to the warehouse_user — Logistics no longer
+# needs to broker the date change.
+_RESCHEDULE_WAREHOUSE_DIRECT_STATUSES = (
+    "pending_logistics", "logistics_approved",
+    "pending_hod", "hod_approved", "pending_sk",
+)
+
+
 def request_reschedule(
     po_number: str,
     dn_number: str | None,
@@ -7145,6 +7288,14 @@ def request_reschedule(
     requested_by: str,
     conn: sqlite3.Connection = None,
 ) -> tuple[bool, str]:
+    """Submit a reschedule request.
+
+    Round 15 routing rules:
+      - DN-attached request AND DN status ∈ _RESCHEDULE_WAREHOUSE_DIRECT_STATUSES
+        → notify the receiving warehouse directly. Logistics is bypassed.
+      - Otherwise (PO-level reschedule, or DN already received) → notify
+        Logistics, preserving the pre-Round-15 behaviour.
+    """
     if not requested_date or not reason:
         return False, "Requested date and reason are required"
     if requested_by_role not in ("warehouse_user", "hod", "admin"):
@@ -7153,6 +7304,24 @@ def request_reschedule(
     if _owns:
         conn = get_connection()
     try:
+        # Resolve the routing target BEFORE the insert so the audit + the
+        # notification reflect the same decision.
+        dn_status = None
+        wh_id = None
+        if dn_number:
+            row = conn.execute(
+                "SELECT status, Warehouse_ID FROM delivery_notes "
+                "WHERE DN_Number = ?",
+                (dn_number,),
+            ).fetchone()
+            if row:
+                dn_status, wh_id = row[0], row[1]
+
+        route_to_warehouse = bool(
+            dn_status and dn_status in _RESCHEDULE_WAREHOUSE_DIRECT_STATUSES
+            and wh_id
+        )
+
         cur = conn.execute(
             "INSERT INTO po_reschedule_requests "
             "(PO_Number, DN_Number, current_date, requested_date, reason, "
@@ -7163,20 +7332,40 @@ def request_reschedule(
         )
         conn.commit()
         try:
-            queue_app_notification(
-                event_key="reschedule_requested",
-                title=f"Reschedule requested for PO {po_number}",
-                body=f"From {current_date or '—'} → {requested_date}. {reason[:120]}",
-                severity="warning",
-                recipient_role="logistics",
-                link_page="🚚 Logistics Portal",
-                related_table="po_reschedule_requests",
-                related_ref=str(cur.lastrowid),
-                conn=conn,
-            )
+            if route_to_warehouse:
+                queue_app_notification(
+                    event_key="reschedule_requested",
+                    title=f"Reschedule requested for DN {dn_number}",
+                    body=(f"From {current_date or '—'} → {requested_date}. "
+                          f"{reason[:120]}"),
+                    severity="warning",
+                    recipient_role="warehouse_user",
+                    recipient_warehouse=wh_id,
+                    link_page="🏭 Warehouse Portal",
+                    related_table="po_reschedule_requests",
+                    related_ref=str(cur.lastrowid),
+                    conn=conn,
+                )
+            else:
+                queue_app_notification(
+                    event_key="reschedule_requested",
+                    title=f"Reschedule requested for PO {po_number}",
+                    body=(f"From {current_date or '—'} → {requested_date}. "
+                          f"{reason[:120]}"),
+                    severity="warning",
+                    recipient_role="logistics",
+                    link_page="🚚 Logistics Portal",
+                    related_table="po_reschedule_requests",
+                    related_ref=str(cur.lastrowid),
+                    conn=conn,
+                )
         except Exception:
             pass
-        return True, "Reschedule request submitted"
+        return True, (
+            "Reschedule request sent to the warehouse."
+            if route_to_warehouse
+            else "Reschedule request submitted to Logistics."
+        )
     except sqlite3.Error as e:
         return False, f"DB error: {e}"
     finally:
@@ -8516,15 +8705,34 @@ def list_pending_hod_dns(
     site_id: str,
     conn: sqlite3.Connection = None,
 ) -> pd.DataFrame:
-    """HOD-side view: DNs heading to this site, sitting at pending_hod."""
+    """HOD-side view: DNs heading to this site, sitting at pending_hod.
+
+    Round 15 — three-way Site_ID resolution (same pattern as
+    list_force_closures_for_site). Warehouse Prepare-DN historically let the
+    operator pick any site from the dropdown (fixed in Phase EE), so older
+    DNs may carry the wrong Site_ID — or the legacy 'HQ' default. Falling
+    through to the PO's Site_ID, then the PR's Site_ID, makes those legacy
+    DNs visible to the correct HOD.
+    """
     _owns = conn is None
     if _owns:
         conn = get_connection()
     try:
         return _localize(pd.read_sql_query(
-            "SELECT * FROM delivery_notes "
-            "WHERE Site_ID = ? AND status = 'pending_hod' "
-            "ORDER BY logistics_decided_at DESC", conn, params=(site_id,),
+            """
+            SELECT dn.*
+            FROM delivery_notes dn
+            LEFT JOIN purchase_orders po ON dn.PO_Number = po.PO_Number
+            LEFT JOIN pr_master      pr ON po.PR_Number = pr.PR_Number
+            WHERE dn.status = 'pending_hod'
+              AND (
+                    dn.Site_ID = ?
+                 OR po.Site_ID = ?
+                 OR pr.Site_ID = ?
+              )
+            ORDER BY dn.logistics_decided_at DESC
+            """,
+            conn, params=(site_id, site_id, site_id),
         ))
     finally:
         if _owns:
@@ -10261,6 +10469,270 @@ def reject_supervisor_request(
                 conn=conn,
             )
         return True, "Request rejected."
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ─── Round 15 helpers — Material master + per-site Min Qty ──────────────────
+
+def next_sap_code(conn: sqlite3.Connection = None) -> str:
+    """Return the next GI-NNNNNNN SAP code in sequence by reading the max
+    numeric tail across inventory.SAP_Code. Format: 'GI-' + 7-digit tail."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        max_num = 0
+        for (sap,) in conn.execute(
+            "SELECT SAP_Code FROM inventory "
+            "WHERE SAP_Code LIKE 'GI-%'"
+        ).fetchall():
+            try:
+                tail = int(str(sap).split("-", 1)[1])
+                if tail > max_num:
+                    max_num = tail
+            except (ValueError, IndexError):
+                continue
+        return f"GI-{max_num + 1:07d}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def next_temp_material_code(conn: sqlite3.Connection = None) -> str:
+    """Return the next Temp-GI-NNNNNNN code in sequence and atomically bump
+    the counter persisted in app_settings.temp_material_seq.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT value FROM app_settings WHERE key='temp_material_seq'"
+        ).fetchone()
+        try:
+            current = int(cur[0]) if cur and cur[0] is not None else 0
+        except (TypeError, ValueError):
+            current = 0
+        nxt = current + 1
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES "
+            "('temp_material_seq', ?)", (str(nxt),),
+        )
+        conn.commit()
+        return f"Temp-GI-{nxt:07d}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def bulk_upsert_materials(
+    rows: list[dict],
+    *,
+    created_by: str,
+    overwrite_duplicates: bool = False,
+    conn: sqlite3.Connection = None,
+) -> dict:
+    """Upsert one or more material rows into the inventory master.
+
+    Each row may contain: Material_Code, Material_Description (or
+    Equipment_Description), UOM, Category, Minimum_Qty. Blank Material_Code
+    triggers a Temp-GI auto-code. SAP_Code is always assigned by the helper.
+
+    Duplicates (matching existing Material_Code) are either rejected (when
+    overwrite_duplicates=False) or updated in place. Returns a dict with
+    'inserted', 'updated', 'rejected' lists for the UI to display.
+
+    Wrapped in a single transaction so partial failures don't leave the
+    inventory master half-populated.
+    """
+    result = {"inserted": [], "updated": [], "rejected": []}
+    if not rows:
+        return result
+
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        # Pre-fetch existing Material_Codes once so the dedup check is O(N+M).
+        existing_codes: set[str] = {
+            r[0] for r in conn.execute(
+                "SELECT Material_Code FROM inventory "
+                "WHERE Material_Code IS NOT NULL AND Material_Code <> ''"
+            ).fetchall()
+        }
+        # Track codes seen WITHIN this batch so a single upload can't carry
+        # the same Material_Code twice and slip through.
+        batch_codes: set[str] = set()
+
+        from config import MATERIAL_CATEGORIES as _CATS
+        default_cat = "Others" if "Others" in _CATS else (_CATS[0] if _CATS else "Others")
+
+        for raw in rows:
+            r = {k: v for k, v in (raw or {}).items()}
+            mat_code = str(r.get("Material_Code") or "").strip()
+            desc     = str(
+                r.get("Material_Description")
+                or r.get("Equipment_Description")
+                or ""
+            ).strip()
+            uom      = str(r.get("UOM") or r.get("UoM") or "").strip()
+            cat      = str(r.get("Category") or default_cat).strip() or default_cat
+            try:
+                min_q = float(r.get("Minimum_Qty") or 0)
+            except (TypeError, ValueError):
+                min_q = 0.0
+
+            if not desc:
+                result["rejected"].append({
+                    **r, "_reason": "Material_Description is required.",
+                })
+                continue
+            if not uom:
+                result["rejected"].append({
+                    **r, "_reason": "UOM is required.",
+                })
+                continue
+
+            # Auto-temp code when blank.
+            if not mat_code:
+                mat_code = next_temp_material_code(conn=conn)
+
+            # Batch-level dedup (catch duplicates within the upload itself).
+            if mat_code in batch_codes:
+                result["rejected"].append({
+                    **r, "Material_Code": mat_code,
+                    "_reason": "Duplicate Material_Code within this upload.",
+                })
+                continue
+            batch_codes.add(mat_code)
+
+            if mat_code in existing_codes:
+                if not overwrite_duplicates:
+                    result["rejected"].append({
+                        **r, "Material_Code": mat_code,
+                        "_reason": "Material_Code already exists.",
+                    })
+                    continue
+                # Overwrite path — update by Material_Code.
+                conn.execute(
+                    "UPDATE inventory SET "
+                    "  Equipment_Description = ?, "
+                    "  UOM = ?, "
+                    "  Category = ?, "
+                    "  Minimum_Qty = ? "
+                    "WHERE Material_Code = ?",
+                    (desc, uom, cat, min_q, mat_code),
+                )
+                result["updated"].append({
+                    "Material_Code": mat_code,
+                    "Equipment_Description": desc,
+                    "UOM": uom, "Category": cat, "Minimum_Qty": min_q,
+                })
+                continue
+
+            # Insert path — assign SAP code, write the row.
+            sap = next_sap_code(conn=conn)
+            conn.execute(
+                "INSERT INTO inventory "
+                "(SAP_Code, Material_Code, Equipment_Description, UOM, "
+                " Category, Minimum_Qty) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (sap, mat_code, desc, uom, cat, min_q),
+            )
+            existing_codes.add(mat_code)
+            result["inserted"].append({
+                "SAP_Code": sap, "Material_Code": mat_code,
+                "Equipment_Description": desc, "UOM": uom,
+                "Category": cat, "Minimum_Qty": min_q,
+            })
+
+        conn.commit()
+        try:
+            log_audit_action(
+                created_by, "MATERIAL_BULK_UPSERT", "inventory",
+                f"inserted={len(result['inserted'])} "
+                f"updated={len(result['updated'])} "
+                f"rejected={len(result['rejected'])}",
+            )
+        except Exception:
+            pass
+        return result
+    finally:
+        if _owns:
+            conn.close()
+
+
+def set_site_min_qty(
+    sap_code: str,
+    site_id: str,
+    min_qty: float,
+    *,
+    updated_by: str,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Upsert a per-site Minimum_Qty override. Pass a negative or NaN qty
+    to delete the override (falls back to inventory.Minimum_Qty)."""
+    if not sap_code or not site_id:
+        return False
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        try:
+            mq = float(min_qty)
+        except (TypeError, ValueError):
+            mq = -1.0
+        if mq < 0:
+            conn.execute(
+                "DELETE FROM inventory_site_overrides "
+                "WHERE SAP_Code = ? AND Site_ID = ?",
+                (sap_code, site_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO inventory_site_overrides "
+                "(SAP_Code, Site_ID, Minimum_Qty, updated_by, updated_at) "
+                "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(SAP_Code, Site_ID) DO UPDATE SET "
+                "  Minimum_Qty = excluded.Minimum_Qty, "
+                "  updated_by  = excluded.updated_by, "
+                "  updated_at  = CURRENT_TIMESTAMP",
+                (sap_code, site_id, mq, updated_by),
+            )
+        conn.commit()
+        return True
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_min_qty_for(
+    sap_code: str,
+    site_id: str,
+    conn: sqlite3.Connection = None,
+) -> float:
+    """Resolve effective Minimum_Qty for a SAP_Code at a Site_ID via
+    COALESCE(site_override, inventory_default, 0)."""
+    if not sap_code:
+        return 0.0
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COALESCE("
+            "  (SELECT Minimum_Qty FROM inventory_site_overrides "
+            "    WHERE SAP_Code = ? AND Site_ID = ?), "
+            "  (SELECT Minimum_Qty FROM inventory WHERE SAP_Code = ?), "
+            "  0)",
+            (sap_code, site_id or "", sap_code),
+        ).fetchone()
+        try:
+            return float(row[0] or 0)
+        except (TypeError, ValueError):
+            return 0.0
     finally:
         if _owns:
             conn.close()

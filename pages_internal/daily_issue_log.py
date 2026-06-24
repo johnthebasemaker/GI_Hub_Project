@@ -634,88 +634,130 @@ def page_daily_issue_log(user: dict) -> None:
                     st.rerun()
 
             with btn_submit:
-                if st.button("📨 Submit Grid to HOD", type="primary", use_container_width=True):
-                    items_df = pd.read_sql("""
-                        SELECT p.SAP_Code, i.Equipment_Description, p.Quantity
-                        FROM pending_issues p
-                        LEFT JOIN inventory i ON p.SAP_Code = i.SAP_Code
-                        WHERE COALESCE(p.Site_ID,'HQ') = ? AND COALESCE(p.status,'draft') = 'draft'
-                    """, conn3, params=(site_id,))
-
-                    if items_df.empty:
-                        st.warning("⚠️ No draft items to submit.")
-                    else:
-                        # Round 12 — belt-and-suspenders: same negative-stock
-                        # validator that gates HOD's EOD commit now runs at
-                        # the SK Submit step too. Stock can still shift
-                        # between SK submit and HOD commit, so the HOD-side
-                        # check stays in place.
-                        from database import validate_eod_no_negative_stock
-                        _viol = validate_eod_no_negative_stock(
-                            conn3, site_id, items_df,
-                        )
-                        if _viol:
-                            _rows = "\n".join(
-                                f"• [{v['sap_code']}] {v['name']} — "
-                                f"current {v['current']:g} {v['uom']}, "
-                                f"to consume {v['to_consume']:g} → "
-                                f"deficit {v['deficit']:g}"
-                                for v in _viol
+                # Round 15 — Submit Grid is a destructive bulk action and now
+                # requires a confirmation step. Validator runs on the first
+                # click; if it passes, the confirmation banner appears, and
+                # a second click commits.
+                _sk_submit_confirm = f"_sk_submit_confirm::{site_id}"
+                if not st.session_state.get(_sk_submit_confirm):
+                    if st.button("📨 Submit Grid to HOD",
+                                 type="primary",
+                                 use_container_width=True,
+                                 key="_sk_submit_btn"):
+                        items_df = pd.read_sql("""
+                            SELECT p.SAP_Code, i.Equipment_Description, p.Quantity
+                            FROM pending_issues p
+                            LEFT JOIN inventory i ON p.SAP_Code = i.SAP_Code
+                            WHERE COALESCE(p.Site_ID,'HQ') = ? AND COALESCE(p.status,'draft') = 'draft'
+                        """, conn3, params=(site_id,))
+                        if items_df.empty:
+                            st.warning("⚠️ No draft items to submit.")
+                        else:
+                            from database import validate_eod_no_negative_stock
+                            _viol = validate_eod_no_negative_stock(
+                                conn3, site_id, items_df,
                             )
-                            st.error(
-                                "🛑 **Insufficient stock for one or more lines.**\n\n"
-                                + _rows
-                                + "\n\nReduce quantities or receive more stock "
-                                + "before submitting."
-                            )
-                            st.stop()
-                        conn3.execute(
-                            "UPDATE pending_issues SET status = 'pending_hod' WHERE COALESCE(Site_ID,'HQ') = ? AND COALESCE(status,'draft') = 'draft'",
-                            (site_id,)
-                        )
-                        conn3.commit()
-
-                        # Persist attached docs (if any) under doc_type='consumption'.
-                        # Doc number = DDMMYY of the date or today.
-                        if cons_files:
-                            from database import save_entry_attachment
-                            attach_date = cons_attach_date or datetime.date.today()
-                            doc_num = attach_date.strftime("%d%m%y")
-                            for f in cons_files:
-                                save_entry_attachment(
-                                    site_id=site_id, doc_type="consumption",
-                                    doc_number=doc_num, file_obj=f,
-                                    uploaded_by=user["username"],
-                                    entry_table="pending_issues",
-                                    entry_date=attach_date.isoformat(),
-                                    conn=conn3,
+                            if _viol:
+                                _rows = "\n".join(
+                                    f"• [{v['sap_code']}] {v['name']} — "
+                                    f"current {v['current']:g} {v['uom']}, "
+                                    f"to consume {v['to_consume']:g} → "
+                                    f"deficit {v['deficit']:g}"
+                                    for v in _viol
                                 )
-
-                        hod_q = pd.read_sql(
-                            "SELECT Phone_Number FROM users WHERE role = 'hod' AND Site_ID = ? LIMIT 1",
-                            conn3, params=(site_id,)
-                        )
-                        if not hod_q.empty and hod_q.iloc[0]["Phone_Number"]:
-                            item_lines = "\n".join(
-                                f"• {r['Quantity']}x [{r['SAP_Code']}] {r['Equipment_Description']}"
-                                for _, r in items_df.iterrows()
+                                st.error(
+                                    "🛑 **Insufficient stock for one or more lines.**\n\n"
+                                    + _rows
+                                    + "\n\nReduce quantities or receive more stock "
+                                    + "before submitting."
+                                )
+                            else:
+                                st.session_state[_sk_submit_confirm] = {
+                                    "count": int(len(items_df)),
+                                }
+                                st.rerun()
+                else:
+                    _cnt = int(st.session_state[_sk_submit_confirm].get("count", 0))
+                    st.markdown(
+                        f'<div style="background:rgba(245,158,11,0.10);'
+                        f'border:1px solid rgba(245,158,11,0.40);'
+                        f'border-left:4px solid #F59E0B;'
+                        f'border-radius:8px;padding:10px 12px;margin:4px 0 6px 0;">'
+                        f'<b style="color:#F59E0B;">⚠️ Confirm submission</b><br>'
+                        f'<span style="color:#7A8FA0;font-size:12px;">'
+                        f'This sends <b>{_cnt}</b> draft row(s) to the HOD\'s EOD '
+                        f'queue. You won\'t be able to edit them after submission '
+                        f'(only the HOD can ↩️ Unapprove or ✗ Reject).</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    c_yes, c_no = st.columns(2)
+                    with c_yes:
+                        if st.button("✅ Yes — submit to HOD",
+                                     type="primary",
+                                     use_container_width=True,
+                                     key="_sk_submit_confirm_yes"):
+                            items_df = pd.read_sql("""
+                                SELECT p.SAP_Code, i.Equipment_Description, p.Quantity
+                                FROM pending_issues p
+                                LEFT JOIN inventory i ON p.SAP_Code = i.SAP_Code
+                                WHERE COALESCE(p.Site_ID,'HQ') = ? AND COALESCE(p.status,'draft') = 'draft'
+                            """, conn3, params=(site_id,))
+                            conn3.execute(
+                                "UPDATE pending_issues SET status = 'pending_hod' "
+                                "WHERE COALESCE(Site_ID,'HQ') = ? "
+                                "AND COALESCE(status,'draft') = 'draft'",
+                                (site_id,),
                             )
-                            msg = (
-                                f"📝 *ISSUE STAGING SUBMITTED ({site_id})*\n"
-                                f"👤 Store Keeper: {user['username']}\n\n"
-                                f"📦 *Submitted Items ({len(items_df)}):*\n"
-                                f"{item_lines}\n\n"
-                                f"Queue is ready for your EOD commit review."
-                            )
-                            queue_whatsapp_alert(hod_q.iloc[0]["Phone_Number"], msg)
+                            conn3.commit()
+                            st.session_state.pop(_sk_submit_confirm, None)
 
-                        st.success(f"✅ {len(items_df)} item(s) submitted to HOD for review!")
-                        # Phase 7E — staging queue has been moved to
-                        # status='pending_hod'; wipe the in-flight row draft.
-                        clear_form_draft(
-                            "sk_consumption", user.get("username", "sk"),
-                        )
-                        st.rerun()
+                            # Persist attached docs (if any) under doc_type='consumption'.
+                            # Doc number = DDMMYY of the date or today.
+                            if cons_files:
+                                from database import save_entry_attachment
+                                attach_date = cons_attach_date or datetime.date.today()
+                                doc_num = attach_date.strftime("%d%m%y")
+                                for f in cons_files:
+                                    save_entry_attachment(
+                                        site_id=site_id, doc_type="consumption",
+                                        doc_number=doc_num, file_obj=f,
+                                        uploaded_by=user["username"],
+                                        entry_table="pending_issues",
+                                        entry_date=attach_date.isoformat(),
+                                        conn=conn3,
+                                    )
+
+                            hod_q = pd.read_sql(
+                                "SELECT Phone_Number FROM users WHERE role = 'hod' AND Site_ID = ? LIMIT 1",
+                                conn3, params=(site_id,)
+                            )
+                            if not hod_q.empty and hod_q.iloc[0]["Phone_Number"]:
+                                item_lines = "\n".join(
+                                    f"• {r['Quantity']}x [{r['SAP_Code']}] {r['Equipment_Description']}"
+                                    for _, r in items_df.iterrows()
+                                )
+                                msg = (
+                                    f"📝 *ISSUE STAGING SUBMITTED ({site_id})*\n"
+                                    f"👤 Store Keeper: {user['username']}\n\n"
+                                    f"📦 *Submitted Items ({len(items_df)}):*\n"
+                                    f"{item_lines}\n\n"
+                                    f"Queue is ready for your EOD commit review."
+                                )
+                                queue_whatsapp_alert(hod_q.iloc[0]["Phone_Number"], msg)
+
+                            st.success(f"✅ {len(items_df)} item(s) submitted to HOD for review!")
+                            # Phase 7E — staging queue has been moved to
+                            # status='pending_hod'; wipe the in-flight row draft.
+                            clear_form_draft(
+                                "sk_consumption", user.get("username", "sk"),
+                            )
+                            st.rerun()
+                    with c_no:
+                        if st.button("Cancel",
+                                     use_container_width=True,
+                                     key="_sk_submit_confirm_no"):
+                            st.session_state.pop(_sk_submit_confirm, None)
+                            st.rerun()
 
         conn3.close()
 

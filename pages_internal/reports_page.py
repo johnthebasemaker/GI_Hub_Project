@@ -149,7 +149,9 @@ def _site_filter(user: dict, key_suffix: str = "default") -> tuple[str | None, s
 # misaligned and wastes precious PDF/Excel width. We strip any column
 # whose every row is null/blank/NaN, while always preserving the two
 # identifier columns the user explicitly asked for.
-_ALWAYS_KEEP = {"SAP_Code", "Material_Code", "Date"}
+# Round 15 — UOM is contract for PR Status (and any other UOM-bearing report)
+# so it survives even when partial legacy rows have it blank.
+_ALWAYS_KEEP = {"SAP_Code", "Material_Code", "Date", "UOM"}
 
 
 _PLACEHOLDER_VALUES = {"", "None", "nan", "NaT", "<NA>", "null", "NULL"}

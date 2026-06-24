@@ -341,13 +341,48 @@ def _tab_prepare_dn(user: dict, wh_id: str) -> None:
         src["PO_Number"].unique().tolist(),
         key="_wh_dn_po",
     )
-    sites = sorted([s for s in (get_sites() or []) if s])
-    site_pick = st.selectbox(
-        "Destination Site",
-        sites if sites else ["HQ"],
-        index=0,
-        key="_wh_dn_site",
-    )
+
+    # Round 15 — Destination Site is LOCKED to the PO's originating Site_ID.
+    # Goods must flow back to the requesting site; allowing the operator to
+    # pick a different site caused the HOD DN-visibility bug. Admin shadow
+    # gets a small override expander for the rare cross-site shipment.
+    from database import get_po_detail as _get_po_detail
+    po_detail = _get_po_detail(po_pick) if po_pick else {}
+    po_site = (po_detail.get("header", {}) or {}).get("Site_ID") or ""
+    all_sites = sorted([s for s in (get_sites() or []) if s])
+
+    if po_site:
+        st.text_input(
+            "Destination Site (locked to PO origin)",
+            value=po_site, disabled=True,
+            key="_wh_dn_site_display",
+        )
+        site_pick = po_site
+        if user.get("role") == "admin":
+            with st.expander(
+                "🔓 Admin: override destination site",
+                expanded=False,
+            ):
+                st.caption(
+                    "Use only for legitimate cross-site shipments. The "
+                    "default is locked to keep DN routing aligned with the "
+                    "PO's originating site."
+                )
+                override = st.selectbox(
+                    "Override destination",
+                    ["— Keep PO origin —"] + all_sites,
+                    index=0, key="_wh_dn_site_override",
+                )
+                if override != "— Keep PO origin —":
+                    site_pick = override
+    else:
+        # No Site_ID on the PO (legacy / data error) — fall back to the
+        # full picker so the warehouse user isn't blocked.
+        site_pick = st.selectbox(
+            "Destination Site (PO has no origin site set)",
+            all_sites if all_sites else ["HQ"],
+            index=0, key="_wh_dn_site",
+        )
 
     # Pull the assignment's PO items via the shielded helper. hide_prices is
     # implicit because get_assignment_detail forces it.

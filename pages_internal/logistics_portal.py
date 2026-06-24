@@ -53,6 +53,9 @@ from database import (
     raise_vendor_return, list_vendor_returns,
     list_force_closures,
     get_sites,
+    # Round 15 — material master
+    bulk_upsert_materials, next_sap_code, next_temp_material_code,
+    set_site_min_qty, get_min_qty_for,
 )
 from ui_components import (
     render_brand_header,
@@ -310,10 +313,64 @@ def _po_header_form(key_prefix: str, prefill: dict | None = None) -> dict:
                                 value=prefill.get("PO_Type", ""),
                                 key=f"{key_prefix}_po_type")
     with c2:
-        pr_no = st.text_input("PR Number",
-                              value=prefill.get("PR_Number",
-                                  st.session_state.get("_logi_create_po_pr", "")),
-                              key=f"{key_prefix}_pr_no")
+        # Round 15 — PR Number is now a dropdown over open PRs (no free-text
+        # typo risk). Falls back to manual entry under an expander for the
+        # rare legacy case where the PR isn't in the queue yet.
+        conn_pr = get_connection()
+        try:
+            open_prs = pd.read_sql(
+                "SELECT DISTINCT PR_Number, COALESCE(Site_ID,'') AS Site_ID "
+                "FROM pr_master "
+                "WHERE COALESCE(status,'open') = 'open' "
+                "ORDER BY PR_Number DESC",
+                conn_pr,
+            )
+        finally:
+            conn_pr.close()
+        pr_choices = (
+            (open_prs["PR_Number"].astype(str) + "  ·  "
+             + open_prs["Site_ID"].astype(str)).tolist()
+            if not open_prs.empty else []
+        )
+        prefill_pr = (
+            prefill.get("PR_Number")
+            or st.session_state.get("_logi_create_po_pr", "")
+        )
+        default_idx = 0
+        if prefill_pr and pr_choices:
+            for i, c in enumerate(pr_choices):
+                if c.startswith(prefill_pr + "  ·"):
+                    default_idx = i + 1  # +1 for the "— select —" sentinel
+                    break
+        pr_pick = st.selectbox(
+            "PR Number",
+            ["— Select an open PR —"] + pr_choices,
+            index=default_idx,
+            key=f"{key_prefix}_pr_pick",
+            help="Open PRs only. Use the '➕ Add unlisted PR' expander "
+                 "below for legacy / out-of-band PRs.",
+        )
+        pr_no_picked = (
+            pr_pick.split("  ·")[0].strip()
+            if pr_pick and pr_pick != "— Select an open PR —"
+            else ""
+        )
+        # Auto-fill Site_ID from the chosen PR.
+        if pr_no_picked and not open_prs.empty:
+            site_row = open_prs[open_prs["PR_Number"] == pr_no_picked]
+            if not site_row.empty:
+                st.session_state["_logi_create_po_site"] = (
+                    site_row.iloc[0]["Site_ID"] or None
+                )
+        with st.expander("➕ Add unlisted PR (free text)", expanded=False):
+            unlisted = st.text_input(
+                "Type a PR number not in the dropdown",
+                value="" if pr_no_picked else prefill_pr,
+                key=f"{key_prefix}_pr_unlisted",
+                placeholder="Used only when the PR isn't already in pr_master",
+            ).strip()
+        pr_no = pr_no_picked or unlisted
+
         quot_no = st.text_input("Quotation No.",
                                  value=prefill.get("Quotation_No", ""),
                                  key=f"{key_prefix}_q_no")
@@ -360,7 +417,7 @@ def _po_header_form(key_prefix: str, prefill: dict | None = None) -> dict:
 
     return {
         "PO_Number": po_no.strip(),
-        "PR_Number": pr_no.strip() or None,
+        "PR_Number": (pr_no or "").strip() or None,
         "Site_ID": st.session_state.get("_logi_create_po_site"),
         "Vendor_Code":   vend.get("Vendor_Code"),
         "Vendor_Name":   vend.get("Vendor_Name") or prefill.get("Vendor_Name"),
@@ -1026,7 +1083,210 @@ def _tab_vendor_returns(user: dict) -> None:
 
 
 # ===========================================================================
-# TAB 8 — History
+# TAB 8 — Material Details (Round 15)
+# ===========================================================================
+# Manual entry + Excel upload for the inventory master. Auto-generates SAP
+# codes (GI-NNNNNNN) sequentially, auto-assigns Temp-GI-NNNNNNN when the
+# Material_Code is blank, and rejects duplicate Material_Codes (configurable
+# overwrite via a checkbox). Result lands in the global `inventory` table so
+# every other portal picks the rows up immediately.
+
+_MAT_DETAIL_CANONICAL_COLS = [
+    ("Material_Code",          "Material Code"),
+    ("Equipment_Description",  "Material Description"),
+    ("UOM",                    "UoM"),
+    ("Category",               "Category"),
+    ("Minimum_Qty",            "Min Qty"),
+]
+
+
+def _tab_material_details(user: dict) -> None:
+    st.markdown("### 📦 Material Details — master register")
+    st.caption(
+        "Add materials one-by-one or upload an Excel batch. Material Code is "
+        "checked for duplicates; blank ones get a `Temp-GI-…` code. SAP Code "
+        "auto-generates from the running sequence."
+    )
+
+    from config import MATERIAL_CATEGORIES
+    actor = user.get("username", "logistics")
+
+    sub_manual, sub_upload, sub_register = st.tabs([
+        "➕ Manual entry", "📤 Excel upload", "📋 Current register",
+    ])
+
+    # ── ➕ Manual entry ────────────────────────────────────────────────────
+    with sub_manual:
+        cA, cB = st.columns(2)
+        with cA:
+            mat_code = st.text_input(
+                "Material Code",
+                key="_md_man_code",
+                placeholder="Leave blank → Temp-GI-… auto-assigned",
+            ).strip()
+            desc = st.text_input(
+                "Material Description *",
+                key="_md_man_desc",
+            ).strip()
+            uom = st.text_input(
+                "UoM *", key="_md_man_uom",
+                placeholder="e.g. KG, PCS, M, L",
+            ).strip()
+        with cB:
+            cat = st.selectbox(
+                "Category", MATERIAL_CATEGORIES,
+                index=MATERIAL_CATEGORIES.index("Others")
+                if "Others" in MATERIAL_CATEGORIES else 0,
+                key="_md_man_cat",
+            )
+            min_qty = st.number_input(
+                "Minimum Qty (global default)",
+                min_value=0.0, step=1.0, value=0.0,
+                key="_md_man_minqty",
+            )
+            st.caption(
+                "Per-site overrides can be set later by the HOD of each "
+                "site from the HOD Portal."
+            )
+
+        if st.button("✅ Add material", type="primary",
+                     key="_md_man_submit"):
+            if not desc:
+                st.error("Material Description is required.")
+            elif not uom:
+                st.error("UoM is required.")
+            else:
+                res = bulk_upsert_materials(
+                    [{
+                        "Material_Code": mat_code,
+                        "Equipment_Description": desc,
+                        "UOM": uom,
+                        "Category": cat,
+                        "Minimum_Qty": min_qty,
+                    }],
+                    created_by=actor,
+                )
+                if res["inserted"]:
+                    new = res["inserted"][0]
+                    st.success(
+                        f"✅ Added — SAP `{new['SAP_Code']}` · "
+                        f"Material `{new['Material_Code']}`."
+                    )
+                    # Clear the form so the next add starts clean.
+                    for k in ("_md_man_code", "_md_man_desc", "_md_man_uom"):
+                        st.session_state.pop(k, None)
+                elif res["rejected"]:
+                    st.error(
+                        f"🚫 {res['rejected'][0].get('_reason', 'Rejected')}"
+                    )
+
+    # ── 📤 Excel upload ────────────────────────────────────────────────────
+    with sub_upload:
+        st.caption(
+            "Excel column headers (case-insensitive): "
+            "**Material_Code, Material_Description, UoM, Category, Minimum_Qty**. "
+            "Rows with blank Material_Code receive a Temp-GI code; rows with "
+            "duplicate Material_Code are rejected unless you tick "
+            "'Overwrite existing'."
+        )
+        f = st.file_uploader(
+            "Upload .xlsx / .xls", type=["xlsx", "xls"],
+            key="_md_xl_file",
+        )
+        overwrite = st.checkbox(
+            "Overwrite existing rows on duplicate Material_Code",
+            value=False, key="_md_xl_overwrite",
+        )
+
+        if f is not None:
+            try:
+                xl_df = pd.read_excel(f, engine="openpyxl")
+            except Exception as e:
+                st.error(f"Couldn't read the workbook: {e}")
+                return
+
+            # Normalise column names: case-insensitive map onto the
+            # canonical names the upserter expects.
+            colmap = {}
+            for c in xl_df.columns:
+                key = str(c).strip().lower().replace(" ", "_")
+                if key in ("material_code", "mat_code", "code"):
+                    colmap[c] = "Material_Code"
+                elif key in ("material_description", "description",
+                             "equipment_description", "name"):
+                    colmap[c] = "Equipment_Description"
+                elif key in ("uom", "uo_m", "unit", "units"):
+                    colmap[c] = "UOM"
+                elif key in ("category", "cat"):
+                    colmap[c] = "Category"
+                elif key in ("minimum_qty", "min_qty", "min", "minimum"):
+                    colmap[c] = "Minimum_Qty"
+            xl_df = xl_df.rename(columns=colmap)
+
+            # Cap preview at 500 rows for sanity.
+            preview = xl_df.head(500).fillna("").to_dict(orient="records")
+            st.caption(
+                f"Parsed {len(xl_df)} row(s) "
+                f"(showing first {min(500, len(xl_df))}). Review and confirm."
+            )
+            st.dataframe(
+                xl_df.head(20), use_container_width=True, hide_index=True,
+            )
+
+            if st.button("📥 Commit upload", type="primary",
+                         key="_md_xl_commit"):
+                res = bulk_upsert_materials(
+                    preview, created_by=actor,
+                    overwrite_duplicates=overwrite,
+                )
+                cI, cU, cR = st.columns(3)
+                cI.metric("Inserted", len(res["inserted"]))
+                cU.metric("Updated",  len(res["updated"]))
+                cR.metric("Rejected", len(res["rejected"]))
+                if res["rejected"]:
+                    st.caption("Rejected rows (with reason):")
+                    st.dataframe(
+                        pd.DataFrame(res["rejected"]),
+                        use_container_width=True, hide_index=True,
+                    )
+
+    # ── 📋 Current register ────────────────────────────────────────────────
+    with sub_register:
+        conn = get_connection()
+        try:
+            inv_df = pd.read_sql(
+                "SELECT Material_Code, Equipment_Description, UOM, "
+                "       Category, Minimum_Qty, SAP_Code "
+                "FROM inventory "
+                "ORDER BY CASE WHEN Material_Code LIKE 'Temp-%' THEN 1 ELSE 0 END, "
+                "         Material_Code",
+                conn,
+            )
+        finally:
+            conn.close()
+        if inv_df.empty:
+            render_empty_state(
+                icon="📭",
+                title="No materials yet",
+                hint="Use Manual entry or Excel upload to seed the register.",
+            )
+            return
+        # Rename for display per Round 15 spec column order.
+        inv_df = inv_df.rename(columns={
+            "Equipment_Description": "Material Description",
+            "UOM": "UoM",
+            "Minimum_Qty": "Min Qty",
+            "Material_Code": "Material Code",
+            "SAP_Code": "SAP Code",
+        })[
+            ["Material Code", "Material Description", "UoM",
+             "Category", "Min Qty", "SAP Code"]
+        ]
+        st.dataframe(inv_df, use_container_width=True, hide_index=True)
+
+
+# ===========================================================================
+# TAB 9 — History
 # ===========================================================================
 def _tab_history(user: dict) -> None:
     st.markdown("### 📂 History — closed PRs / POs")
@@ -1078,9 +1338,10 @@ def page_logistics_portal(user: dict) -> None:
         "🔁 Reschedules",
         "🛑 Force-Close",
         "↩️ Vendor Returns",
+        "📦 Material Details",   # Round 15 — material master entry / Excel upload
         "📂 History",
     ]
-    t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs(tab_labels)
+    t1, t2, t3, t4, t5, t6, t7, t8, t9 = st.tabs(tab_labels)
     with t1: _tab_incoming_prs(user)
     with t2: _tab_create_po(user)
     with t3: _tab_open_pos(user)
@@ -1088,4 +1349,5 @@ def page_logistics_portal(user: dict) -> None:
     with t5: _tab_reschedules(user)
     with t6: _tab_force_close(user)
     with t7: _tab_vendor_returns(user)
-    with t8: _tab_history(user)
+    with t8: _tab_material_details(user)
+    with t9: _tab_history(user)

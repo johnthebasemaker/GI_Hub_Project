@@ -27,6 +27,7 @@ import tempfile
 import traceback
 import importlib
 import subprocess
+import sqlite3  # Round 15 — IntegrityError catches in schema/unique tests
 import platform
 from pathlib import Path
 
@@ -4313,6 +4314,392 @@ def check_r14_prep_raises_on_unreadable_bytes() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Round 15 — Multi-Portal Polish + Material Master + PO Parser Fix
+# ═══════════════════════════════════════════════════════════════════════════
+def _r15_seed_inventory_rows(rows: list[tuple[str, str]]) -> None:
+    """Seed inventory with (SAP_Code, Material_Code) tuples for test isolation."""
+    conn = database.get_connection()
+    try:
+        for sap, mc in rows:
+            conn.execute(
+                "INSERT INTO inventory "
+                "(SAP_Code, Material_Code, Equipment_Description, UOM, "
+                " Category, Minimum_Qty) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (sap, mc, f"Desc {mc}", "PCS", "Others", 0),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def check_r15_schema_inventory_site_overrides_table() -> None:
+    """inventory_site_overrides table + UNIQUE(SAP_Code, Site_ID) present."""
+    conn = database.get_connection()
+    try:
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(inventory_site_overrides)"
+        ).fetchall()}
+        for must in ("SAP_Code", "Site_ID", "Minimum_Qty",
+                     "updated_by", "updated_at"):
+            assert must in cols, f"missing: {must} / {cols}"
+        # UNIQUE constraint must reject same-(SAP,Site) twice.
+        conn.execute(
+            "INSERT INTO inventory_site_overrides "
+            "(SAP_Code, Site_ID, Minimum_Qty, updated_by) "
+            "VALUES (?, ?, ?, ?)",
+            ("R15-OVR-1", "JUBAIL", 10, "test"),
+        )
+        try:
+            conn.execute(
+                "INSERT INTO inventory_site_overrides "
+                "(SAP_Code, Site_ID, Minimum_Qty, updated_by) "
+                "VALUES (?, ?, ?, ?)",
+                ("R15-OVR-1", "JUBAIL", 99, "test"),
+            )
+            raise AssertionError("UNIQUE constraint not enforced")
+        except sqlite3.IntegrityError:
+            pass
+    finally:
+        conn.close()
+
+
+def check_r15_next_sap_code_increments() -> None:
+    """next_sap_code returns max(numeric tail)+1 formatted as GI-NNNNNNN."""
+    _r15_seed_inventory_rows([
+        ("GI-9000100", "R15-NSP-1"),
+        ("GI-9000099", "R15-NSP-2"),
+    ])
+    nxt = database.next_sap_code()
+    # Max across the table — handles whatever already exists in the test DB.
+    conn = database.get_connection()
+    try:
+        max_num = 0
+        for (s,) in conn.execute(
+            "SELECT SAP_Code FROM inventory WHERE SAP_Code LIKE 'GI-%'"
+        ).fetchall():
+            try:
+                max_num = max(max_num, int(str(s).split("-", 1)[1]))
+            except (ValueError, IndexError):
+                pass
+    finally:
+        conn.close()
+    expected = f"GI-{max_num + 1:07d}"
+    assert nxt == expected, f"next_sap_code={nxt}, expected={expected}"
+    # Bounded format: starts with 'GI-' and ends with 7-digit tail.
+    assert nxt.startswith("GI-") and nxt[3:].isdigit() and len(nxt[3:]) == 7
+
+
+def check_r15_next_temp_material_code_persists() -> None:
+    """next_temp_material_code increments and survives a re-read."""
+    a = database.next_temp_material_code()
+    b = database.next_temp_material_code()
+    assert a.startswith("Temp-GI-") and a[8:].isdigit()
+    assert int(b[8:]) == int(a[8:]) + 1, f"expected sequential, got {a}, {b}"
+
+
+def check_r15_bulk_upsert_inserts_with_auto_codes() -> None:
+    """bulk_upsert_materials auto-assigns SAP_Code; blank Material_Code →
+    Temp-GI-…; full path persists the row."""
+    res = database.bulk_upsert_materials([
+        {"Equipment_Description": "R15 Test Material A",
+         "UOM": "PCS", "Category": "Others", "Minimum_Qty": 5,
+         "Material_Code": "R15-UPS-A"},
+        {"Material_Description": "R15 Test Material B (no code)",
+         "UOM": "KG", "Minimum_Qty": 0},  # blank Material_Code
+    ], created_by="r15_test")
+    assert len(res["inserted"]) == 2, res
+    a, b = res["inserted"]
+    assert a["Material_Code"] == "R15-UPS-A"
+    assert b["Material_Code"].startswith("Temp-GI-")
+    assert a["SAP_Code"].startswith("GI-")
+    # Verify DB persistence.
+    conn = database.get_connection()
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM inventory "
+            "WHERE Material_Code IN ('R15-UPS-A', ?)", (b["Material_Code"],),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 2, n
+
+
+def check_r15_bulk_upsert_rejects_duplicates() -> None:
+    """Duplicate Material_Code rejected when overwrite_duplicates=False."""
+    database.bulk_upsert_materials([
+        {"Material_Code": "R15-DUP-X",
+         "Equipment_Description": "First copy", "UOM": "PCS",
+         "Minimum_Qty": 0},
+    ], created_by="r15_test")
+    res = database.bulk_upsert_materials([
+        {"Material_Code": "R15-DUP-X",
+         "Equipment_Description": "Second copy attempt", "UOM": "PCS",
+         "Minimum_Qty": 0},
+    ], created_by="r15_test")
+    assert not res["inserted"]
+    assert len(res["rejected"]) == 1
+    assert "already exists" in (res["rejected"][0].get("_reason") or "").lower()
+
+
+def check_r15_bulk_upsert_overwrite_path() -> None:
+    """overwrite_duplicates=True updates the existing row in place."""
+    database.bulk_upsert_materials([
+        {"Material_Code": "R15-OVR-X",
+         "Equipment_Description": "Original", "UOM": "PCS",
+         "Minimum_Qty": 0},
+    ], created_by="r15_test")
+    res = database.bulk_upsert_materials([
+        {"Material_Code": "R15-OVR-X",
+         "Equipment_Description": "Updated description",
+         "UOM": "KG", "Minimum_Qty": 50, "Category": "Consumable"},
+    ], created_by="r15_test", overwrite_duplicates=True)
+    assert len(res["updated"]) == 1
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT Equipment_Description, UOM, Minimum_Qty "
+            "FROM inventory WHERE Material_Code = ?", ("R15-OVR-X",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "Updated description"
+    assert row[1] == "KG"
+    assert float(row[2]) == 50.0
+
+
+def check_r15_set_and_get_site_min_qty() -> None:
+    """set_site_min_qty + get_min_qty_for COALESCE override over default."""
+    database.bulk_upsert_materials([
+        {"Material_Code": "R15-MIN-X",
+         "Equipment_Description": "Min override test",
+         "UOM": "PCS", "Minimum_Qty": 10},
+    ], created_by="r15_test")
+    conn = database.get_connection()
+    try:
+        sap = conn.execute(
+            "SELECT SAP_Code FROM inventory WHERE Material_Code = ?",
+            ("R15-MIN-X",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    # Default (no override) → falls back to inventory.Minimum_Qty=10.
+    assert database.get_min_qty_for(sap, "JUBAIL") == 10.0
+    # Set site override.
+    assert database.set_site_min_qty(sap, "JUBAIL", 25.0, updated_by="r15_test")
+    assert database.get_min_qty_for(sap, "JUBAIL") == 25.0
+    # Different site still sees the default.
+    assert database.get_min_qty_for(sap, "RIYADH") == 10.0
+    # Clear via negative value → falls back to default.
+    database.set_site_min_qty(sap, "JUBAIL", -1, updated_by="r15_test")
+    assert database.get_min_qty_for(sap, "JUBAIL") == 10.0
+
+
+def check_r15_inventory_material_code_unique_index() -> None:
+    """Direct INSERT with duplicate Material_Code is rejected by the
+    partial UNIQUE index added in Round 15."""
+    conn = database.get_connection()
+    try:
+        # First insert via the helper path so SAP_Code is auto-assigned.
+        database.bulk_upsert_materials([
+            {"Material_Code": "R15-UQ-DUP",
+             "Equipment_Description": "Unique test",
+             "UOM": "PCS", "Minimum_Qty": 0},
+        ], created_by="r15_test")
+        # Now attempt a raw duplicate INSERT — the index should reject it.
+        try:
+            conn.execute(
+                "INSERT INTO inventory "
+                "(SAP_Code, Material_Code, Equipment_Description, UOM) "
+                "VALUES (?, ?, ?, ?)",
+                ("R15-UQ-DUP-FAKE-SAP", "R15-UQ-DUP", "Dup attempt", "PCS"),
+            )
+            conn.commit()
+            raise AssertionError("UNIQUE Material_Code index not enforced")
+        except sqlite3.IntegrityError:
+            pass
+    finally:
+        conn.close()
+
+
+def check_r15_po_pdf_three_items() -> None:
+    """process_po_pdf extracts the 3 line items from PO#4710003114.pdf
+    (regression guard for the two-line layout fix)."""
+    import os
+    pdf_path = "/Users/johnsonandrew/GI_Hub_Project/PO#4710003114.pdf"
+    if not os.path.exists(pdf_path):
+        return  # skip silently in CI environments without the sample file
+    with open(pdf_path, "rb") as f:
+        raw = f.read()
+    ok, msg, ext = database.process_po_pdf(raw)
+    assert ok, msg
+    items = ext.get("items", [])
+    assert len(items) == 3, f"expected 3 items, got {len(items)} ({msg})"
+    assert ext["header"].get("PR_Number") == "3000000681"
+    assert ext["header"].get("PO_Number") == "4710003114"
+    # Item codes match the PDF.
+    codes = sorted(i.get("Material_Code") for i in items)
+    assert codes == ["GI-7001958", "GI-7002522", "GI-7002615"], codes
+
+
+def check_r15_po_pdf_synthetic_two_line_layout() -> None:
+    """Synthetic regression — re-run the items extractor against a hand-rolled
+    text fixture matching the Round 15 two-line layout. Verifies the
+    regression even on machines without the real PDF on disk."""
+    # Mock pdfplumber so we control the extracted text exactly.
+    sample = (
+        "Page 1 of 1\nPurchase Order\n4710999999\n"
+        "Sr. No. Material Description QTY UoM Unit Price VAT Amount Total Price\n"
+        "GI-7099001\n"
+        "001 ITEM ALPHA SAMPLE 10.00 KG 5.00 7.50 50.00\n"
+        "GI-7099002\n"
+        "002 ITEM BETA SAMPLE 20.00 PCS 3.00 9.00 60.00\n"
+    )
+
+    class _MockPage:
+        def extract_text(self): return sample
+        def extract_tables(self): return []
+
+    class _MockPDF:
+        def __init__(self, *_a, **_kw): self.pages = [_MockPage()]
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+
+    orig = database.pdfplumber
+    class _Stub:
+        @staticmethod
+        def open(buf): return _MockPDF()
+    database.pdfplumber = _Stub
+    try:
+        ok, msg, ext = database.process_po_pdf(b"fake")
+    finally:
+        database.pdfplumber = orig
+
+    assert ok, msg
+    items = ext.get("items", [])
+    assert len(items) == 2, f"expected 2 items, got {len(items)}"
+    sa, sb = items
+    assert sa["Material_Code"] == "GI-7099001"
+    assert sa["Description"].startswith("ITEM ALPHA")
+    assert float(sa["Qty"]) == 10.0
+    assert sa["UOM"] == "KG"
+    assert sb["Material_Code"] == "GI-7099002"
+    assert float(sb["Qty"]) == 20.0
+
+
+def check_r15_list_pending_hod_dns_site_fallback() -> None:
+    """list_pending_hod_dns falls back through the 3-way join when the DN
+    has the wrong (or NULL) Site_ID — the bug Phase EE fixed for future
+    DNs but legacy rows still need to surface."""
+    conn = database.get_connection()
+    try:
+        # Seed a PR + PO at site 'R15HOD' with a DN that carries the
+        # default 'HQ' Site_ID (mismatched). The HOD of 'R15HOD' must
+        # still see this DN.
+        conn.execute(
+            "INSERT INTO pr_master (PR_Number, SAP_Code, Requested_Qty, Site_ID) "
+            "VALUES (?, ?, ?, ?)",
+            ("R15-PR-HOD", "GI-9999991", 1, "R15HOD"),
+        )
+        conn.execute(
+            "INSERT INTO purchase_orders (PO_Number, PR_Number, Site_ID) "
+            "VALUES (?, ?, ?)",
+            ("R15-PO-HOD", "R15-PR-HOD", "R15HOD"),
+        )
+        # DN with HQ as Site_ID (the bug) — the JOIN should still tie it
+        # back to R15HOD via the PO.
+        conn.execute(
+            "INSERT INTO delivery_notes "
+            "(DN_Number, PO_Number, Site_ID, Warehouse_ID, status, created_by) "
+            "VALUES (?, ?, ?, ?, ?, 'r15_test')",
+            ("R15-DN-HOD", "R15-PO-HOD", "HQ", "WH1", "pending_hod"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    df = database.list_pending_hod_dns("R15HOD")
+    assert not df.empty, "DN should surface via 3-way join fallback"
+    assert "R15-DN-HOD" in df["DN_Number"].tolist()
+
+
+def check_r15_request_reschedule_routes_to_warehouse() -> None:
+    """When the DN status is in _RESCHEDULE_WAREHOUSE_DIRECT_STATUSES, the
+    reschedule notification fans out to warehouse_user, not logistics."""
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO delivery_notes "
+            "(DN_Number, PO_Number, Site_ID, Warehouse_ID, status, created_by) "
+            "VALUES (?, ?, ?, ?, ?, 'r15_test')",
+            ("R15-DN-WH", "R15-PO-WH", "R15WH", "WH-R15", "pending_sk"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    ok, msg = database.request_reschedule(
+        po_number="R15-PO-WH", dn_number="R15-DN-WH",
+        current_date="2026-07-01", requested_date="2026-07-08",
+        reason="Site offline during planned shutdown",
+        requested_by_role="hod", requested_by="hod_r15",
+    )
+    assert ok, msg
+    assert "warehouse" in msg.lower(), f"msg should mention warehouse: {msg}"
+    # Verify a warehouse-targeted notification landed.
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT recipient_role, recipient_warehouse "
+            "FROM app_notifications WHERE related_table='po_reschedule_requests' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row, "no notification queued"
+    assert row[0] == "warehouse_user", row
+    assert row[1] == "WH-R15", row
+
+
+def check_r15_request_reschedule_routes_to_logistics_when_no_dn() -> None:
+    """PO-level reschedule (no DN_Number, or DN in pre-dispatch state) still
+    routes to logistics — back-compat for the existing flow."""
+    ok, msg = database.request_reschedule(
+        po_number="R15-PO-LOG", dn_number=None,
+        current_date="2026-07-01", requested_date="2026-07-15",
+        reason="Vendor lead time slipped",
+        requested_by_role="hod", requested_by="hod_r15",
+    )
+    assert ok, msg
+    assert "logistics" in msg.lower(), f"msg should mention logistics: {msg}"
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT recipient_role FROM app_notifications "
+            "WHERE related_table='po_reschedule_requests' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row and row[0] == "logistics", row
+
+
+def check_r15_consumption_export_cols_preserved() -> None:
+    """Round 13 contract — the canonical export columns must still hold
+    after the Round 15 additions to inventory schema."""
+    from config import CONSUMPTION_EXPORT_COLS
+    cols = [c for c, _ in CONSUMPTION_EXPORT_COLS]
+    assert "Material_Code" in cols
+    assert "Approved By" in cols  # legacy space-named
+
+
+def check_r15_pr_report_keeps_uom_column() -> None:
+    """_ALWAYS_KEEP now includes UOM so the strip helper never drops it
+    even when a batch of legacy PRs has it blank."""
+    import importlib
+    rp = importlib.import_module("pages_internal.reports_page")
+    assert "UOM" in rp._ALWAYS_KEEP, rp._ALWAYS_KEEP
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Phase 7C — HOD Cross-Site View notification + indicator checks
 # ═══════════════════════════════════════════════════════════════════════════
 def _7c_tag(prefix: str) -> str:
@@ -6328,6 +6715,53 @@ def main() -> int:
     run_check("Round 14", "prep_image_for_vision raises ImagePrepError on bad bytes",
               check_r14_prep_raises_on_unreadable_bytes,
               "Typed exception so OCR callers can show a clean message.")
+
+    # ── Round 15 — Multi-Portal Polish + Material Master + PO Parser ────
+    run_check("Round 15", "inventory_site_overrides schema + UNIQUE",
+              check_r15_schema_inventory_site_overrides_table,
+              "Per-site Min Qty additive table with UNIQUE(SAP, Site) enforced.")
+    run_check("Round 15", "next_sap_code increments from max numeric tail",
+              check_r15_next_sap_code_increments,
+              "GI-NNNNNNN format, max(tail)+1 across inventory.")
+    run_check("Round 15", "next_temp_material_code persists + increments",
+              check_r15_next_temp_material_code_persists,
+              "Temp-GI-NNNNNNN counter stored in app_settings.")
+    run_check("Round 15", "bulk_upsert_materials inserts + auto-codes blanks",
+              check_r15_bulk_upsert_inserts_with_auto_codes,
+              "Auto SAP + Temp-GI auto-assignment.")
+    run_check("Round 15", "bulk_upsert_materials rejects duplicates",
+              check_r15_bulk_upsert_rejects_duplicates,
+              "Duplicate Material_Code stays out of inventory.")
+    run_check("Round 15", "bulk_upsert_materials overwrite path updates in place",
+              check_r15_bulk_upsert_overwrite_path,
+              "overwrite_duplicates=True writes through to inventory.")
+    run_check("Round 15", "set/get_site_min_qty COALESCEs override over default",
+              check_r15_set_and_get_site_min_qty,
+              "Per-site override beats global default; negative qty clears it.")
+    run_check("Round 15", "inventory.Material_Code UNIQUE index enforced",
+              check_r15_inventory_material_code_unique_index,
+              "Partial UNIQUE index blocks duplicate raw INSERTs too.")
+    run_check("Round 15", "process_po_pdf extracts 3 items from sample PDF",
+              check_r15_po_pdf_three_items,
+              "Regression guard against PO#4710003114.pdf two-line layout.")
+    run_check("Round 15", "process_po_pdf synthetic two-line layout fixture",
+              check_r15_po_pdf_synthetic_two_line_layout,
+              "Hand-rolled text fixture covers the parser even without the PDF.")
+    run_check("Round 15", "list_pending_hod_dns falls back via PO/PR Site_ID",
+              check_r15_list_pending_hod_dns_site_fallback,
+              "Fix for the legacy DN-visibility bug.")
+    run_check("Round 15", "request_reschedule routes to warehouse post-receive",
+              check_r15_request_reschedule_routes_to_warehouse,
+              "DN in pending_sk → notify warehouse_user, not logistics.")
+    run_check("Round 15", "request_reschedule keeps logistics for PO-level",
+              check_r15_request_reschedule_routes_to_logistics_when_no_dn,
+              "Back-compat: no DN ⇒ logistics routing preserved.")
+    run_check("Round 15", "CONSUMPTION_EXPORT_COLS unchanged",
+              check_r15_consumption_export_cols_preserved,
+              "Round 13 export contract still holds.")
+    run_check("Round 15", "_ALWAYS_KEEP includes UOM for PR report",
+              check_r15_pr_report_keeps_uom_column,
+              "UoM column survives the strip-empty helper.")
 
     # ── Phase 7C — HOD Cross-Site View notifications + indicator ─────────
     run_check("Phase 7C", "ix_csv_target_date index exists",

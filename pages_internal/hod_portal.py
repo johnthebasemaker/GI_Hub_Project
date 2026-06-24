@@ -458,11 +458,26 @@ def _render_eod_tab(user: dict, site_id: str) -> None:
     # Top action row — Approve-All + Commit
     a1, a2 = st.columns([1, 1])
     with a1:
-        if st.button("✅ Approve All Pending", use_container_width=True,
-                     disabled=(pend_n == 0), key="_hod_eod_approve_all"):
-            n = hod_approve_all_pending_issues(site_id=site_id)
-            st.toast(f"Approved {n} pending row(s)", icon="✅")
-            st.rerun()
+        # Round 15 — bulk approve now requires explicit confirmation. Uses
+        # the shared render_confirm helper. Disabled state still applies
+        # when there are no pending rows.
+        from ui_components import render_confirm as _confirm
+        if pend_n == 0:
+            st.button("✅ Approve All Pending",
+                      use_container_width=True, disabled=True,
+                      key="_hod_eod_approve_all_disabled")
+        else:
+            if _confirm(
+                "_hod_eod_approve_all",
+                action_label=f"✅ Approve All Pending ({pend_n})",
+                body=(f"This will move <b>{pend_n}</b> pending row(s) to "
+                      f"'approved' so they commit on the next Commit EOD. "
+                      f"Use ↩️ on a row to un-approve afterwards."),
+                confirm_label="✅ Yes — approve all pending",
+            ):
+                n = hod_approve_all_pending_issues(site_id=site_id)
+                st.toast(f"Approved {n} pending row(s)", icon="✅")
+                st.rerun()
     with a2:
         if st.button("📤 Commit EOD to Master", type="primary",
                      use_container_width=True, key="_hod_eod_commit_btn"):
@@ -3231,18 +3246,60 @@ def _render_intransit_dn_card(row, user: dict, site_id: str) -> None:
                 placeholder=("e.g. Site is offline for shutdown on "
                              "the originally requested date."),
             )
-            cP1, cP2 = st.columns([1, 1])
-            with cP1:
-                if st.button("Submit",
-                             type="primary",
-                             use_container_width=True,
-                             key=f"_hod_intransit_resch_submit_{dn_no}"):
-                    if not reason.strip():
-                        st.error("Reason is required.")
-                    elif new_date.isoformat() == str(eta):
-                        st.warning("Requested date matches current ETA — "
-                                   "no change to send.")
-                    else:
+            # Round 15 — two-step confirmation. First Submit click flips a
+            # session-state flag and shows the confirmation banner; second
+            # Confirm click actually fires the request_reschedule call.
+            # Notification routing (Warehouse vs Logistics) is now dynamic
+            # per DN status — captured live so the caption matches the truth.
+            _confirm_key = f"_hod_intransit_resch_confirm_{dn_no}"
+            from database import _RESCHEDULE_WAREHOUSE_DIRECT_STATUSES
+            _routes_to_wh = (
+                str(row.get("status") or "") in
+                _RESCHEDULE_WAREHOUSE_DIRECT_STATUSES
+            )
+            _route_label = (
+                "Warehouse (direct routing — post-receive)"
+                if _routes_to_wh else "Logistics"
+            )
+
+            if not st.session_state.get(_confirm_key):
+                cP1, cP2 = st.columns([1, 1])
+                with cP1:
+                    if st.button("Submit",
+                                 type="primary",
+                                 use_container_width=True,
+                                 key=f"_hod_intransit_resch_submit_{dn_no}"):
+                        if not reason.strip():
+                            st.error("Reason is required.")
+                        elif new_date.isoformat() == str(eta):
+                            st.warning("Requested date matches current ETA — "
+                                       "no change to send.")
+                        else:
+                            st.session_state[_confirm_key] = True
+                            st.rerun()
+                with cP2:
+                    st.caption(f"📨 Goes to {_route_label}")
+            else:
+                st.markdown(
+                    f'<div style="background:rgba(245,158,11,0.10);'
+                    f'border:1px solid rgba(245,158,11,0.35);'
+                    f'border-left:4px solid #F59E0B;'
+                    f'border-radius:8px;padding:10px 12px;margin:6px 0;">'
+                    f'<b style="color:#F59E0B;">⚠️ Confirm reschedule</b><br>'
+                    f'<span style="color:#7A8FA0;font-size:12px;">'
+                    f'DN <code>{dn_no}</code>: '
+                    f'<b>{eta or "—"}</b> → <b>{new_date.isoformat()}</b>'
+                    f'<br>Sent to: <b>{_route_label}</b>. '
+                    f'This will queue a notification and create an audit '
+                    f'entry.</span></div>',
+                    unsafe_allow_html=True,
+                )
+                cC1, cC2 = st.columns([1, 1])
+                with cC1:
+                    if st.button("✅ Confirm send",
+                                 type="primary",
+                                 use_container_width=True,
+                                 key=f"_hod_intransit_resch_go_{dn_no}"):
                         ok, msg = request_reschedule(
                             po_number=po_no,
                             dn_number=dn_no,
@@ -3253,7 +3310,12 @@ def _render_intransit_dn_card(row, user: dict, site_id: str) -> None:
                             requested_by=user["username"],
                         )
                         (st.success if ok else st.error)(msg)
+                        st.session_state.pop(_confirm_key, None)
                         if ok:
                             st.rerun()
-            with cP2:
-                st.caption("📨 Goes to Logistics")
+                with cC2:
+                    if st.button("Cancel",
+                                 use_container_width=True,
+                                 key=f"_hod_intransit_resch_cancel_{dn_no}"):
+                        st.session_state.pop(_confirm_key, None)
+                        st.rerun()
