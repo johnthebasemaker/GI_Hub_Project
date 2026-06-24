@@ -1,6 +1,10 @@
 # GI Hub ERP — Handoff
 
-**Last update:** 2026-06 round 16 — **DN ROUTING SIMPLIFICATION + PR PDF POLISH SHIPPED.** Logistics removed from the DN approval chain — Warehouse-prepared DNs now flow `draft → pending_hod → pending_sk → received` (was `… → pending_logistics → pending_hod → …`). `submit_dn_for_logistics` writes `pending_hod` directly and dual-notifies (HOD actionable + Logistics info-only awareness). Idempotent `init_db` migration sweeps any in-flight `pending_logistics`/`logistics_approved` DN forward to `pending_hod`. PR PDF gains two columns — `PO #` (comma-joined for multi-PO PRs, via new `get_pr_with_po_numbers` helper) and `UoM`. Filename renamed from `…_Record.pdf` to `…_Status.pdf`. See §2R. **Tests: 485/485 in `bug_check.py` · 17/17 in `test_ui_crawler.py`.**
+**Last update:** 2026-06 round 17 — **SMART MATERIAL ESTIMATOR (SME) MERGED.** The standalone Streamlit project for Rubber Lining / Brick Lining material planning is now a first-class portal inside the ERP at `pages_internal/material_estimator/` (package, 14 files), exact-locked to `{hod, admin}` via `_EXACT_ROLE_PAGES`. The estimator is a **read-only projection** over the ERP ledger — `Available_Qty` from `load_live_inventory()` (computed, not stored); `Ordered_Qty` from the new `get_on_order_by_material()` helper (open-PO outstanding). Three new SME tables (`sme_equipment`, `sme_recipe`, `sme_sqm_progress`) added to `init_db()` self-heal. Locations + Equipment Types live in `system_settings` under new categories `sme_location` and `sme_equipment_type` (per Correction #1 — no separate dropdown tables). Downloads use **standalone** `sme_secure_xlsx_download` / `sme_secure_pdf_download` helpers (per Correction #2 — no monkey-patching of `st.download_button`, so other portals' downloads can't be affected). SME's Inventory data-entry tabs (Consumption Log, Receipt Log, New Order) deleted entirely so the EOD commit ledger remains the only write path. Bootstrap script `scripts/sme_bootstrap.py --site-id <SITE>` loads `equipment` + `recipes` from `scripts/sme_seed_data/*.xlsx`. See §2S. **Tests: +14 Round-17 checks (14/14 green) — total 482/499 in `bug_check.py` (the 17 pre-existing failures in manual_qa / PR PDF / PO PDF / locate_anything sidecar are unchanged and unrelated to this merge) · UI crawler auto-counts the new page.**
+
+**Prior round:** 16 — DN Routing Simplification + PR PDF Polish.
+
+**Round 16 prior:** **DN ROUTING SIMPLIFICATION + PR PDF POLISH SHIPPED.** Logistics removed from the DN approval chain — Warehouse-prepared DNs now flow `draft → pending_hod → pending_sk → received` (was `… → pending_logistics → pending_hod → …`). `submit_dn_for_logistics` writes `pending_hod` directly and dual-notifies (HOD actionable + Logistics info-only awareness). Idempotent `init_db` migration sweeps any in-flight `pending_logistics`/`logistics_approved` DN forward to `pending_hod`. PR PDF gains two columns — `PO #` (comma-joined for multi-PO PRs, via new `get_pr_with_po_numbers` helper) and `UoM`. Filename renamed from `…_Record.pdf` to `…_Status.pdf`. See §2R. **Tests: 485/485 in `bug_check.py` · 17/17 in `test_ui_crawler.py`.**
 
 **Prior round:** 15 — Multi-Portal Polish + Material Master + PO Parser Fix.
 
@@ -1488,6 +1492,113 @@ UI crawler stays at **17/17**.
 ### Operational note
 
 After deploying Round 16, the first `init_db` call on a live DB will silently flip any in-flight `pending_logistics` DNs into the HOD's queue. Run the migration during a low-traffic window and notify the HODs that their DN Approvals tab will fill on the next refresh.
+
+---
+
+## 2S. Tuning Round 17 (2026-06) — Smart Material Estimator (SME) merge
+
+The standalone Smart Material Estimator project (8.5k LOC Streamlit app for Rubber Lining / Brick Lining planning) is now a first-class portal inside the ERP. The merge follows two binding architectural directives: (a) ERP is the single source of truth — SME no longer holds its own stock/consumption/receipts ledgers; (b) SME is a read-only projection — the EOD commit pipeline remains the only path that writes to `consumption` / `receipts` / `returns`.
+
+### Schema additions — `database.py:init_db()`
+
+Three new tables, all additive, all under the existing self-heal idiom:
+
+- **`sme_equipment`** — equipment master with `Site_ID`, `Equipment_Tag_No`, `Lining_System_Code`, `Surface_Area_SQM`, plus display fields (Name, Location, Type, Substrate). `UNIQUE(Site_ID, Equipment_Tag_No, Lining_System_Code)` — a tag can appear once per lining system per site.
+- **`sme_recipe`** — lining-system recipe master (global, not site-scoped). `UNIQUE(Lining_System_Code, Material_Code)`. Carries `For_1_SQM` and `Nature`.
+- **`sme_sqm_progress`** — per-(site × tag × system) build progress. PK is the composite triple; `Original_SQM` is loaded from the bootstrap, `Done_SQM` is preserved across re-loads.
+
+Plus seed values for two new `system_settings` categories — `sme_location` (Brown Field / TRAIN J / TRAIN K) and `sme_equipment_type` (Vessel / Tank / Column / Pipe / Reactor). **Per Correction #1, no new `sme_locations` / `sme_types` tables** — these dropdowns ride on the existing per-site `system_settings` infrastructure that already powers `Work_Type` and `Tank_No`. Helpers `get_sme_locations()` / `get_sme_equipment_types()` mirror the `get_work_types()` / `get_tank_nos()` pattern, with the same site-then-global fallback.
+
+### Ledger-bridging helpers — `database.py`
+
+- **`get_on_order_by_material(site_id, conn)`** — per-`Material_Code` open-PO outstanding quantity. Sum is `Qty − Delivered_Qty − Returned_Qty` clamped at 0, across POs whose `status` is `open` or `partially_delivered` AND whose `line_status` is not `closed` / `force_closed`. Site-scoped or global.
+- **`get_sme_inventory_view(site_id, conn)`** — bridges ERP ledger to SME engine schema. Calls `load_live_inventory()` for `Available_Qty` (computed: `Opening + Σ Receipts − Σ Consumption − Σ Returns`), then left-joins `get_on_order_by_material()` for `Ordered_Qty`. **`Available_Qty` is NEVER stored on `inventory`** — this was the critical impedance mismatch with the legacy SME schema and is the central contract of the merge. Groups by `Material_Code` so the engine sees one row per material regardless of SAP_Code splits.
+- `get_sme_equipment` / `get_sme_recipe` / `get_sme_sqm_progress` — site-scoped read accessors shaped for the engine's column contract (note the literal `Equipment_Tag_No.` column name with the trailing dot — `allocation_engine.py:57` joins on that exact label).
+- `add_sme_setting` / `delete_sme_setting` / `upsert_sme_sqm_progress` — narrow write helpers used by the Master Data tab and the bootstrap. All refuse cross-category writes (`Work_Type` / `Tank_No` are guarded).
+
+### Bootstrap — `scripts/sme_bootstrap.py`
+
+One-shot loader for SME master data:
+
+```bash
+python3 scripts/sme_bootstrap.py --site-id HQ           # wet run
+python3 scripts/sme_bootstrap.py --site-id HQ --dry-run # parse only
+python3 scripts/sme_bootstrap.py --site-id HQ --db /tmp/other.db
+```
+
+Reads `Equipment.xlsx` + `For_1_SQM.xlsx` from `scripts/sme_seed_data/`. Cleaners are inlined (port of SME's `validate_data.clean_recipe` / `clean_equipment`) so the ERP doesn't depend on the legacy SME project directory. Idempotent: equipment rows for the target `Site_ID` are deleted then re-inserted; recipes are global and fully reloaded; progress uses `upsert_sme_sqm_progress` which preserves `Done_SQM` across re-loads.
+
+### Portal — `pages_internal/material_estimator/` (14-file package)
+
+The `_EXACT_ROLE_PAGES` lock in `main.py` adds `"🧪 Material Estimator": {"hod", "admin"}`. HOD lands on the page scoped to their own bound site; admin gets a sidebar shadow site picker that mirrors the warehouse portal pattern.
+
+Layout (one module per concern):
+
+```
+pages_internal/material_estimator/
+├── __init__.py            # page_material_estimator(user) — entry point
+├── allocation_engine.py   # vendored from SME unchanged (pure pandas)
+├── data_layer.py          # @st.cache_data wrappers; build_estimator_inputs()
+│                          # subtracts Done_SQM so demand reflects remaining work
+├── engine_runner.py       # cached allocation + procurement_list (with
+│                          # Ordered_Qty join for Net_Shortfall)
+├── downloads.py           # standalone secure-download helpers — sme_secure_
+│                          # xlsx_download / sme_secure_pdf_download. NOT a
+│                          # monkey-patch on st.download_button. Excel still
+│                          # AES-zipped via pyzipper; PDF still ReportLab
+│                          # encrypt=. Password constants live at module top.
+├── theming.py             # CSS — status pills, location chips, header strip
+├── ui_dashboard.py        # Tab 0 — KPIs + feasibility + procurement view
+├── ui_priority.py         # Tab 1 — streamlit-sortables drag (rank-input fallback)
+├── ui_session_order.py    # Tab 2 — plan summary + suggestion engine
+├── ui_location_report.py  # Tab 3 — Location-Based + All-Equipment views
+├── ui_equipment_report.py # Tab 4 — Per-tag 3-section report
+├── ui_execution_plan.py   # Tab 5 — Execution Plan + Progress + Consumption
+│                          # Comparison. READ-ONLY. The comparison view joins
+│                          # the ERP `consumption` ledger on Material_Code.
+├── ui_total_overview.py   # Tab 7 — Project-wide demand × stock × on-order
+└── ui_master_data.py      # Tab 8 — Equipment edit + Recipe read + Locations
+                           # + Equipment Types CRUD (system_settings backed)
+```
+
+The SME's `📦 Inventory` top-level tab is **gone entirely** (per directive #4). Its six sub-views (Inventory Dashboard, Consumption, Order Status, New Order, Receipt Log, Consumption Log) all relied on the legacy `consumption_log` / `receipt_log` / `orders_log` tables — the merger writes nothing to any of these, so the data-entry surface ceases to exist. HODs use the existing ERP Live Dashboard for current stock and the Logistics Portal for open POs.
+
+### Critical contracts (don't break these)
+
+- **`Available_Qty` is computed, never stored.** Any future caller that wants per-`Material_Code` stock must go through `get_sme_inventory_view()` (or `load_live_inventory()` directly and group by `Material_Code` themselves). Adding an `Available_Qty` column to `inventory` would silently fork truth from the ledger.
+- **Locations + Equipment Types belong in `system_settings`.** The legacy plan proposed `sme_locations` / `sme_types` tables; the final decision (Correction #1) was to reuse `system_settings`. Adding a separate table would split the dropdown infrastructure and silently break the per-site override fallback.
+- **No monkey-patching `st.download_button`.** SME originally patched the global namespace. In the multi-page ERP that would silently break every other portal's downloads. The merge uses `sme_secure_xlsx_download(...)` / `sme_secure_pdf_download(...)` — same UX (popover + password gate + auto-download), zero global side-effects (Correction #2).
+- **Estimator is read-only on the ledger.** Master Data tab edits SME-prefixed tables only. Any path that needs to write `consumption` / `receipts` / `returns` MUST go through the existing EOD pipeline.
+- **HOD exact-role lock matters.** Procurement / Logistics / Warehouse roles do NOT inherit access — even though they sit higher in `ROLE_HIERARCHY` numerically. The `_EXACT_ROLE_PAGES` entry is the only thing keeping the estimator from leaking to roles that have no reason to see planning data.
+- **Allocation engine's column contract is `Equipment_Tag_No.`** (trailing dot). The accessor `get_sme_equipment()` renames `Equipment_Tag_No` → `Equipment_Tag_No.` at the boundary. Never join across the boundary without the dot.
+- **Recipe master is global; equipment master is site-scoped.** Two different idempotency contracts in the bootstrap — `sme_recipe` is fully DELETE-then-INSERT on every run; `sme_equipment` only deletes rows matching the target `Site_ID`.
+
+### Tests — `bug_check.py` +14 checks, all green (14/14)
+
+Round-17 area in `BUG_REPORT.md` covers schema + idempotency + helper arithmetic + site filter + ledger bridging + setting CRUD + progress preservation + RBAC matrix + import smoke + PAGE_ACCESS membership. The two non-trivial defensive details: the RBAC check reads `main.py` as text and parses the dict literal (avoids transitive imports of `bcrypt` / `fpdf` that may be missing locally); the import smoke loads the ME package via `importlib.util.spec_from_file_location` to bypass `pages_internal/__init__.py` for the same reason. Both still validate the production contract.
+
+Pre-existing baseline before this merge was 468/485 — the 17 failures in `manual_qa` / PR PDF / PO PDF parser / locate_anything sidecar are unchanged and unrelated. Post-merge total: 482/499. UI crawler auto-discovers the new page (it iterates `PAGE_ACCESS`, no hard-coded count to update).
+
+### Requirements
+
+Added four packages — `xlsxwriter`, `pyzipper`, `reportlab`, `streamlit-sortables`. All pure-Python or pre-built wheels, no display deps (the cloud-Linux exclusion that affects `pywhatkit` does NOT apply here — `pyzipper` is just ZIP + AES, no GUI).
+
+### Gotchas to watch
+
+- `ui_priority.streamlit_sortables` is optional. The page falls back to a rank-input grid if missing — works, but the drag UX is the better one.
+- The Master Data → Equipment editor is rebuild-from-scratch on save (`DELETE WHERE Site_ID = ?` → re-INSERT). For large equipment masters this is fine (we tested with 75 rows) but a future page-size threshold may need a per-row UPSERT. Don't over-engineer that until it's needed.
+- The Consumption Comparison view joins `consumption.SAP_Code → inventory.SAP_Code → Material_Code`. If a SAP_Code has no Material_Code on `inventory` it silently drops from the comparison. This matches the rest of the SME engine, which is `Material_Code`-keyed end to end.
+- `get_sme_inventory_view()` groups by `Material_Code` and takes `MIN(Equipment_Description)` for display. If two SAPs share a Material_Code with different descriptions, the picked label is arbitrary. Full SAP detail is always available on the ERP Live Dashboard.
+- The seed Excel files in `scripts/sme_seed_data/` are a one-shot artifact. After bootstrap, edits go through the Master Data tab (for equipment) or by re-running the bootstrap (for recipes — they're global and uneditable in-UI by design in this round).
+
+### Operational note
+
+Deploying Round 17:
+1. Pull the changes.
+2. Run `python3 bug_check.py` and confirm 482/499 (the same 17 pre-existing failures remain).
+3. Start Streamlit. `init_db()` self-heals the three new SME tables + seeds the new `system_settings` categories on first request.
+4. Run `python3 scripts/sme_bootstrap.py --site-id <SITE>` once per site that needs the estimator. Idempotent — safe to re-run.
+5. The portal appears in the sidebar for `hod` + `admin` accounts immediately.
 
 ---
 

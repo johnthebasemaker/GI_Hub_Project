@@ -6496,6 +6496,296 @@ def check_8d_toggle_persists_one() -> None:
     database.set_app_setting("locate_anything_enabled", "0")
 
 
+# ---------------------------------------------------------------------------
+# Round 17 — Smart Material Estimator (SME) merge
+# ---------------------------------------------------------------------------
+# Each check opens a throwaway SQLite connection so they're independent of
+# the seeded harness DB. Self-heal via init_db() runs first on every conn.
+
+def _r17_conn():
+    """Fresh isolated SQLite connection with the full self-healed schema."""
+    conn = sqlite3.connect(":memory:")
+    database.init_db(conn)
+    return conn
+
+
+def check_r17_sme_equipment_schema():
+    conn = _r17_conn()
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(sme_equipment)").fetchall()}
+    for required in ("Site_ID", "Equipment_Tag_No", "Lining_System_Code",
+                     "Surface_Area_SQM"):
+        assert required in cols, f"sme_equipment missing column {required!r}"
+    # Confirm the UNIQUE constraint actually rejects duplicates
+    conn.execute(
+        "INSERT INTO sme_equipment (Site_ID, Equipment_Tag_No, "
+        "Lining_System_Code, Surface_Area_SQM) VALUES ('HQ','T1','1',10)"
+    )
+    try:
+        conn.execute(
+            "INSERT INTO sme_equipment (Site_ID, Equipment_Tag_No, "
+            "Lining_System_Code, Surface_Area_SQM) VALUES ('HQ','T1','1',99)"
+        )
+        assert False, "duplicate (Site_ID, tag, system) should be rejected"
+    except sqlite3.IntegrityError:
+        pass
+
+
+def check_r17_sme_recipe_schema():
+    conn = _r17_conn()
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(sme_recipe)").fetchall()}
+    for required in ("Lining_System_Code", "Material_Code", "For_1_SQM"):
+        assert required in cols, f"sme_recipe missing column {required!r}"
+
+
+def check_r17_sme_progress_schema():
+    conn = _r17_conn()
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(sme_sqm_progress)").fetchall()}
+    for required in ("Site_ID", "Equipment_Tag_No", "Lining_System_Code",
+                     "Original_SQM", "Done_SQM"):
+        assert required in cols, f"sme_sqm_progress missing column {required!r}"
+
+
+def check_r17_sme_settings_seeded():
+    conn = _r17_conn()
+    locs = conn.execute(
+        "SELECT value FROM system_settings "
+        "WHERE category='sme_location' AND Site_ID='HQ'"
+    ).fetchall()
+    assert len(locs) >= 3, f"expected ≥3 seed locations for HQ, got {len(locs)}"
+    types = conn.execute(
+        "SELECT value FROM system_settings "
+        "WHERE category='sme_equipment_type' AND Site_ID='HQ'"
+    ).fetchall()
+    assert len(types) >= 5, f"expected ≥5 seed types for HQ, got {len(types)}"
+
+
+def check_r17_sme_init_db_idempotent():
+    conn = _r17_conn()  # already runs init_db once
+    # Second run should be a no-op (seed inserts are NOT EXISTS-guarded)
+    database.init_db(conn)
+    n = conn.execute(
+        "SELECT COUNT(*) FROM system_settings "
+        "WHERE category='sme_location' AND Site_ID='HQ'"
+    ).fetchone()[0]
+    assert n == 3, f"seed locations duplicated on re-init: count={n}"
+
+
+def check_r17_on_order_arithmetic():
+    conn = _r17_conn()
+    conn.execute(
+        "INSERT INTO purchase_orders (PO_Number, Site_ID, status) "
+        "VALUES ('PO-A', 'HQ', 'open')"
+    )
+    conn.execute(
+        "INSERT INTO po_items (PO_Number, Material_Code, Qty, "
+        "Delivered_Qty, Returned_Qty, line_status) "
+        "VALUES ('PO-A', 'MAT-A', 10, 3, 1, 'open')"
+    )
+    conn.commit()
+    df = database.get_on_order_by_material(site_id='HQ', conn=conn)
+    assert not df.empty, "expected one row"
+    val = float(df.iloc[0]["Ordered_Qty"])
+    assert val == 6.0, f"expected Ordered_Qty=6.0, got {val}"
+
+
+def check_r17_on_order_closed_excluded():
+    conn = _r17_conn()
+    conn.execute(
+        "INSERT INTO purchase_orders (PO_Number, Site_ID, status) "
+        "VALUES ('PO-CLOSED', 'HQ', 'closed')"
+    )
+    conn.execute(
+        "INSERT INTO po_items (PO_Number, Material_Code, Qty, "
+        "Delivered_Qty, line_status) "
+        "VALUES ('PO-CLOSED', 'MAT-X', 10, 0, 'open')"
+    )
+    conn.commit()
+    df = database.get_on_order_by_material(site_id='HQ', conn=conn)
+    assert df.empty, f"closed POs leaked into on-order aggregate: {df.to_dict()}"
+
+
+def check_r17_on_order_site_scope():
+    conn = _r17_conn()
+    conn.execute(
+        "INSERT INTO purchase_orders (PO_Number, Site_ID, status) "
+        "VALUES ('PO-HQ', 'HQ', 'open')"
+    )
+    conn.execute(
+        "INSERT INTO po_items (PO_Number, Material_Code, Qty, line_status) "
+        "VALUES ('PO-HQ', 'MAT-1', 5, 'open')"
+    )
+    conn.execute(
+        "INSERT INTO purchase_orders (PO_Number, Site_ID, status) "
+        "VALUES ('PO-B', 'SITE_B', 'open')"
+    )
+    conn.execute(
+        "INSERT INTO po_items (PO_Number, Material_Code, Qty, line_status) "
+        "VALUES ('PO-B', 'MAT-1', 99, 'open')"
+    )
+    conn.commit()
+    df_hq = database.get_on_order_by_material(site_id='HQ', conn=conn)
+    assert float(df_hq.iloc[0]["Ordered_Qty"]) == 5.0, \
+        f"site filter leaked SITE_B PO into HQ aggregate: {df_hq.to_dict()}"
+
+
+def check_r17_sme_inventory_view():
+    conn = _r17_conn()
+    conn.execute(
+        "INSERT INTO inventory (SAP_Code, Material_Code, "
+        "Equipment_Description, UOM, Opening_Stock, Category) "
+        "VALUES ('SAP-1', 'MAT-1', 'Glue', 'KG', 100, 'Consumable')"
+    )
+    conn.execute(
+        "INSERT INTO receipts (SAP_Code, Site_ID, Quantity) "
+        "VALUES ('SAP-1', 'HQ', 50)"
+    )
+    conn.execute(
+        "INSERT INTO consumption (SAP_Code, Site_ID, Quantity) "
+        "VALUES ('SAP-1', 'HQ', 20)"
+    )
+    conn.execute(
+        "INSERT INTO purchase_orders (PO_Number, Site_ID, status) "
+        "VALUES ('PO-1', 'HQ', 'open')"
+    )
+    conn.execute(
+        "INSERT INTO po_items (PO_Number, Material_Code, Qty, "
+        "Delivered_Qty, line_status) "
+        "VALUES ('PO-1', 'MAT-1', 15, 0, 'open')"
+    )
+    conn.commit()
+    df = database.get_sme_inventory_view(site_id='HQ', conn=conn)
+    assert not df.empty, "view returned empty after seeding"
+    row = df[df["Material_Code"] == "MAT-1"].iloc[0]
+    # Available = Opening(100) + Recv(50) - Cons(20) - Ret(0) = 130
+    assert float(row["Available_Qty"]) == 130.0, \
+        f"Available_Qty math wrong: got {row['Available_Qty']}"
+    assert float(row["Ordered_Qty"]) == 15.0, \
+        f"Ordered_Qty wrong: got {row['Ordered_Qty']}"
+
+
+def check_r17_sme_setting_crud():
+    conn = _r17_conn()
+    inserted = database.add_sme_setting(
+        "sme_location", "FOO BAR", "SITE_B", conn=conn,
+    )
+    assert inserted is True
+    # Idempotent re-insert
+    again = database.add_sme_setting(
+        "sme_location", "FOO BAR", "SITE_B", conn=conn,
+    )
+    assert again is False, "duplicate insert should be rejected"
+    locs = database.get_sme_locations(site_id="SITE_B", conn=conn)
+    assert "FOO BAR" in locs, f"value not visible after insert: {locs}"
+    n = database.delete_sme_setting(
+        "sme_location", "FOO BAR", "SITE_B", conn=conn,
+    )
+    assert n == 1, f"delete rowcount expected 1, got {n}"
+    # Refuse unknown category to prevent accidental writes
+    try:
+        database.add_sme_setting("Work_Type", "GUARD", "HQ", conn=conn)
+        assert False, "should have raised on cross-category write"
+    except ValueError:
+        pass
+
+
+def check_r17_sme_progress_preservation():
+    conn = _r17_conn()
+    # First load: set both Original and Done.
+    database.upsert_sme_sqm_progress(
+        "HQ", "TAG-1", "1",
+        original_sqm=100.0, done_sqm=40.0, conn=conn,
+    )
+    # Bootstrap re-load: pass original_sqm only (done is omitted).
+    database.upsert_sme_sqm_progress(
+        "HQ", "TAG-1", "1",
+        original_sqm=120.0, conn=conn,
+    )
+    row = conn.execute(
+        "SELECT Original_SQM, Done_SQM FROM sme_sqm_progress "
+        "WHERE Site_ID='HQ' AND Equipment_Tag_No='TAG-1' "
+        "AND Lining_System_Code='1'"
+    ).fetchone()
+    assert row[0] == 120.0, f"Original_SQM should update: got {row[0]}"
+    assert row[1] == 40.0, f"Done_SQM should be preserved: got {row[1]}"
+
+
+def check_r17_material_estimator_rbac():
+    # Read main.py as text and assert the exact-role lock contains the
+    # expected page → {hod, admin} mapping. Avoids importing main, which
+    # transitively requires bcrypt / fpdf that the bug-check env may lack.
+    import pathlib, re
+    main_src = pathlib.Path(REPO_ROOT / "main.py").read_text(encoding="utf-8")
+    # Grab the _EXACT_ROLE_PAGES dict literal
+    m = re.search(
+        r"_EXACT_ROLE_PAGES\s*=\s*\{(.*?)\n\}",
+        main_src, re.DOTALL,
+    )
+    assert m, "_EXACT_ROLE_PAGES dict not found in main.py"
+    block = m.group(1)
+    me_line = re.search(
+        r'"🧪 Material Estimator"\s*:\s*\{([^}]+)\}', block,
+    )
+    assert me_line, "Material Estimator missing from _EXACT_ROLE_PAGES"
+    roles = {r.strip().strip("'\"") for r in me_line.group(1).split(",") if r.strip()}
+    assert roles == {"hod", "admin"}, (
+        f"expected {{hod, admin}} exact-lock for Material Estimator, got {roles}"
+    )
+
+
+def check_r17_material_estimator_imports():
+    # Importing pages_internal.material_estimator without going through the
+    # parent package's __init__.py (which transitively pulls reports.py →
+    # fpdf, and auth.py → bcrypt). We exec submodules directly off disk.
+    import importlib.util
+    ME_DIR = REPO_ROOT / "pages_internal" / "material_estimator"
+    assert ME_DIR.exists(), "material_estimator package missing"
+
+    # Stub the parent package so relative imports work even if siblings fail.
+    if "pages_internal" not in sys.modules:
+        parent = type(sys)("pages_internal")
+        parent.__path__ = [str(REPO_ROOT / "pages_internal")]
+        sys.modules["pages_internal"] = parent
+    else:
+        # Make sure it's a package (has __path__)
+        if not hasattr(sys.modules["pages_internal"], "__path__"):
+            sys.modules["pages_internal"].__path__ = [
+                str(REPO_ROOT / "pages_internal"),
+            ]
+
+    # Drop any stale ME modules so this test sees a fresh import
+    for k in list(sys.modules):
+        if k.startswith("pages_internal.material_estimator"):
+            del sys.modules[k]
+
+    spec = importlib.util.spec_from_file_location(
+        "pages_internal.material_estimator",
+        str(ME_DIR / "__init__.py"),
+        submodule_search_locations=[str(ME_DIR)],
+    )
+    ME = importlib.util.module_from_spec(spec)
+    sys.modules["pages_internal.material_estimator"] = ME
+    spec.loader.exec_module(ME)
+    assert callable(getattr(ME, "page_material_estimator", None)), \
+        "package must export page_material_estimator(user)"
+
+    # All eight tab submodules + engine + data layer + downloads + theming
+    expected = [
+        "ui_dashboard", "ui_priority", "ui_session_order",
+        "ui_location_report", "ui_equipment_report",
+        "ui_execution_plan", "ui_total_overview", "ui_master_data",
+        "data_layer", "engine_runner", "downloads", "theming",
+        "allocation_engine",
+    ]
+    for sub in expected:
+        importlib.import_module(f"pages_internal.material_estimator.{sub}")
+
+
+def check_r17_material_estimator_in_page_access():
+    import config as _cfg
+    assert "🧪 Material Estimator" in _cfg.PAGE_ACCESS, \
+        "Material Estimator missing from PAGE_ACCESS — router won't render it"
+
+
 def main() -> int:
     print(f"▶ Bug-check harness · DB → {TMP_DB}")
     try:
@@ -7291,6 +7581,50 @@ def main() -> int:
     run_check("Phase 8D", "panel toggle ON path stores '1' in app_settings",
               check_8d_toggle_persists_one,
               "Verifies set_app_setting reaches the right key.")
+
+    # ── Round 17 — Smart Material Estimator (SME) merge ────────────────
+    run_check("Round 17", "sme_equipment table + key columns present",
+              check_r17_sme_equipment_schema,
+              "Self-heal adds sme_equipment with UNIQUE(Site_ID, tag, system).")
+    run_check("Round 17", "sme_recipe table + key columns present",
+              check_r17_sme_recipe_schema,
+              "Recipe master is global, UNIQUE(Lining_System_Code, Material_Code).")
+    run_check("Round 17", "sme_sqm_progress table + composite PK",
+              check_r17_sme_progress_schema,
+              "PK = (Site_ID, Equipment_Tag_No, Lining_System_Code).")
+    run_check("Round 17", "system_settings seeded with sme_location + sme_equipment_type for HQ",
+              check_r17_sme_settings_seeded,
+              "Per Correction #1 — locations/types ride on system_settings, no new tables.")
+    run_check("Round 17", "init_db idempotent for SME tables (run twice, no errors)",
+              check_r17_sme_init_db_idempotent,
+              "Self-heal must be safe to re-run.")
+    run_check("Round 17", "get_on_order_by_material: Qty=10 Delivered=3 Returned=1 → 6",
+              check_r17_on_order_arithmetic,
+              "Open-PO outstanding = Qty − Delivered − Returned, clamped at 0.")
+    run_check("Round 17", "get_on_order_by_material: closed POs ignored",
+              check_r17_on_order_closed_excluded,
+              "purchase_orders.status in (closed,cancelled,force_closed) → excluded.")
+    run_check("Round 17", "get_on_order_by_material: site filter scopes correctly",
+              check_r17_on_order_site_scope,
+              "site_id=X must drop PO rows for other sites.")
+    run_check("Round 17", "get_sme_inventory_view bridges ledger → engine schema",
+              check_r17_sme_inventory_view,
+              "Available_Qty from load_live_inventory; Ordered_Qty join from open POs.")
+    run_check("Round 17", "add_sme_setting / delete_sme_setting round-trip",
+              check_r17_sme_setting_crud,
+              "Idempotent insert; delete returns row count.")
+    run_check("Round 17", "upsert_sme_sqm_progress preserves Done_SQM on re-load",
+              check_r17_sme_progress_preservation,
+              "Bootstrap re-load must not reset progress.")
+    run_check("Round 17", "Material Estimator RBAC: hod + admin only",
+              check_r17_material_estimator_rbac,
+              "Exact-role lock excludes SK / Supervisor / Logistics / Warehouse.")
+    run_check("Round 17", "pages_internal.material_estimator imports cleanly",
+              check_r17_material_estimator_imports,
+              "Package + 8 tab modules + data layer + downloads.")
+    run_check("Round 17", "Material Estimator portal listed in PAGE_ACCESS",
+              check_r17_material_estimator_in_page_access,
+              "Router needs the key in PAGE_ACCESS to render the nav radio.")
 
     out = write_report()
     print()

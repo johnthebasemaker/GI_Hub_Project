@@ -37,3 +37,16 @@ streamlit-local-storage>=0.0.20
 # package the OCR uploader silently fails on every iPhone photo.
 # Wheels ship for darwin (arm64+x86_64) and manylinux; libheif bundled.
 pillow-heif>=0.16
+
+# Round 17 — Smart Material Estimator merge.
+# - xlsxwriter: header-styled Excel output for the estimator's reports.
+# - pyzipper:   AES-encrypted .zip wrapper around .xlsx downloads (preserves
+#               legacy SME download password gate; pure-Python, no GUI deps).
+# - reportlab:  password-protected PDF downloads (same gate, separate password).
+# - streamlit-sortables: drag-priority list on the Selective Equipment Entry
+#               tab. Module gracefully falls back to a rank-input grid if
+#               this isn't installed.
+xlsxwriter>=3.1.0
+pyzipper>=0.3.6
+reportlab>=4.0.0
+streamlit-sortables>=0.3.0
