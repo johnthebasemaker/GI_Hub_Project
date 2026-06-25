@@ -7071,12 +7071,23 @@ def check_r18_no_pyzipper():
 def check_r18_filename_pattern():
     """sme_filename must produce SME_<Report>_<Site>_<YYYY-MM-DD>.xlsx."""
     import importlib.util as iu
-    # Direct-load to avoid pages_internal __init__ side effects
     ME_DIR = REPO_ROOT / "pages_internal" / "material_estimator"
+    # Round 19: downloads.py now uses relative imports (from .colors ...) so
+    # we need to register the parent package before exec'ing the module.
+    if "pages_internal" not in sys.modules:
+        parent = type(sys)("pages_internal")
+        parent.__path__ = [str(REPO_ROOT / "pages_internal")]
+        sys.modules["pages_internal"] = parent
+    if "pages_internal.material_estimator" not in sys.modules:
+        me_pkg = type(sys)("pages_internal.material_estimator")
+        me_pkg.__path__ = [str(ME_DIR)]
+        sys.modules["pages_internal.material_estimator"] = me_pkg
     spec = iu.spec_from_file_location(
-        "_r18_downloads", str(ME_DIR / "downloads.py"),
+        "pages_internal.material_estimator.downloads",
+        str(ME_DIR / "downloads.py"),
     )
     dl = iu.module_from_spec(spec)
+    sys.modules["pages_internal.material_estimator.downloads"] = dl
     spec.loader.exec_module(dl)
     fn = dl.sme_filename("Project Overview", "HQ", "xlsx")
     import re as _re

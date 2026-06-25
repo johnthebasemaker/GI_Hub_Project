@@ -1,15 +1,7 @@
-"""widgets.py — UI parity helpers ported from SME.
+"""widgets.py — UI parity helpers ported from SME (R19 expanded).
 
-Helpers:
-- dbl_click_metric:    KPI card with click-to-expand drilldown.
-- plotly_mat_table:    Color-coded per-material allocation table (Plotly).
-- status_dot:          Inline ● colored by completion %.
-- fulfil_pill:         Inline pill colored by completion bucket.
-- loc_badge:           Location chip.
-- days_of_continuation_block: post-Submit-Batch runway report (Phase 4 hook).
-
-All colors map to the ERP yellow/amber palette; no SME-specific dark/light
-toggle (ERP has its own theming).
+Adds show_sqm support to plotly_mat_table, plus loc_badge tuned to the
+SME's three named locations (Brown Field / TRAIN J / TRAIN K).
 """
 from __future__ import annotations
 
@@ -17,16 +9,17 @@ import pandas as pd
 import streamlit as st
 
 try:
-    import plotly.graph_objects as go
-    _HAS_PLOTLY = True
+    import numpy as np
+    _HAS_NP = True
 except ImportError:
-    _HAS_PLOTLY = False
+    _HAS_NP = False
 
 
-_ERP_AMBER = "#FBBF24"
-_ERP_AMBER_LIGHT = "#FEF3C7"
-_ERP_BORDER = "#D97706"
-_ERP_TEXT = "#1F2937"
+_LOC_BG = {
+    "Brown Field": ("#1E5799", "#FFFFFF"),
+    "TRAIN J":     ("#A0620A", "#FFFFFF"),
+    "TRAIN K":     ("#1A6B48", "#FFFFFF"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -34,24 +27,22 @@ _ERP_TEXT = "#1F2937"
 # ---------------------------------------------------------------------------
 
 def status_dot(pct: float) -> str:
-    """Colored ● dot based on completion %."""
     try:
         p = float(pct)
     except (TypeError, ValueError):
         p = 0.0
     if p >= 100:
-        color = "#10B981"  # green
+        color = "#10B981"
     elif p >= 90:
-        color = "#F97316"  # orange
+        color = "#F97316"
     elif p >= 80:
-        color = "#EAB308"  # yellow
+        color = "#EAB308"
     else:
-        color = "#EF4444"  # red
+        color = "#EF4444"
     return f'<span style="color:{color};font-size:18px;line-height:1">●</span>'
 
 
 def fulfil_pill(pct: float) -> str:
-    """Inline pill: '🟢 100%' / '🟡 87.5%' / '🔴 0%' colored by bucket."""
     try:
         p = float(pct)
     except (TypeError, ValueError):
@@ -73,11 +64,20 @@ def fulfil_pill(pct: float) -> str:
 
 def loc_badge(loc: str) -> str:
     safe = (loc or "—").replace("<", "").replace(">", "")
+    bg, fg = _LOC_BG.get(loc, ("#374151", "#FFFFFF"))
     return (
-        f'<span style="display:inline-block;padding:1px 8px;border-radius:8px;'
-        f'background:{_ERP_AMBER_LIGHT};color:{_ERP_TEXT};'
-        f'font-size:11px;font-weight:600;border:1px solid {_ERP_BORDER}">'
+        f'<span style="display:inline-block;padding:2px 10px;border-radius:8px;'
+        f'background:{bg};color:{fg};font-size:11px;font-weight:700;">'
         f'📍 {safe}</span>'
+    )
+
+
+def code_chip(code: str | int, short_name: str = "") -> str:
+    label = f"Code {code}" + (f" · {short_name}" if short_name else "")
+    return (
+        f'<span style="display:inline-block;padding:2px 10px;border-radius:8px;'
+        f'background:#312E81;color:#FFFFFF;font-size:11px;font-weight:700;">'
+        f'{label}</span>'
     )
 
 
@@ -94,14 +94,8 @@ def dbl_click_metric(
     drilldown_df: pd.DataFrame | None = None,
     help_text: str = "",
     delta: str = "",
+    height: int = 95,
 ) -> None:
-    """KPI card as a popover. Click → opens drilldown table.
-
-    Mirrors the SME `dbl_click_metric` UX exactly:
-    - Bold label on top line, big value on second line, optional delta on third.
-    - Click opens a popover with the drilldown DataFrame (capped at 200 rows).
-    - 'No detail data' fallback when drilldown_df is empty/None.
-    """
     btn_label = f"**{label}**\n\n{value}"
     if delta:
         btn_label += f"\n\n{delta}"
@@ -126,7 +120,7 @@ def dbl_click_metric(
 
 
 # ---------------------------------------------------------------------------
-# Plotly material table
+# Plotly material table — supports show_sqm per SME spec
 # ---------------------------------------------------------------------------
 
 def plotly_mat_table(
@@ -134,10 +128,14 @@ def plotly_mat_table(
     key_suffix: str,
     *,
     height: int = 380,
+    show_sqm: bool = False,
+    tag: str = "",
+    code: str = "",
     allocated_label: str = "Allocated",
+    total_sqm_for_sc: float | None = None,
 ) -> None:
-    """Colour-coded material allocation table. Renders via styled DataFrame
-    (no Plotly dep required — falls back gracefully)."""
+    """SME-spec colored material table. With show_sqm=True, adds 4 SQM
+    columns derived from each material's own fulfillment rate."""
     if df is None or df.empty:
         st.info("No materials to display.")
         return
@@ -154,18 +152,35 @@ def plotly_mat_table(
         df2.insert(insert_at, "Ordered_Qty", df["Ordered_Qty"])
 
     rename = {
-        "Material_Code": "Code",
-        "Material_Name": "Material Name",
-        "Demand_Qty": "Demand",
-        "Ordered_Qty": "On Order",
-        "Allocated_Qty": allocated_label,
-        "Shortfall_Qty": "Shortfall",
+        "Material_Code":    "Code",
+        "Material_Name":    "Material Name",
+        "Demand_Qty":       "Demand",
+        "Ordered_Qty":      "On Order",
+        "Allocated_Qty":    allocated_label,
+        "Shortfall_Qty":    "Shortfall",
         "Fulfillment_Rate": "Fulfil %",
     }
     df2 = df2.rename(columns=rename)
-    # Convert Fulfil % from 0-1 → percent
-    if "Fulfil %" in df2.columns and df2["Fulfil %"].max() <= 1.5:
-        df2["Fulfil %"] = (df2["Fulfil %"] * 100).round(1)
+    # Normalize Fulfil % into 0-100 range
+    if "Fulfil %" in df2.columns and not df2.empty:
+        try:
+            if df2["Fulfil %"].max() <= 1.5:
+                df2["Fulfil %"] = (df2["Fulfil %"] * 100).round(1)
+        except Exception:
+            pass
+
+    # SME show_sqm: 4 SQM columns derived per-material from fulfillment
+    if show_sqm and tag and code and total_sqm_for_sc:
+        total = float(total_sqm_for_sc)
+        if "Fulfil %" in df2.columns:
+            ratio = df2["Fulfil %"].astype(float) / 100.0
+        else:
+            ratio = pd.Series([1.0] * len(df2))
+        ratio = ratio.clip(0, 1)
+        df2["SQM Total"]   = round(total, 2)
+        df2["SQM Done"]    = (total * ratio).round(2)
+        df2["SQM Deficit"] = (total * (1 - ratio)).round(2)
+        df2["SQM Done %"]  = (ratio * 100).round(1)
 
     fmt = {
         "Demand":         "{:,.3f}",
@@ -175,11 +190,13 @@ def plotly_mat_table(
     }
     if "On Order" in df2.columns:
         fmt["On Order"] = "{:,.3f}"
+    if "SQM Total" in df2.columns:
+        fmt.update({"SQM Total": "{:,.2f}", "SQM Done": "{:,.2f}",
+                    "SQM Deficit": "{:,.2f}", "SQM Done %": "{:.1f}%"})
 
     def style_row(row):
-        pct = row.get("Fulfil %", 100)
         try:
-            p = float(pct)
+            p = float(row.get("Fulfil %", 100))
         except (TypeError, ValueError):
             p = 100.0
         if p >= 100:
@@ -206,7 +223,7 @@ def plotly_mat_table(
 
 
 # ---------------------------------------------------------------------------
-# Days-of-Continuation runway report (post-Submit-Batch — wired in Phase 4)
+# Days-of-Continuation post-Submit-Batch
 # ---------------------------------------------------------------------------
 
 def days_of_continuation_block(
@@ -214,16 +231,8 @@ def days_of_continuation_block(
     daily_consumption_per_material: dict[str, float],
     inventory_view: pd.DataFrame,
 ) -> None:
-    """Inline runway block: how many days of production each material
-    sustains at the just-submitted batch's rate.
-
-    daily_consumption_per_material = {material_code: qty_in_this_batch}
-    inventory_view must carry Material_Code, Available_Qty, Ordered_Qty,
-    Material_Name, UOM.
-    """
     if not daily_consumption_per_material or inventory_view is None or inventory_view.empty:
         return
-
     rows = []
     for mc, qty in daily_consumption_per_material.items():
         if qty <= 0:
@@ -248,31 +257,29 @@ def days_of_continuation_block(
             "Daily burn": round(qty, 3),
             "Available": round(avail, 3),
             "On order": round(ord_q, 3),
-            "Days remaining": (
-                "∞" if days == float("inf") else round(days, 1)
-            ),
+            "Days remaining": ("∞" if days == float("inf") else round(days, 1)),
             "Days w/ open PO": (
                 "∞" if days_with_po == float("inf") else round(days_with_po, 1)
             ),
-            "_sort_days": days if days != float("inf") else 10**9,
+            "_sort": days if days != float("inf") else 10**9,
         })
     if not rows:
         return
-    df = pd.DataFrame(rows).sort_values("_sort_days").drop(columns=["_sort_days"])
-
-    finite_days = [
-        r["_sort_days"] if isinstance(r.get("_sort_days"), (int, float)) else None
-        for r in rows
-    ]
-    finite_days = [d for d in finite_days if d is not None and d < 10**8]
-    bottleneck = min(finite_days) if finite_days else None
+    df = pd.DataFrame(rows).sort_values("_sort").drop(columns=["_sort"])
+    finite = [r["_sort"] if False else None for r in rows]  # safe-ish
+    try:
+        finite = [(r.get("_sort") if isinstance(r, dict) else None) for r in rows]
+        finite = [d for d in finite if d is not None and d < 10**8]
+    except Exception:
+        finite = []
 
     st.markdown("### 📆 Days of Continuation")
-    if bottleneck is not None:
+    if finite:
+        bn = min(finite)
         bn_row = df.iloc[0]
         st.warning(
             f"Available stock will sustain this output for "
-            f"**{bottleneck:.1f} day(s)** before the first material "
+            f"**{bn:.1f} day(s)** before the first material "
             f"(**{bn_row['Material']}**) runs out."
         )
 
