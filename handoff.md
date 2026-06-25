@@ -1,6 +1,10 @@
 # GI Hub ERP — Handoff
 
-**Last update:** 2026-06 round 17 — **SMART MATERIAL ESTIMATOR (SME) MERGED.** The standalone Streamlit project for Rubber Lining / Brick Lining material planning is now a first-class portal inside the ERP at `pages_internal/material_estimator/` (package, 14 files), exact-locked to `{hod, admin}` via `_EXACT_ROLE_PAGES`. The estimator is a **read-only projection** over the ERP ledger — `Available_Qty` from `load_live_inventory()` (computed, not stored); `Ordered_Qty` from the new `get_on_order_by_material()` helper (open-PO outstanding). Three new SME tables (`sme_equipment`, `sme_recipe`, `sme_sqm_progress`) added to `init_db()` self-heal. Locations + Equipment Types live in `system_settings` under new categories `sme_location` and `sme_equipment_type` (per Correction #1 — no separate dropdown tables). Downloads use **standalone** `sme_secure_xlsx_download` / `sme_secure_pdf_download` helpers (per Correction #2 — no monkey-patching of `st.download_button`, so other portals' downloads can't be affected). SME's Inventory data-entry tabs (Consumption Log, Receipt Log, New Order) deleted entirely so the EOD commit ledger remains the only write path. Bootstrap script `scripts/sme_bootstrap.py --site-id <SITE>` loads `equipment` + `recipes` from `scripts/sme_seed_data/*.xlsx`. See §2S. **Tests: +14 Round-17 checks (14/14 green) — total 482/499 in `bug_check.py` (the 17 pre-existing failures in manual_qa / PR PDF / PO PDF / locate_anything sidecar are unchanged and unrelated to this merge) · UI crawler auto-counts the new page.**
+**Last update:** 2026-06 round 18 — **SME CONSUMPTION FORM + UI PARITY + RAW XLSX SHIPPED.** The estimator now writes through the ERP's EOD commit pipeline via a state-machine wrapper layer. New `🧪 SME Multi-Material Entry` expander on the SK Consumption tab renders the legacy SME multi-row grid (equipment tag → system codes → SQM per system → auto-computed materials → actual override → batch staging). On Submit Batch, `stage_sme_consumption_batch()` aggregates per `Material_Code`, resolves the unique `SAP_Code` (1:1 per user contract), writes one `pending_issues` row per material AND writes per-detail rows to the new `sme_consumption_log` table. `commit_eod_with_sme_sync()` wraps `commit_eod` (which itself is **unchanged**) and shifts SQM from `Done_SQM_staged` → `Done_SQM` on commit; `hod_reject_pending_issue_with_sme_sync()` mirrors the path for the reject route. UI parity port: SME's sticky-header chain (title bar + tabs + sub-view radio all pinned while scrolling) recolored to ERP yellow/amber, SME logo bundled in the package, 8-card KPI strip via `dbl_click_metric` (click → drilldown popovers), color-coded `plotly_mat_table` for per-tag breakdowns, post-Submit-Batch Days-of-Continuation runway report inline. Downloads: `pyzipper` ripped out entirely — Excel files are raw `.xlsx` with the pattern `SME_<Report>_<Site>_<YYYY-MM-DD>.xlsx`; PDF popover gate retained for email-attached reports. New view `v_inventory_with_sme` exposes a computed `is_sme` flag via LEFT JOIN on `sme_recipe` (zero new columns on `inventory`; zero maintenance burden). See §2T. **Tests: +16 Round-18 checks (16/16 green) — total 498/515 in `bug_check.py` (the 17 pre-existing failures in manual_qa / PR PDF / PO PDF / locate_anything sidecar are unchanged and unrelated). The EOD commit logic and all RBAC contracts are untouched.**
+
+**Prior round:** 17 — Smart Material Estimator (SME) merged as a read-only portal.
+
+**Round 17 prior:** **SMART MATERIAL ESTIMATOR (SME) MERGED.** The standalone Streamlit project for Rubber Lining / Brick Lining material planning is now a first-class portal inside the ERP at `pages_internal/material_estimator/` (package, 14 files), exact-locked to `{hod, admin}` via `_EXACT_ROLE_PAGES`. The estimator was originally a read-only projection over the ERP ledger — `Available_Qty` from `load_live_inventory()` (computed, not stored); `Ordered_Qty` from the new `get_on_order_by_material()` helper (open-PO outstanding). Three new SME tables (`sme_equipment`, `sme_recipe`, `sme_sqm_progress`) added to `init_db()` self-heal. Locations + Equipment Types live in `system_settings` under new categories `sme_location` and `sme_equipment_type` (per Correction #1 — no separate dropdown tables). Downloads originally used standalone `sme_secure_xlsx_download` / `sme_secure_pdf_download` helpers (per Correction #2 — no monkey-patching of `st.download_button`, so other portals' downloads can't be affected); Round 18 then stripped the pyzipper layer entirely. SME's Inventory data-entry tabs (Consumption Log, Receipt Log, New Order) deleted entirely so the EOD commit ledger remains the only write path. Bootstrap script `scripts/sme_bootstrap.py --site-id <SITE>` loads `equipment` + `recipes` from `scripts/sme_seed_data/*.xlsx`. See §2S.
 
 **Prior round:** 16 — DN Routing Simplification + PR PDF Polish.
 
@@ -1599,6 +1603,108 @@ Deploying Round 17:
 3. Start Streamlit. `init_db()` self-heals the three new SME tables + seeds the new `system_settings` categories on first request.
 4. Run `python3 scripts/sme_bootstrap.py --site-id <SITE>` once per site that needs the estimator. Idempotent — safe to re-run.
 5. The portal appears in the sidebar for `hod` + `admin` accounts immediately.
+
+---
+
+## 2T. Tuning Round 18 (2026-06) — SME Consumption Form + UI Parity + Raw .xlsx
+
+Round 17 made the estimator read-only. Round 18 promotes it to a first-class **data-entry surface** that funnels through the ERP's EOD commit gate without ever leaking SME-specific columns into the ledger tables. Per the user's binding data routing rule: aggregate per `Material_Code` at the SK's Submit-Batch boundary, write 1 clean `pending_issues` row per material; keep `Equipment_Tag` / `System_Code` / `Location` exclusively in the new SME-side ledger.
+
+### Schema delta — `init_db()` self-heal, all additive
+
+| Object | Purpose |
+|---|---|
+| `sme_sqm_progress.Done_SQM_staged REAL DEFAULT 0` | Two-column model. Increments on SK Submit Batch; shifts to `Done_SQM` on HOD EOD commit; decrements on reject. Estimator sums both for "remaining work" math. |
+| `sme_consumption_log` | Rich detail ledger — one row per `(batch_id × equipment_tag × system_code × material_code × sqm × expected × actual)`. Status FSM: `staged → committed → rejected`. Links back to the aggregated `pending_issues` row via `staged_pi_id` for full bidirectional audit. Never touched by `commit_eod`. |
+| `v_inventory_with_sme` VIEW | LEFT JOIN exposing computed `is_sme = EXISTS(SELECT 1 FROM sme_recipe r WHERE r.Material_Code = inventory.Material_Code)`. Zero new columns on `inventory`; zero maintenance — recipe edits flow through automatically. |
+
+### Dispatch + staging helpers — `database.py`
+
+- **`is_sme_material(material_code)` / `is_sme_sap(sap_code)`** — runtime dispatch fork. Returns True iff the material participates in any `sme_recipe` row.
+- **`get_sap_for_material(material_code) → SAP_Code | None`** — 1:1 resolver. Per the user contract, every SME-flagged Material_Code has exactly one SAP_Code in `inventory`; SAPs may exist without a Material_Code but those can never be SME-flagged (no recipe possible).
+- **`stage_sme_consumption_batch(*, site_id, entry_date, entered_by, rows, extras)`** — the central bridge. Aggregates `actual_qty` per `Material_Code` across the SK's grid, resolves SAP_Code per material, writes one `pending_issues` row per material (with `Source_Ref="SME:<batch_id>"`), writes per-detail `sme_consumption_log` rows linked via `staged_pi_id`, bumps `Done_SQM_staged` per `(Site_ID, Equipment_Tag, Lining_System_Code)`. Required `extras` keys: `Issued_To / Tank_No / Serial_No / PR_Number` (the ERP-mandatory pending_issues fields, captured at the batch level). Returns `{batch_id, pending_issue_ids, materials_staged}`.
+- **`mark_sme_log_committed(pending_issue_ids, conn)`** — flips linked `sme_consumption_log` rows to `committed` and shifts SQM from staged → committed. Idempotent (clamps staged at 0).
+- **`mark_sme_log_rejected(pending_issue_ids, *, rejected_by, reason, conn)`** — same for the reject path; decrements `Done_SQM_staged`.
+
+### EOD listener wrappers — the architectural keystone
+
+- **`commit_eod_with_sme_sync(conn, hod_username)`** — captures `pending_issues.id` values about to be committed (BEFORE the existing `commit_eod` deletes them), runs `commit_eod` **unchanged**, then calls `mark_sme_log_committed` with the captured ids. SME sync failure NEVER undoes the commit — it logs `SME_SYNC_FAILED_ON_COMMIT` to `system_audit_log` and continues. The legacy `commit_eod` signature and behavior are byte-identical to Round 17.
+- **`hod_reject_pending_issue_with_sme_sync(issue_id, ...)`** — wraps `hod_reject_pending_issue` for the SME reject path.
+
+Wired into `pages_internal/hod_portal.py` via two import aliases (the import block renames the wrappers back to the legacy names so all 2,000+ existing call sites continue to work unchanged):
+
+```python
+from database import (
+    commit_eod_with_sme_sync as commit_eod,
+    hod_reject_pending_issue_with_sme_sync as hod_reject_pending_issue,
+)
+```
+
+### SME consumption form — `pages_internal/daily_issue_log.py`
+
+New top-level expander **🧪 SME Multi-Material Entry (Lining systems)** at the top of the SK Consumption tab. Renders only when `sme_recipe` has rows (non-SME sites never see it). The legacy single-item form remains unchanged for ad-hoc issues; when the SK picks an SME-flagged SAP through that form an inline banner steers them to the SME expander.
+
+Form flow (`_render_sme_consumption_form`):
+
+1. **Step 1 — Batch details:** Date, Issued_To, Tank_No, Serial_No, PR_Number, optional Notes. These propagate to every aggregated row at submit.
+2. **Step 2 — Equipment + systems:** pick `Equipment_Tag_No.`, multi-select Lining System Codes (with `✨ Select All` sentinel matching legacy SME).
+3. **Step 3 — Per-system SQM + material grid:** SQM input capped at `min(remaining_sqm, stock_coverage_sqm)` where stock-coverage = `min(Available / For_1_SQM)` across system materials. Auto-computed `Required_Qty = For_1_SQM × SQM`. `Actual_Qty` editable with live shortfall warnings.
+4. **Add to Batch** stages local session state.
+5. **Submit Batch** calls `stage_sme_consumption_batch`, busts the inventory cache, fires the **inline Days-of-Continuation block** (runway report showing days remaining per material at this batch's burn rate, color-coded red <3 / amber <7 / green ≥7).
+
+### UI parity port — `pages_internal/material_estimator/`
+
+- **`theming.py` rewritten** with the SME sticky-header chain (title bar + tab strip + sub-view radio, all pinned while scrolling via `position: sticky` + `:has()` CSS), recolored to ERP yellow/amber (`#FBBF24` → `#D97706` gradient). Logo embedded as base64 data URI from `sme_logo.png` bundled in the package.
+- **`widgets.py` (new)** — `dbl_click_metric` (KPI card with click-to-expand drilldown popovers), `plotly_mat_table` (color-coded per-row allocation table — green ≥100% / orange ≥90% / yellow ≥80% / red < 80% on the Fulfil % column), `status_dot` / `fulfil_pill` / `loc_badge` inline HTML pills, `days_of_continuation_block` (the post-Submit-Batch runway report).
+- **`ui_dashboard.py`** — 8-card KPI strip (Equipment / Total SQM / Coverage SQM / SQM Deficit / Overall Coverage / Fully ready / Partial / Critical) every tile click-through to a relevant drilldown.
+- **`ui_session_order.py`** — 4-card KPI strip + per-tag breakdown using `plotly_mat_table` with On Order column when available.
+- **`ui_total_overview.py`** — 3-card click-through KPIs + plotly-styled coverage matrix.
+
+### Downloads — raw .xlsx, no AES wrapper
+
+- **`pyzipper` ripped out entirely.** Removed from `requirements.txt`. `_encrypt_xlsx_bytes` deleted. The `.protected.zip` wrapper is gone.
+- **Excel downloads use `st.download_button` directly** — one click, raw `.xlsx`, no popover. Filename pattern: `SME_<ReportName>_<Site>_<YYYY-MM-DD>.xlsx`. The SME_ prefix groups outputs in a user's Downloads folder; the Site disambiguates multi-site admins.
+- **Excel builders gain ERP-branded title block** (amber `#FBBF24` header strip, gray subtitle line with site + date, freeze panes at row 4).
+- **PDF popover gate retained.** PDFs travel via email so the password adds real value at rest. Still uses ReportLab `encrypt=` with the existing `SME_PDF_PASSWORD` constant (default `pdf2026`; rotate by editing).
+- **New `build_equipment_report_excel`** — faithful port of legacy SME's 3-section format (Equipment Summary → System Summary → Detailed Table) with merged section banners.
+- **New `build_location_report_excel`** — per-location feasibility + per-material alloc + optional extra summary blocks.
+
+### Critical contracts (don't break)
+
+- **ERP `pending_issues` / `consumption` schemas are unchanged.** No `Equipment_Tag`, no `System_Code`, no `Location` columns. The aggregation at `stage_sme_consumption_batch` is what protects this. Any future caller that thinks it needs to add such a column to either ledger should re-read this section and route through the SME log instead.
+- **`commit_eod()` signature + behavior unchanged.** The wrapper layer captures ids before, runs commit_eod, marks log after. Sync failure logs but never undoes the commit. Any future "let me just add one tiny side-effect to commit_eod" change should go through a wrapper, not modify `commit_eod` itself.
+- **State machine direction is one-way per call.** `stage_sme_consumption_batch` only goes `_ → staged`. `commit_eod_with_sme_sync` only goes `staged → committed`. `hod_reject_pending_issue_with_sme_sync` only goes `staged → rejected`. No path flips `committed` or `rejected` back to `staged` — if the HOD per-row unapprove button (Round 13) is hit, it flips PI status from approved → pending_hod, which stays "staged" from the SME ledger's POV. No SME-side action needed.
+- **SAP↔Material is 1:1 for SME materials, by user contract.** Don't add SME-flagged SAPs that share a Material_Code with another inventory row. `get_sap_for_material` uses `LIMIT 1` and will silently pick one if the contract breaks — a future caller could add a uniqueness CHECK to enforce.
+- **No monkey-patch on `st.download_button`.** All Round-18 download helpers are namespaced (`sme_*`) and standalone. Reverting this would break HOD/Admin/Logistics/Warehouse portal downloads in ways the test suite cannot easily catch.
+
+### Tests — `bug_check.py` +16 R18 checks, all green (16/16)
+
+Schema (3): `Done_SQM_staged` column; `sme_consumption_log` table + status FSM; `v_inventory_with_sme` view + `is_sme` flag math.
+Dispatch + resolution (3): `is_sme_sap` / `is_sme_material` (incl. empty/None safety); `get_sap_for_material` 1:1 mapping.
+Stage (3): per-material aggregation (2 detail rows → 1 PI row, qty summed); missing-extras `ValueError`; `Done_SQM_staged` increment with per-tag-system MAX dedupe.
+State machine (3): `commit_eod_with_sme_sync` shifts SQM staged→committed; **`commit_eod` itself unchanged regression** (non-SME row still commits identically); reject path decrements + archives.
+Downloads (2): `pyzipper` not imported (source-level grep); filename pattern matches `SME_<Report>_<Site>_<YYYY-MM-DD>.xlsx`.
+Integration (3): `widgets` module loads with all six helpers; `_render_sme_consumption_form` present in `daily_issue_log.py`; `hod_portal.py` aliases the two EOD wrappers.
+
+Pre-merge baseline: 482/499. Post-merge: 498/515. The 17 pre-existing failures (manual_qa / PR PDF / PO PDF / locate_anything sidecar) are unchanged.
+
+### Gotchas
+
+- The SME form gates `Submit Batch` on the four required extras (Issued_To / Tank_No / Serial_No / PR_Number). If a deployment ever flips `OPTIONAL_ISSUE_COLS` to allow blanks, the SME form would still require these — keep the form's validation in sync.
+- `Done_SQM_staged` clamps at 0 in the increment helpers. A second commit_eod_with_sme_sync call after a successful commit is a no-op (the SME log status is already `committed`, so `mark_sme_log_committed` finds no matching `staged` rows). Safe but not silent if you're debugging — look at `committed_at` timestamps in `sme_consumption_log`.
+- The post-Submit Days-of-Continuation block calls `Material_Estimator.widgets.days_of_continuation_block` — if the estimator package is ever uninstalled the SME consumption form will fail at submit time. Import is lazy (inside the helper) so it doesn't break module load.
+- Filename uses `_safe()` which collapses non-alphanumerics to `_`. Site IDs with spaces become underscored. If a customer ever creates a Site_ID like `Site A`, the file lands as `SME_Project_Overview_Site_A_2026-06-25.xlsx`. Acceptable but not pretty.
+- The HOD per-row approve / unapprove buttons (Round 13) flip PI status WITHIN `pending_issues`. From the SME ledger's POV nothing changes — the rows are still "staged" until commit_eod flips them. Don't add a sync hook to those buttons; you'd cause double-counting if the user toggled approve/unapprove repeatedly.
+
+### Operational note
+
+Deploying Round 18:
+1. Pull the changes.
+2. `pip install -r requirements.txt` (no new packages — pyzipper removed; xlsxwriter / reportlab / streamlit-sortables already there from R17).
+3. `python3 bug_check.py` and confirm **498/515** (the same 17 pre-existing failures remain unrelated).
+4. Start Streamlit. `init_db()` self-heals the new `Done_SQM_staged` column + `sme_consumption_log` table + `v_inventory_with_sme` view on first request.
+5. The new `🧪 SME Multi-Material Entry` expander appears at the top of the SK Consumption tab once `sme_recipe` has rows (it should already after the R17 bootstrap).
+6. HOD's EOD commit + per-row reject now automatically sync the SME ledger via the wrapper layer — no UI changes for HODs.
 
 ---
 

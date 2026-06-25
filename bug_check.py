@@ -6786,6 +6786,351 @@ def check_r17_material_estimator_in_page_access():
         "Material Estimator missing from PAGE_ACCESS — router won't render it"
 
 
+# ---------------------------------------------------------------------------
+# Round 18 — SME consumption form, listeners, downloads, UI parity
+# ---------------------------------------------------------------------------
+
+def _r18_conn():
+    conn = sqlite3.connect(":memory:")
+    database.init_db(conn)
+    return conn
+
+
+def _r18_seed_basic(conn):
+    """Two SME materials + one non-SME bolt + 100-SQM equipment on system 1."""
+    conn.execute(
+        "INSERT INTO inventory (SAP_Code, Material_Code, "
+        "Equipment_Description, UOM, Opening_Stock) "
+        "VALUES ('SAP-A', 'MAT-A', 'Glue', 'KG', 500)"
+    )
+    conn.execute(
+        "INSERT INTO inventory (SAP_Code, Material_Code, "
+        "Equipment_Description, UOM, Opening_Stock) "
+        "VALUES ('SAP-B', 'MAT-B', 'Resin', 'KG', 500)"
+    )
+    conn.execute(
+        "INSERT INTO inventory (SAP_Code, Material_Code, "
+        "Equipment_Description, UOM, Opening_Stock) "
+        "VALUES ('SAP-X', 'MAT-X', 'Bolt', 'EA', 999)"
+    )
+    conn.execute(
+        "INSERT INTO sme_recipe (Lining_System_Code, Material_Code, "
+        "Material_Name, UOM, For_1_SQM) "
+        "VALUES ('1', 'MAT-A', 'Glue', 'KG', 2.0)"
+    )
+    conn.execute(
+        "INSERT INTO sme_recipe (Lining_System_Code, Material_Code, "
+        "Material_Name, UOM, For_1_SQM) "
+        "VALUES ('1', 'MAT-B', 'Resin', 'KG', 3.0)"
+    )
+    conn.execute(
+        "INSERT INTO sme_equipment (Site_ID, Equipment_Tag_No, Name, "
+        "Lining_System_Code, Surface_Area_SQM) "
+        "VALUES ('HQ', 'TAG-1', 'Tank 1', '1', 100)"
+    )
+    conn.commit()
+
+
+def _r18_extras():
+    return {"Issued_To": "crew1", "Tank_No": "T1",
+            "Serial_No": "S1", "PR_Number": "PR1"}
+
+
+def check_r18_staged_column():
+    conn = _r18_conn()
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(sme_sqm_progress)"
+    ).fetchall()}
+    assert "Done_SQM_staged" in cols, \
+        "sme_sqm_progress.Done_SQM_staged missing (Round 18 self-heal)"
+    assert "Done_SQM" in cols, "Done_SQM column lost on R18 self-heal"
+
+
+def check_r18_consumption_log_schema():
+    conn = _r18_conn()
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(sme_consumption_log)"
+    ).fetchall()}
+    for req in ("batch_id", "Site_ID", "entry_date", "entered_by",
+                "Equipment_Tag_No", "Lining_System_Code", "Material_Code",
+                "SQM_Completed", "Expected_Qty", "Actual_Qty",
+                "Variance_Pct", "status", "staged_pi_id"):
+        assert req in cols, f"sme_consumption_log missing column {req!r}"
+    # FSM check: only staged/committed/rejected allowed
+    conn.execute(
+        "INSERT INTO sme_consumption_log "
+        "(batch_id, Site_ID, entry_date, Equipment_Tag_No, "
+        " Lining_System_Code, Material_Code) "
+        "VALUES ('B','HQ','2026-06-25','TAG','1','MAT')"
+    )
+    try:
+        conn.execute(
+            "UPDATE sme_consumption_log SET status='exploded' WHERE id=1"
+        )
+        conn.commit()
+        assert False, "status FSM should reject 'exploded'"
+    except sqlite3.IntegrityError:
+        pass
+
+
+def check_r18_inventory_view_flag():
+    conn = _r18_conn()
+    _r18_seed_basic(conn)
+    rows = dict(conn.execute(
+        "SELECT SAP_Code, is_sme FROM v_inventory_with_sme"
+    ).fetchall())
+    assert rows.get("SAP-A") == 1
+    assert rows.get("SAP-B") == 1
+    assert rows.get("SAP-X") == 0
+
+
+def check_r18_dispatch_helpers():
+    conn = _r18_conn()
+    _r18_seed_basic(conn)
+    assert database.is_sme_sap("SAP-A", conn=conn) is True
+    assert database.is_sme_sap("SAP-X", conn=conn) is False
+    assert database.is_sme_sap("", conn=conn) is False
+    assert database.is_sme_sap(None, conn=conn) is False
+    assert database.is_sme_material("MAT-A", conn=conn) is True
+    assert database.is_sme_material("NOPE", conn=conn) is False
+
+
+def check_r18_sap_resolution():
+    conn = _r18_conn()
+    _r18_seed_basic(conn)
+    assert database.get_sap_for_material("MAT-A", conn=conn) == "SAP-A"
+    assert database.get_sap_for_material("MAT-X", conn=conn) == "SAP-X"
+    assert database.get_sap_for_material("NOPE", conn=conn) is None
+    assert database.get_sap_for_material(None, conn=conn) is None
+
+
+def check_r18_stage_aggregation():
+    conn = _r18_conn()
+    _r18_seed_basic(conn)
+    res = database.stage_sme_consumption_batch(
+        site_id="HQ", entry_date="2026-06-25", entered_by="sk1",
+        rows=[
+            {"equipment_tag": "TAG-1", "lining_system_code": "1",
+             "material_code": "MAT-A", "sqm_completed": 10,
+             "expected_qty": 20, "actual_qty": 12},
+            {"equipment_tag": "TAG-1", "lining_system_code": "1",
+             "material_code": "MAT-A", "sqm_completed": 10,
+             "expected_qty": 20, "actual_qty": 8},
+        ],
+        extras=_r18_extras(), conn=conn,
+    )
+    assert res["materials_staged"] == 1, \
+        f"expected 1 distinct material, got {res['materials_staged']}"
+    assert len(res["pending_issue_ids"]) == 1, \
+        "two detail rows for same material should aggregate to 1 PI row"
+    pi_qty = conn.execute(
+        "SELECT Quantity FROM pending_issues WHERE id = ?",
+        (res["pending_issue_ids"][0],),
+    ).fetchone()[0]
+    assert float(pi_qty) == 20.0, \
+        f"expected aggregated qty 20 (12+8), got {pi_qty}"
+
+
+def check_r18_stage_missing_extras():
+    conn = _r18_conn()
+    _r18_seed_basic(conn)
+    try:
+        database.stage_sme_consumption_batch(
+            site_id="HQ", entry_date="2026-06-25", entered_by="sk1",
+            rows=[{"equipment_tag": "TAG-1",
+                   "lining_system_code": "1",
+                   "material_code": "MAT-A", "sqm_completed": 1,
+                   "expected_qty": 2, "actual_qty": 2}],
+            extras={"Issued_To": "x"},  # missing Tank_No, Serial_No, PR_Number
+            conn=conn,
+        )
+        assert False, "stage should raise ValueError on missing extras"
+    except ValueError as e:
+        assert "missing" in str(e).lower()
+
+
+def check_r18_stage_increments_staged():
+    conn = _r18_conn()
+    _r18_seed_basic(conn)
+    database.stage_sme_consumption_batch(
+        site_id="HQ", entry_date="2026-06-25", entered_by="sk1",
+        rows=[
+            {"equipment_tag": "TAG-1", "lining_system_code": "1",
+             "material_code": "MAT-A", "sqm_completed": 8,
+             "expected_qty": 16, "actual_qty": 16},
+            {"equipment_tag": "TAG-1", "lining_system_code": "1",
+             "material_code": "MAT-B", "sqm_completed": 8,
+             "expected_qty": 24, "actual_qty": 24},
+        ],
+        extras=_r18_extras(), conn=conn,
+    )
+    row = conn.execute(
+        "SELECT Done_SQM_staged, Done_SQM FROM sme_sqm_progress "
+        "WHERE Equipment_Tag_No='TAG-1' AND Lining_System_Code='1'"
+    ).fetchone()
+    # MAX per (tag,system) — both detail rows share SQM=8, so staged=8 not 16
+    assert row[0] == 8.0, f"expected staged=8, got {row[0]}"
+    assert row[1] == 0.0, f"expected Done_SQM=0 pre-commit, got {row[1]}"
+
+
+def check_r18_commit_shifts_sqm():
+    conn = _r18_conn()
+    _r18_seed_basic(conn)
+    database.stage_sme_consumption_batch(
+        site_id="HQ", entry_date="2026-06-25", entered_by="sk1",
+        rows=[{"equipment_tag": "TAG-1", "lining_system_code": "1",
+               "material_code": "MAT-A", "sqm_completed": 12,
+               "expected_qty": 24, "actual_qty": 24}],
+        extras=_r18_extras(), conn=conn,
+    )
+    pre = conn.execute(
+        "SELECT Done_SQM_staged, Done_SQM FROM sme_sqm_progress"
+    ).fetchone()
+    assert pre == (12.0, 0.0)
+    n = database.commit_eod_with_sme_sync(conn=conn, hod_username="hod1")
+    assert n == 1, f"expected 1 row committed, got {n}"
+    post = conn.execute(
+        "SELECT Done_SQM_staged, Done_SQM FROM sme_sqm_progress"
+    ).fetchone()
+    assert post == (0.0, 12.0), \
+        f"expected (0,12) after commit, got {post}"
+    statuses = [r[0] for r in conn.execute(
+        "SELECT status FROM sme_consumption_log"
+    ).fetchall()]
+    assert statuses == ["committed"], \
+        f"expected ['committed'], got {statuses}"
+
+
+def check_r18_commit_eod_unchanged():
+    """Non-SME pending_issues rows still commit identically through the
+    wrapper — regression check that we didn't break the legacy path."""
+    conn = _r18_conn()
+    _r18_seed_basic(conn)
+    conn.execute(
+        "INSERT INTO pending_issues (Date, SAP_Code, Quantity, "
+        " Site_ID, Issued_By, Issued_To, Tank_No, Serial_No, "
+        " PR_Number, status) "
+        "VALUES ('2026-06-25','SAP-X',5,'HQ','sk1','crew','T1',"
+        "        'S1','PR-1','pending_hod')"
+    )
+    conn.commit()
+    n = database.commit_eod_with_sme_sync(conn=conn, hod_username="hod1")
+    assert n == 1, f"expected 1 committed, got {n}"
+    cons = conn.execute(
+        "SELECT SAP_Code, Quantity FROM consumption"
+    ).fetchall()
+    assert ("SAP-X", 5.0) in [(r[0], float(r[1])) for r in cons]
+
+
+def check_r18_reject_decrements_staged():
+    conn = _r18_conn()
+    _r18_seed_basic(conn)
+    res = database.stage_sme_consumption_batch(
+        site_id="HQ", entry_date="2026-06-25", entered_by="sk1",
+        rows=[{"equipment_tag": "TAG-1", "lining_system_code": "1",
+               "material_code": "MAT-A", "sqm_completed": 7,
+               "expected_qty": 14, "actual_qty": 14}],
+        extras=_r18_extras(), conn=conn,
+    )
+    pi_id = res["pending_issue_ids"][0]
+    pre = conn.execute("SELECT Done_SQM_staged FROM sme_sqm_progress").fetchone()[0]
+    assert pre == 7.0
+    ok = database.hod_reject_pending_issue_with_sme_sync(
+        pi_id, rejected_by="hod1", reason="wrong tank", conn=conn,
+    )
+    assert ok
+    post = conn.execute(
+        "SELECT Done_SQM_staged, Done_SQM FROM sme_sqm_progress"
+    ).fetchone()
+    assert post == (0.0, 0.0), f"expected both 0 after reject, got {post}"
+    status = conn.execute(
+        "SELECT status, rejected_reason FROM sme_consumption_log"
+    ).fetchone()
+    assert status == ("rejected", "wrong tank")
+    # Confirm PI moved to archive (handled by the wrapped legacy fn)
+    arch = conn.execute(
+        "SELECT COUNT(*) FROM rejected_issues_archive WHERE original_id = ?",
+        (pi_id,),
+    ).fetchone()[0]
+    assert arch == 1
+
+
+def check_r18_no_pyzipper():
+    """downloads.py must NOT import pyzipper. Source-level check so we
+    don't depend on the lib actually being missing in the test env."""
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator" / "downloads.py"
+    ).read_text(encoding="utf-8")
+    assert "pyzipper" not in src.lower(), \
+        "downloads.py still references pyzipper — Round 18 should have stripped it"
+    assert "_encrypt_xlsx_bytes" not in src, \
+        "_encrypt_xlsx_bytes should be deleted"
+
+
+def check_r18_filename_pattern():
+    """sme_filename must produce SME_<Report>_<Site>_<YYYY-MM-DD>.xlsx."""
+    import importlib.util as iu
+    # Direct-load to avoid pages_internal __init__ side effects
+    ME_DIR = REPO_ROOT / "pages_internal" / "material_estimator"
+    spec = iu.spec_from_file_location(
+        "_r18_downloads", str(ME_DIR / "downloads.py"),
+    )
+    dl = iu.module_from_spec(spec)
+    spec.loader.exec_module(dl)
+    fn = dl.sme_filename("Project Overview", "HQ", "xlsx")
+    import re as _re
+    assert _re.match(
+        r"^SME_Project_Overview_HQ_\d{4}-\d{2}-\d{2}\.xlsx$", fn
+    ), f"unexpected filename: {fn}"
+    assert not fn.endswith(".protected.zip"), \
+        "filename should be raw .xlsx, not .protected.zip"
+
+
+def check_r18_widgets_module():
+    """widgets.py exports dbl_click_metric, plotly_mat_table,
+    days_of_continuation_block, status_dot, fulfil_pill, loc_badge."""
+    import importlib.util as iu
+    ME_DIR = REPO_ROOT / "pages_internal" / "material_estimator"
+    spec = iu.spec_from_file_location(
+        "_r18_widgets", str(ME_DIR / "widgets.py"),
+    )
+    w = iu.module_from_spec(spec)
+    spec.loader.exec_module(w)
+    for fn_name in ("dbl_click_metric", "plotly_mat_table",
+                    "days_of_continuation_block", "status_dot",
+                    "fulfil_pill", "loc_badge"):
+        assert callable(getattr(w, fn_name, None)), \
+            f"widgets.{fn_name} missing or not callable"
+
+
+def check_r18_sme_form_in_daily_issue_log():
+    """_render_sme_consumption_form must exist after Phase 4."""
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "daily_issue_log.py"
+    ).read_text(encoding="utf-8")
+    assert "_render_sme_consumption_form" in src, \
+        "SME form helper missing from daily_issue_log.py"
+    assert "stage_sme_consumption_batch" in src, \
+        "daily_issue_log doesn't import stage_sme_consumption_batch"
+    assert "SME Multi-Material Entry" in src, \
+        "SME expander label missing"
+
+
+def check_r18_hod_portal_wires_wrappers():
+    """hod_portal.py must alias commit_eod → commit_eod_with_sme_sync and
+    hod_reject_pending_issue → hod_reject_pending_issue_with_sme_sync."""
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "hod_portal.py"
+    ).read_text(encoding="utf-8")
+    assert "commit_eod_with_sme_sync as commit_eod" in src, \
+        "hod_portal must alias commit_eod_with_sme_sync as commit_eod"
+    assert "hod_reject_pending_issue_with_sme_sync as hod_reject_pending_issue" in src, \
+        "hod_portal must alias the SME-sync reject wrapper"
+
+
 def main() -> int:
     print(f"▶ Bug-check harness · DB → {TMP_DB}")
     try:
@@ -7625,6 +7970,56 @@ def main() -> int:
     run_check("Round 17", "Material Estimator portal listed in PAGE_ACCESS",
               check_r17_material_estimator_in_page_access,
               "Router needs the key in PAGE_ACCESS to render the nav radio.")
+
+    # ── Round 18 — SME consumption form + EOD listener state machine ─────
+    run_check("Round 18", "sme_sqm_progress.Done_SQM_staged column present",
+              check_r18_staged_column,
+              "Two-column model — staged + committed.")
+    run_check("Round 18", "sme_consumption_log table + status FSM",
+              check_r18_consumption_log_schema,
+              "Rich detail ledger never touched by commit_eod.")
+    run_check("Round 18", "v_inventory_with_sme exposes is_sme flag",
+              check_r18_inventory_view_flag,
+              "1 iff Material_Code participates in any sme_recipe row.")
+    run_check("Round 18", "is_sme_sap / is_sme_material dispatch fork",
+              check_r18_dispatch_helpers,
+              "SAP→Material→recipe-membership lookup; returns False on blanks.")
+    run_check("Round 18", "get_sap_for_material resolves the 1:1 mapping",
+              check_r18_sap_resolution,
+              "SME contract: every Material_Code has exactly one SAP_Code.")
+    run_check("Round 18", "stage_sme_consumption_batch aggregates per Material_Code",
+              check_r18_stage_aggregation,
+              "2 detail rows on the same material → 1 pending_issues row.")
+    run_check("Round 18", "stage_sme_consumption_batch rejects missing extras",
+              check_r18_stage_missing_extras,
+              "Issued_To / Tank_No / Serial_No / PR_Number are mandatory.")
+    run_check("Round 18", "stage_sme_consumption_batch increments Done_SQM_staged",
+              check_r18_stage_increments_staged,
+              "Per (tag, system), take MAX SQM to dedupe across materials.")
+    run_check("Round 18", "commit_eod_with_sme_sync shifts staged→committed",
+              check_r18_commit_shifts_sqm,
+              "After commit, Done_SQM_staged → 0; Done_SQM += sqm.")
+    run_check("Round 18", "commit_eod itself is unchanged (regression)",
+              check_r18_commit_eod_unchanged,
+              "Non-SME pending_issues still commit identically.")
+    run_check("Round 18", "hod_reject_pending_issue_with_sme_sync decrements staged",
+              check_r18_reject_decrements_staged,
+              "Reject path: status='rejected', SQM_staged -= sqm.")
+    run_check("Round 18", "pyzipper no longer imported by downloads.py",
+              check_r18_no_pyzipper,
+              "Round 18 stripped AES wrapper; Excel downloads raw.")
+    run_check("Round 18", "Excel filename pattern is SME_<Report>_<Site>_<Date>.xlsx",
+              check_r18_filename_pattern,
+              "Plain .xlsx (no .protected.zip).")
+    run_check("Round 18", "Material Estimator widgets module loads",
+              check_r18_widgets_module,
+              "dbl_click_metric + plotly_mat_table + days_of_continuation_block.")
+    run_check("Round 18", "SME consumption form helper present in daily_issue_log",
+              check_r18_sme_form_in_daily_issue_log,
+              "_render_sme_consumption_form must exist after Phase 4.")
+    run_check("Round 18", "hod_portal wires the SME-sync EOD + reject wrappers",
+              check_r18_hod_portal_wires_wrappers,
+              "Static check on hod_portal.py import block.")
 
     out = write_report()
     print()
