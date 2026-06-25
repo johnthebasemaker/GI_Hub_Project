@@ -7142,6 +7142,244 @@ def check_r18_hod_portal_wires_wrappers():
         "hod_portal must alias the SME-sync reject wrapper"
 
 
+# ---------------------------------------------------------------------------
+# Round 19 — SME UI parity port
+# ---------------------------------------------------------------------------
+# Most R19 tests are static checks against the package files (the UI itself
+# is Streamlit and can't be exercised in bare mode). For each we load the
+# module via importlib.util to avoid pulling in pages_internal's siblings.
+
+def _r19_load_me_module(name: str):
+    """Load pages_internal.material_estimator.<name> directly without
+    triggering pages_internal/__init__.py (which would pull bcrypt/fpdf
+    transitively in this bare env)."""
+    import importlib.util as iu
+    ME_DIR = REPO_ROOT / "pages_internal" / "material_estimator"
+    if "pages_internal" not in sys.modules:
+        parent = type(sys)("pages_internal")
+        parent.__path__ = [str(REPO_ROOT / "pages_internal")]
+        sys.modules["pages_internal"] = parent
+    if "pages_internal.material_estimator" not in sys.modules:
+        me_pkg = type(sys)("pages_internal.material_estimator")
+        me_pkg.__path__ = [str(ME_DIR)]
+        sys.modules["pages_internal.material_estimator"] = me_pkg
+    full = f"pages_internal.material_estimator.{name}"
+    if full in sys.modules:
+        del sys.modules[full]
+    spec = iu.spec_from_file_location(full, str(ME_DIR / f"{name}.py"))
+    mod = iu.module_from_spec(spec)
+    sys.modules[full] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def check_r19_color_schemes():
+    colors = _r19_load_me_module("colors")
+    schemes = colors.COLOR_SCHEMES
+    required = {"dashboard", "brown_field", "train_j", "train_k",
+                "session", "execution", "overview"}
+    assert required <= set(schemes.keys()), \
+        f"missing schemes: {required - set(schemes.keys())}"
+    # Spot-check exact SME hex values
+    assert schemes["dashboard"]["title_bg"] == "#1A2A3A"
+    assert schemes["brown_field"]["header_bg"] == "#1E5799"
+    assert schemes["train_j"]["total_bg"] == "#FDE8A0"
+    assert schemes["train_k"]["title_bg"] == "#0A2E1A"
+
+
+def check_r19_scheme_for_location():
+    colors = _r19_load_me_module("colors")
+    assert colors.scheme_for_location("Brown Field") == "brown_field"
+    assert colors.scheme_for_location("TRAIN J") == "train_j"
+    assert colors.scheme_for_location("TRAIN K") == "train_k"
+    assert colors.scheme_for_location(None) == "dashboard"
+    assert colors.scheme_for_location("Unknown") == "dashboard"
+
+
+def check_r19_charts_module():
+    charts = _r19_load_me_module("charts")
+    for fn in ("render_design_gauge", "render_design_hbar",
+               "render_plotly_stacked_hbar",
+               "render_plotly_grouped_bar_by_location"):
+        assert callable(getattr(charts, fn, None)), \
+            f"charts.{fn} missing"
+
+
+def check_r19_suggestion_panel():
+    sp = _r19_load_me_module("suggestion_panel")
+    assert callable(getattr(sp, "render_suggestion_panel", None))
+    assert callable(getattr(sp, "_run_suggestion_engine", None))
+
+
+def check_r19_downloads_specials():
+    dl = _r19_load_me_module("downloads")
+    for fn in ("generate_excel_report", "generate_multi_sheet_excel",
+               "equipment_report_excel", "location_report_excel",
+               "sme_xlsx_download", "sme_multi_sheet_xlsx_download",
+               "sme_pdf_download", "sme_download_pair"):
+        assert callable(getattr(dl, fn, None)), \
+            f"downloads.{fn} missing"
+    # Back-compat aliases preserved
+    assert getattr(dl, "build_equipment_report_excel", None) is dl.equipment_report_excel
+    assert getattr(dl, "build_location_report_excel", None) is dl.location_report_excel
+
+
+def check_r19_all_ui_modules():
+    """All 8 tab modules + shared infra load cleanly."""
+    expected = [
+        "data_layer", "engine_runner", "downloads", "theming", "widgets",
+        "colors", "charts", "suggestion_panel", "allocation_engine",
+        "ui_dashboard", "ui_priority", "ui_session_order",
+        "ui_location_report", "ui_equipment_report",
+        "ui_execution_plan", "ui_total_overview", "ui_master_data",
+    ]
+    for m in expected:
+        _r19_load_me_module(m)
+
+
+def check_r19_master_data_safety():
+    """Static-grep ui_master_data.py to ensure it never SQL-mutates ERP
+    ledger tables. This is the routing-rule preservation regression."""
+    import pathlib, re
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_master_data.py"
+    ).read_text(encoding="utf-8")
+    # Allowed write targets
+    allowed = ("sme_equipment", "sme_recipe", "sme_sqm_progress",
+               "system_settings", "v_inventory_with_sme")
+    # Forbidden targets
+    forbidden = ("pending_issues", "consumption", "receipts", "returns")
+    for f in forbidden:
+        # Look for INSERT/UPDATE/DELETE against forbidden tables
+        for stmt in ("INSERT INTO", "UPDATE", "DELETE FROM"):
+            pat = rf'\b{stmt}\s+{f}\b'
+            assert not re.search(pat, src, re.IGNORECASE), \
+                f"ui_master_data must NOT execute {stmt} {f!r} (routing rule violation)"
+
+
+def check_r19_dashboard_structure():
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_dashboard.py"
+    ).read_text(encoding="utf-8")
+    # 7 KPI cards via dbl_click_metric on the project overview sub-view
+    assert src.count("dbl_click_metric") >= 7, \
+        "Dashboard must render at least 7 dbl_click_metric KPI cards"
+    # Both sub-views present
+    assert "📈 Project Overview" in src
+    assert "🛒 Material Requirement & Procurement" in src
+    # 4-field filter strip
+    for k in ("dash_loc", "dash_type", "dash_code", "dash_substrate"):
+        assert k in src, f"Dashboard missing filter key {k!r}"
+
+
+def check_r19_priority_structure():
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_priority.py"
+    ).read_text(encoding="utf-8")
+    # 3 filter keys (Location/Type/Code)
+    for k in ("t1_loc", "t1_type", "t1_code"):
+        assert k in src, f"Priority tab missing filter key {k!r}"
+    # Tag search + add button + remove + clear
+    assert "tag_select" in src
+    assert "＋ Add to Session" in src
+    assert "Clear All" in src
+
+
+def check_r19_location_subviews():
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_location_report.py"
+    ).read_text(encoding="utf-8")
+    assert "📍 Location Based" in src
+    assert "🌐 All Equipment" in src
+    # Per-location color scheme honored
+    assert "scheme_for_location" in src
+
+
+def check_r19_equipment_columns():
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_equipment_report.py"
+    ).read_text(encoding="utf-8")
+    # SME column order present (as labels)
+    for col in ("Equipment Tag No.", "Equipment Name",
+                "System Code", "System Name", "Total SQM"):
+        assert col in src, f"Equipment Report missing column {col!r}"
+    # Uses equipment_report_excel for 3-sheet workbook
+    assert "equipment_report_excel" in src
+
+
+def check_r19_execution_subviews():
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_execution_plan.py"
+    ).read_text(encoding="utf-8")
+    assert "⚙️ Execution Plan" in src
+    assert "📋 Progress List" in src
+    assert "📊 Consumption Comparison" in src
+    # Read-only — no INSERT into consumption from the tab
+    import re as _re
+    assert not _re.search(r"INSERT\s+INTO\s+consumption", src, _re.IGNORECASE), \
+        "Execution Plan tab must be READ-ONLY (no consumption writes)"
+
+
+def check_r19_total_overview_kpis():
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_total_overview.py"
+    ).read_text(encoding="utf-8")
+    # 6 dbl_click_metric calls in the KPI strip
+    assert src.count("dbl_click_metric") >= 6, \
+        "Total Overview must render at least 6 dbl_click_metric cards"
+    # Status filter + 4-cell filter strip
+    for k in ("ov_loc", "ov_type", "ov_code", "ov_status"):
+        assert k in src, f"Total Overview missing filter {k!r}"
+
+
+def check_r19_master_data_subviews():
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_master_data.py"
+    ).read_text(encoding="utf-8")
+    for sub in (
+        "Equipment",
+        "LINING SYSTEM MATERIAL CONSM",
+        "Materials_DetailsAvailable_Qty",
+        "➕ Add Location",
+        "➕ Add Type",
+    ):
+        assert sub in src, f"Master Data missing sub-view {sub!r}"
+
+
+def check_r19_logo_bundled():
+    import pathlib
+    p = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator" / "sme_logo.png"
+    )
+    assert p.exists(), "sme_logo.png missing from package"
+    assert p.stat().st_size > 1000, "sme_logo.png suspiciously small"
+
+
+def check_r19_ledger_schemas_unchanged():
+    """The ERP ledger MUST NOT carry SME-specific columns. This is the
+    Round-18 routing rule preserved across the R19 UI work."""
+    conn = sqlite3.connect(":memory:")
+    database.init_db(conn)
+    for table in ("pending_issues", "consumption", "receipts", "returns"):
+        cols = {r[1] for r in conn.execute(
+            f"PRAGMA table_info({table})"
+        ).fetchall()}
+        for forbidden in ("Equipment_Tag", "Equipment_Tag_No",
+                          "Lining_System_Code", "System_Code",
+                          "SQM_Completed"):
+            assert forbidden not in cols, (
+                f"{table} acquired the SME-specific column {forbidden!r} "
+                f"— this violates the Round-18 routing rule"
+            )
+
+
 def main() -> int:
     print(f"▶ Bug-check harness · DB → {TMP_DB}")
     try:
@@ -8031,6 +8269,59 @@ def main() -> int:
     run_check("Round 18", "hod_portal wires the SME-sync EOD + reject wrappers",
               check_r18_hod_portal_wires_wrappers,
               "Static check on hod_portal.py import block.")
+
+    # ── Round 19 — SME UI parity port ────────────────────────────────────
+    run_check("Round 19", "colors.COLOR_SCHEMES has all 7 SME schemes",
+              check_r19_color_schemes,
+              "dashboard / brown_field / train_j / train_k / session / "
+              "execution / overview — exact SME palette.")
+    run_check("Round 19", "scheme_for_location maps named locations correctly",
+              check_r19_scheme_for_location,
+              "Brown Field → brown_field; TRAIN J → train_j; TRAIN K → train_k.")
+    run_check("Round 19", "charts module exports gauge + hbar + plotly helpers",
+              check_r19_charts_module,
+              "render_design_gauge + render_design_hbar + Plotly stacked bars.")
+    run_check("Round 19", "suggestion_panel module exports render_suggestion_panel",
+              check_r19_suggestion_panel,
+              "Port of SME's _run_suggestion_engine + 2-column UI.")
+    run_check("Round 19", "downloads module exports equipment_report_excel + location_report_excel",
+              check_r19_downloads_specials,
+              "Specialized report builders preserve per-sheet color schemes.")
+    run_check("Round 19", "all 8 ui_*.py tab modules load cleanly",
+              check_r19_all_ui_modules,
+              "Imports the full material_estimator package without errors.")
+    run_check("Round 19", "Master Data CRUD restricted to SME tables + system_settings",
+              check_r19_master_data_safety,
+              "Static check that ui_master_data.py never SQL-mutates "
+              "pending_issues / consumption / receipts / returns.")
+    run_check("Round 19", "Tab 0 Dashboard renders 7-card KPI strip + filters",
+              check_r19_dashboard_structure,
+              "Validates the SME-spec KPI cards + 4-cell filter strip.")
+    run_check("Round 19", "Tab 1 Priority drag list + 4-field detail card",
+              check_r19_priority_structure,
+              "Validates LEFT/RIGHT column layout markers.")
+    run_check("Round 19", "Tab 3 Location Report has both sub-views (Location Based + All Equipment)",
+              check_r19_location_subviews,
+              "Validates the 2-sub-view radio + sortable lists.")
+    run_check("Round 19", "Tab 4 Equipment Report uses SME column order",
+              check_r19_equipment_columns,
+              "Equipment Tag No. → Equipment Name → System Code → "
+              "System Name → Total SQM, sorted by Location → Tag → Code.")
+    run_check("Round 19", "Tab 5 Execution Plan has 3 sub-views",
+              check_r19_execution_subviews,
+              "Execution Plan / Progress List / Consumption Comparison.")
+    run_check("Round 19", "Tab 7 Total Overview has 6-card KPI strip",
+              check_r19_total_overview_kpis,
+              "Items / Total SQM / Already Done / Remaining / Shortfall / Avg Coverage.")
+    run_check("Round 19", "Tab 8 Master Data has 5 sub-views",
+              check_r19_master_data_subviews,
+              "Equipment / LINING SYSTEM MATERIAL CONSM / Materials_DetailsAvailable_Qty / Add Location / Add Type.")
+    run_check("Round 19", "SME logo asset bundled in package",
+              check_r19_logo_bundled,
+              "sme_logo.png must be present for branded reports + sticky title.")
+    run_check("Round 19", "ERP ledger schemas unchanged (regression — R18 routing rule)",
+              check_r19_ledger_schemas_unchanged,
+              "pending_issues / consumption MUST NOT carry Equipment_Tag, System_Code, or Location columns.")
 
     out = write_report()
     print()
