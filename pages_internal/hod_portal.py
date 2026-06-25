@@ -20,7 +20,11 @@ import streamlit as st
 from config import AGGRID_HEIGHT, BRAND_GOLD, TEXT_PRIMARY, TEXT_MUTED, COLOR_OK, COLOR_LOW, COLOR_CRITICAL
 from database import (
     get_connection,
-    commit_eod,
+    # Round 18 — commit_eod is the legacy entry point; the wrapper below
+    # additionally flips linked sme_consumption_log rows to 'committed' and
+    # shifts SQM from Done_SQM_staged to Done_SQM. The wrapper is a no-op
+    # on the SME side when no rows in this commit batch came from SME.
+    commit_eod_with_sme_sync as commit_eod,
     get_low_stock_items,
     get_pending_issues_for_site,
     get_pending_requests,
@@ -49,7 +53,10 @@ from database import (
     get_all_sites_stock_matrix,
     get_receipt_history,
     hod_approve_pending_issue,
-    hod_reject_pending_issue,
+    # Round 18 — wrapped so a rejection on a SME-staged pending_issues row
+    # also flips its sme_consumption_log entry to 'rejected' and decrements
+    # the staged SQM. No-op for non-SME rejects.
+    hod_reject_pending_issue_with_sme_sync as hod_reject_pending_issue,
     hod_approve_all_pending_issues,
     get_work_types,
     get_tank_nos,

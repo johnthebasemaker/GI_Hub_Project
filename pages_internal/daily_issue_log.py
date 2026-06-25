@@ -31,6 +31,13 @@ from database import (
     approve_supervisor_request,
     reject_supervisor_request,
     get_open_returnables_for_employee,
+    # Round 18 — SME consumption dispatch + staging
+    is_sme_sap,
+    get_sme_equipment,
+    get_sme_recipe,
+    get_sme_sqm_progress,
+    get_sme_inventory_view,
+    stage_sme_consumption_batch,
 )
 from cache_layer import (
     cached_work_types,
@@ -128,6 +135,31 @@ def page_daily_issue_log(user: dict) -> None:
             site_id, _SK_CONSUMPTION_STATE_KEYS,
         )
 
+        # Round 18 — SME multi-material entry. Renders only when SME recipes
+        # exist for this site so non-SME sites don't see the option. Lives
+        # ABOVE the OCR + single-item flows because lining-systems consumption
+        # is structurally different and gets first-class real-estate.
+        try:
+            _conn_sme = get_connection()
+            _has_sme = bool(_conn_sme.execute(
+                "SELECT 1 FROM sme_recipe LIMIT 1"
+            ).fetchone())
+            _conn_sme.close()
+        except Exception:
+            _has_sme = False
+        if _has_sme:
+            with st.expander(
+                "🧪 SME Multi-Material Entry (Lining systems)",
+                expanded=False,
+            ):
+                st.caption(
+                    "For Rubber Lining / Brick Lining work tracked by "
+                    "Equipment Tag × System Code × SQM. Per-material qty is "
+                    "auto-computed from the recipe; total qty per material "
+                    "is aggregated into the ERP's pending_issues at submit."
+                )
+                _render_sme_consumption_form(user, site_id)
+
         # Phase 5 — bulk OCR upload (handwritten consumption list)
         with st.expander("📷 Upload Handwritten Consumption List (OCR)", expanded=False):
             _render_consumption_ocr(user=user, site_id=site_id, inv_list=inv_list, work_types=work_types)
@@ -200,6 +232,27 @@ def page_daily_issue_log(user: dict) -> None:
             sap_code = None
             if selected_item:
                 sap_code = selected_item.split("]")[0].replace("[", "").strip()
+
+                # Round 18 — SME dispatch hint. When the SK picks an SME
+                # material via this single-item form, surface a banner that
+                # steers them to the multi-material grid above. The
+                # single-item form still works (one PI row per submit) —
+                # the banner is informational, not a hard block.
+                try:
+                    _conn_dispatch = get_connection()
+                    _is_sme_here = is_sme_sap(sap_code, conn=_conn_dispatch)
+                    _conn_dispatch.close()
+                except Exception:
+                    _is_sme_here = False
+                if _is_sme_here:
+                    st.info(
+                        "🧪 **This is an SME-tracked material.** For accurate "
+                        "Equipment-Tag × System-Code × SQM attribution, "
+                        "scroll up and use the **🧪 SME Multi-Material Entry** "
+                        "expander instead. (You can still queue this item "
+                        "here for an ad-hoc issue if attribution doesn't "
+                        "matter.)"
+                    )
 
                 # Push to the ring buffer — front of list, deduped, capped at 5.
                 _rb = st.session_state.get(RECENT_KEY, [])
@@ -3127,3 +3180,334 @@ def _render_tier3_panel(candidates: list[dict], site_id: str) -> None:
                 st.session_state.pop(k, None)
             _smart_scan_fill_borrower_only()
             st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Round 18 — SME multi-material consumption form
+# ---------------------------------------------------------------------------
+# The Smart Material Estimator records consumption against a (Site_ID ×
+# Equipment_Tag × Lining_System_Code × Material_Code × SQM) tuple. The
+# ERP's pending_issues / consumption ledgers stay SAP_Code-keyed and
+# qty-only — Equipment_Tag / System_Code / Location never reach them. This
+# form is the SK-facing surface that bridges the two:
+#
+#   SK fills the multi-row grid → Add to Grid stages locally → Submit Batch
+#   calls stage_sme_consumption_batch which aggregates per Material_Code,
+#   resolves SAP_Code (1:1 by user contract), writes one pending_issues
+#   row per material AND writes per-detail rows to sme_consumption_log.
+#
+# Done_SQM_staged increments on Submit. HOD EOD commit (via
+# commit_eod_with_sme_sync) shifts it to Done_SQM.
+
+_SME_BATCH_KEY = "_sme_consumption_batch_rows"
+_SME_BATCH_EXTRAS_KEY = "_sme_consumption_batch_extras"
+
+
+def _sme_batch_rows() -> list[dict]:
+    return st.session_state.setdefault(_SME_BATCH_KEY, [])
+
+
+def _sme_batch_extras() -> dict:
+    return st.session_state.setdefault(_SME_BATCH_EXTRAS_KEY, {})
+
+
+def _render_sme_consumption_form(user: dict, site_id: str) -> None:
+    """Multi-row SME consumption staging form.
+
+    Layout:
+      1. Common batch fields (Date, Issued_To, Tank_No, Serial_No, PR_Number)
+      2. Equipment tag picker → System Code picker(s) → SQM input(s)
+      3. Auto-computed material grid (For_1_SQM × SQM) with Actual override
+      4. "Add to Grid" stacks rows into session_state
+      5. Grid preview + per-row remove
+      6. "Submit Batch" calls stage_sme_consumption_batch and clears the queue
+      7. Days-of-Continuation block fires after a successful submit
+    """
+    # Lazy import to avoid a hard dependency if the package isn't deployed
+    from pages_internal.material_estimator.widgets import days_of_continuation_block
+
+    eq_df = get_sme_equipment(site_id=site_id)
+    recipe_df = get_sme_recipe()
+    inv_view = get_sme_inventory_view(site_id=site_id)
+    prog_df = get_sme_sqm_progress(site_id=site_id)
+
+    if eq_df.empty or recipe_df.empty:
+        st.warning(
+            "📭 No SME equipment / recipe master at this site. "
+            "Bootstrap data with `python3 scripts/sme_bootstrap.py "
+            f"--site-id {site_id}` or use the Material Estimator → "
+            "Master Data tab."
+        )
+        return
+
+    # ── 1) Batch-level mandatory fields ────────────────────────────────────
+    st.markdown("**Step 1 — Batch details (apply to every row in this submit)**")
+    bx1, bx2, bx3 = st.columns(3)
+    with bx1:
+        entry_date = st.date_input(
+            "Date*", datetime.date.today(), key="_sme_b_date",
+        )
+        issued_to = st.text_input(
+            "Issued_To*", value=_sme_batch_extras().get("Issued_To", ""),
+            key="_sme_b_issued_to",
+        )
+    with bx2:
+        tank_no = st.text_input(
+            "Tank_No*", value=_sme_batch_extras().get("Tank_No", ""),
+            key="_sme_b_tank_no",
+        )
+        serial_no = st.text_input(
+            "Serial_No*", value=_sme_batch_extras().get("Serial_No", ""),
+            key="_sme_b_serial_no",
+        )
+    with bx3:
+        pr_number = st.text_input(
+            "PR_Number*", value=_sme_batch_extras().get("PR_Number", ""),
+            key="_sme_b_pr_number",
+        )
+        notes = st.text_input(
+            "Batch notes (optional)", key="_sme_b_notes",
+        )
+
+    # Persist extras across reruns for "Add to Grid" repeats
+    st.session_state[_SME_BATCH_EXTRAS_KEY] = {
+        "Issued_To": issued_to.strip(),
+        "Tank_No": tank_no.strip(),
+        "Serial_No": serial_no.strip(),
+        "PR_Number": pr_number.strip(),
+    }
+
+    st.markdown("---")
+    st.markdown("**Step 2 — Pick equipment tag, lining systems, SQM completed today**")
+
+    tags = sorted(eq_df["Equipment_Tag_No."].dropna().unique().tolist())
+    tag = st.selectbox(
+        "Equipment_Tag_No.*", tags, key="_sme_b_tag",
+        index=0 if tags else None,
+    )
+    if not tag:
+        return
+
+    # Show available systems for this tag
+    tag_rows = eq_df[eq_df["Equipment_Tag_No."] == tag]
+    available_sys = tag_rows["Lining_System_Code"].dropna().unique().tolist()
+    if not available_sys:
+        st.error(f"No lining systems defined for equipment {tag}.")
+        return
+
+    SELECT_ALL = "✨ Select All"
+    picked_raw = st.multiselect(
+        "Lining_System_Code*",
+        [SELECT_ALL] + list(available_sys),
+        default=[],
+        key="_sme_b_sys",
+    )
+    picked_systems = (
+        list(available_sys)
+        if SELECT_ALL in picked_raw
+        else [s for s in picked_raw if s != SELECT_ALL]
+    )
+    if not picked_systems:
+        st.info("Pick at least one Lining System Code.")
+        return
+
+    # ── 3) Per-system SQM input + material grid ────────────────────────────
+    st.markdown("---")
+    st.markdown("**Step 3 — Enter SQM completed per system + verify material qty**")
+
+    # Helper: remaining SQM for (tag, system) considering committed + staged
+    def _remaining_sqm(tag_: str, sys_: str) -> float:
+        match = tag_rows[tag_rows["Lining_System_Code"] == sys_]
+        if match.empty:
+            return 0.0
+        orig = float(match["Surface_Area_SQM"].sum())
+        if prog_df.empty:
+            return orig
+        pmatch = prog_df[
+            (prog_df["Equipment_Tag_No."] == tag_)
+            & (prog_df["Lining_System_Code"] == sys_)
+        ]
+        if pmatch.empty:
+            return orig
+        done = float(pmatch.iloc[0].get("Done_SQM", 0) or 0)
+        staged = float(pmatch.iloc[0].get("Done_SQM_staged", 0) or 0)
+        return max(0.0, orig - done - staged)
+
+    # Collect per-system inputs
+    new_grid_rows: list[dict] = []
+    for sysc in picked_systems:
+        sys_recipe = recipe_df[recipe_df["Lining_System_Code"] == sysc]
+        sys_name = (
+            sys_recipe.iloc[0].get("Lining_System_Name")
+            if not sys_recipe.empty else sysc
+        ) or sysc
+        rem_sqm = _remaining_sqm(tag, sysc)
+        # Stock-coverage SQM = min(available / for_1_sqm) across materials
+        if not sys_recipe.empty and not inv_view.empty:
+            joined = sys_recipe.merge(
+                inv_view[["Material_Code", "Available_Qty"]],
+                on="Material_Code", how="left",
+            )
+            joined["Available_Qty"] = joined["Available_Qty"].fillna(0)
+            joined["coverage_per_mat"] = (
+                joined["Available_Qty"]
+                / joined["For_1_SQM"].replace(0, pd.NA)
+            ).fillna(0)
+            stock_sqm = float(joined["coverage_per_mat"].min() or 0)
+        else:
+            stock_sqm = 0.0
+        cap = min(rem_sqm, stock_sqm) if rem_sqm and stock_sqm else max(rem_sqm, 0)
+
+        st.markdown(
+            f"#### Lining System `{sysc}` — {sys_name}  "
+            f"<span style='color:#6B7280;font-size:12px;'>"
+            f"Remaining: <b>{rem_sqm:,.2f}</b> SQM · "
+            f"Stock-cap: <b>{stock_sqm:,.2f}</b> SQM</span>",
+            unsafe_allow_html=True,
+        )
+        sqm_input = st.number_input(
+            f"SQM completed today for system {sysc}",
+            min_value=0.0, max_value=max(cap, 0.0001), step=0.5,
+            value=0.0, key=f"_sme_sqm_{tag}_{sysc}",
+        )
+        if sqm_input <= 0:
+            continue
+
+        # Material grid for this system
+        mat_view_rows = []
+        for _, rrec in sys_recipe.iterrows():
+            mc = str(rrec["Material_Code"]).strip()
+            for_1 = float(rrec.get("For_1_SQM") or 0)
+            required = round(for_1 * sqm_input, 4)
+            inv_row = inv_view[inv_view["Material_Code"] == mc]
+            avail = float(inv_row.iloc[0]["Available_Qty"]) if not inv_row.empty else 0.0
+            mat_view_rows.append({
+                "Material_Code": mc,
+                "Material_Name": rrec.get("Material_Name") or "",
+                "UOM": rrec.get("UOM") or "",
+                "For_1_SQM": for_1,
+                "Required_Qty": required,
+                "Available_Qty": avail,
+                "Actual_Qty": min(required, avail) if required > 0 else 0.0,
+            })
+        if not mat_view_rows:
+            continue
+        mat_df = pd.DataFrame(mat_view_rows)
+        edited = st.data_editor(
+            mat_df,
+            key=f"_sme_mat_grid_{tag}_{sysc}",
+            column_config={
+                "For_1_SQM":   st.column_config.NumberColumn("For 1 SQM", disabled=True, format="%.4f"),
+                "Required_Qty": st.column_config.NumberColumn("Required Qty", disabled=True, format="%.3f"),
+                "Available_Qty": st.column_config.NumberColumn("Available", disabled=True, format="%.3f"),
+                "Actual_Qty":  st.column_config.NumberColumn(
+                    "Actual Qty (override)", min_value=0.0, format="%.3f",
+                ),
+            },
+            disabled=["Material_Code", "Material_Name", "UOM",
+                      "For_1_SQM", "Required_Qty", "Available_Qty"],
+            hide_index=True, use_container_width=True,
+        )
+        # Live shortfall warnings
+        shortfalls = []
+        for _, r in edited.iterrows():
+            if float(r["Actual_Qty"] or 0) > float(r["Available_Qty"] or 0):
+                shortfalls.append(
+                    f"**{r['Material_Code']}** — request "
+                    f"{float(r['Actual_Qty']):g} > available "
+                    f"{float(r['Available_Qty']):g}"
+                )
+        if shortfalls:
+            st.error("🛑 Shortfalls on this system:\n\n" + "\n\n".join(shortfalls))
+
+        for _, r in edited.iterrows():
+            qty = float(r["Actual_Qty"] or 0)
+            if qty <= 0:
+                continue
+            new_grid_rows.append({
+                "equipment_tag": tag,
+                "lining_system_code": sysc,
+                "material_code": str(r["Material_Code"]).strip(),
+                "sqm_completed": float(sqm_input),
+                "expected_qty": float(r["Required_Qty"] or 0),
+                "actual_qty": qty,
+                "notes": (notes or "").strip() or None,
+            })
+
+    # ── 4) Add to Grid ─────────────────────────────────────────────────────
+    if st.button(
+        "➕ Add to Batch", type="primary",
+        disabled=not new_grid_rows, key="_sme_add_to_batch",
+    ):
+        existing = _sme_batch_rows()
+        existing.extend(new_grid_rows)
+        st.session_state[_SME_BATCH_KEY] = existing
+        st.success(f"Added {len(new_grid_rows)} row(s) to the batch.")
+        st.rerun()
+
+    # ── 5) Batch preview ───────────────────────────────────────────────────
+    queued = _sme_batch_rows()
+    if queued:
+        st.markdown("---")
+        st.subheader(f"📥 Batch staging ({len(queued)} row(s))")
+        preview = pd.DataFrame(queued)
+        # Add a 'remove' surrogate column (handled by per-row delete buttons below)
+        st.dataframe(
+            preview[["equipment_tag", "lining_system_code", "material_code",
+                     "sqm_completed", "expected_qty", "actual_qty", "notes"]],
+            use_container_width=True, hide_index=True,
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🗑 Clear batch", key="_sme_clear_batch"):
+                st.session_state[_SME_BATCH_KEY] = []
+                st.rerun()
+        with c2:
+            extras = st.session_state.get(_SME_BATCH_EXTRAS_KEY, {})
+            missing = [
+                k for k in ("Issued_To", "Tank_No", "Serial_No", "PR_Number")
+                if not (extras.get(k) or "").strip()
+            ]
+            disabled = bool(missing)
+            if missing:
+                st.caption(f"Fill required batch fields first: {', '.join(missing)}")
+            if st.button(
+                "✅ Submit Batch", type="primary",
+                disabled=disabled, key="_sme_submit_batch",
+                use_container_width=True,
+            ):
+                try:
+                    res = stage_sme_consumption_batch(
+                        site_id=site_id,
+                        entry_date=str(entry_date),
+                        entered_by=user.get("username", "sk"),
+                        rows=queued,
+                        extras=extras,
+                    )
+                    # Bust the inventory cache so subsequent reads reflect
+                    # the new pending_issues rows.
+                    bust_inventory_cache()
+                    st.success(
+                        f"✅ Batch staged. Batch id `{res['batch_id']}` · "
+                        f"{res['materials_staged']} material(s) routed to "
+                        f"pending_issues · "
+                        f"{len(res['pending_issue_ids'])} aggregated row(s)."
+                    )
+                    # Fire the days-of-continuation runway report inline.
+                    daily_consumption_per_material: dict[str, float] = {}
+                    for r in queued:
+                        mc = r["material_code"]
+                        daily_consumption_per_material[mc] = (
+                            daily_consumption_per_material.get(mc, 0.0)
+                            + float(r["actual_qty"] or 0)
+                        )
+                    days_of_continuation_block(
+                        daily_consumption_per_material=daily_consumption_per_material,
+                        inventory_view=inv_view,
+                    )
+                    # Clear the queue
+                    st.session_state[_SME_BATCH_KEY] = []
+                except ValueError as e:
+                    st.error(f"🛑 Cannot stage batch: {e}")
+                except Exception as e:
+                    st.error(f"🛑 Unexpected error: {type(e).__name__}: {e}")
