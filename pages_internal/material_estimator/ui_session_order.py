@@ -11,7 +11,7 @@ import streamlit as st
 from . import allocation_engine as AE
 from . import data_layer, engine_runner
 from .downloads import sme_multi_sheet_xlsx_download, sme_pdf_download
-from .theming import status_pill
+from .widgets import dbl_click_metric, fulfil_pill, plotly_mat_table
 
 
 def render(site_id: str | None, priority_order: list[str], username: str | None) -> None:
@@ -60,6 +60,29 @@ def render(site_id: str | None, priority_order: list[str], username: str | None)
 
     st.markdown("---")
     st.subheader("Per-equipment material breakdown")
+
+    # Top-of-section KPI strip
+    r = st.columns(4)
+    with r[0]:
+        dbl_click_metric("Tags", str(len(feas)), "so_tags",
+                         drilldown_title="All tags in plan",
+                         drilldown_df=summary)
+    with r[1]:
+        ready_n = int((feas["Status"].str.contains("Fully Ready", na=False)).sum())
+        dbl_click_metric("Fully ready", str(ready_n), "so_ready",
+                         drilldown_title="Tags ready to build today",
+                         drilldown_df=feas[feas["Status"].str.contains("Fully Ready", na=False)])
+    with r[2]:
+        partial_n = int((feas["Status"].str.contains("Partial", na=False)).sum())
+        dbl_click_metric("Partial", str(partial_n), "so_part",
+                         drilldown_title="Partially buildable",
+                         drilldown_df=feas[feas["Status"].str.contains("Partial", na=False)])
+    with r[3]:
+        blocked_n = int((feas["Status"].str.contains("Blocked", na=False)).sum())
+        dbl_click_metric("Blocked", str(blocked_n), "so_blk",
+                         drilldown_title="0% on at least one material",
+                         drilldown_df=feas[feas["Status"].str.contains("Blocked", na=False)])
+
     for _, row in feas.iterrows():
         tag = row["Equipment_Tag_No."]
         with st.expander(
@@ -67,14 +90,15 @@ def render(site_id: str | None, priority_order: list[str], username: str | None)
             f"({row['Completion_Pct']:.1f}%)",
             expanded=False,
         ):
-            st.markdown(status_pill(row["Status"]), unsafe_allow_html=True)
-            mat = alloc[alloc["Equipment_Tag_No."] == tag][[
-                "Material_Code", "Material_Name", "UOM",
-                "Demand_Qty", "Allocated_Qty", "Shortfall_Qty",
-                "Fulfillment_Rate",
-            ]].copy()
-            mat["Fulfillment_Rate"] = (mat["Fulfillment_Rate"] * 100).round(1)
-            st.dataframe(mat, use_container_width=True, hide_index=True)
+            st.markdown(fulfil_pill(row["Completion_Pct"]), unsafe_allow_html=True)
+            mat = alloc[alloc["Equipment_Tag_No."] == tag].copy()
+            # Layer Ordered_Qty into per-tag mat table
+            if "Ordered_Qty" in inv.columns:
+                mat = mat.merge(
+                    inv[["Material_Code", "Ordered_Qty"]],
+                    on="Material_Code", how="left",
+                )
+            plotly_mat_table(mat, key_suffix=f"so_{tag}")
 
     st.markdown("---")
     st.subheader("Suggestion engine — best pause scenario")

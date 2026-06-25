@@ -27,7 +27,7 @@ from . import (
     ui_session_order,
     ui_total_overview,
 )
-from .theming import inject_css
+from .theming import inject_css, render_sticky_title
 
 
 def _resolve_site_id(user: dict) -> str | None:
@@ -69,15 +69,7 @@ def page_material_estimator(user: dict) -> None:
     username = user.get("username")
     site_id = _resolve_site_id(user)
 
-    st.markdown(
-        '<div class="sme-header">🧪 Material Estimator</div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        f'<div class="sme-site-banner">Scope: <b>Site {site_id}</b>'
-        f' · Role: <b>{role}</b></div>',
-        unsafe_allow_html=True,
-    )
+    render_sticky_title("Material Estimator", site_id=site_id, role=role)
 
     priority_order = ui_priority.get_current_priority(site_id)
 

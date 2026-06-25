@@ -11,6 +11,7 @@ import streamlit as st
 from . import allocation_engine as AE
 from . import data_layer, engine_runner
 from .downloads import sme_download_pair
+from .widgets import dbl_click_metric, plotly_mat_table
 
 
 def render(site_id: str | None, priority_order: list[str], username: str | None) -> None:
@@ -49,15 +50,33 @@ def render(site_id: str | None, priority_order: list[str], username: str | None)
     ).clip(0, 100).round(1).fillna(100)
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Distinct materials", len(total))
-    c2.metric("Materials with gap",
-              int((total["Gap_Qty"] > 0).sum()))
-    c3.metric("Fully covered",
-              int((total["Coverage_Pct"] >= 100).sum()))
+    with c1:
+        dbl_click_metric("Distinct materials", str(len(total)), "to_mat",
+                         drilldown_title="All materials in plan",
+                         drilldown_df=total)
+    with c2:
+        gap_df = total[total["Gap_Qty"] > 0]
+        dbl_click_metric("With gap", str(len(gap_df)), "to_gap",
+                         drilldown_title="Materials with positive net gap",
+                         drilldown_df=gap_df,
+                         help_text="Demand exceeds Available + Ordered.")
+    with c3:
+        cov_df = total[total["Coverage_Pct"] >= 100]
+        dbl_click_metric("Fully covered", str(len(cov_df)), "to_cov",
+                         drilldown_title="Materials with full coverage",
+                         drilldown_df=cov_df)
 
-    st.dataframe(
-        total.sort_values("Gap_Qty", ascending=False),
-        use_container_width=True, hide_index=True,
+    # Plotly-styled coverage table
+    pretty = total.rename(columns={
+        "Demand_Qty": "Demand_Qty",
+        "Available_Qty": "Allocated_Qty",  # so plotly_mat_table colors the row
+    }).copy()
+    pretty["Shortfall_Qty"] = pretty["Gap_Qty"]
+    pretty["Fulfillment_Rate"] = pretty["Coverage_Pct"] / 100
+    plotly_mat_table(
+        pretty.sort_values("Gap_Qty", ascending=False),
+        key_suffix="to_main", height=420,
+        allocated_label="Available",
     )
     sme_download_pair(
         total, report_name="Total_Overview",
