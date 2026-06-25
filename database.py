@@ -1789,6 +1789,134 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     except sqlite3.Error:
         pass  # View creation must never break startup
 
+    # Round 20 — SME literal-drop-in compatibility VIEWS.
+    # The SME's legacy app.py uses SQL against three tables that don't
+    # exist in the ERP schema. These views forward the queries to the
+    # actual R17/R18 tables so the SME's read paths Just Work:
+    #   - locations       → system_settings (category='sme_location')
+    #   - types           → system_settings (category='sme_equipment_type')
+    #   - consumption_log → sme_consumption_log (R18 rich ledger), filtered
+    #                       to 'committed' status so reports only show
+    #                       HOD-approved consumption (matches SME semantics)
+    #   - equipment       → sme_equipment with column aliases (lowercase
+    #                       snake_case the SME's master-data tab uses)
+    #   - recipe          → sme_recipe with same alias pattern
+    #   - inventory       → already exists as a real table; the SME reads
+    #                       it directly via column-aliased SELECTs
+    #   - sqm_progress    → sme_sqm_progress with column aliases
+    # Master-data WRITES against locations / types are surgically rerouted
+    # in material_estimator_portal.py to call add_sme_setting /
+    # delete_sme_setting helpers — views are read-only by design.
+    for _v in ("locations", "types", "consumption_log",
+               "equipment", "recipe", "sqm_progress"):
+        try:
+            # Only drop a view (never a table) so a future ERP table named
+            # 'equipment' wouldn't get nuked here.
+            row = c.execute(
+                "SELECT type FROM sqlite_master WHERE name = ?", (_v,)
+            ).fetchone()
+            if row and row[0] == "view":
+                c.execute(f"DROP VIEW {_v}")
+        except sqlite3.Error:
+            pass
+    try:
+        c.execute("""
+            CREATE VIEW locations AS
+            SELECT value AS name,
+                   '#64748B' AS badge_color,
+                   rowid AS sort_order,
+                   '' AS added_at
+            FROM system_settings
+            WHERE category = 'sme_location'
+        """)
+    except sqlite3.Error:
+        pass
+    try:
+        c.execute("""
+            CREATE VIEW types AS
+            SELECT value AS name,
+                   rowid AS sort_order,
+                   '' AS added_at
+            FROM system_settings
+            WHERE category = 'sme_equipment_type'
+        """)
+    except sqlite3.Error:
+        pass
+    try:
+        c.execute("""
+            CREATE VIEW consumption_log AS
+            SELECT id,
+                   entry_date,
+                   Equipment_Tag_No    AS equipment_tag,
+                   Lining_System_Code  AS lining_system_code,
+                   SQM_Completed       AS sqm_completed,
+                   Material_Code       AS material_code,
+                   Expected_Qty        AS expected_qty,
+                   Actual_Qty          AS consumed_qty,
+                   Variance_Pct        AS variance_pct,
+                   '' AS variance_status,
+                   '' AS material_name,
+                   '' AS uom,
+                   '' AS lining_system_name,
+                   committed_at        AS submitted_at,
+                   Site_ID
+            FROM sme_consumption_log
+            WHERE status = 'committed'
+        """)
+    except sqlite3.Error:
+        pass
+    # SME's `equipment`, `recipe`, `sqm_progress` references in Master Data
+    # use lowercase snake_case columns. Map them onto our PascalCase tables.
+    try:
+        c.execute("""
+            CREATE VIEW equipment AS
+            SELECT id,
+                   Site_ID            AS site_id,
+                   Equipment_Tag_No   AS equipment_tag,
+                   Name               AS name,
+                   Location           AS location,
+                   Type               AS type,
+                   Substrate          AS substrate,
+                   Lining_System_Code AS lining_system_code,
+                   '' AS lining_system_short_name,
+                   '' AS lining_type,
+                   '' AS material_spec,
+                   '' AS design,
+                   Lining_System_Code AS lining_systems,
+                   Surface_Area_SQM   AS surface_area_sqm
+            FROM sme_equipment
+        """)
+    except sqlite3.Error:
+        pass
+    try:
+        c.execute("""
+            CREATE VIEW recipe AS
+            SELECT id,
+                   Lining_System_Code AS lining_system_code,
+                   Lining_System_Name AS lining_system_short_name,
+                   ''                 AS lining_type,
+                   Material_Code      AS material_code,
+                   Material_Name      AS material_description,
+                   Material_Name      AS material_name,
+                   For_1_SQM          AS for_1_sqm,
+                   UOM                AS uom
+            FROM sme_recipe
+        """)
+    except sqlite3.Error:
+        pass
+    try:
+        c.execute("""
+            CREATE VIEW sqm_progress AS
+            SELECT Site_ID            AS site_id,
+                   Equipment_Tag_No   AS equipment_tag,
+                   Lining_System_Code AS lining_system_code,
+                   Original_SQM       AS original_sqm,
+                   (COALESCE(Done_SQM,0) + COALESCE(Done_SQM_staged,0)) AS done_sqm
+            FROM sme_sqm_progress
+        """)
+    except sqlite3.Error:
+        pass
+
     # Seed default SME location / equipment-type values under system_settings
     # for legacy site 'HQ' so the new portal has populated dropdowns on first
     # render. Idempotent — INSERT OR IGNORE on (category, value, Site_ID).
