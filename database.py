@@ -1720,6 +1720,74 @@ def init_db(conn: sqlite3.Connection = None) -> None:
             PRIMARY KEY (Site_ID, Equipment_Tag_No, Lining_System_Code)
         )
     """)
+    # Round 18: two-column Done_SQM model — staged is incremented at SK
+    # Submit Batch, then shifted to Done_SQM (committed) when HOD commits
+    # via commit_eod_with_sme_sync. Reject path decrements staged only.
+    try:
+        c.execute(
+            "ALTER TABLE sme_sqm_progress ADD COLUMN Done_SQM_staged REAL DEFAULT 0"
+        )
+    except sqlite3.OperationalError:
+        pass
+
+    # Round 18: rich SME consumption ledger. Captures the full
+    # (tag × system × material × sqm × expected × actual) detail. Never
+    # touched by the ERP's commit_eod path — that table writes aggregated
+    # rows to pending_issues / consumption keyed on SAP_Code. Two-way audit
+    # via batch_id (1 batch = 1 SK Submit Batch click) and staged_pi_ids
+    # (JSON array of pending_issues.id values produced by aggregation).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS sme_consumption_log (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id            TEXT    NOT NULL,
+            Site_ID             TEXT    NOT NULL,
+            entry_date          TEXT    NOT NULL,
+            entered_by          TEXT,
+            Equipment_Tag_No    TEXT    NOT NULL,
+            Lining_System_Code  TEXT    NOT NULL,
+            Material_Code       TEXT    NOT NULL,
+            SQM_Completed       REAL    NOT NULL DEFAULT 0,
+            Expected_Qty        REAL    NOT NULL DEFAULT 0,
+            Actual_Qty          REAL    NOT NULL DEFAULT 0,
+            Variance_Pct        REAL,
+            notes               TEXT,
+            status              TEXT    NOT NULL DEFAULT 'staged'
+                                CHECK(status IN ('staged','committed','rejected')),
+            staged_pi_id        INTEGER,
+            committed_at        DATETIME,
+            rejected_at         DATETIME,
+            rejected_reason     TEXT,
+            created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS ix_sme_cl_batch "
+              "ON sme_consumption_log(batch_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_sme_cl_status "
+              "ON sme_consumption_log(status, Site_ID)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_sme_cl_pi "
+              "ON sme_consumption_log(staged_pi_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_sme_cl_tag_sys "
+              "ON sme_consumption_log(Site_ID, Equipment_Tag_No, Lining_System_Code)")
+
+    # Round 18: derived view exposing is_sme as a computed flag without
+    # adding a column to `inventory`. The flag is True iff the material code
+    # appears in any sme_recipe row. Used by reports + admin displays. The
+    # runtime dispatch in daily_issue_log.py uses is_sme_sap() directly for
+    # speed; this view is for human-readable joins.
+    try:
+        c.execute("DROP VIEW IF EXISTS v_inventory_with_sme")
+        c.execute("""
+            CREATE VIEW v_inventory_with_sme AS
+            SELECT i.*,
+                   CASE WHEN EXISTS (
+                       SELECT 1 FROM sme_recipe r
+                       WHERE TRIM(r.Material_Code) = TRIM(COALESCE(i.Material_Code,''))
+                         AND TRIM(COALESCE(i.Material_Code,'')) <> ''
+                   ) THEN 1 ELSE 0 END AS is_sme
+            FROM inventory i
+        """)
+    except sqlite3.Error:
+        pass  # View creation must never break startup
 
     # Seed default SME location / equipment-type values under system_settings
     # for legacy site 'HQ' so the new portal has populated dropdowns on first
@@ -12100,6 +12168,550 @@ def upsert_sme_sqm_progress(
             (site_id, equipment_tag, lining_system_code, new_orig, new_done),
         )
         conn.commit()
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Round 18 — SME consumption form: dispatch + staging + state-machine
+# ---------------------------------------------------------------------------
+# The SK's Consumption tab forks on inventory.is_sme (computed at runtime
+# from sme_recipe membership). When the SK selects an SME-flagged material,
+# the UI renders a multi-row form keyed on (equipment_tag × system_code ×
+# material_code × sqm × actual_qty). On Submit Batch, the helper below
+# aggregates qty per Material_Code, resolves the unique SAP_Code (1:1 for
+# SME materials), writes one pending_issues row per material, and writes
+# detailed rows to sme_consumption_log.
+#
+# State transitions:
+#   staged → committed  : HOD commits via commit_eod_with_sme_sync. SQM
+#                         shifts from Done_SQM_staged to Done_SQM.
+#   staged → rejected   : HOD rejects via hod_reject_pending_issue_with_sme_sync.
+#                         SQM decrements from Done_SQM_staged.
+#   Per-row approve / unapprove do NOT change SME state — the row is still
+#   staged from the estimator's POV; only commit_eod transitions it.
+
+def is_sme_material(
+    material_code: str,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """True if material_code participates in any sme_recipe row."""
+    mc = (material_code or "").strip()
+    if not mc:
+        return False
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sme_recipe WHERE TRIM(Material_Code) = ? LIMIT 1",
+            (mc,),
+        ).fetchone()
+        return bool(row)
+    finally:
+        if _owns:
+            conn.close()
+
+
+def is_sme_sap(
+    sap_code: str,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """True if the inventory row for sap_code carries a Material_Code that
+    participates in any sme_recipe row. False for SAPs without a
+    Material_Code or whose Material_Code is not in any recipe."""
+    sc = (sap_code or "").strip()
+    if not sc:
+        return False
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT Material_Code FROM inventory "
+            "WHERE TRIM(SAP_Code) = ? LIMIT 1",
+            (sc,),
+        ).fetchone()
+        if not row:
+            return False
+        return is_sme_material(row[0], conn=conn)
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_sap_for_material(
+    material_code: str,
+    conn: sqlite3.Connection = None,
+) -> str | None:
+    """Resolve Material_Code → SAP_Code (1:1 by user contract). Returns
+    None if no inventory row carries this material code."""
+    mc = (material_code or "").strip()
+    if not mc:
+        return None
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT SAP_Code FROM inventory "
+            "WHERE TRIM(Material_Code) = ? LIMIT 1",
+            (mc,),
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        if _owns:
+            conn.close()
+
+
+def _bump_progress_staged(
+    conn: sqlite3.Connection,
+    site_id: str,
+    equipment_tag: str,
+    lining_system_code: str,
+    delta: float,
+) -> None:
+    """Add `delta` (may be negative) to sme_sqm_progress.Done_SQM_staged.
+    Creates the row if missing — Original_SQM defaults to 0 in that case."""
+    conn.execute(
+        "INSERT INTO sme_sqm_progress "
+        "(Site_ID, Equipment_Tag_No, Lining_System_Code, "
+        " Original_SQM, Done_SQM, Done_SQM_staged, updated_at) "
+        "VALUES (?, ?, ?, 0, 0, ?, CURRENT_TIMESTAMP) "
+        "ON CONFLICT(Site_ID, Equipment_Tag_No, Lining_System_Code) "
+        "DO UPDATE SET "
+        "  Done_SQM_staged = MAX(0, "
+        "    COALESCE(sme_sqm_progress.Done_SQM_staged,0) + excluded.Done_SQM_staged"
+        "  ), "
+        "  updated_at = CURRENT_TIMESTAMP",
+        (site_id, equipment_tag, lining_system_code, float(delta)),
+    )
+
+
+def _shift_progress_staged_to_committed(
+    conn: sqlite3.Connection,
+    site_id: str,
+    equipment_tag: str,
+    lining_system_code: str,
+    sqm: float,
+) -> None:
+    """Move `sqm` from Done_SQM_staged into Done_SQM. Idempotent — clamps
+    staged at 0 so a double-call can't drive it negative."""
+    conn.execute(
+        "INSERT INTO sme_sqm_progress "
+        "(Site_ID, Equipment_Tag_No, Lining_System_Code, "
+        " Original_SQM, Done_SQM, Done_SQM_staged, updated_at) "
+        "VALUES (?, ?, ?, 0, ?, 0, CURRENT_TIMESTAMP) "
+        "ON CONFLICT(Site_ID, Equipment_Tag_No, Lining_System_Code) "
+        "DO UPDATE SET "
+        "  Done_SQM        = COALESCE(sme_sqm_progress.Done_SQM,0) + ?, "
+        "  Done_SQM_staged = MAX(0, "
+        "    COALESCE(sme_sqm_progress.Done_SQM_staged,0) - ?"
+        "  ), "
+        "  updated_at = CURRENT_TIMESTAMP",
+        (site_id, equipment_tag, lining_system_code, float(sqm),
+         float(sqm), float(sqm)),
+    )
+
+
+def stage_sme_consumption_batch(
+    *,
+    site_id: str,
+    entry_date: str,
+    entered_by: str,
+    rows: list[dict],
+    extras: dict | None = None,
+    conn: sqlite3.Connection = None,
+) -> dict:
+    """Stage a multi-row SME consumption batch.
+
+    `rows` is the SK's flattened grid — one dict per (equipment_tag ×
+    system_code × material_code) entry:
+        {
+          "equipment_tag":      str,
+          "lining_system_code": str,
+          "material_code":      str,
+          "sqm_completed":      float,
+          "expected_qty":       float,
+          "actual_qty":         float,
+          "notes":              str | None,
+        }
+
+    `extras` carries the ERP's mandatory pending_issues fields that aren't
+    captured per-material in the SME form. Required keys: Issued_To,
+    Tank_No, Serial_No, PR_Number. Optional Work_Type, Source_Ref, etc.
+
+    Behaviour:
+      1. Aggregate Actual_Qty per Material_Code across all rows.
+      2. For each aggregated material: resolve SAP_Code via
+         get_sap_for_material (1:1 by user contract).
+      3. INSERT one row into pending_issues per material with status
+         'pending_hod' and the aggregated qty. Capture each new rowid.
+      4. INSERT one row per detailed grid entry into sme_consumption_log
+         with status='staged', batch_id (uuid hex), and staged_pi_id
+         (which aggregated PI row this detail rolls up into).
+      5. For each distinct (equipment_tag, system_code), bump
+         Done_SQM_staged by the summed SQM.
+      6. Return {batch_id, pending_issue_ids, materials_staged}.
+
+    Raises ValueError on schema problems (missing material in inventory,
+    no SAP_Code, missing extras keys).
+    """
+    import uuid
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        extras = dict(extras or {})
+        required_extras = ("Issued_To", "Tank_No", "Serial_No", "PR_Number")
+        missing = [k for k in required_extras if not (extras.get(k) or "").strip()]
+        if missing:
+            raise ValueError(
+                f"SME consumption batch missing required extras: {missing}"
+            )
+
+        # 1. Aggregate per Material_Code
+        per_material: dict[str, float] = {}
+        for r in rows:
+            mc = (r.get("material_code") or "").strip()
+            qty = float(r.get("actual_qty") or 0)
+            if not mc or qty <= 0:
+                continue
+            per_material[mc] = per_material.get(mc, 0.0) + qty
+        if not per_material:
+            raise ValueError("no positive-qty rows to stage")
+
+        # 2. Resolve SAP_Codes + verify identity
+        sap_map: dict[str, str] = {}
+        for mc in per_material:
+            sap = get_sap_for_material(mc, conn=conn)
+            if not sap:
+                raise ValueError(
+                    f"Material_Code {mc!r} has no SAP_Code in inventory"
+                )
+            sap_map[mc] = sap
+
+        # 3. Insert aggregated rows into pending_issues. We build the column
+        # list dynamically from extras + standard fields to stay tolerant of
+        # the ERP's evolving pending_issues schema.
+        batch_id = uuid.uuid4().hex[:12]
+        pi_col_info = conn.execute("PRAGMA table_info(pending_issues)").fetchall()
+        pi_cols = {r[1] for r in pi_col_info}
+
+        # Map material_code → list of (pi_id, qty) so we can link details
+        material_to_pi: dict[str, int] = {}
+        pending_ids: list[int] = []
+
+        for mc, total_qty in per_material.items():
+            payload: dict = {
+                "Date":      entry_date,
+                "SAP_Code":  sap_map[mc],
+                "Quantity":  float(total_qty),
+                "Site_ID":   site_id,
+                "status":    "pending_hod",
+            }
+            if "Issued_By" in pi_cols:
+                payload["Issued_By"] = entered_by
+            for k in required_extras:
+                if k in pi_cols:
+                    payload[k] = extras.get(k)
+            # Pass-through any other extras whose key is a real PI column.
+            for k, v in extras.items():
+                if k in required_extras or k in payload:
+                    continue
+                if k in pi_cols:
+                    payload[k] = v
+            # Source attribution
+            if "Source_Ref" in pi_cols and "Source_Ref" not in payload:
+                payload["Source_Ref"] = f"SME:{batch_id}"
+
+            cols = list(payload.keys())
+            quoted = ", ".join(f'"{c}"' for c in cols)
+            placeholders = ", ".join(["?"] * len(cols))
+            cur = conn.execute(
+                f"INSERT INTO pending_issues ({quoted}) VALUES ({placeholders})",
+                [payload[k] for k in cols],
+            )
+            material_to_pi[mc] = int(cur.lastrowid)
+            pending_ids.append(int(cur.lastrowid))
+
+        # 4. Write detailed sme_consumption_log rows
+        for r in rows:
+            mc = (r.get("material_code") or "").strip()
+            qty = float(r.get("actual_qty") or 0)
+            if not mc or qty <= 0:
+                continue
+            expected = float(r.get("expected_qty") or 0)
+            var_pct = None
+            if expected:
+                var_pct = round((qty - expected) / expected * 100, 2)
+            conn.execute(
+                "INSERT INTO sme_consumption_log "
+                "(batch_id, Site_ID, entry_date, entered_by, "
+                " Equipment_Tag_No, Lining_System_Code, Material_Code, "
+                " SQM_Completed, Expected_Qty, Actual_Qty, Variance_Pct, "
+                " notes, status, staged_pi_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', ?)",
+                (batch_id, site_id, entry_date, entered_by,
+                 (r.get("equipment_tag") or "").strip(),
+                 (r.get("lining_system_code") or "").strip(),
+                 mc,
+                 float(r.get("sqm_completed") or 0),
+                 expected, qty, var_pct,
+                 r.get("notes"),
+                 material_to_pi[mc]),
+            )
+
+        # 5. Bump Done_SQM_staged per (equipment_tag, system_code).
+        # SQM is per (tag, system) — same value across all materials of a
+        # given (tag, system) entry. Dedupe by taking MAX SQM per pair.
+        per_tag_sys: dict[tuple[str, str], float] = {}
+        for r in rows:
+            tag = (r.get("equipment_tag") or "").strip()
+            sys = (r.get("lining_system_code") or "").strip()
+            sqm = float(r.get("sqm_completed") or 0)
+            if not tag or not sys or sqm <= 0:
+                continue
+            key = (tag, sys)
+            per_tag_sys[key] = max(per_tag_sys.get(key, 0.0), sqm)
+        for (tag, sys), sqm in per_tag_sys.items():
+            _bump_progress_staged(conn, site_id, tag, sys, sqm)
+
+        conn.commit()
+        try:
+            log_audit_action(
+                entered_by, "STAGE_SME_BATCH", "sme_consumption_log",
+                f"batch={batch_id} materials={len(per_material)} "
+                f"pi_ids={pending_ids}",
+            )
+        except Exception:
+            pass
+
+        return {
+            "batch_id": batch_id,
+            "pending_issue_ids": pending_ids,
+            "materials_staged": len(per_material),
+        }
+    finally:
+        if _owns:
+            conn.close()
+
+
+def mark_sme_log_committed(
+    pending_issue_ids: list[int],
+    *,
+    conn: sqlite3.Connection,
+) -> int:
+    """For each pending_issues.id in `pending_issue_ids`, flip every linked
+    sme_consumption_log row from 'staged' → 'committed' and shift the
+    underlying SQM from Done_SQM_staged into Done_SQM.
+
+    Called from commit_eod_with_sme_sync AFTER commit_eod has run (and
+    pending_issues rows have been moved to consumption). Idempotent — a
+    second call on the same ids is a no-op because the rows are no longer
+    in 'staged' status.
+    """
+    if not pending_issue_ids:
+        return 0
+    ids_clean = [int(i) for i in pending_issue_ids]
+    phs = ", ".join(["?"] * len(ids_clean))
+    rows = conn.execute(
+        f"SELECT id, Site_ID, Equipment_Tag_No, Lining_System_Code, "
+        f"       SQM_Completed FROM sme_consumption_log "
+        f"WHERE status='staged' AND staged_pi_id IN ({phs})",
+        ids_clean,
+    ).fetchall()
+    if not rows:
+        return 0
+    # Group SQM shifts by (site, tag, system); take MAX SQM per group to
+    # match the stage-time bump (per-tag-system, not per-material).
+    per_key: dict[tuple, float] = {}
+    log_ids: list[int] = []
+    for log_id, site, tag, sysc, sqm in rows:
+        log_ids.append(int(log_id))
+        if not tag or not sysc:
+            continue
+        key = (site, tag, sysc)
+        per_key[key] = max(per_key.get(key, 0.0), float(sqm or 0))
+    for (site, tag, sysc), sqm in per_key.items():
+        if sqm > 0:
+            _shift_progress_staged_to_committed(conn, site, tag, sysc, sqm)
+    log_phs = ", ".join(["?"] * len(log_ids))
+    conn.execute(
+        f"UPDATE sme_consumption_log SET status='committed', "
+        f"committed_at=CURRENT_TIMESTAMP WHERE id IN ({log_phs})",
+        log_ids,
+    )
+    conn.commit()
+    return len(log_ids)
+
+
+def mark_sme_log_rejected(
+    pending_issue_ids: list[int],
+    *,
+    rejected_by: str | None = None,
+    reason: str | None = None,
+    conn: sqlite3.Connection,
+) -> int:
+    """Flip every linked sme_consumption_log row from 'staged' → 'rejected'
+    and decrement Done_SQM_staged. Called from
+    hod_reject_pending_issue_with_sme_sync. Idempotent."""
+    if not pending_issue_ids:
+        return 0
+    ids_clean = [int(i) for i in pending_issue_ids]
+    phs = ", ".join(["?"] * len(ids_clean))
+    rows = conn.execute(
+        f"SELECT id, Site_ID, Equipment_Tag_No, Lining_System_Code, "
+        f"       SQM_Completed FROM sme_consumption_log "
+        f"WHERE status='staged' AND staged_pi_id IN ({phs})",
+        ids_clean,
+    ).fetchall()
+    if not rows:
+        return 0
+    per_key: dict[tuple, float] = {}
+    log_ids: list[int] = []
+    for log_id, site, tag, sysc, sqm in rows:
+        log_ids.append(int(log_id))
+        if not tag or not sysc:
+            continue
+        key = (site, tag, sysc)
+        per_key[key] = max(per_key.get(key, 0.0), float(sqm or 0))
+    for (site, tag, sysc), sqm in per_key.items():
+        if sqm > 0:
+            _bump_progress_staged(conn, site, tag, sysc, -sqm)
+    log_phs = ", ".join(["?"] * len(log_ids))
+    conn.execute(
+        f"UPDATE sme_consumption_log SET status='rejected', "
+        f"rejected_at=CURRENT_TIMESTAMP, rejected_reason=? "
+        f"WHERE id IN ({log_phs})",
+        [reason or None, *log_ids],
+    )
+    conn.commit()
+    return len(log_ids)
+
+
+def commit_eod_with_sme_sync(
+    conn: sqlite3.Connection = None,
+    *,
+    hod_username: str | None = None,
+) -> int:
+    """Wrapper around commit_eod that also flips linked sme_consumption_log
+    rows to 'committed' and shifts SQM from staged to committed. Returns
+    the same rows_committed count as commit_eod.
+
+    Order matters: capture the to-be-committed pending_issues.id values
+    BEFORE commit_eod deletes them, run commit_eod, then update the SME
+    log using the captured ids. commit_eod itself is unchanged."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        to_commit_ids = [
+            r[0] for r in conn.execute(
+                f"SELECT id FROM pending_issues WHERE {_EOD_PI_STATUS_PRED}"
+            ).fetchall()
+        ]
+        n = commit_eod(conn=conn, hod_username=hod_username)
+        if to_commit_ids:
+            try:
+                mark_sme_log_committed(to_commit_ids, conn=conn)
+            except Exception:
+                # SME sync failure must NEVER undo the commit. Log and
+                # continue — sync can be re-run later via the same helper
+                # if the operator notices stale staged rows.
+                try:
+                    log_audit_action(
+                        hod_username or "unknown",
+                        "SME_SYNC_FAILED_ON_COMMIT",
+                        "sme_consumption_log",
+                        f"pi_ids={to_commit_ids}",
+                    )
+                except Exception:
+                    pass
+        return n
+    finally:
+        if _owns:
+            conn.close()
+
+
+def hod_reject_pending_issue_with_sme_sync(
+    issue_id: int,
+    *,
+    rejected_by: str | None = None,
+    reason: str | None = None,
+    conn: sqlite3.Connection = None,
+) -> bool:
+    """Wrapper around hod_reject_pending_issue. Flips linked
+    sme_consumption_log rows to 'rejected' and decrements Done_SQM_staged.
+    Returns whether the underlying reject succeeded."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        ok = hod_reject_pending_issue(
+            issue_id, rejected_by=rejected_by, reason=reason, conn=conn,
+        )
+        if ok:
+            try:
+                mark_sme_log_rejected(
+                    [int(issue_id)],
+                    rejected_by=rejected_by, reason=reason, conn=conn,
+                )
+            except Exception:
+                try:
+                    log_audit_action(
+                        rejected_by or "unknown",
+                        "SME_SYNC_FAILED_ON_REJECT",
+                        "sme_consumption_log",
+                        f"pi_id={issue_id}",
+                    )
+                except Exception:
+                    pass
+        return ok
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_sme_consumption_log(
+    *,
+    site_id: str | None = None,
+    status: str | None = None,
+    batch_id: str | None = None,
+    limit: int = 500,
+    conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Read sme_consumption_log with optional filters. Used by HOD/Admin
+    audit screens + the post-Submit-Batch confirmation panel."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        where: list[str] = []
+        params: list = []
+        if site_id:
+            where.append("Site_ID = ?")
+            params.append(site_id)
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if batch_id:
+            where.append("batch_id = ?")
+            params.append(batch_id)
+        sql = (
+            "SELECT id, batch_id, Site_ID, entry_date, entered_by, "
+            "       Equipment_Tag_No, Lining_System_Code, Material_Code, "
+            "       SQM_Completed, Expected_Qty, Actual_Qty, Variance_Pct, "
+            "       notes, status, staged_pi_id, committed_at, "
+            "       rejected_at, rejected_reason, created_at "
+            "FROM sme_consumption_log "
+        )
+        if where:
+            sql += "WHERE " + " AND ".join(where) + " "
+        sql += "ORDER BY created_at DESC LIMIT ?"
+        params.append(int(limit))
+        return _localize(pd.read_sql(sql, conn, params=tuple(params)))
     finally:
         if _owns:
             conn.close()
