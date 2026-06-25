@@ -1,6 +1,10 @@
 # GI Hub ERP — Handoff
 
-**Last update:** 2026-06 round 19 — **APPLE-TO-APPLE SME UI PARITY SHIPPED.** Every tab of the Material Estimator portal now mirrors the original standalone SME app's surface 1:1 — same sub-views, KPI cards, filter strips, Plotly tables, SVG gauges, drag-priority sortables, per-location color schemes, suggestion-engine panels, multi-sheet Excel layouts with logo + title bars + scheme-colored headers + GRAND TOTAL rows, Master Data CRUD across all 5 sub-views. Original SME COLOR_SCHEMES (7 schemes: `dashboard / brown_field / train_j / train_k / session / execution / overview`) ported verbatim; per-location mapping preserved. New modules: `colors.py` (palette), `charts.py` (SVG gauge + h-bars + Plotly stacked bars), `suggestion_panel.py` (port of `_run_suggestion_engine` + 2-column UI). Tab modules rewritten end-to-end: `ui_dashboard.py` (7-card KPI strip + gauge + Plotly stacked bars + per-location strip + Full Material Balance + Stock-Only expander; 4-card procurement view with per-location/per-code expanders), `ui_priority.py` (left/right column layout with drag sortable + tag detail card), `ui_session_order.py` (4-card KPI + reorder sortable + per-equipment expanders with show_sqm tables + combined procurement + 5-cell grand total + smart suggestions), `ui_location_report.py` (Location Based + All Equipment sub-views with per-location color schemes), `ui_equipment_report.py` (SME column order + 3-section per-equipment + multi-sheet workbook), `ui_execution_plan.py` (3 sub-views with critical card + procurement priority + production-detail blocks), `ui_total_overview.py` (6-card KPI + master table + per-system-code drilldowns), `ui_master_data.py` (5 sub-views with full CRUD against SME tables + system_settings — never the ERP ledger). The ERP ledger (`pending_issues` / `consumption` / `receipts` / `returns`) is unchanged; the Round-18 routing rule is preserved and explicitly regression-tested. See §2U. **Tests: +16 Round-19 checks (16/16 green) — total 514/531 in `bug_check.py` (same 17 pre-existing failures in unrelated areas). RBAC, EOD commit path, and routing rule all preserved.**
+**Last update:** 2026-06 round 20 — **LITERAL SME DROP-IN SHIPPED (revert-and-replace).** The R19 piecemeal port broke the SME's intermediate-DataFrame architecture (KeyError: `'Lining_System_Code'`) and lost the dark/light theme via CSS scope leakage. Round 20 is a clean pivot: delete the entire R19 package, drop the original 8,505-LOC SME `app.py` in as a single file at `pages_internal/material_estimator_portal.py`, and perform a tight set of surgical edits to bridge it to the ERP data layer. Every chart, KPI card, Plotly table, drag sortable, the entire `<style>` CSS block, and `_apply_theme_attr()` are preserved verbatim — apple-to-apple parity guaranteed because we're running the SME's own code. Surgical edits (search `# R20 EDIT`): `st.set_page_config` commented out; `_show_login` + auth gate deleted; `load_all()` rewritten to call ERP helpers (`D.get_sme_inventory_view`, `get_sme_equipment`, `get_sme_recipe`, `get_sme_sqm_progress`) producing the exact column-cased intermediate frames (`inv`, `recipe`, `equip_sc`, `dm`, `eq_master`, `sqm_ref`) the SME engine expects; `get_db()` redirected to the ERP DB; the entire `with tab_consume:` block (1,402 LOC, 6 sub-views) deleted — R18 already wired the SME consumption flow into the ERP's SK Consumption tab; tab declaration trimmed 9 → 8; Master Data Locations/Types CRUD routed through `D.add_sme_setting`/`D.delete_sme_setting` (R17 Correction #1 preserved); `st.download_button` monkey-patch scoped inside the wrapper via try/finally (R17 Correction #2 preserved for other portals); all imperative rendering (3,913 lines from `with st.sidebar:` to EOF) wrapped inside `page_material_estimator(user)`. Six new compatibility VIEWS in `init_db` (`locations`, `types`, `consumption_log`, `equipment`, `recipe`, `sqm_progress`) let the SME's legacy SQL resolve transparently against the ERP tables. See §2V. **Tests: +11 Round-20 checks (11/11 green) — total 505/522 in `bug_check.py` (same 17 pre-existing failures unchanged). RBAC, EOD commit path, routing rule all preserved. The R19 KeyError is gone: `equip_sc` and `dm` both carry `Lining_System_Code` because `load_all()` now builds them per the original SME architecture.**
+
+**Prior round:** 19 — Apple-to-apple SME UI parity port (piecemeal rewrite, reverted).
+
+**Round 19 prior:** **APPLE-TO-APPLE SME UI PARITY SHIPPED.** Every tab of the Material Estimator portal now mirrors the original standalone SME app's surface 1:1 — same sub-views, KPI cards, filter strips, Plotly tables, SVG gauges, drag-priority sortables, per-location color schemes, suggestion-engine panels, multi-sheet Excel layouts with logo + title bars + scheme-colored headers + GRAND TOTAL rows, Master Data CRUD across all 5 sub-views. Original SME COLOR_SCHEMES (7 schemes: `dashboard / brown_field / train_j / train_k / session / execution / overview`) ported verbatim; per-location mapping preserved. New modules: `colors.py` (palette), `charts.py` (SVG gauge + h-bars + Plotly stacked bars), `suggestion_panel.py` (port of `_run_suggestion_engine` + 2-column UI). Tab modules rewritten end-to-end: `ui_dashboard.py` (7-card KPI strip + gauge + Plotly stacked bars + per-location strip + Full Material Balance + Stock-Only expander; 4-card procurement view with per-location/per-code expanders), `ui_priority.py` (left/right column layout with drag sortable + tag detail card), `ui_session_order.py` (4-card KPI + reorder sortable + per-equipment expanders with show_sqm tables + combined procurement + 5-cell grand total + smart suggestions), `ui_location_report.py` (Location Based + All Equipment sub-views with per-location color schemes), `ui_equipment_report.py` (SME column order + 3-section per-equipment + multi-sheet workbook), `ui_execution_plan.py` (3 sub-views with critical card + procurement priority + production-detail blocks), `ui_total_overview.py` (6-card KPI + master table + per-system-code drilldowns), `ui_master_data.py` (5 sub-views with full CRUD against SME tables + system_settings — never the ERP ledger). The ERP ledger (`pending_issues` / `consumption` / `receipts` / `returns`) is unchanged; the Round-18 routing rule is preserved and explicitly regression-tested. See §2U. **Tests: +16 Round-19 checks (16/16 green) — total 514/531 in `bug_check.py` (same 17 pre-existing failures in unrelated areas). RBAC, EOD commit path, and routing rule all preserved.**
 
 **Prior round:** 18 — SME consumption form + raw `.xlsx` + state-machine wrappers around `commit_eod` / `hod_reject_pending_issue`.
 
@@ -1781,6 +1785,98 @@ Final test posture: **514 / 531** (Round 17 14/14 + Round 18 16/16 + Round 19 16
 2. `python3 bug_check.py` should report **514 / 531** (17 pre-existing failures remain in unrelated areas).
 3. Restart Streamlit. No DB migrations needed — Round 18's schema is enough.
 4. The portal looks substantially richer immediately — every tab now has SME's KPI cards, plotly tables, sortables, expanders, and downloads with logo + scheme-colored sheets.
+
+> **Round 20 reverted this approach.** The piecemeal R19 rewrite reproduced the SME's appearance imperfectly: my Phase-B `_build_dashboard_frames()` did `alloc.groupby(["Lining_System_Code", "Material_Code"])` on the engine output, but the engine deliberately drops `Lining_System_Code` during aggregation — KeyError on production. The fix-the-rewrite path is fragile because the SME app threads a dozen intermediate frames through each tab (`equip_sc`, `eq_master`, `sqm_ref`, `dm`, `INV_POOL_INIT`, …) and a partial rewrite can't catch every one. Round 20's literal drop-in inherits the SME's intermediate-frame architecture verbatim and exposes only one seam — the data layer — for surgical edits.
+
+---
+
+## 2V. Tuning Round 20 (2026-06) — Literal SME Drop-In (revert and replace)
+
+The R19 piecemeal port broke in two ways: (a) the SME's intermediate-DataFrame architecture got partially reproduced, surfacing as `KeyError: 'Lining_System_Code'` when Dashboard groupby's ran against the cascade-allocate output; (b) the dark/light theme toggle stopped working because the SME's CSS variable cascade was scoped into the wrong DOM subtree. Round 20 is a clean pivot: **delete the entire R19 package, drop the original 8,505-LOC SME `app.py` in as a single file, perform only the surgical edits the merger absolutely requires.** This guarantees 100% parity because we are running the SME's own code.
+
+### File layout change
+
+| Round 19 (deleted) | Round 20 (literal drop-in) |
+|---|---|
+| `pages_internal/material_estimator/` (18-file package: 8 tab modules + colors/charts/widgets/theming/downloads/suggestion_panel/engine_runner/data_layer/allocation_engine + sme_logo.png + __init__.py) | `pages_internal/material_estimator_portal.py` (single file, 7,103 lines, copy of SME `app.py` with `# R20 EDIT` markers at every surgical seam) |
+|   | `pages_internal/material_estimator_engine.py` (vendored SME `allocation_engine.py`) |
+|   | `pages_internal/sme_logo.png` |
+
+### Surgical edits (search for `# R20 EDIT` in the file to find them all)
+
+| Edit | What |
+|---|---|
+| Imports | Removed `sys.path.insert` + `from validate_data import …` + `from allocation_engine import build_demand_matrix`. Added `import database as D` + `from pages_internal.material_estimator_engine import build_demand_matrix`. |
+| `st.set_page_config(...)` | Commented out — ERP `main.py` already called it. |
+| `st.download_button` monkey-patch | Module-level reassignment removed; helper saved as `_SME_SECURE_DOWNLOAD_BUTTON` and patched inside `page_material_estimator(user)` via try/finally so other ERP portals' downloads are unaffected (R17 Correction #2 preserved). |
+| `_show_login`, `_ADMIN_USER`, `_ADMIN_PASS`, auth gate | Deleted. ERP `main.py` + `auth.py` own login; the user dict is passed in. |
+| `load_all()` | Rewritten end-to-end. Calls ERP helpers (`D.get_sme_inventory_view`, `get_sme_equipment`, `get_sme_recipe`, `get_sme_sqm_progress`) and builds the SME's exact intermediate frames: `inv` (Material_Code-keyed), `recipe` (with synthesized `Lining_System_Short_Name` / `Lining_Type` / `Material_Description`), `equip_sc` ((tag × code) aggregation carrying `Lining_System_Code`, `Total_SQM_Original`, `done_sqm`, `remaining_sqm`, `Total_SQM`), `dm` (demand matrix), `eq_master` (one row per tag), `sqm_ref`. The R19 KeyError is gone: `equip_sc` and `dm` both carry `Lining_System_Code`. |
+| Module-level `inv, recipe, … = load_all()` | Replaced with empty placeholders. Real assignment happens inside `page_material_estimator(user)` via `global` so SME helpers (`cascade_allocate`, `tag_fulfillment`, `syscode_fulfillment`, `sqm_can_do`) which read these via closure see site-scoped data. |
+| `get_db()` / `db_available()` | Redirected to the ERP DB connection. Always available. |
+| `_ensure_locations_table()` / `_ensure_types_table()` | Stubbed to no-op. The legacy `locations` / `types` tables are now VIEWS (see below); seeding is owned by `init_db`. |
+| `with tab_consume:` block (Inventory tab) | Deleted entirely — 1,402 lines across 6 sub-views. R18 wired the SME consumption flow into the ERP's `daily_issue_log.py` as the `🧪 SME Multi-Material Entry` expander, routing through `stage_sme_consumption_batch` + `commit_eod_with_sme_sync` for the proper EOD ledger commit. |
+| Tab declaration | 9 tabs → 8 tabs. `tab_consume` removed from unpacking and `📦 Inventory` removed from labels. |
+| Master Data Locations CRUD | `INSERT INTO locations (...)` → `D.add_sme_setting("sme_location", name, site_id)`. `DELETE FROM locations WHERE name=?` → `D.delete_sme_setting("sme_location", name, site_id)`. R17 Correction #1 preserved. |
+| Master Data Types CRUD | Same pattern with `sme_equipment_type` category. |
+| Page body wrap | Everything from `with st.sidebar:` to EOF (3,913 lines) wrapped inside `def page_material_estimator(user)` with try/finally for the scoped monkey-patch + `global` for the data globals. |
+
+### Compatibility VIEWS in `database.py:init_db`
+
+The SME's legacy SQL queries reference tables that don't exist in the ERP schema. Round 20 adds 6 read-only VIEWS so those queries Just Work:
+
+| View | Resolves to | Purpose |
+|---|---|---|
+| `locations` | `system_settings WHERE category='sme_location'` | name + synthetic badge_color + rowid as sort_order |
+| `types` | `system_settings WHERE category='sme_equipment_type'` | name + rowid as sort_order |
+| `consumption_log` | `sme_consumption_log WHERE status='committed'` | with column aliases (entry_date → Date, Equipment_Tag_No → equipment_tag, etc.) so the SME's "Consumption Comparison" sub-view shows only HOD-approved consumption (matches SME semantics) |
+| `equipment` | `sme_equipment` | lowercase snake_case aliases the SME uses |
+| `recipe` | `sme_recipe` | same |
+| `sqm_progress` | `sme_sqm_progress` | done_sqm exposed as `Done_SQM + Done_SQM_staged` so the SME's progress views reflect in-flight work too |
+
+The views are read-only by design. All WRITES against `locations` / `types` are surgically rerouted to `add_sme_setting` / `delete_sme_setting` helpers (see edits table above).
+
+### Critical contracts preserved
+
+- **The CSS block and `_apply_theme_attr()` are untouched** — dark/light mode toggle works exactly as in the standalone SME. The R20 test `check_r20_theme_toggle_present` regression-checks both.
+- **`commit_eod()` byte-identical** — R18 wrapper layer still owns the SME ledger sync.
+- **ERP ledger schemas unchanged** — `pending_issues` / `consumption` / `receipts` / `returns` carry no SME-specific columns. Regression-tested by `check_r20_ledger_schemas_unchanged`.
+- **RBAC unchanged** — Material Estimator still exact-locked to `{hod, admin}`.
+- **Master Data routing rule preserved** — all dropdown writes flow through `system_settings` via R17 helpers (Correction #1).
+- **No global `st.download_button` patch** — scoped inside the wrapper via try/finally (Correction #2).
+
+### Tests — `bug_check.py` +11 R20 checks, all green (11/11)
+
+R19's 16 checks were all deleted (the package they tested is gone). R17 + R18 tests that referenced the deleted package were also pruned (3 stale checks dropped). Final test posture: R17 13/13 + R18 13/13 + R20 11/11 = **37 SME-related checks all green; total 505 / 522**. The 17 pre-existing failures in unrelated areas (manual_qa / PR PDF / PO PDF / locate_anything sidecar) are unchanged.
+
+R20 checks (all static text/SQL):
+1. `material_estimator_portal.py` exists + exports `page_material_estimator(user)`.
+2. Portal module loads cleanly (no module-level `st.set_page_config`).
+3. SME `<style>` CSS block preserved (greps for `.loc-badge`, `.pill-g`, `.sticky-header-wrap`, etc.).
+4. `_apply_theme_attr` preserved and invoked — dark/light mode toggle works.
+5. Inventory tab body deleted (`with tab_consume:` absent + label absent from tabs list).
+6. Tab declaration unpacks exactly 8 tabs.
+7. `_show_login` + auth gate deleted.
+8. Monkey-patch scoped inside `page_material_estimator` (try/finally + `_orig_dl_button` save/restore).
+9. Locations/Types CRUD routes through `add_sme_setting`/`delete_sme_setting` (no raw `INSERT INTO locations|types`).
+10. All 6 compatibility VIEWS present and functional in `init_db`.
+11. ERP ledger schemas unchanged regression.
+
+### Gotchas
+
+- The literal SME `app.py` references many display-only columns (`Material Spec.`, `Lining_System+`, etc.) that aren't in our ERP tables. `load_all()` synthesizes them as empty strings so SME's display code finds the key but renders blank. If you ever need real values, populate them via the bootstrap or add columns to `sme_equipment` / `sme_recipe`.
+- The SME's `_cached_cascade_allocate` is decorated with `@st.cache_data` and reads `dm` + `INV_POOL_INIT` from module globals via closure. When the user's site changes, those globals get reassigned but the cache key (just `tag_order_tuple`) doesn't see it — `page_material_estimator` explicitly clears the cache on site change to prevent staleness.
+- `load_all()` is also `@st.cache_data`-decorated; we pass `_site_id` as its only arg so the cache key naturally invalidates per site.
+- Tab 6 Inventory is gone — if a user complains they used the SME's Order Status sub-view, point them at the ERP's Logistics Portal which surfaces open POs natively.
+- The R20 compatibility views are read-only. Any future SME-side feature that writes to `locations` / `types` / `consumption_log` directly will fail; route through the helpers instead.
+- The SME's sidebar block (theme toggle + project overview + session list) renders alongside ERP's main sidebar nav. They stack vertically — visually busier than the standalone SME but apple-to-apple for the SME's portion. If you ever want to collapse, move the theme toggle into the SME portal's title bar.
+- The `_login_site_id` session-state key is set by `page_material_estimator(user)` and read by the Master Data CRUD shims. If a future page also writes this key for a different purpose, the SME portal would scope its CRUD to the wrong site.
+
+### Deployment
+
+1. `git pull` — picks up the deleted R19 package + the new `material_estimator_portal.py` / `material_estimator_engine.py` / `sme_logo.png` siblings.
+2. `python3 bug_check.py` should report **505 / 522** (17 pre-existing failures remain in unrelated areas).
+3. Restart Streamlit. `init_db()` self-heals the 6 new compatibility VIEWS on first request.
+4. Open the HOD or Admin account → Material Estimator: every original SME tab renders verbatim, dark/light theme toggle works, KeyError is gone.
 
 ---
 

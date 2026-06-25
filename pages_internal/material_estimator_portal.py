@@ -1325,25 +1325,13 @@ _DEFAULT_LOCATIONS = [
 
 
 def _ensure_locations_table() -> None:
-    """Create the locations table if missing and seed defaults on first run."""
-    if not db_available():
-        return
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS locations (
-            name        TEXT PRIMARY KEY,
-            badge_color TEXT NOT NULL DEFAULT '#64748B',
-            sort_order  INTEGER NOT NULL DEFAULT 99,
-            added_at    TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-    """)
-    cur.execute("SELECT COUNT(*) AS n FROM locations").fetchone()
-    if cur.execute("SELECT COUNT(*) FROM locations").fetchone()[0] == 0:
-        cur.executemany(
-            "INSERT INTO locations (name, badge_color, sort_order) VALUES (?,?,?)",
-            _DEFAULT_LOCATIONS,
-        )
-    conn.commit(); conn.close()
+    """R20 EDIT: legacy `locations` table is now a VIEW backed by
+    system_settings (category='sme_location'); CREATE TABLE / INSERT here
+    would fail. Seeding is owned by database.init_db (R17 helper inserts
+    Brown Field / TRAIN J / TRAIN K rows for site 'HQ'). This function
+    is preserved as a callable for back-compat with the rest of the SME
+    code and silently no-ops."""
+    return
 
 
 def _refresh_location_order() -> None:
@@ -1379,43 +1367,10 @@ _DEFAULT_TYPE_NAMES = {n for n, _ in _DEFAULT_TYPES}
 
 
 def _ensure_types_table() -> None:
-    """Create the types table if missing and seed defaults on first run.
-    Also back-fills the table with any distinct Type values already present
-    on the equipment table so existing data continues to drive dropdowns.
-    """
-    if not db_available():
-        return
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS types (
-            name        TEXT PRIMARY KEY,
-            sort_order  INTEGER NOT NULL DEFAULT 99,
-            added_at    TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-    """)
-    if cur.execute("SELECT COUNT(*) FROM types").fetchone()[0] == 0:
-        cur.executemany(
-            "INSERT INTO types (name, sort_order) VALUES (?,?)",
-            _DEFAULT_TYPES,
-        )
-        # Backfill: include any existing equipment.type values not in defaults.
-        try:
-            _existing = cur.execute(
-                "SELECT DISTINCT TRIM(type) FROM equipment "
-                "WHERE type IS NOT NULL AND TRIM(type) <> ''"
-            ).fetchall()
-            _exist_set = {r[0] for r in _existing if r[0]}
-            _missing = sorted(_exist_set - _DEFAULT_TYPE_NAMES)
-            _next_order = len(_DEFAULT_TYPES) + 1
-            for _name in _missing:
-                cur.execute(
-                    "INSERT OR IGNORE INTO types (name, sort_order) VALUES (?,?)",
-                    (_name, _next_order),
-                )
-                _next_order += 1
-        except Exception:
-            pass
-    conn.commit(); conn.close()
+    """R20 EDIT: legacy `types` table is now a VIEW backed by
+    system_settings (category='sme_equipment_type'). Seeding owned by
+    init_db. No-op."""
+    return
 
 
 def _refresh_type_order() -> None:

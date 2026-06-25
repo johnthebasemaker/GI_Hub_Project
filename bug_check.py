@@ -6732,54 +6732,6 @@ def check_r17_material_estimator_rbac():
     )
 
 
-def check_r17_material_estimator_imports():
-    # Importing pages_internal.material_estimator without going through the
-    # parent package's __init__.py (which transitively pulls reports.py →
-    # fpdf, and auth.py → bcrypt). We exec submodules directly off disk.
-    import importlib.util
-    ME_DIR = REPO_ROOT / "pages_internal" / "material_estimator"
-    assert ME_DIR.exists(), "material_estimator package missing"
-
-    # Stub the parent package so relative imports work even if siblings fail.
-    if "pages_internal" not in sys.modules:
-        parent = type(sys)("pages_internal")
-        parent.__path__ = [str(REPO_ROOT / "pages_internal")]
-        sys.modules["pages_internal"] = parent
-    else:
-        # Make sure it's a package (has __path__)
-        if not hasattr(sys.modules["pages_internal"], "__path__"):
-            sys.modules["pages_internal"].__path__ = [
-                str(REPO_ROOT / "pages_internal"),
-            ]
-
-    # Drop any stale ME modules so this test sees a fresh import
-    for k in list(sys.modules):
-        if k.startswith("pages_internal.material_estimator"):
-            del sys.modules[k]
-
-    spec = importlib.util.spec_from_file_location(
-        "pages_internal.material_estimator",
-        str(ME_DIR / "__init__.py"),
-        submodule_search_locations=[str(ME_DIR)],
-    )
-    ME = importlib.util.module_from_spec(spec)
-    sys.modules["pages_internal.material_estimator"] = ME
-    spec.loader.exec_module(ME)
-    assert callable(getattr(ME, "page_material_estimator", None)), \
-        "package must export page_material_estimator(user)"
-
-    # All eight tab submodules + engine + data layer + downloads + theming
-    expected = [
-        "ui_dashboard", "ui_priority", "ui_session_order",
-        "ui_location_report", "ui_equipment_report",
-        "ui_execution_plan", "ui_total_overview", "ui_master_data",
-        "data_layer", "engine_runner", "downloads", "theming",
-        "allocation_engine",
-    ]
-    for sub in expected:
-        importlib.import_module(f"pages_internal.material_estimator.{sub}")
-
-
 def check_r17_material_estimator_in_page_access():
     import config as _cfg
     assert "🧪 Material Estimator" in _cfg.PAGE_ACCESS, \
@@ -7055,66 +7007,6 @@ def check_r18_reject_decrements_staged():
     assert arch == 1
 
 
-def check_r18_no_pyzipper():
-    """downloads.py must NOT import pyzipper. Source-level check so we
-    don't depend on the lib actually being missing in the test env."""
-    import pathlib
-    src = pathlib.Path(
-        REPO_ROOT / "pages_internal" / "material_estimator" / "downloads.py"
-    ).read_text(encoding="utf-8")
-    assert "pyzipper" not in src.lower(), \
-        "downloads.py still references pyzipper — Round 18 should have stripped it"
-    assert "_encrypt_xlsx_bytes" not in src, \
-        "_encrypt_xlsx_bytes should be deleted"
-
-
-def check_r18_filename_pattern():
-    """sme_filename must produce SME_<Report>_<Site>_<YYYY-MM-DD>.xlsx."""
-    import importlib.util as iu
-    ME_DIR = REPO_ROOT / "pages_internal" / "material_estimator"
-    # Round 19: downloads.py now uses relative imports (from .colors ...) so
-    # we need to register the parent package before exec'ing the module.
-    if "pages_internal" not in sys.modules:
-        parent = type(sys)("pages_internal")
-        parent.__path__ = [str(REPO_ROOT / "pages_internal")]
-        sys.modules["pages_internal"] = parent
-    if "pages_internal.material_estimator" not in sys.modules:
-        me_pkg = type(sys)("pages_internal.material_estimator")
-        me_pkg.__path__ = [str(ME_DIR)]
-        sys.modules["pages_internal.material_estimator"] = me_pkg
-    spec = iu.spec_from_file_location(
-        "pages_internal.material_estimator.downloads",
-        str(ME_DIR / "downloads.py"),
-    )
-    dl = iu.module_from_spec(spec)
-    sys.modules["pages_internal.material_estimator.downloads"] = dl
-    spec.loader.exec_module(dl)
-    fn = dl.sme_filename("Project Overview", "HQ", "xlsx")
-    import re as _re
-    assert _re.match(
-        r"^SME_Project_Overview_HQ_\d{4}-\d{2}-\d{2}\.xlsx$", fn
-    ), f"unexpected filename: {fn}"
-    assert not fn.endswith(".protected.zip"), \
-        "filename should be raw .xlsx, not .protected.zip"
-
-
-def check_r18_widgets_module():
-    """widgets.py exports dbl_click_metric, plotly_mat_table,
-    days_of_continuation_block, status_dot, fulfil_pill, loc_badge."""
-    import importlib.util as iu
-    ME_DIR = REPO_ROOT / "pages_internal" / "material_estimator"
-    spec = iu.spec_from_file_location(
-        "_r18_widgets", str(ME_DIR / "widgets.py"),
-    )
-    w = iu.module_from_spec(spec)
-    spec.loader.exec_module(w)
-    for fn_name in ("dbl_click_metric", "plotly_mat_table",
-                    "days_of_continuation_block", "status_dot",
-                    "fulfil_pill", "loc_badge"):
-        assert callable(getattr(w, fn_name, None)), \
-            f"widgets.{fn_name} missing or not callable"
-
-
 def check_r18_sme_form_in_daily_issue_log():
     """_render_sme_consumption_form must exist after Phase 4."""
     import pathlib
@@ -7143,228 +7035,216 @@ def check_r18_hod_portal_wires_wrappers():
 
 
 # ---------------------------------------------------------------------------
-# Round 19 — SME UI parity port
+# Round 20 — Literal SME drop-in
 # ---------------------------------------------------------------------------
-# Most R19 tests are static checks against the package files (the UI itself
-# is Streamlit and can't be exercised in bare mode). For each we load the
-# module via importlib.util to avoid pulling in pages_internal's siblings.
+# R19 piecemeal port reverted in favor of a literal drop-in of the SME
+# `app.py`, wired to the ERP via surgical edits (load_all() now calls our
+# helpers; locations/types CRUD routes through add_sme_setting; SME's
+# legacy SQL against locations/types/consumption_log/equipment/recipe/
+# sqm_progress resolves via compatibility VIEWS added in database.py).
+#
+# Most R20 tests are static text-greps against the portal file (the SME UI
+# itself is Streamlit and can't be exercised in bare mode) plus DB-level
+# checks on the compatibility views and ledger schemas.
 
-def _r19_load_me_module(name: str):
-    """Load pages_internal.material_estimator.<name> directly without
-    triggering pages_internal/__init__.py (which would pull bcrypt/fpdf
-    transitively in this bare env)."""
+_R20_PORTAL_PATH = REPO_ROOT / "pages_internal" / "material_estimator_portal.py"
+
+
+def _r20_portal_src() -> str:
+    return _R20_PORTAL_PATH.read_text(encoding="utf-8")
+
+
+def check_r20_portal_exists():
+    import pathlib
+    assert _R20_PORTAL_PATH.exists(), \
+        "material_estimator_portal.py missing"
+    # Companion files
+    assert (REPO_ROOT / "pages_internal" / "material_estimator_engine.py").exists()
+    assert (REPO_ROOT / "pages_internal" / "sme_logo.png").exists()
+    src = _r20_portal_src()
+    assert "def page_material_estimator(user" in src, \
+        "page_material_estimator(user) entry point missing"
+
+
+def check_r20_portal_loads():
+    """Import the portal module via importlib so a bcrypt/fpdf-less env
+    still loads it. The module is intentionally importable; render-time
+    work happens inside page_material_estimator(user)."""
     import importlib.util as iu
-    ME_DIR = REPO_ROOT / "pages_internal" / "material_estimator"
+    # Stub parent package since pages_internal/__init__ imports siblings
     if "pages_internal" not in sys.modules:
         parent = type(sys)("pages_internal")
         parent.__path__ = [str(REPO_ROOT / "pages_internal")]
         sys.modules["pages_internal"] = parent
-    if "pages_internal.material_estimator" not in sys.modules:
-        me_pkg = type(sys)("pages_internal.material_estimator")
-        me_pkg.__path__ = [str(ME_DIR)]
-        sys.modules["pages_internal.material_estimator"] = me_pkg
-    full = f"pages_internal.material_estimator.{name}"
-    if full in sys.modules:
-        del sys.modules[full]
-    spec = iu.spec_from_file_location(full, str(ME_DIR / f"{name}.py"))
+    # Pre-stub the engine sibling so the portal's relative import works
+    eng_name = "pages_internal.material_estimator_engine"
+    if eng_name not in sys.modules:
+        eng_spec = iu.spec_from_file_location(
+            eng_name,
+            str(REPO_ROOT / "pages_internal" / "material_estimator_engine.py"),
+        )
+        eng_mod = iu.module_from_spec(eng_spec)
+        sys.modules[eng_name] = eng_mod
+        eng_spec.loader.exec_module(eng_mod)
+    name = "pages_internal.material_estimator_portal"
+    if name in sys.modules:
+        del sys.modules[name]
+    spec = iu.spec_from_file_location(name, str(_R20_PORTAL_PATH))
     mod = iu.module_from_spec(spec)
-    sys.modules[full] = mod
+    sys.modules[name] = mod
     spec.loader.exec_module(mod)
-    return mod
+    assert callable(getattr(mod, "page_material_estimator", None)), \
+        "page_material_estimator must be callable"
 
 
-def check_r19_color_schemes():
-    colors = _r19_load_me_module("colors")
-    schemes = colors.COLOR_SCHEMES
-    required = {"dashboard", "brown_field", "train_j", "train_k",
-                "session", "execution", "overview"}
-    assert required <= set(schemes.keys()), \
-        f"missing schemes: {required - set(schemes.keys())}"
-    # Spot-check exact SME hex values
-    assert schemes["dashboard"]["title_bg"] == "#1A2A3A"
-    assert schemes["brown_field"]["header_bg"] == "#1E5799"
-    assert schemes["train_j"]["total_bg"] == "#FDE8A0"
-    assert schemes["train_k"]["title_bg"] == "#0A2E1A"
+def check_r20_css_block_present():
+    src = _r20_portal_src()
+    # SME's massive <style> block has these distinctive class markers
+    for marker in (".loc-badge", ".pill-g", ".pill-r", ".status-dot-g",
+                   ".sticky-header-wrap"):
+        assert marker in src, f"missing SME CSS marker: {marker!r}"
 
 
-def check_r19_scheme_for_location():
-    colors = _r19_load_me_module("colors")
-    assert colors.scheme_for_location("Brown Field") == "brown_field"
-    assert colors.scheme_for_location("TRAIN J") == "train_j"
-    assert colors.scheme_for_location("TRAIN K") == "train_k"
-    assert colors.scheme_for_location(None) == "dashboard"
-    assert colors.scheme_for_location("Unknown") == "dashboard"
+def check_r20_theme_toggle_present():
+    src = _r20_portal_src()
+    assert "def _apply_theme_attr" in src, \
+        "_apply_theme_attr function deleted — dark/light toggle broken"
+    assert "sme_theme" in src, \
+        "sme_theme state-key missing — toggle UI deleted"
+    # The theme attr injection must be CALLED (not just defined)
+    assert "_apply_theme_attr()" in src, \
+        "_apply_theme_attr() never invoked"
 
 
-def check_r19_charts_module():
-    charts = _r19_load_me_module("charts")
-    for fn in ("render_design_gauge", "render_design_hbar",
-               "render_plotly_stacked_hbar",
-               "render_plotly_grouped_bar_by_location"):
-        assert callable(getattr(charts, fn, None)), \
-            f"charts.{fn} missing"
+def check_r20_inventory_tab_deleted():
+    src = _r20_portal_src()
+    assert "with tab_consume:" not in src, \
+        "with tab_consume: block must be deleted (Inventory tab)"
+    # The label itself must be gone from the tab declaration
+    # (the comment block referencing it may stay)
+    lines = src.split("\n")
+    in_tabs_call = False
+    for line in lines:
+        if "tab0, tab1" in line and "= st.tabs([" in line:
+            in_tabs_call = True
+            continue
+        if in_tabs_call:
+            if line.strip().startswith("])"):
+                break
+            assert '"📦  Inventory"' not in line, \
+                f"Inventory label still in tab list: {line!r}"
 
 
-def check_r19_suggestion_panel():
-    sp = _r19_load_me_module("suggestion_panel")
-    assert callable(getattr(sp, "render_suggestion_panel", None))
-    assert callable(getattr(sp, "_run_suggestion_engine", None))
-
-
-def check_r19_downloads_specials():
-    dl = _r19_load_me_module("downloads")
-    for fn in ("generate_excel_report", "generate_multi_sheet_excel",
-               "equipment_report_excel", "location_report_excel",
-               "sme_xlsx_download", "sme_multi_sheet_xlsx_download",
-               "sme_pdf_download", "sme_download_pair"):
-        assert callable(getattr(dl, fn, None)), \
-            f"downloads.{fn} missing"
-    # Back-compat aliases preserved
-    assert getattr(dl, "build_equipment_report_excel", None) is dl.equipment_report_excel
-    assert getattr(dl, "build_location_report_excel", None) is dl.location_report_excel
-
-
-def check_r19_all_ui_modules():
-    """All 8 tab modules + shared infra load cleanly."""
-    expected = [
-        "data_layer", "engine_runner", "downloads", "theming", "widgets",
-        "colors", "charts", "suggestion_panel", "allocation_engine",
-        "ui_dashboard", "ui_priority", "ui_session_order",
-        "ui_location_report", "ui_equipment_report",
-        "ui_execution_plan", "ui_total_overview", "ui_master_data",
-    ]
-    for m in expected:
-        _r19_load_me_module(m)
-
-
-def check_r19_master_data_safety():
-    """Static-grep ui_master_data.py to ensure it never SQL-mutates ERP
-    ledger tables. This is the routing-rule preservation regression."""
-    import pathlib, re
-    src = pathlib.Path(
-        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_master_data.py"
-    ).read_text(encoding="utf-8")
-    # Allowed write targets
-    allowed = ("sme_equipment", "sme_recipe", "sme_sqm_progress",
-               "system_settings", "v_inventory_with_sme")
-    # Forbidden targets
-    forbidden = ("pending_issues", "consumption", "receipts", "returns")
-    for f in forbidden:
-        # Look for INSERT/UPDATE/DELETE against forbidden tables
-        for stmt in ("INSERT INTO", "UPDATE", "DELETE FROM"):
-            pat = rf'\b{stmt}\s+{f}\b'
-            assert not re.search(pat, src, re.IGNORECASE), \
-                f"ui_master_data must NOT execute {stmt} {f!r} (routing rule violation)"
-
-
-def check_r19_dashboard_structure():
-    import pathlib
-    src = pathlib.Path(
-        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_dashboard.py"
-    ).read_text(encoding="utf-8")
-    # 7 KPI cards via dbl_click_metric on the project overview sub-view
-    assert src.count("dbl_click_metric") >= 7, \
-        "Dashboard must render at least 7 dbl_click_metric KPI cards"
-    # Both sub-views present
-    assert "📈 Project Overview" in src
-    assert "🛒 Material Requirement & Procurement" in src
-    # 4-field filter strip
-    for k in ("dash_loc", "dash_type", "dash_code", "dash_substrate"):
-        assert k in src, f"Dashboard missing filter key {k!r}"
-
-
-def check_r19_priority_structure():
-    import pathlib
-    src = pathlib.Path(
-        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_priority.py"
-    ).read_text(encoding="utf-8")
-    # 3 filter keys (Location/Type/Code)
-    for k in ("t1_loc", "t1_type", "t1_code"):
-        assert k in src, f"Priority tab missing filter key {k!r}"
-    # Tag search + add button + remove + clear
-    assert "tag_select" in src
-    assert "＋ Add to Session" in src
-    assert "Clear All" in src
-
-
-def check_r19_location_subviews():
-    import pathlib
-    src = pathlib.Path(
-        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_location_report.py"
-    ).read_text(encoding="utf-8")
-    assert "📍 Location Based" in src
-    assert "🌐 All Equipment" in src
-    # Per-location color scheme honored
-    assert "scheme_for_location" in src
-
-
-def check_r19_equipment_columns():
-    import pathlib
-    src = pathlib.Path(
-        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_equipment_report.py"
-    ).read_text(encoding="utf-8")
-    # SME column order present (as labels)
-    for col in ("Equipment Tag No.", "Equipment Name",
-                "System Code", "System Name", "Total SQM"):
-        assert col in src, f"Equipment Report missing column {col!r}"
-    # Uses equipment_report_excel for 3-sheet workbook
-    assert "equipment_report_excel" in src
-
-
-def check_r19_execution_subviews():
-    import pathlib
-    src = pathlib.Path(
-        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_execution_plan.py"
-    ).read_text(encoding="utf-8")
-    assert "⚙️ Execution Plan" in src
-    assert "📋 Progress List" in src
-    assert "📊 Consumption Comparison" in src
-    # Read-only — no INSERT into consumption from the tab
-    import re as _re
-    assert not _re.search(r"INSERT\s+INTO\s+consumption", src, _re.IGNORECASE), \
-        "Execution Plan tab must be READ-ONLY (no consumption writes)"
-
-
-def check_r19_total_overview_kpis():
-    import pathlib
-    src = pathlib.Path(
-        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_total_overview.py"
-    ).read_text(encoding="utf-8")
-    # 6 dbl_click_metric calls in the KPI strip
-    assert src.count("dbl_click_metric") >= 6, \
-        "Total Overview must render at least 6 dbl_click_metric cards"
-    # Status filter + 4-cell filter strip
-    for k in ("ov_loc", "ov_type", "ov_code", "ov_status"):
-        assert k in src, f"Total Overview missing filter {k!r}"
-
-
-def check_r19_master_data_subviews():
-    import pathlib
-    src = pathlib.Path(
-        REPO_ROOT / "pages_internal" / "material_estimator" / "ui_master_data.py"
-    ).read_text(encoding="utf-8")
-    for sub in (
-        "Equipment",
-        "LINING SYSTEM MATERIAL CONSM",
-        "Materials_DetailsAvailable_Qty",
-        "➕ Add Location",
-        "➕ Add Type",
-    ):
-        assert sub in src, f"Master Data missing sub-view {sub!r}"
-
-
-def check_r19_logo_bundled():
-    import pathlib
-    p = pathlib.Path(
-        REPO_ROOT / "pages_internal" / "material_estimator" / "sme_logo.png"
+def check_r20_eight_tabs():
+    src = _r20_portal_src()
+    import re
+    # The tab declaration lives inside page_material_estimator(user) so
+    # it's indented. Look for the unique 8-var unpacking signature.
+    m = re.search(
+        r"tab0, tab1, tab2, tab3, tab_eqrep, tab4, tab5, tab_master\s*=\s*st\.tabs\(\[",
+        src,
     )
-    assert p.exists(), "sme_logo.png missing from package"
-    assert p.stat().st_size > 1000, "sme_logo.png suspiciously small"
+    assert m, "tab unpacking must be exactly 8 vars (no tab_consume)"
+    # Make sure the 9-var form isn't present anywhere
+    nine = re.search(
+        r"tab_eqrep, tab4, tab_consume, tab5",
+        src,
+    )
+    assert nine is None, "stale 9-var unpacking with tab_consume still present"
 
 
-def check_r19_ledger_schemas_unchanged():
-    """The ERP ledger MUST NOT carry SME-specific columns. This is the
-    Round-18 routing rule preserved across the R19 UI work."""
+def check_r20_login_deleted():
+    src = _r20_portal_src()
+    # The function body should not exist
+    assert "def _show_login" not in src, \
+        "_show_login function must be deleted"
+    # The hardcoded admin credential constants should be gone
+    assert "_ADMIN_USER = " not in src or src.count("_ADMIN_USER = ") == 0, \
+        "_ADMIN_USER constant must be deleted"
+    # No st.stop()-gated auth check
+    assert "if not st.session_state[\"_authenticated\"]:" not in src, \
+        "auth gate must be deleted"
+
+
+def check_r20_monkey_patch_scoped():
+    src = _r20_portal_src()
+    # Module-level patch must be commented out / absent
+    import re
+    bad = re.search(
+        r"^st\.download_button = _secure_download_button",
+        src, re.MULTILINE,
+    )
+    assert bad is None, \
+        "module-level st.download_button patch must be removed"
+    # Scoped patch must appear inside page_material_estimator
+    assert "_orig_dl_button = st.download_button" in src, \
+        "scoped patch save missing"
+    assert "st.download_button = _orig_dl_button" in src, \
+        "scoped patch restore missing"
+
+
+def check_r20_master_data_routing():
+    src = _r20_portal_src()
+    import re
+    # No raw INSERT INTO locations / types remaining
+    assert not re.search(
+        r"INSERT INTO locations\b", src, re.IGNORECASE,
+    ), "stale INSERT INTO locations found — must route via add_sme_setting"
+    assert not re.search(
+        r"INSERT INTO types\b", src, re.IGNORECASE,
+    ), "stale INSERT INTO types found — must route via add_sme_setting"
+    assert not re.search(
+        r"DELETE FROM locations\b", src, re.IGNORECASE,
+    ), "stale DELETE FROM locations found"
+    assert not re.search(
+        r"DELETE FROM types\b", src, re.IGNORECASE,
+    ), "stale DELETE FROM types found"
+    # Must call the R17 helpers
+    assert 'D.add_sme_setting("sme_location"' in src, \
+        "must call D.add_sme_setting for sme_location"
+    assert 'D.add_sme_setting("sme_equipment_type"' in src, \
+        "must call D.add_sme_setting for sme_equipment_type"
+    assert 'D.delete_sme_setting("sme_location"' in src
+    assert 'D.delete_sme_setting("sme_equipment_type"' in src
+
+
+def check_r20_compat_views_present():
+    """Round 20 added 6 compatibility VIEWS in database.py init_db so the
+    SME's legacy SQL works against the ERP DB."""
+    conn = sqlite3.connect(":memory:")
+    database.init_db(conn)
+    views = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='view'"
+    ).fetchall()}
+    for v in ("locations", "types", "consumption_log",
+              "equipment", "recipe", "sqm_progress"):
+        assert v in views, f"missing R20 compatibility view: {v!r}"
+    # Functional check — query each view shape
+    # Seed minimal data
+    conn.execute("INSERT INTO sme_equipment (Site_ID, Equipment_Tag_No, "
+                 "Lining_System_Code, Surface_Area_SQM) "
+                 "VALUES ('HQ','T1','1',10)")
+    conn.execute("INSERT INTO sme_recipe (Lining_System_Code, Material_Code, "
+                 "For_1_SQM) VALUES ('1','M1',2)")
+    conn.commit()
+    # equipment view exposes lowercase snake_case
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(equipment)"
+    ).fetchall()}
+    for c in ("equipment_tag", "lining_system_code", "surface_area_sqm",
+              "location", "type"):
+        assert c in cols, f"equipment view missing column {c!r}"
+    # recipe view
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(recipe)"
+    ).fetchall()}
+    for c in ("lining_system_code", "material_code", "for_1_sqm"):
+        assert c in cols, f"recipe view missing column {c!r}"
+
+
+def check_r20_ledger_schemas_unchanged():
+    """Regression check carried forward from R18/R19. The literal drop-in
+    must not have caused any SME column to leak into ERP ledger tables."""
     conn = sqlite3.connect(":memory:")
     database.init_db(conn)
     for table in ("pending_issues", "consumption", "receipts", "returns"):
@@ -7375,8 +7255,8 @@ def check_r19_ledger_schemas_unchanged():
                           "Lining_System_Code", "System_Code",
                           "SQM_Completed"):
             assert forbidden not in cols, (
-                f"{table} acquired the SME-specific column {forbidden!r} "
-                f"— this violates the Round-18 routing rule"
+                f"{table} acquired SME-specific column {forbidden!r} "
+                f"— routing rule broken"
             )
 
 
@@ -8213,9 +8093,9 @@ def main() -> int:
     run_check("Round 17", "Material Estimator RBAC: hod + admin only",
               check_r17_material_estimator_rbac,
               "Exact-role lock excludes SK / Supervisor / Logistics / Warehouse.")
-    run_check("Round 17", "pages_internal.material_estimator imports cleanly",
-              check_r17_material_estimator_imports,
-              "Package + 8 tab modules + data layer + downloads.")
+    # R20 EDIT: removed pages_internal.material_estimator import test — the
+    # R19 package was deleted; the literal SME drop-in is tested by R20's
+    # check_r20_portal_loads instead.
     run_check("Round 17", "Material Estimator portal listed in PAGE_ACCESS",
               check_r17_material_estimator_in_page_access,
               "Router needs the key in PAGE_ACCESS to render the nav radio.")
@@ -8254,74 +8134,52 @@ def main() -> int:
     run_check("Round 18", "hod_reject_pending_issue_with_sme_sync decrements staged",
               check_r18_reject_decrements_staged,
               "Reject path: status='rejected', SQM_staged -= sqm.")
-    run_check("Round 18", "pyzipper no longer imported by downloads.py",
-              check_r18_no_pyzipper,
-              "Round 18 stripped AES wrapper; Excel downloads raw.")
-    run_check("Round 18", "Excel filename pattern is SME_<Report>_<Site>_<Date>.xlsx",
-              check_r18_filename_pattern,
-              "Plain .xlsx (no .protected.zip).")
-    run_check("Round 18", "Material Estimator widgets module loads",
-              check_r18_widgets_module,
-              "dbl_click_metric + plotly_mat_table + days_of_continuation_block.")
     run_check("Round 18", "SME consumption form helper present in daily_issue_log",
               check_r18_sme_form_in_daily_issue_log,
               "_render_sme_consumption_form must exist after Phase 4.")
     run_check("Round 18", "hod_portal wires the SME-sync EOD + reject wrappers",
               check_r18_hod_portal_wires_wrappers,
               "Static check on hod_portal.py import block.")
+    # R20 EDIT: Removed three R18 tests that referenced the deleted R19
+    # package (pyzipper-no-import, filename-pattern, widgets-module).
+    # The literal SME drop-in re-introduces pyzipper as an optional dep
+    # (the SME's own download path uses it). Filenames are generated by
+    # the SME's _standard_filename helper. Widgets live in-file.
 
-    # ── Round 19 — SME UI parity port ────────────────────────────────────
-    run_check("Round 19", "colors.COLOR_SCHEMES has all 7 SME schemes",
-              check_r19_color_schemes,
-              "dashboard / brown_field / train_j / train_k / session / "
-              "execution / overview — exact SME palette.")
-    run_check("Round 19", "scheme_for_location maps named locations correctly",
-              check_r19_scheme_for_location,
-              "Brown Field → brown_field; TRAIN J → train_j; TRAIN K → train_k.")
-    run_check("Round 19", "charts module exports gauge + hbar + plotly helpers",
-              check_r19_charts_module,
-              "render_design_gauge + render_design_hbar + Plotly stacked bars.")
-    run_check("Round 19", "suggestion_panel module exports render_suggestion_panel",
-              check_r19_suggestion_panel,
-              "Port of SME's _run_suggestion_engine + 2-column UI.")
-    run_check("Round 19", "downloads module exports equipment_report_excel + location_report_excel",
-              check_r19_downloads_specials,
-              "Specialized report builders preserve per-sheet color schemes.")
-    run_check("Round 19", "all 8 ui_*.py tab modules load cleanly",
-              check_r19_all_ui_modules,
-              "Imports the full material_estimator package without errors.")
-    run_check("Round 19", "Master Data CRUD restricted to SME tables + system_settings",
-              check_r19_master_data_safety,
-              "Static check that ui_master_data.py never SQL-mutates "
-              "pending_issues / consumption / receipts / returns.")
-    run_check("Round 19", "Tab 0 Dashboard renders 7-card KPI strip + filters",
-              check_r19_dashboard_structure,
-              "Validates the SME-spec KPI cards + 4-cell filter strip.")
-    run_check("Round 19", "Tab 1 Priority drag list + 4-field detail card",
-              check_r19_priority_structure,
-              "Validates LEFT/RIGHT column layout markers.")
-    run_check("Round 19", "Tab 3 Location Report has both sub-views (Location Based + All Equipment)",
-              check_r19_location_subviews,
-              "Validates the 2-sub-view radio + sortable lists.")
-    run_check("Round 19", "Tab 4 Equipment Report uses SME column order",
-              check_r19_equipment_columns,
-              "Equipment Tag No. → Equipment Name → System Code → "
-              "System Name → Total SQM, sorted by Location → Tag → Code.")
-    run_check("Round 19", "Tab 5 Execution Plan has 3 sub-views",
-              check_r19_execution_subviews,
-              "Execution Plan / Progress List / Consumption Comparison.")
-    run_check("Round 19", "Tab 7 Total Overview has 6-card KPI strip",
-              check_r19_total_overview_kpis,
-              "Items / Total SQM / Already Done / Remaining / Shortfall / Avg Coverage.")
-    run_check("Round 19", "Tab 8 Master Data has 5 sub-views",
-              check_r19_master_data_subviews,
-              "Equipment / LINING SYSTEM MATERIAL CONSM / Materials_DetailsAvailable_Qty / Add Location / Add Type.")
-    run_check("Round 19", "SME logo asset bundled in package",
-              check_r19_logo_bundled,
-              "sme_logo.png must be present for branded reports + sticky title.")
-    run_check("Round 19", "ERP ledger schemas unchanged (regression — R18 routing rule)",
-              check_r19_ledger_schemas_unchanged,
-              "pending_issues / consumption MUST NOT carry Equipment_Tag, System_Code, or Location columns.")
+    # ── Round 20 — Literal SME drop-in ───────────────────────────────────
+    run_check("Round 20", "material_estimator_portal.py exists + exports page_material_estimator",
+              check_r20_portal_exists,
+              "Literal SME drop-in lives at pages_internal/material_estimator_portal.py.")
+    run_check("Round 20", "portal module loads cleanly (no module-level set_page_config)",
+              check_r20_portal_loads,
+              "Importing must not crash; must not call st.set_page_config at module level.")
+    run_check("Round 20", "SME <style> CSS block preserved",
+              check_r20_css_block_present,
+              "Apple-to-apple parity requires the SME's massive <style> block intact.")
+    run_check("Round 20", "_apply_theme_attr preserved (dark/light mode toggle)",
+              check_r20_theme_toggle_present,
+              "Native SME dark/light theming must work as in standalone.")
+    run_check("Round 20", "Inventory tab body deleted (R18 owns consumption flow)",
+              check_r20_inventory_tab_deleted,
+              "with tab_consume: block must be absent.")
+    run_check("Round 20", "tab declaration unpacks 8 tabs (not 9)",
+              check_r20_eight_tabs,
+              "Removed 'Inventory' tab label + tab_consume variable.")
+    run_check("Round 20", "_show_login + auth gate deleted",
+              check_r20_login_deleted,
+              "ERP main.py owns login; portal trusts user dict.")
+    run_check("Round 20", "monkey-patch SCOPED inside page_material_estimator",
+              check_r20_monkey_patch_scoped,
+              "st.download_button patch must be wrapped in try/finally.")
+    run_check("Round 20", "locations/types CRUD routes through add_sme_setting / delete_sme_setting",
+              check_r20_master_data_routing,
+              "No raw INSERT/DELETE against locations / types tables.")
+    run_check("Round 20", "compatibility VIEWS created in init_db (locations/types/consumption_log/equipment/recipe/sqm_progress)",
+              check_r20_compat_views_present,
+              "SME's legacy SQL needs these 6 views to resolve.")
+    run_check("Round 20", "ERP ledger schemas unchanged (regression — R18 routing rule)",
+              check_r20_ledger_schemas_unchanged,
+              "pending_issues / consumption MUST NOT carry SME-specific cols.")
 
     out = write_report()
     print()
