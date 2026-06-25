@@ -1515,29 +1515,53 @@ def load_all(_site_id: str):
 
     # 7. Demand matrix
     dm = equip_sc.merge(recipe, on="Lining_System_Code", suffixes=("_e", "_r"))
-    dm["Demand_Qty"] = dm["For_1_SQM"] * dm["Total_SQM"]
-    if "Lining_System_Short_Name_e" in dm.columns:
-        dm = dm.rename(columns={"Lining_System_Short_Name_e": "Lining_System_Short_Name"})
-        dm.drop(columns=["Lining_System_Short_Name_r"], inplace=True, errors="ignore")
-    dm = dm[["Equipment_Tag_No.", "Lining_System_Code", "Lining_System_Short_Name",
-             "Total_SQM", "Material_Code", "Material_Name", "UOM", "Demand_Qty"]]
+    # R20.1 EDIT: guard against empty merge result. If equip_sc has no rows
+    # (e.g., no equipment loaded for this site yet) the merge returns an
+    # empty frame which may not have `For_1_SQM` / `Total_SQM` columns —
+    # downstream slice would KeyError.
+    if dm.empty:
+        dm = pd.DataFrame(columns=[
+            "Equipment_Tag_No.", "Lining_System_Code",
+            "Lining_System_Short_Name", "Total_SQM",
+            "Material_Code", "Material_Name", "UOM", "Demand_Qty",
+        ])
+    else:
+        dm["Demand_Qty"] = dm["For_1_SQM"] * dm["Total_SQM"]
+        if "Lining_System_Short_Name_e" in dm.columns:
+            dm = dm.rename(columns={"Lining_System_Short_Name_e": "Lining_System_Short_Name"})
+            dm.drop(columns=["Lining_System_Short_Name_r"], inplace=True, errors="ignore")
+        dm = dm[["Equipment_Tag_No.", "Lining_System_Code", "Lining_System_Short_Name",
+                 "Total_SQM", "Material_Code", "Material_Name", "UOM", "Demand_Qty"]]
 
-    # 8. Equipment master (one row per tag)
-    eq_master = equip_raw_local.groupby("Equipment_Tag_No.", as_index=False).agg(
-        Name          =("Name",            "first"),
-        Substrate     =("Substrate",        "first"),
-        Location      =("Location",        "first"),
-        Type          =("Type",            "first"),
-        Lining_Systems=("Lining_System+", "first"),
-        Lining_Type   =("Lining_Type",     "first"),
-        Material_Spec =("Material Spec.", "first"),
-        Design        =("Design",          "first"),
-        Total_SQM     =("Surface_Area_SQM", "sum"),
-    )
+    # 8. Equipment master (one row per tag) — guard empty equip_raw
+    if equip_raw_local.empty:
+        eq_master = pd.DataFrame(columns=[
+            "Equipment_Tag_No.", "Name", "Substrate", "Location", "Type",
+            "Lining_Systems", "Lining_Type", "Material_Spec", "Design",
+            "Total_SQM",
+        ])
+    else:
+        eq_master = equip_raw_local.groupby("Equipment_Tag_No.", as_index=False).agg(
+            Name          =("Name",            "first"),
+            Substrate     =("Substrate",        "first"),
+            Location      =("Location",        "first"),
+            Type          =("Type",            "first"),
+            Lining_Systems=("Lining_System+", "first"),
+            Lining_Type   =("Lining_Type",     "first"),
+            Material_Spec =("Material Spec.", "first"),
+            Design        =("Design",          "first"),
+            Total_SQM     =("Surface_Area_SQM", "sum"),
+        )
 
-    # 9. SQM reference
-    sqm_ref = equip_sc[["Equipment_Tag_No.", "Lining_System_Code",
-                         "Total_SQM", "Total_SQM_Original", "done_sqm"]].drop_duplicates()
+    # 9. SQM reference — guard empty equip_sc
+    if equip_sc.empty:
+        sqm_ref = pd.DataFrame(columns=[
+            "Equipment_Tag_No.", "Lining_System_Code",
+            "Total_SQM", "Total_SQM_Original", "done_sqm",
+        ])
+    else:
+        sqm_ref = equip_sc[["Equipment_Tag_No.", "Lining_System_Code",
+                             "Total_SQM", "Total_SQM_Original", "done_sqm"]].drop_duplicates()
 
     return inv, recipe, equip_sc, dm, eq_master, sqm_ref
 
@@ -1606,11 +1630,24 @@ def _cached_cascade_allocate(tag_order_tuple: tuple) -> pd.DataFrame:
                     "Pool_Before":             round(before, 4),
                     "Pool_After":              round(after, 4),
                 })
-    result = pd.DataFrame(rows)
+    # R20.1 EDIT: when `rows` is empty (e.g., dm is empty, or Streamlit
+    # served a stale empty cache from a prior session), `pd.DataFrame([])`
+    # has NO columns at all and every downstream `.groupby(["Equipment_Tag_No.", ...])`
+    # raises KeyError. Pass an explicit column list so empty results still
+    # have the expected shape.
+    _EXPECTED_COLS = [
+        "Equipment_Tag_No.", "Lining_System_Code", "Lining_System_Short_Name",
+        "Total_SQM", "Material_Code", "Material_Name", "UOM",
+        "Demand_Qty", "Allocated_Qty", "Shortfall_Qty",
+        "Pool_Before", "Pool_After",
+    ]
+    result = pd.DataFrame(rows, columns=_EXPECTED_COLS)
     if not result.empty:
         result["Fulfillment_Pct"] = (
             result["Allocated_Qty"] / result["Demand_Qty"].replace(0, np.nan) * 100
         ).fillna(100).clip(0, 100).round(2)
+    else:
+        result["Fulfillment_Pct"] = pd.Series(dtype=float)
     return result
 
 def cascade_allocate(tag_order: list[str]) -> pd.DataFrame:
@@ -3242,13 +3279,13 @@ def page_material_estimator(user: dict) -> None:
             if os.path.exists(LOGO_PATH):
                 st.image(LOGO_PATH, width=140)
             st.markdown("""
-            <div style="padding:.3rem 0 1.2rem">
-              <div style="font-family:'JetBrains Mono',monospace;font-size:1rem;
-                          font-weight:700;color:#F59E0B;">SME</div>
-              <div style="font-family:'JetBrains Mono',monospace;font-size:.56rem;
-                          letter-spacing:.18em;text-transform:uppercase;color:var(--t5);margin-top:2px;">
-                Smart Material Estimator v3</div>
-            </div>""", unsafe_allow_html=True)
+    <div style="padding:.3rem 0 1.2rem">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:1rem;
+          font-weight:700;color:#F59E0B;">SME</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:.56rem;
+          letter-spacing:.18em;text-transform:uppercase;color:var(--t5);margin-top:2px;">
+Smart Material Estimator v3</div>
+    </div>""", unsafe_allow_html=True)
 
             st.markdown('<div class="sec-hdr">📍 Project Overview</div>', unsafe_allow_html=True)
             loc_counts = eq_master.groupby("Location")["Equipment_Tag_No."].count()
@@ -3282,8 +3319,8 @@ def page_material_estimator(user: dict) -> None:
 
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown("""<div style="font-family:'JetBrains Mono',monospace;font-size:.6rem;
-                letter-spacing:.08em;color:var(--t5);">
-                🟢 100%  🟠 90–99%  🟡 80–89%  🔴 &lt;80%</div>""",
+letter-spacing:.08em;color:var(--t5);">
+        🟢 100%  🟠 90–99%  🟡 80–89%  🔴 &lt;80%</div>""",
                 unsafe_allow_html=True)
 
         # ─────────────────────────────────────────────────────────────────────────────
@@ -3291,97 +3328,97 @@ def page_material_estimator(user: dict) -> None:
         # ─────────────────────────────────────────────────────────────────────────────
         _hdr_logo = f'<img src="data:image/png;base64,{_logo_b64()}" style="height:34px;border-radius:6px;flex-shrink:0;">' if _logo_b64() else ""
         st.markdown(f"""
-        <div class="sticky-header-wrap">
-          <div style="display:flex;align-items:center;gap:1rem;">
-            {_hdr_logo}
-            <div style="display:flex;flex-direction:column;gap:.1rem;">
-              <span style="font-family:'JetBrains Mono',monospace;font-size:1.05rem;font-weight:700;color:var(--t0);letter-spacing:-.01em;line-height:1.2;">
-                Smart Material Estimator &amp; Planner</span>
-              <span style="font-family:'JetBrains Mono',monospace;font-size:.58rem;color:var(--t5);letter-spacing:.08em;text-transform:uppercase;">
-                System-code level · Cascading allocation · Priority-based</span>
-            </div>
-            <div style="margin-left:auto;display:flex;align-items:center;gap:.6rem;flex-shrink:0;">
-              <span style="font-family:'JetBrains Mono',monospace;font-size:.58rem;color:var(--t5);letter-spacing:.1em;text-transform:uppercase;background:var(--amber-bg);border:1px solid rgba(245,158,11,.2);padding:.15rem .5rem;border-radius:99px;">v3</span>
-              <span title="System online" style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block;box-shadow:0 0 7px var(--green-glow);"></span>
-            </div>
-          </div>
-        </div>""", unsafe_allow_html=True)
+<div class="sticky-header-wrap">
+  <div style="display:flex;align-items:center;gap:1rem;">
+    {_hdr_logo}
+    <div style="display:flex;flex-direction:column;gap:.1rem;">
+      <span style="font-family:'JetBrains Mono',monospace;font-size:1.05rem;font-weight:700;color:var(--t0);letter-spacing:-.01em;line-height:1.2;">
+        Smart Material Estimator &amp; Planner</span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:.58rem;color:var(--t5);letter-spacing:.08em;text-transform:uppercase;">
+        System-code level · Cascading allocation · Priority-based</span>
+    </div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:.6rem;flex-shrink:0;">
+      <span style="font-family:'JetBrains Mono',monospace;font-size:.58rem;color:var(--t5);letter-spacing:.1em;text-transform:uppercase;background:var(--amber-bg);border:1px solid rgba(245,158,11,.2);padding:.15rem .5rem;border-radius:99px;">v3</span>
+      <span title="System online" style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block;box-shadow:0 0 7px var(--green-glow);"></span>
+    </div>
+  </div>
+</div>""", unsafe_allow_html=True)
 
         # ─────────────────────────────────────────────────────────────────────────────
         # CUSTOM HAMBURGER (JS-injected — overrides Streamlit's invisible/missing toggle)
         # ─────────────────────────────────────────────────────────────────────────────
         import streamlit.components.v1 as _components
         _components.html("""
-        <script>
-        (function(){
-          const PARENT = window.parent.document;
-          const BTN_ID = 'ge-custom-hamburger';
+<script>
+(function(){
+  const PARENT = window.parent.document;
+  const BTN_ID = 'ge-custom-hamburger';
 
-          function findToggle() {
-            return PARENT.querySelector('[data-testid="stSidebarCollapsedControl"] button')
-                || PARENT.querySelector('[data-testid="collapsedControl"] button')
-                || PARENT.querySelector('[data-testid="stSidebarCollapseButton"] button')
-                || PARENT.querySelector('[data-testid="stSidebarCollapseButton"]')
-                || PARENT.querySelector('[data-testid="stSidebar"] button[kind="header"]')
-                || PARENT.querySelector('[data-testid="stSidebar"] [data-testid="stSidebarHeader"] button');
-          }
+  function findToggle() {
+    return PARENT.querySelector('[data-testid="stSidebarCollapsedControl"] button')
+|| PARENT.querySelector('[data-testid="collapsedControl"] button')
+|| PARENT.querySelector('[data-testid="stSidebarCollapseButton"] button')
+|| PARENT.querySelector('[data-testid="stSidebarCollapseButton"]')
+|| PARENT.querySelector('[data-testid="stSidebar"] button[kind="header"]')
+|| PARENT.querySelector('[data-testid="stSidebar"] [data-testid="stSidebarHeader"] button');
+  }
 
-          function makeBtn() {
-            if (PARENT.getElementById(BTN_ID)) return;
-            const btn = PARENT.createElement('button');
-            btn.id = BTN_ID;
-            btn.type = 'button';
-            btn.setAttribute('aria-label', 'Toggle sidebar');
-            btn.title = 'Toggle sidebar';
-            btn.textContent = '\\u2630';
-            btn.style.cssText = [
-              'position:fixed','top:14px','left:16px','z-index:1000001',
-              'width:40px','height:40px',
-              'background:rgba(245,158,11,0.12)',
-              'border:1.5px solid #F59E0B',
-              'border-radius:6px',
-              'color:#F59E0B',
-              'font-size:22px','font-weight:700','line-height:1',
-              'font-family:Inter,Helvetica,sans-serif',
-              'cursor:pointer',
-              'display:flex','align-items:center','justify-content:center',
-              'box-shadow:0 0 0 1px #F59E0B,0 2px 12px rgba(245,158,11,0.45)',
-              'padding:0','margin:0',
-              'transition:all .15s ease'
-            ].join(';') + ';';
-            btn.addEventListener('mouseenter', function(){
-              btn.style.background = 'rgba(245,158,11,0.22)';
-              btn.style.transform  = 'translateY(-1px)';
-            });
-            btn.addEventListener('mouseleave', function(){
-              btn.style.background = 'rgba(245,158,11,0.12)';
-              btn.style.transform  = 'translateY(0)';
-            });
-            btn.addEventListener('click', function(e){
-              e.preventDefault();
-              e.stopPropagation();
-              const t = findToggle();
-              if (t) { t.click(); }
-            });
-            PARENT.body.appendChild(btn);
-          }
+  function makeBtn() {
+    if (PARENT.getElementById(BTN_ID)) return;
+    const btn = PARENT.createElement('button');
+    btn.id = BTN_ID;
+    btn.type = 'button';
+    btn.setAttribute('aria-label', 'Toggle sidebar');
+    btn.title = 'Toggle sidebar';
+    btn.textContent = '\\u2630';
+    btn.style.cssText = [
+      'position:fixed','top:14px','left:16px','z-index:1000001',
+      'width:40px','height:40px',
+      'background:rgba(245,158,11,0.12)',
+      'border:1.5px solid #F59E0B',
+      'border-radius:6px',
+      'color:#F59E0B',
+      'font-size:22px','font-weight:700','line-height:1',
+      'font-family:Inter,Helvetica,sans-serif',
+      'cursor:pointer',
+      'display:flex','align-items:center','justify-content:center',
+      'box-shadow:0 0 0 1px #F59E0B,0 2px 12px rgba(245,158,11,0.45)',
+      'padding:0','margin:0',
+      'transition:all .15s ease'
+    ].join(';') + ';';
+    btn.addEventListener('mouseenter', function(){
+      btn.style.background = 'rgba(245,158,11,0.22)';
+      btn.style.transform  = 'translateY(-1px)';
+    });
+    btn.addEventListener('mouseleave', function(){
+      btn.style.background = 'rgba(245,158,11,0.12)';
+      btn.style.transform  = 'translateY(0)';
+    });
+    btn.addEventListener('click', function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      const t = findToggle();
+      if (t) { t.click(); }
+    });
+    PARENT.body.appendChild(btn);
+  }
 
-          // Try immediately + retry until the DOM is ready
-          makeBtn();
-          let tries = 0;
-          const iv = setInterval(function(){
-            makeBtn();
-            if (++tries > 40) clearInterval(iv);
-          }, 250);
+  // Try immediately + retry until the DOM is ready
+  makeBtn();
+  let tries = 0;
+  const iv = setInterval(function(){
+    makeBtn();
+    if (++tries > 40) clearInterval(iv);
+  }, 250);
 
-          // Keep button alive across Streamlit re-renders
-          const obs = new MutationObserver(function(){
-            if (!PARENT.getElementById(BTN_ID)) makeBtn();
-          });
-          obs.observe(PARENT.body, { childList: true, subtree: false });
-        })();
-        </script>
-        """, height=0, width=0)
+  // Keep button alive across Streamlit re-renders
+  const obs = new MutationObserver(function(){
+    if (!PARENT.getElementById(BTN_ID)) makeBtn();
+  });
+  obs.observe(PARENT.body, { childList: true, subtree: false });
+})();
+</script>
+""", height=0, width=0)
 
         # ─────────────────────────────────────────────────────────────────────────────
         # DROPDOWN AUTO-CLOSE (F#7)
@@ -3389,36 +3426,36 @@ def page_material_estimator(user: dict) -> None:
         # on option elements and dispatch an ESC keydown so the menu collapses.
         # ─────────────────────────────────────────────────────────────────────────────
         _components.html("""
-        <script>
-        (function(){
-          const PARENT = window.parent.document;
-          if (PARENT.__sme_dropdown_autoclose) return;
-          PARENT.__sme_dropdown_autoclose = true;
+<script>
+(function(){
+  const PARENT = window.parent.document;
+  if (PARENT.__sme_dropdown_autoclose) return;
+  PARENT.__sme_dropdown_autoclose = true;
 
-          function dismiss() {
-            // 1) Press ESC on the currently-focused element (closes BaseWeb menus).
-            const ev = new KeyboardEvent('keydown', {
-              key: 'Escape', code: 'Escape',
-              keyCode: 27, which: 27,
-              bubbles: true, cancelable: true,
-            });
-            (PARENT.activeElement || PARENT.body).dispatchEvent(ev);
-            // 2) Also click the body to lose focus from BaseWeb selects.
-            setTimeout(() => {
-              try { PARENT.activeElement && PARENT.activeElement.blur(); } catch(e){}
-            }, 0);
-          }
+  function dismiss() {
+    // 1) Press ESC on the currently-focused element (closes BaseWeb menus).
+    const ev = new KeyboardEvent('keydown', {
+      key: 'Escape', code: 'Escape',
+      keyCode: 27, which: 27,
+      bubbles: true, cancelable: true,
+    });
+    (PARENT.activeElement || PARENT.body).dispatchEvent(ev);
+    // 2) Also click the body to lose focus from BaseWeb selects.
+    setTimeout(() => {
+      try { PARENT.activeElement && PARENT.activeElement.blur(); } catch(e){}
+    }, 0);
+  }
 
-          PARENT.addEventListener('click', function(e){
-            // Streamlit/BaseWeb option elements: li[role="option"] inside menu/listbox.
-            const opt = e.target.closest('li[role="option"], [data-baseweb="menu"] li');
-            if (opt) {
-              setTimeout(dismiss, 30);
-            }
-          }, true);
-        })();
-        </script>
-        """, height=0, width=0)
+  PARENT.addEventListener('click', function(e){
+    // Streamlit/BaseWeb option elements: li[role="option"] inside menu/listbox.
+    const opt = e.target.closest('li[role="option"], [data-baseweb="menu"] li');
+    if (opt) {
+      setTimeout(dismiss, 30);
+    }
+  }, true);
+})();
+</script>
+""", height=0, width=0)
 
         # ─────────────────────────────────────────────────────────────────────────────
         # TABS
@@ -3814,8 +3851,18 @@ def page_material_estimator(user: dict) -> None:
                              height=50+len(tbl_show)*35,key="dash_mat_tbl")
 
                 # ── Stock-only materials (in inventory but not used in any recipe/demand) ──
+                # R20.1 EDIT: filter to ONLY show SME-tracked materials
+                # (i.e., materials that appear in any sme_recipe row but
+                # aren't in the current plan's demand). Bolts, gloves, and
+                # other generic warehouse items are excluded because they
+                # have no recipe membership — they shouldn't appear in the
+                # SME portal's "no demand" section.
                 recipe_codes = set(dm["Material_Code"].unique())
-                stock_only = inv[~inv["Material_Code"].isin(recipe_codes)].copy()
+                _all_sme_codes = set(recipe["Material_Code"].unique())
+                stock_only = inv[
+                    (~inv["Material_Code"].isin(recipe_codes))
+                    & (inv["Material_Code"].isin(_all_sme_codes))
+                ].copy()
                 if not stock_only.empty:
                     st.markdown(
                         '<div class="sec-hdr" style="margin-top:.8rem;">'
@@ -4201,11 +4248,11 @@ def page_material_estimator(user: dict) -> None:
             with right:
                 if not selected_tag:
                     st.markdown("""
-                    <div style="text-align:center;padding:4rem 1rem;">
-                      <div style="font-size:2.5rem;opacity:.12;margin-bottom:.8rem;"></div>
-                      <div style="font-family:'JetBrains Mono',monospace;font-size:.75rem;
-                                  color:var(--t5);letter-spacing:.1em;">
-                        SELECT AN EQUIPMENT TAG TO VIEW DETAILS</div></div>""",
+    <div style="text-align:center;padding:4rem 1rem;">
+      <div style="font-size:2.5rem;opacity:.12;margin-bottom:.8rem;"></div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:.75rem;
+                  color:var(--t5);letter-spacing:.1em;">
+                SELECT AN EQUIPMENT TAG TO VIEW DETAILS</div></div>""",
                         unsafe_allow_html=True)
                 else:
                     row = eq_master[eq_master["Equipment_Tag_No."]==selected_tag].iloc[0]
@@ -4311,30 +4358,30 @@ def page_material_estimator(user: dict) -> None:
                     gt_pct    = min(100, gt_alloc/gt_demand*100) if gt_demand > 0 else 100
 
                     st.markdown(f"""
-                    <div class="grand-box" style="margin-top:.8rem;">
-                      <div style="font-family:'JetBrains Mono',monospace;font-size:.6rem;
-                                  letter-spacing:.14em;text-transform:uppercase;
-                                  color:#F59E0B;margin-bottom:.7rem;">
-                        Equipment Grand Total — {selected_tag}</div>
-                      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.7rem;">
-                        <div><div style="font-family:'JetBrains Mono',monospace;
-                             font-size:1.3rem;font-weight:700;color:var(--t0);">
-                             {len(tag_codes)}</div>
-                             <div style="font-size:.62rem;text-transform:uppercase;
-                             letter-spacing:.08em;color:var(--t4);">System Codes</div></div>
-                        <div><div style="font-family:'JetBrains Mono',monospace;
-                             font-size:1.3rem;font-weight:700;color:var(--t0);">
-                             {gt_demand:,.0f}</div>
-                             <div style="font-size:.62rem;text-transform:uppercase;
-                             letter-spacing:.08em;color:var(--t4);">Total Demand</div></div>
-                        <div><div style="font-family:'JetBrains Mono',monospace;
-                             font-size:1.3rem;font-weight:700;
-                             color:{'#10B981' if gt_pct>=100 else '#F97316' if gt_pct>=90 else '#EAB308' if gt_pct>=80 else '#EF4444'};">
-                             {gt_pct:.1f}%</div>
-                             <div style="font-size:.62rem;text-transform:uppercase;
-                             letter-spacing:.08em;color:var(--t4);">Coverage</div></div>
-                      </div>
-                    </div>""", unsafe_allow_html=True)
+    <div class="grand-box" style="margin-top:.8rem;">
+              <div style="font-family:'JetBrains Mono',monospace;font-size:.6rem;
+                          letter-spacing:.14em;text-transform:uppercase;
+                          color:#F59E0B;margin-bottom:.7rem;">
+                Equipment Grand Total — {selected_tag}</div>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.7rem;">
+                <div><div style="font-family:'JetBrains Mono',monospace;
+                     font-size:1.3rem;font-weight:700;color:var(--t0);">
+                     {len(tag_codes)}</div>
+                     <div style="font-size:.62rem;text-transform:uppercase;
+                     letter-spacing:.08em;color:var(--t4);">System Codes</div></div>
+                <div><div style="font-family:'JetBrains Mono',monospace;
+                     font-size:1.3rem;font-weight:700;color:var(--t0);">
+                     {gt_demand:,.0f}</div>
+                     <div style="font-size:.62rem;text-transform:uppercase;
+                     letter-spacing:.08em;color:var(--t4);">Total Demand</div></div>
+                <div><div style="font-family:'JetBrains Mono',monospace;
+                     font-size:1.3rem;font-weight:700;
+                     color:{'#10B981' if gt_pct>=100 else '#F97316' if gt_pct>=90 else '#EAB308' if gt_pct>=80 else '#EF4444'};">
+                     {gt_pct:.1f}%</div>
+                     <div style="font-size:.62rem;text-transform:uppercase;
+                     letter-spacing:.08em;color:var(--t4);">Coverage</div></div>
+              </div>
+            </div>""", unsafe_allow_html=True)
 
 
         # ═══════════════════════════════════════════════════════════════════════════════
@@ -4594,30 +4641,30 @@ def page_material_estimator(user: dict) -> None:
 
                 # Grand total box
                 st.markdown(f"""
-                <div class="grand-box" style="margin-top:1rem;">
-                  <div style="font-family:'JetBrains Mono',monospace;font-size:.6rem;
-                              letter-spacing:.14em;text-transform:uppercase;
-                              color:#F59E0B;margin-bottom:.7rem;">
-                    ⭐ Grand Total — {len(session_tags)} Equipment Session</div>
-                  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:.7rem;">
-                    <div><div style="font-family:'JetBrains Mono',monospace;font-size:1.25rem;
-                         font-weight:700;color:var(--t0);">{len(session_tags)}</div>
-                         <div style="font-size:.6rem;text-transform:uppercase;
-                         letter-spacing:.08em;color:var(--t4);">Equipment</div></div>
-                    <div><div style="font-family:'JetBrains Mono',monospace;font-size:1.25rem;
-                         font-weight:700;color:var(--t0);">{n_mats}</div>
-                         <div style="font-size:.6rem;text-transform:uppercase;
-                         letter-spacing:.08em;color:var(--t4);">Materials</div></div>
-                    <div><div style="font-family:'JetBrains Mono',monospace;font-size:1.25rem;
-                         font-weight:700;color:var(--t0);">{tot_demand:,.0f}</div>
-                         <div style="font-size:.6rem;text-transform:uppercase;
-                         letter-spacing:.08em;color:var(--t4);">Total Demand</div></div>
-                    <div><div style="font-family:'JetBrains Mono',monospace;font-size:1.25rem;
-                         font-weight:700;color:#EF4444;">{n_short_m}</div>
-                         <div style="font-size:.6rem;text-transform:uppercase;
-                         letter-spacing:.08em;color:var(--t4);">To Procure</div></div>
-                  </div>
-                </div>""", unsafe_allow_html=True)
+<div class="grand-box" style="margin-top:1rem;">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:.6rem;
+                      letter-spacing:.14em;text-transform:uppercase;
+                      color:#F59E0B;margin-bottom:.7rem;">
+            ⭐ Grand Total — {len(session_tags)} Equipment Session</div>
+          <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:.7rem;">
+            <div><div style="font-family:'JetBrains Mono',monospace;font-size:1.25rem;
+                 font-weight:700;color:var(--t0);">{len(session_tags)}</div>
+                 <div style="font-size:.6rem;text-transform:uppercase;
+                 letter-spacing:.08em;color:var(--t4);">Equipment</div></div>
+            <div><div style="font-family:'JetBrains Mono',monospace;font-size:1.25rem;
+                 font-weight:700;color:var(--t0);">{n_mats}</div>
+                 <div style="font-size:.6rem;text-transform:uppercase;
+                 letter-spacing:.08em;color:var(--t4);">Materials</div></div>
+            <div><div style="font-family:'JetBrains Mono',monospace;font-size:1.25rem;
+                 font-weight:700;color:var(--t0);">{tot_demand:,.0f}</div>
+                 <div style="font-size:.6rem;text-transform:uppercase;
+                 letter-spacing:.08em;color:var(--t4);">Total Demand</div></div>
+            <div><div style="font-family:'JetBrains Mono',monospace;font-size:1.25rem;
+                 font-weight:700;color:#EF4444;">{n_short_m}</div>
+                 <div style="font-size:.6rem;text-transform:uppercase;
+                 letter-spacing:.08em;color:var(--t4);">To Procure</div></div>
+          </div>
+        </div>""", unsafe_allow_html=True)
 
                 st.markdown("<br>", unsafe_allow_html=True)
                 d1, d1p, d2, d2p = st.columns(4)
@@ -5198,22 +5245,22 @@ def page_material_estimator(user: dict) -> None:
                 st.markdown('<div class="sec-hdr">🖨 Print Location Report</div>',
                             unsafe_allow_html=True)
                 st.markdown("""
-                <button onclick="window.print()"
-                    style="font-family:'JetBrains Mono',monospace;font-size:.68rem;
-                           font-weight:700;letter-spacing:.08em;text-transform:uppercase;
-                           background:#F59E0B;color:#000;border:none;border-radius:4px;
-                           padding:.52rem 1.3rem;cursor:pointer;transition:all .15s;">
-                    🖨 Print / Save as PDF
-                </button>
-                <style>
-                @media print {
-                    [data-testid="stSidebar"], [data-testid="stHeader"],
-                    .sticky-header-wrap, [data-testid="stTabs"] > div:first-of-type,
-                    button[onclick="window.print()"] { display:none!important; }
-                    [data-testid="stExpander"] { break-inside:avoid; }
-                    body { background:#fff!important; color:#000!important; }
-                }
-                </style>""", unsafe_allow_html=True)
+<button onclick="window.print()"
+    style="font-family:'JetBrains Mono',monospace;font-size:.68rem;
+           font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+           background:#F59E0B;color:#000;border:none;border-radius:4px;
+           padding:.52rem 1.3rem;cursor:pointer;transition:all .15s;">
+    🖨 Print / Save as PDF
+</button>
+<style>
+@media print {
+    [data-testid="stSidebar"], [data-testid="stHeader"],
+    .sticky-header-wrap, [data-testid="stTabs"] > div:first-of-type,
+    button[onclick="window.print()"] { display:none!important; }
+    [data-testid="stExpander"] { break-inside:avoid; }
+    body { background:#fff!important; color:#000!important; }
+}
+        </style>""", unsafe_allow_html=True)
 
                 # ── Smart Reordering Suggestions per location ─────────────────────────
                 st.markdown("<br>", unsafe_allow_html=True)
@@ -5479,18 +5526,18 @@ def page_material_estimator(user: dict) -> None:
                 else:
                     conn = get_db()
                     _cmp_raw = pd.read_sql("""
-                        SELECT entry_date          AS "Date",
-                               equipment_tag       AS "Equipment Tag",
-                               lining_system_code  AS "System Code",
-                               lining_system_name  AS "System Name",
-                               sqm_completed       AS "SQM Done",
-                               material_code       AS "Material Code",
-                               material_name       AS "Material Name",
-                               uom                 AS "UOM",
-                               expected_qty        AS "Expected Qty",
-                               consumed_qty        AS "Actual Qty"
-                        FROM consumption_log
-                    """, conn)
+SELECT entry_date          AS "Date",
+               equipment_tag       AS "Equipment Tag",
+               lining_system_code  AS "System Code",
+               lining_system_name  AS "System Name",
+               sqm_completed       AS "SQM Done",
+               material_code       AS "Material Code",
+               material_name       AS "Material Name",
+               uom                 AS "UOM",
+               expected_qty        AS "Expected Qty",
+               consumed_qty        AS "Actual Qty"
+        FROM consumption_log
+            """, conn)
                     conn.close()
 
                     if _cmp_raw.empty:
@@ -5643,51 +5690,51 @@ def page_material_estimator(user: dict) -> None:
                 else:
                     conn = get_db()
                     prog_df = pd.read_sql("""
-                        WITH dynamic_done AS (
-                            SELECT
-                                equipment_tag,
-                                lining_system_code,
-                                COALESCE(SUM(sqm_completed), 0.0) AS done_sqm
-                            FROM consumption_log
-                            GROUP BY equipment_tag, lining_system_code
-                        )
-                        SELECT
-                            e.location                                              AS "Location",
-                            sp.equipment_tag                                        AS "Equipment Tag",
-                            e.name                                                  AS "Equipment Name",
-                            sp.lining_system_code                                   AS "System Code",
-                            e.lining_system_short_name                              AS "System Name",
-                            sp.original_sqm                                         AS "Total SQM",
-                            COALESCE(dd.done_sqm, 0.0)                             AS "Completed SQM",
-                            (sp.original_sqm - COALESCE(dd.done_sqm, 0.0))        AS "Remaining SQM",
-                            ROUND(COALESCE(dd.done_sqm, 0.0) * 100.0
-                                  / NULLIF(sp.original_sqm, 0), 1)                 AS "Completion %"
-                        FROM sqm_progress sp
-                        LEFT JOIN dynamic_done dd
-                               ON sp.equipment_tag      = dd.equipment_tag
-                              AND sp.lining_system_code = dd.lining_system_code
-                        LEFT JOIN equipment e
-                               ON sp.equipment_tag      = e.equipment_tag
-                              AND sp.lining_system_code = e.lining_system_code
-                        ORDER BY e.location, sp.equipment_tag,
-                                 CAST(sp.lining_system_code AS INTEGER)
-                    """, conn)
+WITH dynamic_done AS (
+            SELECT
+                equipment_tag,
+                lining_system_code,
+                COALESCE(SUM(sqm_completed), 0.0) AS done_sqm
+            FROM consumption_log
+            GROUP BY equipment_tag, lining_system_code
+        )
+        SELECT
+            e.location                                              AS "Location",
+            sp.equipment_tag                                        AS "Equipment Tag",
+            e.name                                                  AS "Equipment Name",
+            sp.lining_system_code                                   AS "System Code",
+            e.lining_system_short_name                              AS "System Name",
+            sp.original_sqm                                         AS "Total SQM",
+            COALESCE(dd.done_sqm, 0.0)                             AS "Completed SQM",
+            (sp.original_sqm - COALESCE(dd.done_sqm, 0.0))        AS "Remaining SQM",
+            ROUND(COALESCE(dd.done_sqm, 0.0) * 100.0
+                  / NULLIF(sp.original_sqm, 0), 1)                 AS "Completion %"
+        FROM sqm_progress sp
+        LEFT JOIN dynamic_done dd
+               ON sp.equipment_tag      = dd.equipment_tag
+              AND sp.lining_system_code = dd.lining_system_code
+        LEFT JOIN equipment e
+               ON sp.equipment_tag      = e.equipment_tag
+              AND sp.lining_system_code = e.lining_system_code
+        ORDER BY e.location, sp.equipment_tag,
+                 CAST(sp.lining_system_code AS INTEGER)
+            """, conn)
 
                     # Pull all consumption rows once for the production-detail panels below.
                     cons_df = pd.read_sql("""
-                        SELECT entry_date       AS "Date",
-                               equipment_tag    AS "Equipment Tag",
-                               lining_system_code AS "System Code",
-                               lining_system_name AS "System Name",
-                               sqm_completed    AS "SQM Done",
-                               material_code    AS "Material Code",
-                               material_name    AS "Material Name",
-                               uom              AS "UOM",
-                               consumed_qty     AS "Consumed Qty"
-                        FROM consumption_log
-                        ORDER BY entry_date, equipment_tag,
-                                 CAST(lining_system_code AS INTEGER)
-                    """, conn)
+SELECT entry_date       AS "Date",
+               equipment_tag    AS "Equipment Tag",
+               lining_system_code AS "System Code",
+               lining_system_name AS "System Name",
+               sqm_completed    AS "SQM Done",
+               material_code    AS "Material Code",
+               material_name    AS "Material Name",
+               uom              AS "UOM",
+               consumed_qty     AS "Consumed Qty"
+        FROM consumption_log
+        ORDER BY entry_date, equipment_tag,
+                 CAST(lining_system_code AS INTEGER)
+            """, conn)
                     conn.close()
 
                     prog_df["Status"] = prog_df["Completion %"].apply(
@@ -6848,13 +6895,13 @@ def page_material_estimator(user: dict) -> None:
                                             f"INSERT INTO equipment ({_cols_str}) VALUES ({_ph})",
                                             list(_all_vals.values()))
                                         cur.execute("""
-                                            INSERT INTO sqm_progress
-                                                (equipment_tag, lining_system_code,
-                                                 original_sqm, done_sqm)
-                                            VALUES (?, ?, ?, 0)
-                                            ON CONFLICT(equipment_tag, lining_system_code)
-                                            DO UPDATE SET original_sqm = excluded.original_sqm
-                                        """, (_eq_tag_val, _code, _sqm))
+                    INSERT INTO sqm_progress
+                                (equipment_tag, lining_system_code,
+                                 original_sqm, done_sqm)
+                            VALUES (?, ?, ?, 0)
+                            ON CONFLICT(equipment_tag, lining_system_code)
+                            DO UPDATE SET original_sqm = excluded.original_sqm
+                                """, (_eq_tag_val, _code, _sqm))
                                     conn.commit(); conn.close()
                                     st.cache_data.clear()
                                     st.success(

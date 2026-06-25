@@ -7035,6 +7035,134 @@ def check_r18_hod_portal_wires_wrappers():
 
 
 # ---------------------------------------------------------------------------
+# Round 20.1 — Bug fixes after first live render
+# ---------------------------------------------------------------------------
+
+def check_r20_1_no_string_indent_bug():
+    """Verify multi-line strings in the wrap region don't have 8-space
+    interior indent (which would make markdown treat HTML/SVG/CSS as
+    indented code blocks)."""
+    import pathlib, tokenize, io
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator_portal.py"
+    ).read_text(encoding="utf-8")
+    lines = src.split("\n")
+    wrap_line = None
+    for i, line in enumerate(lines, start=1):
+        if line.startswith("def page_material_estimator("):
+            wrap_line = i
+            break
+    assert wrap_line, "page_material_estimator def not found"
+
+    # Tokenize and find multi-line strings + f-strings
+    tokens = list(tokenize.generate_tokens(io.StringIO(src).readline))
+    ranges = []
+    fstring_open = None
+    for tok in tokens:
+        if tok.type == tokenize.STRING and "\n" in tok.string:
+            if tok.start[0] >= wrap_line:
+                ranges.append((tok.start[0], tok.end[0]))
+        elif tok.type == tokenize.FSTRING_START:
+            fstring_open = tok.start[0]
+        elif tok.type == tokenize.FSTRING_END:
+            if fstring_open is not None:
+                if tok.end[0] > fstring_open and tok.end[0] >= wrap_line:
+                    ranges.append((fstring_open, tok.end[0]))
+                fstring_open = None
+
+    # For each string, the FIRST non-empty interior line must NOT start
+    # with 8+ spaces AND begin with HTML (a '<' character). That's the
+    # exact case where Streamlit's markdown renderer treats the content
+    # as an indented code block instead of recognizing the HTML open tag.
+    # SQL queries (INSERT/SELECT/UPDATE) don't matter — they're inside
+    # cur.execute() / pd.read_sql() and the database doesn't care about
+    # leading whitespace.
+    offenders = []
+    for s, e in ranges:
+        for line_idx in range(s + 1, e + 1):
+            z = line_idx - 1
+            if z >= len(lines):
+                continue
+            line = lines[z]
+            stripped = line.strip()
+            if not stripped:
+                continue  # skip blank lines
+            # First non-empty interior line found — check it.
+            # Only HTML content (starting with '<') is at risk; SQL,
+            # plain text, and other non-markdown content is fine even
+            # with leading whitespace.
+            if line.startswith(" " * 8) and stripped.startswith("<"):
+                offenders.append((line_idx, line[:80]))
+            break  # only checking the first non-empty interior line
+    if offenders:
+        msg = "\n".join(f"  line {ln}: {repr(text)}" for ln, text in offenders[:5])
+        assert False, (
+            f"{len(offenders)} HTML string range(s) have 8+ leading "
+            f"spaces on their first content line — markdown will render "
+            f"as code block instead of HTML:\n{msg}"
+        )
+
+
+def check_r20_1_cascade_allocate_empty_safe():
+    """The SME's cascade_allocate must return a DataFrame with the
+    expected columns even when rows=[]. Otherwise groupby downstream
+    raises KeyError on Equipment_Tag_No."""
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator_portal.py"
+    ).read_text(encoding="utf-8")
+    # Look for the column list passed to pd.DataFrame(rows, columns=...)
+    assert "pd.DataFrame(rows, columns=" in src, \
+        "cascade_allocate must pass explicit columns= to pd.DataFrame for empty safety"
+    # Required columns must be in the list
+    import re
+    m = re.search(
+        r"_EXPECTED_COLS\s*=\s*\[([^\]]+)\]",
+        src,
+    )
+    assert m, "_EXPECTED_COLS column list missing"
+    block = m.group(1)
+    for col in ("Equipment_Tag_No.", "Lining_System_Code",
+                "Material_Code", "Demand_Qty",
+                "Allocated_Qty", "Shortfall_Qty"):
+        assert col in block, f"_EXPECTED_COLS missing {col!r}"
+
+
+def check_r20_1_stock_only_sme_filter():
+    """Stock-Only Materials block must filter to SME-tracked materials
+    only (Material_Code in sme_recipe). Bolts/gloves/etc. must not pass."""
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator_portal.py"
+    ).read_text(encoding="utf-8")
+    # The filter expression must reference recipe['Material_Code']
+    assert "_all_sme_codes" in src, \
+        "Stock-Only Materials block missing _all_sme_codes filter"
+    assert 'recipe["Material_Code"].unique()' in src, \
+        "filter must derive set from recipe['Material_Code'].unique()"
+    assert 'isin(_all_sme_codes)' in src, \
+        "filter must restrict to SME-tracked materials via .isin(_all_sme_codes)"
+
+
+def check_r20_1_load_all_empty_safe():
+    """load_all() must return DataFrames with expected columns even when
+    underlying data is empty (no equipment / no recipe loaded)."""
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator_portal.py"
+    ).read_text(encoding="utf-8")
+    # Look for the dm-empty guard
+    assert "if dm.empty:" in src, \
+        "load_all missing `if dm.empty:` guard"
+    # Look for the eq_master-empty guard
+    assert "if equip_raw_local.empty:" in src, \
+        "load_all missing `if equip_raw_local.empty:` guard"
+    # Look for the sqm_ref-empty guard
+    assert "if equip_sc.empty:" in src, \
+        "load_all missing `if equip_sc.empty:` guard"
+
+
+# ---------------------------------------------------------------------------
 # Round 20 — Literal SME drop-in
 # ---------------------------------------------------------------------------
 # R19 piecemeal port reverted in favor of a literal drop-in of the SME
@@ -8180,6 +8308,22 @@ def main() -> int:
     run_check("Round 20", "ERP ledger schemas unchanged (regression — R18 routing rule)",
               check_r20_ledger_schemas_unchanged,
               "pending_issues / consumption MUST NOT carry SME-specific cols.")
+
+    # ── Round 20.1 — bug fixes from the first live render ────────────────
+    run_check("Round 20.1", "no string-interior 8-space indent (markdown-as-code-block bug)",
+              check_r20_1_no_string_indent_bug,
+              "Multi-line strings must not have 8-space leading indent on "
+              "interior lines (markdown would render as code blocks).")
+    run_check("Round 20.1", "cascade_allocate returns DataFrame with expected columns when empty",
+              check_r20_1_cascade_allocate_empty_safe,
+              "Empty allocation must not raise KeyError on downstream groupby.")
+    run_check("Round 20.1", "Stock-Only Materials filter restricted to SME-tracked items",
+              check_r20_1_stock_only_sme_filter,
+              "Stock-Only must exclude generic warehouse items (bolts/gloves) — "
+              "only show materials in sme_recipe but not in current plan.")
+    run_check("Round 20.1", "load_all returns shape-preserving empty frames",
+              check_r20_1_load_all_empty_safe,
+              "dm / eq_master / sqm_ref must have expected columns even when empty.")
 
     out = write_report()
     print()
