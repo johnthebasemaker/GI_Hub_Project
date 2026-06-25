@@ -5,7 +5,11 @@ import pandas as pd
 import streamlit as st
 
 from . import data_layer, engine_runner
-from .downloads import sme_secure_multi_sheet_xlsx_download, sme_secure_pdf_download
+from .downloads import (
+    build_equipment_report_excel,
+    sme_custom_xlsx_download,
+    sme_pdf_download,
+)
 
 
 def render(site_id: str | None, priority_order: list[str], username: str | None) -> None:
@@ -63,22 +67,37 @@ def render(site_id: str | None, priority_order: list[str], username: str | None)
     st.subheader("3) Detailed material allocation")
     st.dataframe(detailed, use_container_width=True, hide_index=True)
 
+    # Faithful 3-section format port (SME legacy _equipment_report_excel)
+    payload = build_equipment_report_excel(
+        report_name=f"Equipment_{tag}",
+        site_id=site_id,
+        equipment_summary=eq_summary,
+        system_summary=sys_summary,
+        detailed=detailed,
+    )
     sheets = [
-        {"name": "Equipment Summary", "df": eq_summary},
-        {"name": "System Code Summary", "df": sys_summary},
-        {"name": "Detailed Table", "df": detailed},
+        {"name": "Equipment Summary", "df": eq_summary,
+         "title": f"Equipment Summary — {tag}"},
+        {"name": "System Code Summary", "df": sys_summary,
+         "title": "System Code Summary"},
+        {"name": "Detailed Table", "df": detailed,
+         "title": "Detailed Material Allocation"},
     ]
     c1, c2 = st.columns(2)
     with c1:
-        sme_secure_multi_sheet_xlsx_download(
+        sme_custom_xlsx_download(
             f"⬇ Excel — {tag}",
-            sheets, file_stem=f"SME_Equipment_{tag}",
-            key=f"eqr_xlsx_{tag}", username=username,
+            payload,
+            report_name=f"Equipment_{tag}",
+            site_id=site_id,
+            key=f"eqr_xlsx_{tag}",
         )
     with c2:
-        sme_secure_pdf_download(
+        sme_pdf_download(
             f"⬇ PDF — {tag}",
-            sheets=sheets, file_stem=f"SME_Equipment_{tag}",
-            key=f"eqr_pdf_{tag}", username=username,
+            sheets=sheets,
+            report_name=f"Equipment_{tag}",
+            site_id=site_id,
+            key=f"eqr_pdf_{tag}",
             title=f"Equipment Report — {tag}",
         )

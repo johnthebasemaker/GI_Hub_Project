@@ -5,7 +5,11 @@ import pandas as pd
 import streamlit as st
 
 from . import data_layer, engine_runner
-from .downloads import sme_secure_multi_sheet_xlsx_download, sme_secure_pdf_download
+from .downloads import (
+    build_location_report_excel,
+    sme_custom_xlsx_download,
+    sme_pdf_download,
+)
 
 
 def render(site_id: str | None, priority_order: list[str], username: str | None) -> None:
@@ -50,22 +54,35 @@ def render(site_id: str | None, priority_order: list[str], username: str | None)
         )
 
         if not alloc_loc.empty:
+            payload = build_location_report_excel(
+                report_name=f"Location_{loc}",
+                site_id=site_id,
+                location=loc,
+                feasibility_for_location=feas_loc,
+                materials_for_location=alloc_loc,
+            )
             sheets = [
-                {"name": "Summary", "df": feas_loc},
-                {"name": "Materials", "df": alloc_loc},
+                {"name": "Summary", "df": feas_loc,
+                 "title": f"Equipment Feasibility — {loc}"},
+                {"name": "Materials", "df": alloc_loc,
+                 "title": f"Per-Material Allocation — {loc}"},
             ]
             c1, c2 = st.columns(2)
             with c1:
-                sme_secure_multi_sheet_xlsx_download(
+                sme_custom_xlsx_download(
                     f"⬇ Excel — {loc}",
-                    sheets, file_stem=f"SME_Location_{loc}",
-                    key=f"loc_xlsx_{loc}", username=username,
+                    payload,
+                    report_name=f"Location_{loc}",
+                    site_id=site_id,
+                    key=f"loc_xlsx_{loc}",
                 )
             with c2:
-                sme_secure_pdf_download(
+                sme_pdf_download(
                     f"⬇ PDF — {loc}",
-                    sheets=sheets, file_stem=f"SME_Location_{loc}",
-                    key=f"loc_pdf_{loc}", username=username,
+                    sheets=sheets,
+                    report_name=f"Location_{loc}",
+                    site_id=site_id,
+                    key=f"loc_pdf_{loc}",
                     title=f"Location Report — {loc}",
                 )
     else:

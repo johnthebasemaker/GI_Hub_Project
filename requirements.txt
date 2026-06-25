@@ -39,14 +39,14 @@ streamlit-local-storage>=0.0.20
 pillow-heif>=0.16
 
 # Round 17 — Smart Material Estimator merge.
+# Round 18 — pyzipper removed; Excel downloads are raw .xlsx.
 # - xlsxwriter: header-styled Excel output for the estimator's reports.
-# - pyzipper:   AES-encrypted .zip wrapper around .xlsx downloads (preserves
-#               legacy SME download password gate; pure-Python, no GUI deps).
-# - reportlab:  password-protected PDF downloads (same gate, separate password).
+# - reportlab:  password-protected PDF downloads (PDFs travel via email so
+#               the popover gate stays — Excel popover was dropped because
+#               raw .xlsx in the browser provides no security to gate).
 # - streamlit-sortables: drag-priority list on the Selective Equipment Entry
 #               tab. Module gracefully falls back to a rank-input grid if
 #               this isn't installed.
 xlsxwriter>=3.1.0
-pyzipper>=0.3.6
 reportlab>=4.0.0
 streamlit-sortables>=0.3.0

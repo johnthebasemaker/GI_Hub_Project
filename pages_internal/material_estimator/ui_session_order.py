@@ -10,7 +10,7 @@ import streamlit as st
 
 from . import allocation_engine as AE
 from . import data_layer, engine_runner
-from .downloads import sme_secure_multi_sheet_xlsx_download, sme_secure_pdf_download
+from .downloads import sme_multi_sheet_xlsx_download, sme_pdf_download
 from .theming import status_pill
 
 
@@ -41,19 +41,21 @@ def render(site_id: str | None, priority_order: list[str], username: str | None)
     ]
     c1, c2 = st.columns(2)
     with c1:
-        sme_secure_multi_sheet_xlsx_download(
+        sme_multi_sheet_xlsx_download(
             "⬇ Excel — Session Order Report",
-            sheets=sheets,
-            file_stem="SME_Session_Order",
-            key="session_order_xlsx", username=username,
+            sheets,
+            report_name="Session_Order",
+            site_id=site_id,
+            key="session_order_xlsx",
         )
     with c2:
-        sme_secure_pdf_download(
+        sme_pdf_download(
             "⬇ PDF — Session Order Report",
             sheets=sheets,
-            file_stem="SME_Session_Order",
-            key="session_order_pdf", username=username,
-            title="SME Session Order Report",
+            report_name="Session_Order",
+            site_id=site_id,
+            key="session_order_pdf",
+            title="Session Order Report",
         )
 
     st.markdown("---")

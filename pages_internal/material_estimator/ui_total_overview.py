@@ -60,7 +60,7 @@ def render(site_id: str | None, priority_order: list[str], username: str | None)
         use_container_width=True, hide_index=True,
     )
     sme_download_pair(
-        total, file_stem="SME_Total_Overview",
+        total, report_name="Total_Overview",
         title="Total Overview", key="total_overview",
-        username=username, sheet_name="Total",
+        site_id=site_id, sheet_name="Total",
     )

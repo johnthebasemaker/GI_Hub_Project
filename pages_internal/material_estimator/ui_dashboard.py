@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from . import data_layer, engine_runner
-from .downloads import sme_download_pair
+from .downloads import sme_download_pair  # raw .xlsx (no popover) + PDF popover
 
 
 def _kpi(label: str, value, help_text: str | None = None) -> None:
@@ -63,9 +63,9 @@ def render(site_id: str | None, priority_order: list[str], username: str | None)
             use_container_width=True, hide_index=True,
         )
         sme_download_pair(
-            feas, file_stem="SME_Project_Overview",
+            feas, report_name="Project_Overview",
             title="Project Overview", key="dash_overview",
-            username=username, sheet_name="Overview",
+            site_id=site_id, sheet_name="Overview",
         )
 
     else:  # Procurement view
@@ -80,9 +80,9 @@ def render(site_id: str | None, priority_order: list[str], username: str | None)
         )
         st.dataframe(proc, use_container_width=True, hide_index=True)
         sme_download_pair(
-            proc, file_stem="SME_Procurement_List",
+            proc, report_name="Procurement_List",
             title="Procurement List", key="dash_proc",
-            username=username, sheet_name="Procurement",
+            site_id=site_id, sheet_name="Procurement",
         )
 
         # Stock-only materials (carry inventory the plan doesn't touch)
