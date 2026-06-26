@@ -3248,6 +3248,14 @@ def page_material_estimator(user: dict) -> None:
     if "_session_key" not in st.session_state:
         import uuid as _uuid
         st.session_state["_session_key"] = str(_uuid.uuid4())
+    # R20.3 EDIT: theme key MUST be initialized per render. The original
+    # SME module-level `if "sme_theme" not in st.session_state:` at line
+    # ~3074 only runs once at server-boot import time (when no user
+    # session is bound), so it never lands in real user sessions. The
+    # sidebar's Dark/Light toggle reads st.session_state.sme_theme and
+    # crashes with AttributeError if it's missing.
+    if "sme_theme" not in st.session_state:
+        st.session_state.sme_theme = "dark"
 
     # Refresh location/type dropdown sources (no-op when DB unchanged).
     try:
