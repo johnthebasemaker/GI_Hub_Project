@@ -3115,40 +3115,33 @@ def render_design_gauge(pct: float, can_sqm: float, total_sqm: float) -> str:
         f'stroke-width="20" stroke-linecap="round"/>'
         if pct > 0 else ""
     )
-    return f"""
-    <div class="sme-viz-card">
-      <svg viewBox="0 0 {w} {h}" preserveAspectRatio="xMidYMid meet">
-        <path d="{arc(R, sA, sA + .5*math.pi)}" fill="none"
-              stroke="rgba(239,68,68,.18)" stroke-width="22"/>
-        <path d="{arc(R, sA + .5*math.pi, sA + .7*math.pi)}" fill="none"
-              stroke="rgba(234,179,8,.18)" stroke-width="22"/>
-        <path d="{arc(R, sA + .7*math.pi, sA + .85*math.pi)}" fill="none"
-              stroke="rgba(249,115,22,.18)" stroke-width="22"/>
-        <path d="{arc(R, sA + .85*math.pi, 0)}" fill="none"
-              stroke="rgba(16,185,129,.18)" stroke-width="22"/>
-        <path d="{arc(R, sA, 0)}" fill="none" stroke="rgba(128,128,128,.18)"
-              stroke-width="20"/>
-        {val_arc}
-        <text x="{cx-R+2}" y="{cy+20}" fill="#94A3B8" font-size="10"
-              font-family="JetBrains Mono, monospace">0%</text>
-        <text x="{cx+R-22}" y="{cy+20}" fill="#94A3B8" font-size="10"
-              font-family="JetBrains Mono, monospace">100%</text>
-        <text x="{cx}" y="{cy-20}" text-anchor="middle" fill="{col}"
-              font-size="32" font-weight="800"
-              font-family="JetBrains Mono, monospace">{pct:.1f}%</text>
-        <text x="{cx}" y="{cy-2}" text-anchor="middle" fill="#94A3B8"
-              font-size="11" font-family="Inter, sans-serif">Overall Coverage</text>
-        <text x="{cx}" y="{cy+14}" text-anchor="middle" fill="#94A3B8"
-              font-size="10" font-family="JetBrains Mono, monospace">
-          {can_sqm:,.1f} / {total_sqm:,.1f} SQM
-        </text>
-      </svg>
-      <div class="sme-viz-legend">
-        <span>■ Available: {can_sqm:,.1f} SQM</span>
-        <span>■ Shortfall: {max(0.0, total_sqm-can_sqm):,.1f} SQM</span>
-      </div>
-    </div>
-    """
+    # R20.4 EDIT: returns content with NO leading indent so Streamlit's
+    # markdown recognizes the opening <div> as a type-6 HTML block. The
+    # SME's original 4-space-indented return value caused the SVG to
+    # render as an indented code block (raw text) under some Streamlit
+    # versions. Inner indentation inside <svg> is irrelevant because
+    # everything inside an HTML block passes through as raw HTML.
+    return (
+f"""<div class="sme-viz-card">
+<svg viewBox="0 0 {w} {h}" preserveAspectRatio="xMidYMid meet">
+<path d="{arc(R, sA, sA + .5*math.pi)}" fill="none" stroke="rgba(239,68,68,.18)" stroke-width="22"/>
+<path d="{arc(R, sA + .5*math.pi, sA + .7*math.pi)}" fill="none" stroke="rgba(234,179,8,.18)" stroke-width="22"/>
+<path d="{arc(R, sA + .7*math.pi, sA + .85*math.pi)}" fill="none" stroke="rgba(249,115,22,.18)" stroke-width="22"/>
+<path d="{arc(R, sA + .85*math.pi, 0)}" fill="none" stroke="rgba(16,185,129,.18)" stroke-width="22"/>
+<path d="{arc(R, sA, 0)}" fill="none" stroke="rgba(128,128,128,.18)" stroke-width="20"/>
+{val_arc}
+<text x="{cx-R+2}" y="{cy+20}" fill="#94A3B8" font-size="10" font-family="JetBrains Mono, monospace">0%</text>
+<text x="{cx+R-22}" y="{cy+20}" fill="#94A3B8" font-size="10" font-family="JetBrains Mono, monospace">100%</text>
+<text x="{cx}" y="{cy-20}" text-anchor="middle" fill="{col}" font-size="32" font-weight="800" font-family="JetBrains Mono, monospace">{pct:.1f}%</text>
+<text x="{cx}" y="{cy-2}" text-anchor="middle" fill="#94A3B8" font-size="11" font-family="Inter, sans-serif">Overall Coverage</text>
+<text x="{cx}" y="{cy+14}" text-anchor="middle" fill="#94A3B8" font-size="10" font-family="JetBrains Mono, monospace">{can_sqm:,.1f} / {total_sqm:,.1f} SQM</text>
+</svg>
+<div class="sme-viz-legend">
+<span>■ Available: {can_sqm:,.1f} SQM</span>
+<span>■ Shortfall: {max(0.0, total_sqm-can_sqm):,.1f} SQM</span>
+</div>
+</div>"""
+    )
 
 def render_design_hbar(data: list[dict], title: str = "") -> str:
     """Horizontal bar chart SVG mirroring the Claude design's renderHBar.
