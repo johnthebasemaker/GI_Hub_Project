@@ -427,7 +427,16 @@ LOCATION_ORDER = ["Brown Field", "TRAIN J", "TRAIN K"]
 TYPE_ORDER     = []  # Loaded from `types` table at startup. Falls back to
                      # distinct equipment.type values when the table is empty.
 DB_PATH = os.path.join(BASE_DIR, "sme_database.db")
-LOGO_PATH = os.path.join(BASE_DIR, "logo.png")
+# R20.2 EDIT: literal SME drop-in shipped sme_logo.png (renamed during
+# Round 17 bootstrap to avoid a name collision). The original SME's
+# constant was 'logo.png'; we point at the bundled file. If the file
+# is missing the helpers below return empty strings — which is OK for
+# the sidebar `st.image` call but BREAKS the sticky-header markdown
+# (an empty interpolation leaves a blank line that closes the HTML
+# block, then the next <div> becomes a code block). The sticky-header
+# call below now uses a fallback comment string to keep the HTML
+# block contiguous even when no logo file is present.
+LOGO_PATH = os.path.join(BASE_DIR, "sme_logo.png")
 
 @st.cache_data(show_spinner=False)
 def _logo_b64() -> str:
@@ -3317,6 +3326,57 @@ Smart Material Estimator v3</div>
             else:
                 st.caption("No equipment added yet.")
 
+            # R20.2 TEMP: diagnostic panel — helps debug why Available_Qty/
+            # Ordered_Qty are zero. Shows the data overlap between
+            # sme_recipe Material_Codes and ERP inventory rows. Remove once
+            # the zero-qty issue is resolved.
+            with st.expander("🔬 Data diagnostic", expanded=False):
+                try:
+                    _conn_diag = D.get_connection()
+                    _rec_codes = set(_r[0] for _r in _conn_diag.execute(
+                        "SELECT DISTINCT TRIM(Material_Code) FROM sme_recipe "
+                        "WHERE Material_Code IS NOT NULL"
+                    ).fetchall())
+                    _inv_codes = set(_r[0] for _r in _conn_diag.execute(
+                        "SELECT DISTINCT TRIM(COALESCE(Material_Code,'')) FROM inventory "
+                        "WHERE COALESCE(Material_Code,'') <> ''"
+                    ).fetchall())
+                    _matching = _rec_codes & _inv_codes
+                    _missing_in_inv = _rec_codes - _inv_codes
+                    # Stock check at current site
+                    _site = st.session_state.get("_login_site_id") or "HQ"
+                    _live = D.load_live_inventory(_conn_diag, site_id=_site)
+                    _live_matching = _live[_live["Material_Code"].isin(_matching)] if not _live.empty else _live
+                    _with_stock = (
+                        _live_matching[_live_matching["Current_Stock"] > 0]
+                        if not _live_matching.empty else _live_matching
+                    )
+                    _conn_diag.close()
+                    st.caption(f"Site_ID in use: **{_site}**")
+                    st.caption(f"sme_recipe Material_Codes: **{len(_rec_codes)}**")
+                    st.caption(f"ERP inventory Material_Codes: **{len(_inv_codes)}**")
+                    st.caption(f"Matching (in both): **{len(_matching)}**")
+                    st.caption(
+                        f"Of matching, with Current_Stock>0 at {_site}: "
+                        f"**{len(_with_stock)}**"
+                    )
+                    if _missing_in_inv:
+                        _sample = sorted(_missing_in_inv)[:5]
+                        st.caption(
+                            f"Recipe codes NOT in ERP inventory "
+                            f"({len(_missing_in_inv)} total): "
+                            f"`{', '.join(_sample)}…`"
+                        )
+                    if len(_matching) == 0:
+                        st.warning(
+                            "⚠️ **Zero Material_Code overlap.** Add inventory "
+                            "rows with Material_Code values that match the "
+                            "recipe (or extend the bootstrap to seed "
+                            "inventory from Materials_DetailsAvailable_Qty.xlsx)."
+                        )
+                except Exception as _e:
+                    st.caption(f"(diagnostic failed: {type(_e).__name__}: {_e})")
+
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown("""<div style="font-family:'JetBrains Mono',monospace;font-size:.6rem;
 letter-spacing:.08em;color:var(--t5);">
@@ -3326,7 +3386,15 @@ letter-spacing:.08em;color:var(--t5);">
         # ─────────────────────────────────────────────────────────────────────────────
         # STICKY HEADER
         # ─────────────────────────────────────────────────────────────────────────────
-        _hdr_logo = f'<img src="data:image/png;base64,{_logo_b64()}" style="height:34px;border-radius:6px;flex-shrink:0;">' if _logo_b64() else ""
+        # R20.2 EDIT: fallback to a 1px transparent placeholder when no
+        # logo file is present. An empty interpolation here would leave a
+        # blank line inside the markdown HTML block, closing it; the next
+        # <div> would then render as an indented code block.
+        _hdr_logo = (
+            f'<img src="data:image/png;base64,{_logo_b64()}" '
+            f'style="height:34px;border-radius:6px;flex-shrink:0;">'
+            if _logo_b64() else '<span style="display:inline-block;width:0;"></span>'
+        )
         st.markdown(f"""
 <div class="sticky-header-wrap">
   <div style="display:flex;align-items:center;gap:1rem;">

@@ -1819,15 +1819,20 @@ def init_db(conn: sqlite3.Connection = None) -> None:
                 c.execute(f"DROP VIEW {_v}")
         except sqlite3.Error:
             pass
+    # R20.2 EDIT: GROUP BY value so each location/type appears only ONCE
+    # in the dropdown, regardless of how many sites it's seeded for.
+    # Brown Field is "Brown Field" whether seeded into HQ or CNCEC; the
+    # SME UI treats locations as project-internal names, not per-site.
     try:
         c.execute("""
             CREATE VIEW locations AS
             SELECT value AS name,
                    '#64748B' AS badge_color,
-                   rowid AS sort_order,
+                   MIN(rowid) AS sort_order,
                    '' AS added_at
             FROM system_settings
             WHERE category = 'sme_location'
+            GROUP BY value
         """)
     except sqlite3.Error:
         pass
@@ -1835,10 +1840,11 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         c.execute("""
             CREATE VIEW types AS
             SELECT value AS name,
-                   rowid AS sort_order,
+                   MIN(rowid) AS sort_order,
                    '' AS added_at
             FROM system_settings
             WHERE category = 'sme_equipment_type'
+            GROUP BY value
         """)
     except sqlite3.Error:
         pass
