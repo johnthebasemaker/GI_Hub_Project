@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-06-24T21:35:44`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_5whz8upw/bug_check.db`  
-**Total checks:** 485  
-**Passing:** 485  
+**Run at:** `2026-06-27T16:58:29`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_m1ek1h8n/bug_check.db`  
+**Total checks:** 539  
+**Passing:** 539  
 **Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -345,6 +345,72 @@ _None — every check passed._
 - ✅ legacy pending_logistics DNs migrate to pending_hod
 - ✅ get_pr_with_po_numbers comma-joins per PR line
 - ✅ generate_pr_pdf renders new PO # + UoM columns
+
+### Round 17 — 13/13
+- ✅ sme_equipment table + key columns present
+- ✅ sme_recipe table + key columns present
+- ✅ sme_sqm_progress table + composite PK
+- ✅ system_settings seeded with sme_location + sme_equipment_type for HQ
+- ✅ init_db idempotent for SME tables (run twice, no errors)
+- ✅ get_on_order_by_material: Qty=10 Delivered=3 Returned=1 → 6
+- ✅ get_on_order_by_material: closed POs ignored
+- ✅ get_on_order_by_material: site filter scopes correctly
+- ✅ get_sme_inventory_view bridges ledger → engine schema
+- ✅ add_sme_setting / delete_sme_setting round-trip
+- ✅ upsert_sme_sqm_progress preserves Done_SQM on re-load
+- ✅ Material Estimator RBAC: hod + admin only
+- ✅ Material Estimator portal listed in PAGE_ACCESS
+
+### Round 18 — 13/13
+- ✅ sme_sqm_progress.Done_SQM_staged column present
+- ✅ sme_consumption_log table + status FSM
+- ✅ v_inventory_with_sme exposes is_sme flag
+- ✅ is_sme_sap / is_sme_material dispatch fork
+- ✅ get_sap_for_material resolves the 1:1 mapping
+- ✅ stage_sme_consumption_batch aggregates per Material_Code
+- ✅ stage_sme_consumption_batch rejects missing extras
+- ✅ stage_sme_consumption_batch increments Done_SQM_staged
+- ✅ commit_eod_with_sme_sync shifts staged→committed
+- ✅ commit_eod itself is unchanged (regression)
+- ✅ hod_reject_pending_issue_with_sme_sync decrements staged
+- ✅ SME consumption form helper present in daily_issue_log
+- ✅ hod_portal wires the SME-sync EOD + reject wrappers
+
+### Round 20 — 11/11
+- ✅ material_estimator_portal.py exists + exports page_material_estimator
+- ✅ portal module loads cleanly (no module-level set_page_config)
+- ✅ SME <style> CSS block preserved
+- ✅ _apply_theme_attr preserved (dark/light mode toggle)
+- ✅ Inventory tab body deleted (R18 owns consumption flow)
+- ✅ tab declaration unpacks 8 tabs (not 9)
+- ✅ _show_login + auth gate deleted
+- ✅ monkey-patch SCOPED inside page_material_estimator
+- ✅ locations/types CRUD routes through add_sme_setting / delete_sme_setting
+- ✅ compatibility VIEWS created in init_db (locations/types/consumption_log/equipment/recipe/sqm_progress)
+- ✅ ERP ledger schemas unchanged (regression — R18 routing rule)
+
+### Round 20.1 — 4/4
+- ✅ no string-interior 8-space indent (markdown-as-code-block bug)
+- ✅ cascade_allocate returns DataFrame with expected columns when empty
+- ✅ Stock-Only Materials filter restricted to SME-tracked items
+- ✅ load_all returns shape-preserving empty frames
+
+### Round 20.5 — 11/11
+- ✅ sme_equipment extended with 15 legacy Excel columns
+- ✅ sme_recipe extended with 8 legacy Excel columns
+- ✅ sme_inventory_seed table exists with correct schema
+- ✅ sme_materials_view computes Available_Qty from seed + ledger
+- ✅ equipment VIEW exposes Lining_System / Material Spec. / Lining_Area/location aliases
+- ✅ recipe VIEW serves real Lining_Type (not empty literal)
+- ✅ 9 SME CRUD helpers exist in database.py
+- ✅ helpers translate UI form keys to PascalCase columns
+- ✅ Tab 8 has no raw view-write SQL remaining
+- ✅ TABLE_MAP points Materials_DetailsAvailable_Qty → sme_materials_view
+- ✅ Equipment Smart Entry calls D.insert_sme_equipment + D.upsert_sme_sqm_progress
+
+### Round 20.5.1 — 2/2
+- ✅ Master Data read does not ORDER BY rowid on a VIEW
+- ✅ get_sme_inventory_view is seed-sourced (not ERP live stock)
 
 ### Schema — 216/216
 - ✅ table · inventory
