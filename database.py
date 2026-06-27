@@ -1709,6 +1709,73 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     c.execute("CREATE INDEX IF NOT EXISTS ix_sme_recipe_mc "
               "ON sme_recipe(Material_Code)")
 
+    # R20.5 — extend sme_equipment with the 15 legacy Excel columns that
+    # Equipment.xlsx carries (Sl. #, Project, WBS #, IO#, Drawing #, Design,
+    # Dia / L, Ht. /W, Equipment Total SQM, Remaraks, Lining_System_Short_Name,
+    # Lining_Type, Lining_System, Material Spec., Lining_Area/location).
+    # SME's Master Data tab and _get_autofill helper need every one of these.
+    # ALTERs are wrapped in try/except so re-running init_db is safe.
+    for _alter in (
+        "ALTER TABLE sme_equipment ADD COLUMN Sl_No TEXT",
+        "ALTER TABLE sme_equipment ADD COLUMN Project TEXT",
+        "ALTER TABLE sme_equipment ADD COLUMN WBS_No TEXT",
+        "ALTER TABLE sme_equipment ADD COLUMN IO_No TEXT",
+        "ALTER TABLE sme_equipment ADD COLUMN Drawing_No TEXT",
+        "ALTER TABLE sme_equipment ADD COLUMN Design TEXT",
+        "ALTER TABLE sme_equipment ADD COLUMN Dia_L TEXT",
+        "ALTER TABLE sme_equipment ADD COLUMN Ht_W TEXT",
+        "ALTER TABLE sme_equipment ADD COLUMN Equipment_Total_SQM REAL",
+        "ALTER TABLE sme_equipment ADD COLUMN Remaraks TEXT",
+        "ALTER TABLE sme_equipment ADD COLUMN Lining_System_Short_Name TEXT",
+        "ALTER TABLE sme_equipment ADD COLUMN Lining_Type TEXT",
+        "ALTER TABLE sme_equipment ADD COLUMN Lining_System TEXT",
+        "ALTER TABLE sme_equipment ADD COLUMN Material_Spec TEXT",
+        "ALTER TABLE sme_equipment ADD COLUMN Lining_Area_Location TEXT",
+    ):
+        try:
+            c.execute(_alter)
+        except sqlite3.OperationalError:
+            pass
+
+    # R20.5 — extend sme_recipe with the 8 legacy For_1_SQM.xlsx columns.
+    for _alter in (
+        "ALTER TABLE sme_recipe ADD COLUMN Sl_No TEXT",
+        "ALTER TABLE sme_recipe ADD COLUMN Substrate TEXT",
+        "ALTER TABLE sme_recipe ADD COLUMN System_Keys TEXT",
+        "ALTER TABLE sme_recipe ADD COLUMN Lining_Thickness TEXT",
+        "ALTER TABLE sme_recipe ADD COLUMN Lining_System TEXT",
+        "ALTER TABLE sme_recipe ADD COLUMN Lining_Type TEXT",
+        "ALTER TABLE sme_recipe ADD COLUMN Material_Description TEXT",
+        "ALTER TABLE sme_recipe ADD COLUMN Package_Size TEXT",
+    ):
+        try:
+            c.execute(_alter)
+        except sqlite3.OperationalError:
+            pass
+
+    # R20.5 — SME-owned inventory seed (separate from ERP `inventory`).
+    # Holds the static baseline from Materials_DetailsAvailable_Qty.xlsx.
+    # The `sme_materials_view` (defined below) joins this against ERP
+    # receipts/consumption to produce a live Available_Qty without touching
+    # ERP inventory rows. CRUD writes from the SME Master Data tab go HERE,
+    # never to ERP `inventory`.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS sme_inventory_seed (
+            Material_Code         TEXT PRIMARY KEY,
+            Material_Name         TEXT,
+            Item                  TEXT,
+            Vendor                TEXT,
+            Purchasing_Document   TEXT,
+            Document_Date         TEXT,
+            Nature                TEXT,
+            UOM                   TEXT,
+            Initial_Available_Qty REAL DEFAULT 0,
+            Initial_Ordered_Qty   REAL DEFAULT 0,
+            created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at            DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS sme_sqm_progress (
             Site_ID             TEXT    NOT NULL,
@@ -1808,7 +1875,8 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     # in material_estimator_portal.py to call add_sme_setting /
     # delete_sme_setting helpers — views are read-only by design.
     for _v in ("locations", "types", "consumption_log",
-               "equipment", "recipe", "sqm_progress"):
+               "equipment", "recipe", "sqm_progress",
+               "sme_materials_view"):
         try:
             # Only drop a view (never a table) so a future ERP table named
             # 'equipment' wouldn't get nuked here.
@@ -1873,39 +1941,65 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         pass
     # SME's `equipment`, `recipe`, `sqm_progress` references in Master Data
     # use lowercase snake_case columns. Map them onto our PascalCase tables.
+    # R20.5 — equipment VIEW exposes every legacy Excel column so the SME
+    # Master Data Smart Entry form + _get_autofill helper work. Note the
+    # mixed case: `_get_autofill` quotes "Lining_System", "Material Spec.",
+    # and "Lining_Area/location" as SQLite identifiers, so we alias to
+    # exactly those PascalCase / dotted / slashed names.
     try:
         c.execute("""
             CREATE VIEW equipment AS
             SELECT id,
-                   Site_ID            AS site_id,
-                   Equipment_Tag_No   AS equipment_tag,
-                   Name               AS name,
-                   Location           AS location,
-                   Type               AS type,
-                   Substrate          AS substrate,
-                   Lining_System_Code AS lining_system_code,
-                   '' AS lining_system_short_name,
-                   '' AS lining_type,
-                   '' AS material_spec,
-                   '' AS design,
-                   Lining_System_Code AS lining_systems,
-                   Surface_Area_SQM   AS surface_area_sqm
+                   Site_ID                  AS site_id,
+                   Equipment_Tag_No         AS equipment_tag,
+                   Name                     AS name,
+                   Location                 AS location,
+                   Type                     AS type,
+                   Substrate                AS substrate,
+                   Lining_System_Code       AS lining_system_code,
+                   Lining_System_Short_Name AS lining_system_short_name,
+                   Lining_Type              AS lining_type,
+                   Material_Spec            AS "Material Spec.",
+                   Design                   AS design,
+                   Lining_System            AS "Lining_System",
+                   Lining_Area_Location     AS "Lining_Area/location",
+                   Sl_No                    AS "Sl. #",
+                   Project                  AS project,
+                   WBS_No                   AS "WBS #",
+                   IO_No                    AS "IO#",
+                   Drawing_No               AS "Drawing #",
+                   Dia_L                    AS "Dia / L",
+                   Ht_W                     AS "Ht. /W",
+                   Equipment_Total_SQM      AS "Equipment Total SQM",
+                   Remaraks                 AS remaraks,
+                   Lining_System            AS lining_systems,
+                   Surface_Area_SQM         AS surface_area_sqm
             FROM sme_equipment
         """)
     except sqlite3.Error:
         pass
+    # R20.5 — recipe VIEW now serves real Lining_Type + extended Excel
+    # columns. lining_system_short_name aliases Lining_System_Name (the
+    # bootstrap stores the short name there for back-compat with reads).
     try:
         c.execute("""
             CREATE VIEW recipe AS
             SELECT id,
-                   Lining_System_Code AS lining_system_code,
-                   Lining_System_Name AS lining_system_short_name,
-                   ''                 AS lining_type,
-                   Material_Code      AS material_code,
-                   Material_Name      AS material_description,
-                   Material_Name      AS material_name,
-                   For_1_SQM          AS for_1_sqm,
-                   UOM                AS uom
+                   Lining_System_Code       AS lining_system_code,
+                   Lining_System_Name       AS lining_system_short_name,
+                   Lining_Type              AS lining_type,
+                   Lining_System            AS lining_system,
+                   Substrate                AS substrate,
+                   System_Keys              AS system_keys,
+                   Lining_Thickness         AS lining_thickness,
+                   Material_Code            AS material_code,
+                   COALESCE(Material_Description, Material_Name) AS material_description,
+                   Material_Name            AS material_name,
+                   For_1_SQM                AS for_1_sqm,
+                   UOM                      AS uom,
+                   Nature                   AS nature,
+                   Package_Size             AS package_size,
+                   Sl_No                    AS "Sl. #"
             FROM sme_recipe
         """)
     except sqlite3.Error:
@@ -1919,6 +2013,65 @@ def init_db(conn: sqlite3.Connection = None) -> None:
                    Original_SQM       AS original_sqm,
                    (COALESCE(Done_SQM,0) + COALESCE(Done_SQM_staged,0)) AS done_sqm
             FROM sme_sqm_progress
+        """)
+    except sqlite3.Error:
+        pass
+
+    # R20.5 — Materials view for SME Master Data tab. Wraps sme_inventory_seed
+    # (the SME-owned baseline) and LEFT JOINs against ERP receipts /
+    # consumption tables to surface a LIVE Available_Qty without mingling
+    # writes into ERP `inventory`. Only Material_Codes present in sme_recipe
+    # roll up here — keeps the view tight to ~30 SME materials and excludes
+    # the 1,200+ ERP materials that aren't relevant to the estimator.
+    #
+    # Math:  Available_Qty = Initial_Available_Qty
+    #                        + sum(receipts.Quantity)      (via SAP_Code → inventory.Material_Code)
+    #                        - sum(consumption.Quantity)   (same path)
+    #
+    # The dynamic Master Data form introspects this view via PRAGMA
+    # table_info — column names use lowercase snake_case to match SME's
+    # legacy Inventory table contract.
+    try:
+        c.execute("""
+            CREATE VIEW sme_materials_view AS
+            SELECT s.Material_Code         AS material_code,
+                   s.Material_Name         AS material_name,
+                   s.Item                  AS item,
+                   s.Vendor                AS vendor,
+                   s.Purchasing_Document   AS purchasing_document,
+                   s.Document_Date         AS document_date,
+                   s.Nature                AS nature,
+                   s.UOM                   AS uom,
+                   s.Initial_Available_Qty AS initial_available_qty,
+                   s.Initial_Ordered_Qty   AS initial_ordered_qty,
+                   COALESCE((
+                       SELECT SUM(r.Quantity)
+                       FROM receipts r
+                       JOIN inventory i ON r.SAP_Code = i.SAP_Code
+                       WHERE TRIM(COALESCE(i.Material_Code,'')) = TRIM(s.Material_Code)
+                   ), 0) AS received_qty,
+                   COALESCE((
+                       SELECT SUM(c.Quantity)
+                       FROM consumption c
+                       JOIN inventory i ON c.SAP_Code = i.SAP_Code
+                       WHERE TRIM(COALESCE(i.Material_Code,'')) = TRIM(s.Material_Code)
+                   ), 0) AS consumed_qty,
+                   (s.Initial_Available_Qty
+                       + COALESCE((
+                           SELECT SUM(r.Quantity)
+                           FROM receipts r
+                           JOIN inventory i ON r.SAP_Code = i.SAP_Code
+                           WHERE TRIM(COALESCE(i.Material_Code,'')) = TRIM(s.Material_Code)
+                         ), 0)
+                       - COALESCE((
+                           SELECT SUM(c.Quantity)
+                           FROM consumption c
+                           JOIN inventory i ON c.SAP_Code = i.SAP_Code
+                           WHERE TRIM(COALESCE(i.Material_Code,'')) = TRIM(s.Material_Code)
+                         ), 0)
+                   ) AS available_qty,
+                   s.Initial_Ordered_Qty   AS ordered_qty
+            FROM sme_inventory_seed s
         """)
     except sqlite3.Error:
         pass
@@ -12302,6 +12455,366 @@ def upsert_sme_sqm_progress(
             (site_id, equipment_tag, lining_system_code, new_orig, new_done),
         )
         conn.commit()
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# R20.5 — Master Data CRUD helpers (route Tab 8 writes off the compat VIEWs
+# and onto the real sme_equipment / sme_recipe / sme_inventory_seed tables).
+# All helpers translate the SME UI's lowercase / dotted / slashed form keys
+# into the underlying PascalCase table columns, so the portal can keep its
+# dynamic PRAGMA-driven form code intact.
+# ---------------------------------------------------------------------------
+
+# Maps every column alias the SME Master Data UI can emit (snake_case from
+# PRAGMA table_info OR PascalCase / dotted forms hard-coded in the equipment
+# Smart Entry form) onto the underlying sme_equipment column name.
+_SME_EQUIPMENT_COL_MAP = {
+    "site_id":                  "Site_ID",
+    "equipment_tag":            "Equipment_Tag_No",
+    "name":                     "Name",
+    "location":                 "Location",
+    "type":                     "Type",
+    "substrate":                "Substrate",
+    "lining_system_code":       "Lining_System_Code",
+    "lining_system_short_name": "Lining_System_Short_Name",
+    "lining_type":              "Lining_Type",
+    "lining_system":            "Lining_System",
+    "lining_systems":           "Lining_System",
+    "material_spec":            "Material_Spec",
+    "material spec.":           "Material_Spec",
+    "design":                   "Design",
+    "lining_area/location":     "Lining_Area_Location",
+    "lining_area_location":     "Lining_Area_Location",
+    "sl. #":                    "Sl_No",
+    "sl_no":                    "Sl_No",
+    "project":                  "Project",
+    "wbs #":                    "WBS_No",
+    "wbs_no":                   "WBS_No",
+    "io#":                      "IO_No",
+    "io_no":                    "IO_No",
+    "drawing #":                "Drawing_No",
+    "drawing_no":               "Drawing_No",
+    "dia / l":                  "Dia_L",
+    "dia_l":                    "Dia_L",
+    "ht. /w":                   "Ht_W",
+    "ht_w":                     "Ht_W",
+    "equipment total sqm":      "Equipment_Total_SQM",
+    "equipment_total_sqm":      "Equipment_Total_SQM",
+    "remaraks":                 "Remaraks",
+    "surface_area_sqm":         "Surface_Area_SQM",
+}
+
+_SME_RECIPE_COL_MAP = {
+    "lining_system_code":       "Lining_System_Code",
+    "lining_system_short_name": "Lining_System_Name",
+    "lining_system_name":       "Lining_System_Name",
+    "lining_type":              "Lining_Type",
+    "lining_system":            "Lining_System",
+    "substrate":                "Substrate",
+    "system_keys":              "System_Keys",
+    "lining_thickness":         "Lining_Thickness",
+    "material_code":            "Material_Code",
+    "material_description":     "Material_Description",
+    "material_name":            "Material_Name",
+    "for_1_sqm":                "For_1_SQM",
+    "uom":                      "UOM",
+    "nature":                   "Nature",
+    "package_size":             "Package_Size",
+    "sl. #":                    "Sl_No",
+    "sl_no":                    "Sl_No",
+}
+
+_SME_INVENTORY_SEED_COL_MAP = {
+    "material_code":         "Material_Code",
+    "material_name":         "Material_Name",
+    "item":                  "Item",
+    "vendor":                "Vendor",
+    "purchasing_document":   "Purchasing_Document",
+    "document_date":         "Document_Date",
+    "nature":                "Nature",
+    "uom":                   "UOM",
+    "initial_available_qty": "Initial_Available_Qty",
+    "initial_ordered_qty":   "Initial_Ordered_Qty",
+    # Allow plain available_qty/ordered_qty as aliases when the UI passes
+    # the view's display column names (the view derives them, but on first
+    # INSERT they map to the seed's initial_* slots).
+    "available_qty":         "Initial_Available_Qty",
+    "ordered_qty":           "Initial_Ordered_Qty",
+}
+
+
+def _translate_sme_cols(row: dict, col_map: dict) -> dict:
+    """Lowercase + look up each key in col_map. Unknown keys are dropped
+    silently (the UI may emit PRAGMA-derived columns the table doesn't
+    persist, e.g. derived view columns). Returns {table_col: value}."""
+    out = {}
+    for k, v in (row or {}).items():
+        if k is None:
+            continue
+        canonical = col_map.get(str(k).strip().lower())
+        if canonical is None:
+            # Also try the key verbatim (PascalCase / dotted forms keyed
+            # directly in col_map at lower() time already handle most; this
+            # catches odd one-off cases by case-insensitive exact match).
+            continue
+        out[canonical] = v
+    return out
+
+
+def insert_sme_equipment(
+    row: dict,
+    site_id: str,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Insert ONE row into sme_equipment. Site_ID comes from the kw, never
+    from `row` (UI doesn't ask for it). Equipment_Tag_No + Lining_System_Code
+    are required; raises ValueError if missing. Returns the new row id."""
+    cols = _translate_sme_cols(row, _SME_EQUIPMENT_COL_MAP)
+    cols["Site_ID"] = site_id
+    if not cols.get("Equipment_Tag_No"):
+        raise ValueError("Equipment_Tag_No is required")
+    if not cols.get("Lining_System_Code"):
+        raise ValueError("Lining_System_Code is required")
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        col_names = list(cols.keys())
+        placeholders = ", ".join(["?"] * len(col_names))
+        col_sql = ", ".join(f'"{c}"' for c in col_names)
+        cur = conn.execute(
+            f"INSERT INTO sme_equipment ({col_sql}) VALUES ({placeholders})",
+            [cols[c] for c in col_names],
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        if _owns:
+            conn.close()
+
+
+def update_sme_equipment(
+    eq_id: int,
+    changes: dict,
+    site_id: str = None,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Update one sme_equipment row by id. site_id is optional; when given,
+    scopes the WHERE clause so cross-site edits can't happen accidentally.
+    Returns rowcount."""
+    cols = _translate_sme_cols(changes, _SME_EQUIPMENT_COL_MAP)
+    if not cols:
+        return 0
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        set_sql = ", ".join(f'"{c}" = ?' for c in cols.keys())
+        params = list(cols.values()) + [int(eq_id)]
+        where = 'WHERE id = ?'
+        if site_id:
+            where += ' AND Site_ID = ?'
+            params.append(site_id)
+        cur = conn.execute(
+            f"UPDATE sme_equipment SET {set_sql} {where}", params,
+        )
+        conn.commit()
+        return cur.rowcount or 0
+    finally:
+        if _owns:
+            conn.close()
+
+
+def delete_sme_equipment(
+    eq_id: int,
+    site_id: str = None,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Delete one sme_equipment row by id. Cascades the matching
+    sme_sqm_progress entry. Returns sme_equipment rowcount deleted."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        # Look up tag + code so we can cascade sqm_progress.
+        row = conn.execute(
+            "SELECT Site_ID, Equipment_Tag_No, Lining_System_Code "
+            "FROM sme_equipment WHERE id = ?",
+            (int(eq_id),),
+        ).fetchone()
+        if not row:
+            return 0
+        _row_site, _tag, _code = row[0], row[1], row[2]
+        if site_id and _row_site != site_id:
+            return 0
+        conn.execute(
+            "DELETE FROM sme_sqm_progress "
+            "WHERE Site_ID=? AND Equipment_Tag_No=? AND Lining_System_Code=?",
+            (_row_site, _tag, _code),
+        )
+        cur = conn.execute(
+            "DELETE FROM sme_equipment WHERE id = ?", (int(eq_id),),
+        )
+        conn.commit()
+        return cur.rowcount or 0
+    finally:
+        if _owns:
+            conn.close()
+
+
+def insert_sme_recipe(
+    row: dict,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Insert ONE row into sme_recipe. Lining_System_Code + Material_Code
+    are required. Returns the new row id."""
+    cols = _translate_sme_cols(row, _SME_RECIPE_COL_MAP)
+    if not cols.get("Lining_System_Code"):
+        raise ValueError("Lining_System_Code is required")
+    if not cols.get("Material_Code"):
+        raise ValueError("Material_Code is required")
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        col_names = list(cols.keys())
+        placeholders = ", ".join(["?"] * len(col_names))
+        col_sql = ", ".join(f'"{c}"' for c in col_names)
+        cur = conn.execute(
+            f"INSERT INTO sme_recipe ({col_sql}) VALUES ({placeholders})",
+            [cols[c] for c in col_names],
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        if _owns:
+            conn.close()
+
+
+def update_sme_recipe(
+    rec_id: int,
+    changes: dict,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Update one sme_recipe row by id. Returns rowcount."""
+    cols = _translate_sme_cols(changes, _SME_RECIPE_COL_MAP)
+    if not cols:
+        return 0
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        set_sql = ", ".join(f'"{c}" = ?' for c in cols.keys())
+        params = list(cols.values()) + [int(rec_id)]
+        cur = conn.execute(
+            f"UPDATE sme_recipe SET {set_sql} WHERE id = ?", params,
+        )
+        conn.commit()
+        return cur.rowcount or 0
+    finally:
+        if _owns:
+            conn.close()
+
+
+def delete_sme_recipe(
+    rec_id: int,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Delete one sme_recipe row by id. Returns rowcount."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "DELETE FROM sme_recipe WHERE id = ?", (int(rec_id),),
+        )
+        conn.commit()
+        return cur.rowcount or 0
+    finally:
+        if _owns:
+            conn.close()
+
+
+def insert_sme_inventory_seed(
+    row: dict,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """INSERT or REPLACE one sme_inventory_seed row. Material_Code is the
+    PK; passing an existing code overwrites the seed (matches the SME
+    Master Data UX where editing a code re-asserts the baseline)."""
+    cols = _translate_sme_cols(row, _SME_INVENTORY_SEED_COL_MAP)
+    if not cols.get("Material_Code"):
+        raise ValueError("Material_Code is required")
+    cols["Material_Code"] = str(cols["Material_Code"]).strip()
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        col_names = list(cols.keys())
+        placeholders = ", ".join(["?"] * len(col_names))
+        col_sql = ", ".join(f'"{c}"' for c in col_names)
+        cur = conn.execute(
+            f"INSERT OR REPLACE INTO sme_inventory_seed ({col_sql}) "
+            f"VALUES ({placeholders})",
+            [cols[c] for c in col_names],
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        if _owns:
+            conn.close()
+
+
+def update_sme_inventory_seed(
+    material_code: str,
+    changes: dict,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Update one sme_inventory_seed row by Material_Code. Returns rowcount."""
+    cols = _translate_sme_cols(changes, _SME_INVENTORY_SEED_COL_MAP)
+    # If the changes include Material_Code (e.g., renamed), drop it from
+    # SET to avoid silently changing the PK on a cell-edit save.
+    cols.pop("Material_Code", None)
+    if not cols:
+        return 0
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        set_sql = ", ".join(f'"{c}" = ?' for c in cols.keys())
+        params = list(cols.values()) + [str(material_code).strip()]
+        cur = conn.execute(
+            f"UPDATE sme_inventory_seed SET {set_sql}, "
+            f"updated_at = CURRENT_TIMESTAMP WHERE Material_Code = ?",
+            params,
+        )
+        conn.commit()
+        return cur.rowcount or 0
+    finally:
+        if _owns:
+            conn.close()
+
+
+def delete_sme_inventory_seed(
+    material_code: str,
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Delete one sme_inventory_seed row by Material_Code. Returns rowcount.
+    Does NOT touch ERP `inventory` — receipts / consumption history is
+    preserved by design (the seed is SME-owned, the ledger is ERP-owned)."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "DELETE FROM sme_inventory_seed WHERE Material_Code = ?",
+            (str(material_code).strip(),),
+        )
+        conn.commit()
+        return cur.rowcount or 0
     finally:
         if _owns:
             conn.close()
