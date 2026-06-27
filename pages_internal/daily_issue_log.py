@@ -3211,6 +3211,87 @@ def _sme_batch_extras() -> dict:
     return st.session_state.setdefault(_SME_BATCH_EXTRAS_KEY, {})
 
 
+def days_of_continuation_block(
+    *,
+    daily_consumption_per_material: dict[str, float],
+    inventory_view: pd.DataFrame,
+) -> None:
+    """Days-of-Continuation runway report shown after a SME batch submit.
+
+    R20.5.2 — vendored verbatim from the deleted R19 package
+    `pages_internal/material_estimator/widgets.py` (removed in R20's literal
+    drop-in). The SK consumption form is the only caller, so it lives here
+    now. For each consumed material it computes available ÷ daily-burn (and
+    the same including open-PO qty) and colour-codes the runway.
+    """
+    if not daily_consumption_per_material or inventory_view is None or inventory_view.empty:
+        return
+    rows = []
+    for mc, qty in daily_consumption_per_material.items():
+        if qty <= 0:
+            continue
+        inv_row = inventory_view[inventory_view["Material_Code"] == mc]
+        if inv_row.empty:
+            avail = 0.0
+            ord_q = 0.0
+            name = mc
+            uom = ""
+        else:
+            avail = float(inv_row.iloc[0].get("Available_Qty") or 0)
+            ord_q = float(inv_row.iloc[0].get("Ordered_Qty") or 0)
+            name = inv_row.iloc[0].get("Material_Name") or mc
+            uom = inv_row.iloc[0].get("UOM") or ""
+        days = avail / qty if qty else float("inf")
+        days_with_po = (avail + ord_q) / qty if qty else float("inf")
+        rows.append({
+            "Material_Code": mc,
+            "Material": name,
+            "UOM": uom,
+            "Daily burn": round(qty, 3),
+            "Available": round(avail, 3),
+            "On order": round(ord_q, 3),
+            "Days remaining": ("∞" if days == float("inf") else round(days, 1)),
+            "Days w/ open PO": (
+                "∞" if days_with_po == float("inf") else round(days_with_po, 1)
+            ),
+            "_sort": days if days != float("inf") else 10**9,
+        })
+    if not rows:
+        return
+    df = pd.DataFrame(rows).sort_values("_sort").drop(columns=["_sort"])
+    try:
+        finite = [(r.get("_sort") if isinstance(r, dict) else None) for r in rows]
+        finite = [d for d in finite if d is not None and d < 10**8]
+    except Exception:
+        finite = []
+
+    st.markdown("### 📆 Days of Continuation")
+    if finite:
+        bn = min(finite)
+        bn_row = df.iloc[0]
+        st.warning(
+            f"Available stock will sustain this output for "
+            f"**{bn:.1f} day(s)** before the first material "
+            f"(**{bn_row['Material']}**) runs out."
+        )
+
+    def style_runway(row):
+        try:
+            d = float(row["Days remaining"]) if row["Days remaining"] != "∞" else 999
+        except (TypeError, ValueError):
+            d = 999
+        if d < 3:
+            bg = "rgba(239,68,68,0.18)"
+        elif d < 7:
+            bg = "rgba(234,179,8,0.18)"
+        else:
+            bg = "rgba(16,185,129,0.10)"
+        return [f"background-color:{bg}"] * len(row)
+
+    styled = df.style.apply(style_runway, axis=1)
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
 def _render_sme_consumption_form(user: dict, site_id: str) -> None:
     """Multi-row SME consumption staging form.
 
@@ -3223,9 +3304,8 @@ def _render_sme_consumption_form(user: dict, site_id: str) -> None:
       6. "Submit Batch" calls stage_sme_consumption_batch and clears the queue
       7. Days-of-Continuation block fires after a successful submit
     """
-    # Lazy import to avoid a hard dependency if the package isn't deployed
-    from pages_internal.material_estimator.widgets import days_of_continuation_block
-
+    # R20.5.2 — days_of_continuation_block is now defined module-level above
+    # (vendored from the R19 package that R20 deleted). No import needed.
     eq_df = get_sme_equipment(site_id=site_id)
     recipe_df = get_sme_recipe()
     inv_view = get_sme_inventory_view(site_id=site_id)

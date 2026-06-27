@@ -5053,6 +5053,23 @@ letter-spacing:.08em;color:var(--t5);">
                 if loc not in st.session_state.loc_order:
                     st.session_state.loc_order[loc] = default_loc_order
 
+                # R20.5.2 — reconcile the persisted drag-order against the
+                # CURRENT equipment master. st.session_state.loc_order survives
+                # across data reloads (e.g. a re-bootstrap or a Master Data
+                # edit), so it can hold tags that no longer exist in eq_master;
+                # the per-equipment `eq_master[... == tag].iloc[0]` below would
+                # then raise `IndexError: single positional indexer is
+                # out-of-bounds`. Drop stale tags, append any new ones, and
+                # preserve the user's ordering for everything still valid.
+                _valid_loc_tags = eq_master[eq_master["Location"] == loc][
+                    "Equipment_Tag_No."].tolist()
+                _reconciled = [t for t in st.session_state.loc_order[loc]
+                               if t in _valid_loc_tags]
+                _reconciled += [t for t in _valid_loc_tags
+                                if t not in _reconciled]
+                if _reconciled != st.session_state.loc_order[loc]:
+                    st.session_state.loc_order[loc] = _reconciled
+
                 loc_tags_all = st.session_state.loc_order[loc]
                 if not loc_tags_all:
                     continue

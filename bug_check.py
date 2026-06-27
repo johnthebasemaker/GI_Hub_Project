@@ -7433,6 +7433,77 @@ def check_r20_5_1_inventory_view_seed_sourced():
         f"Ordered_Qty must be seed Initial_Ordered_Qty 200, got {row.iloc[0]['Ordered_Qty']}"
 
 
+def check_r20_5_2_no_deleted_pkg_import():
+    """R20 deleted the package `pages_internal/material_estimator/` (literal
+    drop-in lives in material_estimator_portal.py). No live module may import
+    from it — `daily_issue_log.py` did (days_of_continuation_block), which
+    crashed the SK Consumption page with ModuleNotFoundError. Guard: no
+    `from pages_internal.material_estimator.<sub> import` anywhere."""
+    import pathlib, re
+    pkg_dir = REPO_ROOT / "pages_internal" / "material_estimator"
+    assert not pkg_dir.exists(), \
+        "the R19 package pages_internal/material_estimator/ should not exist"
+    # Scan every .py for a real import statement against the deleted package
+    # (the suffixed modules _portal / _engine are fine; the bare package and
+    # its submodules are not).
+    bad_re = re.compile(
+        r"(?:from|import)\s+pages_internal\.material_estimator(?:\.\w+)*"
+        r"(?:\s+import|\s*$)"
+    )
+    offenders = []
+    for py in REPO_ROOT.rglob("*.py"):
+        if py.name == "bug_check.py":
+            continue
+        for ln in py.read_text(encoding="utf-8").splitlines():
+            s = ln.strip()
+            if s.startswith("#"):
+                continue
+            # Allow the suffixed modules.
+            if "material_estimator_portal" in s or "material_estimator_engine" in s:
+                continue
+            if bad_re.search(s):
+                offenders.append(f"{py.relative_to(REPO_ROOT)}: {s}")
+    assert not offenders, \
+        "live import(s) of deleted package found:\n  " + "\n  ".join(offenders)
+
+
+def check_r20_5_2_doc_block_vendored():
+    """days_of_continuation_block must be defined locally in daily_issue_log.py
+    (vendored from the deleted package) and callable with the engine
+    contract."""
+    import importlib.util as iu
+    name = "pages_internal.daily_issue_log"
+    # Ensure the parent package stub exists for the relative import context.
+    if "pages_internal" not in sys.modules:
+        parent = type(sys)("pages_internal")
+        parent.__path__ = [str(REPO_ROOT / "pages_internal")]
+        sys.modules["pages_internal"] = parent
+    spec = iu.spec_from_file_location(
+        name, str(REPO_ROOT / "pages_internal" / "daily_issue_log.py"))
+    mod = iu.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    fn = getattr(mod, "days_of_continuation_block", None)
+    assert callable(fn), \
+        "days_of_continuation_block must be defined in daily_issue_log.py"
+    # Empty inputs must no-op without raising (defensive contract).
+    fn(daily_consumption_per_material={}, inventory_view=None)
+
+
+def check_r20_5_2_loc_order_reconciled():
+    """Location Report must reconcile st.session_state.loc_order against the
+    current eq_master so a stale persisted drag-order (post re-bootstrap)
+    can't drive `eq_master[... == tag].iloc[0]` out of bounds."""
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator_portal.py"
+    ).read_text(encoding="utf-8")
+    assert "_valid_loc_tags = eq_master[eq_master[\"Location\"] == loc]" in src, \
+        "Location Report missing loc_order reconciliation against eq_master"
+    assert "_reconciled" in src, \
+        "Location Report reconciliation variable missing"
+
+
 # ---------------------------------------------------------------------------
 # Round 20 — Literal SME drop-in
 # ---------------------------------------------------------------------------
@@ -8652,6 +8723,17 @@ def main() -> int:
               check_r20_5_1_inventory_view_seed_sourced,
               "Available/Ordered come from sme_inventory_seed + ledger rollup so "
               "every SME tab reflects the SME inventory file, not ERP stock=0.")
+    run_check("Round 20.5.2", "no live import of the deleted material_estimator package",
+              check_r20_5_2_no_deleted_pkg_import,
+              "R20 deleted pages_internal/material_estimator/; daily_issue_log "
+              "still imported days_of_continuation_block → crashed SK page.")
+    run_check("Round 20.5.2", "days_of_continuation_block vendored into daily_issue_log",
+              check_r20_5_2_doc_block_vendored,
+              "Defined module-level + no-ops on empty inputs.")
+    run_check("Round 20.5.2", "Location Report reconciles stale loc_order vs eq_master",
+              check_r20_5_2_loc_order_reconciled,
+              "Prevents IndexError when persisted drag-order holds tags removed "
+              "by a re-bootstrap.")
 
     out = write_report()
     print()
