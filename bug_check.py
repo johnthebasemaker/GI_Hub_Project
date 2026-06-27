@@ -6629,11 +6629,26 @@ def check_r17_on_order_site_scope():
 
 
 def check_r17_sme_inventory_view():
+    # R20.5.1 — get_sme_inventory_view now sources from the SME-owned
+    # `sme_inventory_seed` baseline (NOT ERP live stock), rolling up ERP
+    # receipts / consumption via SAP_Code → inventory.Material_Code:
+    #   Available_Qty = Initial_Available_Qty + receipts - consumption
+    #   Ordered_Qty   = Initial_Ordered_Qty
+    # Seed the new source with the same numbers so the math still resolves
+    # to Available=130, Ordered=15.
     conn = _r17_conn()
+    # SAP → Material mapping lives in ERP inventory (the join key for the
+    # receipts / consumption rollup).
     conn.execute(
         "INSERT INTO inventory (SAP_Code, Material_Code, "
         "Equipment_Description, UOM, Opening_Stock, Category) "
-        "VALUES ('SAP-1', 'MAT-1', 'Glue', 'KG', 100, 'Consumable')"
+        "VALUES ('SAP-1', 'MAT-1', 'Glue', 'KG', 0, 'Consumable')"
+    )
+    # SME baseline (the standalone SME's inventory file lands here).
+    conn.execute(
+        "INSERT INTO sme_inventory_seed (Material_Code, Material_Name, UOM, "
+        "Nature, Initial_Available_Qty, Initial_Ordered_Qty) "
+        "VALUES ('MAT-1', 'Glue', 'KG', 'Consumable', 100, 15)"
     )
     conn.execute(
         "INSERT INTO receipts (SAP_Code, Site_ID, Quantity) "
@@ -6643,22 +6658,14 @@ def check_r17_sme_inventory_view():
         "INSERT INTO consumption (SAP_Code, Site_ID, Quantity) "
         "VALUES ('SAP-1', 'HQ', 20)"
     )
-    conn.execute(
-        "INSERT INTO purchase_orders (PO_Number, Site_ID, status) "
-        "VALUES ('PO-1', 'HQ', 'open')"
-    )
-    conn.execute(
-        "INSERT INTO po_items (PO_Number, Material_Code, Qty, "
-        "Delivered_Qty, line_status) "
-        "VALUES ('PO-1', 'MAT-1', 15, 0, 'open')"
-    )
     conn.commit()
     df = database.get_sme_inventory_view(site_id='HQ', conn=conn)
     assert not df.empty, "view returned empty after seeding"
     row = df[df["Material_Code"] == "MAT-1"].iloc[0]
-    # Available = Opening(100) + Recv(50) - Cons(20) - Ret(0) = 130
+    # Available = Initial(100) + Recv(50) - Cons(20) = 130
     assert float(row["Available_Qty"]) == 130.0, \
         f"Available_Qty math wrong: got {row['Available_Qty']}"
+    # Ordered = Initial_Ordered_Qty(15)
     assert float(row["Ordered_Qty"]) == 15.0, \
         f"Ordered_Qty wrong: got {row['Ordered_Qty']}"
 
@@ -7377,6 +7384,53 @@ def check_r20_5_equipment_smart_entry_helpers():
         "Dynamic add form must call D.insert_sme_inventory_seed for "
         "Materials Details radio"
     )
+
+
+def check_r20_5_1_master_data_no_order_by_rowid():
+    """Bug A: `db_table` resolves to a VIEW (equipment / recipe /
+    sme_materials_view) which has no implicit rowid. `ORDER BY rowid` raised
+    'no such column: rowid', swallowed by a bare except into an empty grid
+    ('No records found' for all three radios). Guard: the Tab 8 View/Edit/
+    Delete read must NOT order by rowid."""
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator_portal.py"
+    ).read_text(encoding="utf-8")
+    assert "SELECT * FROM {db_table} ORDER BY rowid" not in src, \
+        "Tab 8 still does `ORDER BY rowid` on a VIEW (returns empty grid)"
+    # Must order by a real per-table column instead.
+    assert '"sme_materials_view": "material_code"' in src, \
+        "Tab 8 _ORDER_COL map missing sme_materials_view ordering"
+
+
+def check_r20_5_1_inventory_view_seed_sourced():
+    """Bug B: get_sme_inventory_view must source Available_Qty / Ordered_Qty
+    from the SME seed (sme_inventory_seed via sme_materials_view), NOT ERP
+    live stock. End-to-end: a material present ONLY in the seed (no ERP
+    Opening_Stock) must still report its baseline qty."""
+    conn = sqlite3.connect(":memory:")
+    database.init_db(conn)
+    # ERP inventory carries the SAP→Material mapping but ZERO stock.
+    conn.execute(
+        "INSERT INTO inventory (SAP_Code, Material_Code, "
+        "Equipment_Description, UOM, Opening_Stock, Category) "
+        "VALUES ('SAP-Z', 'MAT-Z', 'Resin', 'KG', 0, 'Consumable')"
+    )
+    # SME baseline only.
+    conn.execute(
+        "INSERT INTO sme_inventory_seed (Material_Code, Material_Name, UOM, "
+        "Initial_Available_Qty, Initial_Ordered_Qty) "
+        "VALUES ('MAT-Z', 'Resin', 'KG', 500, 200)"
+    )
+    conn.commit()
+    df = database.get_sme_inventory_view(site_id="HQ", conn=conn)
+    row = df[df["Material_Code"] == "MAT-Z"]
+    assert not row.empty, \
+        "seed-only material absent — view still reads ERP stock, not the seed"
+    assert float(row.iloc[0]["Available_Qty"]) == 500.0, \
+        f"Available_Qty must be seed baseline 500, got {row.iloc[0]['Available_Qty']}"
+    assert float(row.iloc[0]["Ordered_Qty"]) == 200.0, \
+        f"Ordered_Qty must be seed Initial_Ordered_Qty 200, got {row.iloc[0]['Ordered_Qty']}"
 
 
 # ---------------------------------------------------------------------------
@@ -8590,6 +8644,14 @@ def main() -> int:
                             "D.upsert_sme_sqm_progress",
               check_r20_5_equipment_smart_entry_helpers,
               "Smart Entry save block uses helpers (not raw INSERT INTO).")
+    run_check("Round 20.5.1", "Master Data read does not ORDER BY rowid on a VIEW",
+              check_r20_5_1_master_data_no_order_by_rowid,
+              "Views have no rowid; ORDER BY rowid → empty grid ('No records "
+              "found') for all three radios.")
+    run_check("Round 20.5.1", "get_sme_inventory_view is seed-sourced (not ERP live stock)",
+              check_r20_5_1_inventory_view_seed_sourced,
+              "Available/Ordered come from sme_inventory_seed + ledger rollup so "
+              "every SME tab reflects the SME inventory file, not ERP stock=0.")
 
     out = write_report()
     print()

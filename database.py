@@ -12106,53 +12106,71 @@ def get_sme_inventory_view(
     site_id: str = None,
     conn: sqlite3.Connection = None,
 ) -> pd.DataFrame:
-    """Bridge ERP ledger → SME allocation-engine inventory contract.
+    """SME allocation-engine inventory contract — sourced from the SME's own
+    inventory baseline (`sme_inventory_seed`), NOT ERP live stock.
 
     Returns one row per Material_Code with columns:
         Material_Code, Material_Name, UOM, Nature,
         Available_Qty, Ordered_Qty
 
-    Drops rows where Material_Code is blank (SME engine needs Material_Code
-    as the join key; SAP_Codes without a Material_Code can't participate).
-    Material_Name falls back to the ERP's Equipment_Description if SME's
-    recipe master doesn't have a name for that code.
+    R20.5.1 — REWIRED to the approved isolation model. The SME inventory
+    store is deliberately kept separate from ERP `inventory`; the SME
+    portal must reflect the quantities from Materials_DetailsAvailable_Qty.xlsx
+    (loaded into `sme_inventory_seed`), with live movements rolled up from
+    the ERP ledger:
+
+        Available_Qty = Initial_Available_Qty
+                        + receipts (SME-tagged, via SAP_Code → Material_Code)
+                        - consumption (SME-tagged, same path)
+        Ordered_Qty   = Initial_Ordered_Qty
+
+    All of that math lives in the `sme_materials_view` SQL view (see init_db),
+    so this helper just reads it and shapes the result to the engine contract.
+    Previously this read ERP live stock + open POs, which were always 0 for
+    SME materials (they were never received into ERP `inventory`), so every
+    SME analytical tab showed Available/Ordered = 0.
+
+    `site_id` is accepted for signature compatibility but the SME inventory
+    baseline + ledger rollup are global (matching the standalone SME, whose
+    inventory file is not site-scoped). Materials in `sme_recipe` but absent
+    from the seed simply don't appear here → the engine treats them as 0
+    available (shortfall), exactly as the standalone SME did when a material
+    wasn't in its inventory file.
     """
     _owns = conn is None
     if _owns:
         conn = get_connection()
+    _EMPTY = pd.DataFrame(columns=[
+        "Material_Code", "Material_Name", "UOM",
+        "Nature", "Available_Qty", "Ordered_Qty",
+    ])
     try:
-        live = load_live_inventory(conn=conn, site_id=site_id)
-        if live is None or live.empty:
-            return pd.DataFrame(columns=[
-                "Material_Code", "Material_Name", "UOM",
-                "Nature", "Available_Qty", "Ordered_Qty",
-            ])
-        live = live.copy()
-        if "Material_Code" not in live.columns:
-            live["Material_Code"] = ""
-        live["Material_Code"] = live["Material_Code"].astype(str).str.strip()
-        live = live[live["Material_Code"] != ""].copy()
-        live["Available_Qty"] = pd.to_numeric(
-            live.get("Current_Stock", 0), errors="coerce",
-        ).fillna(0.0)
-        # SAP_Codes may share a Material_Code; sum stock across them and
-        # pick the first non-empty description / UOM for display.
-        desc_col = ("Equipment_Description"
-                    if "Equipment_Description" in live.columns else None)
-        uom_col  = "UOM" if "UOM" in live.columns else None
-        agg_spec = {"Available_Qty": "sum"}
-        if desc_col:
-            agg_spec[desc_col] = "first"
-        if uom_col:
-            agg_spec[uom_col] = "first"
-        grouped = live.groupby("Material_Code", as_index=False).agg(agg_spec)
-        if desc_col and desc_col != "Material_Name":
-            grouped = grouped.rename(columns={desc_col: "Material_Name"})
-        if "Material_Name" not in grouped.columns:
-            grouped["Material_Name"] = ""
+        try:
+            df = pd.read_sql(
+                "SELECT material_code        AS Material_Code, "
+                "       material_name        AS Material_Name, "
+                "       uom                  AS UOM, "
+                "       nature               AS Nature, "
+                "       available_qty        AS Available_Qty, "
+                "       ordered_qty          AS Ordered_Qty "
+                "FROM sme_materials_view",
+                conn,
+            )
+        except Exception:
+            # View missing (pre-R20.5 DB not yet self-healed) → empty contract.
+            return _EMPTY
+        if df.empty:
+            return _EMPTY
 
-        # Enrich with the SME recipe master's authoritative name / UOM / nature
-        # when present (the recipe table carries the project-specific labels).
+        df["Material_Code"] = df["Material_Code"].astype(str).str.strip()
+        df = df[df["Material_Code"] != ""].copy()
+        df["Available_Qty"] = pd.to_numeric(
+            df["Available_Qty"], errors="coerce").fillna(0.0)
+        df["Ordered_Qty"] = pd.to_numeric(
+            df["Ordered_Qty"], errors="coerce").fillna(0.0)
+
+        # Fallback-enrich Material_Name / UOM / Nature from the recipe master
+        # when the seed left them blank (the recipe carries project labels).
         try:
             rec = pd.read_sql(
                 "SELECT DISTINCT Material_Code, "
@@ -12169,39 +12187,17 @@ def get_sme_inventory_view(
         if not rec.empty:
             rec["Material_Code"] = rec["Material_Code"].astype(str).str.strip()
             rec = rec.drop_duplicates(subset=["Material_Code"], keep="first")
-            grouped = grouped.merge(rec, on="Material_Code", how="left")
-            # Prefer SME master name when present, else fall back to ERP desc.
-            grouped["Material_Name"] = (
-                grouped["_rec_name"].fillna(grouped["Material_Name"])
-                .replace({"": None}).fillna(grouped["Material_Name"])
+            df = df.merge(rec, on="Material_Code", how="left")
+            df["Material_Name"] = (
+                df["Material_Name"].replace({"": None})
+                .fillna(df["_rec_name"])
             )
-            if "UOM" in grouped.columns:
-                grouped["UOM"] = (
-                    grouped["_rec_uom"].fillna(grouped["UOM"])
-                    .replace({"": None}).fillna(grouped["UOM"])
-                )
-            else:
-                grouped["UOM"] = grouped["_rec_uom"]
-            grouped["Nature"] = grouped["_rec_nature"]
-            grouped = grouped.drop(
-                columns=["_rec_name", "_rec_uom", "_rec_nature"],
-                errors="ignore",
-            )
-        else:
-            if "UOM" not in grouped.columns:
-                grouped["UOM"] = ""
-            grouped["Nature"] = None
+            df["UOM"] = df["UOM"].replace({"": None}).fillna(df["_rec_uom"])
+            df["Nature"] = df["Nature"].replace({"": None}).fillna(df["_rec_nature"])
+            df = df.drop(columns=["_rec_name", "_rec_uom", "_rec_nature"],
+                         errors="ignore")
 
-        on_order = get_on_order_by_material(site_id=site_id, conn=conn)
-        if on_order.empty:
-            grouped["Ordered_Qty"] = 0.0
-        else:
-            grouped = grouped.merge(on_order, on="Material_Code", how="left")
-            grouped["Ordered_Qty"] = pd.to_numeric(
-                grouped["Ordered_Qty"], errors="coerce",
-            ).fillna(0.0)
-
-        return grouped[[
+        return df[[
             "Material_Code", "Material_Name", "UOM",
             "Nature", "Available_Qty", "Ordered_Qty",
         ]].sort_values("Material_Code").reset_index(drop=True)

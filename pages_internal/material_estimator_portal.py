@@ -7136,9 +7136,24 @@ SELECT entry_date       AS "Date",
             st.markdown(f'<div class="sec-hdr">📋 View, Edit & Delete — {md_table_sel}</div>',
                         unsafe_allow_html=True)
 
+            # R20.5.1 — `db_table` now resolves to a VIEW (equipment / recipe /
+            # sme_materials_view), and VIEWs have no implicit `rowid`. The old
+            # `ORDER BY rowid` raised "no such column: rowid", which the bare
+            # except swallowed into an empty grid → "No records found" for all
+            # three radios even though the data is present. Order by a real
+            # column per table instead.
+            _ORDER_COL = {
+                "equipment":          "id",
+                "recipe":             "id",
+                "sme_materials_view": "material_code",
+            }.get(db_table, "")
             conn = get_db()
             try:
-                view_df = pd.read_sql(f"SELECT * FROM {db_table} ORDER BY rowid", conn)
+                if _ORDER_COL:
+                    view_df = pd.read_sql(
+                        f'SELECT * FROM {db_table} ORDER BY "{_ORDER_COL}"', conn)
+                else:
+                    view_df = pd.read_sql(f"SELECT * FROM {db_table}", conn)
             except Exception:
                 view_df = pd.DataFrame()
             conn.close()
