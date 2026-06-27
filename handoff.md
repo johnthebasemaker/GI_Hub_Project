@@ -2822,6 +2822,14 @@ These are FROZEN — proceed without re-litigating:
 | X1 | CV and Docker decoupled; CV pilots on Mac first | De-risk one at a time |
 | X2 | Pilot CV at one storeroom, then expand | Real-world model accuracy before scale |
 
+> ### 🔁 SUPERSEDED by Workstream C (locked 2026-06-27) — read this before applying A2/A6/A7
+> The user has formally re-canonized the deployment target. The following frozen rows are **overridden** for production:
+> - **A2 (intranet-only) → PUBLIC.** Production runs on a **public Hetzner VPS fronted by Nginx** (TLS via Let's Encrypt). The "AI stays safe internal" guarantee is preserved *not* by intranet isolation but by giving **Ollama and all FastAPI sidecars NO host port mapping** — Nginx is the sole ingress on `gi-net`. Public exposure adds: firewall (only 22/80/443), fail2ban/brute-force protection, TLS, and Streamlit's bcrypt RBAC as the auth gate.
+> - **A6 (corporate NAS) → Hetzner Storage Box.** The `backup` service rsyncs to a Hetzner Storage Box bind-mount instead of a corporate NAS.
+> - **A7 (Twilio for server WhatsApp) → Meta WhatsApp Business Cloud API.** Twilio is skipped. The `whatsapp_worker._send_whatsapp()` router gains a **third** provider, `WHATSAPP_PROVIDER=meta` → `_send_via_meta()`. **`pywhatkit` and the Mac AppleScript path stay intact** (DO-NOT-BREAK-THE-MAC still governs); `meta` is set only in the server's compose env.
+>
+> **Still in force / unchanged:** A1 (Linux Docker), A3 (bcrypt + app RBAC — NOT .NET), A4 (SQLite kept), A5 (CPU-only; **CV/LocateAnything gate stays OFF for v1**, so size the box for Ollama only). New: **material photos stored as files at `/app/data/material_photos/` in the `gi-data` volume; SQLite `inventory.Image_Filename` holds only the filename.** New AI topology: a **FastAPI RAG sidecar** wraps `ai/manual_qa.py` over Ollama (v1 = wrapper, no vector store) so Streamlit stays responsive. CI/CD: **GitHub Actions → GHCR → SSH `docker compose up -d`** on the Hetzner box.
+
 ---
 
 ## Phase 6.0 — Preflight (do BEFORE any code)

@@ -1,0 +1,47 @@
+# Build context hygiene — keep the image small and never bake local state in.
+# NOTE: USER_MANUAL.md, the seed .xlsx files, and logos are NOT ignored —
+# the app + RAG sidecar + SME bootstrap read them at runtime.
+
+# Virtual envs / VCS
+.venv/
+venv/
+env/
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Local database + backups (lives in the gi-data named volume at runtime)
+*.db
+*.sqlite3
+*.bak
+gi_database.*.bak
+
+# Mutable disk state (mounted as volumes at runtime)
+uploads/
+data/cv_training/
+models/
+runs/
+reports_archive/
+
+# CV weights pulled separately into the gi-models volume
+yolov8*.pt
+
+# Reports / generated artifacts
+BUG_REPORT.md
+UI_CRAWLER_REPORT.md
+
+# Secrets / env
+.env
+.streamlit/secrets.toml
+
+# OS noise
+.DS_Store
+
+# Docker meta (don't recurse the build files into the image)
+docker-compose*.yml
+Dockerfile*
+.dockerignore

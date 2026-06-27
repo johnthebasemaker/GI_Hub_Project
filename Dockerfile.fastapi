@@ -1,0 +1,49 @@
+# ============================================================================
+# Dockerfile.fastapi — RAG / User-Manual AI sidecar
+# Wraps ai/manual_qa.py (which talks to Ollama) behind FastAPI so the Streamlit
+# app never blocks on a multi-second LLM prompt-eval. v1 is a thin wrapper —
+# no vector store yet. Internal-only: reached via nginx /api/, no host ports.
+# ============================================================================
+
+# ---- Stage 1: builder ------------------------------------------------------
+FROM python:3.12-slim AS builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Shares the server requirement set so the sidecar can import database/ai
+# helpers without version drift against the Streamlit image.
+COPY requirements-server.txt .
+RUN pip install --upgrade pip && pip install -r requirements-server.txt
+
+# ---- Stage 2: runtime ------------------------------------------------------
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libzbar0 libgomp1 tini \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --uid 10001 gihub
+
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+COPY . /app
+RUN chown -R gihub:gihub /app
+
+USER gihub
+EXPOSE 8000
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["uvicorn", "services.rag_api:app", "--host", "0.0.0.0", "--port", "8000"]

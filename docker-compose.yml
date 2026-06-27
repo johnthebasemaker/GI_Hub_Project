@@ -1,0 +1,115 @@
+# ============================================================================
+# docker-compose.yml — GI Hub production stack (Hetzner CCX33 / Linux)
+# ----------------------------------------------------------------------------
+# Five services on ONE private bridge (gi-net). Only nginx touches host ports.
+# Ollama + FastAPI have NO host ports — that is the load-bearing "AI stays safe
+# internal" guarantee, preserved even though the box is now public-facing.
+#
+#   nginx     :80 (→ :443 in the TLS step)  reverse proxy / sole ingress
+#   streamlit  internal :8501               the ERP app
+#   fastapi    internal :8000               RAG / manual assistant sidecar
+#   ollama     internal :11434  NO PORTS     local LLMs
+#   backup     no ports                      nightly SQLite + uploads backup
+#
+# This file is for the SERVER ONLY. The Mac dev path stays `streamlit run main.py`.
+# ============================================================================
+
+name: gi-hub
+
+networks:
+  gi-net:
+    driver: bridge
+
+volumes:
+  gi-data:        # SQLite DB + uploads + entry attachments + material_photos
+  gi-ollama:      # Ollama model cache (qwen2.5-coder:7b, llama3.1:8b, …)
+  gi-models:      # reserved: CV weights for when the LocateAnything gate is ON
+  gi-backups:     # backup destination (bind to a Hetzner Storage Box later)
+
+services:
+  # ---- Reverse proxy: the only public-facing service ----------------------
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on: [streamlit, fastapi]
+    ports:
+      - "80:80"
+      # - "443:443"   # enabled in the Nginx+TLS step (needs live domain + certs)
+    volumes:
+      - ./docker/nginx/gihub.conf:/etc/nginx/conf.d/default.conf:ro
+      - gi-data:/srv/data:ro          # lets nginx serve /photos/ directly later
+    networks: [gi-net]
+    restart: unless-stopped
+
+  # ---- ERP app (Streamlit) ------------------------------------------------
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    image: gihub-streamlit:latest
+    depends_on: [ollama]
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - GI_SUPPRESS_EMBEDDED_WORKER=1   # no in-container worker (added in WhatsApp step)
+      - GI_DATA_DIR=/app/data
+      - TZ=Asia/Riyadh
+      # - WHATSAPP_PROVIDER=meta        # uncommented in the WhatsApp step
+    volumes:
+      - gi-data:/app/data
+    networks: [gi-net]
+    restart: unless-stopped
+    # no host ports — nginx is the only ingress
+
+  # ---- RAG / manual assistant sidecar -------------------------------------
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile.fastapi
+    image: gihub-fastapi:latest
+    depends_on: [ollama]
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - TZ=Asia/Riyadh
+    networks: [gi-net]
+    restart: unless-stopped
+    # no host ports — reached via nginx /api/
+
+  # ---- Local LLM runtime: INTERNAL ONLY -----------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - gi-ollama:/root/.ollama
+    networks: [gi-net]
+    restart: unless-stopped
+    # NO ports: block — never expose Ollama to the host/internet.
+    # Pull models once after first `up`:
+    #   docker compose exec ollama ollama pull qwen2.5-coder:7b
+    #   docker compose exec ollama ollama pull llama3.1:8b
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
+
+  # ---- Nightly backup -----------------------------------------------------
+  backup:
+    image: alpine:3.20
+    depends_on: [streamlit]
+    volumes:
+      - gi-data:/data                 # rw: SQLite .backup touches -wal/-shm
+      - gi-backups:/backups
+      - ./docker/backup/backup.sh:/usr/local/bin/backup.sh:ro
+    environment:
+      - GI_DATA_DIR=/data
+      - GI_BACKUP_DIR=/backups
+      - TZ=Asia/Riyadh
+    networks: [gi-net]
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache sqlite rsync tzdata >/dev/null
+        echo '0 2 * * * /usr/local/bin/backup.sh >> /backups/backup.log 2>&1' > /etc/crontabs/root
+        echo "[backup] cron installed — nightly 02:00 local. Running an initial pass…"
+        /usr/local/bin/backup.sh || true
+        exec crond -f -l 8

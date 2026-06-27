@@ -1,0 +1,56 @@
+# ============================================================================
+# requirements-server.txt — Linux Docker (Hetzner) dependency set
+# ----------------------------------------------------------------------------
+# Derived from requirements.txt MINUS the macOS/Windows GUI deps that fail on a
+# slim Linux image. The Mac dev path keeps using requirements.txt unchanged.
+#
+#   EXCLUDED on purpose:
+#     • pywhatkit   — desktop GUI WhatsApp fallback (needs a display). The server
+#                     uses the Meta WhatsApp Cloud API instead (WHATSAPP_PROVIDER=meta).
+#                     This is a per-IMAGE exclusion, NOT a per-codebase deletion —
+#                     pywhatkit stays in requirements.txt so the Mac demo works.
+#     • pywin32     — Windows-only.
+#     • pytest/httpx— test-only; CI runs them on GitHub, not in the prod image.
+# ============================================================================
+
+bcrypt
+streamlit
+streamlit-keyup                 # live-typing column filters on Live Dashboard
+
+# WhatsApp: Twilio kept (small, lazy-imported) for back-compat; the server's
+# active provider is the Meta Cloud API path, wired in the WhatsApp step.
+twilio
+
+# Reports / Excel / PDF toolchain
+fpdf2
+openpyxl
+plotly
+xlsxwriter>=3.1.0
+reportlab>=4.0.0
+
+# FastAPI — powers BOTH the existing PWA service and the new RAG/manual sidecar
+fastapi
+uvicorn[standard]
+
+# Employee QR badges (encode/decode). pyzbar needs the native libzbar0 lib —
+# installed via apt in the Dockerfiles.
+qrcode[pil]
+pyzbar
+
+# Network-resilience form drafts (falls back to server-side-only if absent)
+streamlit-local-storage>=0.0.20
+
+# HEIC/HEIF decode for the Ollama vision OCR pipeline (wheels bundle libheif)
+pillow-heif>=0.16
+
+# Smart Material Estimator drag-priority list (graceful fallback if absent)
+streamlit-sortables>=0.3.0
+
+# ----------------------------------------------------------------------------
+# Computer Vision (LocateAnything / YOLO) — DEFERRED for v1.
+# The CV gate ships OFF in production; these modules are lazy-imported, so the
+# app and the RAG sidecar run fine without them. Uncomment + rebuild + resize
+# the box (CCX33 → CCX43) when you turn the Computer Vision gate ON.
+# ----------------------------------------------------------------------------
+# ultralytics>=8.1
+# opencv-python-headless>=4.9

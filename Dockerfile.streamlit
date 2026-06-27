@@ -1,0 +1,64 @@
+# ============================================================================
+# Dockerfile.streamlit — the GI Hub ERP (Streamlit) container
+# Multi-stage: a fat builder compiles wheels into a venv; the slim runtime
+# copies only the venv + app code. Final image runs as non-root `gihub`.
+# ============================================================================
+
+# ---- Stage 1: builder ------------------------------------------------------
+FROM python:3.12-slim AS builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# build-essential: compiles any C-extension wheels that lack manylinux builds.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements-server.txt .
+RUN pip install --upgrade pip && pip install -r requirements-server.txt
+
+# ---- Stage 2: runtime ------------------------------------------------------
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/opt/venv/bin:$PATH" \
+    GI_DATA_DIR=/app/data \
+    # The embedded WhatsApp worker is suppressed in-container; a dedicated
+    # worker service (Meta provider) is added in the WhatsApp step.
+    GI_SUPPRESS_EMBEDDED_WORKER=1
+
+# Runtime native libs:
+#   libzbar0 — pyzbar (QR decode);  libgomp1 — OpenMP runtime used by numpy/etc;
+#   tini     — proper PID 1 (reaps zombies, forwards signals).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libzbar0 libgomp1 tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root runtime user.
+RUN useradd --create-home --uid 10001 gihub
+
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+COPY . /app
+COPY docker/entrypoint-streamlit.sh /usr/local/bin/entrypoint.sh
+
+# Pre-create the data mount-point OWNED by gihub. When the empty `gi-data`
+# named volume mounts here, Docker initialises it from this dir — so the volume
+# becomes gihub-writable without any runtime chown dance.
+RUN chmod +x /usr/local/bin/entrypoint.sh \
+    && mkdir -p /app/data \
+    && chown -R gihub:gihub /app
+
+USER gihub
+EXPOSE 8501
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+CMD ["streamlit", "run", "main.py", \
+     "--server.port=8501", "--server.address=0.0.0.0", \
+     "--server.headless=true", "--browser.gatherUsageStats=false"]
