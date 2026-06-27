@@ -1,25 +1,27 @@
 """
 Smart Material Estimator (SME) — Bootstrap Loader
 ==================================================
-One-shot loader for the SME master data (equipment surface areas + lining-
-system recipes) into the ERP's gi_database.db.
+One-shot loader for the SME master data into the ERP's gi_database.db.
 
-The estimator is a READ-ONLY projection over the ERP ledger — Available_Qty
-and Ordered_Qty come from receipts/consumption and purchase_orders at read
-time. This script only seeds the project master data the engine joins on.
+Three Excel files seed three SME-owned tables:
+  - For_1_SQM.xlsx                      → sme_recipe         (global)
+  - Equipment.xlsx                      → sme_equipment      (per Site_ID)
+  - Materials_DetailsAvailable_Qty.xlsx → sme_inventory_seed (global)
+
+The estimator's Available_Qty is COMPUTED at read time as
+    Initial_Available_Qty + receipts.sum - consumption.sum
+via the `sme_materials_view` SQL view — see database.py. This script only
+seeds the static baselines (Initial_* columns + master attributes).
+
+R20.5 — switched to INSERT OR IGNORE semantics so manual edits made via the
+Master Data tab survive a re-bootstrap. To force-overwrite seed values from
+Excel, pass --force.
 
 Run:
     python3 scripts/sme_bootstrap.py --site-id HQ
+    python3 scripts/sme_bootstrap.py --site-id CNCEC
     python3 scripts/sme_bootstrap.py --site-id HQ --dry-run
-
-Idempotent:
-- sme_equipment   : DELETE rows for the target Site_ID, then INSERT fresh.
-- sme_recipe      : DELETE all rows (recipes are global, not site-scoped),
-                    then INSERT fresh.
-- sme_sqm_progress: UPSERT — preserves Done_SQM on re-load (matches the
-                    legacy SME setup_db.py contract).
-
-Source Excel files live in scripts/sme_seed_data/ next to this script.
+    python3 scripts/sme_bootstrap.py --site-id HQ --force
 """
 from __future__ import annotations
 
@@ -45,22 +47,34 @@ _FILE_EQ   = os.path.join(_SEED_DIR, "Equipment.xlsx")
 
 
 # ---------------------------------------------------------------------------
-# Cleaners — port of validate_data.clean_recipe / clean_equipment
+# Cleaners
 # ---------------------------------------------------------------------------
-# Inventory is NOT loaded into the ERP from Excel — ERP `inventory` already
-# carries Material_Code, and stock comes from the ledger. We only need
-# recipes + equipment from Excel.
 
 def _clean_recipe(df_b: pd.DataFrame) -> pd.DataFrame:
+    """Normalize For_1_SQM.xlsx into the sme_recipe contract.
+
+    R20.5 — keeps every Excel column the SME UI cares about. Renames the
+    Excel column "System Key's" to System_Keys, "PACKAGE SIZE" to
+    Package_Size, and "Sl. #" to Sl_No to match table column names.
+    """
     df = df_b.copy()
+    # Rename oddball Excel headers to table-friendly names.
+    df = df.rename(columns={
+        "Sl. #":         "Sl_No",
+        "System Key's":  "System_Keys",
+        "PACKAGE SIZE":  "Package_Size",
+        "Lining_Thicknes": "Lining_Thickness",  # typo in source spreadsheet
+    })
     keep = [
-        "Lining_System_Code", "Lining_System_Short_Name", "Lining_Type",
-        "Material_Code", "Material_Description", "Material_Name",
-        "For_1_SQM", "UOM",
+        "Sl_No", "Lining_System_Code", "Substrate", "Lining_System",
+        "System_Keys", "Lining_Thickness", "Lining_System_Short_Name",
+        "Lining_Type", "Material_Code", "Material_Description",
+        "Material_Name", "For_1_SQM", "UOM", "Package_Size",
     ]
     df = df[[c for c in keep if c in df.columns]].copy()
     df = df.dropna(subset=["Lining_System_Code", "Material_Code"])
 
+    # Material_Code may carry comma-separated alternates — explode them.
     df["Material_Code"] = df["Material_Code"].astype(str).str.strip()
     df = df.assign(
         Material_Code=df["Material_Code"].str.split(r",\s*")
@@ -72,25 +86,51 @@ def _clean_recipe(df_b: pd.DataFrame) -> pd.DataFrame:
     )
     df["For_1_SQM"] = pd.to_numeric(df["For_1_SQM"], errors="coerce").fillna(0.0)
 
-    for col in ("Lining_System_Short_Name", "Lining_Type",
-                "Material_Name", "Material_Description", "UOM"):
+    # Coerce all string columns + strip "nan" sentinels.
+    for col in ("Sl_No", "Substrate", "Lining_System", "System_Keys",
+                "Lining_Thickness", "Lining_System_Short_Name", "Lining_Type",
+                "Material_Description", "Material_Name", "UOM", "Package_Size"):
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip().replace({"nan": None})
     return df
 
 
 def _clean_equipment(df_c: pd.DataFrame) -> pd.DataFrame:
+    """Normalize Equipment.xlsx into the sme_equipment contract.
+
+    R20.5 — keeps every Excel column the SME UI cares about and renames
+    oddball Excel headers (Sl. #, WBS #, IO#, Drawing #, Dia / L, Ht. /W,
+    Equipment Total SQM, Material Spec., Lining_Area/location) to the
+    snake_case table column names.
+    """
     df = df_c.copy()
+    df = df.rename(columns={
+        "Sl. #":                "Sl_No",
+        "WBS #":                "WBS_No",
+        "IO#":                  "IO_No",
+        "Drawing #":            "Drawing_No",
+        "Dia / L":              "Dia_L",
+        "Ht. /W":               "Ht_W",
+        "Equipment Total SQM":  "Equipment_Total_SQM",
+        "Material Spec.":       "Material_Spec",
+        "Lining_Area/location": "Lining_Area_Location",
+    })
     keep = [
-        "Location", "Type", "Lining_System_Code", "Lining_System_Short_Name",
-        "Lining_Type", "Equipment_Tag_No.", "Name", "Description",
+        "Sl_No", "Project", "WBS_No", "IO_No", "Location", "Type",
+        "Substrate", "Equipment_Tag_No.", "Name", "Drawing_No", "Design",
+        "Dia_L", "Ht_W", "Equipment_Total_SQM", "Remaraks",
+        "Lining_System_Code", "Lining_System_Short_Name", "Lining_Type",
+        "Lining_System", "Material_Spec", "Lining_Area_Location",
         "Surface_Area_SQM",
     ]
     df = df[[c for c in keep if c in df.columns]].copy()
     df = df.dropna(subset=["Equipment_Tag_No.", "Lining_System_Code"])
 
-    for col in ("Equipment_Tag_No.", "Name", "Description", "Location", "Type",
-                "Lining_System_Short_Name", "Lining_Type"):
+    for col in ("Sl_No", "Project", "WBS_No", "IO_No", "Drawing_No",
+                "Design", "Dia_L", "Ht_W", "Remaraks", "Equipment_Tag_No.",
+                "Name", "Location", "Type", "Substrate",
+                "Lining_System_Short_Name", "Lining_Type", "Lining_System",
+                "Material_Spec", "Lining_Area_Location"):
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip().replace({"nan": None})
 
@@ -100,6 +140,10 @@ def _clean_equipment(df_c: pd.DataFrame) -> pd.DataFrame:
     df["Surface_Area_SQM"] = pd.to_numeric(
         df["Surface_Area_SQM"], errors="coerce",
     )
+    if "Equipment_Total_SQM" in df.columns:
+        df["Equipment_Total_SQM"] = pd.to_numeric(
+            df["Equipment_Total_SQM"], errors="coerce",
+        )
     before = len(df)
     df = df.dropna(subset=["Surface_Area_SQM"])
     df = df[df["Surface_Area_SQM"] > 0].reset_index(drop=True)
@@ -110,13 +154,75 @@ def _clean_equipment(df_c: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _clean_inventory_seed(df_a: pd.DataFrame) -> pd.DataFrame:
+    """Normalize Materials_DetailsAvailable_Qty.xlsx into sme_inventory_seed.
+
+    The Excel often has multiple PO lines per Material_Code (one per
+    purchase document). We aggregate: sum Available_Qty + Ordered_Qty;
+    pick the most recent Document_Date and first non-null vendor / PO #
+    for display.
+    """
+    df = df_a.copy()
+    df = df.rename(columns={
+        "Vendor/supplying plant": "Vendor",
+        "Purchasing Document":    "Purchasing_Document",
+        "Document Date":          "Document_Date",
+    })
+    keep = [
+        "Item", "Vendor", "Purchasing_Document", "Document_Date",
+        "Material_Code", "Material_Name", "Nature", "UOM",
+        "Available_Qty", "Ordered_Qty",
+    ]
+    df = df[[c for c in keep if c in df.columns]].copy()
+    df = df.dropna(subset=["Material_Code"])
+    df["Material_Code"] = df["Material_Code"].astype(str).str.strip()
+    df = df[df["Material_Code"] != ""].copy()
+
+    # Coerce numerics
+    df["Available_Qty"] = pd.to_numeric(df.get("Available_Qty"), errors="coerce").fillna(0.0)
+    df["Ordered_Qty"]   = pd.to_numeric(df.get("Ordered_Qty"),   errors="coerce").fillna(0.0)
+
+    # Document_Date → ISO string (sqlite-friendly), most recent wins on agg.
+    if "Document_Date" in df.columns:
+        df["Document_Date"] = pd.to_datetime(
+            df["Document_Date"], errors="coerce",
+        ).dt.strftime("%Y-%m-%d")
+
+    # Aggregate by Material_Code: sum qty, take first non-null for the rest.
+    agg = (df.groupby("Material_Code", as_index=False)
+             .agg({
+                 "Material_Name":        lambda s: next((x for x in s if pd.notna(x) and str(x).strip()), None),
+                 "Item":                 lambda s: next((x for x in s if pd.notna(x)), None),
+                 "Vendor":               lambda s: next((x for x in s if pd.notna(x) and str(x).strip()), None),
+                 "Purchasing_Document":  lambda s: next((str(int(x)) for x in s if pd.notna(x)), None),
+                 "Document_Date":        "max",
+                 "Nature":               lambda s: next((x for x in s if pd.notna(x) and str(x).strip()), None),
+                 "UOM":                  lambda s: next((x for x in s if pd.notna(x) and str(x).strip()), None),
+                 "Available_Qty":        "sum",
+                 "Ordered_Qty":          "sum",
+             }))
+
+    # Cast Item to text (it comes through as float in Excel).
+    if "Item" in agg.columns:
+        agg["Item"] = agg["Item"].apply(
+            lambda x: None if pd.isna(x) else str(int(x)) if isinstance(x, float) else str(x).strip()
+        )
+    return agg
+
+
 # ---------------------------------------------------------------------------
 # Loaders
 # ---------------------------------------------------------------------------
 
-def _load_recipes(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
-    # Recipes are GLOBAL (no Site_ID). Wipe + reload.
-    conn.execute("DELETE FROM sme_recipe")
+def _load_recipes(
+    conn: sqlite3.Connection,
+    df: pd.DataFrame,
+    force: bool,
+) -> int:
+    """Load recipes. R20.5 — INSERT OR IGNORE by default so manual edits
+    survive. --force does an upfront DELETE + INSERT to re-baseline from Excel."""
+    if force:
+        conn.execute("DELETE FROM sme_recipe")
     rows = 0
     for _, r in df.iterrows():
         # Prefer 'Lining_System_Short_Name'; fall back to 'Lining_Type'.
@@ -127,15 +233,27 @@ def _load_recipes(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
         conn.execute(
             "INSERT OR IGNORE INTO sme_recipe "
             "(Lining_System_Code, Lining_System_Name, Material_Code, "
-            " Material_Name, UOM, Nature, For_1_SQM) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (str(r["Lining_System_Code"]).strip(),
-             name,
-             str(r["Material_Code"]).strip(),
-             material_name,
-             r.get("UOM"),
-             None,  # Nature isn't in File B; reserved for future use
-             float(r["For_1_SQM"]) if pd.notna(r["For_1_SQM"]) else 0.0),
+            " Material_Name, UOM, Nature, For_1_SQM, "
+            " Sl_No, Substrate, System_Keys, Lining_Thickness, "
+            " Lining_System, Lining_Type, Material_Description, Package_Size) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(r["Lining_System_Code"]).strip(),
+                name,
+                str(r["Material_Code"]).strip(),
+                material_name,
+                r.get("UOM"),
+                None,  # Nature isn't in File B; reserved for future use
+                float(r["For_1_SQM"]) if pd.notna(r["For_1_SQM"]) else 0.0,
+                r.get("Sl_No"),
+                r.get("Substrate"),
+                r.get("System_Keys"),
+                r.get("Lining_Thickness"),
+                r.get("Lining_System"),
+                r.get("Lining_Type"),
+                r.get("Material_Description"),
+                r.get("Package_Size"),
+            ),
         )
         rows += 1
     return rows
@@ -145,24 +263,87 @@ def _load_equipment(
     conn: sqlite3.Connection,
     df: pd.DataFrame,
     site_id: str,
+    force: bool,
 ) -> int:
-    # Equipment IS site-scoped. Wipe + reload for this Site_ID only.
-    conn.execute("DELETE FROM sme_equipment WHERE Site_ID = ?", (site_id,))
+    """Load equipment for the given Site_ID. R20.5 — INSERT OR IGNORE by
+    default so manual edits survive. --force does an upfront DELETE +
+    INSERT to re-baseline from Excel for this site only."""
+    if force:
+        conn.execute("DELETE FROM sme_equipment WHERE Site_ID = ?", (site_id,))
     rows = 0
     for _, r in df.iterrows():
         conn.execute(
             "INSERT OR IGNORE INTO sme_equipment "
             "(Site_ID, Equipment_Tag_No, Name, Location, Type, Substrate, "
-            " Lining_System_Code, Surface_Area_SQM) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (site_id,
-             str(r["Equipment_Tag_No."]).strip(),
-             r.get("Name"),
-             r.get("Location"),
-             r.get("Type"),
-             r.get("Lining_Type"),  # 'Substrate' analogue from File C
-             str(r["Lining_System_Code"]).strip(),
-             float(r["Surface_Area_SQM"])),
+            " Lining_System_Code, Surface_Area_SQM, "
+            " Sl_No, Project, WBS_No, IO_No, Drawing_No, Design, "
+            " Dia_L, Ht_W, Equipment_Total_SQM, Remaraks, "
+            " Lining_System_Short_Name, Lining_Type, Lining_System, "
+            " Material_Spec, Lining_Area_Location) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "        ?, ?, ?, ?, ?)",
+            (
+                site_id,
+                str(r["Equipment_Tag_No."]).strip(),
+                r.get("Name"),
+                r.get("Location"),
+                r.get("Type"),
+                r.get("Substrate") or r.get("Lining_Type"),  # Substrate fallback
+                str(r["Lining_System_Code"]).strip(),
+                float(r["Surface_Area_SQM"]),
+                r.get("Sl_No"),
+                r.get("Project"),
+                r.get("WBS_No"),
+                r.get("IO_No"),
+                r.get("Drawing_No"),
+                r.get("Design"),
+                r.get("Dia_L"),
+                r.get("Ht_W"),
+                float(r["Equipment_Total_SQM"])
+                    if pd.notna(r.get("Equipment_Total_SQM")) else None,
+                r.get("Remaraks"),
+                r.get("Lining_System_Short_Name"),
+                r.get("Lining_Type"),
+                r.get("Lining_System"),
+                r.get("Material_Spec"),
+                r.get("Lining_Area_Location"),
+            ),
+        )
+        rows += 1
+    return rows
+
+
+def _load_inventory_seed(
+    conn: sqlite3.Connection,
+    df: pd.DataFrame,
+    force: bool,
+) -> int:
+    """Load sme_inventory_seed (SME-owned baseline, separate from ERP
+    inventory). R20.5 — INSERT OR IGNORE by default; --force re-baselines.
+
+    Aggregated row per Material_Code is the contract."""
+    if force:
+        conn.execute("DELETE FROM sme_inventory_seed")
+    rows = 0
+    for _, r in df.iterrows():
+        conn.execute(
+            "INSERT OR IGNORE INTO sme_inventory_seed "
+            "(Material_Code, Material_Name, Item, Vendor, Purchasing_Document, "
+            " Document_Date, Nature, UOM, "
+            " Initial_Available_Qty, Initial_Ordered_Qty) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(r["Material_Code"]).strip(),
+                r.get("Material_Name"),
+                r.get("Item"),
+                r.get("Vendor"),
+                r.get("Purchasing_Document"),
+                r.get("Document_Date"),
+                r.get("Nature"),
+                r.get("UOM"),
+                float(r.get("Available_Qty") or 0.0),
+                float(r.get("Ordered_Qty")   or 0.0),
+            ),
         )
         rows += 1
     return rows
@@ -173,7 +354,9 @@ def _seed_progress(
     df: pd.DataFrame,
     site_id: str,
 ) -> int:
-    # Sum Surface_Area_SQM per (tag × system) — same shape as legacy SME.
+    """Upsert SME SQM progress per (tag × system_code). Always uses the
+    upsert helper which preserves existing Done_SQM (idempotent — safe
+    to re-run regardless of --force)."""
     grouped = df.groupby(
         ["Equipment_Tag_No.", "Lining_System_Code"], as_index=False,
     )["Surface_Area_SQM"].sum()
@@ -184,7 +367,6 @@ def _seed_progress(
             equipment_tag=str(r["Equipment_Tag_No."]).strip(),
             lining_system_code=str(r["Lining_System_Code"]).strip(),
             original_sqm=float(r["Surface_Area_SQM"]),
-            # Don't pass done_sqm — the helper preserves the existing value.
             conn=conn,
         )
         rows += 1
@@ -192,9 +374,8 @@ def _seed_progress(
 
 
 def _seed_site_dropdowns(conn: sqlite3.Connection, site_id: str) -> None:
-    """If the target Site_ID has no SME location/type values yet, copy the
-    HQ seed set onto it. Lets brand-new sites have populated dropdowns on
-    first portal render without forcing the admin into Master Data first."""
+    """Copy HQ's seed location/type values onto a brand-new Site_ID so the
+    portal has populated dropdowns on first render."""
     for category in ("sme_location", "sme_equipment_type"):
         existing = conn.execute(
             "SELECT COUNT(*) FROM system_settings "
@@ -230,6 +411,10 @@ def main() -> int:
                     help="Override DB path (default: ERP gi_database.db)")
     ap.add_argument("--dry-run", action="store_true",
                     help="Parse + report row counts; no DB writes")
+    ap.add_argument("--force", action="store_true",
+                    help="Wipe existing rows before INSERT (re-baseline from "
+                         "Excel — discards any manual edits made in the "
+                         "Master Data tab).")
     args = ap.parse_args()
 
     for p in (_FILE_INV, _FILE_REC, _FILE_EQ):
@@ -239,40 +424,56 @@ def main() -> int:
 
     print("=" * 60)
     print(f"  SME Bootstrap — Site_ID={args.site_id}  "
-          f"{'(DRY RUN)' if args.dry_run else ''}")
+          f"{'(DRY RUN)' if args.dry_run else ''}"
+          f"{'  [FORCE]' if args.force else '  [ignore-mode]'}")
     print("=" * 60)
+    if not args.force:
+        print("  Note: INSERT OR IGNORE — existing rows are preserved so")
+        print("        manual Master Data edits survive. Pass --force to")
+        print("        wipe + reload from Excel.")
 
-    print("\n[1/3] Cleaning recipe master from For_1_SQM.xlsx …")
+    print("\n[1/4] Cleaning recipe master from For_1_SQM.xlsx …")
     rec_raw = pd.read_excel(_FILE_REC,
                             sheet_name="LINING SYSTEM MATERIAL CONSM")
     rec_raw.columns = rec_raw.columns.str.strip()
     recipe = _clean_recipe(rec_raw)
     print(f"      {len(recipe):>4} clean recipe rows")
 
-    print("\n[2/3] Cleaning equipment master from Equipment.xlsx …")
+    print("\n[2/4] Cleaning equipment master from Equipment.xlsx …")
     eq_raw = pd.read_excel(_FILE_EQ, sheet_name="Data Input")
     eq_raw.columns = eq_raw.columns.str.strip()
     equip = _clean_equipment(eq_raw)
     print(f"      {len(equip):>4} clean equipment rows "
           f"({equip['Equipment_Tag_No.'].nunique()} unique tags)")
 
+    print("\n[3/4] Cleaning inventory seed from "
+          "Materials_DetailsAvailable_Qty.xlsx …")
+    inv_raw = pd.read_excel(_FILE_INV)
+    inv_raw.columns = inv_raw.columns.str.strip()
+    inv = _clean_inventory_seed(inv_raw)
+    print(f"      {len(inv):>4} unique Material_Codes "
+          f"(aggregated from {len(inv_raw)} PO lines)")
+
     if args.dry_run:
         print("\n[dry-run] no DB writes; exiting.")
         return 0
 
     db_path = args.db or D.DB_FILE
-    print(f"\n[3/3] Writing to {db_path} …")
+    print(f"\n[4/4] Writing to {db_path} …")
     conn = sqlite3.connect(db_path)
     try:
         D.init_db(conn)  # self-heal first
-        rec_n = _load_recipes(conn, recipe)
-        eq_n  = _load_equipment(conn, equip, site_id=args.site_id)
+        rec_n  = _load_recipes(conn, recipe, force=args.force)
+        eq_n   = _load_equipment(conn, equip, site_id=args.site_id, force=args.force)
+        inv_n  = _load_inventory_seed(conn, inv, force=args.force)
         prog_n = _seed_progress(conn, equip, site_id=args.site_id)
         _seed_site_dropdowns(conn, site_id=args.site_id)
         conn.commit()
-        print(f"      sme_recipe        : {rec_n} rows")
-        print(f"      sme_equipment     : {eq_n} rows  (Site_ID={args.site_id})")
-        print(f"      sme_sqm_progress  : {prog_n} rows (Done_SQM preserved)")
+        print(f"      sme_recipe         : attempted {rec_n} rows")
+        print(f"      sme_equipment      : attempted {eq_n} rows  "
+              f"(Site_ID={args.site_id})")
+        print(f"      sme_inventory_seed : attempted {inv_n} Material_Codes")
+        print(f"      sme_sqm_progress   : {prog_n} rows (Done_SQM preserved)")
     finally:
         conn.close()
 
