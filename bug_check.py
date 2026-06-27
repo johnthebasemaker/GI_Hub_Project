@@ -7163,6 +7163,223 @@ def check_r20_1_load_all_empty_safe():
 
 
 # ---------------------------------------------------------------------------
+# Round 20.5 — Tab 8 Master Data CRUD wiring
+# ---------------------------------------------------------------------------
+# Phase A added 15 cols to sme_equipment + 8 cols to sme_recipe, created
+# sme_inventory_seed, and added 9 CRUD helpers + sme_materials_view.
+# Phase C rewired Tab 8 to call those helpers instead of running raw SQL
+# against the compatibility views (which SQLite rejects with "cannot modify
+# ... because it is a view").
+
+_R20_5_EQUIP_NEW_COLS = (
+    "Sl_No", "Project", "WBS_No", "IO_No", "Drawing_No", "Design",
+    "Dia_L", "Ht_W", "Equipment_Total_SQM", "Remaraks",
+    "Lining_System_Short_Name", "Lining_Type", "Lining_System",
+    "Material_Spec", "Lining_Area_Location",
+)
+_R20_5_RECIPE_NEW_COLS = (
+    "Sl_No", "Substrate", "System_Keys", "Lining_Thickness",
+    "Lining_System", "Lining_Type", "Material_Description", "Package_Size",
+)
+
+
+def check_r20_5_sme_equipment_columns():
+    conn = sqlite3.connect(":memory:")
+    database.init_db(conn)
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(sme_equipment)"
+    ).fetchall()}
+    missing = [c for c in _R20_5_EQUIP_NEW_COLS if c not in cols]
+    assert not missing, f"sme_equipment missing R20.5 cols: {missing}"
+
+
+def check_r20_5_sme_recipe_columns():
+    conn = sqlite3.connect(":memory:")
+    database.init_db(conn)
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(sme_recipe)"
+    ).fetchall()}
+    missing = [c for c in _R20_5_RECIPE_NEW_COLS if c not in cols]
+    assert not missing, f"sme_recipe missing R20.5 cols: {missing}"
+
+
+def check_r20_5_sme_inventory_seed_table():
+    conn = sqlite3.connect(":memory:")
+    database.init_db(conn)
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(sme_inventory_seed)"
+    ).fetchall()}
+    expected = {
+        "Material_Code", "Material_Name", "Item", "Vendor",
+        "Purchasing_Document", "Document_Date", "Nature", "UOM",
+        "Initial_Available_Qty", "Initial_Ordered_Qty",
+        "created_at", "updated_at",
+    }
+    missing = expected - cols
+    assert not missing, f"sme_inventory_seed missing cols: {missing}"
+    # Material_Code must be PK
+    pk_rows = conn.execute(
+        "SELECT name FROM pragma_table_info('sme_inventory_seed') WHERE pk = 1"
+    ).fetchall()
+    assert pk_rows and pk_rows[0][0] == "Material_Code", \
+        "sme_inventory_seed PK must be Material_Code"
+
+
+def check_r20_5_sme_materials_view_math():
+    """Seed 1 row, add 1 receipt + 1 consumption (via SAP_Code in inventory),
+    then verify the view's available_qty computes Initial + Received - Consumed."""
+    conn = sqlite3.connect(":memory:")
+    database.init_db(conn)
+    # Seed inventory mapping: SAP→Material
+    conn.execute("INSERT INTO inventory (SAP_Code, Material_Code, UOM) "
+                 "VALUES ('SAP-X', 'MAT-X', 'KG')")
+    # Seed SME baseline
+    conn.execute("INSERT INTO sme_inventory_seed (Material_Code, "
+                 "Initial_Available_Qty, Initial_Ordered_Qty) "
+                 "VALUES ('MAT-X', 100, 50)")
+    # Receipt: +25
+    conn.execute("INSERT INTO receipts (Date, SAP_Code, Quantity) "
+                 "VALUES ('2026-01-01','SAP-X', 25)")
+    # Consumption: -30
+    conn.execute("INSERT INTO consumption (Date, SAP_Code, Quantity) "
+                 "VALUES ('2026-01-02','SAP-X', 30)")
+    conn.commit()
+    row = conn.execute(
+        "SELECT initial_available_qty, received_qty, consumed_qty, "
+        "       available_qty, ordered_qty "
+        "FROM sme_materials_view WHERE material_code='MAT-X'"
+    ).fetchone()
+    assert row is not None, "sme_materials_view returned no row for MAT-X"
+    init_q, rcv_q, cons_q, avail_q, ord_q = row
+    assert init_q == 100, f"initial: {init_q}"
+    assert rcv_q  == 25,  f"received: {rcv_q}"
+    assert cons_q == 30,  f"consumed: {cons_q}"
+    assert avail_q == 95, f"available_qty math wrong: 100 + 25 - 30 != {avail_q}"
+    assert ord_q == 50,   f"ordered_qty: {ord_q}"
+
+
+def check_r20_5_equipment_view_aliases():
+    conn = sqlite3.connect(":memory:")
+    database.init_db(conn)
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(equipment)"
+    ).fetchall()}
+    # The autofill SELECT quotes these identifiers verbatim; PRAGMA returns
+    # them as-quoted, so we look for the exact strings.
+    for needed in ("Lining_System", "Material Spec.", "Lining_Area/location"):
+        assert needed in cols, \
+            f"equipment view missing aliased col {needed!r}"
+
+
+def check_r20_5_recipe_view_lining_type():
+    """recipe.lining_type must come from sme_recipe.Lining_Type, not the
+    legacy '' AS lining_type placeholder. Seed a real value + verify
+    it round-trips through the view."""
+    conn = sqlite3.connect(":memory:")
+    database.init_db(conn)
+    conn.execute("INSERT INTO sme_recipe (Lining_System_Code, Material_Code, "
+                 "For_1_SQM, Lining_Type) VALUES ('99','MAT-Y',1.0,'Acid')")
+    conn.commit()
+    row = conn.execute(
+        "SELECT lining_type FROM recipe WHERE lining_system_code='99'"
+    ).fetchone()
+    assert row and row[0] == "Acid", \
+        f"recipe.lining_type should round-trip 'Acid', got {row!r}"
+
+
+def check_r20_5_crud_helpers_exist():
+    for fn in ("insert_sme_equipment", "update_sme_equipment",
+               "delete_sme_equipment", "insert_sme_recipe",
+               "update_sme_recipe", "delete_sme_recipe",
+               "insert_sme_inventory_seed", "update_sme_inventory_seed",
+               "delete_sme_inventory_seed"):
+        assert callable(getattr(database, fn, None)), \
+            f"missing R20.5 helper: database.{fn}"
+
+
+def check_r20_5_col_translation():
+    """insert_sme_equipment must accept UI-shaped form keys (lowercase +
+    dotted / slashed) and write to the PascalCase table columns."""
+    conn = sqlite3.connect(":memory:")
+    database.init_db(conn)
+    # Use the public helper with the same key shapes the Tab 8 form emits
+    row_id = database.insert_sme_equipment(
+        {
+            "equipment_tag":         "T-PARITY",
+            "lining_system_code":    "7",
+            "surface_area_sqm":      12.5,
+            "Material Spec.":        "EpoxyA",            # dotted UI key
+            "Lining_Area/location":  "Shell",             # slashed UI key
+            "lining_system":         "LS Full Text",      # lowercase form key
+            "wbs #":                 "WBS-001",           # hashed UI key
+        },
+        site_id="HQ", conn=conn,
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT Material_Spec, Lining_Area_Location, Lining_System, WBS_No "
+        "FROM sme_equipment WHERE id=?", (row_id,),
+    ).fetchone()
+    assert row == ("EpoxyA", "Shell", "LS Full Text", "WBS-001"), \
+        f"col translation mismatch: {row!r}"
+
+
+def check_r20_5_no_raw_view_writes():
+    """Tab 8 (the master-data block from `with tab_master:` to the end of
+    page_material_estimator) must not contain raw INSERT/UPDATE/DELETE
+    statements against the compat views — those would fail at runtime
+    ('cannot modify view') and indicate Phase C wiring regressed."""
+    import pathlib, re
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator_portal.py"
+    ).read_text(encoding="utf-8")
+    # Slice the Tab 8 region (from `with tab_master:` to the END marker)
+    start = src.find("with tab_master:")
+    end_marker = "END ORIGINAL SME IMPERATIVE BODY"
+    end = src.find(end_marker, start)
+    assert start != -1, "with tab_master: block not found"
+    assert end != -1, "END ORIGINAL SME IMPERATIVE BODY marker missing"
+    tab8 = src[start:end]
+    forbidden_re = re.compile(
+        r"\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"
+        r"(equipment|recipe|inventory|sqm_progress|sme_materials_view)\b",
+        re.IGNORECASE,
+    )
+    matches = forbidden_re.findall(tab8)
+    assert not matches, \
+        f"Tab 8 has residual raw view-write SQL: {matches}"
+
+
+def check_r20_5_table_map_materials_view():
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator_portal.py"
+    ).read_text(encoding="utf-8")
+    assert '"Materials_DetailsAvailable_Qty": "sme_materials_view"' in src, \
+        "TABLE_MAP must point Materials_DetailsAvailable_Qty → sme_materials_view"
+    # And the old "inventory" mapping must be gone
+    assert '"Materials_DetailsAvailable_Qty":  "inventory"' not in src, \
+        "stale 'inventory' mapping still present in TABLE_MAP"
+
+
+def check_r20_5_equipment_smart_entry_helpers():
+    import pathlib
+    src = pathlib.Path(
+        REPO_ROOT / "pages_internal" / "material_estimator_portal.py"
+    ).read_text(encoding="utf-8")
+    assert "D.insert_sme_equipment(" in src, \
+        "Equipment Smart Entry must call D.insert_sme_equipment"
+    assert "D.upsert_sme_sqm_progress(" in src, \
+        "Equipment Smart Entry must call D.upsert_sme_sqm_progress"
+    assert "D.insert_sme_recipe(" in src, \
+        "Dynamic add form must call D.insert_sme_recipe for the recipe radio"
+    assert "D.insert_sme_inventory_seed(" in src, (
+        "Dynamic add form must call D.insert_sme_inventory_seed for "
+        "Materials Details radio"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Round 20 — Literal SME drop-in
 # ---------------------------------------------------------------------------
 # R19 piecemeal port reverted in favor of a literal drop-in of the SME
@@ -8324,6 +8541,55 @@ def main() -> int:
     run_check("Round 20.1", "load_all returns shape-preserving empty frames",
               check_r20_1_load_all_empty_safe,
               "dm / eq_master / sqm_ref must have expected columns even when empty.")
+
+    # ── Round 20.5 — Tab 8 Master Data CRUD wiring ────────────────────────
+    run_check("Round 20.5", "sme_equipment extended with 15 legacy Excel columns",
+              check_r20_5_sme_equipment_columns,
+              "ALTER TABLE adds Sl_No, Project, WBS_No, IO_No, Drawing_No, "
+              "Design, Dia_L, Ht_W, Equipment_Total_SQM, Remaraks, "
+              "Lining_System_Short_Name, Lining_Type, Lining_System, "
+              "Material_Spec, Lining_Area_Location.")
+    run_check("Round 20.5", "sme_recipe extended with 8 legacy Excel columns",
+              check_r20_5_sme_recipe_columns,
+              "ALTER TABLE adds Sl_No, Substrate, System_Keys, "
+              "Lining_Thickness, Lining_System, Lining_Type, "
+              "Material_Description, Package_Size.")
+    run_check("Round 20.5", "sme_inventory_seed table exists with correct schema",
+              check_r20_5_sme_inventory_seed_table,
+              "SME-owned baseline; Material_Code PK; Initial_Available_Qty + "
+              "Initial_Ordered_Qty REAL.")
+    run_check("Round 20.5", "sme_materials_view computes Available_Qty from seed + ledger",
+              check_r20_5_sme_materials_view_math,
+              "available_qty = initial_available_qty + receipts.sum - "
+              "consumption.sum (via SAP_Code → Material_Code join).")
+    run_check("Round 20.5", "equipment VIEW exposes Lining_System / Material Spec. / "
+                            "Lining_Area/location aliases",
+              check_r20_5_equipment_view_aliases,
+              "_get_autofill in Tab 8 queries these dotted/slashed identifiers "
+              "verbatim; the VIEW must expose them.")
+    run_check("Round 20.5", "recipe VIEW serves real Lining_Type (not empty literal)",
+              check_r20_5_recipe_view_lining_type,
+              "Lining_Type column must come from sme_recipe.Lining_Type, not "
+              "the legacy '' AS lining_type placeholder.")
+    run_check("Round 20.5", "9 SME CRUD helpers exist in database.py",
+              check_r20_5_crud_helpers_exist,
+              "insert/update/delete x sme_equipment / sme_recipe / sme_inventory_seed.")
+    run_check("Round 20.5", "helpers translate UI form keys to PascalCase columns",
+              check_r20_5_col_translation,
+              "insert_sme_equipment accepts lowercase + dotted/slashed UI keys "
+              "and writes to PascalCase table columns.")
+    run_check("Round 20.5", "Tab 8 has no raw view-write SQL remaining",
+              check_r20_5_no_raw_view_writes,
+              "INSERT/UPDATE/DELETE against equipment / recipe / sqm_progress / "
+              "sme_materials_view must be absent — all writes go through D helpers.")
+    run_check("Round 20.5", "TABLE_MAP points Materials_DetailsAvailable_Qty → sme_materials_view",
+              check_r20_5_table_map_materials_view,
+              "Master Data Materials radio reads the SME-filtered view, not "
+              "the full ERP inventory table.")
+    run_check("Round 20.5", "Equipment Smart Entry calls D.insert_sme_equipment + "
+                            "D.upsert_sme_sqm_progress",
+              check_r20_5_equipment_smart_entry_helpers,
+              "Smart Entry save block uses helpers (not raw INSERT INTO).")
 
     out = write_report()
     print()

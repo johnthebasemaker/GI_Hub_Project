@@ -1,6 +1,8 @@
 # GI Hub ERP — Handoff
 
-**Last update:** 2026-06 round 20.1 — **R20 LIVE-RENDER BUGFIXES.** First-render audit of the literal SME drop-in surfaced four issues that bare-mode tests couldn't catch: (a) the R20 Phase-2 wrap leaked 8-space indent INTO multi-line string contents, so `st.markdown(... unsafe_allow_html=True)` treated the sticky header / gauge / h-bars / section dividers as escaped code text instead of styled HTML; (b) `_cached_cascade_allocate` raised `KeyError: 'Equipment_Tag_No.'` on the Total Overview tab when the row list was empty (e.g., stale cache from a prior session); (c) the Stock-Only Materials section showed generic warehouse items (bolts/gloves) because our `get_sme_inventory_view()` returns all inventory rows, not just SME-tracked ones; (d) `load_all()` could return shape-less empty frames when no data was loaded yet. All four fixed via a tokenize-walking dedent script (158 + 6 lines patched), an explicit `_EXPECTED_COLS` argument to `pd.DataFrame(rows, columns=...)`, an `isin(_all_sme_codes)` filter on Stock-Only Materials, and three `if X.empty: pd.DataFrame(columns=[...])` guards. Plus 4 R20.1 regression tests so this class of issue gets caught in CI next time. See §2V.1. **Tests: +4 Round-20.1 checks (4/4 green) — total 510 / 526 (41 SME-related checks all green: R17 13/13 + R18 13/13 + R20 11/11 + R20.1 4/4).**
+**Last update:** 2026-06 round 20.5 — **TAB 8 MASTER DATA WIRED + SME INVENTORY ISOLATED.** Four user-reported issues on Tab 8 fixed: (1) "Missing Submit Button" warning on Equipment radio (silent IndexError severed the form mid-build); (2) `KeyError: 'Lining_System'` from `_get_autofill` (sme_equipment was missing 15 legacy Excel columns); (3) "cannot modify view" errors on every Add/Edit/Delete (Tab 8 wrote raw SQL against the compat VIEWs); (4) Materials Details flooded with 1,200+ rows of ERP inventory clutter and showed Available_Qty=0 (TABLE_MAP pointed at the wrong table; no SME-specific seed existed). Phase A extends `sme_equipment` +15 cols + `sme_recipe` +8 cols, creates `sme_inventory_seed` (SME-owned baseline), creates `sme_materials_view` (joins seed against ERP `receipts`/`consumption` so `Available_Qty = Initial + Received − Consumed`), rewrites the `equipment`/`recipe` compat VIEWs to expose every aliased column, and adds 9 CRUD helpers that translate UI form keys (lowercase, dotted, slashed) onto PascalCase table columns. Phase B extends the bootstrap to load every Excel column, adds the inventory-seed loader, and switches default semantics to `INSERT OR IGNORE` so manual edits survive (with a `--force` flag for explicit re-baseline). Phase C surgically rewires 4 raw-SQL write sites in Tab 8 to dispatch on `db_table` and call the helpers; `TABLE_MAP` now points `"Materials_DetailsAvailable_Qty" → "sme_materials_view"`. Phase D adds 11 regression tests. The SME inventory store is now fully isolated from ERP `inventory` writes; live Available_Qty still rolls up automatically from R18-tagged consumption + Logistics receipts via SQL view math. See §2W. **Tests: +11 Round-20.5 checks (11/11 green) — total 520 / 537 (52 SME-related checks all green: R17 13/13 + R18 13/13 + R20 11/11 + R20.1 4/4 + R20.5 11/11).**
+
+**Prior round:** 20.1 — **R20 LIVE-RENDER BUGFIXES.** First-render audit of the literal SME drop-in surfaced four issues that bare-mode tests couldn't catch: (a) the R20 Phase-2 wrap leaked 8-space indent INTO multi-line string contents, so `st.markdown(... unsafe_allow_html=True)` treated the sticky header / gauge / h-bars / section dividers as escaped code text instead of styled HTML; (b) `_cached_cascade_allocate` raised `KeyError: 'Equipment_Tag_No.'` on the Total Overview tab when the row list was empty (e.g., stale cache from a prior session); (c) the Stock-Only Materials section showed generic warehouse items (bolts/gloves) because our `get_sme_inventory_view()` returns all inventory rows, not just SME-tracked ones; (d) `load_all()` could return shape-less empty frames when no data was loaded yet. All four fixed via a tokenize-walking dedent script (158 + 6 lines patched), an explicit `_EXPECTED_COLS` argument to `pd.DataFrame(rows, columns=...)`, an `isin(_all_sme_codes)` filter on Stock-Only Materials, and three `if X.empty: pd.DataFrame(columns=[...])` guards. Plus 4 R20.1 regression tests so this class of issue gets caught in CI next time. See §2V.1. **Tests: +4 Round-20.1 checks (4/4 green) — total 510 / 526 (41 SME-related checks all green: R17 13/13 + R18 13/13 + R20 11/11 + R20.1 4/4).**
 
 **Prior round:** 20 — **LITERAL SME DROP-IN SHIPPED (revert-and-replace).** The R19 piecemeal port broke the SME's intermediate-DataFrame architecture (KeyError: `'Lining_System_Code'`) and lost the dark/light theme via CSS scope leakage. Round 20 is a clean pivot: delete the entire R19 package, drop the original 8,505-LOC SME `app.py` in as a single file at `pages_internal/material_estimator_portal.py`, and perform a tight set of surgical edits to bridge it to the ERP data layer. Every chart, KPI card, Plotly table, drag sortable, the entire `<style>` CSS block, and `_apply_theme_attr()` are preserved verbatim — apple-to-apple parity guaranteed because we're running the SME's own code. Surgical edits (search `# R20 EDIT`): `st.set_page_config` commented out; `_show_login` + auth gate deleted; `load_all()` rewritten to call ERP helpers (`D.get_sme_inventory_view`, `get_sme_equipment`, `get_sme_recipe`, `get_sme_sqm_progress`) producing the exact column-cased intermediate frames (`inv`, `recipe`, `equip_sc`, `dm`, `eq_master`, `sqm_ref`) the SME engine expects; `get_db()` redirected to the ERP DB; the entire `with tab_consume:` block (1,402 LOC, 6 sub-views) deleted — R18 already wired the SME consumption flow into the ERP's SK Consumption tab; tab declaration trimmed 9 → 8; Master Data Locations/Types CRUD routed through `D.add_sme_setting`/`D.delete_sme_setting` (R17 Correction #1 preserved); `st.download_button` monkey-patch scoped inside the wrapper via try/finally (R17 Correction #2 preserved for other portals); all imperative rendering (3,913 lines from `with st.sidebar:` to EOF) wrapped inside `page_material_estimator(user)`. Six new compatibility VIEWS in `init_db` (`locations`, `types`, `consumption_log`, `equipment`, `recipe`, `sqm_progress`) let the SME's legacy SQL resolve transparently against the ERP tables. See §2V. **Tests: +11 Round-20 checks (11/11 green) — total 505/522 in `bug_check.py` (same 17 pre-existing failures unchanged). RBAC, EOD commit path, routing rule all preserved. The R19 KeyError is gone: `equip_sc` and `dm` both carry `Lining_System_Code` because `load_all()` now builds them per the original SME architecture.**
 
@@ -1913,6 +1915,101 @@ Round 17 13/13 + Round 18 13/13 + Round 20 11/11 + Round 20.1 4/4 = **41 SME-rel
 1. `git pull` — picks up the R20.1 patches in `material_estimator_portal.py` and the +4 R20.1 checks in `bug_check.py`.
 2. `python3 bug_check.py` → **510 / 526**.
 3. Restart Streamlit. The dashboard sticky header, gauge, h-bars, and per-equipment grand-total boxes all render as styled HTML; the Total Overview tab loads without KeyError; the Stock-Only Materials section shows only SME-tracked materials.
+
+---
+
+## 2W. Tuning Round 20.5 (2026-06) — Tab 8 Master Data CRUD wiring + SME inventory isolation
+
+Round 20 landed the literal SME drop-in with the analytical tabs (Dashboard, Selective Entry, Session Order, Location Report, Equipment Report, Execution Plan, Total Overview) working end-to-end. Tab 8 (Master Data) was the last block that still needed an architectural treatment because it does CRUD — and the R17 compat VIEWs are read-only.
+
+### Four issues fixed
+
+| Issue | Root cause | Fix |
+|---|---|---|
+| **Equipment radio: "Missing Submit Button" warning** | `_get_autofill()` raised `IndexError` mid-form-build (Issue 2 below) which severed the form before its `st.form_submit_button` line rendered — Streamlit then warned that the form had inputs but no submit. | Resolved as a side-effect of Issue 2's fix (autofill no longer crashes). |
+| **`IndexError: No item with that key` at `eq_row["Lining_System"]`** | The R17 `sme_equipment` table was minimal (6 lining columns). The SME's `_get_autofill` queries `"Lining_System", "Material Spec.", "Lining_Area/location"` as quoted identifiers; the `equipment` compat VIEW didn't expose them. | Phase A ALTERs `sme_equipment` with all 15 legacy Excel columns. The `equipment` VIEW now aliases them with the dotted/slashed identifier names the SME hard-codes. |
+| **`Database error: cannot modify recipe because it is a view`** (and same for `equipment`, `inventory`, `sqm_progress`) | The Master Data tab was doing raw `INSERT INTO equipment` / `INSERT INTO recipe` / `INSERT INTO inventory` / `UPDATE … SET` / `DELETE FROM …` against the compat VIEWs. SQLite rejects writes to views. | Phase A adds 9 helpers (`insert/update/delete_sme_equipment`/`_recipe`/`_inventory_seed`). Phase C rewires the 4 raw-SQL write sites in Tab 8 to dispatch on `db_table` and call those helpers. |
+| **Materials_DetailsAvailable_Qty radio floods with ERP inventory clutter (1,200+ rows of bolts/gloves/etc.) and Available/Ordered qty = 0** | `TABLE_MAP` pointed at the ERP `inventory` table. Returns every SAP_Code, not just SME materials. CNCEC qty=0 was a separate symptom of the same root: no SME-specific seed for CNCEC. | New table `sme_inventory_seed` (SME-owned baseline). New `sme_materials_view` joins it against ERP `receipts`/`consumption` so `Available_Qty = Initial + Received − Consumed`. Bootstrap loads `Materials_DetailsAvailable_Qty.xlsx` into the seed. Tab 8 now reads from this view. |
+
+### Why the inventory isolation model is load-bearing
+
+The user explicitly directed: *"don't mingle with the Inventory of the ERP, we will leave those two separate."* The catch surfaced before drafting: R18's SK SME-consumption flow already debits ERP `inventory.Available_Qty` (after Material_Code aggregation, no SME columns leak into the ERP ledger). Receipts likewise flow through ERP `receipts`. If the SME Master Data view read only a frozen seed table, the displayed Available_Qty would never reflect actual consumption or new receipts.
+
+The solution: a 3-column derivation at view time, executed entirely in SQL. The seed is SME-owned and immutable from the ERP side; the live qty is derived from ERP ledger movements that are already tagged via the `is_sme` flag (R18). This means:
+
+* **Master Data CRUD writes** target `sme_inventory_seed` only — they never touch ERP `inventory`.
+* **Master Data reads** show seed columns + derived live columns side-by-side.
+* **R18 consumption / Logistics receipts** continue to flow through ERP unchanged; their effect appears automatically in `sme_materials_view.available_qty`.
+* **Future site rollups** are just additional `sme_inventory_seed` rows + the same view math — no refactor required.
+
+### Schema deltas (Phase A)
+
+* `sme_equipment` +15 columns: `Sl_No`, `Project`, `WBS_No`, `IO_No`, `Drawing_No`, `Design`, `Dia_L`, `Ht_W`, `Equipment_Total_SQM`, `Remaraks`, `Lining_System_Short_Name`, `Lining_Type`, `Lining_System`, `Material_Spec`, `Lining_Area_Location`. (Note: the SME's Excel typo "Remaraks" is preserved verbatim because the upstream UI references it that way.)
+* `sme_recipe` +8 columns: `Sl_No`, `Substrate`, `System_Keys`, `Lining_Thickness`, `Lining_System`, `Lining_Type`, `Material_Description`, `Package_Size`.
+* New table `sme_inventory_seed`: `Material_Code` PK, `Material_Name`, `Item`, `Vendor`, `Purchasing_Document`, `Document_Date`, `Nature`, `UOM`, `Initial_Available_Qty`, `Initial_Ordered_Qty`, plus timestamps.
+* New view `sme_materials_view`: aliases the seed columns to lowercase snake_case + computes `received_qty`, `consumed_qty`, `available_qty` from `receipts`/`consumption` via `SAP_Code → inventory.Material_Code` joins.
+* `equipment` and `recipe` compat VIEWs rewritten to expose every aliased column the SME UI references (PascalCase / dotted / slashed identifiers preserved).
+
+### Helper API (Phase A)
+
+```python
+D.insert_sme_equipment(row: dict, site_id: str) -> int      # returns new id
+D.update_sme_equipment(eq_id, changes, site_id=None) -> int # rowcount
+D.delete_sme_equipment(eq_id, site_id=None) -> int          # cascades sme_sqm_progress
+
+D.insert_sme_recipe(row) -> int
+D.update_sme_recipe(rec_id, changes) -> int
+D.delete_sme_recipe(rec_id) -> int
+
+D.insert_sme_inventory_seed(row) -> int   # INSERT OR REPLACE on Material_Code
+D.update_sme_inventory_seed(material_code, changes) -> int
+D.delete_sme_inventory_seed(material_code) -> int
+```
+
+All accept UI-shaped form keys (lowercase, dotted, slashed) and translate them via per-table `_SME_*_COL_MAP` dicts to the PascalCase table columns. Unknown keys are dropped silently so PRAGMA-driven dynamic forms don't error on derived view columns.
+
+### Bootstrap changes (Phase B)
+
+* Three Excel files (`For_1_SQM.xlsx`, `Equipment.xlsx`, `Materials_DetailsAvailable_Qty.xlsx`) now load **every column** the SME UI cares about, not just the 6/3 the engine needed.
+* New `_clean_inventory_seed()` aggregates the materials Excel by `Material_Code` (multiple PO lines → one row per code; sums qty, picks first non-null vendor/PO/etc.).
+* **Default mode is now `INSERT OR IGNORE`** so manual edits made via the Master Data tab survive a re-bootstrap. New `--force` flag restores the prior wipe-and-reload behavior for explicit re-baseline from Excel.
+* For CNCEC qty=0: run `python3 scripts/sme_bootstrap.py --site-id CNCEC` once. This populates `sme_inventory_seed` (global) and `sme_equipment` (site-scoped) for CNCEC. Available_Qty then reflects HQ seed + any CNCEC-specific receipts/consumption that have flowed through ERP.
+
+### Portal rewiring (Phase C)
+
+The four raw-SQL write sites in Tab 8 of `material_estimator_portal.py`:
+
+* **Equipment Smart Entry save (~line 7000)** — was `INSERT INTO equipment … + INSERT INTO sqm_progress … ON CONFLICT`. Now: `D.insert_sme_equipment(_all_vals, site_id=_login_site)` + `D.upsert_sme_sqm_progress(...)`. Site_ID auto-derived from `st.session_state["_login_site_id"]`.
+* **Dynamic add form (~line 7080)** — dispatches on `db_table`: `recipe → D.insert_sme_recipe`, `sme_materials_view → D.insert_sme_inventory_seed`. Skips derived view columns (`received_qty`, `consumed_qty`, `available_qty`, `ordered_qty`) from the form.
+* **Cell-edit save (~line 7212)** — dispatches on `db_table`: `equipment → D.update_sme_equipment`, `recipe → D.update_sme_recipe`, `sme_materials_view → D.update_sme_inventory_seed`.
+* **Bulk delete (~line 7244)** — same dispatch pattern. `D.delete_sme_equipment` internally cascades `sme_sqm_progress`.
+
+`TABLE_MAP` updated: `"Materials_DetailsAvailable_Qty" → "sme_materials_view"` (was `"inventory"`). `PK_MAP` recognizes the view's `material_code` PK.
+
+### R20.5 regression tests (11/11 green)
+
+1. `check_r20_5_sme_equipment_columns` — all 15 new columns present
+2. `check_r20_5_sme_recipe_columns` — all 8 new columns present
+3. `check_r20_5_sme_inventory_seed_table` — table exists with correct schema + Material_Code PK
+4. `check_r20_5_sme_materials_view_math` — end-to-end: seed 100 + receipt 25 − consumption 30 = `available_qty` 95
+5. `check_r20_5_equipment_view_aliases` — VIEW exposes `Lining_System`, `Material Spec.`, `Lining_Area/location` (dotted/slashed identifiers preserved)
+6. `check_r20_5_recipe_view_lining_type` — `recipe.lining_type` round-trips real Lining_Type values
+7. `check_r20_5_crud_helpers_exist` — all 9 helpers callable
+8. `check_r20_5_col_translation` — helpers translate lowercase/dotted/slashed UI keys → PascalCase table columns
+9. `check_r20_5_no_raw_view_writes` — slices Tab 8 region, regex-scans for residual `INSERT INTO equipment|recipe|inventory|sqm_progress|sme_materials_view`
+10. `check_r20_5_table_map_materials_view` — TABLE_MAP points to `sme_materials_view`; stale `"inventory"` mapping absent
+11. `check_r20_5_equipment_smart_entry_helpers` — confirms `D.insert_sme_equipment`, `D.upsert_sme_sqm_progress`, `D.insert_sme_recipe`, `D.insert_sme_inventory_seed` all called in the portal
+
+### Test posture
+
+Round 17 13/13 + Round 18 13/13 + Round 20 11/11 + Round 20.1 4/4 + Round 20.5 11/11 = **52 SME-related checks all green; total 520 / 537** (same 17 pre-existing env failures: dotenv, bcrypt, fpdf, pdfplumber).
+
+### Deployment
+
+1. `git pull` — picks up Phase A (database.py), Phase B (scripts/sme_bootstrap.py + sme_seed_data refresh), Phase C (material_estimator_portal.py), Phase D (bug_check.py + handoff.md).
+2. `python3 bug_check.py` → **520 / 537**.
+3. **One-time** per site needing CNCEC fix: `python3 scripts/sme_bootstrap.py --site-id CNCEC` (or `--force` to re-baseline an existing site from refreshed Excel).
+4. Restart Streamlit. All 4 Tab 8 issues resolved: form renders with Save button, autofill panels populate, Add/Edit/Delete work for Equipment / Recipe / Materials Details, and Materials Details shows the ~30 SME materials with live Available_Qty derived from ERP movements.
 
 ---
 
