@@ -6606,10 +6606,14 @@ SELECT entry_date       AS "Date",
                 key="md_table_radio",
                 horizontal=True,
             )
+            # R20.5 — Materials_DetailsAvailable_Qty now reads from
+            # sme_materials_view (SME-owned seed + ERP-derived live qtys),
+            # NOT the ERP inventory table. Writes for this mode are routed
+            # to sme_inventory_seed via D.insert/update/delete_sme_inventory_seed.
             TABLE_MAP = {
                 "Equipment":                      "equipment",
                 "LINING SYSTEM MATERIAL CONSM":   "recipe",
-                "Materials_DetailsAvailable_Qty":  "inventory",
+                "Materials_DetailsAvailable_Qty": "sme_materials_view",
             }
             st.markdown("<hr>", unsafe_allow_html=True)
 
@@ -6990,41 +6994,41 @@ SELECT entry_date       AS "Date",
                             elif _bad:
                                 st.error(f"Surface Area SQM must be > 0 for codes: {', '.join(_bad)}")
                             else:
+                                # R20.5 — route writes through database.py
+                                # helpers; sme_equipment is the real table
+                                # (the `equipment` view is read-only).
                                 try:
-                                    conn = get_db(); cur = conn.cursor()
+                                    _site_id_eq = (
+                                        st.session_state.get("_login_site_id")
+                                        or "HQ"
+                                    )
                                     for _cd in sel_codes_display:
                                         _code = _cd.split(" — ")[0].replace("Code ", "").strip()
                                         _af   = _get_autofill(_code)
                                         _sqm  = per_code_sqm[_code]
-                                        # Build INSERT dynamically from shared_inputs + fixed fields
                                         _fixed = {
                                             "location":                st.session_state.get("seq_loc", LOCATION_ORDER[0]),
                                             "lining_system_code":      _code,
                                             "lining_system_short_name": _af["lining_system_short_name"],
                                             "lining_type":             _af["lining_type"],
                                             "equipment_tag":           _eq_tag_val,
-                                            "Material Spec.":          _af["Material Spec."] or None,
+                                            "material_spec":           _af["Material Spec."] or None,
                                             "surface_area_sqm":        _sqm,
-                                            "Lining_System":           _af["Lining_System"] or None,
-                                            "Lining_Area/location":    _af.get("Lining_Area/location"),
+                                            "lining_system":           _af["Lining_System"] or None,
+                                            "lining_area_location":    _af.get("Lining_Area/location"),
                                         }
                                         _all_vals = {**_fixed}
                                         for _k, _v in shared_inputs.items():
                                             _all_vals[_k] = _v if _v != "" else None
-                                        _cols_str = ", ".join([f'"{c}"' for c in _all_vals.keys()])
-                                        _ph       = ", ".join(["?"] * len(_all_vals))
-                                        cur.execute(
-                                            f"INSERT INTO equipment ({_cols_str}) VALUES ({_ph})",
-                                            list(_all_vals.values()))
-                                        cur.execute("""
-                    INSERT INTO sqm_progress
-                                (equipment_tag, lining_system_code,
-                                 original_sqm, done_sqm)
-                            VALUES (?, ?, ?, 0)
-                            ON CONFLICT(equipment_tag, lining_system_code)
-                            DO UPDATE SET original_sqm = excluded.original_sqm
-                                """, (_eq_tag_val, _code, _sqm))
-                                    conn.commit(); conn.close()
+                                        D.insert_sme_equipment(
+                                            _all_vals, site_id=_site_id_eq,
+                                        )
+                                        D.upsert_sme_sqm_progress(
+                                            site_id=_site_id_eq,
+                                            equipment_tag=_eq_tag_val,
+                                            lining_system_code=_code,
+                                            original_sqm=float(_sqm),
+                                        )
                                     st.cache_data.clear()
                                     st.success(
                                         f"✅ Equipment **{_eq_tag_val}** saved for "
@@ -7055,6 +7059,16 @@ SELECT entry_date       AS "Date",
                 conn.close()
 
                 SKIP_DYN = {"id", "sl. #", "sl.#", "sl. no.", "sl. no", "sl.no."}
+                # R20.5 — sme_materials_view exposes derived columns
+                # (received_qty, consumed_qty, available_qty) that come from
+                # ERP receipts/consumption joins. The form must not collect
+                # these — the user fills the seed (initial_*) and the view
+                # computes the rest at read time.
+                if db_table == "sme_materials_view":
+                    SKIP_DYN = SKIP_DYN | {
+                        "received_qty", "consumed_qty", "available_qty",
+                        "ordered_qty",  # derived from initial_ordered_qty
+                    }
                 _skip_dyn_lower = {s.lower() for s in SKIP_DYN}
                 editable_cols = [(n, t) for (_, n, t, *__) in col_info
                                  if n.lower() not in _skip_dyn_lower]
@@ -7088,14 +7102,20 @@ SELECT entry_date       AS "Date",
                     if _missing_fields:
                         st.error(f"Please fill in all mandatory fields: {', '.join(_missing_fields)}")
                     else:
+                        # R20.5 — dispatch on db_table; all writes go through
+                        # database.py helpers that route to the real sme_*
+                        # tables (the views are read-only).
                         try:
-                            conn = get_db(); cur = conn.cursor()
-                            _dcols = list(dyn_inputs.keys())
-                            _dvals = [dyn_inputs[c] if dyn_inputs[c] != "" else None for c in _dcols]
-                            _cols_str = ", ".join([f'"{c}"' for c in _dcols])
-                            _ph       = ", ".join(["?"] * len(_dcols))
-                            cur.execute(f"INSERT INTO {db_table} ({_cols_str}) VALUES ({_ph})", _dvals)
-                            conn.commit(); conn.close()
+                            _row = {c: (dyn_inputs[c] if dyn_inputs[c] != "" else None)
+                                    for c in dyn_inputs.keys()}
+                            if db_table == "recipe":
+                                D.insert_sme_recipe(_row)
+                            elif db_table == "sme_materials_view":
+                                D.insert_sme_inventory_seed(_row)
+                            else:
+                                raise RuntimeError(
+                                    f"Unsupported table for dynamic add: {db_table}"
+                                )
                             st.cache_data.clear()
                             st.success("✅ Row added successfully.")
                             st.rerun()
@@ -7123,10 +7143,14 @@ SELECT entry_date       AS "Date",
                 view_df = pd.DataFrame()
             conn.close()
 
+            # R20.5 — sme_materials_view PK is material_code; the dispatch
+            # at save / delete time routes to D.update_sme_inventory_seed /
+            # D.delete_sme_inventory_seed which write to the underlying
+            # sme_inventory_seed table.
             PK_MAP = {
-                "equipment":  ("id",            int),
-                "recipe":     ("id",            int),
-                "inventory":  ("material_code", str),
+                "equipment":          ("id",            int),
+                "recipe":             ("id",            int),
+                "sme_materials_view": ("material_code", str),
             }
             pk_col, pk_cast = PK_MAP.get(db_table, ("id", int))
 
@@ -7216,24 +7240,37 @@ SELECT entry_date       AS "Date",
                         if not _edited_rows:
                             st.info("No changes detected in the grid.")
                         else:
+                            # R20.5 — dispatch on db_table; writes go through
+                            # database.py helpers that target the real sme_*
+                            # tables (the views are read-only).
                             try:
-                                conn = get_db(); cur = conn.cursor()
+                                _site_id_ed = (
+                                    st.session_state.get("_login_site_id")
+                                    or "HQ"
+                                )
                                 n_saved = 0
                                 for _row_idx, _changes in _edited_rows.items():
-                                    # Guard: skip structural + checkbox columns
                                     _safe = {k: v for k, v in _changes.items()
                                              if k not in ("Sl. No.", pk_col, "☐ Select")}
                                     if not _safe:
                                         continue
-                                    _pk_val    = view_df.iloc[int(_row_idx)][pk_col]
-                                    _set_parts = [f'"{k}" = ?' for k in _safe.keys()]
-                                    _set_sql   = ", ".join(_set_parts)
-                                    _vals      = list(_safe.values()) + [pk_cast(_pk_val)]
-                                    cur.execute(
-                                        f'UPDATE {db_table} SET {_set_sql} WHERE "{pk_col}" = ?',
-                                        _vals)
+                                    _pk_val = view_df.iloc[int(_row_idx)][pk_col]
+                                    if db_table == "equipment":
+                                        D.update_sme_equipment(
+                                            int(_pk_val), _safe,
+                                            site_id=_site_id_ed,
+                                        )
+                                    elif db_table == "recipe":
+                                        D.update_sme_recipe(int(_pk_val), _safe)
+                                    elif db_table == "sme_materials_view":
+                                        D.update_sme_inventory_seed(
+                                            str(_pk_val), _safe,
+                                        )
+                                    else:
+                                        raise RuntimeError(
+                                            f"Unsupported table for edit: {db_table}"
+                                        )
                                     n_saved += 1
-                                conn.commit(); conn.close()
                                 st.cache_data.clear()
                                 st.success(f"✅ {n_saved} row(s) updated successfully.")
                                 st.rerun()
@@ -7250,26 +7287,31 @@ SELECT entry_date       AS "Date",
                         if not _del_indices:
                             st.warning("No rows checked for deletion. Check the ☐ column first.")
                         else:
+                            # R20.5 — dispatch on db_table; delete_sme_equipment
+                            # internally cascades sme_sqm_progress.
                             try:
-                                conn = get_db(); cur = conn.cursor()
+                                _site_id_dl = (
+                                    st.session_state.get("_login_site_id")
+                                    or "HQ"
+                                )
                                 n_deleted = 0
                                 for _di in _del_indices:
                                     _del_id = view_df.iloc[_di][pk_col]
                                     if db_table == "equipment":
-                                        _match = view_df[view_df[pk_col] == _del_id]
-                                        if not _match.empty:
-                                            _er = _match.iloc[0]
-                                            cur.execute(
-                                                "DELETE FROM sqm_progress "
-                                                "WHERE equipment_tag = ? AND lining_system_code = ?",
-                                                (_er["equipment_tag"], _er["lining_system_code"]))
-                                    cur.execute(
-                                        f'DELETE FROM {db_table} WHERE "{pk_col}" = ?',
-                                        (pk_cast(_del_id),))
+                                        D.delete_sme_equipment(
+                                            int(_del_id), site_id=_site_id_dl,
+                                        )
+                                    elif db_table == "recipe":
+                                        D.delete_sme_recipe(int(_del_id))
+                                    elif db_table == "sme_materials_view":
+                                        D.delete_sme_inventory_seed(str(_del_id))
+                                    else:
+                                        raise RuntimeError(
+                                            f"Unsupported table for delete: {db_table}"
+                                        )
                                     n_deleted += 1
-                                conn.commit(); conn.close()
                                 st.cache_data.clear()
-                                st.success(f"✅ {n_deleted} row(s) deleted from `{db_table}`.")
+                                st.success(f"✅ {n_deleted} row(s) deleted from `{md_table_sel}`.")
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Database error: {e}")
