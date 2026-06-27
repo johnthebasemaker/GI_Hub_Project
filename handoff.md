@@ -1,5 +1,35 @@
 # GI Hub ERP — Handoff
 
+---
+
+> # 🛑 READ THIS FIRST — SME ↔ ERP INTEGRATION CANON (locked 2026-06, round 20.5.1)
+>
+> The standalone **Smart Material Estimator (SME)** project has been fully merged into this ERP. The integration is **feature-complete and LOCKED**. A fresh AI session MUST internalize the rules below before touching anything under `pages_internal/material_estimator_portal.py`, `scripts/sme_bootstrap.py`, or any `sme_*` table / helper in `database.py`. These rules were each written *because the mistake was actually made and cost a debugging round.*
+>
+> ### The one-paragraph mental model
+> The SME UI is a **literal drop-in** of the original standalone app (one 7,200-LOC file, `pages_internal/material_estimator_portal.py`). It reads the ERP database through a set of compatibility **SQLite VIEWs** (`equipment`, `recipe`, `sqm_progress`, `locations`, `types`, `consumption_log`, `sme_materials_view`) that alias the real `sme_*` tables into the lowercase/dotted column names the SME's legacy SQL expects. **SME inventory data is strictly isolated** from the ERP `inventory` ledger: the SME baseline lives in `sme_inventory_seed`, and live quantities are *derived* (never stored) as `Available_Qty = Initial_Qty + Received − Consumed` via the `sme_materials_view` SQL view.
+>
+> ### ⚠️ STRICT AI DIRECTIVES — violating any of these will break production or corrupt the ledger
+>
+> **RULE 1 — NEVER `ORDER BY rowid` on SME data.**
+> Every SME table the UI touches in Master Data is accessed through a SQLite **VIEW**, and **views have no `rowid`**. `SELECT … ORDER BY rowid` raises `no such column: rowid`; if it's inside a `try/except`, it silently returns an empty result and the UI shows *"No records found"* even though the data exists. Always order by an **explicit primary key**: `id` for `equipment`/`recipe`, `material_code` for `sme_materials_view`. (This was the R20.5.1 "empty grids" bug.)
+>
+> **RULE 2 — NEVER mingle `sme_inventory_seed` with the ERP `inventory` table.**
+> They are deliberately, permanently separate. `sme_inventory_seed` is the **SME-owned** baseline (loaded from `Materials_DetailsAvailable_Qty.xlsx`). ERP `inventory` is the **ERP-owned** ledger-backed stock. SME Master Data CRUD writes go to `sme_inventory_seed` ONLY. The live Available_Qty shown anywhere in the SME portal is computed by `sme_materials_view` (seed + ERP receipts − ERP consumption, joined via `SAP_Code → inventory.Material_Code`). Do **not** "simplify" by pointing SME reads at ERP `inventory`, and do **not** write SME quantities into ERP `inventory`. Doing either re-introduces the qty=0 / clutter bugs and risks corrupting the ERP ledger. (This isolation was an explicit, repeated user directive.)
+>
+> **RULE 3 — ALWAYS enforce `Site_ID` scoping on new queries/reports.**
+> The ERP is multi-site (`HQ`, `CNCEC`, …). `sme_equipment` and `sme_sqm_progress` are **site-scoped** (carry `Site_ID`); `sme_recipe` and `sme_inventory_seed` are **global** by design (recipes and the materials master are not per-site). When you write a new query, report, or helper that reads site-scoped data, thread `Site_ID` through it — mirror the existing `get_sme_equipment(site_id=…)` / `get_sme_sqm_progress(site_id=…)` signatures. Never assume a single site.
+>
+> **RULE 4 — NEVER hallucinate the original standalone SME project's internals.**
+> The original SME `app.py` / `allocation_engine.py` source is **not** in this repo beyond the vendored copies (`material_estimator_portal.py`, `material_estimator_engine.py`). If a task requires deep analysis of the *original* standalone SME architecture (its un-merged behavior, original tabs, original SQL, original Excel schemas), **STOP and explicitly ask the user to provide the original SME project files.** Do not invent column names, sheet names, or behaviors from memory.
+>
+> ### 🔒 Project direction (locked)
+> **The SME integration is DONE and FROZEN.** Future development focus shifts to **the ERP project's own features** (see §3 "Remaining Features — Prioritized"). Touch the SME code only to fix a regression that is *proven* against the 522-green test baseline — and add a regression test for any SME fix. Do not refactor the SME drop-in for style; it is intentionally a verbatim port.
+>
+> **Full architecture details: §2W (R20.5 + R20.5.1). Test baseline: `python3 bug_check.py` → 522 passing (17 pre-existing env-only failures: dotenv/bcrypt/fpdf/pdfplumber — unrelated to app logic).**
+
+---
+
 **Last update:** 2026-06 round 20.5 — **TAB 8 MASTER DATA WIRED + SME INVENTORY ISOLATED.** Four user-reported issues on Tab 8 fixed: (1) "Missing Submit Button" warning on Equipment radio (silent IndexError severed the form mid-build); (2) `KeyError: 'Lining_System'` from `_get_autofill` (sme_equipment was missing 15 legacy Excel columns); (3) "cannot modify view" errors on every Add/Edit/Delete (Tab 8 wrote raw SQL against the compat VIEWs); (4) Materials Details flooded with 1,200+ rows of ERP inventory clutter and showed Available_Qty=0 (TABLE_MAP pointed at the wrong table; no SME-specific seed existed). Phase A extends `sme_equipment` +15 cols + `sme_recipe` +8 cols, creates `sme_inventory_seed` (SME-owned baseline), creates `sme_materials_view` (joins seed against ERP `receipts`/`consumption` so `Available_Qty = Initial + Received − Consumed`), rewrites the `equipment`/`recipe` compat VIEWs to expose every aliased column, and adds 9 CRUD helpers that translate UI form keys (lowercase, dotted, slashed) onto PascalCase table columns. Phase B extends the bootstrap to load every Excel column, adds the inventory-seed loader, and switches default semantics to `INSERT OR IGNORE` so manual edits survive (with a `--force` flag for explicit re-baseline). Phase C surgically rewires 4 raw-SQL write sites in Tab 8 to dispatch on `db_table` and call the helpers; `TABLE_MAP` now points `"Materials_DetailsAvailable_Qty" → "sme_materials_view"`. Phase D adds 11 regression tests. The SME inventory store is now fully isolated from ERP `inventory` writes; live Available_Qty still rolls up automatically from R18-tagged consumption + Logistics receipts via SQL view math. See §2W. **Tests: +11 Round-20.5 checks (11/11 green).** **R20.5.1 follow-up:** fixed two bugs the live render exposed — Master Data's `ORDER BY rowid` returned empty grids for all 3 radios (VIEWs have no rowid), and `get_sme_inventory_view()` was still reading ERP live stock so every analytical tab showed qty=0; rewired it to the seed-based `sme_materials_view` model so the whole portal reflects the SME inventory file. **Total 522 / 539 (54 SME-related green: R17 13/13 + R18 13/13 + R20 11/11 + R20.1 4/4 + R20.5 11/11 + R20.5.1 2/2).**
 
 **Prior round:** 20.1 — **R20 LIVE-RENDER BUGFIXES.** First-render audit of the literal SME drop-in surfaced four issues that bare-mode tests couldn't catch: (a) the R20 Phase-2 wrap leaked 8-space indent INTO multi-line string contents, so `st.markdown(... unsafe_allow_html=True)` treated the sticky header / gauge / h-bars / section dividers as escaped code text instead of styled HTML; (b) `_cached_cascade_allocate` raised `KeyError: 'Equipment_Tag_No.'` on the Total Overview tab when the row list was empty (e.g., stale cache from a prior session); (c) the Stock-Only Materials section showed generic warehouse items (bolts/gloves) because our `get_sme_inventory_view()` returns all inventory rows, not just SME-tracked ones; (d) `load_all()` could return shape-less empty frames when no data was loaded yet. All four fixed via a tokenize-walking dedent script (158 + 6 lines patched), an explicit `_EXPECTED_COLS` argument to `pd.DataFrame(rows, columns=...)`, an `isin(_all_sme_codes)` filter on Stock-Only Materials, and three `if X.empty: pd.DataFrame(columns=[...])` guards. Plus 4 R20.1 regression tests so this class of issue gets caught in CI next time. See §2V.1. **Tests: +4 Round-20.1 checks (4/4 green) — total 510 / 526 (41 SME-related checks all green: R17 13/13 + R18 13/13 + R20 11/11 + R20.1 4/4).**
@@ -1918,7 +1948,42 @@ Round 17 13/13 + Round 18 13/13 + Round 20 11/11 + Round 20.1 4/4 = **41 SME-rel
 
 ---
 
-## 2W. Tuning Round 20.5 (2026-06) — Tab 8 Master Data CRUD wiring + SME inventory isolation
+## 2W. Tuning Round 20.5 / 20.5.1 (2026-06) — Tab 8 Master Data CRUD wiring + SME inventory isolation
+
+> ### 📐 §2W.0 — SME ARCHITECTURE CANON (the authoritative reference)
+> Read this before editing anything SME. The three earlier rounds (R17 merge, R18 consumption form, R20 literal drop-in) are summarized in §2S–§2V; the *current, locked* shape is here.
+>
+> **What the SME portal IS:** a verbatim drop-in of the original standalone Streamlit app, living as ONE file — `pages_internal/material_estimator_portal.py` (~7,200 LOC). All rendering is wrapped inside `page_material_estimator(user)`. The allocation engine is vendored at `pages_internal/material_estimator_engine.py`. The logo is `pages_internal/sme_logo.png`. It is intentionally NOT refactored into a package — do not "clean it up."
+>
+> **Why VIEWs:** the SME's legacy SQL references tables named `equipment`, `recipe`, `sqm_progress`, `locations`, `types`, `consumption_log`, and an inventory source. None exist in the ERP schema under those names. `init_db()` creates **compatibility SQLite VIEWs** that alias the real `sme_*` tables (and `system_settings`) into the exact lowercase/dotted/slashed column names the SME expects. The SME reads through the views; **writes are rerouted to helper functions** (views are read-only).
+>
+> **Canonical table / view map:**
+>
+> | SME legacy name | Backed by (real object) | Kind | Site-scoped? | Writes go through |
+> |---|---|---|---|---|
+> | `equipment` | `sme_equipment` | VIEW | ✅ `Site_ID` | `D.insert/update/delete_sme_equipment` |
+> | `recipe` | `sme_recipe` | VIEW | ❌ global | `D.insert/update/delete_sme_recipe` |
+> | `sqm_progress` | `sme_sqm_progress` | VIEW | ✅ `Site_ID` | `D.upsert_sme_sqm_progress` |
+> | Materials radio → `sme_materials_view` | `sme_inventory_seed` + `receipts`/`consumption` join | VIEW | ❌ global | `D.insert/update/delete_sme_inventory_seed` |
+> | `locations` | `system_settings` (category `sme_location`) | VIEW | ✅ via Site_ID rows | `D.add/delete_sme_setting` |
+> | `types` | `system_settings` (category `sme_equipment_type`) | VIEW | ✅ via Site_ID rows | `D.add/delete_sme_setting` |
+> | `consumption_log` | `sme_consumption_log` (R18) | VIEW | ✅ `Site_ID` | R18 staging helpers |
+>
+> **The inventory isolation model (THE most important part):**
+> ```
+>   Materials_DetailsAvailable_Qty.xlsx ──bootstrap──▶ sme_inventory_seed  (SME-owned baseline; NEVER ERP inventory)
+>                                                              │
+>   ERP receipts ──┐                                          │  joined at READ time only
+>   ERP consumption ┼─ via SAP_Code → inventory.Material_Code ─┤  (nothing is stored)
+>                  ┘                                           ▼
+>                                              sme_materials_view.available_qty
+>                                       = Initial_Available_Qty + Σreceipts − Σconsumption
+> ```
+> `get_sme_inventory_view()` (in `database.py`) reads `sme_materials_view` and feeds `load_all()`, which feeds EVERY analytical tab AND the SK consumption form in `daily_issue_log.py`. So fixing the math in the view fixes the whole portal at once. ERP `inventory` is never written by SME code; SME quantities are never written into ERP `inventory`. (See RULE 2 at the top of this file.)
+>
+> **`pyzipper` is GONE.** R17 originally shipped encrypted-zip download helpers using `pyzipper`. R18 ripped that out entirely — SME report downloads are now raw `.xlsx`/PDF via the standard ERP download path (the `st.download_button` monkey-patch is scoped inside `page_material_estimator` via try/finally so other portals are unaffected). Do not re-introduce `pyzipper` or a module-level download-button patch.
+>
+> **Bootstrap:** `python3 scripts/sme_bootstrap.py --site-id <SITE>` loads all three Excel files (`scripts/sme_seed_data/*.xlsx`) into `sme_recipe` (global), `sme_equipment` (site), `sme_inventory_seed` (global), and seeds `sme_sqm_progress`. Default `INSERT OR IGNORE` preserves manual Master-Data edits; `--force` re-baselines from Excel. Run once per `Site_ID`.
 
 Round 20 landed the literal SME drop-in with the analytical tabs (Dashboard, Selective Entry, Session Order, Location Report, Equipment Report, Execution Plan, Total Overview) working end-to-end. Tab 8 (Master Data) was the last block that still needed an architectural treatment because it does CRUD — and the R17 compat VIEWs are read-only.
 
@@ -2000,9 +2065,9 @@ The four raw-SQL write sites in Tab 8 of `material_estimator_portal.py`:
 10. `check_r20_5_table_map_materials_view` — TABLE_MAP points to `sme_materials_view`; stale `"inventory"` mapping absent
 11. `check_r20_5_equipment_smart_entry_helpers` — confirms `D.insert_sme_equipment`, `D.upsert_sme_sqm_progress`, `D.insert_sme_recipe`, `D.insert_sme_inventory_seed` all called in the portal
 
-### Test posture
+### Test posture (R20.5 — superseded by the R20.5.1 LOCKED baseline in §2W.1)
 
-Round 17 13/13 + Round 18 13/13 + Round 20 11/11 + Round 20.1 4/4 + Round 20.5 11/11 = **52 SME-related checks all green; total 520 / 537** (same 17 pre-existing env failures: dotenv, bcrypt, fpdf, pdfplumber).
+Round 17 13/13 + Round 18 13/13 + Round 20 11/11 + Round 20.1 4/4 + Round 20.5 11/11 = 52 SME-related checks green; total 520 / 537 at the end of R20.5. **R20.5.1 then added +2 checks → final 522 / 539 (54 SME-related green). See §2W.1 for the authoritative current baseline.**
 
 ### Deployment
 
@@ -2011,14 +2076,24 @@ Round 17 13/13 + Round 18 13/13 + Round 20 11/11 + Round 20.1 4/4 + Round 20.5 1
 3. **One-time** per site needing CNCEC fix: `python3 scripts/sme_bootstrap.py --site-id CNCEC` (or `--force` to re-baseline an existing site from refreshed Excel).
 4. Restart Streamlit. All 4 Tab 8 issues resolved: form renders with Save button, autofill panels populate, Add/Edit/Delete work for Equipment / Recipe / Materials Details, and Materials Details shows the ~30 SME materials with live Available_Qty derived from ERP movements.
 
-### R20.5.1 follow-up — two bugs surfaced after the user ran the bootstrap
+## 2W.1. R20.5.1 — two bugs surfaced after the user ran the bootstrap (live render)
+
+These two are the source of **RULE 1** and the reinforcement of **RULE 2** at the top of this file. Each one cost a debugging round; do not regress them.
 
 | Symptom | Root cause | Fix |
 |---|---|---|
-| **Master Data → "No records found" for ALL three radios** (Equipment / Recipe / Materials) despite 75 / 86 / 22 rows in the DB | Tab 8's View/Edit/Delete read did `SELECT * FROM {db_table} ORDER BY rowid`. After R20.5, `db_table` resolves to a **VIEW** — and VIEWs have no implicit `rowid`. SQLite raised `no such column: rowid`, swallowed by the surrounding `except Exception: view_df = pd.DataFrame()` into an empty grid. | Order by a real per-table column via `_ORDER_COL` map (`equipment`/`recipe` → `id`, `sme_materials_view` → `material_code`) with a no-ORDER fallback. |
-| **Every SME analytical tab (Dashboard Full Material Balance, Equipment Report, etc.) showed Available/Ordered = 0** | `get_sme_inventory_view()` still sourced Available from ERP **live stock** and Ordered from ERP **open POs** — both 0 for SME materials, which live in `sme_inventory_seed`, not ERP `inventory`. R20.5 only rewired Tab 8's Materials radio to the new model; the rest of the portal (everything fed by `load_all()`) was missed. | Rewrote `get_sme_inventory_view()` to read `sme_materials_view` (the approved `Initial + Received − Consumed` math). Now the **whole** SME surface — Dashboard, Equipment Report, Session Order, Execution Plan, Total Overview, AND the SK consumption form in `daily_issue_log.py` (shared caller) — reflects the SME inventory file. Recipe master still fallback-enriches name/UOM/Nature. |
+| **Master Data → "No records found" for ALL three radios** (Equipment / Recipe / Materials) despite 75 / 86 / 22 rows in the DB | Tab 8's View/Edit/Delete read did `SELECT * FROM {db_table} ORDER BY rowid`. After R20.5, `db_table` resolves to a **VIEW** — and VIEWs have no implicit `rowid`. SQLite raised `no such column: rowid`, swallowed by the surrounding `except Exception: view_df = pd.DataFrame()` into an empty grid. | Order by a real per-table column via `_ORDER_COL` map (`equipment`/`recipe` → `id`, `sme_materials_view` → `material_code`) with a no-ORDER fallback. **→ RULE 1.** |
+| **Every SME analytical tab (Dashboard Full Material Balance, Equipment Report, etc.) showed Available/Ordered = 0** | `get_sme_inventory_view()` still sourced Available from ERP **live stock** and Ordered from ERP **open POs** — both 0 for SME materials, which live in `sme_inventory_seed`, not ERP `inventory`. R20.5 only rewired Tab 8's Materials radio to the new model; the rest of the portal (everything fed by `load_all()`) was missed. | Rewrote `get_sme_inventory_view()` to read `sme_materials_view` (the approved `Initial + Received − Consumed` math). Now the **whole** SME surface — Dashboard, Equipment Report, Session Order, Execution Plan, Total Overview, AND the SK consumption form in `daily_issue_log.py` (shared caller) — reflects the SME inventory file. Recipe master still fallback-enriches name/UOM/Nature. **→ RULE 2.** |
 
-`check_r17_sme_inventory_view` updated to seed the new source (same 130/15 expected outputs). +2 R20.5.1 regression checks (`check_r20_5_1_master_data_no_order_by_rowid`, `check_r20_5_1_inventory_view_seed_sourced`). **Tests: 522 / 539 (54 SME-related green: R17 13/13 + R18 13/13 + R20 11/11 + R20.1 4/4 + R20.5 11/11 + R20.5.1 2/2).**
+`check_r17_sme_inventory_view` updated to seed the new source (same 130/15 expected outputs). +2 R20.5.1 regression checks (`check_r20_5_1_master_data_no_order_by_rowid`, `check_r20_5_1_inventory_view_seed_sourced`).
+
+### Final SME test posture (LOCKED baseline)
+
+**`python3 bug_check.py` → 522 passing / 17 pre-existing env failures (539 total).** The 54 SME-related checks are all green: **R17 13/13 + R18 13/13 + R20 11/11 + R20.1 4/4 + R20.5 11/11 + R20.5.1 2/2.** The 17 failures are environment-only (missing `dotenv`, `bcrypt`, `fpdf`, `pdfplumber` on this machine) and are unrelated to application logic — they predate all SME work. **Any future change must keep the 522 green.**
+
+### 🔒 SME integration status: FEATURE-COMPLETE & FROZEN
+
+The SME ↔ ERP merge is done. Future development pivots to **the ERP project's own roadmap (§3 below)**. Touch SME code only to fix a *proven* regression against the 522 baseline, and always add a regression test for the fix. If a task requires understanding the *original standalone* SME app's internals beyond what's vendored here, **ask the user for the original SME project files — do not hallucinate** (RULE 4).
 
 ---
 
