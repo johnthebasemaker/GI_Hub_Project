@@ -3175,14 +3175,17 @@ def render_design_hbar(data: list[dict], title: str = "") -> str:
         f'color:var(--t4);margin-bottom:.5rem;">{title}</div>'
         if title else ""
     )
-    return f"""
-    <div class="sme-viz-card">
-      {title_html}
-      <svg viewBox="0 0 {w} {total_h}" preserveAspectRatio="xMidYMid meet">
-        {"".join(rows)}
-      </svg>
-    </div>
-    """
+    # R20.4 EDIT: zero-indent for the same reason as render_design_gauge —
+    # opening tag must be at column 0 so Streamlit's markdown treats the
+    # whole thing as an HTML block, not an indented code block.
+    return (
+f"""<div class="sme-viz-card">
+{title_html}
+<svg viewBox="0 0 {w} {total_h}" preserveAspectRatio="xMidYMid meet">
+{"".join(rows)}
+</svg>
+</div>"""
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4986,6 +4989,56 @@ letter-spacing:.08em;color:var(--t5);">
                 st.markdown('<div class="sec-hdr">📍 All Equipment by Location — Cascading Balance</div>',
                             unsafe_allow_html=True)
                 st.caption("Drag to reorder equipment within each location. Order is independent from the session list.")
+
+                # R20.4 TEMP: diagnostic to find why per-location sections
+                # render empty. Shows LOCATION_ORDER + eq_master location
+                # values + per-location tag counts so we can spot mismatches.
+                with st.expander("🔬 Location Report diagnostic", expanded=False):
+                    st.caption(
+                        f"`LOCATION_ORDER` ({len(LOCATION_ORDER)}): "
+                        f"`{LOCATION_ORDER!r}`"
+                    )
+                    if eq_master is None or eq_master.empty:
+                        st.warning("⚠️ eq_master is EMPTY — load_all() returned no equipment.")
+                    else:
+                        _loc_vals = eq_master["Location"].fillna("").astype(str).str.strip()
+                        _unique_locs = sorted(_loc_vals.unique())
+                        st.caption(
+                            f"`eq_master.Location` distinct ({len(_unique_locs)}): "
+                            f"`{_unique_locs!r}`"
+                        )
+                        _per_loc = _loc_vals.value_counts().to_dict()
+                        st.caption(
+                            f"Equipment per location: `{_per_loc!r}`"
+                        )
+                        _matching = [
+                            loc for loc in LOCATION_ORDER if loc in _unique_locs
+                        ]
+                        _missing = [
+                            loc for loc in LOCATION_ORDER if loc not in _unique_locs
+                        ]
+                        if _matching:
+                            st.caption(
+                                f"✓ LOCATION_ORDER matching eq_master: "
+                                f"`{_matching!r}`"
+                            )
+                        if _missing:
+                            st.warning(
+                                f"⚠️ LOCATION_ORDER values **NOT** in eq_master "
+                                f"(per-location loop will skip these): "
+                                f"`{_missing!r}`"
+                            )
+                        _orphan_locs = [
+                            loc for loc in _unique_locs
+                            if loc and loc not in LOCATION_ORDER
+                        ]
+                        if _orphan_locs:
+                            st.warning(
+                                f"⚠️ eq_master Location values **NOT** in "
+                                f"LOCATION_ORDER (won't render): "
+                                f"`{_orphan_locs!r}`. "
+                                f"Add them via Master Data → ➕ Add Location."
+                            )
 
             for loc in LOCATION_ORDER:
                 # Skip location rendering in All Equipment mode
