@@ -25,6 +25,8 @@
 15. [Warehouse Portal Manual (NEW in v3.0)](#15-warehouse-portal-manual)
 16. [Cross-Role Procurement Walk-through (NEW in v3.0)](#16-cross-role-procurement-walk-through)
 17. [Operations & Hosting — the after-launch chapter](#17-operations--hosting--the-after-launch-chapter)
+18. [Material Estimator (SME) Manual](#18-material-estimator-sme-manual)
+19. [Man-Hours & Labor Tracking Manual (NEW)](#19-man-hours--labor-tracking-manual)
 
 ---
 
@@ -110,6 +112,11 @@ The hierarchy is parallel, not strictly linear — `warehouse_user` and `supervi
 | 🏭 Warehouse Portal (NEW) | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ (admin shadow, picks WH in sidebar) |
 | 🛡️ Admin Portal | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | 📊 Reports | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 🛡️ Supervisor Portal | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ (admin shadow) |
+| 🧪 Material Estimator | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ |
+| 🕒 Man-Hours (NEW) | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ |
+
+> **Exact-role locks:** Entry Log, HOD Portal, Supervisor Portal, Logistics Portal, Warehouse Portal, Material Estimator, and Man-Hours are *exact-locked* in `main.py` (`_EXACT_ROLE_PAGES`) — higher-hierarchy roles do **not** inherit access. Admin reaches the locked portals via shadow access.
 
 ## 2.3 Site scope by role
 
@@ -3554,9 +3561,97 @@ tail -200 ~/Library/Logs/gi-whatsapp-worker.err > /tmp/worker-err.txt
 
 ---
 
+# 18. Material Estimator (SME) Manual
+
+> **Access:** `🧪 Material Estimator` page — exact-locked to **HOD + Admin**. HOD is scoped to their own site; Admin gets a sidebar site picker. SK / Supervisor / Logistics / Warehouse never see this page.
+
+## 18.1 What it is
+
+The **Smart Material Estimator (SME)** is a planning portal for Rubber-Lining / Brick-Lining work. It answers: *"For the equipment and lining systems at this site, how much material do we need, what's already available, and what must we still procure?"* It is a **read-only projection** over the live ERP ledger — it never writes consumption, receipts, or stock. `Available_Qty` is **computed** (SME seed baseline + Logistics receipts − tagged consumption), never stored.
+
+It reads three SME-owned master tables seeded by Admin: **Equipment** (per site — tag, location, surface area, lining system), **Recipe** (global — material per 1 SQM for each lining system), and the **Materials seed** (the SME inventory baseline). Locations and Equipment Types are managed in `system_settings`.
+
+## 18.2 Tabs (8)
+
+| Tab | Purpose |
+|---|---|
+| 📊 **Dashboard** | KPI strip + per-location material balance + a stock-only view of SME-tracked items + a procurement view (what to buy, per code/location). |
+| 🎯 **Priority** | Drag-to-rank equipment so the allocation engine fills the highest-priority tags first when stock is short. |
+| 🧾 **Session / Selective Order** | Pick specific equipment, enter the SQM to execute, and get the exact material list + a combined procurement total with a GRAND TOTAL row. |
+| 📍 **Location Report** | Material requirement broken down by location, with per-location colour schemes; plus an "All Equipment" view. |
+| 🏭 **Equipment Report** | Per-equipment three-section breakdown (requirement / available / shortfall), exportable as a multi-sheet workbook. |
+| 🗂️ **Execution Plan** | Critical-items card + procurement-priority + production-detail blocks for executing a work package. |
+| 📈 **Total Overview** | Whole-site rollup: 6-card KPI strip + master table + per-system-code drill-downs. |
+| ⚙️ **Master Data** | CRUD for Equipment, Recipe, and the SME Materials baseline + Locations/Types. **Writes go only to the SME-owned tables — never the ERP inventory ledger.** |
+
+## 18.3 How SME consumption reaches the ledger
+
+The SME does **not** issue stock itself. Day-to-day consumption is entered on the **Store Keeper → SK Consumption** page (the `🧪 SME Multi-Material Entry` grid): pick an equipment tag → system codes → SQM per system → auto-computed materials → submit a batch. That flows through the **normal EOD commit pipeline** (HOD approval → `commit_eod`), and the SME's `Done_SQM` advances on commit. So the estimator's "available" figures stay in sync with real ledger movements.
+
+## 18.4 Key rules (for support)
+
+- **SME inventory is isolated from ERP `inventory`.** The SME baseline lives in its own seed table; quantities shown are derived, not stored. Do not expect SME edits to change the Live Dashboard stock and vice-versa.
+- **Master-data grids order by an explicit key** (not row order); if a grid says "No records found" but data exists, it's a known historical bug class — refresh / report it.
+- Bootstrap/seed is loaded by Admin via `scripts/sme_bootstrap.py --site-id <SITE>`.
+
+---
+
+# 19. Man-Hours & Labor Tracking Manual
+
+> **Access:** `🕒 Man-Hours` page — exact-locked to **HOD + Admin**. HOD is scoped to their own site; Admin gets a sidebar **site picker**. (NEW — 2026-06.)
+
+## 19.1 What it is
+
+Man-Hours tracks **labor** the way the Material Estimator tracks material: log who worked, where, and for how long; record SQM produced; define the **required** man-hours for a scope; then compare **estimated vs actual** to surface over-runs. It is fully **site-scoped** and **isolated** — it reads the Material Estimator's Equipment / System-Code / Location lists (read-only) for its dropdowns, and writes only to its own `mh_*` tables. Nothing here touches inventory, the EOD path, or the SME data.
+
+## 19.2 Tabs (5)
+
+### 19.2.1 👥 Employees
+Per-site labor roster. Add/update a worker with **Code, Name, Designation, Type (OWN / Supply), Company**. "OWN" = your own (GI) staff; "Supply" = subcontractor labor (e.g. DMC) — these can live here even though they aren't ERP app-users. A status expander flips a worker active/inactive.
+
+### 19.2.2 🕒 Daily Timesheet
+Two ways to enter actuals, plus team-SQM:
+
+- **📤 Excel upload** — upload an attendance workbook in the `to_john_Attendance` format (sheets `ADD EMPLOYEE` + `SAR`). The system previews the parsed counts, then on import you choose:
+  - **Replace rows for these dates** (recommended) — deletes this site's existing timesheets for the dates in the file, then inserts (safe to re-upload a corrected file — no duplicates), or
+  - **Append** — adds the rows as-is.
+  Unknown workers are auto-created into the roster. Location / Equipment / System import blank (the source file doesn't carry them) and are assigned afterward here.
+- **🕒 Manual per-day batch grid** — pick a **Work Date**, **Equipment Tag**, **System Code** (drop-downs from the Material Estimator's equipment), and a break (default 60 min). The grid lists active workers; tick **Worked** and set In/Out (default 07:30–16:30). On save, one timesheet row is written per worker.
+- **📐 Team SQM** — record the SQM the crew completed on that date/tag/system and choose **even** (equal per worker) or **by-hours** (pro-rata on hours) distribution; each worker's share lands in their row's `Allocated_SQM`.
+
+**Hours math:** `Total = (Out − In) − break`; **Normal = min(Total, 8 h)**; **OT = max(0, Total − 8 h)**. (Example: 07:30–16:30 with a 1 h break = 8 h Total / 8 Normal / 0 OT.) The source file's own hour columns are ignored — hours are always recomputed.
+
+### 19.2.3 📐 Estimator
+Define the **required** man-hours for a scope: pick Equipment Tag + System Code, enter Estimated man-hours (and optionally Estimated SQM → yields a man-hours-per-SQM norm) + a basis note. One estimate per Tag/System (re-saving updates it).
+
+### 19.2.4 📊 Estimate vs Actual
+The variance dashboard. KPI strip (scopes tracked / over-consuming / total actual man-hours) + a table where **over-runs >10 % are highlighted red** and on-or-under-budget rows green. `Variance = Actual − Estimated`, `Variance % = Variance ÷ Estimated`. A "Where the most man-hours went" table ranks the top consumers. An expander lets you record a **reason** for an over-consumption (saved per Tag/System and shown back in the table).
+
+### 19.2.5 🧑‍🔧 Employee-wise
+The "where did each person work, date by date" view. Pick an employee (or *All*) and a date range; get a clean, date-ordered list of every tag/system they worked with hours and allocated SQM — the un-cluttered per-person timeline.
+
+## 19.3 Bulk seed (Admin / CLI)
+
+To pre-load an attendance file outside the UI:
+```bash
+python3 scripts/manhour_bootstrap.py --file "/path/to/attendance.xlsx" --site-id CNCEC
+#   --dry-run    parse + report, write nothing
+#   --no-replace append instead of replace-by-date
+```
+It uses the same parse/import code path as the in-app upload, so behaviour is identical.
+
+## 19.4 Key rules (for support)
+
+- **Isolated `mh_*` data.** Man-Hours never changes inventory, SME data, or the EOD ledger.
+- **Site-scoped.** HOD sees only their site; Admin switches sites with the sidebar picker. Each timesheet/estimate carries `Site_ID`.
+- **One timesheet line per (employee, date, equipment-tag, system-code).** A worker split across two tags in a day has two rows.
+- Equipment-Tag / System-Code / Location drop-downs come from the **Material Estimator's** equipment master — keep that seeded for a site or the lists will be empty.
+
+---
+
 ## Document end
 
-This manual covers every page, tab, button, table, and field built into the General Industries Hub v3.0 as of the latest commit, including the new Logistics and Warehouse portals and the procurement chain. For technical reference (function signatures, table schemas, full SQL), see `database.py`, `auth.py`, and `pages_internal/*.py` source files. For day-to-day operating procedure across all five roles, see `SOP.md`.
+This manual covers every page, tab, button, table, and field built into the General Industries Hub v3.0 as of the latest commit, including the Logistics and Warehouse portals and the procurement chain (§14–16), the **Material Estimator (SME)** planning portal (§18), and the **Man-Hours & Labor Tracking** module (§19). For technical reference (function signatures, table schemas, full SQL), see `database.py`, `auth.py`, and `pages_internal/*.py` source files. For day-to-day operating procedure across all roles, see `SOP.md`.
 
 For PDF export: use any markdown-to-PDF converter (Typora, pandoc, marp, or VSCode's "Markdown PDF" extension). Suggested pandoc command:
 ```bash

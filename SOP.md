@@ -89,6 +89,30 @@ R = Responsible (does the work) · A = Accountable (signs off) · C = Consulted 
 - [ ] Generate **🧾 PO Status** report scoped to your site — review on-time delivery rate
 - [ ] Audit your own bell inbox for missed criticals (filter to unread)
 
+### §3.3a Site HOD — Man-Hours & Labor Tracking (`🕒 Man-Hours`)
+
+**Daily (or per shift):**
+- [ ] 🕒 Daily Timesheet — log the day's labor. Either upload the day's attendance Excel (`Replace rows for these dates` so a re-upload never duplicates) **or** use the manual per-day batch grid (pick Work Date → Equipment Tag → System Code → tick who worked + In/Out).
+- [ ] Record **team SQM** completed for each tag/system worked, and pick the distribution (even / by-hours).
+- [ ] Confirm Location/Equipment/System are filled on imported rows (the Excel arrives with them blank).
+
+**Weekly:**
+- [ ] 📊 Estimate vs Actual — review the variance table; for every red (>10 % over) scope, record a **Reason** for the over-consumption.
+- [ ] 👥 Employees — deactivate workers who have left; confirm OWN vs Supply + Company are correct.
+- [ ] 🧑‍🔧 Employee-wise — spot-check a few workers' date-wise timelines for gaps or double-bookings.
+
+**Monthly:**
+- [ ] 📐 Estimator — update required man-hours for upcoming scopes (and Estimated SQM for a MH-per-SQM norm).
+- [ ] Compare total Actual man-hours vs Estimated for the month; flag systemic over-runs to management with the captured reasons.
+
+> Man-Hours is **site-scoped** and **isolated** — it never changes inventory or the EOD ledger. Equipment-Tag / System-Code drop-downs come from the **Material Estimator** master, so keep that seeded for the site.
+
+### §3.3b Site HOD — Material Estimator (`🧪 Material Estimator`)
+
+- [ ] **Before a work package:** open 🧾 Session/Selective Order → pick equipment + SQM → review the material requirement and the procurement total; raise PRs for shortfalls via the normal HOD PR flow.
+- [ ] **Weekly:** 📊 Dashboard / 📈 Total Overview — check available-vs-required per location; the figures are computed live from receipts and committed consumption (no manual upkeep).
+- [ ] **Master Data:** only Admin/HOD edits Equipment/Recipe/Materials here; these are SME-owned and never touch the ERP inventory ledger.
+
 ---
 
 ### §3.4 Logistics — Hourly (during work hours)
@@ -520,6 +544,11 @@ For complete vocabulary (FEFO, EOD, PR, DN, OCR, WAL, etc.) see `USER_MANUAL.md`
 | **T-2 / T-1 / T-0 reminders** | Daily sweep job firing notifications 2 days before, 1 day before, and on the expected delivery date. Idempotent. |
 | **App notification** | A row in `app_notifications`, surfaced via the sidebar bell. Always fires; in-app only. |
 | **WhatsApp trigger toggle** | `config.WHATSAPP_TRIGGERS[event_key] = True/False` to per-event control WhatsApp emission. In-app is unaffected. |
+| **Material Estimator (SME)** | HOD/Admin planning portal for Rubber/Brick-Lining material. Read-only projection over the ledger; `Available_Qty` is computed, never stored. SME inventory is isolated from the ERP `inventory` table. |
+| **Man-Hours** | HOD/Admin labor-tracking module. Employee roster + daily timesheets (Excel upload or manual grid) + team-SQM distribution + a man-hour estimator + an estimate-vs-actual variance dashboard. Writes only `mh_*` tables; never touches inventory or the EOD ledger. |
+| **OWN vs Supply** | Labor type on the Man-Hours roster: OWN = your own (GI) staff; Supply = subcontractor labor (e.g. DMC). |
+| **Normal vs OT hours** | Man-Hours computes `Total = (Out − In) − break`, `Normal = min(Total, 8h)`, `OT = max(0, Total − 8h)`. The source file's own hour columns are ignored. |
+| **SQM distribution** | How a day's team SQM is split to each worker's `Allocated_SQM`: **even** (equal per worker) or **by-hours** (pro-rata on hours). |
 
 ---
 
@@ -528,6 +557,7 @@ For complete vocabulary (FEFO, EOD, PR, DN, OCR, WAL, etc.) see `USER_MANUAL.md`
 | Version | Date | Author | Changes |
 |---|---|---|---|
 | 1.0 | 2026-06 | Initial release | First publication alongside Hub v3.0 procurement chain. Covers Site HOD, Logistics, Warehouse User, SK, Admin. Includes RACI, daily/weekly/monthly cadences, 4 decision trees, 6-tier escalation matrix, 7 recovery procedures, 5 quick-reference cards. |
+| 1.1 | 2026-06-28 | Update | Added §3.3a **Man-Hours & Labor Tracking** and §3.3b **Material Estimator** HOD cadences; glossary entries for both modules (SME isolation, OWN/Supply, Normal/OT, SQM distribution). These HOD/Admin-only modules are site-scoped and isolated from the inventory ledger. |
 
 ---
 
