@@ -34,7 +34,9 @@
 
 ---
 
-**Last update:** 2026-06 round 20.5.2 — **TWO LIVE CRASHES FIXED.** (1) SK Consumption page threw `ModuleNotFoundError: No module named 'pages_internal.material_estimator'` — `daily_issue_log.py` still imported `days_of_continuation_block` from the R19 package R20 deleted; vendored the function in-file and removed the dead import (it was the only live reference). (2) Admin Material Estimator → Location Report threw `IndexError: single positional indexer is out-of-bounds` — `st.session_state.loc_order` held equipment tags removed by a re-bootstrap; now reconciled against the current `eq_master` each run. +3 regression checks. See §2W.2. **Tests: 525 / 542 (57 SME-related green).**
+**Last update:** 2026-06-28 — **WORKSTREAM C PAUSED; MAN-HOUR TRACKING STARTED.** Docker/Nginx-SSL/Meta-webhook infra is complete locally + committed (`f89449f`, `e360455`); see §2Y. New active feature **Man-Hour & Labor Tracking Integration** in planning — see §2Z. Test baseline now **547 bug_check checks green** (542 prior + 5 new Workstream C webhook checks). The earlier round-20.5.2 note is preserved below.
+
+**Prior update:** 2026-06 round 20.5.2 — **TWO LIVE CRASHES FIXED.** (1) SK Consumption page threw `ModuleNotFoundError: No module named 'pages_internal.material_estimator'` — `daily_issue_log.py` still imported `days_of_continuation_block` from the R19 package R20 deleted; vendored the function in-file and removed the dead import (it was the only live reference). (2) Admin Material Estimator → Location Report threw `IndexError: single positional indexer is out-of-bounds` — `st.session_state.loc_order` held equipment tags removed by a re-bootstrap; now reconciled against the current `eq_master` each run. +3 regression checks. See §2W.2. **Tests: 525 / 542 (57 SME-related green).**
 
 **Prior round:** 20.5 — **TAB 8 MASTER DATA WIRED + SME INVENTORY ISOLATED.** Four user-reported issues on Tab 8 fixed: (1) "Missing Submit Button" warning on Equipment radio (silent IndexError severed the form mid-build); (2) `KeyError: 'Lining_System'` from `_get_autofill` (sme_equipment was missing 15 legacy Excel columns); (3) "cannot modify view" errors on every Add/Edit/Delete (Tab 8 wrote raw SQL against the compat VIEWs); (4) Materials Details flooded with 1,200+ rows of ERP inventory clutter and showed Available_Qty=0 (TABLE_MAP pointed at the wrong table; no SME-specific seed existed). Phase A extends `sme_equipment` +15 cols + `sme_recipe` +8 cols, creates `sme_inventory_seed` (SME-owned baseline), creates `sme_materials_view` (joins seed against ERP `receipts`/`consumption` so `Available_Qty = Initial + Received − Consumed`), rewrites the `equipment`/`recipe` compat VIEWs to expose every aliased column, and adds 9 CRUD helpers that translate UI form keys (lowercase, dotted, slashed) onto PascalCase table columns. Phase B extends the bootstrap to load every Excel column, adds the inventory-seed loader, and switches default semantics to `INSERT OR IGNORE` so manual edits survive (with a `--force` flag for explicit re-baseline). Phase C surgically rewires 4 raw-SQL write sites in Tab 8 to dispatch on `db_table` and call the helpers; `TABLE_MAP` now points `"Materials_DetailsAvailable_Qty" → "sme_materials_view"`. Phase D adds 11 regression tests. The SME inventory store is now fully isolated from ERP `inventory` writes; live Available_Qty still rolls up automatically from R18-tagged consumption + Logistics receipts via SQL view math. See §2W. **Tests: +11 Round-20.5 checks (11/11 green).** **R20.5.1 follow-up:** fixed two bugs the live render exposed — Master Data's `ORDER BY rowid` returned empty grids for all 3 radios (VIEWs have no rowid), and `get_sme_inventory_view()` was still reading ERP live stock so every analytical tab showed qty=0; rewired it to the seed-based `sme_materials_view` model so the whole portal reflects the SME inventory file. **Total 522 / 539 (54 SME-related green: R17 13/13 + R18 13/13 + R20 11/11 + R20.1 4/4 + R20.5 11/11 + R20.5.1 2/2).**
 
@@ -2113,6 +2115,41 @@ Found on first render after pulling the R20.5.1 fixes. Both are "deleted-package
 ### 🔒 SME integration status: FEATURE-COMPLETE & FROZEN
 
 The SME ↔ ERP merge is done. Future development pivots to **the ERP project's own roadmap (§3 below)**. Touch SME code only to fix a *proven* regression against the 525 baseline, and always add a regression test for the fix. If a task requires understanding the *original standalone* SME app's internals beyond what's vendored here, **ask the user for the original SME project files — do not hallucinate** (RULE 4).
+
+---
+
+## 2Y. Workstream C (Docker / Deployment) — ⏸️ PAUSED 2026-06-28
+
+Paused mid-stream to build a higher-priority application feature (§2Z). **The infrastructure already built is COMPLETE LOCALLY and committed to `main`** (commits `f89449f`, `e360455`, + the Step-4/5 work). All of it is **server-only / additive** — the Mac dev path (`streamlit run main.py`) is byte-for-byte unchanged, verified each round.
+
+**Done & committed:**
+- **Docker foundation** — `Dockerfile.streamlit`, `Dockerfile.fastapi`, `docker-compose.yml` (5 services: nginx/streamlit/fastapi/ollama/backup on the `gi-net` bridge; only nginx binds host ports), `requirements-server.txt`, `.dockerignore`, `docker/entrypoint-streamlit.sh` (symlinks DB+uploads into the `gi-data` volume — zero app-code changes).
+- **16 GB tuning** — server changed to **Hetzner CPX42 (8 vCPU / 16 GB / 320 GB)**; Ollama pinned via `OLLAMA_MAX_LOADED_MODELS=1` + `OLLAMA_NUM_PARALLEL=1` so only one ~5 GB model is resident at a time.
+- **CI/CD** — `.github/workflows/deploy.yml` (push-to-main → SSH → `git reset --hard origin/main` → build → `compose up -d`).
+- **Nginx + TLS** — `docker/nginx/gihub.conf` (HTTP) + `docker/nginx/gihub.ssl.conf` (Let's Encrypt for `giinventory.com`, with the certbot bootstrap documented inline).
+- **Meta WhatsApp webhook** — `services/rag_api.py` (FastAPI RAG sidecar wrapping `ai/manual_qa`) + `services/whatsapp_webhook.py` (pure parser/router: extracts sender phone, body, name, `phone_number_id`; handshake + `X-Hub-Signature-256` verification; stub response router). **+5 bug_check.py "Workstream C" checks, all green.**
+
+**Frozen decisions** live in the Phase 6 register's "🔁 SUPERSEDED by Workstream C" block (public Hetzner VPS + Nginx + Meta Cloud API; A3 bcrypt-RBAC and A4 SQLite still in force; CV gate OFF for v1).
+
+**When resumed:** provision the box → `git clone` → smoke test → certbot first-issue → register the Meta webhook (`https://giinventory.com/api/whatsapp/webhook`) → wire the Meta *sender* provider + a dedicated worker service. Offsite-backup gap (Hetzner Storage Box) and the server-side git deploy key are the two go-live to-dos.
+
+---
+
+## 2Z. Man-Hour & Labor Tracking Integration — 🟢 ACTIVE (planning, 2026-06-28)
+
+New workstream: track **labor** the way the SME tracks **material**. Source-of-truth schema came from the user's `to john_Attendance.xlsx` (2 sheets: `ADD EMPLOYEE` roster template + `SAR` daily attendance, 209 rows / 22 employees / 2026-05-16→06-20).
+
+**Goal:** Employee master (per site; OWN/Supply + Company) → daily timesheets (in/out → Total/Normal/OT hours + SQM done, individual or team-distributed) → a **Man-Hour Estimator** (required MH per Location/Equipment-Tag/System-Code) → an **Estimate-vs-Actual variance dashboard** with reason capture and an employee-wise "where did each person work, date-wise" view.
+
+**Key architectural finding (drives the design):** the work dimensions already exist in the **FROZEN SME tables** — `sme_equipment` carries `Equipment_Tag_No`, `Location`, `Lining_System_Code`; `sme_recipe` is the system-code catalogue; `sme_sqm_progress` holds `Done_SQM`. The man-hour feature therefore **reads those SME tables read-only** (dropdowns + SQM context) and **writes only to NEW `mh_*` tables** — never modifying the frozen SME data (RULE 2 spirit). Proposed prefix `mh_` (man-hour), kept distinct from `sme_` to avoid the SME freeze tripwires.
+
+**Decisions locked (2026-06-28):**
+1. **Employee master** = new **`mh_employees`** roster (Code, Name, Designation, Worker_Type[OWN|Supply], Company, Site_ID), with an *optional* `linked_id_number` → `employees.ID_Number` for OWN/GI workers. Handles Supply/DMC subcontractors that aren't in the ERP `employees` master.
+2. **SQM** = team entry per Date/Equipment/System in new **`mh_production`**, auto-distributed to workers (**even** *or* **by-hours**, with per-person override). Per-worker share lands in `mh_timesheets.Allocated_SQM`.
+3. **Hours math** = **8h normal + 1h unpaid break.** `Total = (Out−In) − 60min` ; `Normal = min(Total, 8)` ; `OT = max(0, Total−8)`. (Your file's 07:30–16:30 → 9h gross − 1h = 8h net = Normal 8 / OT 0.)
+4. **UI** = new standalone portal **"🕒 Man-Hours"**, RBAC-locked to **{hod, admin}** via `_EXACT_ROLE_PAGES` (mirrors the SME estimator lock). Tabs: Employees · Daily Timesheet · Man-Hour Estimator · Estimate-vs-Actual · Employee-wise.
+
+**Status:** blueprint approved-in-principle; **No code written yet** (user's "plan first, don't build"). Tables: `mh_employees`, `mh_timesheets`, `mh_production`, `mh_manhour_estimates`, `mh_variance_notes` + view `v_mh_estimate_vs_actual` — all `mh_` prefixed, additive via `init_db` self-heal. Reads `sme_equipment`/`sme_recipe`/`sme_sqm_progress` **read-only** for dropdowns + SQM context. New `pages_internal/manhour_portal.py`, `scripts/manhour_bootstrap.py` (Excel import), new bug_check "Man-Hour" section. **Nothing in the SME drop-in, EOD path, or material ledger is touched.**
 
 ---
 
