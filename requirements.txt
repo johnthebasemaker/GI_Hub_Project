@@ -23,8 +23,12 @@ pyzbar
 
 # Phase 6C — YOLOv8 training + inference (lazy-imported by ai/cv/train.py and
 # ai/cv/inference.py — Streamlit and bug_check never pay torch's import cost).
-ultralytics>=8.1
-opencv-python-headless>=4.9
+# NOTE: commented out for Streamlit Community Cloud — PyTorch + OpenCV exceed
+# the free-tier build/RAM budget, and the CV (Smart Scan) features are gated
+# OFF in production. Re-enable (and add libgl1 to packages.txt) when turning
+# Computer Vision ON. Local dev that needs CV: `pip install ultralytics opencv-python-headless`.
+# ultralytics>=8.1
+# opencv-python-headless>=4.9
 
 # Phase 7E — Network resilience / form draft recovery for low-connectivity sites.
 # Wraps browser localStorage so multi-step form data survives Streamlit WS drops.
