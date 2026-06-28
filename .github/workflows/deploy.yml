@@ -1,0 +1,75 @@
+# ============================================================================
+# deploy.yml — Continuous deployment to the Hetzner production server
+# ----------------------------------------------------------------------------
+# Flow:  push to `main`  ->  SSH into the server  ->  git reset to origin/main
+#        ->  rebuild app images  ->  docker compose up -d
+#
+# Images are built ON THE SERVER (no container registry) — the simplest robust
+# pipeline for a single box. This NEVER runs against your Mac; it targets the
+# future Hetzner host only.
+#
+# Required GitHub repo secrets (Settings → Secrets and variables → Actions):
+#   HETZNER_HOST      server public IP or domain (e.g. giinventory.com)
+#   HETZNER_USER      deploy user (e.g. deploy)
+#   HETZNER_SSH_KEY   PRIVATE key whose public half is in the deploy user's
+#                     ~/.ssh/authorized_keys  (use a dedicated deploy keypair)
+#   HETZNER_SSH_PORT  SSH port (22 unless you changed it)
+#   HETZNER_APP_DIR   absolute path to the cloned repo (e.g. /home/deploy/GI_Hub_Project)
+#
+# Server prerequisite: the repo must already be `git clone`d there once, and —
+# if the GitHub repo is private — the server needs a read-only DEPLOY KEY so
+# `git fetch` works non-interactively. (Add the key as a Deploy Key in the repo
+# settings and point the server's remote at the SSH URL.)
+# ============================================================================
+
+name: Deploy to Hetzner
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:        # lets you re-run a deploy manually from the Actions tab
+
+# Serialize deploys: if one is mid-flight, queue the next instead of overlapping.
+concurrency:
+  group: hetzner-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: SSH deploy (git pull + compose up)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        # Pin to a released tag; bump deliberately when upgrading.
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host:     ${{ secrets.HETZNER_HOST }}
+          username: ${{ secrets.HETZNER_USER }}
+          key:      ${{ secrets.HETZNER_SSH_KEY }}
+          port:     ${{ secrets.HETZNER_SSH_PORT }}
+          script_stop: true        # abort the deploy on the first failing command
+          command_timeout: 20m     # image builds on a shared-vCPU box can be slow
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.HETZNER_APP_DIR }}"
+
+            echo "==> Syncing working tree to origin/main"
+            git fetch --prune origin
+            git reset --hard origin/main      # server is a pure mirror; no local drift
+            #  (runtime state — gi_database.db, uploads — lives in Docker volumes,
+            #   NOT in the repo, so a hard reset never touches user data.)
+
+            echo "==> Rebuilding application images"
+            docker compose build streamlit fastapi
+
+            echo "==> Refreshing base images (nginx / ollama / alpine)"
+            docker compose pull nginx ollama backup || true
+
+            echo "==> Restarting the stack"
+            docker compose up -d --remove-orphans
+
+            echo "==> Reclaiming dangling image layers"
+            docker image prune -f
+
+            echo "==> Final status"
+            docker compose ps

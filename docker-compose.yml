@@ -24,7 +24,18 @@ volumes:
   gi-data:        # SQLite DB + uploads + entry attachments + material_photos
   gi-ollama:      # Ollama model cache (qwen2.5-coder:7b, llama3.1:8b, …)
   gi-models:      # reserved: CV weights for when the LocateAnything gate is ON
-  gi-backups:     # backup destination (bind to a Hetzner Storage Box later)
+  gi-backups:     # backup destination — see note below
+  # ⚠️ OFFSITE GAP: with Hetzner snapshots disabled, this named volume is our
+  # ONLY backup, and it lives on the SAME VPS disk as gi-data. It protects
+  # against DB corruption / bad writes / accidental deletes, but NOT against
+  # total VPS loss. Before go-live, bind gi-backups to an OFF-box target
+  # (Hetzner Storage Box via NFS/CIFS), e.g.:
+  #   gi-backups:
+  #     driver: local
+  #     driver_opts:
+  #       type: cifs
+  #       o: "username=<box>,password=<pw>,vers=3.0,uid=0,gid=0"
+  #       device: "//<box>.your-storagebox.de/backup"
 
 services:
   # ---- Reverse proxy: the only public-facing service ----------------------
@@ -69,6 +80,10 @@ services:
     environment:
       - OLLAMA_HOST=http://ollama:11434
       - TZ=Asia/Riyadh
+      # Meta WhatsApp webhook (receiver stubs live in services/rag_api.py).
+      # Provide these via the server's .env / Docker secrets — never hardcode.
+      # - META_WEBHOOK_VERIFY_TOKEN=${META_WEBHOOK_VERIFY_TOKEN}
+      # - META_APP_SECRET=${META_APP_SECRET}
     networks: [gi-net]
     restart: unless-stopped
     # no host ports — reached via nginx /api/
@@ -76,6 +91,14 @@ services:
   # ---- Local LLM runtime: INTERNAL ONLY -----------------------------------
   ollama:
     image: ollama/ollama:latest
+    environment:
+      # 16 GB RAM guardrails — never hold two models resident at once.
+      # MAX_LOADED_MODELS=1 unloads the current model before loading the next;
+      # NUM_PARALLEL=1 caps concurrent requests so a burst can't force a
+      # second model into memory. Trade-off: switching coder <-> chat reloads
+      # from disk (a few seconds), but peak RAM stays ~one model + the app stack.
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_NUM_PARALLEL=1
     volumes:
       - gi-ollama:/root/.ollama
     networks: [gi-net]

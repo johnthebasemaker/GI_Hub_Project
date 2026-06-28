@@ -6,6 +6,8 @@ env/
 # Ignore databases (Keep your local data local!)
 *.db
 *.sqlite3
+*.db-wal
+*.db-shm
 
 # Ignore passwords/secrets
 .env
