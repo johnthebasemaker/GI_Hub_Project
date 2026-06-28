@@ -25,7 +25,14 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------------------------
-DB_FILE = "gi_database.db"
+# DB selection: prefer the real local DB when it exists (local dev / server),
+# else fall back to the committed SANITIZED demo DB used by the public Streamlit
+# Cloud share (where gi_database.db is gitignored & absent). An explicit
+# GI_DB_FILE env var always wins. Backward-compatible: local/tests are unchanged
+# because gi_database.db is present and bug_check patches DB_FILE explicitly.
+DB_FILE = os.environ.get("GI_DB_FILE") or (
+    "gi_database.db" if os.path.exists("gi_database.db") else "demo_seed.db"
+)
 
 # Columns that are auto-managed and should not appear in dynamic forms
 SYSTEM_COLS = {"id", "Timestamp", "created_at"}

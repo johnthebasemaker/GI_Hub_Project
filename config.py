@@ -12,7 +12,12 @@ APP_NAME     = "General Industries Lightning Hub"
 APP_SUBTITLE = "Enterprise Inventory Management"
 APP_ICON     = "⚡"
 APP_VERSION  = "2.0.0"
-DB_FILE      = "gi_database.db"
+# DB selection (mirrors database.DB_FILE): real local DB when present, else the
+# committed sanitized demo DB for the public Streamlit Cloud share. GI_DB_FILE wins.
+import os as _os_cfg
+DB_FILE      = _os_cfg.environ.get("GI_DB_FILE") or (
+    "gi_database.db" if _os_cfg.path.exists("gi_database.db") else "demo_seed.db"
+)
 
 # ---------------------------------------------------------------------------
 # BRAND COLORS — General Industries Corporate Identity
