@@ -2137,6 +2137,105 @@ def check_module_imports() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Workstream C — Meta WhatsApp webhook parser/router (services/whatsapp_webhook.py)
+# ---------------------------------------------------------------------------
+# Pure (FastAPI-free) logic, so we can exercise it directly here. Covers payload
+# parsing for the common message types, status-callback separation, the GET
+# handshake token check, X-Hub-Signature-256 verification, and the stub router.
+def _wa_text_payload(body: str = "RECEIVED DN-1042",
+                     wa_id: str = "966500000000",
+                     name: str = "Ahmed") -> dict:
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [{
+            "id": "WABA_ID",
+            "changes": [{
+                "field": "messages",
+                "value": {
+                    "messaging_product": "whatsapp",
+                    "metadata": {"display_phone_number": "+966...",
+                                 "phone_number_id": "PNID_123"},
+                    "contacts": [{"profile": {"name": name}, "wa_id": wa_id}],
+                    "messages": [{
+                        "from": wa_id, "id": "wamid.ABC", "timestamp": "1719600000",
+                        "type": "text", "text": {"body": body},
+                    }],
+                },
+            }],
+        }],
+    }
+
+
+def check_wsc_webhook_parses_text():
+    from services.whatsapp_webhook import parse_inbound_messages
+    msgs = parse_inbound_messages(_wa_text_payload())
+    assert len(msgs) == 1, f"expected 1 message, got {len(msgs)}"
+    m = msgs[0]
+    assert m.from_phone == "966500000000", f"sender phone wrong: {m.from_phone!r}"
+    assert m.text == "RECEIVED DN-1042", f"body wrong: {m.text!r}"
+    assert m.sender_name == "Ahmed", f"name wrong: {m.sender_name!r}"
+    assert m.phone_number_id == "PNID_123", "our phone_number_id must be captured for replies"
+    assert m.wa_message_id == "wamid.ABC", "wa message id (for dedup/reply) missing"
+
+
+def check_wsc_webhook_parses_interactive():
+    from services.whatsapp_webhook import parse_inbound_messages
+    payload = {"entry": [{"changes": [{"value": {
+        "metadata": {"phone_number_id": "PNID_123"},
+        "contacts": [{"profile": {"name": "Sara"}, "wa_id": "966511111111"}],
+        "messages": [{
+            "from": "966511111111", "id": "wamid.INT", "type": "interactive",
+            "interactive": {"type": "button_reply",
+                            "button_reply": {"id": "confirm", "title": "Confirm Receipt"}},
+        }],
+    }}]}]}
+    msgs = parse_inbound_messages(payload)
+    assert len(msgs) == 1 and msgs[0].text == "Confirm Receipt", \
+        f"interactive button title not extracted: {msgs and msgs[0].text!r}"
+
+
+def check_wsc_status_callback_separated():
+    from services.whatsapp_webhook import parse_inbound_messages, parse_statuses
+    payload = {"entry": [{"changes": [{"value": {
+        "metadata": {"phone_number_id": "PNID_123"},
+        "statuses": [{"id": "wamid.X", "recipient_id": "966500000000",
+                      "status": "delivered", "timestamp": "1719600100"}],
+    }}]}]}
+    assert parse_inbound_messages(payload) == [], "status callbacks must NOT be inbound messages"
+    statuses = parse_statuses(payload)
+    assert len(statuses) == 1 and statuses[0]["status"] == "delivered", "status not parsed"
+
+
+def check_wsc_router_stub():
+    from services.whatsapp_webhook import parse_inbound_messages, route_inbound_message
+    hi = parse_inbound_messages(_wa_text_payload(body="hi"))[0]
+    reply = route_inbound_message(hi)
+    assert reply and "RECEIVED" in reply, "greeting should return the help/menu reply"
+    unknown = parse_inbound_messages(_wa_text_payload(body="zzz unmatched"))[0]
+    assert route_inbound_message(unknown) is None, "unmatched message must not auto-reply (stub)"
+
+
+def check_wsc_verify_subscription_and_signature():
+    import importlib
+    W = importlib.import_module("services.whatsapp_webhook")
+    # GET handshake token check
+    W.META_WEBHOOK_VERIFY_TOKEN = "tok123"
+    assert W.verify_subscription("subscribe", "tok123") is True, "matching token must verify"
+    assert W.verify_subscription("subscribe", "wrong") is False, "wrong token must fail"
+    assert W.verify_subscription("subscribe", None) is False, "missing token must fail"
+    # Signature: passthrough when secret unset; strict when set
+    W.META_APP_SECRET = ""
+    assert W.verify_signature(b"{}", None) is True, "unset secret must not block setup"
+    import hmac as _h, hashlib as _hh
+    W.META_APP_SECRET = "s3cr3t"
+    body = b'{"hello":"world"}'
+    good = "sha256=" + _h.new(b"s3cr3t", body, _hh.sha256).hexdigest()
+    assert W.verify_signature(body, good) is True, "valid signature must pass"
+    assert W.verify_signature(body, "sha256=deadbeef") is False, "bad signature must fail"
+    assert W.verify_signature(body, None) is False, "missing signature must fail when secret set"
+
+
+# ---------------------------------------------------------------------------
 # Report writer
 # ---------------------------------------------------------------------------
 def write_report() -> Path:
@@ -8734,6 +8833,25 @@ def main() -> int:
               check_r20_5_2_loc_order_reconciled,
               "Prevents IndexError when persisted drag-order holds tags removed "
               "by a re-bootstrap.")
+
+    # ---- Workstream C — Meta WhatsApp webhook parser/router ----
+    run_check("Workstream C", "webhook parses a text message (phone + body + name)",
+              check_wsc_webhook_parses_text,
+              "parse_inbound_messages extracts from_phone, text, sender_name, "
+              "phone_number_id and wa_message_id for replies/dedup.")
+    run_check("Workstream C", "webhook parses an interactive button_reply title",
+              check_wsc_webhook_parses_interactive,
+              "interactive button_reply / list_reply titles surface as .text.")
+    run_check("Workstream C", "status callbacks are separated from inbound messages",
+              check_wsc_status_callback_separated,
+              "value.statuses parsed by parse_statuses; never treated as a user message.")
+    run_check("Workstream C", "stub router replies to greetings, stays silent otherwise",
+              check_wsc_router_stub,
+              "route_inbound_message returns the menu for hi/help; None for unmatched.")
+    run_check("Workstream C", "GET handshake token + X-Hub-Signature-256 verification",
+              check_wsc_verify_subscription_and_signature,
+              "verify_subscription matches the verify token; verify_signature "
+              "passes when secret unset, strict HMAC-SHA256 when set.")
 
     out = write_report()
     print()
