@@ -58,6 +58,7 @@ from pages_internal import (
     page_warehouse_portal,
     page_supervisor_portal,
     page_material_estimator,
+    page_manhour_portal,
 )
 
 # ===========================================================================
@@ -177,6 +178,10 @@ _EXACT_ROLE_PAGES = {
     # see a planning surface they shouldn't act on. HOD edits the estimator
     # scoped to their own site; Admin gets a sidebar site picker.
     "🧪 Material Estimator": {"hod", "admin"},
+    # §2Z — Man-Hours portal exact-locked to {hod, admin}, same rationale as the
+    # Material Estimator: SK / Supervisor / Logistics / Warehouse never see the
+    # labor-planning surface. HOD scoped to own site; Admin gets a site picker.
+    "🕒 Man-Hours": {"hod", "admin"},
 }
 
 # Per-page deny-list. Used when a role would otherwise pass the hierarchy
@@ -611,6 +616,8 @@ def main() -> None:
         page_warehouse_portal(user)
     elif page == "🧪 Material Estimator":
         page_material_estimator(user)
+    elif page == "🕒 Man-Hours":
+        page_manhour_portal(user)
 
 
 if __name__ == "__main__":

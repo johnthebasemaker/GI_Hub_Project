@@ -2128,6 +2128,7 @@ def check_module_imports() -> None:
         "pages_internal.admin_portal",
         "pages_internal.live_dashboard",
         "pages_internal.reports_page",
+        "pages_internal.manhour_portal",
     ]:
         try:
             importlib.import_module(mod)
@@ -2303,6 +2304,49 @@ def check_mh_timesheet_and_distribution():
     ts = database.list_mh_timesheets("CNCEC", conn=conn)
     vals = sorted(round(v, 2) for v in ts["Allocated_SQM"])
     assert vals == [8.89, 11.11], f"by_hours split wrong: {vals}"
+
+
+def check_mh_parse_workbook():
+    import io
+    buf = io.BytesIO()
+    sar = pd.DataFrame([
+        {"Location": "", "Equipment Tag #": "", "code": 30551, "name": "Thameem",
+         "work date": "2026-05-16", "in time": "07:30", "out time": "16:30",
+         "status": "PR", "remarks": ""},
+        {"Location": "", "Equipment Tag #": "", "code": 30802, "name": "Anish",
+         "work date": "2026-05-16", "in time": "07:30", "out time": "16:30",
+         "status": "PR", "remarks": ""},
+    ])
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        sar.to_excel(w, sheet_name="SAR", index=False)
+    buf.seek(0)
+    parsed = database.parse_attendance_workbook(buf)
+    assert len(parsed["employees"]) == 2, parsed["employees"]
+    assert len(parsed["timesheets"]) == 2, "two SAR rows expected"
+    assert parsed["dates"] == ["2026-05-16"], parsed["dates"]
+    assert parsed["timesheets"][0]["code"] == "30551", "numeric code must coerce to str"
+
+
+def check_mh_import_replace_vs_append():
+    conn = _mh_conn()
+    parsed = {
+        "employees": [{"code": "A", "name": "Worker A", "designation": "",
+                       "worker_type": "OWN", "company": ""}],
+        "timesheets": [{"code": "A", "name": "Worker A", "work_date": "2026-05-16",
+                        "location": "", "equipment_tag": "", "in_time": "07:30",
+                        "out_time": "16:30", "status": "PR", "remarks": ""}],
+        "dates": ["2026-05-16"],
+    }
+    e, t = database.import_mh_attendance("CNCEC", parsed, replace=True, conn=conn)
+    assert (e, t) == (1, 1), (e, t)
+    # replace re-import → no duplication
+    database.import_mh_attendance("CNCEC", parsed, replace=True, conn=conn)
+    assert len(database.list_mh_timesheets("CNCEC", conn=conn)) == 1, \
+        "replace-by-date must not duplicate on re-import"
+    # append → adds a second row
+    database.import_mh_attendance("CNCEC", parsed, replace=False, conn=conn)
+    assert len(database.list_mh_timesheets("CNCEC", conn=conn)) == 2, \
+        "append mode should insert again"
 
 
 def check_mh_estimate_vs_actual_view():
@@ -8958,6 +9002,13 @@ def main() -> int:
               check_mh_estimate_vs_actual_view,
               "v_mh_estimate_vs_actual sums actual hours, computes Variance_Pct, "
               "joins the variance reason.")
+    run_check("Man-Hour", "attendance workbook parser (shared by UI + bootstrap)",
+              check_mh_parse_workbook,
+              "parse_attendance_workbook reads SAR, coerces codes, merges roster, "
+              "collects dates.")
+    run_check("Man-Hour", "bulk import — replace-by-date idempotent vs append",
+              check_mh_import_replace_vs_append,
+              "import_mh_attendance(replace=True) is idempotent; replace=False appends.")
 
     out = write_report()
     print()

@@ -27,6 +27,7 @@ from .logistics_portal import page_logistics_portal
 from .warehouse_portal import page_warehouse_portal
 from .supervisor_portal import page_supervisor_portal
 from .material_estimator_portal import page_material_estimator
+from .manhour_portal import page_manhour_portal
 
 __all__ = [
     "page_live_dashboard",
@@ -38,4 +39,5 @@ __all__ = [
     "page_warehouse_portal",
     "page_supervisor_portal",
     "page_material_estimator",
+    "page_manhour_portal",
 ]

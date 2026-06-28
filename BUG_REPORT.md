@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-06-28T10:29:03`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_x_10gbnt/bug_check.db`  
-**Total checks:** 552  
-**Passing:** 552  
+**Run at:** `2026-06-28T11:03:40`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_b0ciujzo/bug_check.db`  
+**Total checks:** 554  
+**Passing:** 554  
 **Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -18,16 +18,16 @@ _None — every check passed._
 - ✅ BLOB round-trip + disk mirror (2 ms)
 
 ### Audit — 1/1
-- ✅ log_audit_action writes row (1 ms)
+- ✅ log_audit_action writes row (2 ms)
 
 ### Bulk Badges — 1/1
 - ✅ generate_employee_qr_badges_pdf produces valid PDF (4 ms)
 
 ### CV Foundation — 4/4
 - ✅ Employees CRUD + duplicate rejection (2 ms)
-- ✅ import_employees_csv idempotent upsert (4 ms)
+- ✅ import_employees_csv idempotent upsert (5 ms)
 - ✅ register + promote CV model — only one active (2 ms)
-- ✅ Tool catalogue CRUD + min_confidence override (2 ms)
+- ✅ Tool catalogue CRUD + min_confidence override (3 ms)
 
 ### CV Inference — 5/5
 - ✅ detect_tool returns [] when no active model (0 ms)
@@ -37,10 +37,10 @@ _None — every check passed._
 - ✅ invalidate_model_cache clears threshold cache (1 ms)
 
 ### Consumption — 1/1
-- ✅ Stage → commit_eod (4 ms)
+- ✅ Stage → commit_eod (5 ms)
 
 ### Hub Assistant — 6/6
-- ✅ system prompt injects username + role label (2 ms)
+- ✅ system prompt injects username + role label (1 ms)
 - ✅ empty username does not crash the prompt builder (0 ms)
 - ✅ admin gets FULL §7 with the 👥 Users content (0 ms)
 - ✅ logistics role gets §14 (Logistics Portal) (0 ms)
@@ -64,18 +64,20 @@ _None — every check passed._
 ### Mailer — 1/1
 - ✅ Draft helpers (Outlook / mailto patched) (0 ms)
 
-### Man-Hour — 5/5
+### Man-Hour — 7/7
 - ✅ schema — 5 mh_ tables + comparison view exist (32 ms)
 - ✅ hours math — 8h normal + 1h break, OT, overnight (0 ms)
-- ✅ employee upsert is idempotent + validates Worker_Type (33 ms)
-- ✅ timesheet insert + team-SQM distribution (even/by_hours) (32 ms)
-- ✅ estimate-vs-actual view math + reason join (31 ms)
+- ✅ employee upsert is idempotent + validates Worker_Type (31 ms)
+- ✅ timesheet insert + team-SQM distribution (even/by_hours) (31 ms)
+- ✅ estimate-vs-actual view math + reason join (30 ms)
+- ✅ attendance workbook parser (shared by UI + bootstrap) (8 ms)
+- ✅ bulk import — replace-by-date idempotent vs append (31 ms)
 
 ### Math — 1/1
-- ✅ Identity: Closing = Opening + R − C − Rt (8 ms)
+- ✅ Identity: Closing = Opening + R − C − Rt (9 ms)
 
 ### Module load — 1/1
-- ✅ import every page module (551 ms)
+- ✅ import every page module (556 ms)
 
 ### Notifications — 1/1
 - ✅ mark_all_notifications_read scopes correctly (1 ms)
@@ -83,15 +85,15 @@ _None — every check passed._
 ### Phase 7A — 15/15
 - ✅ employees.Site_ID column self-heals (1 ms)
 - ✅ ix_employees_site index exists (0 ms)
-- ✅ add_employee(site_id=) persists binding (1 ms)
+- ✅ add_employee(site_id=) persists binding (2 ms)
 - ✅ add_employee() without site_id writes NULL (back-compat) (1 ms)
 - ✅ update_employee(site_id=) reassigns site (2 ms)
-- ✅ update_employee(site_id='') clears binding to NULL (2 ms)
+- ✅ update_employee(site_id='') clears binding to NULL (5 ms)
 - ✅ update_employee(site_id=None) leaves binding untouched (2 ms)
 - ✅ list_employees() returns Site_ID column (1 ms)
 - ✅ list_employees(site_id_filter='HQ') filters (3 ms)
 - ✅ list_employees(site_id_filter='__UNASSIGNED__') gets NULL rows (2 ms)
-- ✅ list_employees_for_site(site, status='active') excludes inactive (3 ms)
+- ✅ list_employees_for_site(site, status='active') excludes inactive (4 ms)
 - ✅ import_employees_csv with Site_ID column persists site (2 ms)
 - ✅ import_employees_csv without Site_ID column is back-compat (2 ms)
 - ✅ import_employees_csv preserves existing binding when col absent (3 ms)
@@ -99,12 +101,12 @@ _None — every check passed._
 
 ### Phase 7B — 21/21
 - ✅ generate_smr_request_no returns SMR-YYYYMMDD-0001 day-empty (0 ms)
-- ✅ generate_smr_request_no increments on same day (4 ms)
+- ✅ generate_smr_request_no increments on same day (5 ms)
 - ✅ create_supervisor_request happy path inserts header + items (6 ms)
 - ✅ rejects worker not bound to site (3 ms)
 - ✅ rejects empty item list (1 ms)
 - ✅ rejects PPE=No without reason (2 ms)
-- ✅ rejects unknown SAP_Code (3 ms)
+- ✅ rejects unknown SAP_Code (2 ms)
 - ✅ Stock_At_Request snapshot is captured (5 ms)
 - ✅ Available_Flag = 0 when requested qty > stock (5 ms)
 - ✅ approve mirrors lines → pending_issues draft (Round 12) (9 ms)
@@ -112,12 +114,12 @@ _None — every check passed._
 - ✅ approve is idempotent (refuses second call) (9 ms)
 - ✅ approve drops SK_Adjusted_Qty=0 lines (11 ms)
 - ✅ reject requires reason + flips status, no pending_issues (9 ms)
-- ✅ end-to-end: approve → commit_eod → consumption row with Source_Ref (12 ms)
+- ✅ end-to-end: approve → commit_eod → consumption row with Source_Ref (11 ms)
 - ✅ update_supervisor_request_item only works while pending_sk (11 ms)
 - ✅ cancel_supervisor_request only works while pending_sk (7 ms)
-- ✅ delete_supervisor_request_item drops a pending line (7 ms)
-- ✅ report_supervisor_intent_vs_actual joins on Source_Ref (12 ms)
-- ✅ get_open_returnables_for_employee finds matching loans (4 ms)
+- ✅ delete_supervisor_request_item drops a pending line (8 ms)
+- ✅ report_supervisor_intent_vs_actual joins on Source_Ref (13 ms)
+- ✅ get_open_returnables_for_employee finds matching loans (3 ms)
 - ✅ config.WHATSAPP_TRIGGERS has 4 smr_* keys (0 ms)
 
 ### Phase 7C — 14/14
@@ -128,11 +130,11 @@ _None — every check passed._
 - ✅ record_cross_site_view dedupe returns False (3 ms)
 - ✅ different target same day returns True (2 ms)
 - ✅ different viewer same target returns True (2 ms)
-- ✅ self-view returns False (1 ms)
+- ✅ self-view returns False (0 ms)
 - ✅ blank inputs return False (0 ms)
 - ✅ notify_cross_site_view admin role → silent (0 ms)
-- ✅ notify_cross_site_view queues notification on first fire (4 ms)
-- ✅ notify_cross_site_view writes audit row on first fire (4 ms)
+- ✅ notify_cross_site_view queues notification on first fire (5 ms)
+- ✅ notify_cross_site_view writes audit row on first fire (5 ms)
 - ✅ notify_cross_site_view dedupe → no new notification (6 ms)
 - ✅ config.WHATSAPP_TRIGGERS['cross_site_viewed'] = False (0 ms)
 
@@ -140,11 +142,11 @@ _None — every check passed._
 - ✅ PO_VENDOR_MASK_FIELDS has 17 entries (0 ms)
 - ✅ get_po_detail() default returns commercial fields populated (6 ms)
 - ✅ get_po_detail(hide_vendor=True) blanks all 17 fields (6 ms)
-- ✅ get_po_detail(hide_vendor=True) preserves PO_Type + PO_Date (6 ms)
-- ✅ get_po_detail combines hide_prices + hide_vendor (6 ms)
+- ✅ get_po_detail(hide_vendor=True) preserves PO_Type + PO_Date (5 ms)
+- ✅ get_po_detail combines hide_prices + hide_vendor (5 ms)
 - ✅ build_po_site_notification — title + site_id correct (6 ms)
 - ✅ build_po_site_notification — PR list deduped from items (6 ms)
-- ✅ build_po_site_notification — Expected_Delivery surfaced (6 ms)
+- ✅ build_po_site_notification — Expected_Delivery surfaced (7 ms)
 - ✅ build_po_site_notification — body has top 5 lines + 'and N more' (6 ms)
 - ✅ build_po_site_notification body has NO Vendor_Name (6 ms)
 - ✅ build_po_site_notification body has NO financial figure (6 ms)
@@ -159,41 +161,41 @@ _None — every check passed._
 - ✅ ix_form_drafts_user index exists (0 ms)
 - ✅ UNIQUE(username, form_id) enforced (1 ms)
 - ✅ upsert_form_draft writes a new row (2 ms)
-- ✅ upsert_form_draft updates on duplicate (user, form) (2 ms)
+- ✅ upsert_form_draft updates on duplicate (user, form) (3 ms)
 - ✅ upsert_form_draft default TTL is 7 days (2 ms)
 - ✅ upsert_form_draft honours custom ttl_days (2 ms)
 - ✅ upsert_form_draft rejects non-JSON payload (0 ms)
 - ✅ get_form_draft returns roundtripped payload (2 ms)
 - ✅ get_form_draft returns None for missing entry (0 ms)
 - ✅ get_form_draft hides expired entries (1 ms)
-- ✅ delete_form_draft removes row + returns True (2 ms)
-- ✅ delete_form_draft on missing entry returns False (0 ms)
+- ✅ delete_form_draft removes row + returns True (3 ms)
+- ✅ delete_form_draft on missing entry returns False (1 ms)
 - ✅ prune_expired_form_drafts deletes expired rows only (4 ms)
 - ✅ list_user_drafts returns multi-form DataFrame (3 ms)
 - ✅ requirements.txt declares streamlit-local-storage (0 ms)
 
 ### Phase 7F — 12/12
-- ✅ ROLE_MANUAL_RECIPES covers all 6 production roles (1 ms)
-- ✅ slice_markdown_for_role('store_keeper') keeps SK chapter (0 ms)
+- ✅ ROLE_MANUAL_RECIPES covers all 6 production roles (0 ms)
+- ✅ slice_markdown_for_role('store_keeper') keeps SK chapter (1 ms)
 - ✅ slice_markdown_for_role('store_keeper') drops Logistics (0 ms)
 - ✅ slice_markdown_for_role('supervisor') keeps Supervisor chapter (0 ms)
 - ✅ slice_markdown_for_role('hod') keeps Reports chapter (0 ms)
 - ✅ slice_markdown_for_role('admin') returns full markdown (0 ms)
 - ✅ parse_markdown recognises image syntax (0 ms)
 - ✅ render_image handles missing file (placeholder) (1 ms)
-- ✅ build_role_manual_pdf returns valid PDF bytes (386 ms)
-- ✅ build_role_manual_pdf('admin') == build_manual_pdf (2870 ms)
-- ✅ build_role_manual_pdf(unknown role) falls back to master (1431 ms)
+- ✅ build_role_manual_pdf returns valid PDF bytes (376 ms)
+- ✅ build_role_manual_pdf('admin') == build_manual_pdf (2881 ms)
+- ✅ build_role_manual_pdf(unknown role) falls back to master (1422 ms)
 - ✅ docs/screenshots/ has the seed placeholder PNGs (0 ms)
 
 ### Phase 8A — 10/10
 - ✅ app_settings seeds locate_anything_enabled=0 (1 ms)
 - ✅ app_settings seeds locate_anything_sidecar_url (1 ms)
 - ✅ client.is_enabled() returns False when gate is off (6 ms)
-- ✅ client.detect() short-circuits to [] when gate is off (1 ms)
+- ✅ client.detect() short-circuits to [] when gate is off (2 ms)
 - ✅ client.detect() parses mock 200 response into list (5 ms)
 - ✅ client.detect() returns [] on 503 + trips breaker (5 ms)
-- ✅ client circuit breaker opens after 3 failures (12 ms)
+- ✅ client circuit breaker opens after 3 failures (11 ms)
 - ✅ client module imports without torch / transformers (0 ms)
 - ✅ ai/locate_anything/requirements.txt exists (0 ms)
 - ✅ scripts/download_model.sh exists and is executable (0 ms)
@@ -223,13 +225,13 @@ _None — every check passed._
 - ✅ panel toggle ON path stores '1' in app_settings (4 ms)
 
 ### Phase 8E — 8/8
-- ✅ locate_anything_calls table exists with required columns (1 ms)
-- ✅ ix_la_calls_called_at index present (1 ms)
+- ✅ locate_anything_calls table exists with required columns (0 ms)
+- ✅ ix_la_calls_called_at index present (0 ms)
 - ✅ log_locate_anything_call writes a row + returns rowid (2 ms)
 - ✅ mark_locate_anything_outcome updates accepted field (5 ms)
 - ✅ client.detect happy path writes telemetry row (6 ms)
-- ✅ client.detect failure path writes telemetry with error (6 ms)
-- ✅ client.detect gate-off writes NO telemetry row (3 ms)
+- ✅ client.detect failure path writes telemetry with error (5 ms)
+- ✅ client.detect gate-off writes NO telemetry row (4 ms)
 - ✅ get_locate_anything_summary computes rates safely (7 ms)
 
 ### Procurement — 7/7
@@ -237,7 +239,7 @@ _None — every check passed._
 - ✅ Warehouses CRUD round-trip (1 ms)
 - ✅ Vendors CRUD round-trip (1 ms)
 - ✅ App notifications inbox (user + role broadcast) (2 ms)
-- ✅ WhatsApp per-event gate honours config toggles (1 ms)
+- ✅ WhatsApp per-event gate honours config toggles (2 ms)
 - ✅ users CHECK accepts logistics + warehouse_user (1 ms)
 - ✅ po_items RL/BL strict-separation persists (1 ms)
 
@@ -278,10 +280,10 @@ _None — every check passed._
 - ✅ Stage → commit_pending_receipts (2 ms)
 
 ### Reminders — 1/1
-- ✅ T-2 / T-1 / T-0 sweep is idempotent (13 ms)
+- ✅ T-2 / T-1 / T-0 sweep is idempotent (14 ms)
 
 ### Reports — 3/3
-- ✅ Every report_* runs without raising (9 ms)
+- ✅ Every report_* runs without raising (10 ms)
 - ✅ Daily Receipts has Material_Code column (1 ms)
 - ✅ Phase 5 procurement reports run cleanly (2 ms)
 
@@ -290,53 +292,53 @@ _None — every check passed._
 
 ### Returnable Reminders — 4/4
 - ✅ sweep fires once per offset across all four windows (5 ms)
-- ✅ sweep is idempotent within an hour (2 ms)
-- ✅ phone resolution prefers CV → manual → audit (2 ms)
+- ✅ sweep is idempotent within an hour (3 ms)
+- ✅ phone resolution prefers CV → manual → audit (3 ms)
 - ✅ T+24h escalates to supervisor (NOT HOD) (2 ms)
 
 ### Returns — 2/2
-- ✅ Submit → approve → ledger row (10 ms)
+- ✅ Submit → approve → ledger row (9 ms)
 - ✅ Reject removes from pending list (3 ms)
 
 ### Round 12 — 10/10
-- ✅ Requested_By column on pending_issues + consumption (0 ms)
+- ✅ Requested_By column on pending_issues + consumption (1 ms)
 - ✅ line_status column on supervisor_material_request_items (0 ms)
 - ✅ new SMR lines default to line_status='active' (6 ms)
-- ✅ withdraw_smr_line_at_staging flips line_status (12 ms)
+- ✅ withdraw_smr_line_at_staging flips line_status (15 ms)
 - ✅ commit_eod(hod_username=…) writes 'Approved By' (12 ms)
-- ✅ commit_eod flips SMR line_status='committed' (13 ms)
+- ✅ commit_eod flips SMR line_status='committed' (12 ms)
 - ✅ commit_eod carries Requested_By into consumption (12 ms)
 - ✅ HIDDEN_FORM_COLS covers Technician + auto-fields (0 ms)
 - ✅ list_smr_history honours filters + decided-only default (27 ms)
-- ✅ E2E: sup → SK approve → SK submit → HOD commit (12 ms)
+- ✅ E2E: sup → SK approve → SK submit → HOD commit (11 ms)
 
 ### Round 13 — 10/10
 - ✅ commit_eod commits 'approved' rows (4 ms)
 - ✅ commit_eod commits 'flagged' rows (4 ms)
 - ✅ commit_eod skips 'rejected' rows (4 ms)
-- ✅ get_pending_issues_for_site returns approved + flagged (7 ms)
-- ✅ hod_reject_pending_issue moves to archive (4 ms)
-- ✅ hod_unapprove_pending_issue flips approved → pending_hod (4 ms)
+- ✅ get_pending_issues_for_site returns approved + flagged (8 ms)
+- ✅ hod_reject_pending_issue moves to archive (5 ms)
+- ✅ hod_unapprove_pending_issue flips approved → pending_hod (5 ms)
 - ✅ bogus 'Approved' column dropped from consumption (0 ms)
 - ✅ rejected_issues_archive schema present (0 ms)
 - ✅ CONSUMPTION_EXPORT_COLS contains canonical set (0 ms)
 - ✅ SMR reject at HOD flips line_status='rejected_at_hod' (12 ms)
 
 ### Round 14 — 5/5
-- ✅ prep_image_for_vision caps long edge ≤ 1600 px (103 ms)
+- ✅ prep_image_for_vision caps long edge ≤ 1600 px (107 ms)
 - ✅ prep_image_for_vision converts to RGB JPEG (1 ms)
 - ✅ prep_image_for_vision shrinks byte size (94 ms)
 - ✅ prep_image_for_vision honours EXIF orientation (2 ms)
-- ✅ prep_image_for_vision raises ImagePrepError on bad bytes (20 ms)
+- ✅ prep_image_for_vision raises ImagePrepError on bad bytes (19 ms)
 
 ### Round 15 — 15/15
 - ✅ inventory_site_overrides schema + UNIQUE (1 ms)
-- ✅ next_sap_code increments from max numeric tail (2 ms)
+- ✅ next_sap_code increments from max numeric tail (3 ms)
 - ✅ next_temp_material_code persists + increments (2 ms)
 - ✅ bulk_upsert_materials inserts + auto-codes blanks (3 ms)
 - ✅ bulk_upsert_materials rejects duplicates (3 ms)
 - ✅ bulk_upsert_materials overwrite path updates in place (4 ms)
-- ✅ set/get_site_min_qty COALESCEs override over default (8 ms)
+- ✅ set/get_site_min_qty COALESCEs override over default (9 ms)
 - ✅ inventory.Material_Code UNIQUE index enforced (2 ms)
 - ✅ process_po_pdf extracts 3 items from sample PDF (18 ms)
 - ✅ process_po_pdf synthetic two-line layout fixture (0 ms)
@@ -349,86 +351,86 @@ _None — every check passed._
 ### Round 16 — 5/5
 - ✅ submit_dn_for_logistics writes status='pending_hod' (3 ms)
 - ✅ submit_dn_for_logistics fans out HOD + Logistics notifications (3 ms)
-- ✅ legacy pending_logistics DNs migrate to pending_hod (9 ms)
+- ✅ legacy pending_logistics DNs migrate to pending_hod (8 ms)
 - ✅ get_pr_with_po_numbers comma-joins per PR line (2 ms)
-- ✅ generate_pr_pdf renders new PO # + UoM columns (4 ms)
+- ✅ generate_pr_pdf renders new PO # + UoM columns (3 ms)
 
 ### Round 17 — 13/13
-- ✅ sme_equipment table + key columns present (31 ms)
-- ✅ sme_recipe table + key columns present (32 ms)
-- ✅ sme_sqm_progress table + composite PK (32 ms)
-- ✅ system_settings seeded with sme_location + sme_equipment_type for HQ (33 ms)
-- ✅ init_db idempotent for SME tables (run twice, no errors) (33 ms)
-- ✅ get_on_order_by_material: Qty=10 Delivered=3 Returned=1 → 6 (32 ms)
-- ✅ get_on_order_by_material: closed POs ignored (32 ms)
-- ✅ get_on_order_by_material: site filter scopes correctly (32 ms)
-- ✅ get_sme_inventory_view bridges ledger → engine schema (34 ms)
+- ✅ sme_equipment table + key columns present (30 ms)
+- ✅ sme_recipe table + key columns present (31 ms)
+- ✅ sme_sqm_progress table + composite PK (31 ms)
+- ✅ system_settings seeded with sme_location + sme_equipment_type for HQ (30 ms)
+- ✅ init_db idempotent for SME tables (run twice, no errors) (32 ms)
+- ✅ get_on_order_by_material: Qty=10 Delivered=3 Returned=1 → 6 (31 ms)
+- ✅ get_on_order_by_material: closed POs ignored (31 ms)
+- ✅ get_on_order_by_material: site filter scopes correctly (31 ms)
+- ✅ get_sme_inventory_view bridges ledger → engine schema (32 ms)
 - ✅ add_sme_setting / delete_sme_setting round-trip (31 ms)
-- ✅ upsert_sme_sqm_progress preserves Done_SQM on re-load (32 ms)
+- ✅ upsert_sme_sqm_progress preserves Done_SQM on re-load (30 ms)
 - ✅ Material Estimator RBAC: hod + admin only (0 ms)
 - ✅ Material Estimator portal listed in PAGE_ACCESS (0 ms)
 
 ### Round 18 — 13/13
-- ✅ sme_sqm_progress.Done_SQM_staged column present (32 ms)
-- ✅ sme_consumption_log table + status FSM (31 ms)
+- ✅ sme_sqm_progress.Done_SQM_staged column present (31 ms)
+- ✅ sme_consumption_log table + status FSM (30 ms)
 - ✅ v_inventory_with_sme exposes is_sme flag (30 ms)
-- ✅ is_sme_sap / is_sme_material dispatch fork (31 ms)
+- ✅ is_sme_sap / is_sme_material dispatch fork (30 ms)
 - ✅ get_sap_for_material resolves the 1:1 mapping (30 ms)
-- ✅ stage_sme_consumption_batch aggregates per Material_Code (34 ms)
+- ✅ stage_sme_consumption_batch aggregates per Material_Code (32 ms)
 - ✅ stage_sme_consumption_batch rejects missing extras (31 ms)
-- ✅ stage_sme_consumption_batch increments Done_SQM_staged (32 ms)
-- ✅ commit_eod_with_sme_sync shifts staged→committed (34 ms)
+- ✅ stage_sme_consumption_batch increments Done_SQM_staged (33 ms)
+- ✅ commit_eod_with_sme_sync shifts staged→committed (35 ms)
 - ✅ commit_eod itself is unchanged (regression) (32 ms)
 - ✅ hod_reject_pending_issue_with_sme_sync decrements staged (34 ms)
 - ✅ SME consumption form helper present in daily_issue_log (0 ms)
 - ✅ hod_portal wires the SME-sync EOD + reject wrappers (0 ms)
 
 ### Round 20 — 11/11
-- ✅ material_estimator_portal.py exists + exports page_material_estimator (0 ms)
+- ✅ material_estimator_portal.py exists + exports page_material_estimator (1 ms)
 - ✅ portal module loads cleanly (no module-level set_page_config) (5 ms)
 - ✅ SME <style> CSS block preserved (0 ms)
 - ✅ _apply_theme_attr preserved (dark/light mode toggle) (0 ms)
 - ✅ Inventory tab body deleted (R18 owns consumption flow) (1 ms)
-- ✅ tab declaration unpacks 8 tabs (not 9) (0 ms)
-- ✅ _show_login + auth gate deleted (0 ms)
+- ✅ tab declaration unpacks 8 tabs (not 9) (1 ms)
+- ✅ _show_login + auth gate deleted (1 ms)
 - ✅ monkey-patch SCOPED inside page_material_estimator (2 ms)
 - ✅ locations/types CRUD routes through add_sme_setting / delete_sme_setting (8 ms)
-- ✅ compatibility VIEWS created in init_db (locations/types/consumption_log/equipment/recipe/sqm_progress) (31 ms)
-- ✅ ERP ledger schemas unchanged (regression — R18 routing rule) (31 ms)
+- ✅ compatibility VIEWS created in init_db (locations/types/consumption_log/equipment/recipe/sqm_progress) (32 ms)
+- ✅ ERP ledger schemas unchanged (regression — R18 routing rule) (33 ms)
 
 ### Round 20.1 — 4/4
-- ✅ no string-interior 8-space indent (markdown-as-code-block bug) (59 ms)
-- ✅ cascade_allocate returns DataFrame with expected columns when empty (0 ms)
-- ✅ Stock-Only Materials filter restricted to SME-tracked items (0 ms)
+- ✅ no string-interior 8-space indent (markdown-as-code-block bug) (72 ms)
+- ✅ cascade_allocate returns DataFrame with expected columns when empty (1 ms)
+- ✅ Stock-Only Materials filter restricted to SME-tracked items (1 ms)
 - ✅ load_all returns shape-preserving empty frames (0 ms)
 
 ### Round 20.5 — 11/11
-- ✅ sme_equipment extended with 15 legacy Excel columns (31 ms)
-- ✅ sme_recipe extended with 8 legacy Excel columns (31 ms)
-- ✅ sme_inventory_seed table exists with correct schema (31 ms)
-- ✅ sme_materials_view computes Available_Qty from seed + ledger (30 ms)
-- ✅ equipment VIEW exposes Lining_System / Material Spec. / Lining_Area/location aliases (32 ms)
-- ✅ recipe VIEW serves real Lining_Type (not empty literal) (31 ms)
+- ✅ sme_equipment extended with 15 legacy Excel columns (40 ms)
+- ✅ sme_recipe extended with 8 legacy Excel columns (33 ms)
+- ✅ sme_inventory_seed table exists with correct schema (36 ms)
+- ✅ sme_materials_view computes Available_Qty from seed + ledger (36 ms)
+- ✅ equipment VIEW exposes Lining_System / Material Spec. / Lining_Area/location aliases (44 ms)
+- ✅ recipe VIEW serves real Lining_Type (not empty literal) (40 ms)
 - ✅ 9 SME CRUD helpers exist in database.py (0 ms)
-- ✅ helpers translate UI form keys to PascalCase columns (31 ms)
+- ✅ helpers translate UI form keys to PascalCase columns (32 ms)
 - ✅ Tab 8 has no raw view-write SQL remaining (1 ms)
 - ✅ TABLE_MAP points Materials_DetailsAvailable_Qty → sme_materials_view (0 ms)
 - ✅ Equipment Smart Entry calls D.insert_sme_equipment + D.upsert_sme_sqm_progress (0 ms)
 
 ### Round 20.5.1 — 2/2
-- ✅ Master Data read does not ORDER BY rowid on a VIEW (1 ms)
+- ✅ Master Data read does not ORDER BY rowid on a VIEW (0 ms)
 - ✅ get_sme_inventory_view is seed-sourced (not ERP live stock) (33 ms)
 
 ### Round 20.5.2 — 3/3
-- ✅ no live import of the deleted material_estimator package (4687 ms)
+- ✅ no live import of the deleted material_estimator package (4813 ms)
 - ✅ days_of_continuation_block vendored into daily_issue_log (1 ms)
 - ✅ Location Report reconciles stale loc_order vs eq_master (0 ms)
 
 ### Schema — 216/216
 - ✅ table · inventory (1 ms)
-- ✅ table · consumption (0 ms)
-- ✅ table · receipts (1 ms)
-- ✅ table · returns (0 ms)
+- ✅ table · consumption (1 ms)
+- ✅ table · receipts (0 ms)
+- ✅ table · returns (1 ms)
 - ✅ table · pending_issues (0 ms)
 - ✅ table · pending_receipts (0 ms)
 - ✅ table · pending_returns (0 ms)
@@ -445,8 +447,8 @@ _None — every check passed._
 - ✅ table · bug_reports (0 ms)
 - ✅ table · report_schedules (0 ms)
 - ✅ table · report_archive (0 ms)
-- ✅ table · qr_approval_requests (1 ms)
-- ✅ table · entry_attachments (0 ms)
+- ✅ table · qr_approval_requests (0 ms)
+- ✅ table · entry_attachments (1 ms)
 - ✅ table · mtc_documents (0 ms)
 - ✅ table · warehouses (0 ms)
 - ✅ table · vendors (0 ms)
@@ -463,8 +465,8 @@ _None — every check passed._
 - ✅ table · delivery_reminders_sent (0 ms)
 - ✅ table · employees (0 ms)
 - ✅ table · tool_catalogue (0 ms)
-- ✅ table · cv_model_versions (0 ms)
-- ✅ table · supervisor_material_requests (1 ms)
+- ✅ table · cv_model_versions (1 ms)
+- ✅ table · supervisor_material_requests (0 ms)
 - ✅ table · supervisor_material_request_items (0 ms)
 - ✅ table · cross_site_views (0 ms)
 - ✅ table · form_drafts (0 ms)
@@ -481,8 +483,8 @@ _None — every check passed._
 - ✅ column · receipts.Date (0 ms)
 - ✅ column · receipts.SAP_Code (0 ms)
 - ✅ column · receipts.Quantity (0 ms)
-- ✅ column · receipts.Supplier (1 ms)
-- ✅ column · receipts.Expiry_Date (0 ms)
+- ✅ column · receipts.Supplier (0 ms)
+- ✅ column · receipts.Expiry_Date (1 ms)
 - ✅ column · receipts.PR_Number (0 ms)
 - ✅ column · receipts.Site_ID (0 ms)
 - ✅ column · receipts.Unit_Cost (0 ms)
@@ -500,7 +502,7 @@ _None — every check passed._
 - ✅ column · pending_returns.SAP_Code (0 ms)
 - ✅ column · pending_returns.Quantity (0 ms)
 - ✅ column · pending_returns.Return_Reason (0 ms)
-- ✅ column · pending_returns.Return_DN_No (0 ms)
+- ✅ column · pending_returns.Return_DN_No (1 ms)
 - ✅ column · pending_returns.override_required (0 ms)
 - ✅ column · pending_returns.status (0 ms)
 - ✅ column · pending_returns.Material_Code (0 ms)
@@ -517,7 +519,7 @@ _None — every check passed._
 - ✅ column · entry_attachments.Site_ID (0 ms)
 - ✅ column · mtc_documents.SAP_Code (0 ms)
 - ✅ column · mtc_documents.mtc_number (0 ms)
-- ✅ column · mtc_documents.status (0 ms)
+- ✅ column · mtc_documents.status (1 ms)
 - ✅ column · mtc_documents.pending_receipt_id (0 ms)
 - ✅ column · mtc_documents.Site_ID (0 ms)
 - ✅ column · users.username (0 ms)
@@ -535,11 +537,11 @@ _None — every check passed._
 - ✅ column · vendors.Default_Payment_Terms (0 ms)
 - ✅ column · purchase_orders.PO_Number (0 ms)
 - ✅ column · purchase_orders.PR_Number (0 ms)
-- ✅ column · purchase_orders.Vendor_Code (0 ms)
-- ✅ column · purchase_orders.PO_Date (0 ms)
-- ✅ column · purchase_orders.Expected_Delivery (0 ms)
+- ✅ column · purchase_orders.Vendor_Code (1 ms)
+- ✅ column · purchase_orders.PO_Date (1 ms)
+- ✅ column · purchase_orders.Expected_Delivery (1 ms)
 - ✅ column · purchase_orders.status (0 ms)
-- ✅ column · purchase_orders.Inco_Terms (1 ms)
+- ✅ column · purchase_orders.Inco_Terms (0 ms)
 - ✅ column · purchase_orders.Payment_Terms (0 ms)
 - ✅ column · purchase_orders.source (0 ms)
 - ✅ column · po_items.PO_Number (0 ms)
@@ -573,7 +575,7 @@ _None — every check passed._
 - ✅ column · dn_items.Qty (0 ms)
 - ✅ column · dn_items.UOM (0 ms)
 - ✅ column · dn_items.rl_bl_family (0 ms)
-- ✅ column · dn_items.status (0 ms)
+- ✅ column · dn_items.status (1 ms)
 - ✅ column · po_returns.PO_Number (0 ms)
 - ✅ column · po_returns.Qty (0 ms)
 - ✅ column · po_returns.Reason (0 ms)
@@ -591,12 +593,12 @@ _None — every check passed._
 - ✅ column · app_notifications.event_key (0 ms)
 - ✅ column · app_notifications.title (0 ms)
 - ✅ column · app_notifications.severity (0 ms)
-- ✅ column · app_notifications.recipient_user (0 ms)
+- ✅ column · app_notifications.recipient_user (1 ms)
 - ✅ column · app_notifications.recipient_role (0 ms)
 - ✅ column · pr_master.WBS_Number (0 ms)
 - ✅ column · pr_master.Network (0 ms)
 - ✅ column · pr_master.Plant (0 ms)
-- ✅ column · pr_master.Delivery_Date (1 ms)
+- ✅ column · pr_master.Delivery_Date (0 ms)
 - ✅ column · pr_master.logistics_status (0 ms)
 - ✅ column · returnable_items.cv_detected (0 ms)
 - ✅ column · returnable_items.cv_confidence (0 ms)
@@ -610,12 +612,12 @@ _None — every check passed._
 - ✅ column · supervisor_material_requests.Job_Tank_Place (0 ms)
 - ✅ column · supervisor_material_requests.Old_PPE_Returned (0 ms)
 - ✅ column · supervisor_material_requests.No_Return_Reason (0 ms)
-- ✅ column · supervisor_material_requests.requested_by (0 ms)
+- ✅ column · supervisor_material_requests.requested_by (1 ms)
 - ✅ column · supervisor_material_requests.requested_at (0 ms)
 - ✅ column · supervisor_material_requests.status (0 ms)
 - ✅ column · supervisor_material_requests.sk_decided_by (0 ms)
 - ✅ column · supervisor_material_requests.sk_decided_at (0 ms)
-- ✅ column · supervisor_material_requests.sk_reject_reason (1 ms)
+- ✅ column · supervisor_material_requests.sk_reject_reason (0 ms)
 - ✅ column · supervisor_material_requests.posted_pending_ids (0 ms)
 - ✅ column · supervisor_material_request_items.request_id (0 ms)
 - ✅ column · supervisor_material_request_items.SAP_Code (0 ms)
@@ -628,7 +630,7 @@ _None — every check passed._
 - ✅ column · supervisor_material_request_items.SK_Adjusted_Qty (0 ms)
 - ✅ column · supervisor_material_request_items.Notes (0 ms)
 - ✅ column · pending_issues.Source_Ref (0 ms)
-- ✅ column · cross_site_views.viewer_username (0 ms)
+- ✅ column · cross_site_views.viewer_username (1 ms)
 - ✅ column · cross_site_views.viewer_site_id (0 ms)
 - ✅ column · cross_site_views.target_site_id (0 ms)
 - ✅ column · cross_site_views.view_date (0 ms)
@@ -643,9 +645,9 @@ _None — every check passed._
 - ✅ init_db() is idempotent (6 ms)
 
 ### Site Visibility — 3/3
-- ✅ In-Transit DNs filtered + sorted per site (24 ms)
-- ✅ HOD reschedule → Logistics → outcome reflected (8 ms)
-- ✅ Force-closure visibility scoped to site (6 ms)
+- ✅ In-Transit DNs filtered + sorted per site (26 ms)
+- ✅ HOD reschedule → Logistics → outcome reflected (9 ms)
+- ✅ Force-closure visibility scoped to site (7 ms)
 
 ### Sites — 1/1
 - ✅ HQ visible to get_sites() (1 ms)
@@ -661,11 +663,11 @@ _None — every check passed._
 - ✅ Warehouse view strictly hides prices (items + header) (4 ms)
 - ✅ DN splitter enforces RL/BL strict separation (5 ms)
 - ✅ Full DN flow → SK confirms → receipts row (11 ms)
-- ✅ Internal return reopens PO line (11 ms)
-- ✅ HOD rejection terminates the DN cleanly (5 ms)
+- ✅ Internal return reopens PO line (12 ms)
+- ✅ HOD rejection terminates the DN cleanly (6 ms)
 
 ### WhatsApp — 1/1
-- ✅ queue_whatsapp_alert writes pending row (1 ms)
+- ✅ queue_whatsapp_alert writes pending row (2 ms)
 
 ### Workstream C — 5/5
 - ✅ webhook parses a text message (phone + body + name) (0 ms)

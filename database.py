@@ -13944,3 +13944,162 @@ def get_mh_estimate_vs_actual(site_id: str = None,
     finally:
         if _owns:
             _c.close()
+
+
+# ── Attendance workbook import (shared by the UI uploader + bootstrap CLI) ───
+def _mh_norm(s) -> str:
+    return str(s or "").strip().lower()
+
+
+def _mh_str_code(v) -> str:
+    """Employee codes arrive as int/float/str — normalise to a clean string."""
+    if v is None:
+        return ""
+    try:
+        if isinstance(v, float) and pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    if isinstance(v, int):
+        return str(v)
+    return str(v).strip()
+
+
+def _mh_iso_date(v) -> str:
+    try:
+        return pd.to_datetime(v).date().isoformat()
+    except Exception:
+        return str(v or "").strip()[:10]
+
+
+def _mh_map_columns(df: "pd.DataFrame", wanted: dict) -> dict:
+    by_norm = {_mh_norm(c): c for c in df.columns}
+    out = {}
+    for canon, accepted in wanted.items():
+        for a in accepted:
+            if a in by_norm:
+                out[canon] = by_norm[a]
+                break
+    return out
+
+
+def parse_attendance_workbook(source) -> dict:
+    """Parse an attendance .xlsx (the to-john_Attendance format) into plain
+    dicts. `source` may be a file path OR a file-like (Streamlit UploadedFile).
+
+    Returns {"employees": [...], "timesheets": [...], "dates": [...]}. Pure
+    parsing — no DB writes. Every distinct SAR worker is merged into the roster
+    (ADD EMPLOYEE rows, if present, supply richer attributes). Location /
+    Equipment Tag / System Code are imported as-is (usually blank → filled in
+    the UI); hours are computed downstream from In/Out.
+    """
+    xls = pd.ExcelFile(source)
+
+    # ADD EMPLOYEE sheet (often a header/legend only) ----------------------
+    emp_rows: list[dict] = []
+    if "ADD EMPLOYEE" in xls.sheet_names:
+        edf = xls.parse("ADD EMPLOYEE")
+        ecm = _mh_map_columns(edf, {
+            "code": ["code"], "name": ["name"], "designation": ["designation"],
+            "type": ["type"], "company": ["company"],
+        })
+        if "code" in ecm:
+            for _, r in edf.iterrows():
+                code = _mh_str_code(r.get(ecm["code"]))
+                name = str(r.get(ecm.get("name"), "") or "").strip()
+                if not code or not name:
+                    continue
+                wt = str(r.get(ecm.get("type"), "") or "").strip()
+                emp_rows.append({
+                    "code": code, "name": name,
+                    "designation": str(r.get(ecm.get("designation"), "") or "").strip(),
+                    "worker_type": "Supply" if wt.lower().startswith("supply") else "OWN",
+                    "company": str(r.get(ecm.get("company"), "") or "").strip(),
+                })
+
+    # SAR sheet (daily attendance) -----------------------------------------
+    timesheets: list[dict] = []
+    if "SAR" in xls.sheet_names:
+        sdf = xls.parse("SAR")
+        scm = _mh_map_columns(sdf, {
+            "location": ["location"],
+            "equipment_tag": ["equipment tag #", "equipment tag"],
+            "system_code": ["system code", "code "],  # rarely present in source
+            "code": ["code"], "name": ["name"], "work_date": ["work date"],
+            "in_time": ["in time"], "out_time": ["out time"],
+            "status": ["status"], "remarks": ["remarks"],
+        })
+        # 'code' must be the EMPLOYEE code column, not a system-code column
+        scm.pop("system_code", None)
+        for _, r in sdf.iterrows():
+            code = _mh_str_code(r.get(scm.get("code")))
+            wdate = _mh_iso_date(r.get(scm.get("work_date")))
+            if not code or not wdate:
+                continue
+            in_v = r.get(scm.get("in_time"))
+            out_v = r.get(scm.get("out_time"))
+            timesheets.append({
+                "code": code,
+                "name": str(r.get(scm.get("name"), "") or "").strip(),
+                "work_date": wdate,
+                "location": str(r.get(scm.get("location"), "") or "").strip(),
+                "equipment_tag": str(r.get(scm.get("equipment_tag"), "") or "").strip(),
+                "in_time": None if pd.isna(in_v) else in_v,
+                "out_time": None if pd.isna(out_v) else out_v,
+                "status": str(r.get(scm.get("status"), "") or "").strip() or "PR",
+                "remarks": str(r.get(scm.get("remarks"), "") or "").strip(),
+            })
+
+    # Merge: every SAR worker becomes an employee ---------------------------
+    by_code = {e["code"]: e for e in emp_rows}
+    for t in timesheets:
+        by_code.setdefault(t["code"], {
+            "code": t["code"], "name": t["name"] or t["code"],
+            "designation": "", "worker_type": "OWN", "company": "",
+        })
+    dates = sorted({t["work_date"] for t in timesheets})
+    return {"employees": list(by_code.values()), "timesheets": timesheets,
+            "dates": dates}
+
+
+def import_mh_attendance(site_id: str, parsed: dict, *, replace: bool = True,
+                         created_by: str = "import",
+                         conn: sqlite3.Connection = None) -> "tuple[int, int]":
+    """Bulk-import a parsed attendance workbook for one site.
+
+    When replace=True, existing timesheets for this site on the dates present
+    in the file are DELETED first (predictable re-import). Employees are always
+    upserted. Returns (employees_loaded, timesheets_loaded).
+    """
+    site_id = (site_id or "").strip()
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        if replace and parsed.get("dates"):
+            qmarks = ",".join("?" for _ in parsed["dates"])
+            _c.execute(
+                f"DELETE FROM mh_timesheets WHERE Site_ID=? AND Work_Date IN ({qmarks})",
+                (site_id, *parsed["dates"]),
+            )
+            _c.commit()
+        emp_n = 0
+        for e in parsed.get("employees", []):
+            ok, _ = upsert_mh_employee(
+                site_id, e["code"], e["name"], designation=e.get("designation", ""),
+                worker_type=e.get("worker_type", "OWN"), company=e.get("company", ""),
+                created_by=created_by, conn=_c)
+            emp_n += int(ok)
+        ts_n = 0
+        for t in parsed.get("timesheets", []):
+            ok, _ = add_mh_timesheet(
+                site_id, t["code"], t["work_date"], t.get("in_time"),
+                t.get("out_time"), location=t.get("location", ""),
+                equipment_tag=t.get("equipment_tag", ""), system_code="",
+                status=t.get("status", "PR"), remarks=t.get("remarks", ""),
+                created_by=created_by, conn=_c)
+            ts_n += int(ok)
+        return emp_n, ts_n
+    finally:
+        if _owns:
+            _c.close()

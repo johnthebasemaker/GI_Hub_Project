@@ -76,6 +76,7 @@ PAGE_ACCESS = {
     "🛡️ Admin Portal":        "admin",
     "📊 Reports":             "supervisor",
     "🧪 Material Estimator":  "hod",            # Round 17 — exact-locked to {hod, admin}
+    "🕒 Man-Hours":           "hod",            # §2Z — exact-locked to {hod, admin}
 }
 
 # Cross-site request status FSM: pending → approved|rejected → fulfilled

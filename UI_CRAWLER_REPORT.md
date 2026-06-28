@@ -1,7 +1,7 @@
 # UI Crawler Report
-_Generated 2026-06-24T21:35:48_
+_Generated 2026-06-28T11:04:28_
 
-**17 passed · 0 failed · 0 skipped**
+**21 passed · 0 failed · 0 skipped**
 
 | Role | Page | Status | Detail |
 |---|---|---|---|
@@ -12,9 +12,13 @@ _Generated 2026-06-24T21:35:48_
 | admin | 🏭 Warehouse Portal | ✅ PASS |  |
 | admin | 🛡️ Admin Portal | ✅ PASS |  |
 | admin | 📊 Reports | ✅ PASS |  |
+| admin | 🧪 Material Estimator | ✅ PASS |  |
+| admin | 🕒 Man-Hours | ✅ PASS |  |
 | hod | 📦 Live Dashboard | ✅ PASS |  |
 | hod | 📋 HOD Portal | ✅ PASS |  |
 | hod | 📊 Reports | ✅ PASS |  |
+| hod | 🧪 Material Estimator | ✅ PASS |  |
+| hod | 🕒 Man-Hours | ✅ PASS |  |
 | store_keeper | 📝 Entry Log | ✅ PASS |  |
 | logistics | 📦 Live Dashboard | ✅ PASS |  |
 | logistics | 🚚 Logistics Portal | ✅ PASS |  |
