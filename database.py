@@ -2101,6 +2101,183 @@ def init_db(conn: sqlite3.Connection = None) -> None:
             (_val, _val),
         )
 
+    # ── Man-Hour & Labor Tracking (workstream §2Z) ──────────────────────────
+    # Labor tracked the way the SME tracks material. These mh_* tables are an
+    # ISOLATED, ADDITIVE domain: they READ sme_equipment / sme_recipe /
+    # sme_sqm_progress (Equipment_Tag_No, Location, Lining_System_Code = the
+    # "System Code", Done_SQM) only for dropdowns + context, and never write to
+    # any sme_* table, the inventory ledger, or the EOD path. Site_ID is threaded
+    # through every table (RULE 3). All self-heal via CREATE TABLE IF NOT EXISTS.
+
+    # Labor roster (the "ADD EMPLOYEE" sheet). Separate from the ERP `employees`
+    # master so OWN (GI) staff AND Supply (subcontractor, e.g. DMC) workers live
+    # together with Designation/Type/Company. linked_id_number optionally ties an
+    # OWN worker back to employees.ID_Number (no FK constraint — soft link).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS mh_employees (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            Site_ID          TEXT    NOT NULL,
+            Employee_Code    TEXT    NOT NULL,
+            Name             TEXT    NOT NULL,
+            Designation      TEXT,
+            Worker_Type      TEXT    NOT NULL DEFAULT 'OWN'
+                             CHECK(Worker_Type IN ('OWN','Supply')),
+            Company          TEXT,
+            linked_id_number TEXT,
+            status           TEXT    NOT NULL DEFAULT 'active'
+                             CHECK(status IN ('active','inactive')),
+            created_by       TEXT,
+            created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(Site_ID, Employee_Code)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS ix_mh_emp_site "
+              "ON mh_employees(Site_ID, status)")
+
+    # Daily timesheet actuals (the "SAR" sheet + the new work tags). One row per
+    # (employee, date, equipment-tag, system-code) — a worker may have several
+    # rows/day if their work is split across tags. Hours are COMPUTED from
+    # In/Out − break (8h normal + 1h unpaid break policy); the source file's
+    # dirty Total/Normal/OT columns are ignored. Allocated_SQM is the worker's
+    # share of the team's daily SQM (filled by the mh_production distributor).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS mh_timesheets (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            Site_ID          TEXT    NOT NULL,
+            Employee_Code    TEXT    NOT NULL,
+            Work_Date        TEXT    NOT NULL,
+            Location         TEXT,
+            Equipment_Tag    TEXT,
+            System_Code      TEXT,
+            In_Time          TEXT,
+            Out_Time         TEXT,
+            Break_Mins       INTEGER NOT NULL DEFAULT 60,
+            Total_Hours      REAL    NOT NULL DEFAULT 0,
+            Normal_Hours     REAL    NOT NULL DEFAULT 0,
+            OT_Hours         REAL    NOT NULL DEFAULT 0,
+            Allocated_SQM    REAL    NOT NULL DEFAULT 0,
+            Status           TEXT    NOT NULL DEFAULT 'PR',
+            Remarks          TEXT,
+            created_by       TEXT,
+            created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(Site_ID, Employee_Code, Work_Date, Equipment_Tag, System_Code)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS ix_mh_ts_site_date "
+              "ON mh_timesheets(Site_ID, Work_Date)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_mh_ts_emp_date "
+              "ON mh_timesheets(Employee_Code, Work_Date)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_mh_ts_tag_sys "
+              "ON mh_timesheets(Site_ID, Equipment_Tag, System_Code)")
+
+    # Team SQM produced per day on a tag/system — the source for "distributed
+    # evenly across the team". Distribution_Method drives how SQM_Done is split
+    # into each worker's mh_timesheets.Allocated_SQM (even | by_hours | manual).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS mh_production (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            Site_ID             TEXT    NOT NULL,
+            Work_Date           TEXT    NOT NULL,
+            Equipment_Tag       TEXT    NOT NULL,
+            System_Code         TEXT    NOT NULL,
+            SQM_Done            REAL    NOT NULL DEFAULT 0,
+            Distribution_Method TEXT    NOT NULL DEFAULT 'even'
+                                CHECK(Distribution_Method IN ('even','by_hours','manual')),
+            created_by          TEXT,
+            created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(Site_ID, Work_Date, Equipment_Tag, System_Code)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS ix_mh_prod_tag_sys "
+              "ON mh_production(Site_ID, Equipment_Tag, System_Code)")
+
+    # The Man-Hour Estimator — required/estimated man-hours per
+    # Location / Equipment-Tag / System-Code (mirrors the material estimator).
+    # Estimated_SQM is optional; when present it yields an MH-per-SQM norm.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS mh_manhour_estimates (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            Site_ID             TEXT    NOT NULL,
+            Location            TEXT,
+            Equipment_Tag       TEXT    NOT NULL,
+            System_Code         TEXT    NOT NULL,
+            Estimated_Manhours  REAL    NOT NULL DEFAULT 0,
+            Estimated_SQM       REAL,
+            Basis               TEXT,
+            created_by          TEXT,
+            created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(Site_ID, Equipment_Tag, System_Code)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS ix_mh_est_tag_sys "
+              "ON mh_manhour_estimates(Site_ID, Equipment_Tag, System_Code)")
+
+    # Free-text reason for an over-consumption variance, keyed at the
+    # estimate-vs-actual grain (one current reason per Site/Tag/System).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS mh_variance_notes (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            Site_ID         TEXT    NOT NULL,
+            Equipment_Tag   TEXT    NOT NULL,
+            System_Code     TEXT    NOT NULL,
+            Reason          TEXT    NOT NULL,
+            entered_by      TEXT,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(Site_ID, Equipment_Tag, System_Code)
+        )
+    """)
+
+    # Read-only comparison view: estimated MH vs actual consumed MH per
+    # Site/Tag/System, with the latest team SQM and any variance reason.
+    # Variance_Pct = (Actual − Estimated) / Estimated × 100 (NULL when no
+    # estimate). Drives the Estimate-vs-Actual dashboard.
+    try:
+        c.execute("DROP VIEW IF EXISTS v_mh_estimate_vs_actual")
+        c.execute("""
+            CREATE VIEW v_mh_estimate_vs_actual AS
+            SELECT
+                e.Site_ID                                   AS Site_ID,
+                e.Equipment_Tag                             AS Equipment_Tag,
+                e.System_Code                               AS System_Code,
+                e.Location                                  AS Location,
+                e.Estimated_Manhours                        AS Estimated_Manhours,
+                COALESCE(a.Actual_Manhours, 0)              AS Actual_Manhours,
+                COALESCE(a.Actual_Manhours, 0)
+                    - e.Estimated_Manhours                  AS Variance_Manhours,
+                CASE WHEN e.Estimated_Manhours > 0
+                     THEN ROUND((COALESCE(a.Actual_Manhours, 0)
+                          - e.Estimated_Manhours) * 100.0
+                          / e.Estimated_Manhours, 1)
+                     ELSE NULL END                          AS Variance_Pct,
+                COALESCE(p.SQM_Done, 0)                     AS SQM_Done,
+                n.Reason                                    AS Variance_Reason
+            FROM mh_manhour_estimates e
+            LEFT JOIN (
+                SELECT Site_ID, Equipment_Tag, System_Code,
+                       SUM(Total_Hours) AS Actual_Manhours
+                FROM mh_timesheets
+                GROUP BY Site_ID, Equipment_Tag, System_Code
+            ) a ON a.Site_ID = e.Site_ID
+               AND a.Equipment_Tag = e.Equipment_Tag
+               AND a.System_Code = e.System_Code
+            LEFT JOIN (
+                SELECT Site_ID, Equipment_Tag, System_Code,
+                       SUM(SQM_Done) AS SQM_Done
+                FROM mh_production
+                GROUP BY Site_ID, Equipment_Tag, System_Code
+            ) p ON p.Site_ID = e.Site_ID
+               AND p.Equipment_Tag = e.Equipment_Tag
+               AND p.System_Code = e.System_Code
+            LEFT JOIN mh_variance_notes n
+                   ON n.Site_ID = e.Site_ID
+                  AND n.Equipment_Tag = e.Equipment_Tag
+                  AND n.System_Code = e.System_Code
+        """)
+    except sqlite3.Error:
+        pass  # View creation must never break startup
+
     conn.commit()
     if _owns_conn:
         conn.close()
@@ -13358,3 +13535,412 @@ def get_sme_consumption_log(
     finally:
         if _owns:
             conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Man-Hour & Labor Tracking (workstream §2Z)
+# ---------------------------------------------------------------------------
+# Isolated mh_* domain. These helpers WRITE only to mh_* tables and READ
+# sme_equipment / sme_recipe / sme_sqm_progress read-only (for dropdowns). They
+# never touch the inventory ledger, the EOD path, or any sme_* write. Hours are
+# computed (8h normal + 1h unpaid break); the source attendance file's dirty
+# hour columns are ignored. Site_ID threaded through every function (RULE 3).
+# ═══════════════════════════════════════════════════════════════════════════
+
+MH_NORMAL_THRESHOLD_HOURS = 8.0   # hours/day counted as "normal" before OT
+MH_DEFAULT_BREAK_MINS = 60        # unpaid break deducted from gross
+
+
+def _mh_time_to_minutes(value) -> "int | None":
+    """Parse a clock time → minutes-since-midnight. Tolerant of datetime/time
+    objects and 'HH:MM' / 'HH:MM:SS' strings. Returns None if unparseable."""
+    import datetime as _dt
+    if value is None or value == "":
+        return None
+    if isinstance(value, _dt.datetime):
+        return value.hour * 60 + value.minute
+    if isinstance(value, _dt.time):
+        return value.hour * 60 + value.minute
+    parts = str(value).strip().split(":")
+    try:
+        h = int(parts[0])
+        m = int(parts[1]) if len(parts) > 1 else 0
+        return h * 60 + m
+    except (ValueError, IndexError):
+        return None
+
+
+def compute_mh_hours(in_time, out_time, break_mins: int = MH_DEFAULT_BREAK_MINS,
+                     normal_threshold: float = MH_NORMAL_THRESHOLD_HOURS
+                     ) -> "tuple[float, float, float]":
+    """Return (Total, Normal, OT) hours from In/Out times.
+
+    Total  = max(0, (Out − In) − break) in hours (overnight shifts wrap +24h)
+    Normal = min(Total, normal_threshold)
+    OT     = max(0, Total − normal_threshold)
+    """
+    im = _mh_time_to_minutes(in_time)
+    om = _mh_time_to_minutes(out_time)
+    if im is None or om is None:
+        return 0.0, 0.0, 0.0
+    gross = om - im
+    if gross < 0:
+        gross += 24 * 60  # overnight shift guard
+    net = max(0.0, (gross - int(break_mins or 0)) / 60.0)
+    total = round(net, 2)
+    normal = round(min(total, normal_threshold), 2)
+    ot = round(max(0.0, total - normal_threshold), 2)
+    return total, normal, ot
+
+
+# ── mh_employees (labor roster) ─────────────────────────────────────────────
+def upsert_mh_employee(site_id: str, employee_code: str, name: str, *,
+                       designation: str = "", worker_type: str = "OWN",
+                       company: str = "", linked_id_number: str = None,
+                       status: str = "active", created_by: str = "system",
+                       conn: sqlite3.Connection = None) -> "tuple[bool, str]":
+    """Insert-or-update one labor-roster row (UNIQUE Site_ID + Employee_Code).
+    Returns (False, msg) on bad input — never raises."""
+    site_id = (site_id or "").strip()
+    employee_code = (employee_code or "").strip()
+    name = (name or "").strip()
+    if not site_id or not employee_code or not name:
+        return False, "Site_ID, Employee_Code and Name are required."
+    wt = (worker_type or "OWN").strip()
+    if wt not in ("OWN", "Supply"):
+        return False, "Worker_Type must be 'OWN' or 'Supply'."
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        _c.execute(
+            "INSERT INTO mh_employees "
+            "(Site_ID, Employee_Code, Name, Designation, Worker_Type, Company, "
+            " linked_id_number, status, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(Site_ID, Employee_Code) DO UPDATE SET "
+            "  Name=excluded.Name, Designation=excluded.Designation, "
+            "  Worker_Type=excluded.Worker_Type, Company=excluded.Company, "
+            "  linked_id_number=excluded.linked_id_number, status=excluded.status, "
+            "  updated_at=CURRENT_TIMESTAMP",
+            (site_id, employee_code, name, (designation or "").strip(), wt,
+             (company or "").strip(),
+             (linked_id_number or "").strip() or None, status, created_by),
+        )
+        _c.commit()
+        return True, f"Employee {employee_code} saved."
+    finally:
+        if _owns:
+            _c.close()
+
+
+def list_mh_employees(site_id: str = None, status: str = None,
+                      conn: sqlite3.Connection = None) -> pd.DataFrame:
+    """Labor roster as a DataFrame, optionally filtered by site and/or status."""
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        where, params = [], []
+        if site_id:
+            where.append("Site_ID = ?"); params.append(site_id)
+        if status:
+            where.append("status = ?"); params.append(status)
+        sql = ("SELECT id, Site_ID, Employee_Code, Name, Designation, "
+               "Worker_Type, Company, linked_id_number, status, created_at "
+               "FROM mh_employees ")
+        if where:
+            sql += "WHERE " + " AND ".join(where) + " "
+        sql += "ORDER BY Employee_Code"
+        return _localize(pd.read_sql(sql, _c, params=tuple(params)))
+    finally:
+        if _owns:
+            _c.close()
+
+
+def set_mh_employee_status(emp_id: int, status: str,
+                           conn: sqlite3.Connection = None) -> bool:
+    """Flip an employee active/inactive."""
+    if status not in ("active", "inactive"):
+        return False
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        _c.execute("UPDATE mh_employees SET status=?, updated_at=CURRENT_TIMESTAMP "
+                   "WHERE id=?", (status, int(emp_id)))
+        _c.commit()
+        return True
+    finally:
+        if _owns:
+            _c.close()
+
+
+# ── mh_timesheets (daily actuals) ───────────────────────────────────────────
+def add_mh_timesheet(site_id: str, employee_code: str, work_date: str,
+                     in_time, out_time, *, location: str = "",
+                     equipment_tag: str = "", system_code: str = "",
+                     break_mins: int = MH_DEFAULT_BREAK_MINS,
+                     status: str = "PR", remarks: str = "",
+                     created_by: str = "system",
+                     conn: sqlite3.Connection = None) -> "tuple[bool, str]":
+    """Insert one timesheet line; hours are computed from In/Out − break.
+    On UNIQUE collision (same site/emp/date/tag/system) updates in place."""
+    site_id = (site_id or "").strip()
+    employee_code = (employee_code or "").strip()
+    work_date = str(work_date or "").strip()[:10]
+    if not site_id or not employee_code or not work_date:
+        return False, "Site_ID, Employee_Code and Work_Date are required."
+    total, normal, ot = compute_mh_hours(in_time, out_time, break_mins)
+    in_s = "" if in_time is None else str(in_time)
+    out_s = "" if out_time is None else str(out_time)
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        _c.execute(
+            "INSERT INTO mh_timesheets "
+            "(Site_ID, Employee_Code, Work_Date, Location, Equipment_Tag, "
+            " System_Code, In_Time, Out_Time, Break_Mins, Total_Hours, "
+            " Normal_Hours, OT_Hours, Status, Remarks, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(Site_ID, Employee_Code, Work_Date, Equipment_Tag, System_Code) "
+            "DO UPDATE SET In_Time=excluded.In_Time, Out_Time=excluded.Out_Time, "
+            "  Location=excluded.Location, Break_Mins=excluded.Break_Mins, "
+            "  Total_Hours=excluded.Total_Hours, Normal_Hours=excluded.Normal_Hours, "
+            "  OT_Hours=excluded.OT_Hours, Status=excluded.Status, "
+            "  Remarks=excluded.Remarks",
+            (site_id, employee_code, work_date, (location or "").strip() or None,
+             (equipment_tag or "").strip() or None,
+             (system_code or "").strip() or None, in_s, out_s, int(break_mins or 0),
+             total, normal, ot, status, (remarks or "").strip(), created_by),
+        )
+        _c.commit()
+        return True, f"Timesheet saved ({total}h)."
+    finally:
+        if _owns:
+            _c.close()
+
+
+def list_mh_timesheets(site_id: str = None, *, work_date: str = None,
+                       employee_code: str = None, equipment_tag: str = None,
+                       system_code: str = None, date_from: str = None,
+                       date_to: str = None,
+                       conn: sqlite3.Connection = None) -> pd.DataFrame:
+    """Daily timesheet rows as a DataFrame with flexible filters."""
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        where, params = [], []
+        for col, val in (("Site_ID", site_id), ("Work_Date", work_date),
+                         ("Employee_Code", employee_code),
+                         ("Equipment_Tag", equipment_tag),
+                         ("System_Code", system_code)):
+            if val:
+                where.append(f"{col} = ?"); params.append(val)
+        if date_from:
+            where.append("Work_Date >= ?"); params.append(date_from)
+        if date_to:
+            where.append("Work_Date <= ?"); params.append(date_to)
+        sql = ("SELECT id, Site_ID, Employee_Code, Work_Date, Location, "
+               "Equipment_Tag, System_Code, In_Time, Out_Time, Break_Mins, "
+               "Total_Hours, Normal_Hours, OT_Hours, Allocated_SQM, Status, "
+               "Remarks, created_at FROM mh_timesheets ")
+        if where:
+            sql += "WHERE " + " AND ".join(where) + " "
+        sql += "ORDER BY Work_Date DESC, Employee_Code"
+        return _localize(pd.read_sql(sql, _c, params=tuple(params)))
+    finally:
+        if _owns:
+            _c.close()
+
+
+def get_mh_employee_timeline(site_id: str = None, employee_code: str = None, *,
+                             date_from: str = None, date_to: str = None,
+                             conn: sqlite3.Connection = None) -> pd.DataFrame:
+    """Employee-wise, date-ordered view: where each person worked and the hours
+    booked. Powers the 'neat, not clumsy' Employee-wise tab."""
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        where, params = [], []
+        if site_id:
+            where.append("t.Site_ID = ?"); params.append(site_id)
+        if employee_code:
+            where.append("t.Employee_Code = ?"); params.append(employee_code)
+        if date_from:
+            where.append("t.Work_Date >= ?"); params.append(date_from)
+        if date_to:
+            where.append("t.Work_Date <= ?"); params.append(date_to)
+        sql = ("SELECT t.Employee_Code, COALESCE(e.Name, t.Employee_Code) AS Name, "
+               "t.Work_Date, t.Location, t.Equipment_Tag, t.System_Code, "
+               "t.Total_Hours, t.Normal_Hours, t.OT_Hours, t.Allocated_SQM "
+               "FROM mh_timesheets t "
+               "LEFT JOIN mh_employees e "
+               "  ON e.Site_ID = t.Site_ID AND e.Employee_Code = t.Employee_Code ")
+        if where:
+            sql += "WHERE " + " AND ".join(where) + " "
+        sql += "ORDER BY t.Employee_Code, t.Work_Date"
+        return _localize(pd.read_sql(sql, _c, params=tuple(params)))
+    finally:
+        if _owns:
+            _c.close()
+
+
+# ── mh_production (team SQM) + distribution ─────────────────────────────────
+def set_mh_production(site_id: str, work_date: str, equipment_tag: str,
+                      system_code: str, sqm_done: float, *,
+                      distribution_method: str = "even",
+                      created_by: str = "system",
+                      conn: sqlite3.Connection = None,
+                      auto_distribute: bool = True) -> "tuple[bool, str]":
+    """Record the team's SQM for a day/tag/system and (optionally) distribute it
+    across that day's workers into mh_timesheets.Allocated_SQM."""
+    if distribution_method not in ("even", "by_hours", "manual"):
+        return False, "distribution_method must be even | by_hours | manual."
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        _c.execute(
+            "INSERT INTO mh_production "
+            "(Site_ID, Work_Date, Equipment_Tag, System_Code, SQM_Done, "
+            " Distribution_Method, created_by) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(Site_ID, Work_Date, Equipment_Tag, System_Code) "
+            "DO UPDATE SET SQM_Done=excluded.SQM_Done, "
+            "  Distribution_Method=excluded.Distribution_Method",
+            (site_id, str(work_date)[:10], equipment_tag, system_code,
+             float(sqm_done or 0), distribution_method, created_by),
+        )
+        _c.commit()
+        if auto_distribute and distribution_method != "manual":
+            distribute_mh_sqm(site_id, work_date, equipment_tag, system_code,
+                              method=distribution_method, conn=_c)
+        return True, "Production SQM saved."
+    finally:
+        if _owns:
+            _c.close()
+
+
+def distribute_mh_sqm(site_id: str, work_date: str, equipment_tag: str,
+                      system_code: str, *, method: str = "even",
+                      conn: sqlite3.Connection = None) -> int:
+    """Split a day's team SQM into each worker's Allocated_SQM. 'even' = equal
+    per worker; 'by_hours' = pro-rata on Total_Hours. Returns rows updated."""
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        row = _c.execute(
+            "SELECT SQM_Done FROM mh_production WHERE Site_ID=? AND Work_Date=? "
+            "AND Equipment_Tag=? AND System_Code=?",
+            (site_id, str(work_date)[:10], equipment_tag, system_code),
+        ).fetchone()
+        if not row:
+            return 0
+        total_sqm = float(row[0] or 0)
+        rows = _c.execute(
+            "SELECT id, Total_Hours FROM mh_timesheets WHERE Site_ID=? AND "
+            "Work_Date=? AND Equipment_Tag=? AND System_Code=?",
+            (site_id, str(work_date)[:10], equipment_tag, system_code),
+        ).fetchall()
+        if not rows:
+            return 0
+        if method == "by_hours":
+            hours_sum = sum(float(r[1] or 0) for r in rows) or 0
+            for rid, hrs in rows:
+                share = (total_sqm * float(hrs or 0) / hours_sum) if hours_sum else 0
+                _c.execute("UPDATE mh_timesheets SET Allocated_SQM=? WHERE id=?",
+                           (round(share, 3), rid))
+        else:  # even
+            share = total_sqm / len(rows)
+            for rid, _hrs in rows:
+                _c.execute("UPDATE mh_timesheets SET Allocated_SQM=? WHERE id=?",
+                           (round(share, 3), rid))
+        _c.commit()
+        return len(rows)
+    finally:
+        if _owns:
+            _c.close()
+
+
+# ── mh_manhour_estimates + variance notes ───────────────────────────────────
+def upsert_mh_estimate(site_id: str, equipment_tag: str, system_code: str,
+                       estimated_manhours: float, *, location: str = "",
+                       estimated_sqm: float = None, basis: str = "",
+                       created_by: str = "system",
+                       conn: sqlite3.Connection = None) -> "tuple[bool, str]":
+    """Define/update the required man-hours for a Tag/System (the estimator)."""
+    site_id = (site_id or "").strip()
+    equipment_tag = (equipment_tag or "").strip()
+    system_code = (system_code or "").strip()
+    if not site_id or not equipment_tag or not system_code:
+        return False, "Site_ID, Equipment_Tag and System_Code are required."
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        _c.execute(
+            "INSERT INTO mh_manhour_estimates "
+            "(Site_ID, Location, Equipment_Tag, System_Code, Estimated_Manhours, "
+            " Estimated_SQM, Basis, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(Site_ID, Equipment_Tag, System_Code) DO UPDATE SET "
+            "  Location=excluded.Location, "
+            "  Estimated_Manhours=excluded.Estimated_Manhours, "
+            "  Estimated_SQM=excluded.Estimated_SQM, Basis=excluded.Basis, "
+            "  updated_at=CURRENT_TIMESTAMP",
+            (site_id, (location or "").strip() or None, equipment_tag, system_code,
+             float(estimated_manhours or 0),
+             None if estimated_sqm in (None, "") else float(estimated_sqm),
+             (basis or "").strip(), created_by),
+        )
+        _c.commit()
+        return True, "Estimate saved."
+    finally:
+        if _owns:
+            _c.close()
+
+
+def list_mh_estimates(site_id: str = None,
+                      conn: sqlite3.Connection = None) -> pd.DataFrame:
+    """Man-hour estimates as a DataFrame."""
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        where, params = [], []
+        if site_id:
+            where.append("Site_ID = ?"); params.append(site_id)
+        sql = ("SELECT id, Site_ID, Location, Equipment_Tag, System_Code, "
+               "Estimated_Manhours, Estimated_SQM, Basis, created_at "
+               "FROM mh_manhour_estimates ")
+        if where:
+            sql += "WHERE " + " AND ".join(where) + " "
+        sql += "ORDER BY Equipment_Tag, System_Code"
+        return _localize(pd.read_sql(sql, _c, params=tuple(params)))
+    finally:
+        if _owns:
+            _c.close()
+
+
+def set_mh_variance_reason(site_id: str, equipment_tag: str, system_code: str,
+                           reason: str, entered_by: str = "system",
+                           conn: sqlite3.Connection = None) -> "tuple[bool, str]":
+    """Record/replace the over-consumption reason for a Tag/System."""
+    if not (reason or "").strip():
+        return False, "Reason is required."
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        _c.execute(
+            "INSERT INTO mh_variance_notes "
+            "(Site_ID, Equipment_Tag, System_Code, Reason, entered_by) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(Site_ID, Equipment_Tag, System_Code) DO UPDATE SET "
+            "  Reason=excluded.Reason, entered_by=excluded.entered_by, "
+            "  created_at=CURRENT_TIMESTAMP",
+            (site_id, equipment_tag, system_code, reason.strip(), entered_by),
+        )
+        _c.commit()
+        return True, "Reason saved."
+    finally:
+        if _owns:
+            _c.close()
+
+
+def get_mh_estimate_vs_actual(site_id: str = None,
+                              conn: sqlite3.Connection = None) -> pd.DataFrame:
+    """Estimate-vs-Actual comparison (reads the v_mh_estimate_vs_actual view)."""
+    _c, _owns = _conn_ctx_6a(conn)
+    try:
+        sql = "SELECT * FROM v_mh_estimate_vs_actual "
+        params = ()
+        if site_id:
+            sql += "WHERE Site_ID = ? "
+            params = (site_id,)
+        sql += "ORDER BY Variance_Manhours DESC"
+        return _localize(pd.read_sql(sql, _c, params=params))
+    finally:
+        if _owns:
+            _c.close()

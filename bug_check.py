@@ -2236,6 +2236,93 @@ def check_wsc_verify_subscription_and_signature():
 
 
 # ---------------------------------------------------------------------------
+# Man-Hour & Labor Tracking (workstream §2Z) — schema + helpers
+# ---------------------------------------------------------------------------
+# mh_* tables are isolated: write-only to mh_*, read-only against sme_*. These
+# checks run against the throwaway bug_check DB (mh tables self-heal in init_db).
+def _mh_conn():
+    conn = database.get_connection(":memory:")
+    database.init_db(conn)
+    return conn
+
+
+def check_mh_schema_present():
+    conn = _mh_conn()
+    names = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE name LIKE 'mh_%' "
+        "OR name='v_mh_estimate_vs_actual'")}
+    for t in ("mh_employees", "mh_timesheets", "mh_production",
+              "mh_manhour_estimates", "mh_variance_notes",
+              "v_mh_estimate_vs_actual"):
+        assert t in names, f"missing man-hour object: {t}"
+
+
+def check_mh_hours_math():
+    # 8h normal + 1h break policy
+    assert database.compute_mh_hours("07:30", "16:30", 60) == (8.0, 8.0, 0.0), \
+        "07:30-16:30 -60m must be 8/8/0"
+    assert database.compute_mh_hours("07:00", "18:00", 60) == (10.0, 8.0, 2.0), \
+        "10h net must be 10/8/2 (OT beyond 8)"
+    # overnight wrap, no break
+    assert database.compute_mh_hours("22:00", "06:00", 0) == (8.0, 8.0, 0.0), \
+        "overnight 22:00->06:00 must wrap to 8h"
+    # unparseable → zeros, never raises
+    assert database.compute_mh_hours(None, "x", 60) == (0.0, 0.0, 0.0)
+
+
+def check_mh_employee_upsert_idempotent():
+    conn = _mh_conn()
+    ok, _ = database.upsert_mh_employee("CNCEC", "30551", "Thameem", conn=conn)
+    assert ok
+    # second upsert updates in place (no duplicate; name changes)
+    database.upsert_mh_employee("CNCEC", "30551", "Thameem Ansari",
+                                worker_type="OWN", conn=conn)
+    df = database.list_mh_employees("CNCEC", conn=conn)
+    assert len(df) == 1, f"expected 1 employee, got {len(df)}"
+    assert df.iloc[0]["Name"] == "Thameem Ansari", "upsert must update Name in place"
+    bad, _ = database.upsert_mh_employee("CNCEC", "X", "Y", worker_type="Bogus", conn=conn)
+    assert bad is False, "invalid Worker_Type must be rejected"
+
+
+def check_mh_timesheet_and_distribution():
+    conn = _mh_conn()
+    for code in ("A", "B"):
+        database.upsert_mh_employee("CNCEC", code, f"Worker {code}", conn=conn)
+    database.add_mh_timesheet("CNCEC", "A", "2026-05-16", "07:30", "16:30",
+                              equipment_tag="EQ1", system_code="RL-1", conn=conn)
+    database.add_mh_timesheet("CNCEC", "B", "2026-05-16", "07:00", "18:00",
+                              equipment_tag="EQ1", system_code="RL-1", conn=conn)
+    # even split of 20 SQM across 2 workers → 10/10
+    database.set_mh_production("CNCEC", "2026-05-16", "EQ1", "RL-1", 20.0,
+                               distribution_method="even", conn=conn)
+    ts = database.list_mh_timesheets("CNCEC", conn=conn)
+    assert sorted(ts["Allocated_SQM"]) == [10.0, 10.0], "even split must be 10/10"
+    # by_hours: A=8h, B=10h, total 18 → A=8.889, B=11.111
+    database.set_mh_production("CNCEC", "2026-05-16", "EQ1", "RL-1", 20.0,
+                               distribution_method="by_hours", conn=conn)
+    ts = database.list_mh_timesheets("CNCEC", conn=conn)
+    vals = sorted(round(v, 2) for v in ts["Allocated_SQM"])
+    assert vals == [8.89, 11.11], f"by_hours split wrong: {vals}"
+
+
+def check_mh_estimate_vs_actual_view():
+    conn = _mh_conn()
+    database.upsert_mh_employee("CNCEC", "A", "Worker A", conn=conn)
+    database.add_mh_timesheet("CNCEC", "A", "2026-05-16", "07:00", "18:00",
+                              equipment_tag="EQ1", system_code="RL-1", conn=conn)
+    database.upsert_mh_estimate("CNCEC", "EQ1", "RL-1", 8.0, conn=conn)
+    database.set_mh_variance_reason("CNCEC", "EQ1", "RL-1", "rework", conn=conn)
+    df = database.get_mh_estimate_vs_actual("CNCEC", conn=conn)
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row["Estimated_Manhours"] == 8.0 and row["Actual_Manhours"] == 10.0, \
+        "view must sum actual Total_Hours (10) vs estimate (8)"
+    assert row["Variance_Manhours"] == 2.0 and row["Variance_Pct"] == 25.0, \
+        "variance must be +2h / +25%"
+    assert row["Variance_Reason"] == "rework", "variance reason must join through"
+
+
+# ---------------------------------------------------------------------------
 # Report writer
 # ---------------------------------------------------------------------------
 def write_report() -> Path:
@@ -8852,6 +8939,25 @@ def main() -> int:
               check_wsc_verify_subscription_and_signature,
               "verify_subscription matches the verify token; verify_signature "
               "passes when secret unset, strict HMAC-SHA256 when set.")
+
+    # ---- Man-Hour & Labor Tracking (§2Z) ----
+    run_check("Man-Hour", "schema — 5 mh_ tables + comparison view exist",
+              check_mh_schema_present,
+              "mh_employees/timesheets/production/manhour_estimates/variance_notes "
+              "+ v_mh_estimate_vs_actual self-heal in init_db.")
+    run_check("Man-Hour", "hours math — 8h normal + 1h break, OT, overnight",
+              check_mh_hours_math,
+              "compute_mh_hours: (Out-In)-break; Normal=min(Total,8); OT=max(0,Total-8).")
+    run_check("Man-Hour", "employee upsert is idempotent + validates Worker_Type",
+              check_mh_employee_upsert_idempotent,
+              "ON CONFLICT(Site_ID,Employee_Code) updates in place; OWN/Supply enforced.")
+    run_check("Man-Hour", "timesheet insert + team-SQM distribution (even/by_hours)",
+              check_mh_timesheet_and_distribution,
+              "Allocated_SQM split equally or pro-rata on Total_Hours.")
+    run_check("Man-Hour", "estimate-vs-actual view math + reason join",
+              check_mh_estimate_vs_actual_view,
+              "v_mh_estimate_vs_actual sums actual hours, computes Variance_Pct, "
+              "joins the variance reason.")
 
     out = write_report()
     print()
