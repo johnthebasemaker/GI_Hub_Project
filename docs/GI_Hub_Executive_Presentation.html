@@ -124,14 +124,16 @@
     <h1>GI&nbsp;Hub&nbsp;ERP<br><span style="color:var(--gold)">+ Smart Material Estimator</span></h1>
     <p class="sub" style="text-align:center;margin-left:auto;margin-right:auto">
       A single, role-based platform that runs the full material lifecycle —
-      from purchase request to consumption — with an integrated engineering
-      estimator for Rubber&nbsp;&amp;&nbsp;Brick lining projects.
+      from purchase request to consumption — with integrated engineering
+      estimators for both <span class="em">material</span> and <span class="em">labor</span>
+      on Rubber&nbsp;&amp;&nbsp;Brick lining projects.
     </p>
     <div class="badges" style="justify-content:center">
       <span class="pill">Streamlit · SQLite (WAL)</span>
       <span class="pill">6 Roles · Multi-Site</span>
-      <span class="pill">525 automated tests</span>
-      <span class="pill">Self-hosted · giinventory.com</span>
+      <span class="pill">554 automated tests</span>
+      <span class="pill">Material &amp; Labor planning</span>
+      <span class="pill">Docker · Hetzner-ready</span>
     </div>
   </section>
 
@@ -145,13 +147,14 @@
     <div class="grid g4">
       <div class="card"><div class="stat">6</div><div class="stat-l">Role-based portals</div></div>
       <div class="card"><div class="stat">2+</div><div class="stat-l">Sites (HQ · CNCEC)</div></div>
-      <div class="card"><div class="stat">525</div><div class="stat-l">Regression tests green</div></div>
+      <div class="card"><div class="stat">554</div><div class="stat-l">Regression tests green</div></div>
       <div class="card"><div class="stat">100%</div><div class="stat-l">Audited write paths</div></div>
     </div>
-    <div class="grid g3" style="margin-top:1.1rem">
+    <div class="grid g4" style="margin-top:1.1rem">
       <div class="card accent"><h3><span class="ico">📦</span>Inventory & Stock</h3><p>Live stock computed from the ledger — receipts, consumption, returns, transfers — never a hand-edited number. FEFO lot discipline.</p></div>
       <div class="card accent"><h3><span class="ico">🧾</span>Procurement Chain</h3><p>Purchase Request → PO → Delivery Note → Receive, with HOD approval gates and cross-site stock requests.</p></div>
       <div class="card accent"><h3><span class="ico">🧪</span>Material Estimator</h3><p>Engineering planning for lining projects — demand vs. availability, coverage %, and procurement suggestions.</p></div>
+      <div class="card accent"><h3><span class="ico">🕒</span>Man-Hours & Labor</h3><p>Track planned vs. actual man-hours per scope — timesheets, overtime, and variance analysis. <b>(New)</b></p></div>
     </div>
   </section>
 
@@ -185,10 +188,10 @@
       <div class="card"><h3><span class="ico">🖥️</span>Presentation</h3><p>Streamlit web app. Custom RBAC sidebar routes each user to exactly the portals their role allows.</p></div>
       <div class="card"><h3><span class="ico">🧠</span>Logic</h3><p>All business rules + SQL centralized in <span class="pill">database.py</span> — the single write authority and audit gate.</p></div>
       <div class="card"><h3><span class="ico">🗄️</span>Data</h3><p>SQLite in WAL mode. Live stock & estimator quantities are <em>derived</em> via SQL views, never stored.</p></div>
-      <div class="card"><h3><span class="ico">🔌</span>Services</h3><p>AI scan sidecar, WhatsApp worker, e-mail/PDF generation, automated backups.</p></div>
+      <div class="card"><h3><span class="ico">🔌</span>Services</h3><p>FastAPI AI sidecar, WhatsApp Business worker, e-mail/PDF generation, automated backups — each isolated, each replaceable.</p></div>
     </div>
     <div class="note">
-      <b>Quality gate:</b> a <b>525-check</b> automated harness (<span class="pill">bug_check.py</span>) guards every release —
+      <b>Quality gate:</b> a <b>554-check</b> automated harness (<span class="pill">bug_check.py</span>) guards every release —
       schema, workflows, RBAC, and the SME integration. No change ships unless the suite stays green.
     </div>
     <div class="legend">
@@ -208,7 +211,7 @@
       <div class="card"><h3><span class="ico">🛡️</span>Supervisor</h3><p>Raises material requests; monitors the live dashboard for their site.</p></div>
       <div class="card"><h3><span class="ico">🏭</span>Warehouse</h3><p>Receives stock, prepares Delivery Notes, manages lots & FEFO.</p></div>
       <div class="card"><h3><span class="ico">🚚</span>Logistics</h3><p>Drives the PR → PO procurement chain and cross-site fulfilment.</p></div>
-      <div class="card accent"><h3><span class="ico">🏛️</span>Head of Dept (HOD)</h3><p>Approves issues, commits End-of-Day, owns the Material Estimator.</p></div>
+      <div class="card accent"><h3><span class="ico">🏛️</span>Head of Dept (HOD)</h3><p>Approves issues, commits End-of-Day, owns the Material Estimator &amp; Man-Hours planning.</p></div>
       <div class="card accent"><h3><span class="ico">👑</span>Admin</h3><p>Full oversight, master-data editor, user management, system settings.</p></div>
     </div>
     <div class="note"><b>Multi-site aware:</b> every record is scoped by <span class="pill">Site_ID</span> so HQ and CNCEC operate independently while admins get a consolidated view.</div>
@@ -312,12 +315,32 @@
     </div>
   </section>
 
+  <!-- 9b · MAN-HOURS & LABOR TRACKING -->
+  <section class="slide" data-title="Man-Hours & Labor Tracking">
+    <div class="kicker">Newest module</div>
+    <h2>Man-Hours &amp; <span class="acc">Labor Tracking</span></h2>
+    <p class="lead">The newest addition tracks <em>labor</em> the way the estimator tracks <em>material</em>:
+      who worked, where, and for how long — then compares planned vs. actual man-hours to expose over-runs.
+      Locked to HOD &amp; Admin, fully site-scoped, and isolated from the stock ledger.</p>
+    <div class="grid g4">
+      <div class="card"><h3><span class="ico">👥</span>Roster</h3><p>OWN (GI) staff &amp; Supply subcontractors per site, with designation &amp; company.</p></div>
+      <div class="card"><h3><span class="ico">🕒</span>Timesheets</h3><p>One-click Excel upload <em>or</em> a per-day grid; In/Out auto-computes Normal + Overtime hours.</p></div>
+      <div class="card"><h3><span class="ico">📐</span>Estimator</h3><p>Define the required man-hours per equipment / system — the labor budget for a scope.</p></div>
+      <div class="card"><h3><span class="ico">📊</span>Variance</h3><p>Estimated vs. actual, over-runs flagged red, with a reason-capture field per scope.</p></div>
+    </div>
+    <div class="grid g2" style="margin-top:1.1rem">
+      <div class="card accent"><h3><span class="ico">🧮</span>SQM productivity</h3><p>Record the team's completed SQM and distribute it across the crew — evenly or by hours worked — for true labor productivity.</p></div>
+      <div class="card accent"><h3><span class="ico">🧑‍🔧</span>Employee-wise view</h3><p>A clean, date-by-date timeline of exactly where each worker spent their hours — no clutter.</p></div>
+    </div>
+    <div class="note"><b>Same DNA as the material estimator:</b> it reads the equipment &amp; system catalogue but writes only its own isolated tables — never the stock ledger or End-of-Day path. Proven on real data: <b>22 employees · 209 timesheets</b> imported and verified in one pass.</div>
+  </section>
+
   <!-- 10 · DATA INTEGRITY -->
   <section class="slide" data-title="Integrity & Quality">
     <div class="kicker">Trust the numbers</div>
     <h2>Built for <span class="acc">integrity</span></h2>
     <div class="grid g2">
-      <div class="card"><h3><span class="ico">🧪</span>Automated regression harness</h3><p>525 checks cover schema, every workflow state machine, RBAC locks and the SME integration. Runs before every release; the build is gated on green.</p></div>
+      <div class="card"><h3><span class="ico">🧪</span>Automated regression harness</h3><p>554 checks cover schema, every workflow state machine, RBAC locks and the SME integration. Runs before every release; the build is gated on green.</p></div>
       <div class="card"><h3><span class="ico">🧾</span>Immutable audit trail</h3><p>Posted ledger rows are never edited in place. Corrections happen via reversal documents; rejected items are archived, not deleted.</p></div>
       <div class="card"><h3><span class="ico">📐</span>Derived, not declared</h3><p>Live stock and estimator availability are computed from movements — eliminating the "someone typed the wrong number" class of error.</p></div>
       <div class="card"><h3><span class="ico">🔒</span>Least-privilege RBAC</h3><p>Page access is exact-locked per role; multi-site scoping prevents cross-contamination of data between HQ and CNCEC.</p></div>
@@ -331,14 +354,34 @@
     <h2>Automation &amp; <span class="acc">intelligence</span></h2>
     <div class="grid g3">
       <div class="card"><h3><span class="ico">📷</span>Smart Scan AI</h3><p>Vision OCR reads material slips from a phone photo; an optional AI fallback locates items when the primary model is unsure. Opt-in, gated OFF until a site enables it.</p></div>
-      <div class="card"><h3><span class="ico">💬</span>WhatsApp & Alerts</h3><p>Background worker pushes notifications and chases overdue returnables — no one has to remember to follow up.</p></div>
+      <div class="card"><h3><span class="ico">💬</span>WhatsApp Business</h3><p>Direct Meta Cloud API pushes notifications and chases overdue returnables — two-way messaging, no third-party reseller.</p></div>
       <div class="card"><h3><span class="ico">📄</span>Reports & PDFs</h3><p>Role-based PDF reports, Excel exports and e-mail drafts generated on demand for procurement and management.</p></div>
     </div>
     <div class="grid g3" style="margin-top:1.1rem">
       <div class="card"><h3><span class="ico">🔔</span>In-app Notifications</h3><p>An unread bell surfaces every action item — approvals, receipts, requests — to the right role.</p></div>
       <div class="card"><h3><span class="ico">💾</span>Automated Backups</h3><p>Scheduled snapshots with a documented restore procedure protect against data loss.</p></div>
-      <div class="card"><h3><span class="ico">🌐</span>Secure Hosting</h3><p>Self-hosted on giinventory.com behind Cloudflare Tunnel + Access — e-mail allow-listed, zero open ports.</p></div>
+      <div class="card"><h3><span class="ico">🌐</span>Private & Self-Hosted</h3><p>Runs on a dedicated company server — the local AI models stay internal and never leave the box. (See deployment, next.)</p></div>
     </div>
+  </section>
+
+  <!-- 11b · PRODUCTION DEPLOYMENT -->
+  <section class="slide" data-title="Production Deployment">
+    <div class="kicker">Going to production</div>
+    <h2>Production-grade <span class="acc">deployment</span></h2>
+    <p class="lead">The platform is being packaged for a dedicated company server — fully containerized,
+      reverse-proxied with TLS, continuously deployed, and wired to WhatsApp Business — while the local
+      development setup keeps working untouched.</p>
+    <div class="grid g3">
+      <div class="card"><h3><span class="ico">🐳</span>Docker</h3><p>The whole stack — app, AI, proxy, backups — comes up with one <span class="pill">docker compose up</span>. Reproducible on any Linux server.</p></div>
+      <div class="card"><h3><span class="ico">☁️</span>Hetzner + Nginx</h3><p>A cost-efficient cloud server behind an Nginx reverse proxy with TLS. AI models stay on a private network — never exposed to the internet.</p></div>
+      <div class="card"><h3><span class="ico">⚙️</span>CI/CD</h3><p>Push to GitHub → the server auto-pulls, rebuilds &amp; restarts. Zero manual deploys, every change versioned.</p></div>
+    </div>
+    <div class="grid g3" style="margin-top:1.1rem">
+      <div class="card"><h3><span class="ico">💬</span>WhatsApp Cloud API</h3><p>Direct Meta Business messaging for alerts &amp; two-way replies, with a secure webhook receiver.</p></div>
+      <div class="card"><h3><span class="ico">🧠</span>Private AI sidecar</h3><p>FastAPI + a local LLM serve the manual assistant on-box — company data never leaves the server.</p></div>
+      <div class="card"><h3><span class="ico">💾</span>Automated backups</h3><p>Nightly snapshots with off-box retention and a documented one-command restore path.</p></div>
+    </div>
+    <div class="note"><b>Memory-efficient by design:</b> tuned to run multiple AI models on modest hardware without contention — one model resident at a time, the rest of the stack kept lean.</div>
   </section>
 
   <!-- 12 · STATUS & ROADMAP -->
@@ -349,10 +392,12 @@
       <tr><th>Area</th><th>Status</th><th>Notes</th></tr>
       <tr><td><b>Core ERP</b> — inventory, procurement, EOD</td><td><span class="pill" style="border-color:var(--green);color:var(--green)">● Live</span></td><td>In daily production use across sites.</td></tr>
       <tr><td><b>SME Integration</b></td><td><span class="pill" style="border-color:var(--gold);color:var(--gold)">● Complete &amp; Locked</span></td><td>Feature-complete; frozen. Touched only for proven regressions.</td></tr>
+      <tr><td><b>Man-Hours &amp; Labor</b></td><td><span class="pill" style="border-color:var(--green);color:var(--green)">● Live · New</span></td><td>Shipped &amp; tested; loaded with real CNCEC attendance data.</td></tr>
       <tr><td><b>Smart Scan AI</b></td><td><span class="pill" style="border-color:var(--sky);color:var(--sky)">● Ready · opt-in</span></td><td>Shipped; gated OFF until a pilot site enables it.</td></tr>
-      <tr><td><b>ERP feature roadmap</b></td><td><span class="pill" style="border-color:var(--low);color:var(--low)">▶ Next focus</span></td><td>Stock reservations, hard FEFO, UoM conversion, auto-PR drafting.</td></tr>
+      <tr><td><b>Docker / Deployment</b></td><td><span class="pill" style="border-color:var(--low);color:var(--low)">▶ In progress</span></td><td>Container stack, Nginx + TLS, CI/CD &amp; Meta WhatsApp built; server provisioning next.</td></tr>
+      <tr><td><b>ERP feature roadmap</b></td><td><span class="pill" style="border-color:var(--indigo);color:var(--indigo)">▷ Planned</span></td><td>Stock reservations, hard FEFO, UoM conversion, auto-PR drafting.</td></tr>
     </table>
-    <div class="note"><b>Direction:</b> with the SME merge complete, development now pivots to deepening the <b>ERP's own</b> capabilities — tighter inventory discipline and procurement automation.</div>
+    <div class="note"><b>Direction:</b> with the SME merge complete and labor tracking live, development is finishing <b>production deployment</b> and deepening the <b>ERP's own</b> capabilities — tighter inventory discipline and procurement automation.</div>
   </section>
 
   <!-- 13 · CLOSE -->
@@ -362,20 +407,20 @@
     <div class="grid g4" style="margin-top:2rem;width:min(900px,90%)">
       <div class="card center"><div class="stat">1</div><div class="stat-l">Source of truth</div></div>
       <div class="card center"><div class="stat">6</div><div class="stat-l">Governed roles</div></div>
-      <div class="card center"><div class="stat">525</div><div class="stat-l">Tests green</div></div>
+      <div class="card center"><div class="stat">554</div><div class="stat-l">Tests green</div></div>
       <div class="card center"><div class="stat">0</div><div class="stat-l">Hand-edited stock</div></div>
     </div>
     <p class="sub" style="text-align:center;margin-left:auto;margin-right:auto">
-      GI Hub ERP + Smart Material Estimator — from purchase request to consumption,
-      with engineering planning built in.
+      GI Hub ERP — from purchase request to consumption, with material <em>and</em> labor
+      planning built in, and production deployment underway.
     </p>
   </section>
 
 </div>
 
 <div class="footer" id="footer">
-  <span class="brand"><b>GI&nbsp;Hub&nbsp;ERP</b> &nbsp;·&nbsp; Smart Material Estimator</span>
-  <span id="pagecount">01 / 13</span>
+  <span class="brand"><b>GI&nbsp;Hub&nbsp;ERP</b> &nbsp;·&nbsp; Material &amp; Labor Planning</span>
+  <span id="pagecount">01 / 15</span>
 </div>
 <div id="hint">Navigate with <kbd>←</kbd> <kbd>→</kbd> &nbsp;·&nbsp; <kbd>F</kbd> fullscreen &nbsp;·&nbsp; <kbd>Home</kbd> reset</div>
 
