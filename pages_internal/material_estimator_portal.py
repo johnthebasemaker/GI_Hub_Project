@@ -266,7 +266,11 @@ def _secure_download_button(label, data=None, file_name=None, mime=None,
                             key=None, help=None, on_click=None, args=None,
                             kwargs=None, *, type="secondary",
                             disabled=False, use_container_width=False,
-                            icon=None):
+                            icon=None, **extra):
+    # **extra forwards any newer Streamlit kwargs (e.g. width="stretch") so this
+    # wrapper never breaks a caller using the current API even if the patch is
+    # active. When width is given, drop the deprecated use_container_width to
+    # avoid passing both.
     is_xlsx = (
         isinstance(data, (bytes, bytearray))
         and file_name
@@ -281,11 +285,12 @@ def _secure_download_button(label, data=None, file_name=None, mime=None,
             label=label, data=data, file_name=file_name, mime=mime,
             key=key, help=help, on_click=on_click, args=args, kwargs=kwargs,
             type=type, disabled=disabled,
-            use_container_width=use_container_width,
         )
+        if "width" not in extra:
+            call_kwargs["use_container_width"] = use_container_width
         if icon is not None:
             call_kwargs["icon"] = icon
-        return _orig_download_button(**call_kwargs)
+        return _orig_download_button(**call_kwargs, **extra)
 
     # ── Excel: encrypt bytes, then gate the download behind a password popover.
     # The popover label looks like a normal button; on click it opens a small

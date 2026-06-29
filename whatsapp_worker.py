@@ -86,7 +86,82 @@ def _twilio_config() -> tuple[str, str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Unified send — Twilio → PyWhatKit fallback
+# Provider selection (Workstream C). Default ("" / "auto") preserves the
+# existing Twilio→macOS→pywhatkit chain so the Mac demo keeps working unchanged.
+# Set WHATSAPP_PROVIDER=meta on the server (docker-compose worker) to use the
+# Meta WhatsApp Business Cloud API. pywhatkit is never imported in meta/twilio mode.
+# ---------------------------------------------------------------------------
+WHATSAPP_PROVIDER = os.environ.get("WHATSAPP_PROVIDER", "").strip().lower()
+if WHATSAPP_PROVIDER not in ("", "auto", "meta", "twilio", "pywhatkit"):
+    print(f"⚠️  Unknown WHATSAPP_PROVIDER={WHATSAPP_PROVIDER!r}; using default chain")
+    WHATSAPP_PROVIDER = ""
+
+
+def _meta_config() -> tuple[str, str, str]:
+    """Returns (phone_number_id, access_token, api_version) for the Meta
+    WhatsApp Cloud API, from Streamlit secrets [meta] or META_* env vars."""
+    pnid = token = ""
+    ver = "v21.0"
+    try:
+        import streamlit as st
+        cfg = st.secrets.get("meta", {})
+        pnid  = str(cfg.get("phone_number_id", "") or "")
+        token = str(cfg.get("access_token",    "") or "")
+        ver   = str(cfg.get("api_version", ver) or ver)
+    except Exception:
+        pass
+    if not pnid:
+        pnid = os.environ.get("META_PHONE_NUMBER_ID", "")
+    if not token:
+        token = os.environ.get("META_ACCESS_TOKEN", "")
+    ver = os.environ.get("META_API_VERSION", ver)
+    return pnid, token, ver
+
+
+def _send_via_meta(phone: str, text: str) -> None:
+    """Send one WhatsApp message via the Meta Cloud API (Graph). Raises on
+    failure so the queue row is marked 'failed' with the API error.
+
+    NOTE: a plain text body only delivers inside the 24-hour customer-service
+    window. Business-initiated notifications outside that window require an
+    approved message TEMPLATE — that's the next WhatsApp build step.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    pnid, token, ver = _meta_config()
+    if not pnid or not token:
+        raise RuntimeError(
+            "WHATSAPP_PROVIDER=meta but META_PHONE_NUMBER_ID / META_ACCESS_TOKEN "
+            "are not configured (set them in the env / Docker secret)."
+        )
+    to = phone.replace("whatsapp:", "").strip().lstrip("+")
+    url = f"https://graph.facebook.com/{ver}/{pnid}/messages"
+    payload = json.dumps({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "text",
+        "text": {"preview_url": False, "body": text},
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=payload, method="POST",
+        headers={"Authorization": f"Bearer {token}",
+                 "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Meta API HTTP {e.code}: {body}") from e
+    except Exception as e:
+        raise RuntimeError(f"Meta API error: {type(e).__name__}: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# Unified send — provider router → Twilio → macOS → PyWhatKit
 # ---------------------------------------------------------------------------
 def _send_via_chrome_macos(phone: str, text: str) -> None:
     """
@@ -186,7 +261,17 @@ def _send_whatsapp(phone: str, text: str) -> None:
          Bypasses pywhatkit. Works from any process / thread.
       3. pywhatkit — legacy fallback on non-macOS desktop (Windows/Linux)
          that has a logged-in WhatsApp Web in the default browser.
+
+    WHATSAPP_PROVIDER overrides this: `meta` → Meta Cloud API only, `twilio` →
+    Twilio only, `pywhatkit` → pywhatkit only. Unset/`auto` = the chain below.
     """
+    # ── Explicit provider routing (Workstream C) ──────────────────────────
+    # `meta` → Meta Cloud API only (the server path). Everything else
+    # (twilio / pywhatkit / auto / unset) uses the existing chain below, which
+    # already prefers Twilio when creds exist and falls back appropriately.
+    if WHATSAPP_PROVIDER == "meta":
+        return _send_via_meta(phone, text)
+
     sid, token, from_num = _twilio_config()
 
     # ── 1. Twilio (cloud / production) ────────────────────────────────────

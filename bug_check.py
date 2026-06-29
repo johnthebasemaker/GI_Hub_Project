@@ -2367,6 +2367,62 @@ def check_mh_estimate_vs_actual_view():
 
 
 # ---------------------------------------------------------------------------
+# Workstream C — Meta WhatsApp sender provider + SME download-button forward-compat
+# ---------------------------------------------------------------------------
+def check_meta_provider_routing():
+    import whatsapp_worker as W
+    saved = {k: os.environ.get(k) for k in ("META_PHONE_NUMBER_ID", "META_ACCESS_TOKEN")}
+    try:
+        os.environ["META_PHONE_NUMBER_ID"] = "PNID-123"
+        os.environ["META_ACCESS_TOKEN"] = "TKN-xyz"
+        pnid, tok, ver = W._meta_config()
+        assert pnid == "PNID-123" and tok == "TKN-xyz", (pnid, tok)
+        assert ver.startswith("v"), f"api version looks wrong: {ver}"
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+    # provider=meta routes _send_whatsapp → _send_via_meta
+    sent = {}
+    op, om = W.WHATSAPP_PROVIDER, W._send_via_meta
+    try:
+        W.WHATSAPP_PROVIDER = "meta"
+        W._send_via_meta = lambda p, t: sent.update(phone=p, text=t)
+        W._send_whatsapp("+966500000000", "hello")
+        assert sent == {"phone": "+966500000000", "text": "hello"}, sent
+    finally:
+        W.WHATSAPP_PROVIDER, W._send_via_meta = op, om
+
+    # missing config → _send_via_meta raises (so the queue row is marked failed)
+    saved2 = {k: os.environ.pop(k, None) for k in ("META_PHONE_NUMBER_ID", "META_ACCESS_TOKEN")}
+    try:
+        raised = False
+        try:
+            W._send_via_meta("+966500000000", "x")
+        except RuntimeError:
+            raised = True
+        assert raised, "missing META_* config must raise RuntimeError"
+    finally:
+        for k, v in saved2.items():
+            if v is not None:
+                os.environ[k] = v
+
+
+def check_sme_download_button_forwards_width():
+    import pathlib
+    src = pathlib.Path(REPO_ROOT / "pages_internal" /
+                       "material_estimator_portal.py").read_text(encoding="utf-8")
+    assert "icon=None, **extra)" in src, \
+        "_secure_download_button must accept **extra (forward-compat with width=)"
+    assert "_orig_download_button(**call_kwargs, **extra)" in src, \
+        "must forward **extra to the real download_button"
+    assert 'if "width" not in extra:' in src, \
+        "must drop use_container_width when width is supplied (avoid passing both)"
+
+
+# ---------------------------------------------------------------------------
 # Report writer
 # ---------------------------------------------------------------------------
 def write_report() -> Path:
@@ -9009,6 +9065,16 @@ def main() -> int:
     run_check("Man-Hour", "bulk import — replace-by-date idempotent vs append",
               check_mh_import_replace_vs_append,
               "import_mh_attendance(replace=True) is idempotent; replace=False appends.")
+
+    # ---- Workstream C — Meta sender provider + download-button forward-compat ----
+    run_check("Workstream C", "Meta provider — config read + routing + missing-config raise",
+              check_meta_provider_routing,
+              "WHATSAPP_PROVIDER=meta routes _send_whatsapp→_send_via_meta; "
+              "_meta_config reads META_* env; missing creds raise RuntimeError.")
+    run_check("Workstream C", "SME download_button forwards width= (no HOD TypeError)",
+              check_sme_download_button_forwards_width,
+              "_secure_download_button accepts/forwards **extra so width='stretch' "
+              "callers (e.g. HOD PR PDF) never throw if the patch is active.")
 
     out = write_report()
     print()

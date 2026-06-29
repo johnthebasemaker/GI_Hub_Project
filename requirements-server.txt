@@ -14,7 +14,7 @@
 # ============================================================================
 
 bcrypt
-streamlit
+streamlit>=1.58                 # width="stretch" support (matches local)
 streamlit-keyup                 # live-typing column filters on Live Dashboard
 
 # WhatsApp: Twilio kept (small, lazy-imported) for back-compat; the server's
@@ -23,6 +23,7 @@ twilio
 
 # Reports / Excel / PDF toolchain
 fpdf2
+pdfplumber                      # PO/PR PDF parsing (logistics + HOD)
 openpyxl
 plotly
 xlsxwriter>=3.1.0

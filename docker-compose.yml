@@ -115,6 +115,27 @@ services:
     restart: unless-stopped
     # no host ports — reached via nginx /api/
 
+  # ---- WhatsApp worker: drains the queue via the Meta Cloud API -----------
+  # Reuses the app image but runs whatsapp_worker.py instead of Streamlit. The
+  # Streamlit container suppresses its embedded worker (GI_SUPPRESS_EMBEDDED_WORKER=1),
+  # so this is the single sender process. Shares gi-data to read the queue.
+  worker:
+    image: gihub-streamlit:latest
+    depends_on: [streamlit]
+    command: ["python", "whatsapp_worker.py"]
+    environment:
+      - WHATSAPP_PROVIDER=meta
+      - GI_DATA_DIR=/app/data
+      - TZ=Asia/Riyadh
+      # Provide via the server's .env / Docker secrets — never hardcode:
+      # - META_PHONE_NUMBER_ID=${META_PHONE_NUMBER_ID}
+      # - META_ACCESS_TOKEN=${META_ACCESS_TOKEN}
+    volumes:
+      - gi-data:/app/data
+    networks: [gi-net]
+    restart: unless-stopped
+    # no host ports
+
   # ---- Local LLM runtime: INTERNAL ONLY -----------------------------------
   ollama:
     image: ollama/ollama:latest

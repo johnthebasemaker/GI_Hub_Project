@@ -1,8 +1,11 @@
 bcrypt
-streamlit
+# Pin a floor so Streamlit Cloud matches local: download_button's width="stretch"
+# (and the use_container_width deprecation) require a recent build.
+streamlit>=1.58
 streamlit-keyup            # live-typing column filters on Live Dashboard
 twilio
 fpdf2
+pdfplumber                 # PO/PR PDF parsing (logistics + HOD); was missing → cloud crash
 openpyxl
 plotly
 pytest

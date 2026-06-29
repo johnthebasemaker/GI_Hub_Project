@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-06-28T15:04:11`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_n3oewo6x/bug_check.db`  
-**Total checks:** 554  
-**Passing:** 554  
+**Run at:** `2026-06-29T21:25:24`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_b5vvwz7b/bug_check.db`  
+**Total checks:** 556  
+**Passing:** 556  
 **Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -15,663 +15,665 @@ _None — every check passed._
 ## ✅ Passing by area
 
 ### Attachments — 1/1
-- ✅ BLOB round-trip + disk mirror
+- ✅ BLOB round-trip + disk mirror (2 ms)
 
 ### Audit — 1/1
-- ✅ log_audit_action writes row
+- ✅ log_audit_action writes row (2 ms)
 
 ### Bulk Badges — 1/1
-- ✅ generate_employee_qr_badges_pdf produces valid PDF
+- ✅ generate_employee_qr_badges_pdf produces valid PDF (4 ms)
 
 ### CV Foundation — 4/4
-- ✅ Employees CRUD + duplicate rejection
-- ✅ import_employees_csv idempotent upsert
-- ✅ register + promote CV model — only one active
-- ✅ Tool catalogue CRUD + min_confidence override
+- ✅ Employees CRUD + duplicate rejection (3 ms)
+- ✅ import_employees_csv idempotent upsert (5 ms)
+- ✅ register + promote CV model — only one active (2 ms)
+- ✅ Tool catalogue CRUD + min_confidence override (3 ms)
 
 ### CV Inference — 5/5
-- ✅ detect_tool returns [] when no active model
-- ✅ detect_tool returns [] when model_path missing on disk
-- ✅ detect_tool drops detections below DEFAULT threshold
-- ✅ per-class min_confidence override beats default
-- ✅ invalidate_model_cache clears threshold cache
+- ✅ detect_tool returns [] when no active model (0 ms)
+- ✅ detect_tool returns [] when model_path missing on disk (0 ms)
+- ✅ detect_tool drops detections below DEFAULT threshold (1 ms)
+- ✅ per-class min_confidence override beats default (1 ms)
+- ✅ invalidate_model_cache clears threshold cache (1 ms)
 
 ### Consumption — 1/1
-- ✅ Stage → commit_eod
+- ✅ Stage → commit_eod (4 ms)
 
 ### Hub Assistant — 6/6
-- ✅ system prompt injects username + role label
-- ✅ empty username does not crash the prompt builder
-- ✅ admin gets FULL §7 with the 👥 Users content
-- ✅ logistics role gets §14 (Logistics Portal)
-- ✅ warehouse_user role gets §15 (Warehouse Portal)
-- ✅ admin refusal phrase points to Settings download bay
+- ✅ system prompt injects username + role label (1 ms)
+- ✅ empty username does not crash the prompt builder (0 ms)
+- ✅ admin gets FULL §7 with the 👥 Users content (0 ms)
+- ✅ logistics role gets §14 (Logistics Portal) (0 ms)
+- ✅ warehouse_user role gets §15 (Warehouse Portal) (0 ms)
+- ✅ admin refusal phrase points to Settings download bay (0 ms)
 
 ### Logistics — 8/8
-- ✅ HOD submits PR → appears in Logistics queue
-- ✅ Create PO (manual) — RL/BL tagged, PR→in_po
-- ✅ get_po_detail(hide_prices=True) blanks prices
-- ✅ Assign PO to Warehouse — full + subset
-- ✅ Reschedule request → approve updates PO date
-- ✅ Force-close PR / PO / line with audit
-- ✅ Vendor return reopens the closed PO
-- ✅ PO PDF extraction smoke test
+- ✅ HOD submits PR → appears in Logistics queue (4 ms)
+- ✅ Create PO (manual) — RL/BL tagged, PR→in_po (6 ms)
+- ✅ get_po_detail(hide_prices=True) blanks prices (4 ms)
+- ✅ Assign PO to Warehouse — full + subset (4 ms)
+- ✅ Reschedule request → approve updates PO date (4 ms)
+- ✅ Force-close PR / PO / line with audit (8 ms)
+- ✅ Vendor return reopens the closed PO (3 ms)
+- ✅ PO PDF extraction smoke test (8 ms)
 
 ### MTC — 2/2
-- ✅ Attached rubber MTC stored as BLOB
-- ✅ Missing MTC → mark_emailed flow
+- ✅ Attached rubber MTC stored as BLOB (2 ms)
+- ✅ Missing MTC → mark_emailed flow (3 ms)
 
 ### Mailer — 1/1
-- ✅ Draft helpers (Outlook / mailto patched)
+- ✅ Draft helpers (Outlook / mailto patched) (0 ms)
 
 ### Man-Hour — 7/7
-- ✅ schema — 5 mh_ tables + comparison view exist
-- ✅ hours math — 8h normal + 1h break, OT, overnight
-- ✅ employee upsert is idempotent + validates Worker_Type
-- ✅ timesheet insert + team-SQM distribution (even/by_hours)
-- ✅ estimate-vs-actual view math + reason join
-- ✅ attendance workbook parser (shared by UI + bootstrap)
-- ✅ bulk import — replace-by-date idempotent vs append
+- ✅ schema — 5 mh_ tables + comparison view exist (33 ms)
+- ✅ hours math — 8h normal + 1h break, OT, overnight (0 ms)
+- ✅ employee upsert is idempotent + validates Worker_Type (32 ms)
+- ✅ timesheet insert + team-SQM distribution (even/by_hours) (32 ms)
+- ✅ estimate-vs-actual view math + reason join (32 ms)
+- ✅ attendance workbook parser (shared by UI + bootstrap) (8 ms)
+- ✅ bulk import — replace-by-date idempotent vs append (32 ms)
 
 ### Math — 1/1
-- ✅ Identity: Closing = Opening + R − C − Rt
+- ✅ Identity: Closing = Opening + R − C − Rt (8 ms)
 
 ### Module load — 1/1
-- ✅ import every page module
+- ✅ import every page module (556 ms)
 
 ### Notifications — 1/1
-- ✅ mark_all_notifications_read scopes correctly
+- ✅ mark_all_notifications_read scopes correctly (1 ms)
 
 ### Phase 7A — 15/15
-- ✅ employees.Site_ID column self-heals
-- ✅ ix_employees_site index exists
-- ✅ add_employee(site_id=) persists binding
-- ✅ add_employee() without site_id writes NULL (back-compat)
-- ✅ update_employee(site_id=) reassigns site
-- ✅ update_employee(site_id='') clears binding to NULL
-- ✅ update_employee(site_id=None) leaves binding untouched
-- ✅ list_employees() returns Site_ID column
-- ✅ list_employees(site_id_filter='HQ') filters
-- ✅ list_employees(site_id_filter='__UNASSIGNED__') gets NULL rows
-- ✅ list_employees_for_site(site, status='active') excludes inactive
-- ✅ import_employees_csv with Site_ID column persists site
-- ✅ import_employees_csv without Site_ID column is back-compat
-- ✅ import_employees_csv preserves existing binding when col absent
-- ✅ bulk_assign_employees_to_site sets Site_ID for N rows
+- ✅ employees.Site_ID column self-heals (1 ms)
+- ✅ ix_employees_site index exists (1 ms)
+- ✅ add_employee(site_id=) persists binding (2 ms)
+- ✅ add_employee() without site_id writes NULL (back-compat) (1 ms)
+- ✅ update_employee(site_id=) reassigns site (2 ms)
+- ✅ update_employee(site_id='') clears binding to NULL (2 ms)
+- ✅ update_employee(site_id=None) leaves binding untouched (2 ms)
+- ✅ list_employees() returns Site_ID column (1 ms)
+- ✅ list_employees(site_id_filter='HQ') filters (3 ms)
+- ✅ list_employees(site_id_filter='__UNASSIGNED__') gets NULL rows (2 ms)
+- ✅ list_employees_for_site(site, status='active') excludes inactive (3 ms)
+- ✅ import_employees_csv with Site_ID column persists site (2 ms)
+- ✅ import_employees_csv without Site_ID column is back-compat (2 ms)
+- ✅ import_employees_csv preserves existing binding when col absent (3 ms)
+- ✅ bulk_assign_employees_to_site sets Site_ID for N rows (4 ms)
 
 ### Phase 7B — 21/21
-- ✅ generate_smr_request_no returns SMR-YYYYMMDD-0001 day-empty
-- ✅ generate_smr_request_no increments on same day
-- ✅ create_supervisor_request happy path inserts header + items
-- ✅ rejects worker not bound to site
-- ✅ rejects empty item list
-- ✅ rejects PPE=No without reason
-- ✅ rejects unknown SAP_Code
-- ✅ Stock_At_Request snapshot is captured
-- ✅ Available_Flag = 0 when requested qty > stock
-- ✅ approve mirrors lines → pending_issues draft (Round 12)
-- ✅ approve flips status + captures posted_pending_ids JSON
-- ✅ approve is idempotent (refuses second call)
-- ✅ approve drops SK_Adjusted_Qty=0 lines
-- ✅ reject requires reason + flips status, no pending_issues
-- ✅ end-to-end: approve → commit_eod → consumption row with Source_Ref
-- ✅ update_supervisor_request_item only works while pending_sk
-- ✅ cancel_supervisor_request only works while pending_sk
-- ✅ delete_supervisor_request_item drops a pending line
-- ✅ report_supervisor_intent_vs_actual joins on Source_Ref
-- ✅ get_open_returnables_for_employee finds matching loans
-- ✅ config.WHATSAPP_TRIGGERS has 4 smr_* keys
+- ✅ generate_smr_request_no returns SMR-YYYYMMDD-0001 day-empty (1 ms)
+- ✅ generate_smr_request_no increments on same day (5 ms)
+- ✅ create_supervisor_request happy path inserts header + items (6 ms)
+- ✅ rejects worker not bound to site (3 ms)
+- ✅ rejects empty item list (1 ms)
+- ✅ rejects PPE=No without reason (2 ms)
+- ✅ rejects unknown SAP_Code (3 ms)
+- ✅ Stock_At_Request snapshot is captured (5 ms)
+- ✅ Available_Flag = 0 when requested qty > stock (5 ms)
+- ✅ approve mirrors lines → pending_issues draft (Round 12) (9 ms)
+- ✅ approve flips status + captures posted_pending_ids JSON (9 ms)
+- ✅ approve is idempotent (refuses second call) (9 ms)
+- ✅ approve drops SK_Adjusted_Qty=0 lines (12 ms)
+- ✅ reject requires reason + flips status, no pending_issues (9 ms)
+- ✅ end-to-end: approve → commit_eod → consumption row with Source_Ref (12 ms)
+- ✅ update_supervisor_request_item only works while pending_sk (11 ms)
+- ✅ cancel_supervisor_request only works while pending_sk (7 ms)
+- ✅ delete_supervisor_request_item drops a pending line (7 ms)
+- ✅ report_supervisor_intent_vs_actual joins on Source_Ref (13 ms)
+- ✅ get_open_returnables_for_employee finds matching loans (3 ms)
+- ✅ config.WHATSAPP_TRIGGERS has 4 smr_* keys (0 ms)
 
 ### Phase 7C — 14/14
-- ✅ ix_csv_target_date index exists
-- ✅ ix_csv_viewer_date index exists
-- ✅ UNIQUE(viewer,target,date) enforced
-- ✅ record_cross_site_view first call returns True
-- ✅ record_cross_site_view dedupe returns False
-- ✅ different target same day returns True
-- ✅ different viewer same target returns True
-- ✅ self-view returns False
-- ✅ blank inputs return False
-- ✅ notify_cross_site_view admin role → silent
-- ✅ notify_cross_site_view queues notification on first fire
-- ✅ notify_cross_site_view writes audit row on first fire
-- ✅ notify_cross_site_view dedupe → no new notification
-- ✅ config.WHATSAPP_TRIGGERS['cross_site_viewed'] = False
+- ✅ ix_csv_target_date index exists (0 ms)
+- ✅ ix_csv_viewer_date index exists (0 ms)
+- ✅ UNIQUE(viewer,target,date) enforced (1 ms)
+- ✅ record_cross_site_view first call returns True (2 ms)
+- ✅ record_cross_site_view dedupe returns False (3 ms)
+- ✅ different target same day returns True (2 ms)
+- ✅ different viewer same target returns True (2 ms)
+- ✅ self-view returns False (0 ms)
+- ✅ blank inputs return False (0 ms)
+- ✅ notify_cross_site_view admin role → silent (0 ms)
+- ✅ notify_cross_site_view queues notification on first fire (5 ms)
+- ✅ notify_cross_site_view writes audit row on first fire (5 ms)
+- ✅ notify_cross_site_view dedupe → no new notification (5 ms)
+- ✅ config.WHATSAPP_TRIGGERS['cross_site_viewed'] = False (0 ms)
 
 ### Phase 7D — 16/16
-- ✅ PO_VENDOR_MASK_FIELDS has 17 entries
-- ✅ get_po_detail() default returns commercial fields populated
-- ✅ get_po_detail(hide_vendor=True) blanks all 17 fields
-- ✅ get_po_detail(hide_vendor=True) preserves PO_Type + PO_Date
-- ✅ get_po_detail combines hide_prices + hide_vendor
-- ✅ build_po_site_notification — title + site_id correct
-- ✅ build_po_site_notification — PR list deduped from items
-- ✅ build_po_site_notification — Expected_Delivery surfaced
-- ✅ build_po_site_notification — body has top 5 lines + 'and N more'
-- ✅ build_po_site_notification body has NO Vendor_Name
-- ✅ build_po_site_notification body has NO financial figure
-- ✅ build_po_site_notification — WhatsApp body mirrors in-app
-- ✅ create_po_manual queues notification to site HOD
-- ✅ create_po_manual queues notification to site SK
-- ✅ create_po_manual notifications NEVER contain Vendor_Name
-- ✅ create_po_manual with Site_ID=NULL queues NO notification
+- ✅ PO_VENDOR_MASK_FIELDS has 17 entries (0 ms)
+- ✅ get_po_detail() default returns commercial fields populated (6 ms)
+- ✅ get_po_detail(hide_vendor=True) blanks all 17 fields (6 ms)
+- ✅ get_po_detail(hide_vendor=True) preserves PO_Type + PO_Date (6 ms)
+- ✅ get_po_detail combines hide_prices + hide_vendor (6 ms)
+- ✅ build_po_site_notification — title + site_id correct (6 ms)
+- ✅ build_po_site_notification — PR list deduped from items (6 ms)
+- ✅ build_po_site_notification — Expected_Delivery surfaced (6 ms)
+- ✅ build_po_site_notification — body has top 5 lines + 'and N more' (6 ms)
+- ✅ build_po_site_notification body has NO Vendor_Name (6 ms)
+- ✅ build_po_site_notification body has NO financial figure (6 ms)
+- ✅ build_po_site_notification — WhatsApp body mirrors in-app (6 ms)
+- ✅ create_po_manual queues notification to site HOD (7 ms)
+- ✅ create_po_manual queues notification to site SK (6 ms)
+- ✅ create_po_manual notifications NEVER contain Vendor_Name (4 ms)
+- ✅ create_po_manual with Site_ID=NULL queues NO notification (2 ms)
 
 ### Phase 7E — 16/16
-- ✅ ix_form_drafts_expires index exists
-- ✅ ix_form_drafts_user index exists
-- ✅ UNIQUE(username, form_id) enforced
-- ✅ upsert_form_draft writes a new row
-- ✅ upsert_form_draft updates on duplicate (user, form)
-- ✅ upsert_form_draft default TTL is 7 days
-- ✅ upsert_form_draft honours custom ttl_days
-- ✅ upsert_form_draft rejects non-JSON payload
-- ✅ get_form_draft returns roundtripped payload
-- ✅ get_form_draft returns None for missing entry
-- ✅ get_form_draft hides expired entries
-- ✅ delete_form_draft removes row + returns True
-- ✅ delete_form_draft on missing entry returns False
-- ✅ prune_expired_form_drafts deletes expired rows only
-- ✅ list_user_drafts returns multi-form DataFrame
-- ✅ requirements.txt declares streamlit-local-storage
+- ✅ ix_form_drafts_expires index exists (1 ms)
+- ✅ ix_form_drafts_user index exists (0 ms)
+- ✅ UNIQUE(username, form_id) enforced (1 ms)
+- ✅ upsert_form_draft writes a new row (1 ms)
+- ✅ upsert_form_draft updates on duplicate (user, form) (3 ms)
+- ✅ upsert_form_draft default TTL is 7 days (2 ms)
+- ✅ upsert_form_draft honours custom ttl_days (2 ms)
+- ✅ upsert_form_draft rejects non-JSON payload (0 ms)
+- ✅ get_form_draft returns roundtripped payload (2 ms)
+- ✅ get_form_draft returns None for missing entry (0 ms)
+- ✅ get_form_draft hides expired entries (2 ms)
+- ✅ delete_form_draft removes row + returns True (2 ms)
+- ✅ delete_form_draft on missing entry returns False (0 ms)
+- ✅ prune_expired_form_drafts deletes expired rows only (4 ms)
+- ✅ list_user_drafts returns multi-form DataFrame (3 ms)
+- ✅ requirements.txt declares streamlit-local-storage (0 ms)
 
 ### Phase 7F — 12/12
-- ✅ ROLE_MANUAL_RECIPES covers all 6 production roles
-- ✅ slice_markdown_for_role('store_keeper') keeps SK chapter
-- ✅ slice_markdown_for_role('store_keeper') drops Logistics
-- ✅ slice_markdown_for_role('supervisor') keeps Supervisor chapter
-- ✅ slice_markdown_for_role('hod') keeps Reports chapter
-- ✅ slice_markdown_for_role('admin') returns full markdown
-- ✅ parse_markdown recognises image syntax
-- ✅ render_image handles missing file (placeholder)
-- ✅ build_role_manual_pdf returns valid PDF bytes
-- ✅ build_role_manual_pdf('admin') == build_manual_pdf
-- ✅ build_role_manual_pdf(unknown role) falls back to master
-- ✅ docs/screenshots/ has the seed placeholder PNGs
+- ✅ ROLE_MANUAL_RECIPES covers all 6 production roles (0 ms)
+- ✅ slice_markdown_for_role('store_keeper') keeps SK chapter (0 ms)
+- ✅ slice_markdown_for_role('store_keeper') drops Logistics (0 ms)
+- ✅ slice_markdown_for_role('supervisor') keeps Supervisor chapter (0 ms)
+- ✅ slice_markdown_for_role('hod') keeps Reports chapter (0 ms)
+- ✅ slice_markdown_for_role('admin') returns full markdown (0 ms)
+- ✅ parse_markdown recognises image syntax (0 ms)
+- ✅ render_image handles missing file (placeholder) (1 ms)
+- ✅ build_role_manual_pdf returns valid PDF bytes (383 ms)
+- ✅ build_role_manual_pdf('admin') == build_manual_pdf (2986 ms)
+- ✅ build_role_manual_pdf(unknown role) falls back to master (1489 ms)
+- ✅ docs/screenshots/ has the seed placeholder PNGs (0 ms)
 
 ### Phase 8A — 10/10
-- ✅ app_settings seeds locate_anything_enabled=0
-- ✅ app_settings seeds locate_anything_sidecar_url
-- ✅ client.is_enabled() returns False when gate is off
-- ✅ client.detect() short-circuits to [] when gate is off
-- ✅ client.detect() parses mock 200 response into list
-- ✅ client.detect() returns [] on 503 + trips breaker
-- ✅ client circuit breaker opens after 3 failures
-- ✅ client module imports without torch / transformers
-- ✅ ai/locate_anything/requirements.txt exists
-- ✅ scripts/download_model.sh exists and is executable
+- ✅ app_settings seeds locate_anything_enabled=0 (1 ms)
+- ✅ app_settings seeds locate_anything_sidecar_url (1 ms)
+- ✅ client.is_enabled() returns False when gate is off (6 ms)
+- ✅ client.detect() short-circuits to [] when gate is off (1 ms)
+- ✅ client.detect() parses mock 200 response into list (5 ms)
+- ✅ client.detect() returns [] on 503 + trips breaker (5 ms)
+- ✅ client circuit breaker opens after 3 failures (12 ms)
+- ✅ client module imports without torch / transformers (0 ms)
+- ✅ ai/locate_anything/requirements.txt exists (0 ms)
+- ✅ scripts/download_model.sh exists and is executable (0 ms)
 
 ### Phase 8B — 5/5
-- ✅ bundle_locate_anything_weights.sh exists + executable + bash-clean
-- ✅ install_locate_anything_weights.sh exists + executable + bash-clean
-- ✅ run_locate_anything.sh exists + executable + bash-clean
-- ✅ com.gi.locate-anything.plist.tmpl parses as valid plist
-- ✅ install.sh recognises --with-locate-anything flag
+- ✅ bundle_locate_anything_weights.sh exists + executable + bash-clean (7 ms)
+- ✅ install_locate_anything_weights.sh exists + executable + bash-clean (4 ms)
+- ✅ run_locate_anything.sh exists + executable + bash-clean (4 ms)
+- ✅ com.gi.locate-anything.plist.tmpl parses as valid plist (1 ms)
+- ✅ install.sh recognises --with-locate-anything flag (0 ms)
 
 ### Phase 8C — 11/11
-- ✅ should_invoke_tier3([]) → True (empty)
-- ✅ should_invoke_tier3([conf=0.25]) → True (manual band)
-- ✅ should_invoke_tier3([conf=0.50]) → False (candidates band)
-- ✅ should_invoke_tier3([conf=0.95]) → False (auto band)
-- ✅ tier3_to_candidates reshapes LocateAnything output
-- ✅ tier3_to_candidates filters items below noise floor
-- ✅ tier3_to_candidates caps at MAX_CANDIDATES (3)
-- ✅ tier3_to_candidates tags source='tier3_locate_anything'
-- ✅ integration: YOLO empty + mock sidecar → tier3 candidates ready
-- ✅ gate guard: toggle OFF + YOLO empty → sidecar HTTP NOT called
-- ✅ gate guard: YOLO confident → sidecar HTTP NOT called
+- ✅ should_invoke_tier3([]) → True (empty) (0 ms)
+- ✅ should_invoke_tier3([conf=0.25]) → True (manual band) (0 ms)
+- ✅ should_invoke_tier3([conf=0.50]) → False (candidates band) (0 ms)
+- ✅ should_invoke_tier3([conf=0.95]) → False (auto band) (0 ms)
+- ✅ tier3_to_candidates reshapes LocateAnything output (0 ms)
+- ✅ tier3_to_candidates filters items below noise floor (0 ms)
+- ✅ tier3_to_candidates caps at MAX_CANDIDATES (3) (0 ms)
+- ✅ tier3_to_candidates tags source='tier3_locate_anything' (0 ms)
+- ✅ integration: YOLO empty + mock sidecar → tier3 candidates ready (0 ms)
+- ✅ gate guard: toggle OFF + YOLO empty → sidecar HTTP NOT called (2 ms)
+- ✅ gate guard: YOLO confident → sidecar HTTP NOT called (0 ms)
 
 ### Phase 8D — 2/2
-- ✅ _render_locate_anything_panel doesn't crash with sidecar down
-- ✅ panel toggle ON path stores '1' in app_settings
+- ✅ _render_locate_anything_panel doesn't crash with sidecar down (0 ms)
+- ✅ panel toggle ON path stores '1' in app_settings (4 ms)
 
 ### Phase 8E — 8/8
-- ✅ locate_anything_calls table exists with required columns
-- ✅ ix_la_calls_called_at index present
-- ✅ log_locate_anything_call writes a row + returns rowid
-- ✅ mark_locate_anything_outcome updates accepted field
-- ✅ client.detect happy path writes telemetry row
-- ✅ client.detect failure path writes telemetry with error
-- ✅ client.detect gate-off writes NO telemetry row
-- ✅ get_locate_anything_summary computes rates safely
+- ✅ locate_anything_calls table exists with required columns (1 ms)
+- ✅ ix_la_calls_called_at index present (1 ms)
+- ✅ log_locate_anything_call writes a row + returns rowid (2 ms)
+- ✅ mark_locate_anything_outcome updates accepted field (5 ms)
+- ✅ client.detect happy path writes telemetry row (6 ms)
+- ✅ client.detect failure path writes telemetry with error (5 ms)
+- ✅ client.detect gate-off writes NO telemetry row (3 ms)
+- ✅ get_locate_anything_summary computes rates safely (7 ms)
 
 ### Procurement — 7/7
-- ✅ RL/BL strict-separation classifier
-- ✅ Warehouses CRUD round-trip
-- ✅ Vendors CRUD round-trip
-- ✅ App notifications inbox (user + role broadcast)
-- ✅ WhatsApp per-event gate honours config toggles
-- ✅ users CHECK accepts logistics + warehouse_user
-- ✅ po_items RL/BL strict-separation persists
+- ✅ RL/BL strict-separation classifier (0 ms)
+- ✅ Warehouses CRUD round-trip (1 ms)
+- ✅ Vendors CRUD round-trip (1 ms)
+- ✅ App notifications inbox (user + role broadcast) (2 ms)
+- ✅ WhatsApp per-event gate honours config toggles (1 ms)
+- ✅ users CHECK accepts logistics + warehouse_user (1 ms)
+- ✅ po_items RL/BL strict-separation persists (1 ms)
 
 ### QR — 1/1
-- ✅ Submit → approve / reject
+- ✅ Submit → approve / reject (9 ms)
 
 ### QR Badges — 2/2
-- ✅ encode_id_to_png produces a valid PNG
-- ✅ encode → decode roundtrip preserves ID_Number
+- ✅ encode_id_to_png produces a valid PNG (20 ms)
+- ✅ encode → decode roundtrip preserves ID_Number (3 ms)
 
 ### RBAC — 24/24
-- ✅ store_keeper allow 📝 Entry Log
-- ✅ hod block 📝 Entry Log
-- ✅ admin block 📝 Entry Log
-- ✅ supervisor block 📝 Entry Log
-- ✅ store_keeper block 📦 Live Dashboard
-- ✅ supervisor allow 📦 Live Dashboard
-- ✅ hod allow 📦 Live Dashboard
-- ✅ admin allow 📦 Live Dashboard
-- ✅ admin allow 🛡️ Admin Portal
-- ✅ hod block 🛡️ Admin Portal
-- ✅ hod allow 📋 HOD Portal
-- ✅ supervisor block 📋 HOD Portal
-- ✅ supervisor allow 📊 Reports
-- ✅ store_keeper block 📊 Reports
-- ✅ logistics allow 🚚 Logistics Portal
-- ✅ admin allow 🚚 Logistics Portal
-- ✅ hod block 🚚 Logistics Portal
-- ✅ warehouse_user block 🚚 Logistics Portal
-- ✅ warehouse_user allow 🏭 Warehouse Portal
-- ✅ admin allow 🏭 Warehouse Portal
-- ✅ logistics block 🏭 Warehouse Portal
-- ✅ hod block 🏭 Warehouse Portal
-- ✅ store_keeper block 🚚 Logistics Portal
-- ✅ store_keeper block 🏭 Warehouse Portal
+- ✅ store_keeper allow 📝 Entry Log (0 ms)
+- ✅ hod block 📝 Entry Log (0 ms)
+- ✅ admin block 📝 Entry Log (0 ms)
+- ✅ supervisor block 📝 Entry Log (0 ms)
+- ✅ store_keeper block 📦 Live Dashboard (0 ms)
+- ✅ supervisor allow 📦 Live Dashboard (0 ms)
+- ✅ hod allow 📦 Live Dashboard (0 ms)
+- ✅ admin allow 📦 Live Dashboard (0 ms)
+- ✅ admin allow 🛡️ Admin Portal (0 ms)
+- ✅ hod block 🛡️ Admin Portal (0 ms)
+- ✅ hod allow 📋 HOD Portal (0 ms)
+- ✅ supervisor block 📋 HOD Portal (0 ms)
+- ✅ supervisor allow 📊 Reports (0 ms)
+- ✅ store_keeper block 📊 Reports (0 ms)
+- ✅ logistics allow 🚚 Logistics Portal (0 ms)
+- ✅ admin allow 🚚 Logistics Portal (0 ms)
+- ✅ hod block 🚚 Logistics Portal (0 ms)
+- ✅ warehouse_user block 🚚 Logistics Portal (0 ms)
+- ✅ warehouse_user allow 🏭 Warehouse Portal (0 ms)
+- ✅ admin allow 🏭 Warehouse Portal (0 ms)
+- ✅ logistics block 🏭 Warehouse Portal (0 ms)
+- ✅ hod block 🏭 Warehouse Portal (0 ms)
+- ✅ store_keeper block 🚚 Logistics Portal (0 ms)
+- ✅ store_keeper block 🏭 Warehouse Portal (0 ms)
 
 ### Receipts — 1/1
-- ✅ Stage → commit_pending_receipts
+- ✅ Stage → commit_pending_receipts (2 ms)
 
 ### Reminders — 1/1
-- ✅ T-2 / T-1 / T-0 sweep is idempotent
+- ✅ T-2 / T-1 / T-0 sweep is idempotent (13 ms)
 
 ### Reports — 3/3
-- ✅ Every report_* runs without raising
-- ✅ Daily Receipts has Material_Code column
-- ✅ Phase 5 procurement reports run cleanly
+- ✅ Every report_* runs without raising (9 ms)
+- ✅ Daily Receipts has Material_Code column (1 ms)
+- ✅ Phase 5 procurement reports run cleanly (2 ms)
 
 ### Returnable — 1/1
-- ✅ Tool loan → mark returned
+- ✅ Tool loan → mark returned (5 ms)
 
 ### Returnable Reminders — 4/4
-- ✅ sweep fires once per offset across all four windows
-- ✅ sweep is idempotent within an hour
-- ✅ phone resolution prefers CV → manual → audit
-- ✅ T+24h escalates to supervisor (NOT HOD)
+- ✅ sweep fires once per offset across all four windows (5 ms)
+- ✅ sweep is idempotent within an hour (2 ms)
+- ✅ phone resolution prefers CV → manual → audit (3 ms)
+- ✅ T+24h escalates to supervisor (NOT HOD) (2 ms)
 
 ### Returns — 2/2
-- ✅ Submit → approve → ledger row
-- ✅ Reject removes from pending list
+- ✅ Submit → approve → ledger row (10 ms)
+- ✅ Reject removes from pending list (3 ms)
 
 ### Round 12 — 10/10
-- ✅ Requested_By column on pending_issues + consumption
-- ✅ line_status column on supervisor_material_request_items
-- ✅ new SMR lines default to line_status='active'
-- ✅ withdraw_smr_line_at_staging flips line_status
-- ✅ commit_eod(hod_username=…) writes 'Approved By'
-- ✅ commit_eod flips SMR line_status='committed'
-- ✅ commit_eod carries Requested_By into consumption
-- ✅ HIDDEN_FORM_COLS covers Technician + auto-fields
-- ✅ list_smr_history honours filters + decided-only default
-- ✅ E2E: sup → SK approve → SK submit → HOD commit
+- ✅ Requested_By column on pending_issues + consumption (0 ms)
+- ✅ line_status column on supervisor_material_request_items (0 ms)
+- ✅ new SMR lines default to line_status='active' (6 ms)
+- ✅ withdraw_smr_line_at_staging flips line_status (12 ms)
+- ✅ commit_eod(hod_username=…) writes 'Approved By' (12 ms)
+- ✅ commit_eod flips SMR line_status='committed' (13 ms)
+- ✅ commit_eod carries Requested_By into consumption (12 ms)
+- ✅ HIDDEN_FORM_COLS covers Technician + auto-fields (0 ms)
+- ✅ list_smr_history honours filters + decided-only default (27 ms)
+- ✅ E2E: sup → SK approve → SK submit → HOD commit (12 ms)
 
 ### Round 13 — 10/10
-- ✅ commit_eod commits 'approved' rows
-- ✅ commit_eod commits 'flagged' rows
-- ✅ commit_eod skips 'rejected' rows
-- ✅ get_pending_issues_for_site returns approved + flagged
-- ✅ hod_reject_pending_issue moves to archive
-- ✅ hod_unapprove_pending_issue flips approved → pending_hod
-- ✅ bogus 'Approved' column dropped from consumption
-- ✅ rejected_issues_archive schema present
-- ✅ CONSUMPTION_EXPORT_COLS contains canonical set
-- ✅ SMR reject at HOD flips line_status='rejected_at_hod'
+- ✅ commit_eod commits 'approved' rows (4 ms)
+- ✅ commit_eod commits 'flagged' rows (5 ms)
+- ✅ commit_eod skips 'rejected' rows (4 ms)
+- ✅ get_pending_issues_for_site returns approved + flagged (7 ms)
+- ✅ hod_reject_pending_issue moves to archive (5 ms)
+- ✅ hod_unapprove_pending_issue flips approved → pending_hod (4 ms)
+- ✅ bogus 'Approved' column dropped from consumption (0 ms)
+- ✅ rejected_issues_archive schema present (0 ms)
+- ✅ CONSUMPTION_EXPORT_COLS contains canonical set (0 ms)
+- ✅ SMR reject at HOD flips line_status='rejected_at_hod' (12 ms)
 
 ### Round 14 — 5/5
-- ✅ prep_image_for_vision caps long edge ≤ 1600 px
-- ✅ prep_image_for_vision converts to RGB JPEG
-- ✅ prep_image_for_vision shrinks byte size
-- ✅ prep_image_for_vision honours EXIF orientation
-- ✅ prep_image_for_vision raises ImagePrepError on bad bytes
+- ✅ prep_image_for_vision caps long edge ≤ 1600 px (104 ms)
+- ✅ prep_image_for_vision converts to RGB JPEG (2 ms)
+- ✅ prep_image_for_vision shrinks byte size (95 ms)
+- ✅ prep_image_for_vision honours EXIF orientation (2 ms)
+- ✅ prep_image_for_vision raises ImagePrepError on bad bytes (20 ms)
 
 ### Round 15 — 15/15
-- ✅ inventory_site_overrides schema + UNIQUE
-- ✅ next_sap_code increments from max numeric tail
-- ✅ next_temp_material_code persists + increments
-- ✅ bulk_upsert_materials inserts + auto-codes blanks
-- ✅ bulk_upsert_materials rejects duplicates
-- ✅ bulk_upsert_materials overwrite path updates in place
-- ✅ set/get_site_min_qty COALESCEs override over default
-- ✅ inventory.Material_Code UNIQUE index enforced
-- ✅ process_po_pdf extracts 3 items from sample PDF
-- ✅ process_po_pdf synthetic two-line layout fixture
-- ✅ list_pending_hod_dns falls back via PO/PR Site_ID
-- ✅ request_reschedule routes to warehouse post-receive
-- ✅ request_reschedule keeps logistics for PO-level
-- ✅ CONSUMPTION_EXPORT_COLS unchanged
-- ✅ _ALWAYS_KEEP includes UOM for PR report
+- ✅ inventory_site_overrides schema + UNIQUE (1 ms)
+- ✅ next_sap_code increments from max numeric tail (3 ms)
+- ✅ next_temp_material_code persists + increments (2 ms)
+- ✅ bulk_upsert_materials inserts + auto-codes blanks (3 ms)
+- ✅ bulk_upsert_materials rejects duplicates (3 ms)
+- ✅ bulk_upsert_materials overwrite path updates in place (5 ms)
+- ✅ set/get_site_min_qty COALESCEs override over default (8 ms)
+- ✅ inventory.Material_Code UNIQUE index enforced (2 ms)
+- ✅ process_po_pdf extracts 3 items from sample PDF (18 ms)
+- ✅ process_po_pdf synthetic two-line layout fixture (0 ms)
+- ✅ list_pending_hod_dns falls back via PO/PR Site_ID (3 ms)
+- ✅ request_reschedule routes to warehouse post-receive (3 ms)
+- ✅ request_reschedule keeps logistics for PO-level (2 ms)
+- ✅ CONSUMPTION_EXPORT_COLS unchanged (0 ms)
+- ✅ _ALWAYS_KEEP includes UOM for PR report (0 ms)
 
 ### Round 16 — 5/5
-- ✅ submit_dn_for_logistics writes status='pending_hod'
-- ✅ submit_dn_for_logistics fans out HOD + Logistics notifications
-- ✅ legacy pending_logistics DNs migrate to pending_hod
-- ✅ get_pr_with_po_numbers comma-joins per PR line
-- ✅ generate_pr_pdf renders new PO # + UoM columns
+- ✅ submit_dn_for_logistics writes status='pending_hod' (3 ms)
+- ✅ submit_dn_for_logistics fans out HOD + Logistics notifications (3 ms)
+- ✅ legacy pending_logistics DNs migrate to pending_hod (8 ms)
+- ✅ get_pr_with_po_numbers comma-joins per PR line (2 ms)
+- ✅ generate_pr_pdf renders new PO # + UoM columns (4 ms)
 
 ### Round 17 — 13/13
-- ✅ sme_equipment table + key columns present
-- ✅ sme_recipe table + key columns present
-- ✅ sme_sqm_progress table + composite PK
-- ✅ system_settings seeded with sme_location + sme_equipment_type for HQ
-- ✅ init_db idempotent for SME tables (run twice, no errors)
-- ✅ get_on_order_by_material: Qty=10 Delivered=3 Returned=1 → 6
-- ✅ get_on_order_by_material: closed POs ignored
-- ✅ get_on_order_by_material: site filter scopes correctly
-- ✅ get_sme_inventory_view bridges ledger → engine schema
-- ✅ add_sme_setting / delete_sme_setting round-trip
-- ✅ upsert_sme_sqm_progress preserves Done_SQM on re-load
-- ✅ Material Estimator RBAC: hod + admin only
-- ✅ Material Estimator portal listed in PAGE_ACCESS
+- ✅ sme_equipment table + key columns present (32 ms)
+- ✅ sme_recipe table + key columns present (30 ms)
+- ✅ sme_sqm_progress table + composite PK (31 ms)
+- ✅ system_settings seeded with sme_location + sme_equipment_type for HQ (31 ms)
+- ✅ init_db idempotent for SME tables (run twice, no errors) (34 ms)
+- ✅ get_on_order_by_material: Qty=10 Delivered=3 Returned=1 → 6 (32 ms)
+- ✅ get_on_order_by_material: closed POs ignored (33 ms)
+- ✅ get_on_order_by_material: site filter scopes correctly (32 ms)
+- ✅ get_sme_inventory_view bridges ledger → engine schema (33 ms)
+- ✅ add_sme_setting / delete_sme_setting round-trip (31 ms)
+- ✅ upsert_sme_sqm_progress preserves Done_SQM on re-load (30 ms)
+- ✅ Material Estimator RBAC: hod + admin only (0 ms)
+- ✅ Material Estimator portal listed in PAGE_ACCESS (0 ms)
 
 ### Round 18 — 13/13
-- ✅ sme_sqm_progress.Done_SQM_staged column present
-- ✅ sme_consumption_log table + status FSM
-- ✅ v_inventory_with_sme exposes is_sme flag
-- ✅ is_sme_sap / is_sme_material dispatch fork
-- ✅ get_sap_for_material resolves the 1:1 mapping
-- ✅ stage_sme_consumption_batch aggregates per Material_Code
-- ✅ stage_sme_consumption_batch rejects missing extras
-- ✅ stage_sme_consumption_batch increments Done_SQM_staged
-- ✅ commit_eod_with_sme_sync shifts staged→committed
-- ✅ commit_eod itself is unchanged (regression)
-- ✅ hod_reject_pending_issue_with_sme_sync decrements staged
-- ✅ SME consumption form helper present in daily_issue_log
-- ✅ hod_portal wires the SME-sync EOD + reject wrappers
+- ✅ sme_sqm_progress.Done_SQM_staged column present (32 ms)
+- ✅ sme_consumption_log table + status FSM (31 ms)
+- ✅ v_inventory_with_sme exposes is_sme flag (30 ms)
+- ✅ is_sme_sap / is_sme_material dispatch fork (31 ms)
+- ✅ get_sap_for_material resolves the 1:1 mapping (31 ms)
+- ✅ stage_sme_consumption_batch aggregates per Material_Code (34 ms)
+- ✅ stage_sme_consumption_batch rejects missing extras (31 ms)
+- ✅ stage_sme_consumption_batch increments Done_SQM_staged (33 ms)
+- ✅ commit_eod_with_sme_sync shifts staged→committed (37 ms)
+- ✅ commit_eod itself is unchanged (regression) (33 ms)
+- ✅ hod_reject_pending_issue_with_sme_sync decrements staged (33 ms)
+- ✅ SME consumption form helper present in daily_issue_log (0 ms)
+- ✅ hod_portal wires the SME-sync EOD + reject wrappers (0 ms)
 
 ### Round 20 — 11/11
-- ✅ material_estimator_portal.py exists + exports page_material_estimator
-- ✅ portal module loads cleanly (no module-level set_page_config)
-- ✅ SME <style> CSS block preserved
-- ✅ _apply_theme_attr preserved (dark/light mode toggle)
-- ✅ Inventory tab body deleted (R18 owns consumption flow)
-- ✅ tab declaration unpacks 8 tabs (not 9)
-- ✅ _show_login + auth gate deleted
-- ✅ monkey-patch SCOPED inside page_material_estimator
-- ✅ locations/types CRUD routes through add_sme_setting / delete_sme_setting
-- ✅ compatibility VIEWS created in init_db (locations/types/consumption_log/equipment/recipe/sqm_progress)
-- ✅ ERP ledger schemas unchanged (regression — R18 routing rule)
+- ✅ material_estimator_portal.py exists + exports page_material_estimator (0 ms)
+- ✅ portal module loads cleanly (no module-level set_page_config) (5 ms)
+- ✅ SME <style> CSS block preserved (0 ms)
+- ✅ _apply_theme_attr preserved (dark/light mode toggle) (0 ms)
+- ✅ Inventory tab body deleted (R18 owns consumption flow) (1 ms)
+- ✅ tab declaration unpacks 8 tabs (not 9) (0 ms)
+- ✅ _show_login + auth gate deleted (0 ms)
+- ✅ monkey-patch SCOPED inside page_material_estimator (2 ms)
+- ✅ locations/types CRUD routes through add_sme_setting / delete_sme_setting (8 ms)
+- ✅ compatibility VIEWS created in init_db (locations/types/consumption_log/equipment/recipe/sqm_progress) (33 ms)
+- ✅ ERP ledger schemas unchanged (regression — R18 routing rule) (32 ms)
 
 ### Round 20.1 — 4/4
-- ✅ no string-interior 8-space indent (markdown-as-code-block bug)
-- ✅ cascade_allocate returns DataFrame with expected columns when empty
-- ✅ Stock-Only Materials filter restricted to SME-tracked items
-- ✅ load_all returns shape-preserving empty frames
+- ✅ no string-interior 8-space indent (markdown-as-code-block bug) (54 ms)
+- ✅ cascade_allocate returns DataFrame with expected columns when empty (0 ms)
+- ✅ Stock-Only Materials filter restricted to SME-tracked items (0 ms)
+- ✅ load_all returns shape-preserving empty frames (0 ms)
 
 ### Round 20.5 — 11/11
-- ✅ sme_equipment extended with 15 legacy Excel columns
-- ✅ sme_recipe extended with 8 legacy Excel columns
-- ✅ sme_inventory_seed table exists with correct schema
-- ✅ sme_materials_view computes Available_Qty from seed + ledger
-- ✅ equipment VIEW exposes Lining_System / Material Spec. / Lining_Area/location aliases
-- ✅ recipe VIEW serves real Lining_Type (not empty literal)
-- ✅ 9 SME CRUD helpers exist in database.py
-- ✅ helpers translate UI form keys to PascalCase columns
-- ✅ Tab 8 has no raw view-write SQL remaining
-- ✅ TABLE_MAP points Materials_DetailsAvailable_Qty → sme_materials_view
-- ✅ Equipment Smart Entry calls D.insert_sme_equipment + D.upsert_sme_sqm_progress
+- ✅ sme_equipment extended with 15 legacy Excel columns (31 ms)
+- ✅ sme_recipe extended with 8 legacy Excel columns (30 ms)
+- ✅ sme_inventory_seed table exists with correct schema (30 ms)
+- ✅ sme_materials_view computes Available_Qty from seed + ledger (32 ms)
+- ✅ equipment VIEW exposes Lining_System / Material Spec. / Lining_Area/location aliases (33 ms)
+- ✅ recipe VIEW serves real Lining_Type (not empty literal) (31 ms)
+- ✅ 9 SME CRUD helpers exist in database.py (0 ms)
+- ✅ helpers translate UI form keys to PascalCase columns (30 ms)
+- ✅ Tab 8 has no raw view-write SQL remaining (1 ms)
+- ✅ TABLE_MAP points Materials_DetailsAvailable_Qty → sme_materials_view (0 ms)
+- ✅ Equipment Smart Entry calls D.insert_sme_equipment + D.upsert_sme_sqm_progress (0 ms)
 
 ### Round 20.5.1 — 2/2
-- ✅ Master Data read does not ORDER BY rowid on a VIEW
-- ✅ get_sme_inventory_view is seed-sourced (not ERP live stock)
+- ✅ Master Data read does not ORDER BY rowid on a VIEW (0 ms)
+- ✅ get_sme_inventory_view is seed-sourced (not ERP live stock) (32 ms)
 
 ### Round 20.5.2 — 3/3
-- ✅ no live import of the deleted material_estimator package
-- ✅ days_of_continuation_block vendored into daily_issue_log
-- ✅ Location Report reconciles stale loc_order vs eq_master
+- ✅ no live import of the deleted material_estimator package (4759 ms)
+- ✅ days_of_continuation_block vendored into daily_issue_log (1 ms)
+- ✅ Location Report reconciles stale loc_order vs eq_master (0 ms)
 
 ### Schema — 216/216
-- ✅ table · inventory
-- ✅ table · consumption
-- ✅ table · receipts
-- ✅ table · returns
-- ✅ table · pending_issues
-- ✅ table · pending_receipts
-- ✅ table · pending_returns
-- ✅ table · returnable_items
-- ✅ table · users
-- ✅ table · pending_users
-- ✅ table · pr_master
-- ✅ table · lots
-- ✅ table · stock_adjustments
-- ✅ table · system_settings
-- ✅ table · system_audit_log
-- ✅ table · app_settings
-- ✅ table · whatsapp_queue
-- ✅ table · bug_reports
-- ✅ table · report_schedules
-- ✅ table · report_archive
-- ✅ table · qr_approval_requests
-- ✅ table · entry_attachments
-- ✅ table · mtc_documents
-- ✅ table · warehouses
-- ✅ table · vendors
-- ✅ table · purchase_orders
-- ✅ table · po_items
-- ✅ table · po_shipment_schedule
-- ✅ table · po_assignments
-- ✅ table · delivery_notes
-- ✅ table · dn_items
-- ✅ table · po_returns
-- ✅ table · po_reschedule_requests
-- ✅ table · po_force_closures
-- ✅ table · app_notifications
-- ✅ table · delivery_reminders_sent
-- ✅ table · employees
-- ✅ table · tool_catalogue
-- ✅ table · cv_model_versions
-- ✅ table · supervisor_material_requests
-- ✅ table · supervisor_material_request_items
-- ✅ table · cross_site_views
-- ✅ table · form_drafts
-- ✅ column · inventory.SAP_Code
-- ✅ column · inventory.Material_Code
-- ✅ column · inventory.Equipment_Description
-- ✅ column · inventory.UOM
-- ✅ column · inventory.Minimum_Qty
-- ✅ column · inventory.Unit_Cost
-- ✅ column · inventory.Category
-- ✅ column · inventory.Opening_Stock
-- ✅ column · inventory.Site_ID
-- ✅ column · consumption.Source_Ref
-- ✅ column · receipts.Date
-- ✅ column · receipts.SAP_Code
-- ✅ column · receipts.Quantity
-- ✅ column · receipts.Supplier
-- ✅ column · receipts.Expiry_Date
-- ✅ column · receipts.PR_Number
-- ✅ column · receipts.Site_ID
-- ✅ column · receipts.Unit_Cost
-- ✅ column · receipts.DN_No
-- ✅ column · receipts.Lot_Number
-- ✅ column · receipts.DN_Number
-- ✅ column · receipts.Warehouse_ID
-- ✅ column · receipts.PO_Number_Source
-- ✅ column · returns.Date
-- ✅ column · returns.SAP_Code
-- ✅ column · returns.Quantity
-- ✅ column · returns.Reason
-- ✅ column · returns.Remarks
-- ✅ column · returns.Site_ID
-- ✅ column · pending_returns.SAP_Code
-- ✅ column · pending_returns.Quantity
-- ✅ column · pending_returns.Return_Reason
-- ✅ column · pending_returns.Return_DN_No
-- ✅ column · pending_returns.override_required
-- ✅ column · pending_returns.status
-- ✅ column · pending_returns.Material_Code
-- ✅ column · pending_returns.Equipment_Description
-- ✅ column · qr_approval_requests.SAP_Code
-- ✅ column · qr_approval_requests.Quantity
-- ✅ column · qr_approval_requests.requested_by
-- ✅ column · qr_approval_requests.status
-- ✅ column · qr_approval_requests.approved_by
-- ✅ column · entry_attachments.doc_type
-- ✅ column · entry_attachments.doc_number
-- ✅ column · entry_attachments.file_blob
-- ✅ column · entry_attachments.uploaded_by
-- ✅ column · entry_attachments.Site_ID
-- ✅ column · mtc_documents.SAP_Code
-- ✅ column · mtc_documents.mtc_number
-- ✅ column · mtc_documents.status
-- ✅ column · mtc_documents.pending_receipt_id
-- ✅ column · mtc_documents.Site_ID
-- ✅ column · users.username
-- ✅ column · users.role
-- ✅ column · users.Site_ID
-- ✅ column · users.Phone_Number
-- ✅ column · users.Warehouse_ID
-- ✅ column · warehouses.Warehouse_ID
-- ✅ column · warehouses.Name
-- ✅ column · warehouses.status
-- ✅ column · vendors.Vendor_Code
-- ✅ column · vendors.Vendor_Name
-- ✅ column · vendors.status
-- ✅ column · vendors.Default_Inco_Terms
-- ✅ column · vendors.Default_Payment_Terms
-- ✅ column · purchase_orders.PO_Number
-- ✅ column · purchase_orders.PR_Number
-- ✅ column · purchase_orders.Vendor_Code
-- ✅ column · purchase_orders.PO_Date
-- ✅ column · purchase_orders.Expected_Delivery
-- ✅ column · purchase_orders.status
-- ✅ column · purchase_orders.Inco_Terms
-- ✅ column · purchase_orders.Payment_Terms
-- ✅ column · purchase_orders.source
-- ✅ column · po_items.PO_Number
-- ✅ column · po_items.Material_Code
-- ✅ column · po_items.Qty
-- ✅ column · po_items.UOM
-- ✅ column · po_items.Unit_Price
-- ✅ column · po_items.Total_Price
-- ✅ column · po_items.rl_bl_family
-- ✅ column · po_items.Delivered_Qty
-- ✅ column · po_items.line_status
-- ✅ column · po_items.WBS_Number
-- ✅ column · po_items.Network
-- ✅ column · po_shipment_schedule.PO_Number
-- ✅ column · po_shipment_schedule.shipment_no
-- ✅ column · po_shipment_schedule.target_date
-- ✅ column · po_shipment_schedule.status
-- ✅ column · po_assignments.PO_Number
-- ✅ column · po_assignments.Warehouse_ID
-- ✅ column · po_assignments.assigned_by
-- ✅ column · po_assignments.Expected_Delivery
-- ✅ column · po_assignments.status
-- ✅ column · delivery_notes.DN_Number
-- ✅ column · delivery_notes.PO_Number
-- ✅ column · delivery_notes.Warehouse_ID
-- ✅ column · delivery_notes.Site_ID
-- ✅ column · delivery_notes.status
-- ✅ column · delivery_notes.rl_bl_family
-- ✅ column · dn_items.DN_Number
-- ✅ column · dn_items.po_item_id
-- ✅ column · dn_items.Qty
-- ✅ column · dn_items.UOM
-- ✅ column · dn_items.rl_bl_family
-- ✅ column · dn_items.status
-- ✅ column · po_returns.PO_Number
-- ✅ column · po_returns.Qty
-- ✅ column · po_returns.Reason
-- ✅ column · po_returns.raised_by_role
-- ✅ column · po_returns.status
-- ✅ column · po_reschedule_requests.PO_Number
-- ✅ column · po_reschedule_requests.requested_date
-- ✅ column · po_reschedule_requests.reason
-- ✅ column · po_reschedule_requests.requested_by_role
-- ✅ column · po_reschedule_requests.status
-- ✅ column · po_force_closures.target_type
-- ✅ column · po_force_closures.target_ref
-- ✅ column · po_force_closures.reason
-- ✅ column · po_force_closures.closed_by
-- ✅ column · app_notifications.event_key
-- ✅ column · app_notifications.title
-- ✅ column · app_notifications.severity
-- ✅ column · app_notifications.recipient_user
-- ✅ column · app_notifications.recipient_role
-- ✅ column · pr_master.WBS_Number
-- ✅ column · pr_master.Network
-- ✅ column · pr_master.Plant
-- ✅ column · pr_master.Delivery_Date
-- ✅ column · pr_master.logistics_status
-- ✅ column · returnable_items.cv_detected
-- ✅ column · returnable_items.cv_confidence
-- ✅ column · returnable_items.cv_employee_id
-- ✅ column · returnable_items.cv_tool_class
-- ✅ column · employees.Site_ID
-- ✅ column · supervisor_material_requests.request_no
-- ✅ column · supervisor_material_requests.Site_ID
-- ✅ column · supervisor_material_requests.Worker_ID
-- ✅ column · supervisor_material_requests.Worker_Name
-- ✅ column · supervisor_material_requests.Job_Tank_Place
-- ✅ column · supervisor_material_requests.Old_PPE_Returned
-- ✅ column · supervisor_material_requests.No_Return_Reason
-- ✅ column · supervisor_material_requests.requested_by
-- ✅ column · supervisor_material_requests.requested_at
-- ✅ column · supervisor_material_requests.status
-- ✅ column · supervisor_material_requests.sk_decided_by
-- ✅ column · supervisor_material_requests.sk_decided_at
-- ✅ column · supervisor_material_requests.sk_reject_reason
-- ✅ column · supervisor_material_requests.posted_pending_ids
-- ✅ column · supervisor_material_request_items.request_id
-- ✅ column · supervisor_material_request_items.SAP_Code
-- ✅ column · supervisor_material_request_items.Material_Code
-- ✅ column · supervisor_material_request_items.Equipment_Description
-- ✅ column · supervisor_material_request_items.UOM
-- ✅ column · supervisor_material_request_items.Requested_Qty
-- ✅ column · supervisor_material_request_items.Stock_At_Request
-- ✅ column · supervisor_material_request_items.Available_Flag
-- ✅ column · supervisor_material_request_items.SK_Adjusted_Qty
-- ✅ column · supervisor_material_request_items.Notes
-- ✅ column · pending_issues.Source_Ref
-- ✅ column · cross_site_views.viewer_username
-- ✅ column · cross_site_views.viewer_site_id
-- ✅ column · cross_site_views.target_site_id
-- ✅ column · cross_site_views.view_date
-- ✅ column · cross_site_views.first_seen_at
-- ✅ column · form_drafts.username
-- ✅ column · form_drafts.form_id
-- ✅ column · form_drafts.site_id
-- ✅ column · form_drafts.payload_json
-- ✅ column · form_drafts.created_at
-- ✅ column · form_drafts.updated_at
-- ✅ column · form_drafts.expires_at
-- ✅ init_db() is idempotent
+- ✅ table · inventory (1 ms)
+- ✅ table · consumption (1 ms)
+- ✅ table · receipts (1 ms)
+- ✅ table · returns (1 ms)
+- ✅ table · pending_issues (0 ms)
+- ✅ table · pending_receipts (0 ms)
+- ✅ table · pending_returns (0 ms)
+- ✅ table · returnable_items (0 ms)
+- ✅ table · users (0 ms)
+- ✅ table · pending_users (0 ms)
+- ✅ table · pr_master (0 ms)
+- ✅ table · lots (1 ms)
+- ✅ table · stock_adjustments (0 ms)
+- ✅ table · system_settings (0 ms)
+- ✅ table · system_audit_log (0 ms)
+- ✅ table · app_settings (0 ms)
+- ✅ table · whatsapp_queue (0 ms)
+- ✅ table · bug_reports (0 ms)
+- ✅ table · report_schedules (0 ms)
+- ✅ table · report_archive (0 ms)
+- ✅ table · qr_approval_requests (0 ms)
+- ✅ table · entry_attachments (0 ms)
+- ✅ table · mtc_documents (0 ms)
+- ✅ table · warehouses (0 ms)
+- ✅ table · vendors (0 ms)
+- ✅ table · purchase_orders (0 ms)
+- ✅ table · po_items (0 ms)
+- ✅ table · po_shipment_schedule (0 ms)
+- ✅ table · po_assignments (0 ms)
+- ✅ table · delivery_notes (0 ms)
+- ✅ table · dn_items (0 ms)
+- ✅ table · po_returns (0 ms)
+- ✅ table · po_reschedule_requests (0 ms)
+- ✅ table · po_force_closures (0 ms)
+- ✅ table · app_notifications (0 ms)
+- ✅ table · delivery_reminders_sent (0 ms)
+- ✅ table · employees (0 ms)
+- ✅ table · tool_catalogue (0 ms)
+- ✅ table · cv_model_versions (0 ms)
+- ✅ table · supervisor_material_requests (0 ms)
+- ✅ table · supervisor_material_request_items (1 ms)
+- ✅ table · cross_site_views (1 ms)
+- ✅ table · form_drafts (0 ms)
+- ✅ column · inventory.SAP_Code (0 ms)
+- ✅ column · inventory.Material_Code (1 ms)
+- ✅ column · inventory.Equipment_Description (0 ms)
+- ✅ column · inventory.UOM (1 ms)
+- ✅ column · inventory.Minimum_Qty (0 ms)
+- ✅ column · inventory.Unit_Cost (0 ms)
+- ✅ column · inventory.Category (1 ms)
+- ✅ column · inventory.Opening_Stock (0 ms)
+- ✅ column · inventory.Site_ID (0 ms)
+- ✅ column · consumption.Source_Ref (0 ms)
+- ✅ column · receipts.Date (0 ms)
+- ✅ column · receipts.SAP_Code (0 ms)
+- ✅ column · receipts.Quantity (0 ms)
+- ✅ column · receipts.Supplier (0 ms)
+- ✅ column · receipts.Expiry_Date (0 ms)
+- ✅ column · receipts.PR_Number (0 ms)
+- ✅ column · receipts.Site_ID (0 ms)
+- ✅ column · receipts.Unit_Cost (0 ms)
+- ✅ column · receipts.DN_No (0 ms)
+- ✅ column · receipts.Lot_Number (0 ms)
+- ✅ column · receipts.DN_Number (1 ms)
+- ✅ column · receipts.Warehouse_ID (0 ms)
+- ✅ column · receipts.PO_Number_Source (0 ms)
+- ✅ column · returns.Date (0 ms)
+- ✅ column · returns.SAP_Code (0 ms)
+- ✅ column · returns.Quantity (0 ms)
+- ✅ column · returns.Reason (0 ms)
+- ✅ column · returns.Remarks (0 ms)
+- ✅ column · returns.Site_ID (0 ms)
+- ✅ column · pending_returns.SAP_Code (1 ms)
+- ✅ column · pending_returns.Quantity (0 ms)
+- ✅ column · pending_returns.Return_Reason (0 ms)
+- ✅ column · pending_returns.Return_DN_No (0 ms)
+- ✅ column · pending_returns.override_required (0 ms)
+- ✅ column · pending_returns.status (0 ms)
+- ✅ column · pending_returns.Material_Code (0 ms)
+- ✅ column · pending_returns.Equipment_Description (0 ms)
+- ✅ column · qr_approval_requests.SAP_Code (0 ms)
+- ✅ column · qr_approval_requests.Quantity (1 ms)
+- ✅ column · qr_approval_requests.requested_by (0 ms)
+- ✅ column · qr_approval_requests.status (0 ms)
+- ✅ column · qr_approval_requests.approved_by (0 ms)
+- ✅ column · entry_attachments.doc_type (0 ms)
+- ✅ column · entry_attachments.doc_number (0 ms)
+- ✅ column · entry_attachments.file_blob (0 ms)
+- ✅ column · entry_attachments.uploaded_by (0 ms)
+- ✅ column · entry_attachments.Site_ID (0 ms)
+- ✅ column · mtc_documents.SAP_Code (0 ms)
+- ✅ column · mtc_documents.mtc_number (0 ms)
+- ✅ column · mtc_documents.status (0 ms)
+- ✅ column · mtc_documents.pending_receipt_id (0 ms)
+- ✅ column · mtc_documents.Site_ID (0 ms)
+- ✅ column · users.username (0 ms)
+- ✅ column · users.role (0 ms)
+- ✅ column · users.Site_ID (0 ms)
+- ✅ column · users.Phone_Number (0 ms)
+- ✅ column · users.Warehouse_ID (1 ms)
+- ✅ column · warehouses.Warehouse_ID (0 ms)
+- ✅ column · warehouses.Name (0 ms)
+- ✅ column · warehouses.status (0 ms)
+- ✅ column · vendors.Vendor_Code (0 ms)
+- ✅ column · vendors.Vendor_Name (0 ms)
+- ✅ column · vendors.status (0 ms)
+- ✅ column · vendors.Default_Inco_Terms (0 ms)
+- ✅ column · vendors.Default_Payment_Terms (0 ms)
+- ✅ column · purchase_orders.PO_Number (0 ms)
+- ✅ column · purchase_orders.PR_Number (0 ms)
+- ✅ column · purchase_orders.Vendor_Code (0 ms)
+- ✅ column · purchase_orders.PO_Date (0 ms)
+- ✅ column · purchase_orders.Expected_Delivery (0 ms)
+- ✅ column · purchase_orders.status (0 ms)
+- ✅ column · purchase_orders.Inco_Terms (1 ms)
+- ✅ column · purchase_orders.Payment_Terms (0 ms)
+- ✅ column · purchase_orders.source (0 ms)
+- ✅ column · po_items.PO_Number (1 ms)
+- ✅ column · po_items.Material_Code (1 ms)
+- ✅ column · po_items.Qty (0 ms)
+- ✅ column · po_items.UOM (0 ms)
+- ✅ column · po_items.Unit_Price (0 ms)
+- ✅ column · po_items.Total_Price (0 ms)
+- ✅ column · po_items.rl_bl_family (0 ms)
+- ✅ column · po_items.Delivered_Qty (0 ms)
+- ✅ column · po_items.line_status (0 ms)
+- ✅ column · po_items.WBS_Number (0 ms)
+- ✅ column · po_items.Network (0 ms)
+- ✅ column · po_shipment_schedule.PO_Number (0 ms)
+- ✅ column · po_shipment_schedule.shipment_no (0 ms)
+- ✅ column · po_shipment_schedule.target_date (0 ms)
+- ✅ column · po_shipment_schedule.status (0 ms)
+- ✅ column · po_assignments.PO_Number (0 ms)
+- ✅ column · po_assignments.Warehouse_ID (0 ms)
+- ✅ column · po_assignments.assigned_by (0 ms)
+- ✅ column · po_assignments.Expected_Delivery (0 ms)
+- ✅ column · po_assignments.status (1 ms)
+- ✅ column · delivery_notes.DN_Number (0 ms)
+- ✅ column · delivery_notes.PO_Number (0 ms)
+- ✅ column · delivery_notes.Warehouse_ID (0 ms)
+- ✅ column · delivery_notes.Site_ID (0 ms)
+- ✅ column · delivery_notes.status (0 ms)
+- ✅ column · delivery_notes.rl_bl_family (0 ms)
+- ✅ column · dn_items.DN_Number (0 ms)
+- ✅ column · dn_items.po_item_id (0 ms)
+- ✅ column · dn_items.Qty (0 ms)
+- ✅ column · dn_items.UOM (0 ms)
+- ✅ column · dn_items.rl_bl_family (0 ms)
+- ✅ column · dn_items.status (0 ms)
+- ✅ column · po_returns.PO_Number (0 ms)
+- ✅ column · po_returns.Qty (0 ms)
+- ✅ column · po_returns.Reason (0 ms)
+- ✅ column · po_returns.raised_by_role (0 ms)
+- ✅ column · po_returns.status (0 ms)
+- ✅ column · po_reschedule_requests.PO_Number (1 ms)
+- ✅ column · po_reschedule_requests.requested_date (0 ms)
+- ✅ column · po_reschedule_requests.reason (0 ms)
+- ✅ column · po_reschedule_requests.requested_by_role (0 ms)
+- ✅ column · po_reschedule_requests.status (0 ms)
+- ✅ column · po_force_closures.target_type (0 ms)
+- ✅ column · po_force_closures.target_ref (0 ms)
+- ✅ column · po_force_closures.reason (0 ms)
+- ✅ column · po_force_closures.closed_by (0 ms)
+- ✅ column · app_notifications.event_key (0 ms)
+- ✅ column · app_notifications.title (0 ms)
+- ✅ column · app_notifications.severity (0 ms)
+- ✅ column · app_notifications.recipient_user (0 ms)
+- ✅ column · app_notifications.recipient_role (0 ms)
+- ✅ column · pr_master.WBS_Number (0 ms)
+- ✅ column · pr_master.Network (0 ms)
+- ✅ column · pr_master.Plant (0 ms)
+- ✅ column · pr_master.Delivery_Date (0 ms)
+- ✅ column · pr_master.logistics_status (0 ms)
+- ✅ column · returnable_items.cv_detected (1 ms)
+- ✅ column · returnable_items.cv_confidence (0 ms)
+- ✅ column · returnable_items.cv_employee_id (0 ms)
+- ✅ column · returnable_items.cv_tool_class (0 ms)
+- ✅ column · employees.Site_ID (0 ms)
+- ✅ column · supervisor_material_requests.request_no (0 ms)
+- ✅ column · supervisor_material_requests.Site_ID (0 ms)
+- ✅ column · supervisor_material_requests.Worker_ID (0 ms)
+- ✅ column · supervisor_material_requests.Worker_Name (0 ms)
+- ✅ column · supervisor_material_requests.Job_Tank_Place (0 ms)
+- ✅ column · supervisor_material_requests.Old_PPE_Returned (0 ms)
+- ✅ column · supervisor_material_requests.No_Return_Reason (0 ms)
+- ✅ column · supervisor_material_requests.requested_by (0 ms)
+- ✅ column · supervisor_material_requests.requested_at (0 ms)
+- ✅ column · supervisor_material_requests.status (0 ms)
+- ✅ column · supervisor_material_requests.sk_decided_by (0 ms)
+- ✅ column · supervisor_material_requests.sk_decided_at (0 ms)
+- ✅ column · supervisor_material_requests.sk_reject_reason (0 ms)
+- ✅ column · supervisor_material_requests.posted_pending_ids (0 ms)
+- ✅ column · supervisor_material_request_items.request_id (1 ms)
+- ✅ column · supervisor_material_request_items.SAP_Code (0 ms)
+- ✅ column · supervisor_material_request_items.Material_Code (0 ms)
+- ✅ column · supervisor_material_request_items.Equipment_Description (0 ms)
+- ✅ column · supervisor_material_request_items.UOM (0 ms)
+- ✅ column · supervisor_material_request_items.Requested_Qty (0 ms)
+- ✅ column · supervisor_material_request_items.Stock_At_Request (0 ms)
+- ✅ column · supervisor_material_request_items.Available_Flag (0 ms)
+- ✅ column · supervisor_material_request_items.SK_Adjusted_Qty (0 ms)
+- ✅ column · supervisor_material_request_items.Notes (0 ms)
+- ✅ column · pending_issues.Source_Ref (0 ms)
+- ✅ column · cross_site_views.viewer_username (0 ms)
+- ✅ column · cross_site_views.viewer_site_id (0 ms)
+- ✅ column · cross_site_views.target_site_id (0 ms)
+- ✅ column · cross_site_views.view_date (0 ms)
+- ✅ column · cross_site_views.first_seen_at (0 ms)
+- ✅ column · form_drafts.username (0 ms)
+- ✅ column · form_drafts.form_id (0 ms)
+- ✅ column · form_drafts.site_id (1 ms)
+- ✅ column · form_drafts.payload_json (0 ms)
+- ✅ column · form_drafts.created_at (0 ms)
+- ✅ column · form_drafts.updated_at (0 ms)
+- ✅ column · form_drafts.expires_at (0 ms)
+- ✅ init_db() is idempotent (6 ms)
 
 ### Site Visibility — 3/3
-- ✅ In-Transit DNs filtered + sorted per site
-- ✅ HOD reschedule → Logistics → outcome reflected
-- ✅ Force-closure visibility scoped to site
+- ✅ In-Transit DNs filtered + sorted per site (25 ms)
+- ✅ HOD reschedule → Logistics → outcome reflected (9 ms)
+- ✅ Force-closure visibility scoped to site (6 ms)
 
 ### Sites — 1/1
-- ✅ HQ visible to get_sites()
+- ✅ HQ visible to get_sites() (1 ms)
 
 ### Smart Scan — 4/4
-- ✅ bucket_detections returns 'auto' for ≥0.75
-- ✅ bucket_detections caps candidates at 3 and floors at 0.30
-- ✅ lookup_employee_by_qr rejects suspended / unknown / blank
-- ✅ get_open_loans_for_employee matches CV + manual loans
+- ✅ bucket_detections returns 'auto' for ≥0.75 (0 ms)
+- ✅ bucket_detections caps candidates at 3 and floors at 0.30 (0 ms)
+- ✅ lookup_employee_by_qr rejects suspended / unknown / blank (3 ms)
+- ✅ get_open_loans_for_employee matches CV + manual loans (3 ms)
 
 ### Warehouse — 6/6
-- ✅ Acknowledge + receive (partial + over-deliver guard)
-- ✅ Warehouse view strictly hides prices (items + header)
-- ✅ DN splitter enforces RL/BL strict separation
-- ✅ Full DN flow → SK confirms → receipts row
-- ✅ Internal return reopens PO line
-- ✅ HOD rejection terminates the DN cleanly
+- ✅ Acknowledge + receive (partial + over-deliver guard) (4 ms)
+- ✅ Warehouse view strictly hides prices (items + header) (5 ms)
+- ✅ DN splitter enforces RL/BL strict separation (5 ms)
+- ✅ Full DN flow → SK confirms → receipts row (11 ms)
+- ✅ Internal return reopens PO line (11 ms)
+- ✅ HOD rejection terminates the DN cleanly (6 ms)
 
 ### WhatsApp — 1/1
-- ✅ queue_whatsapp_alert writes pending row
+- ✅ queue_whatsapp_alert writes pending row (2 ms)
 
-### Workstream C — 5/5
-- ✅ webhook parses a text message (phone + body + name)
-- ✅ webhook parses an interactive button_reply title
-- ✅ status callbacks are separated from inbound messages
-- ✅ stub router replies to greetings, stays silent otherwise
-- ✅ GET handshake token + X-Hub-Signature-256 verification
+### Workstream C — 7/7
+- ✅ webhook parses a text message (phone + body + name) (0 ms)
+- ✅ webhook parses an interactive button_reply title (0 ms)
+- ✅ status callbacks are separated from inbound messages (0 ms)
+- ✅ stub router replies to greetings, stays silent otherwise (0 ms)
+- ✅ GET handshake token + X-Hub-Signature-256 verification (0 ms)
+- ✅ Meta provider — config read + routing + missing-config raise (0 ms)
+- ✅ SME download_button forwards width= (no HOD TypeError) (0 ms)
