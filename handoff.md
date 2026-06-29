@@ -34,7 +34,7 @@
 
 ---
 
-**Last update:** 2026-06-28 — **WORKSTREAM C PAUSED; MAN-HOUR TRACKING STARTED.** Docker/Nginx-SSL/Meta-webhook infra is complete locally + committed (`f89449f`, `e360455`); see §2Y. New active feature **Man-Hour & Labor Tracking Integration** in planning — see §2Z. Test baseline now **547 bug_check checks green** (542 prior + 5 new Workstream C webhook checks). The earlier round-20.5.2 note is preserved below.
+**Last update:** 2026-06-28 — **MAN-HOUR FEATURE COMPLETE; WORKSTREAM C UNPAUSED.** Man-Hour & Labor Tracking shipped + documented (USER_MANUAL §19, SOP §3.3a) — see §2Z. **Workstream C (Docker/Deployment) is ACTIVE again**: latest step wired the **Certbot + Nginx TLS** stack in `docker-compose.yml` (certbot service, `certbot-etc`/`certbot-www` volumes, nginx :80+:443 with a 6h reload loop) + `scripts/init-letsencrypt.sh` for first-boot cert issuance — see §2Y. Test baseline **554 bug_check checks green**. The earlier round-20.5.2 note is preserved below.
 
 **Prior update:** 2026-06 round 20.5.2 — **TWO LIVE CRASHES FIXED.** (1) SK Consumption page threw `ModuleNotFoundError: No module named 'pages_internal.material_estimator'` — `daily_issue_log.py` still imported `days_of_continuation_block` from the R19 package R20 deleted; vendored the function in-file and removed the dead import (it was the only live reference). (2) Admin Material Estimator → Location Report threw `IndexError: single positional indexer is out-of-bounds` — `st.session_state.loc_order` held equipment tags removed by a re-bootstrap; now reconciled against the current `eq_master` each run. +3 regression checks. See §2W.2. **Tests: 525 / 542 (57 SME-related green).**
 
@@ -2118,9 +2118,17 @@ The SME ↔ ERP merge is done. Future development pivots to **the ERP project's 
 
 ---
 
-## 2Y. Workstream C (Docker / Deployment) — ⏸️ PAUSED 2026-06-28
+## 2Y. Workstream C (Docker / Deployment) — 🟢 ACTIVE (unpaused 2026-06-28)
 
-Paused mid-stream to build a higher-priority application feature (§2Z). **The infrastructure already built is COMPLETE LOCALLY and committed to `main`** (commits `f89449f`, `e360455`, + the Step-4/5 work). All of it is **server-only / additive** — the Mac dev path (`streamlit run main.py`) is byte-for-byte unchanged, verified each round.
+Resumed after the Man-Hour feature shipped (§2Z). **All infra is server-only / additive** — the Mac dev path (`streamlit run main.py`) is byte-for-byte unchanged, verified each round.
+
+**Latest step — Certbot + Nginx TLS wiring (single-command first boot):**
+- `docker-compose.yml` now has a **`certbot`** service (auto-renew loop, no host ports) + **`certbot-etc`** / **`certbot-www`** volumes; **nginx** publishes **:80 + :443**, mounts the cert volumes, uses `docker/nginx/gihub.ssl.conf`, and runs a **6h reload loop** so renewed certs apply without a restart.
+- **`scripts/init-letsencrypt.sh`** solves the cold-boot chicken-and-egg: seeds a self-signed **dummy cert** so nginx can start → brings nginx up → deletes dummy → issues the **real** Let's Encrypt cert via webroot → reloads. Run **once** on the live box (`staging=1` default; flip to `0` for trusted certs). Thereafter ordinary `docker compose up -d` works and certbot auto-renews.
+- **Pre-reqs flagged in the script:** DNS A-record → server IP; Cloudflare set to **DNS-only (grey)** or **Full (strict)** so HTTP-01 isn't blocked; firewall opens 80/443.
+- Domain/email are EDIT-THESE vars (default `giinventory.com`).
+
+**Done & committed (earlier steps):**
 
 **Done & committed:**
 - **Docker foundation** — `Dockerfile.streamlit`, `Dockerfile.fastapi`, `docker-compose.yml` (5 services: nginx/streamlit/fastapi/ollama/backup on the `gi-net` bridge; only nginx binds host ports), `requirements-server.txt`, `.dockerignore`, `docker/entrypoint-streamlit.sh` (symlinks DB+uploads into the `gi-data` volume — zero app-code changes).
