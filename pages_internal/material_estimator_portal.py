@@ -3079,6 +3079,11 @@ def plotly_mat_table(df: pd.DataFrame, key_suffix: str, height: int = 380,
 if "sme_theme" not in st.session_state:
     st.session_state.sme_theme = "dark"
 
+# §2c — when False, the SME's own sidebar block (theme toggle, logo, branding,
+# project/inventory/session panels) is suppressed so only the ERP's default nav
+# shows. The theme CSS attribute is still applied outside the block.
+_SME_LEGACY_SIDEBAR = False
+
 def _apply_theme_attr():
     """Inject the data-sme-theme attribute on <html> so the light/dark CSS
     overrides take effect. Calc/data flow is untouched."""
@@ -3216,7 +3221,14 @@ def page_material_estimator(user: dict) -> None:
     # 1. Surface auth context for SME helpers that read session_state.
     st.session_state["_authenticated"]  = True
     st.session_state["_login_username"] = user.get("username") or "user"
-    _site_id_p = user.get("site_id") or "HQ"
+    # §2a — Admin has no bound site, so they'd default to HQ and see zeros.
+    # Give admin a sidebar single-site picker over the seeded sites instead.
+    if (user.get("role") or "").lower() == "admin":
+        _sites = D.get_sites() or ["HQ"]
+        _site_id_p = st.sidebar.selectbox("🧪 Estimator site", _sites,
+                                          key="_sme_admin_site")
+    else:
+        _site_id_p = user.get("site_id") or "HQ"
     st.session_state["_login_site_id"]  = _site_id_p
 
     # 2. If site changed since last render, clear the cascade-allocate cache
@@ -3275,7 +3287,10 @@ def page_material_estimator(user: dict) -> None:
     try:
         # ── BEGIN ORIGINAL SME IMPERATIVE BODY (indented) ─────────────────────
         # ─────────────────────────────────────────────────────────────────────────────
-        with st.sidebar:
+        # §2c — apply the theme CSS even though the SME sidebar is hidden, then
+        # gate the legacy sidebar chrome behind the flag (off → ERP nav only).
+        _apply_theme_attr()
+        if _SME_LEGACY_SIDEBAR:
             # Theme toggle — design integration (light/dark mode switch)
             _ttl, _ttr = st.columns(2, gap="small")
             with _ttl:

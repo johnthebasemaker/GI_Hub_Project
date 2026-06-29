@@ -2410,6 +2410,22 @@ def check_meta_provider_routing():
                 os.environ[k] = v
 
 
+def check_sme_admin_site_picker_and_sidebar_hidden():
+    import pathlib
+    src = pathlib.Path(REPO_ROOT / "pages_internal" /
+                       "material_estimator_portal.py").read_text(encoding="utf-8")
+    # 2a — admin gets a single-site picker (else defaults to HQ → zeros)
+    assert 'st.sidebar.selectbox("🧪 Estimator site"' in src, \
+        "admin Material-Estimator site picker missing"
+    assert 'if (user.get("role") or "").lower() == "admin":' in src, \
+        "admin-role branch for the site picker missing"
+    # 2c — SME's own sidebar suppressed, theme still applied
+    assert "_SME_LEGACY_SIDEBAR = False" in src, "SME legacy-sidebar flag missing"
+    assert "if _SME_LEGACY_SIDEBAR:" in src, "SME sidebar must be gated by the flag"
+    assert "        _apply_theme_attr()\n        if _SME_LEGACY_SIDEBAR:" in src, \
+        "theme must be applied OUTSIDE the suppressed sidebar block"
+
+
 def check_sme_download_button_forwards_width():
     import pathlib
     src = pathlib.Path(REPO_ROOT / "pages_internal" /
@@ -9075,6 +9091,10 @@ def main() -> int:
               check_sme_download_button_forwards_width,
               "_secure_download_button accepts/forwards **extra so width='stretch' "
               "callers (e.g. HOD PR PDF) never throw if the patch is active.")
+    run_check("Material Estimator", "admin site picker + SME sidebar suppressed",
+              check_sme_admin_site_picker_and_sidebar_hidden,
+              "Admin gets a single-site picker; SME's own sidebar chrome is hidden "
+              "(only ERP nav) while the theme CSS is still applied.")
 
     out = write_report()
     print()
