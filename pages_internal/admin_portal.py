@@ -220,6 +220,8 @@ def page_admin_portal(user: dict) -> None:
         "👷 Employees",
         # Phase 6C — YOLO tool catalogue + model version manager
         "🛠️ Tool Catalogue",
+        # Lot lifecycle — cross-site quarantine / expire / dispose
+        "🧪 Lot Management",
     ]
     tabs = st.tabs(tab_labels)
     with tabs[0]: _render_overview_tab(user)
@@ -235,6 +237,9 @@ def page_admin_portal(user: dict) -> None:
     with tabs[10]: _render_logistics_oversight_tab(user)
     with tabs[11]: _render_employees_tab(user)
     with tabs[12]: _render_tool_catalogue_tab(user)
+    with tabs[13]:
+        from pages_internal.lot_management import render_lot_management
+        render_lot_management(user, site_id=None)   # admin → cross-site
 
 
 # ===========================================================================

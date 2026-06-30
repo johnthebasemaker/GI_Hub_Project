@@ -532,6 +532,12 @@ def init_db(conn: sqlite3.Connection = None) -> None:
             posted_txn_ref   TEXT
         )
     """)
+    # Self-heal: link a disposal adjustment back to the lot it writes off, so
+    # approval can tag the write-off consumption with the lot AND flip the lot
+    # to 'disposed' (NULL for ordinary cycle-count adjustments).
+    c.execute("PRAGMA table_info(stock_adjustments)")
+    if "Lot_Number" not in {r[1] for r in c.fetchall()}:
+        c.execute("ALTER TABLE stock_adjustments ADD COLUMN Lot_Number TEXT")
 
     # ── bug_reports (user feedback: bugs + feature requests) ────────────
     c.execute("""
@@ -6538,10 +6544,15 @@ def insert_stock_adjustment(
     notes: str,
     submitted_by: str,
     conn: sqlite3.Connection = None,
+    lot_number: str = None,
 ) -> tuple[bool, str, int | None]:
     """
     Stage a physical-count → system-qty discrepancy for HOD approval.
     Returns (ok, message, adjustment_id).
+
+    lot_number (optional): when set, this is a lot disposal write-off — on
+    approval the posted consumption is tagged with the lot and the lot flips
+    to 'disposed'.
     """
     if not sap_code or not site_id or not submitted_by:
         return False, "SAP code, site, and submitter are required.", None
@@ -6563,10 +6574,11 @@ def insert_stock_adjustment(
         cur = conn.execute(
             """INSERT INTO stock_adjustments
                (Site_ID, SAP_Code, system_qty, counted_qty, variance,
-                reason_code, notes, status, submitted_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_hod', ?)""",
+                reason_code, notes, status, submitted_by, Lot_Number)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_hod', ?, ?)""",
             (site_id, sap_code.strip(), system_qty, counted_qty, variance,
-             reason_code, (notes or "").strip(), submitted_by),
+             reason_code, (notes or "").strip(), submitted_by,
+             (lot_number or None)),
         )
         conn.commit()
         adj_id = cur.lastrowid
@@ -6603,13 +6615,15 @@ def approve_stock_adjustment(
         conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT Site_ID, SAP_Code, variance, reason_code, notes, status, submitted_by "
+            "SELECT Site_ID, SAP_Code, variance, reason_code, notes, status, "
+            "       submitted_by, Lot_Number "
             "FROM stock_adjustments WHERE id = ?",
             (adjustment_id,),
         ).fetchone()
         if not row:
             return False, f"Adjustment #{adjustment_id} not found."
-        site_id, sap_code, variance, reason_code, notes, status, submitted_by = row
+        (site_id, sap_code, variance, reason_code, notes, status,
+         submitted_by, adj_lot) = row
         if status != "pending_hod":
             return False, f"Adjustment #{adjustment_id} is already {status}."
 
@@ -6636,6 +6650,11 @@ def approve_stock_adjustment(
             if "Issued_To" in cons_cols:
                 insert_cols.append("Issued_To")
                 insert_vals.append("ADJUSTMENT")
+            # Lot disposal: tag the write-off to the lot so v_lot_balance
+            # zeroes that lot's remaining qty (not just the SAP total).
+            if adj_lot and "Lot_Number" in cons_cols:
+                insert_cols.append("Lot_Number")
+                insert_vals.append(adj_lot)
             placeholders = ", ".join(["?"] * len(insert_cols))
             c.execute(
                 f"INSERT INTO consumption ({', '.join(insert_cols)}) "
@@ -6671,11 +6690,19 @@ def approve_stock_adjustment(
             "WHERE id=?",
             (approver, posted_ref, adjustment_id),
         )
+        # Lot disposal: the write-off is posted → retire the lot.
+        if adj_lot:
+            c.execute(
+                "UPDATE lots SET Status='disposed' "
+                "WHERE Lot_Number=? AND SAP_Code=? AND Site_ID=?",
+                (adj_lot, sap_code, site_id),
+            )
         conn.commit()
         log_audit_action(
             approver, "APPROVE_ADJUSTMENT", "stock_adjustments",
             f"id={adjustment_id} sap={sap_code} site={site_id} "
-            f"var={variance:+g} posted={posted_ref}",
+            f"var={variance:+g} posted={posted_ref}"
+            + (f" lot={adj_lot}→disposed" if adj_lot else ""),
         )
         return True, f"Adjustment #{adjustment_id} approved · ledger row {posted_ref}."
     except Exception as e:
@@ -6696,6 +6723,10 @@ def reject_stock_adjustment(
     if _owns:
         conn = get_connection()
     try:
+        _adj = conn.execute(
+            "SELECT Lot_Number, SAP_Code, Site_ID FROM stock_adjustments "
+            "WHERE id=? AND status='pending_hod'", (adjustment_id,),
+        ).fetchone()
         cur = conn.execute(
             "UPDATE stock_adjustments "
             "SET status='rejected', approved_by=?, "
@@ -6703,9 +6734,19 @@ def reject_stock_adjustment(
             "WHERE id=? AND status='pending_hod'",
             (approver, reason or f"Rejected by {approver}", adjustment_id),
         )
-        conn.commit()
         if cur.rowcount == 0:
+            conn.commit()
             return False, "Already processed or not found."
+        # If this was a pending lot disposal, release the lot back to 'open'
+        # (it was quarantined on submit to lock it out of FEFO).
+        if _adj and _adj[0]:
+            conn.execute(
+                "UPDATE lots SET Status='open' "
+                "WHERE Lot_Number=? AND SAP_Code=? AND Site_ID=? "
+                "  AND Status='quarantine'",
+                (_adj[0], _adj[1], _adj[2]),
+            )
+        conn.commit()
         log_audit_action(
             approver, "REJECT_ADJUSTMENT", "stock_adjustments",
             f"id={adjustment_id} reason={reason!r}",
@@ -7105,6 +7146,77 @@ def mark_lot_status(
             f"{lot_number}/{sap_code}/{site_id} → {new_status}",
         )
         return True, f"Lot {lot_number} status set to {new_status}."
+    finally:
+        if _owns:
+            conn.close()
+
+
+def dispose_lot(
+    lot_number: str,
+    sap_code: str,
+    site_id: str,
+    reason_code: str,
+    notes: str,
+    submitted_by: str,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str, int | None]:
+    """
+    Submit a lot for disposal via the existing HOD stock-adjustment approval.
+
+    Writes off the lot's remaining qty (system_qty=Remaining, counted_qty=0 →
+    negative variance → a write-off consumption on approval) and quarantines
+    the lot so it can't be consumed while the disposal is pending. On approval
+    the lot flips to 'disposed'; on rejection it returns to 'open'. The ledger
+    stays append-only (a reversal document, never an edit). Returns
+    (ok, message, adjustment_id).
+    """
+    if reason_code not in ADJUSTMENT_REASONS:
+        return False, f"Unknown reason code '{reason_code}'.", None
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        bal = conn.execute(
+            "SELECT Remaining_Qty, Status FROM v_lot_balance "
+            "WHERE Lot_Number=? AND SAP_Code=? AND Site_ID=?",
+            (lot_number, sap_code, site_id),
+        ).fetchone()
+        if not bal:
+            return False, f"Lot {lot_number} not found at {site_id}.", None
+        remaining, lot_status = float(bal[0] or 0), bal[1]
+        if lot_status == "disposed":
+            return False, f"Lot {lot_number} is already disposed.", None
+        if remaining <= 0:
+            return False, (f"Lot {lot_number} has no remaining qty to dispose "
+                           f"(balance {remaining:g})."), None
+
+        # Lock the lot out of FEFO while the disposal awaits approval.
+        conn.execute(
+            "UPDATE lots SET Status='quarantine' "
+            "WHERE Lot_Number=? AND SAP_Code=? AND Site_ID=?",
+            (lot_number, sap_code, site_id),
+        )
+        conn.commit()
+
+        ok, msg, adj_id = insert_stock_adjustment(
+            site_id=site_id, sap_code=sap_code,
+            system_qty=remaining, counted_qty=0.0,
+            reason_code=reason_code,
+            notes=f"Lot {lot_number} disposal · {notes or ''}".strip(" ·"),
+            submitted_by=submitted_by, conn=conn, lot_number=lot_number,
+        )
+        if not ok:
+            # Roll the quarantine back if staging failed.
+            conn.execute(
+                "UPDATE lots SET Status='open' "
+                "WHERE Lot_Number=? AND SAP_Code=? AND Site_ID=? "
+                "  AND Status='quarantine'",
+                (lot_number, sap_code, site_id),
+            )
+            conn.commit()
+            return False, msg, None
+        return True, (f"Lot {lot_number} ({remaining:g}) submitted for "
+                      f"disposal approval (adj #{adj_id})."), adj_id
     finally:
         if _owns:
             conn.close()

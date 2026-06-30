@@ -3037,6 +3037,8 @@ def page_hod_portal(user: dict) -> None:
         "🚚 DN Approvals",
         # Phase 4 — read-only visibility into the procurement chain for this site
         "🚚 In-Transit",
+        # Lot lifecycle — site-scoped quarantine / expire / dispose
+        "🧪 Lot Management",
     ]
     tabs = st.tabs(tab_labels)
     with tabs[0]: _render_eod_tab(user, site_id)
@@ -3055,6 +3057,9 @@ def page_hod_portal(user: dict) -> None:
     with tabs[13]: _render_qr_approval_tab(user, site_id)
     with tabs[14]: _render_dn_approvals_tab(user, site_id)
     with tabs[15]: _render_in_transit_tab(user, site_id)
+    with tabs[16]:
+        from pages_internal.lot_management import render_lot_management
+        render_lot_management(user, site_id=site_id)   # HOD → site-scoped
 
 
 # ===========================================================================

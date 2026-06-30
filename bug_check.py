@@ -542,6 +542,95 @@ def check_sme_equipment_loader_mapping() -> None:
         conn.close()
 
 
+def _seed_lot(conn, lot, sap, site, qty, expiry="2030-01-01"):
+    conn.execute(
+        "INSERT OR IGNORE INTO inventory (SAP_Code, Equipment_Description, UOM, "
+        "Site_ID, Category, Opening_Stock) VALUES (?,?,?,?,?,0)",
+        (sap, "Lot Probe", "Pcs", site, "Others"))
+    conn.execute(
+        "INSERT OR IGNORE INTO lots (Lot_Number, SAP_Code, Site_ID, "
+        "Received_Date, Expiry_Date, Status) VALUES (?,?,?,?,?, 'open')",
+        (lot, sap, site, "2026-01-01", expiry))
+    conn.execute(
+        "INSERT INTO receipts (Date, SAP_Code, Quantity, Site_ID, Lot_Number) "
+        "VALUES (?,?,?,?,?)", ("2026-01-01", sap, qty, site, lot))
+    conn.commit()
+
+
+def check_lot_quarantine_excluded_from_fefo() -> None:
+    """Quarantining a lot drops it out of FEFO suggestions; releasing restores it."""
+    conn = database.get_connection()
+    try:
+        _seed_lot(conn, "LOTQ1", "SAP-LOTQ", "HQ", 50)
+        lots = database.get_lots_for_item("SAP-LOTQ", "HQ", conn=conn)
+        assert "LOTQ1" in set(lots["Lot_Number"]), "open lot must be FEFO-eligible"
+        ok, _ = database.mark_lot_status("LOTQ1", "SAP-LOTQ", "HQ", "quarantine", "tester", conn=conn)
+        assert ok
+        lots2 = database.get_lots_for_item("SAP-LOTQ", "HQ", conn=conn)
+        assert "LOTQ1" not in set(lots2.get("Lot_Number", [])), \
+            "quarantined lot must NOT be FEFO-suggested"
+        database.mark_lot_status("LOTQ1", "SAP-LOTQ", "HQ", "open", "tester", conn=conn)
+        lots3 = database.get_lots_for_item("SAP-LOTQ", "HQ", conn=conn)
+        assert "LOTQ1" in set(lots3["Lot_Number"]), "released lot must be FEFO-eligible again"
+    finally:
+        conn.close()
+
+
+def check_lot_disposal_via_adjustment() -> None:
+    """dispose_lot routes a write-off through HOD approval: lot quarantines while
+    pending; on approval the lot is 'disposed', the write-off consumption is
+    tagged to the lot (balance → 0), and Current_Stock drops. Reject restores."""
+    conn = database.get_connection()
+    try:
+        _seed_lot(conn, "LOTD1", "SAP-LOTD", "HQ", 40)
+        stock0 = database.get_item_snapshot("SAP-LOTD", "HQ", conn=conn)["current_stock"]
+        assert abs(stock0 - 40) < 1e-6, stock0
+
+        ok, _msg, adj = database.dispose_lot(
+            "LOTD1", "SAP-LOTD", "HQ", "damaged", "leak", "sk1", conn=conn)
+        assert ok and adj, _msg
+        # Locked out of FEFO while pending.
+        st_now = conn.execute("SELECT Status FROM lots WHERE Lot_Number='LOTD1'").fetchone()[0]
+        assert st_now == "quarantine", f"pending disposal must quarantine, got {st_now}"
+        # Adjustment carries the lot and is pending.
+        arow = conn.execute(
+            "SELECT Lot_Number, status FROM stock_adjustments WHERE id=?", (adj,)).fetchone()
+        assert arow[0] == "LOTD1" and arow[1] == "pending_hod", arow
+
+        ok2, _ = database.approve_stock_adjustment(adj, "hod1", conn=conn)
+        assert ok2
+        st2 = conn.execute("SELECT Status FROM lots WHERE Lot_Number='LOTD1'").fetchone()[0]
+        assert st2 == "disposed", f"approved disposal must set 'disposed', got {st2}"
+        bal = database.get_all_lots(site_id="HQ", conn=conn)
+        rem = float(bal[bal["Lot_Number"] == "LOTD1"]["Remaining_Qty"].iloc[0])
+        assert abs(rem) < 1e-6, f"disposed lot balance must be 0, got {rem}"
+        stock1 = database.get_item_snapshot("SAP-LOTD", "HQ", conn=conn)["current_stock"]
+        assert abs(stock1 - 0) < 1e-6, f"stock must drop by the written-off qty, got {stock1}"
+
+        # Reject path restores the lot to 'open'.
+        _seed_lot(conn, "LOTD2", "SAP-LOTD2", "HQ", 12)
+        ok3, _m3, adj3 = database.dispose_lot(
+            "LOTD2", "SAP-LOTD2", "HQ", "lost", "", "sk1", conn=conn)
+        assert ok3
+        database.reject_stock_adjustment(adj3, "hod1", "not damaged", conn=conn)
+        st3 = conn.execute("SELECT Status FROM lots WHERE Lot_Number='LOTD2'").fetchone()[0]
+        assert st3 == "open", f"rejected disposal must restore 'open', got {st3}"
+    finally:
+        conn.close()
+
+
+def check_lot_management_module() -> None:
+    """The shared Lot Management UI module imports and exposes the renderer used
+    by both the Admin (cross-site) and HOD (site-scoped) portals."""
+    import importlib
+    m = importlib.import_module("pages_internal.lot_management")
+    assert hasattr(m, "render_lot_management"), "render_lot_management missing"
+    import pathlib
+    for f in ("admin_portal.py", "hod_portal.py"):
+        src = pathlib.Path(REPO_ROOT / "pages_internal" / f).read_text(encoding="utf-8")
+        assert "render_lot_management" in src, f"{f} must mount Lot Management"
+
+
 def check_system_code_report_tab() -> None:
     """The System Code Report tab exists and groups equipment per system code
     (distinct equipment count + summed Total SQM) with an Excel export."""
@@ -8620,6 +8709,19 @@ def main() -> int:
               "retry_failed_whatsapp resets attempts for a fresh budget.")
     run_check("Sites",       "HQ visible to get_sites()",
               check_sites)
+    run_check("Lots",        "quarantine drops a lot out of FEFO",
+              check_lot_quarantine_excluded_from_fefo,
+              "mark_lot_status(quarantine) excludes the lot from FEFO; release "
+              "restores it.")
+    run_check("Lots",        "disposal via HOD adjustment (approve + reject)",
+              check_lot_disposal_via_adjustment,
+              "dispose_lot quarantines + stages a write-off; approval disposes "
+              "the lot, tags the consumption to it (balance→0), drops stock; "
+              "reject restores 'open'.")
+    run_check("Lots",        "Lot Management UI module mounts in both portals",
+              check_lot_management_module,
+              "shared render_lot_management used by Admin (cross-site) + HOD "
+              "(site-scoped).")
     run_check("Resilience",  "global error boundary (friendly UI + dev log)",
               check_error_boundary,
               "Users get a one-line message + ref ID; full traceback logged to "
