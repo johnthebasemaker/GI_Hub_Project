@@ -451,6 +451,35 @@ def check_receipt_flow() -> None:
         conn.close()
 
 
+def check_bin_location_flows_to_ledger() -> None:
+    """A Bin_Location on a staged receipt threads through commit → receipts,
+    and get_item_bin_locations surfaces it. Pure metadata — stock unaffected."""
+    sap, binloc = "SAP-001", "A-12-BIN"
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO pending_receipts "
+            "(Date, SAP_Code, Quantity, Supplier, Site_ID, status, Bin_Location) "
+            "VALUES (DATE('now'), ?, 7, 'BinSup', 'HQ', 'pending_hod', ?)",
+            (sap, binloc),
+        )
+        conn.commit()
+        n = database.commit_pending_receipts(conn, site_id="HQ", username=TEST_HOD)
+        assert n >= 1, f"commit returned {n}"
+        got = conn.execute(
+            "SELECT COUNT(*) FROM receipts "
+            "WHERE SAP_Code=? AND Site_ID='HQ' AND Bin_Location=?",
+            (sap, binloc),
+        ).fetchone()[0]
+        assert got >= 1, "Bin_Location did not thread through to the receipts ledger"
+        bins = database.get_item_bin_locations(sap, "HQ", conn=conn)
+        assert binloc in bins, f"helper missing the bin: {bins}"
+        # Sanity: an unknown item returns an empty list, not an error.
+        assert database.get_item_bin_locations("SAP-NOPE", "HQ", conn=conn) == []
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Workflow: SK return submit → HOD approve → returns ledger row
 # ---------------------------------------------------------------------------
@@ -8315,6 +8344,10 @@ def main() -> int:
     run_check("Receipts",    "Stage → commit_pending_receipts",
               check_receipt_flow,
               "Verify commit_pending_receipts() copies status='pending_hod' rows.")
+    run_check("Receipts",    "Bin_Location threads to ledger + lookup helper",
+              check_bin_location_flows_to_ledger,
+              "Put-away bin tag survives staging→commit; get_item_bin_locations "
+              "surfaces it. Metadata only — no impact on v_site_stock.")
     run_check("Returns",     "Submit → approve → ledger row",
               check_returns_flow)
     run_check("Returns",     "Reject removes from pending list",

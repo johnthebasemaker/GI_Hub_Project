@@ -592,6 +592,10 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         "Serial_No", "PR", "Location", "Vehicle_No", "Driver_Name",
         "DN_No", "Pallet_No", "Mob_From", "Prepared_by", "Mob_To",
         "Received_by", "DN_Copy",
+        # Bin/shelf put-away tag (lightweight location tracking; metadata only,
+        # never read by v_site_stock). Distinct from logistics 'Location'
+        # (the delivery location on the DN).
+        "Bin_Location",
     ]:
         if col not in rec_cols:
             c.execute(f"ALTER TABLE receipts ADD COLUMN {col} TEXT")
@@ -601,7 +605,8 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     _prc_cols = {row[1] for row in c.fetchall()}
     for _col in ["Serial_No", "PR", "Location", "Vehicle_No", "Driver_Name",
                  "DN_No", "Pallet_No", "Mob_From", "Prepared_by", "Mob_To",
-                 "Received_by", "DN_Copy", "Supplier", "PR_Number", "Expiry_Date"]:
+                 "Received_by", "DN_Copy", "Supplier", "PR_Number", "Expiry_Date",
+                 "Bin_Location"]:
         if _col not in _prc_cols:
             c.execute(f"ALTER TABLE pending_receipts ADD COLUMN {_col} TEXT")
 
@@ -4831,7 +4836,7 @@ def commit_pending_receipts(
     _LOGISTICS_COLS = [
         "Serial_No", "PR", "Location", "Vehicle_No", "Driver_Name",
         "DN_No", "Pallet_No", "Mob_From", "Prepared_by", "Mob_To",
-        "Received_by", "DN_Copy",
+        "Received_by", "DN_Copy", "Bin_Location",
     ]
 
     for _, row in rows.iterrows():
@@ -5430,6 +5435,7 @@ def get_receipt_history(
                       r.Quantity, COALESCE(r.Supplier,'') AS Supplier,
                       COALESCE(r.PR_Number,'') AS PR_Number,
                       COALESCE(r.Expiry_Date,'') AS Expiry_Date,
+                      COALESCE(r.Bin_Location,'') AS Bin_Location,
                       r.Site_ID
                FROM receipts r
                LEFT JOIN inventory i ON r.SAP_Code = i.SAP_Code
@@ -5442,6 +5448,46 @@ def get_receipt_history(
         if _owns:
             conn.close()
     return _localize(df)
+
+
+def get_item_bin_locations(
+    sap_code: str, site_id: str, limit: int = 5,
+    conn: sqlite3.Connection = None,
+) -> list[str]:
+    """
+    Distinct bin/shelf locations an item has been put away in at a site, most
+    recent first (lightweight 'where is this stored?' lookup). Metadata only —
+    derived from receipts.Bin_Location; never affects stock math. Returns [] if
+    the item has no tagged bins yet.
+    """
+    sap = (sap_code or "").strip()
+    if not sap:
+        return []
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT Bin_Location FROM receipts "
+            "WHERE TRIM(SAP_Code) = ? AND COALESCE(Site_ID,'HQ') = ? "
+            "  AND COALESCE(TRIM(Bin_Location),'') <> '' "
+            "ORDER BY rowid DESC",
+            (sap, site_id),
+        ).fetchall()
+    except Exception:
+        return []
+    finally:
+        if _owns:
+            conn.close()
+    seen, out = set(), []
+    for (bin_loc,) in rows:
+        b = (bin_loc or "").strip()
+        if b and b not in seen:
+            seen.add(b)
+            out.append(b)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def get_whatsapp_log(

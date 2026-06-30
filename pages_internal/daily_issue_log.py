@@ -23,6 +23,7 @@ from database import (
     get_user_last_entry_defaults,
     pwa_stage_pending_issues,
     stage_pending_receipts_bulk,
+    get_item_bin_locations,
     # Phase 7B — Supervisor Material Request workflow
     list_supervisor_requests,
     get_supervisor_request,
@@ -1022,6 +1023,25 @@ def page_daily_issue_log(user: dict) -> None:
                                 "WBS Number*", _wbs_opts_r, index=0,
                                 key=f"rcpt_{col_name}",
                             )
+                    elif col_name == "Bin_Location":
+                        # Lightweight put-away tag — optional. Show where this
+                        # item is already stored at this site as a hint.
+                        _existing_bins = (
+                            get_item_bin_locations(rcpt_sap, site_id)
+                            if rcpt_sap else []
+                        )
+                        rcpt_input[col_name] = st.text_input(
+                            "🗄️ Bin / Shelf (Optional)",
+                            placeholder="e.g. A-12, Rack 3",
+                            key=f"rcpt_{col_name}",
+                            help="Where this batch is physically put away. "
+                                 "Leave blank if not tracked.",
+                        )
+                        if _existing_bins:
+                            st.caption(
+                                "📍 Currently stored in: "
+                                + ", ".join(_existing_bins)
+                            )
                     else:
                         rcpt_input[col_name] = st.text_input(f"{col_name}*", key=f"rcpt_{col_name}")
 
@@ -1029,7 +1049,7 @@ def page_daily_issue_log(user: dict) -> None:
                 if not rcpt_sap:
                     st.error("⚠️ Please select a material from the search box. This field is mandatory.")
                     st.stop()
-                _RCPT_OPTIONAL = {"Expiry_Date"}
+                _RCPT_OPTIONAL = {"Expiry_Date", "Bin_Location"}
                 rcpt_missing = [
                     col for col, val in rcpt_input.items()
                     if col not in _RCPT_OPTIONAL
