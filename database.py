@@ -5295,6 +5295,10 @@ def retry_failed_whatsapp(
     """
     Flip selected failed rows back to 'pending'. If msg_ids is None,
     retries every failed row. Returns the number of rows reset.
+
+    Also resets `attempts` to 0 so the row gets a fresh send budget — the
+    worker caps auto-retries at MAX_SEND_ATTEMPTS, and without this reset a
+    manually-retried row already at the cap would immediately re-fail.
     """
     _owns = conn is None
     if _owns:
@@ -5304,14 +5308,14 @@ def retry_failed_whatsapp(
         if msg_ids:
             ph = ",".join(["?"] * len(msg_ids))
             cur.execute(
-                f"UPDATE whatsapp_queue SET status='pending', error_message=NULL "
-                f"WHERE id IN ({ph}) AND status='failed'",
+                f"UPDATE whatsapp_queue SET status='pending', error_message=NULL, "
+                f"attempts=0 WHERE id IN ({ph}) AND status='failed'",
                 tuple(msg_ids),
             )
         else:
             cur.execute(
-                "UPDATE whatsapp_queue SET status='pending', error_message=NULL "
-                "WHERE status='failed'",
+                "UPDATE whatsapp_queue SET status='pending', error_message=NULL, "
+                "attempts=0 WHERE status='failed'",
             )
         conn.commit()
         return cur.rowcount

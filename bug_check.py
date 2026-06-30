@@ -740,6 +740,69 @@ def check_whatsapp_queue() -> None:
         conn.close()
 
 
+def check_whatsapp_auto_retry() -> None:
+    """A transient send failure must auto-retry (status stays 'pending') up to
+    MAX_SEND_ATTEMPTS, then become terminal-'failed'. The manual retry helper
+    must reset `attempts` so a capped row gets a fresh budget."""
+    import whatsapp_worker as W
+
+    phone = "+966500RETRY1"
+    database.queue_whatsapp_alert(phone, "auto-retry probe")
+
+    conn = database.get_connection()
+    try:
+        # Isolate: park every other queued row so process_queue (oldest-pending)
+        # is guaranteed to pick OUR row each pass.
+        my_id = conn.execute(
+            "SELECT id FROM whatsapp_queue WHERE phone_number=? "
+            "ORDER BY id DESC LIMIT 1", (phone,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE whatsapp_queue SET status='sent' "
+            "WHERE status IN ('pending','processing') AND id != ?", (my_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    def _row():
+        c = database.get_connection()
+        try:
+            return c.execute(
+                "SELECT status, COALESCE(attempts,0) FROM whatsapp_queue "
+                "WHERE id=?", (my_id,),
+            ).fetchone()
+        finally:
+            c.close()
+
+    orig_send = W._send_whatsapp
+    W._send_whatsapp = lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("simulated sender offline"))
+    try:
+        cap = W.MAX_SEND_ATTEMPTS
+        assert cap >= 2, f"MAX_SEND_ATTEMPTS should be >=2, got {cap}"
+        # Passes 1..cap-1 → requeued as 'pending'; final pass → 'failed'.
+        for n in range(1, cap):
+            W.process_queue()
+            status, attempts = _row()
+            assert status == "pending", (
+                f"attempt {n}/{cap} should requeue as pending, got {status!r}")
+            assert attempts == n, f"attempts should be {n}, got {attempts}"
+        W.process_queue()  # the cap-th attempt
+        status, attempts = _row()
+        assert status == "failed", (
+            f"at the cap the row must be terminal-failed, got {status!r}")
+        assert attempts == cap, f"attempts should be {cap}, got {attempts}"
+
+        # Manual retry must reset attempts so the row isn't instantly re-failed.
+        database.retry_failed_whatsapp([my_id])
+        status, attempts = _row()
+        assert status == "pending" and attempts == 0, (
+            f"manual retry must reset to pending/0, got {status!r}/{attempts}")
+    finally:
+        W._send_whatsapp = orig_send
+
+
 def check_rl_bl_classification() -> None:
     """RL and BL strict-separation invariant: classify_rl_bl_family must
     return distinct family tags so the PO/DN splitter can never aggregate
@@ -8154,6 +8217,11 @@ def main() -> int:
               check_audit_log)
     run_check("WhatsApp",    "queue_whatsapp_alert writes pending row",
               check_whatsapp_queue)
+    run_check("WhatsApp",    "failed sends auto-retry up to the cap, then fail",
+              check_whatsapp_auto_retry,
+              "process_queue requeues a failed send (status='pending') until "
+              "MAX_SEND_ATTEMPTS, then marks it terminal-failed; manual "
+              "retry_failed_whatsapp resets attempts for a fresh budget.")
     run_check("Sites",       "HQ visible to get_sites()",
               check_sites)
 

@@ -322,6 +322,14 @@ def _send_whatsapp(phone: str, text: str) -> None:
 # ---------------------------------------------------------------------------
 # Queue processor — one message per call
 # ---------------------------------------------------------------------------
+# A transient send failure (sender offline, API hiccup) should not strand a
+# message in 'failed' forever. We auto-retry up to MAX_SEND_ATTEMPTS by flipping
+# the row back to 'pending'; the 60-second poll loop then re-picks it, giving
+# natural spacing without a busy loop. Only after the cap is it terminal-'failed'
+# (the admin "Retry all failed" button resets attempts to give a fresh budget).
+MAX_SEND_ATTEMPTS = 3
+
+
 def process_queue() -> None:
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}] Checking WhatsApp queue…")
@@ -360,11 +368,25 @@ def process_queue() -> None:
             time.sleep(10)
         except Exception as send_err:
             err = f"{type(send_err).__name__}: {send_err}"
-            print(f"  ❌ Send failed #{msg_id}: {err}")
+            # `attempts` was already incremented during the state-lock above.
+            row_at = c.execute(
+                "SELECT COALESCE(attempts,0) FROM whatsapp_queue WHERE id = ?",
+                (msg_id,),
+            ).fetchone()
+            attempts = int(row_at[0]) if row_at else MAX_SEND_ATTEMPTS
+            if attempts < MAX_SEND_ATTEMPTS:
+                # Under the cap → requeue for the next poll (auto-retry).
+                next_status = "pending"
+                print(f"  ↻ Send failed #{msg_id} (attempt {attempts}/"
+                      f"{MAX_SEND_ATTEMPTS}) — requeued: {err}")
+            else:
+                next_status = "failed"
+                print(f"  ❌ Send failed #{msg_id} (attempt {attempts}/"
+                      f"{MAX_SEND_ATTEMPTS}) — giving up: {err}")
             c.execute(
-                "UPDATE whatsapp_queue SET status = 'failed', "
+                "UPDATE whatsapp_queue SET status = ?, "
                 "error_message = ? WHERE id = ?",
-                (err[:500], msg_id),
+                (next_status, err[:500], msg_id),
             )
             conn.commit()
 
