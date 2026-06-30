@@ -24,6 +24,10 @@ from database import (
     pwa_stage_pending_issues,
     stage_pending_receipts_bulk,
     get_item_bin_locations,
+    get_uom_conversions,
+    add_uom_conversion,
+    delete_uom_conversion,
+    convert_to_base,
     # Phase 7B — Supervisor Material Request workflow
     list_supervisor_requests,
     get_supervisor_request,
@@ -923,6 +927,7 @@ def page_daily_issue_log(user: dict) -> None:
             )
             rcpt_sap = None
             rcpt_category = None
+            rcpt_base_uom = ""
             mtc_number = ""
             mtc_file = None
             if sel_rcpt_item:
@@ -932,6 +937,7 @@ def page_daily_issue_log(user: dict) -> None:
                     if not m.empty:
                         _mat_code = m.iloc[0].get('Material_Code', 'N/A')
                         _uom      = m.iloc[0].get('UOM', 'N/A')
+                        rcpt_base_uom = str(_uom or "").strip()
                         rcpt_category = str(m.iloc[0].get('Category', 'Others') or 'Others')
                         st.markdown(
                             f'<div style="background:rgba(59,130,246,0.09);'
@@ -971,6 +977,50 @@ def page_daily_issue_log(user: dict) -> None:
                         key="rcpt_mtc_file",
                     )
 
+            # ── Pack → base UoM conversions (manage per item) ─────────────
+            # Ledger always stores BASE units; this only helps data entry.
+            rcpt_convs = (
+                get_uom_conversions(rcpt_sap) if rcpt_sap
+                else pd.DataFrame(columns=["id", "Pack_UOM", "Factor"])
+            )
+            if rcpt_sap:
+                with st.expander("📦 Pack / unit conversions for this item", expanded=False):
+                    base_lbl = rcpt_base_uom or "base unit"
+                    if not rcpt_convs.empty:
+                        for _, _cv in rcpt_convs.iterrows():
+                            cc1, cc2 = st.columns([4, 1])
+                            with cc1:
+                                st.markdown(
+                                    f"• **1 {html.escape(str(_cv['Pack_UOM']))}** "
+                                    f"= {float(_cv['Factor']):g} {html.escape(base_lbl)}"
+                                )
+                            with cc2:
+                                if st.button("🗑", key=f"_uomdel_{int(_cv['id'])}"):
+                                    delete_uom_conversion(int(_cv["id"]))
+                                    st.rerun()
+                    else:
+                        st.caption("No pack conversions yet for this item.")
+                    nc1, nc2, nc3 = st.columns([2, 2, 1])
+                    with nc1:
+                        _new_pack = st.text_input(
+                            "Pack unit", placeholder="e.g. Box",
+                            key="_uom_new_pack")
+                    with nc2:
+                        _new_factor = st.number_input(
+                            f"= how many {base_lbl}?",
+                            min_value=0.0, step=1.0, key="_uom_new_factor")
+                    with nc3:
+                        st.markdown("<div style='height:28px'></div>",
+                                    unsafe_allow_html=True)
+                        if st.button("➕ Add", key="_uom_add_btn",
+                                     disabled=not (_new_pack.strip() and _new_factor > 0)):
+                            ok, msg = add_uom_conversion(
+                                rcpt_sap, _new_pack, _new_factor)
+                            (st.toast(f"📦 {msg}", icon="✅") if ok
+                             else st.error(msg))
+                            if ok:
+                                st.rerun()
+
             st.markdown(
                 '<div style="font-size:11px;color:#4A6080;font-weight:700;'
                 'text-transform:uppercase;letter-spacing:0.08em;'
@@ -994,7 +1044,33 @@ def page_daily_issue_log(user: dict) -> None:
                     elif "qty" in col_name.lower() or "quantity" in col_name.lower():
                         # Highlighted, non-editable current-stock badge above the qty field.
                         render_stock_badge(rcpt_site_snap or {}, site_id=site_id)
-                        rcpt_input[col_name] = st.number_input(f"{col_name}*", min_value=0.1, step=1.0, key=f"rcpt_{col_name}")
+                        _base_lbl = rcpt_base_uom or "base unit"
+                        if not rcpt_convs.empty:
+                            # Receive in base UoM OR a defined pack (e.g. Box).
+                            # The ledger always stores BASE units.
+                            _unit_opts = [_base_lbl] + rcpt_convs["Pack_UOM"].tolist()
+                            _recv_unit = st.selectbox(
+                                "Receive in", _unit_opts, index=0,
+                                key=f"rcpt_recvunit_{col_name}",
+                                help="Pick a pack (e.g. Box) to enter pack qty; "
+                                     f"it is stored as {_base_lbl}.",
+                            )
+                            if _recv_unit != _base_lbl:
+                                _pk_qty = st.number_input(
+                                    f"{col_name} (in {_recv_unit})*",
+                                    min_value=0.1, step=1.0,
+                                    key=f"rcpt_{col_name}",
+                                )
+                                _base_qty = convert_to_base(
+                                    rcpt_sap, _recv_unit, _pk_qty)
+                                st.caption(f"= **{_base_qty:g} {_base_lbl}** stored")
+                                rcpt_input[col_name] = _base_qty
+                            else:
+                                rcpt_input[col_name] = st.number_input(
+                                    f"{col_name}*", min_value=0.1, step=1.0,
+                                    key=f"rcpt_{col_name}")
+                        else:
+                            rcpt_input[col_name] = st.number_input(f"{col_name}*", min_value=0.1, step=1.0, key=f"rcpt_{col_name}")
                     elif col_name == "Expiry_Date":
                         rcpt_input[col_name] = st.date_input(
                             f"{col_name} (Optional)", value=None,

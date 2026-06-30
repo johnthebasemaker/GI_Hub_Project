@@ -451,6 +451,41 @@ def check_receipt_flow() -> None:
         conn.close()
 
 
+def check_uom_pack_conversions() -> None:
+    """uom_conversions CRUD + convert_to_base math + guards. Conversions are an
+    entry aid only — the ledger stays in base units."""
+    sap = "SAP-UOM-1"
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO inventory "
+            "(SAP_Code, Equipment_Description, Material_Code, UOM, "
+            " Minimum_Qty, Site_ID, Category, Opening_Stock) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (sap, "UoM Probe", "MC-UOM", "Pcs", 0.0, "HQ", "Others", 0.0),
+        )
+        conn.commit()
+
+        ok, _m = database.add_uom_conversion(sap, "Box", 100.0, conn=conn)
+        assert ok, _m
+        # 1 Box = 100 Pcs → 5 Box = 500 Pcs.
+        assert abs(database.convert_to_base(sap, "Box", 5, conn=conn) - 500.0) < 1e-6
+        # blank / unknown pack → already base units (returned as-is).
+        assert database.convert_to_base(sap, "", 5, conn=conn) == 5
+        assert database.convert_to_base(sap, "Nope", 5, conn=conn) == 5
+        # guards: non-positive factor and pack == base UoM are rejected.
+        assert not database.add_uom_conversion(sap, "Case", 0, conn=conn)[0]
+        assert not database.add_uom_conversion(sap, "Pcs", 10, conn=conn)[0]
+
+        df = database.get_uom_conversions(sap, conn=conn)
+        assert "Box" in set(df["Pack_UOM"]), df.to_dict()
+        cid = int(df[df["Pack_UOM"] == "Box"]["id"].iloc[0])
+        assert database.delete_uom_conversion(cid, conn=conn)
+        assert database.get_uom_conversions(sap, conn=conn).empty
+    finally:
+        conn.close()
+
+
 def check_bin_location_flows_to_ledger() -> None:
     """A Bin_Location on a staged receipt threads through commit → receipts,
     and get_item_bin_locations surfaces it. Pure metadata — stock unaffected."""
@@ -8348,6 +8383,10 @@ def main() -> int:
               check_bin_location_flows_to_ledger,
               "Put-away bin tag survives staging→commit; get_item_bin_locations "
               "surfaces it. Metadata only — no impact on v_site_stock.")
+    run_check("Receipts",    "UoM pack conversions (CRUD + convert_to_base)",
+              check_uom_pack_conversions,
+              "1 Box = N base units; receiving in a pack stores base units. "
+              "Entry aid only — ledger stays single-UoM.")
     run_check("Returns",     "Submit → approve → ledger row",
               check_returns_flow)
     run_check("Returns",     "Reject removes from pending list",

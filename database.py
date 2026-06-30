@@ -288,6 +288,22 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         )
     """)
 
+    # ── UoM pack conversions (base-UoM model) ─────────────────────────────────
+    # The ledger always stores the item's BASE UoM (inventory.UOM). This table
+    # is a data-entry aid only: 1 <Pack_UOM> = <Factor> base units (e.g.
+    # 1 Box = 100 Pcs). Receiving "5 Box" writes 500 base units to receipts —
+    # v_site_stock never reads this table, so identity math is untouched.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS uom_conversions (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            SAP_Code   TEXT NOT NULL,
+            Pack_UOM   TEXT NOT NULL,
+            Factor     REAL NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(SAP_Code, Pack_UOM)
+        )
+    """)
+
     # ── Phase 7A: Registration & Audit Logs ──────────────────────────────────
     c.execute("""
         CREATE TABLE IF NOT EXISTS pending_users (
@@ -5488,6 +5504,118 @@ def get_item_bin_locations(
         if len(out) >= limit:
             break
     return out
+
+
+# ── UoM pack conversions (base-UoM data-entry aid) ─────────────────────────
+def add_uom_conversion(
+    sap_code: str, pack_uom: str, factor: float,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Define/replace a pack: 1 <pack_uom> = <factor> base units. Factor must
+    be > 0; pack_uom must differ from the item's base UoM (a pack equal to the
+    base unit is meaningless)."""
+    sap = (sap_code or "").strip()
+    pack = (pack_uom or "").strip()
+    if not sap or not pack:
+        return False, "SAP code and pack unit are required."
+    try:
+        f = float(factor)
+    except (TypeError, ValueError):
+        return False, "Factor must be a number."
+    if f <= 0:
+        return False, "Factor must be greater than 0."
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        base_uom = conn.execute(
+            "SELECT UOM FROM inventory WHERE TRIM(SAP_Code) = ?", (sap,),
+        ).fetchone()
+        if base_uom and (base_uom[0] or "").strip().lower() == pack.lower():
+            return False, "Pack unit must differ from the item's base UoM."
+        conn.execute(
+            "INSERT INTO uom_conversions (SAP_Code, Pack_UOM, Factor) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(SAP_Code, Pack_UOM) DO UPDATE SET Factor = excluded.Factor",
+            (sap, pack, f),
+        )
+        conn.commit()
+        return True, f"1 {pack} = {f:g} base unit(s)."
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_uom_conversions(
+    sap_code: str = None, conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """All pack conversions, or just those for one item (sap_code given)."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        if sap_code:
+            df = pd.read_sql(
+                "SELECT id, SAP_Code, Pack_UOM, Factor FROM uom_conversions "
+                "WHERE TRIM(SAP_Code) = ? ORDER BY Pack_UOM",
+                conn, params=((sap_code or "").strip(),),
+            )
+        else:
+            df = pd.read_sql(
+                "SELECT id, SAP_Code, Pack_UOM, Factor FROM uom_conversions "
+                "ORDER BY SAP_Code, Pack_UOM", conn,
+            )
+    finally:
+        if _owns:
+            conn.close()
+    return df
+
+
+def delete_uom_conversion(
+    conv_id: int, conn: sqlite3.Connection = None,
+) -> bool:
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            "DELETE FROM uom_conversions WHERE id = ?", (int(conv_id),))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        if _owns:
+            conn.close()
+
+
+def convert_to_base(
+    sap_code: str, pack_uom: str, pack_qty: float,
+    conn: sqlite3.Connection = None,
+) -> float:
+    """Convert a quantity entered in `pack_uom` to the item's BASE units.
+    If pack_uom is blank/unknown for the item, the quantity is returned as-is
+    (already base units). Never raises — entry helper."""
+    try:
+        q = float(pack_qty)
+    except (TypeError, ValueError):
+        return 0.0
+    pack = (pack_uom or "").strip()
+    if not pack:
+        return q
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT Factor FROM uom_conversions "
+            "WHERE TRIM(SAP_Code) = ? AND Pack_UOM = ?",
+            ((sap_code or "").strip(), pack),
+        ).fetchone()
+    finally:
+        if _owns:
+            conn.close()
+    if not row:
+        return q   # unknown pack → treat as already-base
+    return round(q * float(row[0]), 4)
 
 
 def get_whatsapp_log(
