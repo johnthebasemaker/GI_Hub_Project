@@ -112,9 +112,13 @@ never *swapped in*, until the dual-CI phase proves parity.
   `get_connection()` is **untouched** and remains the runtime path — **zero
   behavior change**, verified by a regression check (`get_connection()` still
   returns `sqlite3.Connection`). 577 bug_check / 21 crawler green on SQLite.
-- **Phase 2 — Portability helpers.** Add `column_exists()`, `upsert()`,
-  `now_sql()`, `date_diff_days()` and route the 111 PRAGMA / 41 upsert / 34 date
-  sites through them. Still SQLite in prod; tests green throughout.
+- **Phase 2 — Portability helpers. ✅ HELPERS DONE.** Added `db_dialect()`,
+  `column_exists()`, `now_sql()`, `days_ago_sql()`, `date_diff_days_sql()` —
+  each emits *identical* SQLite behavior and the correct Postgres form, with a
+  regression check. First self-heal site (`stock_adjustments.Lot_Number`) routed
+  through `column_exists()` to prove the pattern. **Remaining ~185 legacy sites
+  are migrated incrementally and validated against real Postgres under Phase 4
+  dual-CI** (the safe way — never a blind sed). Still SQLite in prod; tests green.
 - **Phase 3 — Param style.** Migrate raw `?` SQL to SQLAlchemy `text()` + named
   params, module by module, suite green after each. The largest mechanical phase.
 - **Phase 4 — Dual-backend CI.** Spin a throwaway Postgres (docker) and run the

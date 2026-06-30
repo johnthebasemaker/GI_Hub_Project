@@ -2682,6 +2682,45 @@ def check_postgres_engine_seam() -> None:
         assert conn.execute(text("SELECT 1")).scalar() == 1
 
 
+def check_postgres_phase2_helpers() -> None:
+    """Phase 2 portability primitives emit identical SQLite behavior and the
+    correct Postgres form, and run on SQLite."""
+    import os
+    # dialect detection
+    _saved = os.environ.pop("DATABASE_URL", None)
+    try:
+        assert database.db_dialect() == "sqlite"
+        os.environ["DATABASE_URL"] = "postgresql+psycopg2://u:p@h/db"
+        assert database.db_dialect() == "postgresql"
+    finally:
+        os.environ.pop("DATABASE_URL", None)
+        if _saved is not None:
+            os.environ["DATABASE_URL"] = _saved
+
+    # now_sql is the standard, dialect-agnostic token
+    assert database.now_sql() == "CURRENT_TIMESTAMP"
+
+    # date expressions — both dialect forms
+    assert database.days_ago_sql(7, "sqlite") == "date('now','-7 days')"
+    assert database.days_ago_sql(7, "postgresql") == "(CURRENT_DATE - INTERVAL '7 days')"
+    assert "julianday" in database.date_diff_days_sql("a", "b", "sqlite")
+    assert database.date_diff_days_sql("a", "b", "postgresql") == "(date(a) - date(b))"
+
+    conn = database.get_connection()
+    try:
+        # column_exists matches the PRAGMA truth on a real table
+        assert database.column_exists("inventory", "SAP_Code", conn=conn) is True
+        assert database.column_exists("inventory", "Nope_Col", conn=conn) is False
+        # the SQLite date expressions actually execute
+        d = conn.execute(
+            f"SELECT {database.date_diff_days_sql(chr(39)+'2026-01-10'+chr(39), chr(39)+'2026-01-01'+chr(39), 'sqlite')}"
+        ).fetchone()[0]
+        assert int(d) == 9, f"date_diff_days_sql expected 9, got {d}"
+        conn.execute(f"SELECT {database.days_ago_sql(3, 'sqlite')}").fetchone()
+    finally:
+        conn.close()
+
+
 def check_error_boundary() -> None:
     """The global error boundary: friendly one-liner + ref ID to the user,
     full traceback to logs/app_errors.log, and st.rerun()/st.stop() signals
@@ -8801,6 +8840,10 @@ def main() -> int:
               check_postgres_engine_seam,
               "get_database_url() defaults to SQLite (DATABASE_URL overrides); "
               "get_engine() runs; get_connection() still returns sqlite3.")
+    run_check("Postgres",    "Phase 2 portability helpers (dialect-correct SQL)",
+              check_postgres_phase2_helpers,
+              "db_dialect/column_exists/now_sql/days_ago_sql/date_diff_days_sql "
+              "emit identical SQLite behavior + the correct Postgres form.")
     run_check("Resilience",  "global error boundary (friendly UI + dev log)",
               check_error_boundary,
               "Users get a one-line message + ref ID; full traceback logged to "

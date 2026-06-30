@@ -181,6 +181,80 @@ def get_engine(url: str = None):
 
 
 # ---------------------------------------------------------------------------
+# Phase 2 — dialect-portability helpers (see docs/POSTGRES_MIGRATION.md)
+# ---------------------------------------------------------------------------
+# Small primitives that emit the right SQL for the active dialect so the
+# SQLite-isms (PRAGMA self-heal, date('now'), julianday) can be expressed
+# portably. These are ADDITIVE: they emit *identical* behavior on SQLite, so
+# adopting them never changes the current app. Existing call sites migrate to
+# them incrementally and are validated against real Postgres under the dual-CI
+# phase before any cutover.
+def db_dialect(conn=None) -> str:
+    """'sqlite' or 'postgresql' — the active/target dialect.
+
+    A raw sqlite3 connection is always 'sqlite'. Otherwise we read the resolved
+    DATABASE_URL (so callers can ask the target dialect before connecting).
+    """
+    if conn is not None and isinstance(conn, sqlite3.Connection):
+        return "sqlite"
+    return "postgresql" if get_database_url().startswith(
+        ("postgresql", "postgres")) else "sqlite"
+
+
+def column_exists(table: str, col: str, conn: sqlite3.Connection = None) -> bool:
+    """Portable 'does this column exist?' — SQLite uses PRAGMA table_info;
+    Postgres uses information_schema. Replaces the repeated PRAGMA self-heal
+    probe without changing its SQLite result."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        if isinstance(conn, sqlite3.Connection):
+            return any(r[1] == col
+                       for r in conn.execute(f"PRAGMA table_info({table})").fetchall())
+        # SQLAlchemy connection (Postgres / other)
+        from sqlalchemy import text
+        return conn.execute(
+            text("SELECT 1 FROM information_schema.columns "
+                 "WHERE table_name=:t AND column_name=:c"),
+            {"t": table, "c": col},
+        ).first() is not None
+    finally:
+        if _owns:
+            conn.close()
+
+
+def now_sql() -> str:
+    """SQL for 'right now' — standard, identical on both dialects."""
+    return "CURRENT_TIMESTAMP"
+
+
+def days_ago_sql(days: int, dialect: str = None) -> str:
+    """SQL expression for the date `days` before today.
+
+    SQLite:    date('now','-7 days')
+    Postgres:  (CURRENT_DATE - INTERVAL '7 days')
+    """
+    d = dialect or db_dialect()
+    n = int(days)
+    if d == "postgresql":
+        return f"(CURRENT_DATE - INTERVAL '{n} days')"
+    return f"date('now','-{n} days')"
+
+
+def date_diff_days_sql(later: str, earlier: str, dialect: str = None) -> str:
+    """SQL expression for the integer day difference (later − earlier).
+
+    SQLite:    CAST(julianday(later) - julianday(earlier) AS INTEGER)
+    Postgres:  (date(later) - date(earlier))
+    """
+    d = dialect or db_dialect()
+    if d == "postgresql":
+        return f"(date({later}) - date({earlier}))"
+    return f"CAST(julianday({later}) - julianday({earlier}) AS INTEGER)"
+
+
+# ---------------------------------------------------------------------------
 # SCHEMA INIT — accepts external conn for testability
 # ---------------------------------------------------------------------------
 def init_db(conn: sqlite3.Connection = None) -> None:
@@ -614,8 +688,8 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     # Self-heal: link a disposal adjustment back to the lot it writes off, so
     # approval can tag the write-off consumption with the lot AND flip the lot
     # to 'disposed' (NULL for ordinary cycle-count adjustments).
-    c.execute("PRAGMA table_info(stock_adjustments)")
-    if "Lot_Number" not in {r[1] for r in c.fetchall()}:
+    # Phase 2 — uses the portable column_exists() helper (identical on SQLite).
+    if not column_exists("stock_adjustments", "Lot_Number", conn=conn):
         c.execute("ALTER TABLE stock_adjustments ADD COLUMN Lot_Number TEXT")
 
     # ── bug_reports (user feedback: bugs + feature requests) ────────────
