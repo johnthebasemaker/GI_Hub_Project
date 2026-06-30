@@ -26,7 +26,10 @@
 > ### 🔒 Project direction (locked)
 > **The SME integration is DONE and FROZEN.** Future development focus shifts to **the ERP project's own features** (see §3 "Remaining Features — Prioritized"). Touch the SME code only to fix a regression that is *proven* against the 522-green test baseline — and add a regression test for any SME fix. Do not refactor the SME drop-in for style; it is intentionally a verbatim port.
 >
-> **Full architecture details: §2W (R20.5 + R20.5.1 + R20.5.2). Test baseline: `python3 bug_check.py` → 525 passing (17 pre-existing env-only failures: dotenv/bcrypt/fpdf/pdfplumber — unrelated to app logic).**
+> **Full architecture details: §2W (R20.5 + R20.5.1 + R20.5.2). Test baseline (2026-06-30): `.venv/bin/python bug_check.py` → 560 passing / 0 failed in the full venv · `test_ui_crawler.py` → 21/21. (A bare env without optional deps skips some checks.)**
+>
+> ### ⚠️ NOTE FOR A FRESH SESSION — recent SME edits are INTENTIONAL, not regressions
+> The 2026-06-29/30 session made several **surgical, user-requested, regression-tested** edits to the frozen drop-in (`material_estimator_portal.py`) — admin site picker, hidden SME sidebar, KPI-modal drill-downs, filter cross-filtering, and the cold-start import fix. They are guarded by `bug_check.py` checks under the **"Material Estimator"** group. Do NOT revert them as "frozen-file violations" — they extend, not refactor, and all 560 checks stay green. The freeze still holds for *new* work: touch SME only for a proven regression + add a test.
 >
 > ### 🧹 Two footguns that bit us twice (do not repeat)
 > - **Deleting/renaming an SME module?** `grep -rn "pages_internal.material_estimator" --include=*.py` first. A single missed inline import inside a function body stays invisible until that code path renders (bare-mode import tests skip Streamlit-gated branches). This crashed the SK page in R20.5.2.
@@ -34,7 +37,29 @@
 
 ---
 
-**Last update:** 2026-06-28 — **MAN-HOUR FEATURE COMPLETE; WORKSTREAM C UNPAUSED.** Man-Hour & Labor Tracking shipped + documented (USER_MANUAL §19, SOP §3.3a) — see §2Z. **Workstream C (Docker/Deployment) is ACTIVE again**: latest step wired the **Certbot + Nginx TLS** stack in `docker-compose.yml` (certbot service, `certbot-etc`/`certbot-www` volumes, nginx :80+:443 with a 6h reload loop) + `scripts/init-letsencrypt.sh` for first-boot cert issuance — see §2Y. Test baseline **554 bug_check checks green**. The earlier round-20.5.2 note is preserved below.
+**Last update:** 2026-06-30 — **WORKSTREAM C INFRA + STREAMLIT-CLOUD DEMO + ESTIMATOR/LOGIN POLISH.** Everything below is committed and pushed (`origin/main == HEAD`). Tests: **560 bug_check / 0 failed · UI crawler 21/21.** Per-item detail is in the bullets below and the commit messages (`git log --oneline`).
+
+> ### 📍 WHERE WE ARE — read this first
+>
+> **DONE this session (all committed + pushed, newest first):**
+> - **Estimator filter cross-filtering** — Dashboard now cross-filters System Code ↔ Substrate (so impossible combos like *Conductive Coating + PU codes* can't be picked); Material Requirement now cascades Location→Type→Code; Overview + Location Report already cascaded. Only narrows *options*; downstream math untouched. (`4aa2de5`, `3f2bcd1`)
+> - **Cold-start `ImportError` FIXED (root cause).** `pages_internal/__init__.py` now **lazy-imports** page modules via PEP-562 `__getattr__` (was eager → Streamlit's loader saw the package half-built → `cannot import name page_material_estimator`). Race gone (30/30 clean). Also removed a dead cross-import in the SME module. (`e77c48a`, `afcd3d8`)
+> - **Login focus bug FIXED.** Sign-in inputs wrapped in `st.form` → typing the username no longer reruns + steals focus from the password; Tab → password, Enter → login. (`afcd3d8`, `auth.py`)
+> - **KPI drill-downs** → centered **navy/gold `st.dialog` modal** (was a clipped `st.popover`); card labels bold. (`fee078d`, `afcd3d8`)
+> - **Admin Material-Estimator site picker** + **hid the SME's own sidebar** (`_SME_LEGACY_SIDEBAR=False`; theme still applied). (`ad57b00`)
+> - **Meta WhatsApp Cloud API sender** — `whatsapp_worker._send_via_meta` + `WHATSAPP_PROVIDER` router (default unset = existing Twilio/macOS/pywhatkit chain, so the **Mac demo is unchanged**) + a dedicated `worker` compose service. Webhook receiver stubs already in `services/whatsapp_webhook.py` + `services/rag_api.py`. Secrets via templates: `.streamlit/secrets.toml.example` + `.env.example` (both gitignored). (`3e10451`, `f3d706b`)
+> - **Streamlit-Cloud readiness** — slim `requirements.txt` (CV deps `ultralytics`/`opencv` commented out; gated OFF anyway) + `packages.txt`(`libzbar0`); **added `pdfplumber`** (was missing → cloud crash) + **pinned `streamlit>=1.58`** (fixes the HOD `width="stretch"` TypeError) + **`watchdog`**. Sanitized **`demo_seed.db`** + a `DB_FILE` fallback (`gi_database.db` if present, else `demo_seed.db`) so the public demo runs populated without exposing real data. (`9cb8d7a`, `483b410`, `3f2bcd1`)
+> - **Certbot + Nginx TLS** wired in `docker-compose.yml` + `scripts/init-letsencrypt.sh` (first-boot cert). (`06ead58`, §2Y)
+>
+> **PENDING / NEXT (nothing half-done in code — these are external/ops steps):**
+> 1. **Provision the Hetzner server** — user chose **CPX42 (8 vCPU / 16 GB / 320 GB)**. Not bought yet. When live: harden → `./scripts/init-letsencrypt.sh` → `docker compose up -d` → register the Meta webhook at `https://giinventory.com/api/whatsapp/webhook`.
+> 2. **Wire Meta WhatsApp secrets** — code is ready; user supplies `META_PHONE_NUMBER_ID` / `META_ACCESS_TOKEN` (+ webhook `META_WEBHOOK_VERIFY_TOKEN` / `META_APP_SECRET`) in the gitignored `.streamlit/secrets.toml` (local) or `.env` (server) — **never in chat.** Still needs Meta business verification + approved message templates for business-initiated sends.
+> 3. **Streamlit-Cloud demo** — redeploy from GitHub to pick up pdfplumber/streamlit-pin/watchdog/cross-filter. ⚠️ The user **manually uploaded the real `gi_database.db`** to the remote (commit `c558bba`) for a trusted-person demo — so the demo shows real data and the DB is now tracked again; a future `git add -A` would push DB changes. (The DB-fallback means cloud uses the committed `gi_database.db` when present.)
+> 4. **Optional:** turn CV (Smart Scan) ON later — uncomment `ultralytics`/`opencv` + add `libgl1` to `packages.txt` + resize the box. The dependent-filter rollout is COMPLETE.
+>
+> **Frozen contracts still intact:** SME drop-in reads `sme_*` read-only; Man-Hour writes only `mh_*`; EOD path, identity math, RBAC, RL/BL separation, price masking — all untouched.
+
+**Prior update:** 2026-06-28 — **MAN-HOUR FEATURE COMPLETE; WORKSTREAM C UNPAUSED.** Man-Hour & Labor Tracking shipped + documented (USER_MANUAL §19, SOP §3.3a) — see §2Z. Certbot + Nginx TLS wired (§2Y).
 
 **Prior update:** 2026-06 round 20.5.2 — **TWO LIVE CRASHES FIXED.** (1) SK Consumption page threw `ModuleNotFoundError: No module named 'pages_internal.material_estimator'` — `daily_issue_log.py` still imported `days_of_continuation_block` from the R19 package R20 deleted; vendored the function in-file and removed the dead import (it was the only live reference). (2) Admin Material Estimator → Location Report threw `IndexError: single positional indexer is out-of-bounds` — `st.session_state.loc_order` held equipment tags removed by a re-bootstrap; now reconciled against the current `eq_master` each run. +3 regression checks. See §2W.2. **Tests: 525 / 542 (57 SME-related green).**
 
