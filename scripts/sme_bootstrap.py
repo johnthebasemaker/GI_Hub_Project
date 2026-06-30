@@ -116,9 +116,9 @@ def _clean_equipment(df_c: pd.DataFrame) -> pd.DataFrame:
         "Lining_Area/location": "Lining_Area_Location",
     })
     keep = [
-        "Sl_No", "Project", "WBS_No", "IO_No", "Location", "Type",
-        "Substrate", "Equipment_Tag_No.", "Name", "Drawing_No", "Design",
-        "Dia_L", "Ht_W", "Equipment_Total_SQM", "Remaraks",
+        "Sl_No", "Project", "WBS_No", "IO_No", "Sub_Location", "Location",
+        "Type", "Substrate", "Equipment_Tag_No.", "Name", "Drawing_No",
+        "Design", "Dia_L", "Ht_W", "Equipment_Total_SQM", "Remaraks",
         "Lining_System_Code", "Lining_System_Short_Name", "Lining_Type",
         "Lining_System", "Material_Spec", "Lining_Area_Location",
         "Surface_Area_SQM",
@@ -126,13 +126,35 @@ def _clean_equipment(df_c: pd.DataFrame) -> pd.DataFrame:
     df = df[[c for c in keep if c in df.columns]].copy()
     df = df.dropna(subset=["Equipment_Tag_No.", "Lining_System_Code"])
 
-    for col in ("Sl_No", "Project", "WBS_No", "IO_No", "Drawing_No",
-                "Design", "Dia_L", "Ht_W", "Remaraks", "Equipment_Tag_No.",
-                "Name", "Location", "Type", "Substrate",
+    for col in ("Sl_No", "Project", "WBS_No", "IO_No", "Sub_Location",
+                "Drawing_No", "Design", "Dia_L", "Ht_W", "Remaraks",
+                "Equipment_Tag_No.", "Name", "Location", "Type", "Substrate",
                 "Lining_System_Short_Name", "Lining_Type", "Lining_System",
                 "Material_Spec", "Lining_Area_Location"):
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip().replace({"nan": None})
+
+    # Normalize Location casing to the portal's canonical LOCATION_ORDER
+    # (e.g. "BROWN FIELD" → "Brown Field") so the dashboard shows one entry
+    # per location instead of case-variant duplicates.
+    _LOCATION_CANON = {"Brown Field", "TRAIN J", "TRAIN K"}
+    _loc_lookup = {c.lower(): c for c in _LOCATION_CANON}
+    if "Location" in df.columns:
+        df["Location"] = df["Location"].map(
+            lambda v: _loc_lookup.get(str(v).strip().lower(), v)
+            if v is not None else v
+        )
+
+    # Drop rows whose Lining_System_Code is not numeric. The 2026-06 file
+    # carries "To_Be_Confirmed_LSC" placeholder rows for equipment not yet
+    # assigned a lining system — they can't be material-estimated and would
+    # break the portal's integer code-sort. Skip them (and report the count).
+    _code_num = pd.to_numeric(df["Lining_System_Code"], errors="coerce")
+    _dropped = int(_code_num.isna().sum())
+    if _dropped:
+        print(f"  Skipping {_dropped} row(s) with non-numeric "
+              f"Lining_System_Code (e.g. To_Be_Confirmed_LSC).")
+    df = df[_code_num.notna()].copy()
 
     df["Lining_System_Code"] = (
         df["Lining_System_Code"].astype(float).astype(int).astype(str)
@@ -151,6 +173,43 @@ def _clean_equipment(df_c: pd.DataFrame) -> pd.DataFrame:
     if before != after:
         print(f"  [warn] dropped {before - after} equipment rows "
               f"with null / zero Surface_Area_SQM")
+
+    # Aggregate area-split rows. The file lists one row per physical area
+    # (Bottom, Shell, Dish End…) for a given equipment+lining-code, each with
+    # its own SQM. sme_equipment holds one row per (tag, code), so SUM the area
+    # SQM into the per-(tag,code) total (else the first area would win and the
+    # rest would be silently dropped → undercounted material). Area labels are
+    # joined for context; every other field takes the first non-empty value.
+    _GROUP = ["Equipment_Tag_No.", "Lining_System_Code"]
+
+    def _first_real(s):
+        for x in s:
+            if pd.notna(x) and str(x).strip() not in ("", "None", "nan"):
+                return x
+        return None
+
+    def _join_areas(s):
+        seen, out = set(), []
+        for x in s:
+            t = "" if x is None else str(x).strip()
+            if t and t not in ("None", "nan") and t not in seen:
+                seen.add(t)
+                out.append(t)
+        return " + ".join(out) if out else None
+
+    agg_spec = {
+        c: _first_real for c in df.columns
+        if c not in _GROUP and c not in ("Surface_Area_SQM", "Lining_Area_Location")
+    }
+    agg_spec["Surface_Area_SQM"] = "sum"
+    if "Lining_Area_Location" in df.columns:
+        agg_spec["Lining_Area_Location"] = _join_areas
+
+    _combos_before = len(df)
+    df = df.groupby(_GROUP, as_index=False).agg(agg_spec)
+    if len(df) != _combos_before:
+        print(f"  Aggregated {_combos_before} area rows → {len(df)} "
+              f"unique (tag, code) rows (SQM summed).")
     return df
 
 
@@ -276,11 +335,11 @@ def _load_equipment(
             "INSERT OR IGNORE INTO sme_equipment "
             "(Site_ID, Equipment_Tag_No, Name, Location, Type, Substrate, "
             " Lining_System_Code, Surface_Area_SQM, "
-            " Sl_No, Project, WBS_No, IO_No, Drawing_No, Design, "
+            " Sl_No, Project, WBS_No, IO_No, Sub_Location, Drawing_No, Design, "
             " Dia_L, Ht_W, Equipment_Total_SQM, Remaraks, "
             " Lining_System_Short_Name, Lining_Type, Lining_System, "
             " Material_Spec, Lining_Area_Location) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
             "        ?, ?, ?, ?, ?)",
             (
                 site_id,
@@ -288,13 +347,18 @@ def _load_equipment(
                 r.get("Name"),
                 r.get("Location"),
                 r.get("Type"),
-                r.get("Substrate") or r.get("Lining_Type"),  # Substrate fallback
+                # Substrate is the xlsx Substrate column ONLY (TANK / VESSEL /
+                # CONCRETE). It is a DIFFERENT concept from Lining_Type and must
+                # never borrow from it — doing so caused the R-fix data bug where
+                # Substrate held lining names and Lining_Type was empty.
+                r.get("Substrate"),
                 str(r["Lining_System_Code"]).strip(),
                 float(r["Surface_Area_SQM"]),
                 r.get("Sl_No"),
                 r.get("Project"),
                 r.get("WBS_No"),
                 r.get("IO_No"),
+                r.get("Sub_Location"),
                 r.get("Drawing_No"),
                 r.get("Design"),
                 r.get("Dia_L"),

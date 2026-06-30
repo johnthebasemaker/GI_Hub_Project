@@ -1769,6 +1769,8 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         "ALTER TABLE sme_equipment ADD COLUMN Project TEXT",
         "ALTER TABLE sme_equipment ADD COLUMN WBS_No TEXT",
         "ALTER TABLE sme_equipment ADD COLUMN IO_No TEXT",
+        # Sub_Location replaced IO# in the 2026-06 Equipment.xlsx revision.
+        "ALTER TABLE sme_equipment ADD COLUMN Sub_Location TEXT",
         "ALTER TABLE sme_equipment ADD COLUMN Drawing_No TEXT",
         "ALTER TABLE sme_equipment ADD COLUMN Design TEXT",
         "ALTER TABLE sme_equipment ADD COLUMN Dia_L TEXT",

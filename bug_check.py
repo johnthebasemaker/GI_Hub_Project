@@ -486,6 +486,62 @@ def check_uom_pack_conversions() -> None:
         conn.close()
 
 
+def check_sme_equipment_loader_mapping() -> None:
+    """The SME equipment loader must (1) put the xlsx Substrate column into
+    Substrate — NOT Lining_Type, (2) populate Lining_Type, (3) SUM area-split
+    SQM per (tag, code) and join area labels, (4) normalize Location casing,
+    (5) capture Sub_Location, (6) drop non-numeric (To_Be_Confirmed) codes."""
+    import importlib
+    smeboot = importlib.import_module("scripts.sme_bootstrap")
+    raw = pd.DataFrame([
+        # One equipment+code split across two physical areas → SQM must sum.
+        {"Equipment_Tag_No.": "T-1", "Lining_System_Code": 2,
+         "Substrate": "TANK", "Lining_Type": "Rubber Lining",
+         "Location": "BROWN FIELD", "Sub_Location": "SL-1",
+         "Lining_Area/location": "Bottom", "Surface_Area_SQM": 10.0,
+         "Equipment Total SQM": 15.0, "Name": "Tank 1", "Type": "ME"},
+        {"Equipment_Tag_No.": "T-1", "Lining_System_Code": 2,
+         "Substrate": "TANK", "Lining_Type": "Rubber Lining",
+         "Location": "BROWN FIELD", "Sub_Location": "SL-1",
+         "Lining_Area/location": "Shell", "Surface_Area_SQM": 5.0,
+         "Equipment Total SQM": 15.0, "Name": "Tank 1", "Type": "ME"},
+        # Placeholder code → must be skipped (would break the int code-sort).
+        {"Equipment_Tag_No.": "To_Be_Confirmed_ETN",
+         "Lining_System_Code": "To_Be_Confirmed_LSC",
+         "Substrate": "CONCRETE SUBSTRATE", "Lining_Type": "Carbon Brick Lining",
+         "Location": "TRAIN J", "Sub_Location": "SL-X",
+         "Lining_Area/location": "Floor", "Surface_Area_SQM": 7.0,
+         "Equipment Total SQM": 7.0, "Name": "TBC", "Type": "CV"},
+    ])
+    clean = smeboot._clean_equipment(raw)
+    conn = database.get_connection()
+    try:
+        n = smeboot._load_equipment(conn, clean, site_id="ZZTEST", force=True)
+        conn.commit()
+        row = conn.execute(
+            "SELECT Substrate, Lining_Type, Surface_Area_SQM, "
+            "       Lining_Area_Location, Location, Sub_Location "
+            "FROM sme_equipment WHERE Site_ID='ZZTEST' AND Equipment_Tag_No='T-1'"
+        ).fetchone()
+        assert row is not None, "T-1 not loaded"
+        assert row[0] == "TANK", f"Substrate must be the xlsx Substrate, got {row[0]!r}"
+        assert row[1] == "Rubber Lining", f"Lining_Type empty/wrong: {row[1]!r}"
+        assert abs(float(row[2]) - 15.0) < 1e-6, f"area SQM must sum to 15, got {row[2]}"
+        assert "Bottom" in row[3] and "Shell" in row[3], f"areas not joined: {row[3]!r}"
+        assert row[4] == "Brown Field", f"Location casing not normalized: {row[4]!r}"
+        assert row[5] == "SL-1", f"Sub_Location not captured: {row[5]!r}"
+        # Placeholder-code row must have been dropped entirely.
+        tbc = conn.execute(
+            "SELECT COUNT(*) FROM sme_equipment "
+            "WHERE Site_ID='ZZTEST' AND Equipment_Tag_No LIKE 'To_Be_Confirmed%'"
+        ).fetchone()[0]
+        assert tbc == 0, "non-numeric-code placeholder row was not skipped"
+    finally:
+        conn.execute("DELETE FROM sme_equipment WHERE Site_ID='ZZTEST'")
+        conn.commit()
+        conn.close()
+
+
 def check_stock_reservations() -> None:
     """Approving a cross-site transfer earmarks stock at the target site;
     Available = Current − Reserved; fulfilling/rejecting releases it. The
@@ -9513,6 +9569,12 @@ def main() -> int:
     run_check("Material Estimator", "KPI drill-down is a centered modal (not clipped popover)",
               check_kpi_drilldown_is_modal,
               "dbl_click_metric opens a navy/gold st.dialog so wide tables pop fully.")
+    run_check("Material Estimator", "equipment loader: Substrate≠Lining_Type, area SQM sums",
+              check_sme_equipment_loader_mapping,
+              "Substrate column loads the xlsx Substrate (TANK/VESSEL/CONCRETE), "
+              "Lining_Type populated, area-split SQM summed per (tag,code), "
+              "Location casing normalized, Sub_Location captured, To_Be_Confirmed "
+              "codes skipped.")
     run_check("Material Estimator", "admin site picker + SME sidebar suppressed",
               check_sme_admin_site_picker_and_sidebar_hidden,
               "Admin gets a single-site picker; SME's own sidebar chrome is hidden "
