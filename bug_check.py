@@ -2428,6 +2428,17 @@ def check_pages_internal_exports_resolve():
         "SME portal must not module-level import back through the pages_internal package"
 
 
+def check_kpi_drilldown_is_modal():
+    import pathlib
+    src = pathlib.Path(REPO_ROOT / "pages_internal" /
+                       "material_estimator_portal.py").read_text(encoding="utf-8")
+    assert "@st.dialog(" in src and "def _kpi_drilldown_dialog(" in src, \
+        "KPI drill-down must open a centered st.dialog modal"
+    assert 'key=f"kpimetric_{state_key}"' in src, \
+        "KPI metric must be a keyed button (card-CSS hook + modal trigger)"
+    assert "_kpi_drilldown_dialog()" in src, "metric click must open the modal"
+
+
 def check_sme_admin_site_picker_and_sidebar_hidden():
     import pathlib
     src = pathlib.Path(REPO_ROOT / "pages_internal" /
@@ -9113,6 +9124,9 @@ def main() -> int:
               check_pages_internal_exports_resolve,
               "every page_* export is importable; SME portal no longer re-enters "
               "the half-built package at module level.")
+    run_check("Material Estimator", "KPI drill-down is a centered modal (not clipped popover)",
+              check_kpi_drilldown_is_modal,
+              "dbl_click_metric opens a navy/gold st.dialog so wide tables pop fully.")
     run_check("Material Estimator", "admin site picker + SME sidebar suppressed",
               check_sme_admin_site_picker_and_sidebar_hidden,
               "Admin gets a single-site picker; SME's own sidebar chrome is hidden "

@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-06-30T08:04:37`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_ce6s6451/bug_check.db`  
-**Total checks:** 558  
-**Passing:** 558  
+**Run at:** `2026-06-30T08:14:35`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_mbcuwc3d/bug_check.db`  
+**Total checks:** 559  
+**Passing:** 559  
 **Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -73,8 +73,9 @@ _None — every check passed._
 - ✅ attendance workbook parser (shared by UI + bootstrap)
 - ✅ bulk import — replace-by-date idempotent vs append
 
-### Material Estimator — 2/2
+### Material Estimator — 3/3
 - ✅ pages_internal exports resolve (no cold-start ImportError)
+- ✅ KPI drill-down is a centered modal (not clipped popover)
 - ✅ admin site picker + SME sidebar suppressed
 
 ### Math — 1/1

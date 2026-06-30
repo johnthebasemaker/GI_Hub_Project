@@ -1713,6 +1713,56 @@ def sqm_can_do(alloc_df: pd.DataFrame, tag: str, code: str) -> tuple[float, floa
     return round(total_sqm, 2), can, short
 
 
+@st.dialog(" ", width="large")
+def _kpi_drilldown_dialog() -> None:
+    """Centered modal that renders the active KPI drill-down (navy/gold brand).
+    Reads its payload from session_state so it survives in-modal reruns."""
+    p = st.session_state.get("_kpi_drill", {}) or {}
+    title = p.get("title", "Details")
+    help_text = p.get("help", "")
+    _df = p.get("df")
+    _df = _df if _df is not None else pd.DataFrame()
+    st.markdown(
+        f"<div style='font-family:\"JetBrains Mono\",monospace;font-weight:700;"
+        f"font-size:1.15rem;color:#F0C040;border-bottom:2px solid "
+        f"rgba(240,192,64,.35);padding:.1rem 0 .55rem;margin-bottom:.7rem;'>"
+        f"{title}</div>", unsafe_allow_html=True)
+    if help_text:
+        st.caption(help_text)
+    if len(_df):
+        _MAX_ROWS = 500
+        if len(_df) > _MAX_ROWS:
+            st.caption(f"Showing top {_MAX_ROWS:,} of {len(_df):,} rows")
+            _df = _df.head(_MAX_ROWS)
+        st.dataframe(_df, use_container_width=True, hide_index=True,
+                     height=min(35 * (len(_df) + 1) + 3, 560))
+    else:
+        st.info("No detail data available for this metric.")
+
+
+_KPI_CARD_CSS = """<style>
+[class*="st-key-kpimetric_"] button{
+    display:flex!important;flex-direction:column!important;align-items:flex-start!important;
+    gap:.15rem;background:linear-gradient(160deg,#0E1B30,#16243C)!important;
+    border:1px solid #2A4060!important;border-radius:14px!important;
+    padding:.7rem .95rem!important;min-height:94px;width:100%;
+    box-shadow:0 2px 10px rgba(0,0,0,.25);transition:transform .12s,border-color .12s;}
+[class*="st-key-kpimetric_"] button:hover{
+    border-color:rgba(240,192,64,.55)!important;transform:translateY(-1px);}
+[class*="st-key-kpimetric_"] button p{margin:0!important;line-height:1.2;}
+[class*="st-key-kpimetric_"] button p:first-child{
+    color:#8FA3B8!important;font-size:.7rem!important;font-weight:600!important;
+    letter-spacing:.05em;text-transform:uppercase;}
+[class*="st-key-kpimetric_"] button p:nth-child(2){
+    color:#F0C040!important;font-size:1.5rem!important;font-weight:800!important;
+    font-family:'JetBrains Mono',monospace;}
+[class*="st-key-kpimetric_"] button p:nth-child(3){
+    color:#8FA3B8!important;font-size:.72rem!important;}
+[data-testid="stDialog"] div[role="dialog"]{
+    border:1px solid rgba(240,192,64,.30)!important;border-radius:16px!important;}
+</style>"""
+
+
 def dbl_click_metric(
     label: str,
     value: str,
@@ -1723,25 +1773,23 @@ def dbl_click_metric(
     delta: str = "",
     height: int = 95,
 ) -> None:
-    """Renders a metric card popover — click opens the drill-down table."""
-    btn_label = f"**{label}**\n\n{value}"
+    """KPI metric card → click opens a centered navy/gold modal drill-down
+    (replaces the old clipped st.popover so wide tables pop fully)."""
+    if not st.session_state.get("_kpi_css_injected"):
+        st.markdown(_KPI_CARD_CSS, unsafe_allow_html=True)
+        st.session_state["_kpi_css_injected"] = True
+
+    btn_label = f"{label}\n\n{value}"
     if delta:
         btn_label += f"\n\n{delta}"
-    with st.popover(btn_label, use_container_width=True):
-        st.subheader(drilldown_title)
-        if help_text:
-            st.caption(help_text)
-        _df = drilldown_df if drilldown_df is not None else pd.DataFrame()
-        if len(_df):
-            _MAX_ROWS = 200
-            _total = len(_df)
-            if _total > _MAX_ROWS:
-                st.caption(f"Showing top {_MAX_ROWS:,} of {_total:,} rows")
-                _df = _df.head(_MAX_ROWS)
-            st.dataframe(_df, use_container_width=True, hide_index=True,
-                         height=min(35 * (len(_df) + 1) + 3, 420))
-        else:
-            st.info("No detail data available for this metric.")
+    if st.button(btn_label, key=f"kpimetric_{state_key}",
+                 use_container_width=True, help=help_text or None):
+        st.session_state["_kpi_drill"] = {
+            "title": drilldown_title,
+            "df": drilldown_df if drilldown_df is not None else pd.DataFrame(),
+            "help": help_text,
+        }
+        _kpi_drilldown_dialog()
 
 
 COLOR_SCHEMES = {
