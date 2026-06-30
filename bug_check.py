@@ -2445,6 +2445,9 @@ def check_estimator_filters_cross_filter():
     # and Substrate options narrow by selected System Codes
     assert "_eq_pool_sub = _eq_pool[_eq_pool[\"Equipment_Tag_No.\"].isin(_code_tags)]" in src, \
         "Substrate filter must cross-filter by the selected System Codes"
+    # §4 rollout — the Material Requirement block must also cascade L->T->Code
+    assert '_t1_eq_pool = _t1_eq_pool[_t1_eq_pool["Type"].str.strip().isin(f_type)]' in src, \
+        "Material Requirement filters must cascade Location->Type->System Code"
 
 
 def check_kpi_drilldown_is_modal():

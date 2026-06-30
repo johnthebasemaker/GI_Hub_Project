@@ -2,6 +2,7 @@ bcrypt
 # Pin a floor so Streamlit Cloud matches local: download_button's width="stretch"
 # (and the use_container_width deprecation) require a recent build.
 streamlit>=1.58
+watchdog                   # reliable file-watching (Streamlit recommends it; steadier reloads)
 streamlit-keyup            # live-typing column filters on Live Dashboard
 twilio
 fpdf2

@@ -15,6 +15,7 @@
 
 bcrypt
 streamlit>=1.58                 # width="stretch" support (matches local)
+watchdog                        # reliable file-watching / steadier reloads
 streamlit-keyup                 # live-typing column filters on Live Dashboard
 
 # WhatsApp: Twilio kept (small, lazy-imported) for back-compat; the server's

@@ -4268,12 +4268,23 @@ letter-spacing:.08em;color:var(--t5);">
                 f_loc  = st.multiselect(" Location", options=LOCATION_ORDER,
                                          default=[], key="t1_loc",
                                          placeholder="All locations")
-                all_types = _get_all_types(eq_master)
+                # §4 — Type options cascade by the selected Location (empty = all),
+                # matching the Dashboard/Overview blocks.
+                _t1_type_pool = eq_master[eq_master["Location"].isin(f_loc)] if f_loc else eq_master
+                all_types = _get_all_types(_t1_type_pool)
                 f_type = st.multiselect(" Type", options=all_types,
                                          default=[], key="t1_type",
                                          placeholder="All types")
+                # §4 — System Code options cascade by the selected Location + Type.
+                _t1_eq_pool = eq_master.copy()
+                if f_loc:
+                    _t1_eq_pool = _t1_eq_pool[_t1_eq_pool["Location"].isin(f_loc)]
+                if f_type:
+                    _t1_eq_pool = _t1_eq_pool[_t1_eq_pool["Type"].str.strip().isin(f_type)]
+                _t1_tags = _t1_eq_pool["Equipment_Tag_No."].tolist()
                 all_codes_t1 = sorted(
-                    dm["Lining_System_Code"].unique().tolist(), key=lambda x: int(x))
+                    dm[dm["Equipment_Tag_No."].isin(_t1_tags)]["Lining_System_Code"]
+                    .unique().tolist(), key=lambda x: int(x))
                 f_code = st.multiselect(
                     " System Code", options=all_codes_t1,
                     format_func=lambda c: f"Code {c} – "
