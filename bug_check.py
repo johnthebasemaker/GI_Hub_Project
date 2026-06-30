@@ -2489,6 +2489,25 @@ def check_sme_download_button_forwards_width():
         "must drop use_container_width when width is supplied (avoid passing both)"
 
 
+def check_maintenance_mode_gate():
+    """The Admin maintenance toggle must actually block non-admins at the
+    main() entry point — it was previously written to app_settings but never
+    read, so the switch did nothing."""
+    import pathlib
+    src = pathlib.Path(REPO_ROOT / "main.py").read_text(encoding="utf-8")
+    # main.py must read the setting the Admin toggle writes
+    assert 'get_app_setting("maintenance_mode"' in src, \
+        "main.py must read the maintenance_mode app_setting"
+    # the gate must exempt admin and stop everyone else
+    assert 'role != "admin" and _maintenance_active()' in src, \
+        "maintenance gate must be admin-exempt and key off _maintenance_active()"
+    assert "_render_maintenance_block(user)" in src and "st.stop()" in src, \
+        "non-admins must see the downtime block and the app must stop"
+    # fail-OPEN on read error so a transient DB hiccup never locks everyone out
+    assert "fail OPEN" in src or "return False" in src, \
+        "_maintenance_active must fail open on read error"
+
+
 # ---------------------------------------------------------------------------
 # Report writer
 # ---------------------------------------------------------------------------
@@ -9157,6 +9176,10 @@ def main() -> int:
               check_sme_admin_site_picker_and_sidebar_hidden,
               "Admin gets a single-site picker; SME's own sidebar chrome is hidden "
               "(only ERP nav) while the theme CSS is still applied.")
+    run_check("Maintenance", "maintenance_mode toggle actually blocks non-admins",
+              check_maintenance_mode_gate,
+              "main() reads app_settings.maintenance_mode and shows a downtime "
+              "page to every non-admin role (admin stays exempt to switch it off).")
 
     out = write_report()
     print()

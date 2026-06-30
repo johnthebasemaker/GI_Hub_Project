@@ -25,6 +25,7 @@ from config import (
 from database import (
     init_db,
     get_connection,
+    get_app_setting,
     get_overdue_unreported_items,
     log_audit_action,
     # Phase 5 — sidebar notifications bell
@@ -154,6 +155,36 @@ def _require_login() -> dict:
         login_form()
         st.stop()
     return user
+
+
+def _maintenance_active() -> bool:
+    """True when admin has enabled the maintenance switch (app_settings)."""
+    try:
+        return get_app_setting("maintenance_mode", "0") == "1"
+    except Exception:
+        # If the setting can't be read, fail OPEN (never lock everyone out
+        # because of a transient DB read error).
+        return False
+
+
+def _render_maintenance_block(user: dict) -> None:
+    """Full-page downtime notice shown to non-admins while maintenance is ON."""
+    st.markdown(
+        "<div style='max-width:560px;margin:12vh auto 0;text-align:center;'>"
+        "<div style='font-size:3rem;line-height:1;'>🔧</div>"
+        "<h2 style='margin:0.6rem 0 0.4rem;'>We'll be right back</h2>"
+        "<p style='color:#6b7280;font-size:0.95rem;margin:0 0 1.2rem;'>"
+        "The GI Hub is undergoing scheduled maintenance. Please check back "
+        "shortly — an administrator is making updates. Your data is safe.</p>"
+        f"<p style='color:#9ca3af;font-size:0.8rem;'>Signed in as "
+        f"<b>{user.get('username','')}</b> ({user.get('display_label','')}).</p>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    _, mid, _ = st.columns([1, 1, 1])
+    with mid:
+        if st.button("🚪 Log out", use_container_width=True):
+            logout()
 
 
 # Pages that are role-locked exactly (NOT inherited via hierarchy).
@@ -575,6 +606,12 @@ def main() -> None:
     # 1. Enforce login — stops here if unauthenticated
     user = _require_login()
     role = user["role"]
+
+    # 1b. Maintenance gate — admin-exempt. Non-admins get a downtime notice
+    #     (with logout) and the app stops here, so they never reach any page.
+    if role != "admin" and _maintenance_active():
+        _render_maintenance_block(user)
+        st.stop()
 
     # 2. Overdue returnable-items banner for Store Keepers
     if role == "store_keeper":
