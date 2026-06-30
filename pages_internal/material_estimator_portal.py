@@ -45,7 +45,13 @@ import streamlit as st
 # those for the Excel-fallback path; in the ERP we read straight from the
 # database helpers below.
 import database as D
-from pages_internal.material_estimator_engine import build_demand_matrix  # noqa: F401
+# NOTE: the legacy `from pages_internal.material_estimator_engine import
+# build_demand_matrix` was REMOVED here. It was unused (F401) yet it re-entered
+# the half-initialized `pages_internal` package during __init__, which under
+# Streamlit's loader intermittently broke
+# `from pages_internal import page_material_estimator` (the cold-start ImportError).
+# If the engine helper is ever needed, import it lazily inside the function:
+#   from pages_internal.material_estimator_engine import build_demand_matrix
 
 # ── Optional libs for encrypted downloads (Phase 4) ──────────────────────────
 try:

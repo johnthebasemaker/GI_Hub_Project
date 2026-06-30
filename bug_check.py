@@ -2410,6 +2410,24 @@ def check_meta_provider_routing():
                 os.environ[k] = v
 
 
+def check_pages_internal_exports_resolve():
+    # Guards the cold-start ImportError: every page_* main.py imports must be
+    # resolvable from the pages_internal package, and the SME portal must not
+    # re-enter the half-built package at module level.
+    import importlib, pathlib
+    pkg = importlib.import_module("pages_internal")
+    for name in ("page_live_dashboard", "page_daily_issue_log", "page_hod_portal",
+                 "page_admin_portal", "page_reports", "page_logistics_portal",
+                 "page_warehouse_portal", "page_supervisor_portal",
+                 "page_material_estimator", "page_manhour_portal"):
+        assert hasattr(pkg, name), f"pages_internal missing export: {name}"
+    src = pathlib.Path(REPO_ROOT / "pages_internal" /
+                       "material_estimator_portal.py").read_text(encoding="utf-8")
+    assert "from pages_internal.material_estimator_engine import build_demand_matrix" \
+        not in src.replace("#   from pages_internal.material_estimator_engine import build_demand_matrix", ""), \
+        "SME portal must not module-level import back through the pages_internal package"
+
+
 def check_sme_admin_site_picker_and_sidebar_hidden():
     import pathlib
     src = pathlib.Path(REPO_ROOT / "pages_internal" /
@@ -9091,6 +9109,10 @@ def main() -> int:
               check_sme_download_button_forwards_width,
               "_secure_download_button accepts/forwards **extra so width='stretch' "
               "callers (e.g. HOD PR PDF) never throw if the patch is active.")
+    run_check("Material Estimator", "pages_internal exports resolve (no cold-start ImportError)",
+              check_pages_internal_exports_resolve,
+              "every page_* export is importable; SME portal no longer re-enters "
+              "the half-built package at module level.")
     run_check("Material Estimator", "admin site picker + SME sidebar suppressed",
               check_sme_admin_site_picker_and_sidebar_hidden,
               "Admin gets a single-site picker; SME's own sidebar chrome is hidden "
