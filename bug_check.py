@@ -542,6 +542,20 @@ def check_sme_equipment_loader_mapping() -> None:
         conn.close()
 
 
+def check_sme_sub_location_surfaced() -> None:
+    """Sub_Location is exposed by get_sme_equipment and rendered in the
+    portal (eq_master agg + equipment detail card)."""
+    import pathlib
+    cols = list(database.get_sme_equipment(site_id="__nope__").columns)
+    assert "Sub_Location" in cols, f"get_sme_equipment must expose Sub_Location: {cols}"
+    src = pathlib.Path(REPO_ROOT / "pages_internal" /
+                       "material_estimator_portal.py").read_text(encoding="utf-8")
+    assert 'Sub_Location  =("Sub_Location"' in src, \
+        "eq_master groupby must carry Sub_Location"
+    assert '("Sub-Location",' in src, \
+        "equipment detail card must render a Sub-Location row"
+
+
 def check_stock_reservations() -> None:
     """Approving a cross-site transfer earmarks stock at the target site;
     Available = Current − Reserved; fulfilling/rejecting releases it. The
@@ -9575,6 +9589,10 @@ def main() -> int:
               "Lining_Type populated, area-split SQM summed per (tag,code), "
               "Location casing normalized, Sub_Location captured, To_Be_Confirmed "
               "codes skipped.")
+    run_check("Material Estimator", "Sub_Location surfaced (helper + detail card)",
+              check_sme_sub_location_surfaced,
+              "get_sme_equipment exposes Sub_Location; eq_master carries it and "
+              "the equipment detail card renders a Sub-Location row.")
     run_check("Material Estimator", "admin site picker + SME sidebar suppressed",
               check_sme_admin_site_picker_and_sidebar_hidden,
               "Admin gets a single-site picker; SME's own sidebar chrome is hidden "

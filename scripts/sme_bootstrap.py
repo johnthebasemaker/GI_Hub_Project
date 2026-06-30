@@ -479,6 +479,11 @@ def main() -> int:
                     help="Wipe existing rows before INSERT (re-baseline from "
                          "Excel — discards any manual edits made in the "
                          "Master Data tab).")
+    ap.add_argument("--equipment-only", action="store_true",
+                    help="Only reload sme_equipment (+ sqm progress) from "
+                         "Equipment.xlsx; skip recipe + inventory_seed. Use "
+                         "when ONLY Equipment.xlsx changed. Pair with --force "
+                         "to re-baseline the site's equipment.")
     args = ap.parse_args()
 
     for p in (_FILE_INV, _FILE_REC, _FILE_EQ):
@@ -527,16 +532,19 @@ def main() -> int:
     conn = sqlite3.connect(db_path)
     try:
         D.init_db(conn)  # self-heal first
-        rec_n  = _load_recipes(conn, recipe, force=args.force)
         eq_n   = _load_equipment(conn, equip, site_id=args.site_id, force=args.force)
-        inv_n  = _load_inventory_seed(conn, inv, force=args.force)
         prog_n = _seed_progress(conn, equip, site_id=args.site_id)
         _seed_site_dropdowns(conn, site_id=args.site_id)
+        if args.equipment_only:
+            rec_n = inv_n = "skipped (--equipment-only)"
+        else:
+            rec_n  = _load_recipes(conn, recipe, force=args.force)
+            inv_n  = _load_inventory_seed(conn, inv, force=args.force)
         conn.commit()
-        print(f"      sme_recipe         : attempted {rec_n} rows")
+        print(f"      sme_recipe         : {rec_n}")
         print(f"      sme_equipment      : attempted {eq_n} rows  "
               f"(Site_ID={args.site_id})")
-        print(f"      sme_inventory_seed : attempted {inv_n} Material_Codes")
+        print(f"      sme_inventory_seed : {inv_n}")
         print(f"      sme_sqm_progress   : {prog_n} rows (Done_SQM preserved)")
     finally:
         conn.close()

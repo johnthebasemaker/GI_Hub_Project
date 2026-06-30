@@ -1485,6 +1485,9 @@ def load_all(_site_id: str):
     if "Substrate" not in equip_raw_local.columns:
         equip_raw_local["Substrate"] = ""
     equip_raw_local["Substrate"] = equip_raw_local["Substrate"].fillna("").astype(str).str.strip()
+    if "Sub_Location" not in equip_raw_local.columns:
+        equip_raw_local["Sub_Location"] = ""
+    equip_raw_local["Sub_Location"] = equip_raw_local["Sub_Location"].fillna("").astype(str).str.strip()
     # Synthesize SME-only display fields the original UI references
     short_name_map = recipe.drop_duplicates("Lining_System_Code") \
         .set_index("Lining_System_Code")["Lining_System_Short_Name"].to_dict()
@@ -1556,14 +1559,15 @@ def load_all(_site_id: str):
     # 8. Equipment master (one row per tag) — guard empty equip_raw
     if equip_raw_local.empty:
         eq_master = pd.DataFrame(columns=[
-            "Equipment_Tag_No.", "Name", "Substrate", "Location", "Type",
-            "Lining_Systems", "Lining_Type", "Material_Spec", "Design",
-            "Total_SQM",
+            "Equipment_Tag_No.", "Name", "Substrate", "Sub_Location",
+            "Location", "Type", "Lining_Systems", "Lining_Type",
+            "Material_Spec", "Design", "Total_SQM",
         ])
     else:
         eq_master = equip_raw_local.groupby("Equipment_Tag_No.", as_index=False).agg(
             Name          =("Name",            "first"),
             Substrate     =("Substrate",        "first"),
+            Sub_Location  =("Sub_Location",     "first"),
             Location      =("Location",        "first"),
             Type          =("Type",            "first"),
             Lining_Systems=("Lining_System+", "first"),
@@ -2820,6 +2824,7 @@ def _per_equipment_payload(
         ("Name",            str(eq_row.get("Name", "") if hasattr(eq_row, "get") else getattr(eq_row, "Name", ""))),
         ("Type",            str(eq_row.get("Type", "") if hasattr(eq_row, "get") else getattr(eq_row, "Type", ""))),
         ("Location",        str(eq_row.get("Location", "") if hasattr(eq_row, "get") else getattr(eq_row, "Location", ""))),
+        ("Sub-Location",    str(eq_row.get("Sub_Location", "") or "—" if hasattr(eq_row, "get") else (getattr(eq_row, "Sub_Location", "") or "—"))),
         ("Substrate",       str(eq_row.get("Substrate", "") or "—" if hasattr(eq_row, "get") else (getattr(eq_row, "Substrate", "") or "—"))),
         ("Material Spec.",  str(eq_row.get("Material_Spec", "") or "—" if hasattr(eq_row, "get") else (getattr(eq_row, "Material_Spec", "") or "—"))),
         ("Total SQM",       f"{eq_total_sqm:,.2f}"),

@@ -12865,7 +12865,8 @@ def get_sme_equipment(
             params = (site_id,)
         df = pd.read_sql(
             "SELECT Site_ID, Equipment_Tag_No, Name, Location, Type, "
-            "       Substrate, Lining_System_Code, "
+            "       Substrate, COALESCE(Sub_Location,'') AS Sub_Location, "
+            "       Lining_System_Code, "
             "       COALESCE(Surface_Area_SQM,0) AS Surface_Area_SQM "
             f"FROM sme_equipment{where}",
             conn, params=params,
@@ -12873,7 +12874,8 @@ def get_sme_equipment(
         if df.empty:
             return pd.DataFrame(columns=[
                 "Site_ID", "Equipment_Tag_No.", "Name", "Location", "Type",
-                "Substrate", "Lining_System_Code", "Surface_Area_SQM",
+                "Substrate", "Sub_Location", "Lining_System_Code",
+                "Surface_Area_SQM",
             ])
         # The engine joins on the exact label 'Equipment_Tag_No.' (with the
         # trailing dot — see allocation_engine.py:57). Preserve that contract.
