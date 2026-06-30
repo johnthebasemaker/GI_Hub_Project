@@ -2721,6 +2721,63 @@ def check_postgres_phase2_helpers() -> None:
         conn.close()
 
 
+def check_2fa_flow() -> None:
+    """2FA lifecycle: stage (disabled) → verify code → enable → disable (admin
+    reset). enable_2fa must never turn on without a confirmed secret."""
+    import importlib
+    auth = importlib.import_module("auth")
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO users (username, password_hash, role, Site_ID) "
+            "VALUES ('tf_user', 'x', 'store_keeper', 'HQ')")
+        conn.commit()
+        assert database.column_exists("users", "totp_secret", conn=conn)
+        assert database.column_exists("users", "totp_enabled", conn=conn)
+        sec, en = auth.get_user_2fa("tf_user", conn=conn)
+        assert sec == "" and en is False, "new user must start without 2FA"
+
+        try:
+            import pyotp
+        except ImportError:
+            return  # optional dep absent — helpers still import
+
+        secret = auth.generate_2fa_secret()
+        assert secret
+        auth.stage_2fa_secret("tf_user", secret, conn=conn)
+        s2, e2 = auth.get_user_2fa("tf_user", conn=conn)
+        assert s2 == secret and e2 is False, "staged secret stays DISABLED until confirmed"
+        # correct code verifies; empty/blank secret or code never verifies
+        assert auth.verify_2fa_code(secret, pyotp.TOTP(secret).now()) is True
+        assert auth.verify_2fa_code(secret, "") is False
+        assert auth.verify_2fa_code("", "123456") is False
+
+        auth.enable_2fa("tf_user", conn=conn)
+        assert auth.get_user_2fa("tf_user", conn=conn)[1] is True
+        # admin reset clears it
+        auth.disable_2fa("tf_user", conn=conn)
+        s4, e4 = auth.get_user_2fa("tf_user", conn=conn)
+        assert s4 == "" and e4 is False
+        # safety: cannot enable without a secret (no silent lock-in)
+        auth.enable_2fa("tf_user", conn=conn)
+        assert auth.get_user_2fa("tf_user", conn=conn)[1] is False, \
+            "enable_2fa must require a staged secret"
+    finally:
+        conn.close()
+
+
+def check_2fa_wiring() -> None:
+    """Login gate, session grant, self-service, and admin reset are wired."""
+    import pathlib
+    asrc = pathlib.Path(REPO_ROOT / "auth.py").read_text(encoding="utf-8")
+    assert 'st.session_state.get("_2fa_pending")' in asrc, "login must gate on pending 2FA"
+    assert "_render_2fa_challenge" in asrc and "_grant_session(" in asrc
+    assert "def render_2fa_self_service" in asrc, "self-enrollment UI missing"
+    assert "2FA_RESET" in asrc, "admin 2FA reset (lost-device recovery) missing"
+    msrc = pathlib.Path(REPO_ROOT / "main.py").read_text(encoding="utf-8")
+    assert "render_2fa_self_service(user)" in msrc, "sidebar must mount 2FA self-service"
+
+
 def check_error_boundary() -> None:
     """The global error boundary: friendly one-liner + ref ID to the user,
     full traceback to logs/app_errors.log, and st.rerun()/st.stop() signals
@@ -8844,6 +8901,14 @@ def main() -> int:
               check_postgres_phase2_helpers,
               "db_dialect/column_exists/now_sql/days_ago_sql/date_diff_days_sql "
               "emit identical SQLite behavior + the correct Postgres form.")
+    run_check("Auth/2FA",    "TOTP lifecycle (stage→verify→enable→reset)",
+              check_2fa_flow,
+              "Opt-in; staged secret stays disabled until a code confirms; "
+              "admin reset clears it; enable requires a secret (no lock-in).")
+    run_check("Auth/2FA",    "2FA login gate + self-service + admin reset wired",
+              check_2fa_wiring,
+              "login holds 2FA-enabled users for a code; sidebar self-enrollment; "
+              "admin can reset a lost device.")
     run_check("Resilience",  "global error boundary (friendly UI + dev log)",
               check_error_boundary,
               "Users get a one-line message + ref ID; full traceback logged to "

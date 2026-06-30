@@ -38,6 +38,7 @@ from cache_layer import cached_low_stock_items
 from auth import (
     seed_default_users,
     login_form, get_current_user, logout,
+    render_2fa_self_service,
 )
 from ui_components import (
     inject_custom_css,
@@ -589,6 +590,11 @@ def render_sidebar(user: dict) -> str:
 
         # Phase 4 — theme switcher (default 'dark' preserves current look)
         render_theme_toggle(sidebar=False)  # we're already inside `with st.sidebar:`
+        st.divider()
+
+        # Two-factor auth — opt-in self-enrollment for every signed-in user.
+        with st.expander("🔐 Two-Factor Auth"):
+            render_2fa_self_service(user)
         st.divider()
 
         if st.button("🚪 Sign Out", width="stretch"):

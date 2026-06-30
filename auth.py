@@ -74,6 +74,109 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 # ===========================================================================
+# TWO-FACTOR AUTH (TOTP)  — opt-in per user; admin can reset (no lock-outs)
+# ===========================================================================
+def _pyotp():
+    """Lazy import so a missing optional dep never breaks login/import."""
+    try:
+        import pyotp
+        return pyotp
+    except ImportError:  # pragma: no cover - depends on optional dep
+        return None
+
+
+def generate_2fa_secret() -> str:
+    """A fresh base32 TOTP secret (or '' if pyotp is unavailable)."""
+    p = _pyotp()
+    return p.random_base32() if p else ""
+
+
+def verify_2fa_code(secret: str, code: str) -> bool:
+    """True iff `code` is a currently-valid 6-digit TOTP for `secret`.
+    valid_window=1 tolerates ±30s clock skew. False on any error."""
+    p = _pyotp()
+    if not p or not secret or not code:
+        return False
+    try:
+        return p.TOTP(secret).verify(str(code).strip(), valid_window=1)
+    except Exception:
+        return False
+
+
+def totp_provisioning_uri(username: str, secret: str) -> str:
+    """otpauth:// URI for authenticator apps (issuer = the app name)."""
+    p = _pyotp()
+    if not p or not secret:
+        return ""
+    return p.TOTP(secret).provisioning_uri(name=username, issuer_name=APP_NAME)
+
+
+def get_user_2fa(username: str, conn: sqlite3.Connection = None) -> tuple[str, bool]:
+    """Return (secret, enabled) for a user. ('' , False) if none/unknown."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT totp_secret, COALESCE(totp_enabled,0) FROM users "
+            "WHERE username = ?", (username.strip(),),
+        ).fetchone()
+    finally:
+        if _owns:
+            conn.close()
+    if not row:
+        return "", False
+    return (row[0] or ""), bool(row[1])
+
+
+def stage_2fa_secret(username: str, secret: str,
+                     conn: sqlite3.Connection = None) -> None:
+    """Store a secret but leave it DISABLED (enrollment isn't confirmed yet)."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE users SET totp_secret = ?, totp_enabled = 0 "
+            "WHERE username = ?", (secret, username.strip()))
+        conn.commit()
+    finally:
+        if _owns:
+            conn.close()
+
+
+def enable_2fa(username: str, conn: sqlite3.Connection = None) -> None:
+    """Flip 2FA on (after the user confirms a code at enrollment)."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE users SET totp_enabled = 1 WHERE username = ? "
+            "AND COALESCE(totp_secret,'') <> ''", (username.strip(),))
+        conn.commit()
+    finally:
+        if _owns:
+            conn.close()
+
+
+def disable_2fa(username: str, conn: sqlite3.Connection = None) -> None:
+    """Turn 2FA off and clear the secret (user opt-out OR admin reset for a
+    lost device — this is the lock-out safety net)."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE users SET totp_secret = NULL, totp_enabled = 0 "
+            "WHERE username = ?", (username.strip(),))
+        conn.commit()
+    finally:
+        if _owns:
+            conn.close()
+
+
+# ===========================================================================
 # USER MANAGEMENT  (pure Python — testable)
 # ===========================================================================
 
@@ -270,7 +373,113 @@ def get_current_user() -> dict | None:
 def logout() -> None:
     """Clears the login session and triggers a full page rerun."""
     st.session_state.pop(_SESSION_KEY, None)
+    st.session_state.pop("_2fa_pending", None)
     st.rerun()
+
+
+def _grant_session(user: dict, username: str) -> None:
+    """Set the session, log the device, and rerun into the app."""
+    st.session_state[_SESSION_KEY] = user
+    st.session_state.pop("_2fa_pending", None)
+    device_info = "Web Browser"
+    if hasattr(st, "context") and hasattr(st.context, "headers"):
+        device_info = st.context.headers.get("User-Agent", "Unknown Device")
+    log_audit_action(username, "LOGIN", "System", f"Device: {device_info}")
+    st.success(f"Welcome, {user['display_label']} {user['icon']}")
+    st.rerun()
+
+
+def _render_2fa_challenge() -> None:
+    """Second login step: a 2FA-enabled user enters their 6-digit code."""
+    user = st.session_state.get("_2fa_pending")
+    _, col, _ = st.columns([1, 1.4, 1])
+    with col:
+        st.markdown(
+            f"<div style='text-align:center;padding:2rem 0 1rem;'>"
+            f"<div style='font-size:2.4rem;'>🔐</div>"
+            f"<h3 style='color:{TEXT_PRIMARY};margin:.3rem 0;'>Two-Factor Verification</h3>"
+            f"<p style='color:{TEXT_MUTED};font-size:.85rem;'>"
+            f"Enter the 6-digit code from your authenticator app for "
+            f"<b>{(user or {}).get('username','')}</b>.</p></div>",
+            unsafe_allow_html=True)
+        with st.form("twofa_challenge_form", clear_on_submit=False):
+            code = st.text_input("Authentication code", max_chars=6,
+                                 placeholder="123456", key="twofa_code")
+            ok = st.form_submit_button("✅ Verify", type="primary",
+                                       use_container_width=True)
+        if ok:
+            secret, enabled = get_user_2fa(user["username"])
+            if enabled and verify_2fa_code(secret, code):
+                _grant_session(user, user["username"])
+            else:
+                log_audit_action(user["username"], "2FA_FAILED", "System",
+                                 "Invalid 2FA code")
+                st.error("❌ Invalid or expired code. Try again.")
+        if st.button("← Back to sign in", key="twofa_cancel"):
+            st.session_state.pop("_2fa_pending", None)
+            st.rerun()
+
+
+def _qr_png(data: str) -> bytes | None:
+    """Render a string to a PNG QR code (bytes), or None if unavailable."""
+    try:
+        import io
+        import qrcode
+        buf = io.BytesIO()
+        qrcode.make(data).save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def render_2fa_self_service(user: dict) -> None:
+    """Self-service 2FA enrollment for the signed-in user (sidebar expander).
+    Each user enrolls their OWN device; admins can only RESET (never enroll
+    on someone's behalf)."""
+    username = user["username"]
+    if _pyotp() is None:
+        st.caption("🔐 2FA is unavailable (pyotp not installed).")
+        return
+    secret, enabled = get_user_2fa(username)
+
+    if enabled:
+        st.success("🔐 2FA is ON")
+        if st.button("Disable 2FA", key="_2fa_self_disable", width="stretch"):
+            disable_2fa(username)
+            log_audit_action(username, "2FA_DISABLED", "users", "self-service")
+            st.toast("2FA disabled", icon="🔓")
+            st.rerun()
+        return
+
+    if secret:
+        # Enrollment in progress — show QR + confirm.
+        st.caption("Scan with Google Authenticator / Authy, then confirm a code.")
+        png = _qr_png(totp_provisioning_uri(username, secret))
+        if png:
+            st.image(png, width=170)
+        st.caption("Or enter this key manually:")
+        st.code(secret, language=None)
+        with st.form("_2fa_enroll_form", clear_on_submit=False):
+            code = st.text_input("6-digit code", max_chars=6, key="_2fa_enroll_code")
+            confirm = st.form_submit_button("✅ Confirm & turn on", width="stretch")
+        if confirm:
+            if verify_2fa_code(secret, code):
+                enable_2fa(username)
+                log_audit_action(username, "2FA_ENABLED", "users", "self-service")
+                st.toast("2FA enabled 🔐", icon="✅")
+                st.rerun()
+            else:
+                st.error("❌ Invalid code — try again.")
+        if st.button("Cancel", key="_2fa_enroll_cancel", width="stretch"):
+            disable_2fa(username)   # clears the staged secret
+            st.rerun()
+        return
+
+    # Not enrolled yet.
+    st.caption("Add a second factor for extra account security.")
+    if st.button("Enable 2FA", key="_2fa_self_enable", width="stretch"):
+        stage_2fa_secret(username, generate_2fa_secret())
+        st.rerun()
 
 
 # ===========================================================================
@@ -284,6 +493,12 @@ def login_form() -> None:
     and calls st.rerun() to load the main app.
     This function never returns normally — it either reruns or stays put.
     """
+    # If a password just succeeded for a 2FA-enabled user, show ONLY the code
+    # challenge until they verify (or cancel back to sign-in).
+    if st.session_state.get("_2fa_pending"):
+        _render_2fa_challenge()
+        return
+
     # Centre the login card using columns
     _, col, _ = st.columns([1, 1.4, 1])
 
@@ -349,17 +564,14 @@ def login_form() -> None:
                     else:
                         user = authenticate_user(username, password)
                         if user:
-                            st.session_state[_SESSION_KEY] = user
-
-                            # 🕵️ Intercept HTTP Headers to get Device/Browser Info
-                            device_info = "Web Browser"
-                            if hasattr(st, "context") and hasattr(st.context, "headers"):
-                                device_info = st.context.headers.get("User-Agent", "Unknown Device")
-
-                            log_audit_action(username, "LOGIN", "System", f"Device: {device_info}")
-
-                            st.success(f"Welcome, {user['display_label']} {user['icon']}")
-                            st.rerun()
+                            # Password OK. If this user enabled 2FA, hold them
+                            # for the code challenge BEFORE granting a session.
+                            _secret, _enabled = get_user_2fa(user["username"])
+                            if _enabled:
+                                st.session_state["_2fa_pending"] = user
+                                st.rerun()
+                            else:
+                                _grant_session(user, username)
                         else:
                             log_audit_action(username, "LOGIN_FAILED", "System", "Invalid credentials attempted")
                             st.error("❌ Invalid username or password.")
@@ -803,3 +1015,32 @@ def render_user_management_tab(current_username: str) -> None:
                         st.error(
                             "Cannot delete. This may be the last admin account."
                         )
+
+    # ── Reset Two-Factor Auth (lost-device recovery) ───────────────────────
+    st.divider()
+    st.markdown("**🔐 Reset Two-Factor Auth**")
+    st.caption(
+        "If a user loses their authenticator device, reset their 2FA here so "
+        "they can sign in with just their password and re-enroll.")
+    _conn = get_connection()
+    try:
+        _twofa_users = [r[0] for r in _conn.execute(
+            "SELECT username FROM users WHERE COALESCE(totp_enabled,0)=1 "
+            "ORDER BY username").fetchall()]
+    except Exception:
+        _twofa_users = []
+    finally:
+        _conn.close()
+    if not _twofa_users:
+        st.info("No users currently have 2FA enabled.")
+    else:
+        with st.form("form_reset_2fa", clear_on_submit=True):
+            r2_user = st.selectbox("User with 2FA on", _twofa_users,
+                                   key="reset_2fa_select")
+            st.warning(f"⚠️ This turns OFF 2FA for **{r2_user}**.", icon="⚠️")
+            if st.form_submit_button("🔓 Reset 2FA", use_container_width=True):
+                disable_2fa(r2_user)
+                log_audit_action(current_username, "2FA_RESET", "users",
+                                 f"admin reset 2FA for {r2_user}")
+                st.success(f"2FA reset for **{r2_user}**.")
+                st.rerun()

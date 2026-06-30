@@ -488,6 +488,12 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     usr_cols = {row[1] for row in c.fetchall()}
     if "Phone_Number" not in usr_cols:
         c.execute("ALTER TABLE users ADD COLUMN Phone_Number TEXT")
+    # 2FA (TOTP) — opt-in per user. totp_secret holds the base32 shared secret;
+    # totp_enabled flips to 1 only after the user confirms a code at enrollment.
+    if "totp_secret" not in usr_cols:
+        c.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT")
+    if "totp_enabled" not in usr_cols:
+        c.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0")
         
     c.execute("PRAGMA table_info(pending_users)")
     pnd_cols = {row[1] for row in c.fetchall()}
