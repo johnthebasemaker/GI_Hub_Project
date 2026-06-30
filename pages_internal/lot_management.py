@@ -11,8 +11,9 @@ Rendered by BOTH the Admin portal (cross-site, site_id=None) and the HOD portal
     EXISTING HOD stock-adjustment approval flow; the lot is quarantined while
     pending and flips to 'disposed' on approval (or back to 'open' if rejected).
 
-Split / Merge are intentionally NOT here yet (they need lot-to-lot ledger
-reclassification — a separate, carefully-tested follow-up).
+  • Split / Merge      → split_lot / merge_lots: within-SAP, lot-to-lot
+    reclassification recorded in lot_transfers (the movement ledger is NOT
+    touched; v_lot_balance nets transfers in/out so Current_Stock is unchanged).
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ import streamlit as st
 
 from database import (
     get_all_lots, mark_lot_status, dispose_lot, ADJUSTMENT_REASONS,
+    split_lot, merge_lots,
 )
 
 # Disposal reason codes that make sense for a lot (subset of ADJUSTMENT_REASONS).
@@ -158,3 +160,45 @@ def render_lot_management(user: dict, site_id: str | None = None) -> None:
                 (st.toast(msg, icon="🗑️") if ok else st.error(msg))
                 if ok:
                     st.rerun()
+
+    # ── Split / Merge (within-SAP reclassification) ───────────────────────
+    if cur_status == "open":
+        with st.expander("✂️ Split / 🔗 Merge this lot", expanded=False):
+            st.caption("Reclassifies qty between lots of the SAME item & site. "
+                       "Current stock is unchanged.")
+            sp_col, mg_col = st.columns(2)
+
+            # Split: peel a qty off into a new child lot.
+            with sp_col:
+                st.markdown("**✂️ Split**")
+                sp_qty = st.number_input(
+                    f"Qty to split off (< {remaining:g})",
+                    min_value=0.0, max_value=float(max(remaining - 0.0001, 0.0)),
+                    step=1.0, key=f"lot_split_qty_{scope}")
+                if st.button("✂️ Split lot", key=f"lot_split_btn_{scope}",
+                             use_container_width=True, disabled=(sp_qty <= 0)):
+                    ok, msg, _new = split_lot(lot, sap, lsite, sp_qty, user["username"])
+                    (st.toast(msg, icon="✂️") if ok else st.error(msg))
+                    if ok:
+                        st.rerun()
+
+            # Merge: fold this lot's remaining into another open lot.
+            with mg_col:
+                st.markdown("**🔗 Merge into**")
+                targets = df[
+                    (df["SAP_Code"] == sap) & (df["Site_ID"] == lsite)
+                    & (df["Status"] == "open") & (df["Lot_Number"] != lot)
+                ]["Lot_Number"].tolist()
+                if not targets:
+                    st.caption("No other open lot of this item to merge into.")
+                else:
+                    into = st.selectbox("Target lot", options=targets,
+                                        key=f"lot_merge_into_{scope}")
+                    st.caption(f"Moves all **{remaining:g}** from {lot} → {into}; "
+                               f"{lot} becomes exhausted.")
+                    if st.button("🔗 Merge", key=f"lot_merge_btn_{scope}",
+                                 use_container_width=True):
+                        ok, msg = merge_lots(lot, into, sap, lsite, user["username"])
+                        (st.toast(msg, icon="🔗") if ok else st.error(msg))
+                        if ok:
+                            st.rerun()

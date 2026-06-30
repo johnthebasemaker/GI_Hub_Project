@@ -619,6 +619,39 @@ def check_lot_disposal_via_adjustment() -> None:
         conn.close()
 
 
+def check_lot_split_merge() -> None:
+    """split_lot peels qty into a child lot; merge_lots folds it back. Per-lot
+    balances move but the SAP's Current_Stock never changes (within-SAP
+    reclassification recorded in lot_transfers, not the movement ledger)."""
+    conn = database.get_connection()
+    try:
+        _seed_lot(conn, "LOTSM", "SAP-LOTSM", "HQ", 100)
+        stock0 = database.get_item_snapshot("SAP-LOTSM", "HQ", conn=conn)["current_stock"]
+        assert abs(stock0 - 100) < 1e-6
+
+        # Split 30 off → child lot with 30, parent left with 70, stock unchanged.
+        ok, _msg, child = database.split_lot("LOTSM", "SAP-LOTSM", "HQ", 30, "u", conn=conn)
+        assert ok and child, _msg
+        bal = database.get_all_lots(site_id="HQ", conn=conn).set_index("Lot_Number")
+        assert abs(float(bal.loc["LOTSM", "Remaining_Qty"]) - 70) < 1e-6
+        assert abs(float(bal.loc[child, "Remaining_Qty"]) - 30) < 1e-6
+        assert abs(database.get_item_snapshot("SAP-LOTSM", "HQ", conn=conn)["current_stock"] - 100) < 1e-6
+        # Can't split >= remaining.
+        bad, _, _ = database.split_lot("LOTSM", "SAP-LOTSM", "HQ", 999, "u", conn=conn)
+        assert not bad, "split must reject qty >= remaining"
+
+        # Merge the child back into the parent → parent 100, child exhausted.
+        okm, _m = database.merge_lots(child, "LOTSM", "SAP-LOTSM", "HQ", "u", conn=conn)
+        assert okm, _m
+        bal2 = database.get_all_lots(site_id="HQ", conn=conn).set_index("Lot_Number")
+        assert abs(float(bal2.loc["LOTSM", "Remaining_Qty"]) - 100) < 1e-6
+        assert abs(float(bal2.loc[child, "Remaining_Qty"])) < 1e-6
+        assert conn.execute("SELECT Status FROM lots WHERE Lot_Number=?", (child,)).fetchone()[0] == "exhausted"
+        assert abs(database.get_item_snapshot("SAP-LOTSM", "HQ", conn=conn)["current_stock"] - 100) < 1e-6
+    finally:
+        conn.close()
+
+
 def check_lot_management_module() -> None:
     """The shared Lot Management UI module imports and exposes the renderer used
     by both the Admin (cross-site) and HOD (site-scoped) portals."""
@@ -8718,6 +8751,11 @@ def main() -> int:
               "dispose_lot quarantines + stages a write-off; approval disposes "
               "the lot, tags the consumption to it (balance→0), drops stock; "
               "reject restores 'open'.")
+    run_check("Lots",        "split/merge reclassify within-SAP (stock unchanged)",
+              check_lot_split_merge,
+              "split_lot peels qty into a child lot; merge_lots folds it back; "
+              "per-lot balances move via lot_transfers but Current_Stock is "
+              "untouched.")
     run_check("Lots",        "Lot Management UI module mounts in both portals",
               check_lot_management_module,
               "shared render_lot_management used by Admin (cross-site) + HOD "

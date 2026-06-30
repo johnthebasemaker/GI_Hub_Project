@@ -463,6 +463,25 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         )
     """)
 
+    # Lot split / merge — within-SAP, lot-to-lot reclassification. Recorded
+    # here (NOT as movement-ledger rows) so the receipts/consumption ledger
+    # stays append-only and gross totals aren't inflated. v_lot_balance below
+    # subtracts transfers_out and adds transfers_in, so per-lot balances move
+    # while the SAP's Current_Stock is unchanged (a transfer nets to zero).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS lot_transfers (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            From_Lot    TEXT NOT NULL,
+            To_Lot      TEXT NOT NULL,
+            SAP_Code    TEXT NOT NULL,
+            Site_ID     TEXT DEFAULT 'HQ',
+            Qty         REAL NOT NULL,
+            kind        TEXT DEFAULT 'split' CHECK(kind IN ('split','merge')),
+            by_user     TEXT,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     # Self-heal: add Lot_Number to every movement table so each
     # transaction can reference the master lot row it touched.
     for _tbl in ("receipts", "consumption", "pending_issues", "pending_receipts"):
@@ -2509,6 +2528,19 @@ def _build_stock_views(c: sqlite3.Cursor) -> None:
                     WHERE c.Lot_Number = l.Lot_Number
                       AND c.SAP_Code   = l.SAP_Code
                       AND COALESCE(c.Site_ID,'HQ') = l.Site_ID
+                ), 0)
+                -- split/merge reclassification (within-SAP; nets to zero)
+                - COALESCE((
+                    SELECT SUM(t.Qty) FROM lot_transfers t
+                    WHERE t.From_Lot = l.Lot_Number
+                      AND t.SAP_Code = l.SAP_Code
+                      AND COALESCE(t.Site_ID,'HQ') = l.Site_ID
+                ), 0)
+                + COALESCE((
+                    SELECT SUM(t.Qty) FROM lot_transfers t
+                    WHERE t.To_Lot = l.Lot_Number
+                      AND t.SAP_Code = l.SAP_Code
+                      AND COALESCE(t.Site_ID,'HQ') = l.Site_ID
                 ), 0) AS Remaining_Qty
             FROM lots l
         """)
@@ -7217,6 +7249,142 @@ def dispose_lot(
             return False, msg, None
         return True, (f"Lot {lot_number} ({remaining:g}) submitted for "
                       f"disposal approval (adj #{adj_id})."), adj_id
+    finally:
+        if _owns:
+            conn.close()
+
+
+def _next_split_lot_number(conn, base_lot, sap, site) -> str:
+    """Unique child lot number for a split: '<base>/S1', '/S2', … ."""
+    n = 1
+    while True:
+        candidate = f"{base_lot}/S{n}"
+        hit = conn.execute(
+            "SELECT 1 FROM lots WHERE Lot_Number=? AND SAP_Code=? AND Site_ID=?",
+            (candidate, sap, site),
+        ).fetchone()
+        if not hit:
+            return candidate
+        n += 1
+
+
+def split_lot(
+    lot_number: str,
+    sap_code: str,
+    site_id: str,
+    split_qty: float,
+    by_user: str,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str, str | None]:
+    """
+    Split `split_qty` off an open lot into a NEW child lot (same SAP/site,
+    inheriting expiry/supplier). Recorded as a within-SAP lot_transfer — the
+    movement ledger is untouched and the SAP's Current_Stock is unchanged.
+    Returns (ok, message, new_lot_number).
+    """
+    try:
+        q = float(split_qty)
+    except (TypeError, ValueError):
+        return False, "Split qty must be numeric.", None
+    if q <= 0:
+        return False, "Split qty must be greater than 0.", None
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        bal = conn.execute(
+            "SELECT vb.Remaining_Qty, l.Status, l.Expiry_Date, l.Supplier, "
+            "       l.PR_Number, l.Received_Date "
+            "FROM v_lot_balance vb JOIN lots l "
+            "  ON l.Lot_Number=vb.Lot_Number AND l.SAP_Code=vb.SAP_Code "
+            " AND l.Site_ID=vb.Site_ID "
+            "WHERE vb.Lot_Number=? AND vb.SAP_Code=? AND vb.Site_ID=?",
+            (lot_number, sap_code, site_id),
+        ).fetchone()
+        if not bal:
+            return False, f"Lot {lot_number} not found at {site_id}.", None
+        remaining, status = float(bal[0] or 0), bal[1]
+        if status != "open":
+            return False, f"Only an 'open' lot can be split (this is '{status}').", None
+        if q >= remaining:
+            return False, (f"Split qty {q:g} must be LESS than the lot's "
+                           f"remaining {remaining:g} (use merge/dispose otherwise)."), None
+
+        new_lot = _next_split_lot_number(conn, lot_number, sap_code, site_id)
+        conn.execute(
+            "INSERT INTO lots (Lot_Number, SAP_Code, Site_ID, Received_Date, "
+            "Expiry_Date, Supplier, PR_Number, Status) "
+            "VALUES (?,?,?,?,?,?,?, 'open')",
+            (new_lot, sap_code, site_id, bal[5], bal[2], bal[3], bal[4]),
+        )
+        conn.execute(
+            "INSERT INTO lot_transfers (From_Lot, To_Lot, SAP_Code, Site_ID, "
+            "Qty, kind, by_user) VALUES (?,?,?,?,?, 'split', ?)",
+            (lot_number, new_lot, sap_code, site_id, q, by_user),
+        )
+        conn.commit()
+        log_audit_action(
+            by_user or "system", "LOT_SPLIT", "lot_transfers",
+            f"{lot_number} → {new_lot} qty={q:g} ({sap_code}/{site_id})",
+        )
+        return True, f"Split {q:g} from {lot_number} → new lot {new_lot}.", new_lot
+    finally:
+        if _owns:
+            conn.close()
+
+
+def merge_lots(
+    from_lot: str,
+    into_lot: str,
+    sap_code: str,
+    site_id: str,
+    by_user: str,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """
+    Move ALL of `from_lot`'s remaining qty into `into_lot` (same SAP/site).
+    Recorded as a within-SAP lot_transfer; `from_lot` is marked 'exhausted'.
+    Current_Stock is unchanged. Both lots must be 'open'.
+    """
+    if from_lot == into_lot:
+        return False, "Cannot merge a lot into itself."
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        def _bal(lot):
+            return conn.execute(
+                "SELECT Remaining_Qty, Status FROM v_lot_balance "
+                "WHERE Lot_Number=? AND SAP_Code=? AND Site_ID=?",
+                (lot, sap_code, site_id),
+            ).fetchone()
+        src, dst = _bal(from_lot), _bal(into_lot)
+        if not src:
+            return False, f"Source lot {from_lot} not found at {site_id}."
+        if not dst:
+            return False, f"Target lot {into_lot} not found at {site_id}."
+        if src[1] != "open" or dst[1] != "open":
+            return False, "Both lots must be 'open' to merge."
+        qty = float(src[0] or 0)
+        if qty <= 0:
+            return False, f"Source lot {from_lot} has no remaining qty to merge."
+
+        conn.execute(
+            "INSERT INTO lot_transfers (From_Lot, To_Lot, SAP_Code, Site_ID, "
+            "Qty, kind, by_user) VALUES (?,?,?,?,?, 'merge', ?)",
+            (from_lot, into_lot, sap_code, site_id, qty, by_user),
+        )
+        conn.execute(
+            "UPDATE lots SET Status='exhausted' "
+            "WHERE Lot_Number=? AND SAP_Code=? AND Site_ID=?",
+            (from_lot, sap_code, site_id),
+        )
+        conn.commit()
+        log_audit_action(
+            by_user or "system", "LOT_MERGE", "lot_transfers",
+            f"{from_lot} → {into_lot} qty={qty:g} ({sap_code}/{site_id})",
+        )
+        return True, f"Merged {qty:g} from {from_lot} into {into_lot}."
     finally:
         if _owns:
             conn.close()
