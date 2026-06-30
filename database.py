@@ -288,6 +288,27 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         )
     """)
 
+    # ── Stock reservations (earmark on approved cross-site transfers) ─────────
+    # An approved `requests` row earmarks stock at the TARGET site (the one
+    # holding the stock) until the transfer is fulfilled/rejected. This NEVER
+    # changes Current_Stock (identity math is untouched); it powers a derived
+    # Available = Current − Reserved figure and an advisory warning.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS stock_reservations (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            SAP_Code    TEXT NOT NULL,
+            Site_ID     TEXT NOT NULL,
+            Qty         REAL NOT NULL,
+            request_id  INTEGER,
+            status      TEXT DEFAULT 'active'
+                             CHECK(status IN ('active','released')),
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            released_at DATETIME
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_resv_sap_site "
+              "ON stock_reservations(SAP_Code, Site_ID, status)")
+
     # ── UoM pack conversions (base-UoM model) ─────────────────────────────────
     # The ledger always stores the item's BASE UoM (inventory.UOM). This table
     # is a data-entry aid only: 1 <Pack_UOM> = <Factor> base units (e.g.
@@ -3668,6 +3689,61 @@ def create_request(
     return new_id
 
 
+def get_reserved_qty(
+    sap_code: str, site_id: str, conn: sqlite3.Connection = None,
+) -> float:
+    """Sum of ACTIVE reservations earmarking this item's stock at `site_id`.
+    Never affects Current_Stock — it's a separate advisory layer."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(Qty),0) FROM stock_reservations "
+            "WHERE TRIM(SAP_Code) = ? AND COALESCE(Site_ID,'HQ') = ? "
+            "  AND status = 'active'",
+            ((sap_code or "").strip(), site_id),
+        ).fetchone()
+        return float(row[0] or 0.0)
+    finally:
+        if _owns:
+            conn.close()
+
+
+def _reserve_for_request(conn: sqlite3.Connection, req_id: int) -> None:
+    """Earmark stock at the TARGET site for an approved transfer request.
+    Idempotent — skips if an active reservation already exists for the request."""
+    req = conn.execute(
+        "SELECT target_site, SAP_Code, requested_qty FROM requests WHERE id = ?",
+        (req_id,),
+    ).fetchone()
+    if not req:
+        return
+    target_site, sap, qty = req[0], req[1], float(req[2] or 0)
+    if not target_site or not sap or qty <= 0:
+        return
+    exists = conn.execute(
+        "SELECT 1 FROM stock_reservations "
+        "WHERE request_id = ? AND status = 'active' LIMIT 1", (req_id,),
+    ).fetchone()
+    if exists:
+        return
+    conn.execute(
+        "INSERT INTO stock_reservations (SAP_Code, Site_ID, Qty, request_id, status) "
+        "VALUES (?, ?, ?, ?, 'active')",
+        (str(sap).strip(), target_site, qty, req_id),
+    )
+
+
+def _release_reservation_for_request(conn: sqlite3.Connection, req_id: int) -> None:
+    """Release any active reservation tied to a request (fulfilled/rejected)."""
+    conn.execute(
+        "UPDATE stock_reservations SET status='released', "
+        "released_at=CURRENT_TIMESTAMP "
+        "WHERE request_id = ? AND status = 'active'", (req_id,),
+    )
+
+
 def update_request_status(
     conn: sqlite3.Connection = None,
     req_id: int = 0,
@@ -3679,6 +3755,9 @@ def update_request_status(
     Transitions a request to a new FSM status.
     reviewed_by is set for admin actions (approve/reject).
     Returns True if a row was actually updated.
+
+    Side-effect: keeps stock_reservations in sync — an 'approved' transfer
+    earmarks stock at the target site; 'fulfilled'/'rejected' releases it.
     """
     from config import REQUEST_STATUSES
     if new_status not in REQUEST_STATUSES:
@@ -3701,8 +3780,16 @@ def update_request_status(
             "updated_at=CURRENT_TIMESTAMP WHERE id=?",
             (new_status, reviewed_by, req_id),
         )
-    conn.commit()
     updated = c.rowcount > 0
+
+    # Keep reservations consistent with the transfer's lifecycle.
+    if updated:
+        if new_status == "approved":
+            _reserve_for_request(conn, req_id)
+        elif new_status in ("fulfilled", "rejected"):
+            _release_reservation_for_request(conn, req_id)
+
+    conn.commit()
     if _owns:
         conn.close()
     return updated
@@ -3892,6 +3979,14 @@ def get_item_snapshot(
             rcpt_df.iloc[0]["Date"] if not rcpt_df.empty else None
         )
 
+        # Reservations earmark stock for approved cross-site transfers. Only
+        # meaningful per-site (a reservation lives at one site). Available is a
+        # derived advisory figure — Current_Stock itself is never reduced.
+        reserved_qty = (
+            get_reserved_qty(sap_code, site_id, conn=conn) if site_id else 0.0
+        )
+        available_qty = current_stock - reserved_qty
+
         return {
             "found": True,
             "sap_code": sap_code,
@@ -3900,6 +3995,8 @@ def get_item_snapshot(
             "material_code": row0.get("Material_Code", "") or "",
             "minimum_qty":   float(row0.get("Minimum_Qty") or 0.0),
             "current_stock": current_stock,
+            "reserved_qty":  reserved_qty,
+            "available_qty": available_qty,
             "cons_df": cons_df,
             "cons_total": cons_total,
             "rcpt_df": rcpt_df,

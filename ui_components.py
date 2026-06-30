@@ -1782,6 +1782,17 @@ def render_stock_badge(
         if minimum > 0 else ""
     )
 
+    # Reservations (approved cross-site transfers) earmark stock without
+    # reducing Current_Stock. Surface Reserved + Available when any is active.
+    reserved  = float(snap.get("reserved_qty") or 0.0)
+    available = float(snap.get("available_qty") or current)
+    resv_html = (
+        f'<div style="color:{COLOR_LOW};font-size:0.78rem;font-weight:600;'
+        f'margin-top:4px;">🔒 Reserved {reserved:g} {uom} · '
+        f'Available <b>{available:g} {uom}</b></div>'
+        if reserved > 0 else ""
+    )
+
     st.markdown(
         f'<div style="background:linear-gradient(135deg, rgba(212,175,55,0.10),'
         f' rgba(10,25,47,0.55));'
@@ -1794,6 +1805,7 @@ def render_stock_badge(
         f'margin-top:2px;">{icon} {current:g} '
         f'<span style="color:{TEXT_MUTED};font-size:0.85rem;font-weight:500;">{uom}</span>'
         f'{min_html}</div>'
+        f'{resv_html}'
         f'{warn_html}'
         f'</div>',
         unsafe_allow_html=True,

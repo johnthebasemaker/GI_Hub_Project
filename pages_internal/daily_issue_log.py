@@ -451,8 +451,10 @@ def page_daily_issue_log(user: dict) -> None:
                     )
                     if _qty_val is not None:
                         _avail = float(issue_site_snap.get("current_stock") or 0.0)
+                        _reserved = float(issue_site_snap.get("reserved_qty") or 0.0)
+                        _free = float(issue_site_snap.get("available_qty") or _avail)
+                        _uom = issue_site_snap.get("uom", "") or ""
                         if float(_qty_val) > _avail:
-                            _uom = issue_site_snap.get("uom", "") or ""
                             st.error(
                                 f"🛑 **Insufficient stock at {site_id}.**\n\n"
                                 f"Requested: **{float(_qty_val):g} {_uom}**\n"
@@ -460,6 +462,15 @@ def page_daily_issue_log(user: dict) -> None:
                                 "Reduce the quantity or receive more stock before issuing."
                             )
                             st.stop()
+                        elif _reserved > 0 and float(_qty_val) > _free:
+                            # Warn only — reserved stock is earmarked for an
+                            # approved transfer, but we do NOT hard-block.
+                            st.warning(
+                                f"⚠️ **Dipping into reserved stock at {site_id}.** "
+                                f"{_reserved:g} {_uom} is earmarked for an approved "
+                                f"transfer (only {_free:g} {_uom} free). Proceeding "
+                                f"anyway — coordinate with the transfer if needed."
+                            )
                 if True:
                     conn2 = get_connection()
                     input_data["Site_ID"] = site_id

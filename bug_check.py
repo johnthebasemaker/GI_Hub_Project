@@ -486,6 +486,68 @@ def check_uom_pack_conversions() -> None:
         conn.close()
 
 
+def check_stock_reservations() -> None:
+    """Approving a cross-site transfer earmarks stock at the target site;
+    Available = Current − Reserved; fulfilling/rejecting releases it. The
+    Current_Stock identity is never altered."""
+    sap = "SAP-RESV-1"
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO inventory "
+            "(SAP_Code, Equipment_Description, Material_Code, UOM, "
+            " Minimum_Qty, Site_ID, Category, Opening_Stock) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (sap, "Resv Probe", "MC-RESV", "Pcs", 0.0, "HQ", "Others", 0.0),
+        )
+        # Put 100 on hand at HQ.
+        conn.execute(
+            "INSERT INTO receipts (Date, SAP_Code, Quantity, Supplier, Site_ID) "
+            "VALUES (DATE('now'), ?, 100, 'S', 'HQ')", (sap,),
+        )
+        conn.commit()
+
+        cur0 = database.get_item_snapshot(sap, "HQ", conn=conn)["current_stock"]
+        assert abs(cur0 - 100.0) < 1e-6, cur0
+        assert database.get_reserved_qty(sap, "HQ", conn=conn) == 0.0
+
+        # Another site requests 30 from HQ; approve it → reserve at HQ.
+        rid = database.create_request(
+            conn=conn, requesting_site="SITE_B", target_site="HQ",
+            sap_code=sap, requested_qty=30, requested_by="hod_b")
+        assert database.update_request_status(
+            conn=conn, req_id=rid, new_status="approved", reviewed_by="admin")
+        assert abs(database.get_reserved_qty(sap, "HQ", conn=conn) - 30.0) < 1e-6
+
+        snap = database.get_item_snapshot(sap, "HQ", conn=conn)
+        assert abs(snap["current_stock"] - 100.0) < 1e-6, "Current must NOT change"
+        assert abs(snap["reserved_qty"] - 30.0) < 1e-6
+        assert abs(snap["available_qty"] - 70.0) < 1e-6
+
+        # Idempotent: re-approving doesn't double-reserve.
+        database.update_request_status(
+            conn=conn, req_id=rid, new_status="approved", reviewed_by="admin")
+        assert abs(database.get_reserved_qty(sap, "HQ", conn=conn) - 30.0) < 1e-6
+
+        # Fulfilling releases the earmark.
+        database.update_request_status(
+            conn=conn, req_id=rid, new_status="fulfilled", reviewed_by="admin")
+        assert database.get_reserved_qty(sap, "HQ", conn=conn) == 0.0
+
+        # And a rejected request also leaves nothing reserved.
+        rid2 = database.create_request(
+            conn=conn, requesting_site="SITE_B", target_site="HQ",
+            sap_code=sap, requested_qty=15, requested_by="hod_b")
+        database.update_request_status(
+            conn=conn, req_id=rid2, new_status="approved", reviewed_by="admin")
+        assert abs(database.get_reserved_qty(sap, "HQ", conn=conn) - 15.0) < 1e-6
+        database.update_request_status(
+            conn=conn, req_id=rid2, new_status="rejected", reviewed_by="admin")
+        assert database.get_reserved_qty(sap, "HQ", conn=conn) == 0.0
+    finally:
+        conn.close()
+
+
 def check_bin_location_flows_to_ledger() -> None:
     """A Bin_Location on a staged receipt threads through commit → receipts,
     and get_item_bin_locations surfaces it. Pure metadata — stock unaffected."""
@@ -8387,6 +8449,10 @@ def main() -> int:
               check_uom_pack_conversions,
               "1 Box = N base units; receiving in a pack stores base units. "
               "Entry aid only — ledger stays single-UoM.")
+    run_check("Reservations", "Approve transfer earmarks; fulfil/reject releases",
+              check_stock_reservations,
+              "Available = Current − Reserved; Current_Stock identity is never "
+              "altered. Reserve on approve, release on fulfilled/rejected.")
     run_check("Returns",     "Submit → approve → ledger row",
               check_returns_flow)
     run_check("Returns",     "Reject removes from pending list",
