@@ -58,3 +58,12 @@ pillow-heif>=0.16
 xlsxwriter>=3.1.0
 reportlab>=4.0.0
 streamlit-sortables>=0.3.0
+
+# PostgreSQL migration (see docs/POSTGRES_MIGRATION.md).
+# Phase 1 engine seam: SQLAlchemy is required to build the (optional) engine;
+# the runtime still uses SQLite by default, so nothing changes until a later
+# phase / DATABASE_URL is set. psycopg2-binary is only needed when actually
+# pointing DATABASE_URL at a Postgres server (Phase 4+), kept here so the
+# server image has it ready.
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9

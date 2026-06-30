@@ -121,6 +121,66 @@ def get_connection(db_file: str = None) -> sqlite3.Connection:
 
 
 # ---------------------------------------------------------------------------
+# PostgreSQL migration — Phase 1 engine seam (see docs/POSTGRES_MIGRATION.md)
+# ---------------------------------------------------------------------------
+# This adds a SQLAlchemy Engine *alongside* the existing raw-sqlite3 path with
+# ZERO behavior change: get_connection() above is untouched and remains the
+# runtime path. The engine is only built when get_engine() is explicitly
+# called, and SQLAlchemy is imported lazily so environments without it (or
+# without psycopg2) keep running exactly as before. Later phases migrate
+# callers onto the engine; Phase 1 just establishes the seam + URL resolution.
+_ENGINES: dict = {}
+
+
+def get_database_url() -> str:
+    """Resolve the SQLAlchemy database URL.
+
+    `DATABASE_URL` (env) wins — e.g. ``postgresql+psycopg2://user:pw@host/db``.
+    Otherwise we derive a SQLite URL from DB_FILE, so the default behavior is
+    identical to today (same file, same data).
+    """
+    url = os.environ.get("DATABASE_URL")
+    if url:
+        return url
+    target = DB_FILE
+    if target == ":memory:":
+        return "sqlite://"
+    return "sqlite:///" + os.path.abspath(target)
+
+
+def get_engine(url: str = None):
+    """Lazily build (and cache) a SQLAlchemy Engine for `url` (default:
+    get_database_url()). NOT yet used by the runtime — Phase 1 seam only.
+
+    Raises a clear RuntimeError if SQLAlchemy isn't installed, so the optional
+    dependency never breaks module import or the existing sqlite3 path.
+    """
+    try:
+        from sqlalchemy import create_engine
+    except ImportError as exc:  # pragma: no cover - depends on optional dep
+        raise RuntimeError(
+            "SQLAlchemy is not installed. Install it with "
+            "`pip install SQLAlchemy` to use the Postgres engine seam."
+        ) from exc
+    u = url or get_database_url()
+    if u not in _ENGINES:
+        if u.startswith("sqlite"):
+            # Mirror get_connection()'s threading posture for parity.
+            _ENGINES[u] = create_engine(
+                u, future=True,
+                connect_args={"check_same_thread": False, "timeout": 30},
+            )
+        else:
+            # Postgres/other: pooled connections for the Streamlit + worker
+            # threads, with liveness checks (server phases).
+            _ENGINES[u] = create_engine(
+                u, future=True, pool_pre_ping=True,
+                pool_size=5, max_overflow=10,
+            )
+    return _ENGINES[u]
+
+
+# ---------------------------------------------------------------------------
 # SCHEMA INIT — accepts external conn for testability
 # ---------------------------------------------------------------------------
 def init_db(conn: sqlite3.Connection = None) -> None:

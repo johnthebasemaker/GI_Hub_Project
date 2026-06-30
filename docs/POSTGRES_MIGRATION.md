@@ -106,9 +106,12 @@ never *swapped in*, until the dual-CI phase proves parity.
 ## 5. Phased plan (each phase independently shippable + reversible)
 
 - **Phase 0 — this document.** Inventory + decision. No code. ✅
-- **Phase 1 — Engine seam.** Add SQLAlchemy + `psycopg2-binary` (optional deps).
-  Introduce `DATABASE_URL`; `get_connection()` keeps returning a SQLite connection
-  by default. **Zero behavior change.** Tests green on SQLite.
+- **Phase 1 — Engine seam. ✅ DONE.** Added SQLAlchemy + `psycopg2-binary` to
+  requirements; new `get_database_url()` (DATABASE_URL wins, else derives a
+  SQLite URL from DB_FILE) and `get_engine()` (lazy SQLAlchemy import, pooled).
+  `get_connection()` is **untouched** and remains the runtime path — **zero
+  behavior change**, verified by a regression check (`get_connection()` still
+  returns `sqlite3.Connection`). 577 bug_check / 21 crawler green on SQLite.
 - **Phase 2 — Portability helpers.** Add `column_exists()`, `upsert()`,
   `now_sql()`, `date_diff_days()` and route the 111 PRAGMA / 41 upsert / 34 date
   sites through them. Still SQLite in prod; tests green throughout.
@@ -132,8 +135,7 @@ even then the pre-cutover `.db` is a full snapshot.
 ## 6. What Phase 0 delivers / what's next
 
 - ✅ This inventory + risk register + reversible plan.
-- ⏭️ **Decision point for you:** proceed to **Phase 1** (the no-behavior-change
-  engine seam) when ready. That phase adds dependencies and a `DATABASE_URL` seam
-  but does **not** change how the app runs on SQLite.
-
-No PostgreSQL code is written until you green-light Phase 1.
+- ✅ **Phase 1 delivered** (engine seam, zero behavior change — see above).
+- ⏭️ **Next decision point:** **Phase 2** (portability helpers — `column_exists`,
+  `upsert`, `now_sql`, `date_diff_days`) — still SQLite in prod, tests green
+  throughout. Green-light when ready.

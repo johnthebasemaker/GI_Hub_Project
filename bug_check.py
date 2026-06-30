@@ -2645,6 +2645,43 @@ def check_sites() -> None:
     assert "HQ" in sites, f"HQ not in get_sites() → {sites}"
 
 
+def check_postgres_engine_seam() -> None:
+    """Phase 1 seam: get_database_url() defaults to SQLite (DATABASE_URL wins),
+    get_engine() can run a query, and get_connection() is UNCHANGED (still a
+    raw sqlite3 connection — zero behavior change)."""
+    import os
+    import sqlite3 as _sqlite3
+    # Default URL derives from DB_FILE (SQLite) when DATABASE_URL is unset.
+    _saved = os.environ.pop("DATABASE_URL", None)
+    try:
+        url = database.get_database_url()
+        assert url.startswith("sqlite"), f"default URL must be SQLite, got {url!r}"
+        # DATABASE_URL overrides.
+        os.environ["DATABASE_URL"] = "postgresql+psycopg2://u:p@h/db"
+        assert database.get_database_url() == "postgresql+psycopg2://u:p@h/db"
+    finally:
+        os.environ.pop("DATABASE_URL", None)
+        if _saved is not None:
+            os.environ["DATABASE_URL"] = _saved
+
+    # get_connection() must remain a raw sqlite3 connection (unchanged path).
+    c = database.get_connection()
+    try:
+        assert isinstance(c, _sqlite3.Connection), \
+            "get_connection() must still return sqlite3.Connection (no behavior change)"
+    finally:
+        c.close()
+
+    # The engine builds and runs a trivial query against the same SQLite DB.
+    try:
+        from sqlalchemy import text
+    except ImportError:
+        return  # optional dep absent — seam still imports; nothing to exercise
+    eng = database.get_engine()
+    with eng.connect() as conn:
+        assert conn.execute(text("SELECT 1")).scalar() == 1
+
+
 def check_error_boundary() -> None:
     """The global error boundary: friendly one-liner + ref ID to the user,
     full traceback to logs/app_errors.log, and st.rerun()/st.stop() signals
@@ -8760,6 +8797,10 @@ def main() -> int:
               check_lot_management_module,
               "shared render_lot_management used by Admin (cross-site) + HOD "
               "(site-scoped).")
+    run_check("Postgres",    "Phase 1 engine seam (SQLite default, no behavior change)",
+              check_postgres_engine_seam,
+              "get_database_url() defaults to SQLite (DATABASE_URL overrides); "
+              "get_engine() runs; get_connection() still returns sqlite3.")
     run_check("Resilience",  "global error boundary (friendly UI + dev log)",
               check_error_boundary,
               "Users get a one-line message + ref ID; full traceback logged to "
