@@ -2435,6 +2435,18 @@ def check_pages_internal_exports_resolve():
         "pages_internal must NOT eagerly import the heavy estimator at package init"
 
 
+def check_estimator_filters_cross_filter():
+    import pathlib
+    src = pathlib.Path(REPO_ROOT / "pages_internal" /
+                       "material_estimator_portal.py").read_text(encoding="utf-8")
+    # §4 — System Code options narrow by selected Substrate (look-back via session_state)
+    assert '_sub_sel_prev = st.session_state.get("dash_substrate")' in src, \
+        "System Code filter must cross-filter by the selected Substrate"
+    # and Substrate options narrow by selected System Codes
+    assert "_eq_pool_sub = _eq_pool[_eq_pool[\"Equipment_Tag_No.\"].isin(_code_tags)]" in src, \
+        "Substrate filter must cross-filter by the selected System Codes"
+
+
 def check_kpi_drilldown_is_modal():
     import pathlib
     src = pathlib.Path(REPO_ROOT / "pages_internal" /
@@ -9131,6 +9143,10 @@ def main() -> int:
               check_pages_internal_exports_resolve,
               "every page_* export is importable; SME portal no longer re-enters "
               "the half-built package at module level.")
+    run_check("Material Estimator", "Dashboard filters cross-filter Code <-> Substrate",
+              check_estimator_filters_cross_filter,
+              "System Code & Substrate options narrow each other so impossible "
+              "combos (e.g. Conductive Coating + PU codes) can't be picked.")
     run_check("Material Estimator", "KPI drill-down is a centered modal (not clipped popover)",
               check_kpi_drilldown_is_modal,
               "dbl_click_metric opens a navy/gold st.dialog so wide tables pop fully.")

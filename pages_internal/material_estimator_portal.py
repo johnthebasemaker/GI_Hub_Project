@@ -3654,7 +3654,14 @@ letter-spacing:.08em;color:var(--t5);">
                     eq_master["Location"].isin(sel_locations) &
                     eq_master["Type"].str.strip().isin(sel_types)
                 ] if (sel_locations or sel_types) else eq_master
-                _tags_pool = _eq_pool["Equipment_Tag_No."].tolist()
+                # Full cross-filter (§4): also narrow System Code options by the
+                # currently-selected Substrate. Substrate renders AFTER this widget,
+                # so read its value from session_state. This prevents impossible
+                # combos (e.g. Conductive Coating + PU codes) from both being picked.
+                _sub_sel_prev = st.session_state.get("dash_substrate")
+                _eq_pool_codes = (_eq_pool[_eq_pool["Substrate"].isin(_sub_sel_prev)]
+                                  if _sub_sel_prev else _eq_pool)
+                _tags_pool = _eq_pool_codes["Equipment_Tag_No."].tolist()
                 _code_pool = dm[dm["Equipment_Tag_No."].isin(_tags_pool)]
                 all_codes_d = (
                     _code_pool[["Lining_System_Code","Lining_System_Short_Name"]]
@@ -3667,8 +3674,16 @@ letter-spacing:.08em;color:var(--t5);">
                                                 default=code_opts_d, key="dash_code")
                 sel_codes = [c.split(" – ")[0].replace("Code ","").strip() for c in sel_codes_raw]
             with df4:
-                # Substrate options scoped to selected locations + types
-                all_desc_d = sorted(_eq_pool["Substrate"].dropna().unique().tolist())
+                # Substrate options scoped to selected locations + types, AND
+                # cross-filtered by the selected System Codes (§4 full cross-filter):
+                # only substrates that co-exist with the chosen codes appear.
+                if sel_codes:
+                    _code_tags = dm[dm["Lining_System_Code"].astype(str).isin(
+                        [str(c) for c in sel_codes])]["Equipment_Tag_No."].tolist()
+                    _eq_pool_sub = _eq_pool[_eq_pool["Equipment_Tag_No."].isin(_code_tags)]
+                else:
+                    _eq_pool_sub = _eq_pool
+                all_desc_d = sorted(_eq_pool_sub["Substrate"].dropna().unique().tolist())
                 sel_substrate = st.multiselect(" Substrate", options=all_desc_d,
                                                 default=all_desc_d, key="dash_substrate")
 
