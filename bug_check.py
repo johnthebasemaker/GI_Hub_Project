@@ -2426,6 +2426,13 @@ def check_pages_internal_exports_resolve():
     assert "from pages_internal.material_estimator_engine import build_demand_matrix" \
         not in src.replace("#   from pages_internal.material_estimator_engine import build_demand_matrix", ""), \
         "SME portal must not module-level import back through the pages_internal package"
+    # lazy loading guard: pages must NOT be eagerly imported during package init
+    # (that left the cold-start race window). PEP 562 __getattr__ defers them.
+    init_src = pathlib.Path(REPO_ROOT / "pages_internal" / "__init__.py").read_text(encoding="utf-8")
+    assert "def __getattr__" in init_src, \
+        "pages_internal must lazily import page modules via __getattr__"
+    assert "from .material_estimator_portal import" not in init_src, \
+        "pages_internal must NOT eagerly import the heavy estimator at package init"
 
 
 def check_kpi_drilldown_is_modal():

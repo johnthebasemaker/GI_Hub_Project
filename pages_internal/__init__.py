@@ -12,32 +12,45 @@ contents into multi-page navigation entries. We have a custom sidebar + RBAC
 gate in main.py and do NOT want Streamlit's auto-page sidebar. Naming the
 folder `pages_internal` avoids that auto-discovery.
 
-Re-exports
-----------
-`from pages_internal import page_live_dashboard, page_daily_issue_log, ...`
-works at the package level so main.py's import block is short.
+Lazy re-exports (PEP 562)
+-------------------------
+`from pages_internal import page_live_dashboard, page_material_estimator, ...`
+works at the package level. The page modules are imported LAZILY via
+`__getattr__` — NOT eagerly here. Eager imports during this `__init__` left a
+window where Streamlit's polling module-loader could observe the package
+half-built and raise `cannot import name 'page_material_estimator'` at cold
+start (especially with the heavy 7,200-LOC estimator module). Deferring each
+import until after `__init__` fully completes removes that race entirely.
 """
+from __future__ import annotations
 
-from .live_dashboard import page_live_dashboard
-from .reports_page import page_reports
-from .daily_issue_log import page_daily_issue_log
-from .hod_portal import page_hod_portal
-from .admin_portal import page_admin_portal
-from .logistics_portal import page_logistics_portal
-from .warehouse_portal import page_warehouse_portal
-from .supervisor_portal import page_supervisor_portal
-from .material_estimator_portal import page_material_estimator
-from .manhour_portal import page_manhour_portal
+import importlib
 
-__all__ = [
-    "page_live_dashboard",
-    "page_reports",
-    "page_daily_issue_log",
-    "page_hod_portal",
-    "page_admin_portal",
-    "page_logistics_portal",
-    "page_warehouse_portal",
-    "page_supervisor_portal",
-    "page_material_estimator",
-    "page_manhour_portal",
-]
+# Exported name → submodule that defines it.
+_PAGE_MODULES = {
+    "page_live_dashboard":    "live_dashboard",
+    "page_reports":           "reports_page",
+    "page_daily_issue_log":   "daily_issue_log",
+    "page_hod_portal":        "hod_portal",
+    "page_admin_portal":      "admin_portal",
+    "page_logistics_portal":  "logistics_portal",
+    "page_warehouse_portal":  "warehouse_portal",
+    "page_supervisor_portal": "supervisor_portal",
+    "page_material_estimator": "material_estimator_portal",
+    "page_manhour_portal":    "manhour_portal",
+}
+
+__all__ = list(_PAGE_MODULES)
+
+
+def __getattr__(name: str):
+    """Import the owning submodule on first access (after __init__ completes)."""
+    mod = _PAGE_MODULES.get(name)
+    if mod is None:
+        raise AttributeError(f"module 'pages_internal' has no attribute {name!r}")
+    module = importlib.import_module(f".{mod}", __name__)
+    return getattr(module, name)
+
+
+def __dir__():
+    return sorted(__all__)

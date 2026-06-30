@@ -1751,13 +1751,13 @@ _KPI_CARD_CSS = """<style>
     border-color:rgba(240,192,64,.55)!important;transform:translateY(-1px);}
 [class*="st-key-kpimetric_"] button p{margin:0!important;line-height:1.2;}
 [class*="st-key-kpimetric_"] button p:first-child{
-    color:#8FA3B8!important;font-size:.7rem!important;font-weight:600!important;
-    letter-spacing:.05em;text-transform:uppercase;}
+    color:#EAF1F8!important;font-size:.82rem!important;font-weight:800!important;
+    letter-spacing:.03em;text-transform:uppercase;}
 [class*="st-key-kpimetric_"] button p:nth-child(2){
-    color:#F0C040!important;font-size:1.5rem!important;font-weight:800!important;
+    color:#F0C040!important;font-size:1.6rem!important;font-weight:900!important;
     font-family:'JetBrains Mono',monospace;}
 [class*="st-key-kpimetric_"] button p:nth-child(3){
-    color:#8FA3B8!important;font-size:.72rem!important;}
+    color:#AEBED0!important;font-size:.74rem!important;font-weight:700!important;}
 [data-testid="stDialog"] div[role="dialog"]{
     border:1px solid rgba(240,192,64,.30)!important;border-radius:16px!important;}
 </style>"""

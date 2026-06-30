@@ -322,35 +322,42 @@ def login_form() -> None:
                     unsafe_allow_html=True,
                 )
 
-                username = st.text_input(
-                    "Username",
-                    placeholder="Enter your username",
-                    key="login_username",
-                ).strip()
-                password = st.text_input(
-                    "Password",
-                    type="password",
-                    placeholder="Enter your password",
-                    key="login_password",
-                ).strip()
+                # Inputs live INSIDE an st.form so typing the username doesn't
+                # rerun the script and steal focus from the password field.
+                # Tab username → password, then Enter (or click) submits once.
+                with st.form("login_signin_form", clear_on_submit=False):
+                    username = st.text_input(
+                        "Username",
+                        placeholder="Enter your username",
+                        key="login_username",
+                    ).strip()
+                    password = st.text_input(
+                        "Password",
+                        type="password",
+                        placeholder="Enter your password",
+                        key="login_password",
+                    ).strip()
 
-                st.markdown("<br>", unsafe_allow_html=True)
+                    st.markdown("<br>", unsafe_allow_html=True)
 
-                if st.button("🔐  Sign In", type="primary", use_container_width=True):
+                    submitted = st.form_submit_button(
+                        "🔐  Sign In", type="primary", use_container_width=True)
+
+                if submitted:
                     if not username or not password:
                         st.error("Please enter both username and password.")
                     else:
                         user = authenticate_user(username, password)
                         if user:
                             st.session_state[_SESSION_KEY] = user
-                            
+
                             # 🕵️ Intercept HTTP Headers to get Device/Browser Info
                             device_info = "Web Browser"
                             if hasattr(st, "context") and hasattr(st.context, "headers"):
                                 device_info = st.context.headers.get("User-Agent", "Unknown Device")
-                                
+
                             log_audit_action(username, "LOGIN", "System", f"Device: {device_info}")
-                            
+
                             st.success(f"Welcome, {user['display_label']} {user['icon']}")
                             st.rerun()
                         else:
