@@ -37,27 +37,38 @@
 
 ---
 
-**Last update:** 2026-06-30 — **WORKSTREAM C INFRA + STREAMLIT-CLOUD DEMO + ESTIMATOR/LOGIN POLISH.** Everything below is committed and pushed (`origin/main == HEAD`). Tests: **560 bug_check / 0 failed · UI crawler 21/21.** Per-item detail is in the bullets below and the commit messages (`git log --oneline`).
+**Last update:** 2026-06-30 (evening) — **P0/P1/P2 FEATURE SWEEP + SME DATA FIX + POSTGRES PHASE 0–2 + 2FA.** All committed + pushed (`origin/main == b329d5c`). Tests: **580 bug_check / 0 failed · UI crawler 21/21** (was 560). Per-item detail in the commit messages (`git log --oneline`).
 
 > ### 📍 WHERE WE ARE — read this first
 >
 > **DONE this session (all committed + pushed, newest first):**
-> - **Estimator filter cross-filtering** — Dashboard now cross-filters System Code ↔ Substrate (so impossible combos like *Conductive Coating + PU codes* can't be picked); Material Requirement now cascades Location→Type→Code; Overview + Location Report already cascaded. Only narrows *options*; downstream math untouched. (`4aa2de5`, `3f2bcd1`)
-> - **Cold-start `ImportError` FIXED (root cause).** `pages_internal/__init__.py` now **lazy-imports** page modules via PEP-562 `__getattr__` (was eager → Streamlit's loader saw the package half-built → `cannot import name page_material_estimator`). Race gone (30/30 clean). Also removed a dead cross-import in the SME module. (`e77c48a`, `afcd3d8`)
-> - **Login focus bug FIXED.** Sign-in inputs wrapped in `st.form` → typing the username no longer reruns + steals focus from the password; Tab → password, Enter → login. (`afcd3d8`, `auth.py`)
-> - **KPI drill-downs** → centered **navy/gold `st.dialog` modal** (was a clipped `st.popover`); card labels bold. (`fee078d`, `afcd3d8`)
-> - **Admin Material-Estimator site picker** + **hid the SME's own sidebar** (`_SME_LEGACY_SIDEBAR=False`; theme still applied). (`ad57b00`)
-> - **Meta WhatsApp Cloud API sender** — `whatsapp_worker._send_via_meta` + `WHATSAPP_PROVIDER` router (default unset = existing Twilio/macOS/pywhatkit chain, so the **Mac demo is unchanged**) + a dedicated `worker` compose service. Webhook receiver stubs already in `services/whatsapp_webhook.py` + `services/rag_api.py`. Secrets via templates: `.streamlit/secrets.toml.example` + `.env.example` (both gitignored). (`3e10451`, `f3d706b`)
-> - **Streamlit-Cloud readiness** — slim `requirements.txt` (CV deps `ultralytics`/`opencv` commented out; gated OFF anyway) + `packages.txt`(`libzbar0`); **added `pdfplumber`** (was missing → cloud crash) + **pinned `streamlit>=1.58`** (fixes the HOD `width="stretch"` TypeError) + **`watchdog`**. Sanitized **`demo_seed.db`** + a `DB_FILE` fallback (`gi_database.db` if present, else `demo_seed.db`) so the public demo runs populated without exposing real data. (`9cb8d7a`, `483b410`, `3f2bcd1`)
-> - **Certbot + Nginx TLS** wired in `docker-compose.yml` + `scripts/init-letsencrypt.sh` (first-boot cert). (`06ead58`, §2Y)
+> - **2FA (TOTP), opt-in + admin reset** — sidebar self-enrollment (QR via `qrcode` + `pyotp`); login challenge holds 2FA-enabled users for a 6-digit code; **Admin → User Management → Reset 2FA** is the lost-device safety net. `totp_enabled` defaults 0 so existing users keep password-only login — **no lock-outs.** Helpers in `auth.py`; `users.totp_secret/totp_enabled` self-heal. (`b329d5c`)
+> - **PostgreSQL migration — Phases 0–2 (no cutover).** Plan + risk register in `docs/POSTGRES_MIGRATION.md`. Phase 1 = SQLAlchemy engine seam (`get_database_url()`/`get_engine()`, lazy import) with **`get_connection()` untouched → zero behavior change**. Phase 2 = portability helpers (`db_dialect`, `column_exists`, `now_sql`, `days_ago_sql`, `date_diff_days_sql`). **SQLite stays the default; nothing past Phase 2 is implemented.** Phase 3+ (param-style → dual-CI → cutover) awaits green-light. (`8908ec5`, `4ef91d6`, `cf0a3c3`)
+> - **Lot Management UI** (Admin cross-site + HOD site-scoped) — quarantine/release, mark-expired, **dispose** (write-off via the existing HOD stock-adjustment approval; lot flips to `disposed` on approval, back to `open` on reject), plus **split/merge** via a new `lot_transfers` table that `v_lot_balance` nets in/out (within-SAP reclassification — movement ledger untouched, Current_Stock unchanged). `pages_internal/lot_management.py`. (`e16b615`, `ef1fbdb`)
+> - **Global error boundary** — users see a friendly one-liner + 8-char reference ID; full traceback → `logs/app_errors.log` (gitignored); `GI_DEBUG=1` for inline. `config.toml [client] showErrorDetails="none"`. Decided: **stay on Streamlit**, no FastAPI rewrite. (`a0b8281`, `error_handling.py`)
+> - **SME data + tab work** (intentional, regression-tested edits to the frozen drop-in):
+>   - **Substrate load bug FIXED** — the bootstrap had loaded *Lining_Type* values into `Substrate` (and left `Lining_Type` empty). Now `Substrate` = the xlsx Substrate (TANK/VESSEL/CONCRETE); **area-split rows are SUMMED per (tag,code)** (fixes a pre-existing SQM undercount); CNCEC re-baselined from the **new `Equipment.xlsx`** (75→65 rows). (`4e22ebf`)
+>   - **System Code Report tab** (9th estimator tab) — per system code: # equipments + total SQM + per-code drill-down + Excel. (`8244abe`)
+>   - **`Sub_Location`** captured + surfaced in `get_sme_equipment`, the equipment detail card, and the `equipment` compat VIEW (Master Data grid). New `--equipment-only` bootstrap flag. (`0aeeb50`, `faf8254`)
+> - **Stock reservations** — approved cross-site transfers earmark stock at the target site; `Available = Current − Reserved` shown on the stock badge + a non-blocking warning when an issue dips into reserved. Current_Stock identity untouched. (`4de7d61`)
+> - **UoM pack→base conversion** — `uom_conversions` table + a per-item pack manager on the SK receipt form; receiving in a pack stores BASE units. Entry aid only; ledger stays single-UoM. (`aab0dfb`)
+> - **Bins** — lightweight `Bin_Location` put-away tag on receipts (+ pending_receipts), threaded staging→commit; `get_item_bin_locations()` lookup. (`5c8a068`)
+> - **Auto-PR drafting** — HOD button drafts one batch PR (qty = shortage, configurable factor) for all below-min items; idempotent; drafts are editable/renamable before submit. Also **fixed an auth reject crash** (`log_audit_action` UnboundLocalError). (`6db970b`)
+> - **WhatsApp auto-retry** — failed sends requeue up to 3 attempts before terminal-failed. (`349c459`)
+> - **Maintenance Mode** — the admin toggle now actually blocks non-admins at login (was a no-op). (`85e0b01`)
 >
-> **PENDING / NEXT (nothing half-done in code — these are external/ops steps):**
-> 1. **Provision the Hetzner server** — user chose **CPX42 (8 vCPU / 16 GB / 320 GB)**. Not bought yet. When live: harden → `./scripts/init-letsencrypt.sh` → `docker compose up -d` → register the Meta webhook at `https://giinventory.com/api/whatsapp/webhook`.
-> 2. **Wire Meta WhatsApp secrets** — code is ready; user supplies `META_PHONE_NUMBER_ID` / `META_ACCESS_TOKEN` (+ webhook `META_WEBHOOK_VERIFY_TOKEN` / `META_APP_SECRET`) in the gitignored `.streamlit/secrets.toml` (local) or `.env` (server) — **never in chat.** Still needs Meta business verification + approved message templates for business-initiated sends.
-> 3. **Streamlit-Cloud demo** — redeploy from GitHub to pick up pdfplumber/streamlit-pin/watchdog/cross-filter. ⚠️ The user **manually uploaded the real `gi_database.db`** to the remote (commit `c558bba`) for a trusted-person demo — so the demo shows real data and the DB is now tracked again; a future `git add -A` would push DB changes. (The DB-fallback means cloud uses the committed `gi_database.db` when present.)
-> 4. **Optional:** turn CV (Smart Scan) ON later — uncomment `ultralytics`/`opencv` + add `libgl1` to `packages.txt` + resize the box. The dependent-filter rollout is COMPLETE.
+> **Locked decisions (saved to AI memory — do not re-litigate):**
+> - FEFO stays **allow-and-log** (not hard-block). UoM = base-UoM + entry conversion. Bins = lightweight tag. Reservations = available + warn. Stay on **Streamlit** (error UX via the boundary). Postgres **planned, not cut over** until Phase 1/3 green-lit by the user.
+> - **To update SME equipment data:** edit `scripts/sme_seed_data/Equipment.xlsx` (sheet `Data Input`) → `python scripts/sme_bootstrap.py --site-id CNCEC --equipment-only --force` (back up `gi_database.db` first; `--dry-run` to preview).
 >
-> **Frozen contracts still intact:** SME drop-in reads `sme_*` read-only; Man-Hour writes only `mh_*`; EOD path, identity math, RBAC, RL/BL separation, price masking — all untouched.
+> **PENDING / NEXT:**
+> 1. **PostgreSQL Phase 3+** (param-style `?`→named migration, then Phase 4 dual-CI against a real Postgres, then cutover) — when the user green-lights. The ~185 legacy SQLite-isms migrate incrementally under dual-CI, never a blind sed.
+> 2. **Workstream C ops** (unchanged, external): provision Hetzner **CPX42**, wire Meta WhatsApp secrets (never in chat), redeploy the Streamlit-Cloud demo. ⚠️ `gi_database.db` is tracked + carries real data; a `git add -A` pushes DB changes (we stage it deliberately).
+> 3. **After an app RESTART** the new surfaces appear: estimator **🔢 System Code Report**, Admin + HOD **🧪 Lot Management**, sidebar **🔐 Two-Factor Auth**, Master Data **Sub_Location** column. (Streamlit hot-reload does NOT add new tabs from imported modules — a full restart is required.)
+>
+> **Frozen contracts still intact:** Man-Hour writes only `mh_*`; EOD path, identity math (`receipts − consumption − returns`), RBAC, RL/BL separation, price masking — all untouched. The SME edits above are **additive + regression-tested** (System Code Report tab, Sub_Location, the Substrate/area-SQM data fix) — not refactors; the freeze still holds for *new* work.
+
+**Prior update:** 2026-06-30 (earlier) — **WORKSTREAM C INFRA + STREAMLIT-CLOUD DEMO + ESTIMATOR/LOGIN POLISH.** Estimator filter cross-filtering (System Code ↔ Substrate); cold-start `ImportError` fixed (lazy `pages_internal/__init__.py`); login-focus fix (`st.form`); KPI drill-down `st.dialog` modal; admin estimator site picker + hidden SME sidebar; **Meta WhatsApp Cloud API sender** (`WHATSAPP_PROVIDER` router, default = existing chain) + `worker` compose service; Streamlit-Cloud readiness (`pdfplumber`, `streamlit>=1.58` pin, `watchdog`, sanitized `demo_seed.db` + DB fallback); **Certbot + Nginx TLS** (`docker-compose.yml` + `scripts/init-letsencrypt.sh`). Tests at that point: 560/0.
 
 **Prior update:** 2026-06-28 — **MAN-HOUR FEATURE COMPLETE; WORKSTREAM C UNPAUSED.** Man-Hour & Labor Tracking shipped + documented (USER_MANUAL §19, SOP §3.3a) — see §2Z. Certbot + Nginx TLS wired (§2Y).
 
