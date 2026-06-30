@@ -11,6 +11,8 @@ env/
 
 # Ignore passwords/secrets
 .env
+.streamlit/secrets.toml
+~$*.xlsx
 
 # Ignore Python cache clutter
 __pycache__/
