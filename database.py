@@ -2018,6 +2018,7 @@ def init_db(conn: sqlite3.Connection = None) -> None:
                    Project                  AS project,
                    WBS_No                   AS "WBS #",
                    IO_No                    AS "IO#",
+                   Sub_Location             AS "Sub_Location",
                    Drawing_No               AS "Drawing #",
                    Dia_L                    AS "Dia / L",
                    Ht_W                     AS "Ht. /W",

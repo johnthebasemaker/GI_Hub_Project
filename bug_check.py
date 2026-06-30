@@ -571,6 +571,15 @@ def check_sme_sub_location_surfaced() -> None:
         "eq_master groupby must carry Sub_Location"
     assert '("Sub-Location",' in src, \
         "equipment detail card must render a Sub-Location row"
+    # The Master Data 'View, Edit & Delete — Equipment' grid reads the
+    # `equipment` compat VIEW, so the VIEW must expose Sub_Location too.
+    conn = database.get_connection()
+    try:
+        vcols = [r[1] for r in conn.execute("PRAGMA table_info(equipment)").fetchall()]
+        assert "Sub_Location" in vcols, \
+            f"equipment VIEW must expose Sub_Location (Master Data grid): {vcols}"
+    finally:
+        conn.close()
 
 
 def check_stock_reservations() -> None:
