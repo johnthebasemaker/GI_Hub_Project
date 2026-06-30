@@ -10,6 +10,12 @@ font                     = "sans serif"
 [browser]
 gatherUsageStats = false
 
+[client]
+# Never dump raw tracebacks + source onto the frontend. The global error
+# boundary in main.py shows a friendly one-liner + reference ID and logs the
+# full traceback to logs/app_errors.log. Set GI_DEBUG=1 for inline details.
+showErrorDetails = "none"
+
 [server]
 headless      = true
 maxUploadSize = 50

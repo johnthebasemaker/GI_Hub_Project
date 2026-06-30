@@ -658,4 +658,24 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Global error boundary — users see a friendly one-liner + reference ID;
+    # the full traceback goes to logs/app_errors.log keyed by that ID. Streamlit
+    # control-flow signals (rerun/stop) must propagate untouched.
+    from error_handling import (
+        get_error_logger, is_streamlit_control_flow, new_error_id, debug_enabled,
+    )
+    try:
+        main()
+    except Exception as _exc:          # noqa: BLE001 — top-level safety net
+        if is_streamlit_control_flow(_exc):
+            raise
+        _err_id = new_error_id()
+        get_error_logger().exception("Unhandled UI error [ref %s]", _err_id)
+        st.error(
+            f"⚠️ Something went wrong on our side. "
+            f"Reference **{_err_id}** — please share this with the admin if it "
+            f"keeps happening. Your data is safe."
+        )
+        if debug_enabled():
+            with st.expander("🛠 Developer details (GI_DEBUG=1)"):
+                st.exception(_exc)

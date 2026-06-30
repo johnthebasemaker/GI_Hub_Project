@@ -2523,6 +2523,39 @@ def check_sites() -> None:
     assert "HQ" in sites, f"HQ not in get_sites() → {sites}"
 
 
+def check_error_boundary() -> None:
+    """The global error boundary: friendly one-liner + ref ID to the user,
+    full traceback to logs/app_errors.log, and st.rerun()/st.stop() signals
+    are re-raised (never swallowed)."""
+    import importlib, pathlib
+    E = importlib.import_module("error_handling")
+    eid = E.new_error_id()
+    assert len(eid) == 8 and eid.isalnum(), f"bad error id {eid!r}"
+    # Real errors are NOT control flow; rerun/stop ARE (must propagate).
+    assert E.is_streamlit_control_flow(ValueError("x")) is False
+    class RerunException(Exception): pass
+    class StopException(Exception): pass
+    assert E.is_streamlit_control_flow(RerunException()) is True
+    assert E.is_streamlit_control_flow(StopException()) is True
+    # Logging an exception writes the ref to the rotating log file.
+    try:
+        raise RuntimeError("probe")
+    except Exception:
+        E.get_error_logger().exception("Unhandled UI error [ref %s]", eid)
+    log = pathlib.Path(REPO_ROOT / "logs" / "app_errors.log")
+    assert log.exists() and eid in log.read_text(encoding="utf-8"), \
+        "traceback must be logged with its reference id"
+    # main.py wires the boundary and re-raises control-flow exceptions.
+    msrc = pathlib.Path(REPO_ROOT / "main.py").read_text(encoding="utf-8")
+    assert "is_streamlit_control_flow(_exc)" in msrc and "raise" in msrc, \
+        "main() boundary must re-raise control-flow exceptions"
+    assert "get_error_logger().exception(" in msrc, "boundary must log the traceback"
+    # config hides raw tracebacks on the frontend.
+    cfg = pathlib.Path(REPO_ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8")
+    assert 'showErrorDetails = "none"' in cfg, \
+        "config must hide raw tracebacks from the frontend"
+
+
 # ---------------------------------------------------------------------------
 # Module import smoke — every page module must load without raising
 # ---------------------------------------------------------------------------
@@ -8587,6 +8620,11 @@ def main() -> int:
               "retry_failed_whatsapp resets attempts for a fresh budget.")
     run_check("Sites",       "HQ visible to get_sites()",
               check_sites)
+    run_check("Resilience",  "global error boundary (friendly UI + dev log)",
+              check_error_boundary,
+              "Users get a one-line message + ref ID; full traceback logged to "
+              "logs/app_errors.log; rerun/stop signals re-raised; tracebacks "
+              "hidden from the frontend via config.")
 
     # ── Phase C — Procurement chain checks ─────────────────────────────────
     run_check("Procurement", "RL/BL strict-separation classifier",
