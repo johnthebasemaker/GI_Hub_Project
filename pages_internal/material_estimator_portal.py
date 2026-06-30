@@ -3613,12 +3613,13 @@ letter-spacing:.08em;color:var(--t5);">
         # ─────────────────────────────────────────────────────────────────────────────
         # R20 EDIT: removed "📦  Inventory" tab; `tab_consume` unpacking variable
         # dropped because the tab body block has been deleted. 8 tabs now (was 9).
-        tab0, tab1, tab2, tab3, tab_eqrep, tab4, tab5, tab_master = st.tabs([
+        tab0, tab1, tab2, tab3, tab_eqrep, tab_scr, tab4, tab5, tab_master = st.tabs([
             "📊  Dashboard",
             "🔍  Selective Equipment Entry",
             "📦  Session Order Report",
             "📍  Location Report",
             "📋  Equipment Report",
+            "🔢  System Code Report",
             "⚙️  Execution Plan",
             "📈  Total Overview",
             "🗄️  Master Data",
@@ -5748,6 +5749,122 @@ letter-spacing:.08em;color:var(--t5);">
                     key="pdf_er_all",
                     use_container_width=True,
                 )
+
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # TAB · SYSTEM CODE REPORT  (inverse of Equipment Report: per code → equipments)
+        # ═══════════════════════════════════════════════════════════════════════════════
+        with tab_scr:
+            st.markdown('<div class="sec-hdr">🔢 System Code Report — Equipments per System Code</div>',
+                        unsafe_allow_html=True)
+            st.caption("For each lining system code: how many equipments carry it, "
+                       "which equipments (with names), and the total surface area. "
+                       "The inverse view of the Equipment Report.")
+
+            _scr_today = date.today()
+            _scr = equip_sc[[
+                "Equipment_Tag_No.", "Lining_System_Code",
+                "Lining_System_Short_Name", "Total_SQM_Original",
+            ]].merge(
+                eq_master[["Equipment_Tag_No.", "Name", "Location", "Type", "Substrate"]],
+                on="Equipment_Tag_No.", how="left",
+            ).rename(columns={
+                "Name":                     "Equipment Name",
+                "Equipment_Tag_No.":        "Equipment Tag No.",
+                "Lining_System_Code":       "System Code",
+                "Lining_System_Short_Name": "System Name",
+                "Total_SQM_Original":       "Total SQM",
+            })
+
+            if _scr.empty:
+                st.info("No equipment loaded for this site yet.")
+            else:
+                _scr["Total SQM"] = _scr["Total SQM"].round(2)
+
+                def _scr_code_key(s):
+                    return s.map(lambda v: int(v) if str(v).isdigit() else 9999)
+
+                # Summary: one row per system code (distinct equipment count + SQM).
+                _scr_summary = (
+                    _scr.groupby(["System Code", "System Name"], as_index=False)
+                        .agg(**{
+                            "# Equipments": ("Equipment Tag No.", "nunique"),
+                            "Total SQM":    ("Total SQM", "sum"),
+                        })
+                )
+                _scr_summary["Total SQM"] = _scr_summary["Total SQM"].round(2)
+                _scr_summary = _scr_summary.sort_values(
+                    "System Code", key=_scr_code_key).reset_index(drop=True)
+
+                _sk1, _sk2, _sk3 = st.columns(3)
+                _sk1.metric("System Codes", f"{_scr_summary.shape[0]}")
+                _sk2.metric("Equipments",   f"{_scr['Equipment Tag No.'].nunique()}")
+                _sk3.metric("Total SQM",    f"{_scr['Total SQM'].sum():,.1f}")
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # Whole-report workbook: one sheet per code + an All-System-Codes sheet.
+                _scr_sheets = []
+                for _scode in _scr_summary["System Code"]:
+                    _scg = _scr[_scr["System Code"] == _scode]
+                    _scr_sheets.append({
+                        "name":  f"Code {_scode}"[:31],
+                        "df":    _scg[["Location", "Type", "Equipment Tag No.",
+                                       "Equipment Name", "System Code", "System Name",
+                                       "Total SQM"]].reset_index(drop=True),
+                        "title": f"System Code {_scode} — {_scg['System Name'].iloc[0]}",
+                        "color_scheme": "overview",
+                    })
+                if _scr_sheets:
+                    st.download_button(
+                        "⬇ Excel — System Code Report (all codes)",
+                        data=_equipment_report_excel(
+                            location_sheets=_scr_sheets,
+                            include_all_codes_sheet=True),
+                        file_name=f"system_code_report_{_scr_today}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_scr_all",
+                    )
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                st.markdown('<div class="sec-hdr">Summary by System Code</div>',
+                            unsafe_allow_html=True)
+                st.dataframe(
+                    _scr_summary[["System Code", "System Name",
+                                  "# Equipments", "Total SQM"]],
+                    use_container_width=True, hide_index=True,
+                )
+
+                st.markdown('<div class="sec-hdr">Per-System-Code Equipment List</div>',
+                            unsafe_allow_html=True)
+                for _, _srow in _scr_summary.iterrows():
+                    _scode   = _srow["System Code"]
+                    _sysname = _srow["System Name"]
+                    _scg = _scr[_scr["System Code"] == _scode].sort_values(
+                        ["Location", "Equipment Tag No."]).reset_index(drop=True)
+                    with st.expander(
+                        f"🔢  Code {_scode}  ·  {_sysname}  ·  "
+                        f"{int(_srow['# Equipments'])} equipment(s)  ·  "
+                        f"{float(_srow['Total SQM']):,.2f} SQM",
+                        expanded=False,
+                    ):
+                        st.dataframe(
+                            _scg[["Equipment Tag No.", "Equipment Name", "Location",
+                                  "Type", "Substrate", "Total SQM"]].reset_index(drop=True),
+                            use_container_width=True, hide_index=True,
+                        )
+                        st.download_button(
+                            "⬇ Excel",
+                            data=_equipment_report_excel(location_sheets=[{
+                                "name":  f"Code {_scode}"[:31],
+                                "df":    _scg[["Location", "Type", "Equipment Tag No.",
+                                               "Equipment Name", "System Code",
+                                               "System Name", "Total SQM"]].reset_index(drop=True),
+                                "title": f"System Code {_scode} — {_sysname}",
+                                "color_scheme": "overview",
+                            }]),
+                            file_name=f"system_code_{str(_scode).replace('/','_')}_{_scr_today}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"dl_scr_code_{_scode}",
+                        )
 
         # ═══════════════════════════════════════════════════════════════════════════════
         # TAB 4 · EXECUTION PLAN

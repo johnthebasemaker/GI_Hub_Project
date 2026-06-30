@@ -542,6 +542,23 @@ def check_sme_equipment_loader_mapping() -> None:
         conn.close()
 
 
+def check_system_code_report_tab() -> None:
+    """The System Code Report tab exists and groups equipment per system code
+    (distinct equipment count + summed Total SQM) with an Excel export."""
+    import pathlib
+    src = pathlib.Path(REPO_ROOT / "pages_internal" /
+                       "material_estimator_portal.py").read_text(encoding="utf-8")
+    assert '"🔢  System Code Report"' in src, "System Code Report tab label missing"
+    assert "with tab_scr:" in src, "tab_scr body block missing"
+    # distinct equipment count + SQM sum per code
+    assert '("Equipment Tag No.", "nunique")' in src, \
+        "must count DISTINCT equipment per system code"
+    assert 'groupby(["System Code", "System Name"]' in src, \
+        "must group by system code"
+    # Excel export wired through the shared workbook writer
+    assert 'key="dl_scr_all"' in src, "whole-report Excel download missing"
+
+
 def check_sme_sub_location_surfaced() -> None:
     """Sub_Location is exposed by get_sme_equipment and rendered in the
     portal (eq_master agg + equipment detail card)."""
@@ -8362,19 +8379,21 @@ def check_r20_inventory_tab_deleted():
 def check_r20_eight_tabs():
     src = _r20_portal_src()
     import re
-    # The tab declaration lives inside page_material_estimator(user) so
-    # it's indented. Look for the unique 8-var unpacking signature.
+    # The tab declaration lives inside page_material_estimator(user) so it's
+    # indented. The R20 Inventory tab (tab_consume) stays deleted; the
+    # System Code Report (tab_scr) was added after Equipment Report.
     m = re.search(
-        r"tab0, tab1, tab2, tab3, tab_eqrep, tab4, tab5, tab_master\s*=\s*st\.tabs\(\[",
+        r"tab0, tab1, tab2, tab3, tab_eqrep, tab_scr, tab4, tab5, tab_master"
+        r"\s*=\s*st\.tabs\(\[",
         src,
     )
-    assert m, "tab unpacking must be exactly 8 vars (no tab_consume)"
-    # Make sure the 9-var form isn't present anywhere
-    nine = re.search(
-        r"tab_eqrep, tab4, tab_consume, tab5",
-        src,
-    )
-    assert nine is None, "stale 9-var unpacking with tab_consume still present"
+    assert m, "tab unpacking must include tab_scr and exclude tab_consume"
+    # The deleted Inventory tab must never come back as a real tab (a comment
+    # referencing the removal is fine — only the live tab body/unpacking matters).
+    assert "with tab_consume:" not in src, \
+        "stale tab_consume Inventory tab body must not reappear"
+    assert ", tab_consume," not in src.replace("`tab_consume`", ""), \
+        "stale tab_consume unpacking variable must not reappear"
 
 
 def check_r20_login_deleted():
@@ -9415,9 +9434,10 @@ def main() -> int:
     run_check("Round 20", "Inventory tab body deleted (R18 owns consumption flow)",
               check_r20_inventory_tab_deleted,
               "with tab_consume: block must be absent.")
-    run_check("Round 20", "tab declaration unpacks 8 tabs (not 9)",
+    run_check("Round 20", "tab unpacking has tab_scr, no tab_consume",
               check_r20_eight_tabs,
-              "Removed 'Inventory' tab label + tab_consume variable.")
+              "Deleted 'Inventory'/tab_consume stays gone; System Code Report "
+              "(tab_scr) added after Equipment Report.")
     run_check("Round 20", "_show_login + auth gate deleted",
               check_r20_login_deleted,
               "ERP main.py owns login; portal trusts user dict.")
@@ -9589,6 +9609,10 @@ def main() -> int:
               "Lining_Type populated, area-split SQM summed per (tag,code), "
               "Location casing normalized, Sub_Location captured, To_Be_Confirmed "
               "codes skipped.")
+    run_check("Material Estimator", "System Code Report tab (per-code equipments + SQM)",
+              check_system_code_report_tab,
+              "New tab groups equipment per system code: distinct equipment "
+              "count + summed Total SQM + per-code drill-down + Excel export.")
     run_check("Material Estimator", "Sub_Location surfaced (helper + detail card)",
               check_sme_sub_location_surfaced,
               "get_sme_equipment exposes Sub_Location; eq_master carries it and "
