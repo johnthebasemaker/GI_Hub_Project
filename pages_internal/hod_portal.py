@@ -41,6 +41,9 @@ from database import (
     get_app_setting,
     set_app_setting,
     insert_manual_pr,
+    auto_draft_prs_for_below_minimum,
+    update_pr_line,
+    rename_pr_number,
     update_pr_workflow_state,
     submit_pr_to_logistics,
     list_pending_hod_dns, get_dn_detail, hod_decide_dn,
@@ -1438,6 +1441,59 @@ def _render_pr_tab(user: dict, site_id: str) -> None:
                 else:
                     st.error(msg)
 
+    # ── 1b) AUTO-DRAFT FROM BELOW-MINIMUM STOCK ────────────────────────────
+    # One click drafts a PR line (qty = shortage to minimum) for every
+    # below-minimum item at this site. Items that already have an open PR are
+    # skipped, so re-clicking is safe.
+    with st.expander("🤖 Auto-draft PRs from low stock", expanded=False):
+        conn_low = get_connection()
+        try:
+            low_df = get_low_stock_items(conn_low, site_id=site_id)
+        finally:
+            conn_low.close()
+        low_n = 0 if low_df is None or low_df.empty else int(len(low_df))
+        st.caption(
+            f"Drafts one PR line per below-minimum item at **{site_id}**. "
+            f"Requested Qty = (factor × Minimum) − current stock, set below. "
+            f"Items already on an open PR are skipped (safe to re-run); every "
+            f"line stays editable until you submit it to Logistics."
+        )
+        if low_n == 0:
+            st.success("✅ No items are below minimum at this site.")
+        else:
+            st.info(f"**{low_n}** item(s) below minimum at {site_id}.")
+            ac1, _ac2 = st.columns([1, 2])
+            with ac1:
+                target_factor = st.number_input(
+                    "Order up to ( × Minimum )",
+                    min_value=1.0, max_value=10.0, value=1.0, step=0.5,
+                    key="_hod_pr_autodraft_factor",
+                    help="1.0 = restore exactly to minimum (the shortage). "
+                         "1.5 = order up to 1.5× minimum (a 50% buffer). "
+                         "You can still edit every line below before submitting.",
+                )
+            if st.button(f"🤖 Auto-draft PR(s) for {low_n} item(s)",
+                         type="primary", key="_hod_pr_autodraft_btn"):
+                added, pr_no, skipped, total = auto_draft_prs_for_below_minimum(
+                    site_id, target_factor=target_factor)
+                if added:
+                    log_audit_action(
+                        user["username"], "AUTO_DRAFT_PRS", "pr_master",
+                        f"{pr_no}: {added} drafted (×{target_factor:g} min), "
+                        f"{skipped} skipped of {total}",
+                    )
+                    st.toast(
+                        f"🤖 Drafted {added} PR line(s) as {pr_no}"
+                        + (f" · {skipped} skipped (already on open PR)" if skipped else ""),
+                        icon="📋",
+                    )
+                    st.rerun()
+                else:
+                    st.warning(
+                        f"Nothing drafted — all {total} below-minimum item(s) "
+                        f"already have an open PR."
+                    )
+
     # ── 2) EXISTING PR PDF UPLOAD (preserved verbatim) ──────────────────
     with st.expander("📄 Upload PR PDF (auto-extract via pdfplumber)", expanded=False):
         st.caption(
@@ -1528,6 +1584,116 @@ def _render_pr_tab(user: dict, site_id: str) -> None:
             f'</tr>'
         )
     st.markdown(_html_table("".join(rows_html), cols), unsafe_allow_html=True)
+
+    # ── 3.25) EDIT DRAFT PRs (before submitting to Logistics) ────────────
+    # Lines still at 'site_draft' can have their qty / supplier / cost edited
+    # and their PR number reassigned (e.g. turn an auto-draft PR-AUTO-… into a
+    # real assigned number). Locked once submitted — Logistics owns it then.
+    if "logistics_status" in pr_df.columns:
+        _ls_edit = pr_df["logistics_status"].fillna("site_draft")
+    else:
+        _ls_edit = pd.Series(["site_draft"] * len(pr_df), index=pr_df.index)
+    editable_df = pr_df[
+        (pr_df["status"] == "open") & (_ls_edit == "site_draft")
+    ].copy()
+
+    if not editable_df.empty:
+        with st.expander(
+            f"✏️ Edit draft PRs before submit ({len(editable_df)} editable line(s))",
+            expanded=False,
+        ):
+            # ── (a) Reassign / rename a PR number (whole PR) ──────────────
+            st.markdown("**Assign / rename a PR number**")
+            st.caption(
+                "Turn a generated `PR-AUTO-…` into your real PR number "
+                "(applies to every still-draft line of that PR)."
+            )
+            rn1, rn2, rn3 = st.columns([2, 2, 1])
+            with rn1:
+                pr_to_rename = st.selectbox(
+                    "PR to rename",
+                    sorted(set(editable_df["PR_Number"].tolist())),
+                    index=None,
+                    placeholder="Pick a draft PR…",
+                    key="_hod_pr_rename_pick",
+                )
+            with rn2:
+                new_pr_no = st.text_input(
+                    "New PR number",
+                    placeholder="e.g. 3001234567",
+                    key="_hod_pr_rename_new",
+                )
+            with rn3:
+                st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                if st.button("🔤 Rename", key="_hod_pr_rename_btn",
+                             disabled=not (pr_to_rename and new_pr_no.strip())):
+                    ok, msg = rename_pr_number(
+                        pr_to_rename, new_pr_no, site_id)
+                    if ok:
+                        log_audit_action(
+                            user["username"], "RENAME_PR", "pr_master",
+                            f"{pr_to_rename} → {new_pr_no.strip()}",
+                        )
+                        st.toast(f"🔤 {msg}", icon="✅")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+            st.divider()
+
+            # ── (b) Edit line values (qty / supplier / cost) ──────────────
+            st.markdown("**Edit line values**")
+            st.caption("Change Requested Qty, Supplier or Est. Cost, then Save. "
+                       "SAP / material are fixed.")
+            grid_cols = ["id", "PR_Number", "SAP_Code", "Material_Name", "UOM",
+                         "Requested_Qty", "Supplier", "Est_Cost_SAR"]
+            grid_src = editable_df[grid_cols].copy()
+            grid_src["Supplier"] = grid_src["Supplier"].fillna("")
+            grid_src["Est_Cost_SAR"] = pd.to_numeric(
+                grid_src["Est_Cost_SAR"], errors="coerce").fillna(0.0)
+            edited = st.data_editor(
+                grid_src,
+                hide_index=True,
+                use_container_width=True,
+                key="_hod_pr_edit_grid",
+                disabled=["id", "PR_Number", "SAP_Code", "Material_Name", "UOM"],
+                column_config={
+                    "id": None,  # hidden — internal key
+                    "Requested_Qty": st.column_config.NumberColumn(
+                        "Qty Req", min_value=0.01, step=1.0),
+                    "Est_Cost_SAR": st.column_config.NumberColumn(
+                        "Est. SAR", min_value=0.0, step=10.0),
+                },
+            )
+            if st.button("💾 Save line edits", type="primary",
+                         key="_hod_pr_edit_save"):
+                orig = grid_src.set_index("id")
+                changed = 0
+                for _, er in edited.iterrows():
+                    lid = int(er["id"])
+                    o = orig.loc[lid]
+                    q  = float(er["Requested_Qty"])
+                    sup = str(er["Supplier"] or "").strip()
+                    cost = float(er["Est_Cost_SAR"] or 0.0)
+                    if (abs(q - float(o["Requested_Qty"])) > 1e-9
+                            or sup != str(o["Supplier"] or "").strip()
+                            or abs(cost - float(o["Est_Cost_SAR"])) > 1e-9):
+                        ok, msg = update_pr_line(
+                            lid, requested_qty=q, supplier=sup,
+                            est_cost_sar=cost)
+                        if ok:
+                            changed += 1
+                        else:
+                            st.warning(f"Line {lid}: {msg}")
+                if changed:
+                    log_audit_action(
+                        user["username"], "EDIT_PR_LINES", "pr_master",
+                        f"{changed} line(s) edited at {site_id}",
+                    )
+                    st.toast(f"💾 Saved {changed} line edit(s)", icon="✅")
+                    st.rerun()
+                else:
+                    st.info("No changes to save.")
 
     # ── 3.5) SUBMIT PR TO LOGISTICS (Phase C — procurement chain) ───────
     # This step hands the PR off to the Logistics Portal queue. The

@@ -559,7 +559,6 @@ def render_user_management_tab(current_username: str) -> None:
                                 (retro_wh, retro_user),
                             )
                             conn.commit()
-                            from database import log_audit_action
                             log_audit_action(
                                 current_username, "BIND_WAREHOUSE", "users",
                                 f"{retro_user} → {retro_wh}",
@@ -653,7 +652,6 @@ def render_user_management_tab(current_username: str) -> None:
                             queue_whatsapp_alert(t_user["Phone_Number"], welcome_msg)
                         # ----------------------------------------------
 
-                        from database import log_audit_action
                         details = f"Approved access for {t_user['username']}"
                         if _wh_id_for_insert:
                             details += f" → bound to warehouse {_wh_id_for_insert}"

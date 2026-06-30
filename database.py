@@ -5129,6 +5129,183 @@ def insert_manual_pr(
             conn.close()
 
 
+def auto_draft_prs_for_below_minimum(
+    site_id: str, target_factor: float = 1.0,
+    conn: sqlite3.Connection = None,
+) -> tuple[int, str, int, int]:
+    """
+    One-click PR drafting for replenishment. Creates a single batch PR (one
+    draft line per item) covering every below-minimum item at `site_id`.
+    Reuses insert_manual_pr so drafts are identical to manual ones
+    (workflow_state='draft', editable until submitted to Logistics).
+
+    Requested_Qty = max(target_factor × Minimum_Qty − Current_Stock, 0):
+      • target_factor=1.0 → restore exactly to minimum (the gap / shortage).
+      • target_factor=1.5 → order up to 1.5× minimum (a 50% buffer), etc.
+
+    Idempotent by design: an item that ALREADY has an open pr_master line at
+    this site is skipped, so a second click never floods duplicate drafts.
+
+    Returns (added, pr_number, skipped, total_below_min). pr_number is "" when
+    nothing was drafted.
+    """
+    try:
+        target_factor = float(target_factor)
+    except (TypeError, ValueError):
+        target_factor = 1.0
+    if target_factor < 1.0:
+        target_factor = 1.0   # never order BELOW the minimum
+
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        low = get_low_stock_items(conn, site_id=site_id)
+        if low is None or low.empty:
+            return (0, "", 0, 0)
+
+        # Items that already have an OPEN PR at this site → don't re-draft.
+        open_saps = {
+            str(r[0]).strip() for r in conn.execute(
+                "SELECT DISTINCT SAP_Code FROM pr_master "
+                "WHERE Site_ID = ? AND status = 'open'", (site_id,),
+            ).fetchall()
+        }
+
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        pr_number = f"PR-AUTO-{site_id}-{stamp}"
+        added = skipped = 0
+        for _, row in low.iterrows():
+            sap = str(row.get("SAP_Code") or "").strip()
+            # Order up to target_factor × minimum (factor 1.0 == shortage).
+            minimum = float(row.get("Minimum_Qty") or 0)
+            current = float(row.get("Current_Stock") or 0)
+            qty = round(max(target_factor * minimum - current, 0.0), 4)
+            if not sap or qty <= 0 or sap in open_saps:
+                skipped += 1
+                continue
+            ok, _msg = insert_manual_pr(
+                pr_number=pr_number,
+                sap_code=sap,
+                material_code=str(row.get("Material_Code") or ""),
+                material_name=str(row.get("Equipment_Description") or ""),
+                requested_qty=qty,
+                site_id=site_id,
+                uom=str(row.get("UOM") or ""),
+                supplier="",
+                est_cost_sar=0.0,
+                notes="Auto-drafted from below-minimum stock alert.",
+                conn=conn,
+            )
+            if ok:
+                added += 1
+                open_saps.add(sap)   # guard against dup SAP within this batch
+            else:
+                skipped += 1
+        return (added, pr_number if added else "", skipped, int(len(low)))
+    finally:
+        if _owns:
+            conn.close()
+
+
+# A PR line is editable only BEFORE it is handed to Logistics. Once submitted,
+# Logistics owns it (POs may already reference the number), so edits are locked.
+_PR_EDITABLE_WHERE = (
+    "status = 'open' AND COALESCE(logistics_status,'site_draft') = 'site_draft'"
+)
+
+
+def update_pr_line(
+    line_id: int,
+    requested_qty: float = None,
+    pr_number: str = None,
+    supplier: str = None,
+    est_cost_sar: float = None,
+    notes: str = None,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """
+    Edit a single pr_master line (by id) BEFORE it is submitted to Logistics.
+    Only the provided fields change. Refuses to touch a line that is already
+    submitted/closed (guarded by _PR_EDITABLE_WHERE) so in-flight PRs can't be
+    altered underneath Logistics.
+    """
+    sets, params = [], []
+    if requested_qty is not None:
+        try:
+            q = float(requested_qty)
+        except (TypeError, ValueError):
+            return False, "Requested Qty must be a number."
+        if q <= 0:
+            return False, "Requested Qty must be positive."
+        sets.append("Requested_Qty = ?"); params.append(q)
+    if pr_number is not None:
+        if not str(pr_number).strip():
+            return False, "PR Number cannot be blank."
+        sets.append("PR_Number = ?"); params.append(str(pr_number).strip())
+    if supplier is not None:
+        sets.append("Supplier = ?"); params.append(str(supplier).strip())
+    if est_cost_sar is not None:
+        try:
+            sets.append("Est_Cost_SAR = ?"); params.append(float(est_cost_sar))
+        except (TypeError, ValueError):
+            return False, "Estimated cost must be a number."
+    if notes is not None:
+        sets.append("Notes = ?"); params.append(str(notes).strip())
+    if not sets:
+        return False, "Nothing to update."
+
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            f"UPDATE pr_master SET {', '.join(sets)} "
+            f"WHERE id = ? AND {_PR_EDITABLE_WHERE}",
+            (*params, int(line_id)),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return False, "Line not found or already submitted to Logistics."
+        return True, "PR line updated."
+    finally:
+        if _owns:
+            conn.close()
+
+
+def rename_pr_number(
+    old_pr_number: str, new_pr_number: str, site_id: str,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """
+    Reassign the PR number on every still-draft line of a PR at `site_id`
+    (e.g. turn a generated 'PR-AUTO-…' into a real assigned PR number before
+    submitting to Logistics). Only acts on pre-submit lines.
+    """
+    old = (old_pr_number or "").strip()
+    new = (new_pr_number or "").strip()
+    if not old or not new:
+        return False, "Both old and new PR numbers are required."
+    if old == new:
+        return False, "New PR number is the same as the old one."
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cur = conn.execute(
+            f"UPDATE pr_master SET PR_Number = ? "
+            f"WHERE PR_Number = ? AND Site_ID = ? AND {_PR_EDITABLE_WHERE}",
+            (new, old, site_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return False, "No editable lines found (already submitted?)."
+        return True, f"Renamed {cur.rowcount} line(s) → {new}."
+    finally:
+        if _owns:
+            conn.close()
+
+
 def update_pr_workflow_state(
     pr_number: str,
     sap_code: str,

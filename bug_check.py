@@ -727,6 +727,22 @@ def check_audit_log() -> None:
         conn.close()
 
 
+def check_user_mgmt_no_unbound_log_audit() -> None:
+    """render_user_management_tab must NOT inline-import log_audit_action.
+    An inline 'from database import log_audit_action' makes the name a
+    function-local for the whole function, so the Reject-user branch (which
+    has no such import) raised UnboundLocalError. It must resolve to the
+    module-level import at the top of auth.py."""
+    import auth
+    fn = auth.render_user_management_tab
+    assert "log_audit_action" not in set(fn.__code__.co_varnames), (
+        "log_audit_action is a function-local in render_user_management_tab "
+        "— an inline import shadows the module global and breaks branches "
+        "that skip it (e.g. Reject user). Import it at module level only.")
+    assert "log_audit_action" in set(fn.__code__.co_names), \
+        "log_audit_action should resolve as a module-level name"
+
+
 def check_whatsapp_queue() -> None:
     database.queue_whatsapp_alert("+966500000099", "smoke test")
     conn = database.get_connection()
@@ -1057,6 +1073,113 @@ def check_pr_to_logistics_handoff() -> None:
         # outcome is "row is in queue".
         q2 = database.list_prs_for_logistics(conn=conn)
         assert "3000099001" in set(q2["PR_Number"])
+    finally:
+        conn.close()
+
+
+def check_auto_draft_prs_below_minimum() -> None:
+    """auto_draft_prs_for_below_minimum drafts a PR line (qty=shortage) for a
+    below-minimum item, and is idempotent (a 2nd run does not re-draft an item
+    that now has an open PR)."""
+    sap = "SAP-AUTOPR-1"
+    conn = database.get_connection()
+    try:
+        # A brand-new item, far below minimum at HQ (0 stock, min 999).
+        conn.execute(
+            "INSERT OR IGNORE INTO inventory "
+            "(SAP_Code, Equipment_Description, Material_Code, UOM, "
+            " Minimum_Qty, Site_ID, Category, Opening_Stock) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (sap, "Auto PR Probe", "MC-AUTOPR", "PCS", 999.0, "HQ",
+             "Others", 0.0),
+        )
+        conn.commit()
+
+        added, pr_no, skipped, total = \
+            database.auto_draft_prs_for_below_minimum("HQ", conn=conn)
+        assert added >= 1, f"expected >=1 draft, got {added}"
+        assert pr_no.startswith("PR-AUTO-HQ-"), f"bad PR number {pr_no!r}"
+
+        row = conn.execute(
+            "SELECT Requested_Qty, status, workflow_state FROM pr_master "
+            "WHERE SAP_Code=? AND PR_Number=?", (sap, pr_no),
+        ).fetchone()
+        assert row is not None, "no PR line created for the below-min item"
+        assert abs(float(row[0]) - 999.0) < 1e-6, f"qty should be shortage 999, got {row[0]}"
+        assert row[1] == "open" and row[2] == "draft", (row[1], row[2])
+
+        # Idempotency: the item now has an open PR → a 2nd run must skip it.
+        before = conn.execute(
+            "SELECT COUNT(*) FROM pr_master WHERE SAP_Code=?", (sap,),
+        ).fetchone()[0]
+        added2, _pr2, _sk2, _tot2 = \
+            database.auto_draft_prs_for_below_minimum("HQ", conn=conn)
+        after = conn.execute(
+            "SELECT COUNT(*) FROM pr_master WHERE SAP_Code=?", (sap,),
+        ).fetchone()[0]
+        assert after == before, (
+            f"re-run must not add a duplicate PR for {sap} "
+            f"(before={before} after={after})")
+    finally:
+        conn.close()
+
+
+def check_pr_factor_edit_rename_and_lock() -> None:
+    """auto-draft factor math (order-up-to N× minimum), update_pr_line,
+    rename_pr_number, and the post-submit edit lock."""
+    sap = "SAP-PREDIT-1"
+    conn = database.get_connection()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO inventory "
+            "(SAP_Code, Equipment_Description, Material_Code, UOM, "
+            " Minimum_Qty, Site_ID, Category, Opening_Stock) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (sap, "PR Edit Probe", "MC-PREDIT", "PCS", 999.0, "HQ",
+             "Others", 0.0),
+        )
+        conn.commit()
+
+        # factor=2.0 → order up to 2× minimum (1998) with 0 on hand.
+        added, pr_no, _sk, _tot = database.auto_draft_prs_for_below_minimum(
+            "HQ", target_factor=2.0, conn=conn)
+        assert added >= 1 and pr_no, (added, pr_no)
+        lid, qty = conn.execute(
+            "SELECT id, Requested_Qty FROM pr_master "
+            "WHERE SAP_Code=? AND PR_Number=?", (sap, pr_no),
+        ).fetchone()
+        assert abs(float(qty) - 1998.0) < 1e-6, f"2x min should be 1998, got {qty}"
+
+        # update_pr_line: change qty + supplier on a draft line.
+        ok, _m = database.update_pr_line(
+            lid, requested_qty=50.0, supplier="ACME", conn=conn)
+        assert ok, _m
+        q2, sup2 = conn.execute(
+            "SELECT Requested_Qty, Supplier FROM pr_master WHERE id=?", (lid,),
+        ).fetchone()
+        assert abs(float(q2) - 50.0) < 1e-6 and sup2 == "ACME", (q2, sup2)
+
+        # rename_pr_number: reassign the whole draft PR.
+        ok, _m = database.rename_pr_number(pr_no, "REAL-PR-123", "HQ", conn=conn)
+        assert ok, _m
+        new_no = conn.execute(
+            "SELECT PR_Number FROM pr_master WHERE id=?", (lid,),
+        ).fetchone()[0]
+        assert new_no == "REAL-PR-123", new_no
+
+        # Post-submit LOCK: once submitted to logistics, edits/renames refuse.
+        # (auto-draft batches every below-min item into one PR, so submit the
+        # WHOLE renamed PR — not just our line — to lock it fully.)
+        conn.execute(
+            "UPDATE pr_master SET logistics_status='submitted' "
+            "WHERE PR_Number='REAL-PR-123' AND Site_ID='HQ'",
+        )
+        conn.commit()
+        ok_edit, _ = database.update_pr_line(lid, requested_qty=7.0, conn=conn)
+        assert not ok_edit, "must not edit a PR already submitted to Logistics"
+        ok_ren, _ = database.rename_pr_number(
+            "REAL-PR-123", "REAL-PR-999", "HQ", conn=conn)
+        assert not ok_ren, "must not rename a PR already submitted to Logistics"
     finally:
         conn.close()
 
@@ -8215,6 +8338,10 @@ def main() -> int:
               check_mailer_drafts)
     run_check("Audit",       "log_audit_action writes row",
               check_audit_log)
+    run_check("Auth",        "user-mgmt tab: no shadowed log_audit_action (Reject user)",
+              check_user_mgmt_no_unbound_log_audit,
+              "inline 'from database import log_audit_action' made it a local "
+              "→ UnboundLocalError when rejecting a pending user.")
     run_check("WhatsApp",    "queue_whatsapp_alert writes pending row",
               check_whatsapp_queue)
     run_check("WhatsApp",    "failed sends auto-retry up to the cap, then fail",
@@ -8252,6 +8379,14 @@ def main() -> int:
     run_check("Logistics", "HOD submits PR → appears in Logistics queue",
               check_pr_to_logistics_handoff,
               "submit_pr_to_logistics + list_prs_for_logistics.")
+    run_check("Procurement", "Auto-draft PRs from below-minimum (idempotent)",
+              check_auto_draft_prs_below_minimum,
+              "auto_draft_prs_for_below_minimum drafts qty=shortage PR lines "
+              "for below-min items and skips items already on an open PR.")
+    run_check("Procurement", "PR factor qty + edit + rename + post-submit lock",
+              check_pr_factor_edit_rename_and_lock,
+              "order-up-to N×min math; update_pr_line + rename_pr_number edit "
+              "drafts and refuse once submitted to Logistics.")
     run_check("Logistics", "Create PO (manual) — RL/BL tagged, PR→in_po",
               check_po_manual_creation_and_rl_bl,
               "create_po_manual + post-insert side-effects.")
