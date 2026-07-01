@@ -46,6 +46,8 @@ from database import (
     log_audit_action,
     get_app_setting,
     set_app_setting,
+    get_reminder_offsets,
+    set_reminder_offsets,
     get_whatsapp_log,
     list_bug_reports,
     update_bug_report,
@@ -1288,6 +1290,37 @@ def _render_whatsapp_console_tab(user: dict) -> None:
                 f"low={ls} burn={br} expiry={ex}",
             )
             st.toast("✅ Thresholds saved", icon="💾")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ── Delivery reminder cadence (backlog #25) ─────────────────────────
+        st.write("")
+        st.markdown(
+            f'<div style="background:{_C["surf2"]};border:1px solid {_C["border"]};'
+            f'border-radius:10px;padding:16px;">'
+            f'<div style="color:{_C["text"]};font-size:13px;font-weight:600;'
+            f'margin-bottom:12px;">🔔 Delivery Reminder Cadence</div>'
+            f'<div style="color:{_C["muted"]};font-size:11.5px;margin-bottom:8px;">'
+            f'Days-before-due to fire PO/DN reminders. Default <code>2, 1, 0</code> '
+            f'(T-2 / T-1 / due-day). Longer lead time e.g. <code>7, 3, 1, 0</code>.</div>',
+            unsafe_allow_html=True,
+        )
+        _cur_offsets = get_reminder_offsets()
+        _cad = st.text_input(
+            "Reminder offsets (comma-separated days)",
+            value=", ".join(str(o) for o in _cur_offsets),
+            key="_adm_reminder_cadence",
+        )
+        if st.button("💾 Save Cadence", key="_adm_reminder_save"):
+            try:
+                parsed = [int(p.strip()) for p in _cad.split(",") if p.strip()]
+                saved = set_reminder_offsets(parsed)
+                log_audit_action(
+                    user["username"], "UPDATE_REMINDER_CADENCE", "app_settings",
+                    f"offsets={saved}",
+                )
+                st.toast(f"✅ Cadence saved: {saved}", icon="🔔")
+            except ValueError:
+                st.error("Enter whole numbers only, e.g. 7, 3, 1, 0")
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.write("")

@@ -963,6 +963,25 @@ def check_opening_stock_audit() -> None:
     assert "SAP=OS-D" not in joined, "new item D should not be audited as an edit"
 
 
+def check_reminder_offsets_config() -> None:
+    """Backlog #25 — delivery-reminder cadence is configurable via
+    app_settings, with normalization + safe fallback to [2,1,0]."""
+    # Default when unset.
+    database.set_app_setting("reminder_offsets", "")
+    assert database.get_reminder_offsets() == [2, 1, 0], "default should be [2,1,0]"
+    # Round-trip a custom cadence.
+    assert database.set_reminder_offsets([7, 3, 1, 0]) == [7, 3, 1, 0]
+    assert database.get_reminder_offsets() == [7, 3, 1, 0], "custom cadence not read back"
+    # Normalization: dedupe, drop negatives, coerce str, sort descending.
+    assert database.set_reminder_offsets([1, 1, 3, -5, "2"]) == [3, 2, 1]
+    # Empty input falls back to default, never disables reminders.
+    assert database.set_reminder_offsets([]) == [2, 1, 0]
+    # Corrupt stored JSON falls back to default, doesn't raise.
+    database.set_app_setting("reminder_offsets", "not-json")
+    assert database.get_reminder_offsets() == [2, 1, 0], "bad JSON should fall back"
+    database.set_app_setting("reminder_offsets", "")  # leave clean
+
+
 # ---------------------------------------------------------------------------
 # Returnable items (tool loans)
 # ---------------------------------------------------------------------------
@@ -8949,6 +8968,8 @@ def main() -> int:
               check_returns_archive)
     run_check("Audit",       "Opening_Stock edits logged, not new items (#23)",
               check_opening_stock_audit)
+    run_check("Reminders",   "Delivery cadence configurable + normalized (#25)",
+              check_reminder_offsets_config)
     run_check("Returnable",  "Tool loan → mark returned",
               check_returnable_items)
     run_check("QR",          "Submit → approve / reject",

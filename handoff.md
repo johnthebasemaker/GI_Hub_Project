@@ -42,6 +42,7 @@
 > ### 📍 WHERE WE ARE — read this first
 >
 > **DONE this session (all committed + pushed, newest first):**
+> - **Configurable delivery-reminder cadence (backlog #25)** — `get/set_reminder_offsets()` + `app_settings.reminder_offsets` (JSON, default [2,1,0]); `sweep_delivery_reminders()` data-driven; Admin → Settings cadence input. +1 regression. `database.py`, `pages_internal/admin_portal.py`.
 > - **Estimator KPI cards — no more wrapped numbers.** `[data-testid="stMetricValue"]` in `material_estimator_portal.py` now `white-space:nowrap` + `font-size:clamp(1rem,1.6vw,1.9rem)` so hero values (e.g. `29,280.3`, `13,046.25`) auto-shrink to one line instead of breaking mid-digit. CSS-only; mobile rule inherits nowrap. No logic touched.
 > - **CNCEC equipment re-baseline (data-only re-seed).** User reworked `Equipment.xlsx` (root + `scripts/sme_seed_data/` copies, byte-identical) — blanked the `To_Be_Confirmed_*` placeholder cells AND reworked Surface-Area SQM across 51 of 65 (tag,code) combos (**total 31,343.53 → 29,280.29 SQM, −6.6%**; user-confirmed intentional). Re-loaded via `python scripts/sme_bootstrap.py --site-id CNCEC --equipment-only --force` (DB backed up first to scratchpad). Same 26 tags / 65 rows; `sme_recipe`/`sme_inventory_seed` untouched; 30 pre-existing zero-Done orphan progress rows unchanged. **562/20, all SME checks green.** Blank-cell handling needed no code change (parser already drops blank/placeholder LSC + nulls blank text). ⚠️ Commit of `gi_database.db` changes the public demo numbers.
 > - **Opening_Stock audit trail (backlog #23)** — `audit_opening_stock_changes()` logs one `OPENING_STOCK_EDIT` per changed existing inventory item on Master DB Editor save (new items excluded). +1 regression. `database.py`, `pages_internal/admin_portal.py`.
@@ -2266,7 +2267,7 @@ New workstream: track **labor** the way the SME tracks **material**. Source-of-t
 14. **Dashboard tile editor** — admin can pick which KPI cards appear in the hero strips
 15. **Per-site Unit_Cost** (today: one cost per item across sites; SAP allows site-specific). Touches valuation math everywhere — high impact
 16. **AI Insights regen scheduling** — currently on-demand only
-17. **Export the USER_MANUAL.md to PDF programmatically** — the pandoc command is documented; could add a one-click button in Admin → Settings
+17. ~~**Export the USER_MANUAL.md to PDF programmatically**~~ ✅ **ALREADY DONE** (verified 2026-07-01) — `build_manual_pdf()` / `build_role_manual_pdf()` in `build_manual_pdf.py` (fpdf2, no pandoc) + Admin → Settings "⬇️ Download GI_Hub_User_Manual.pdf" / "📥 Download Role Manuals" buttons already wired.
 
 ### New (from 2026-06 round)
 
@@ -2280,7 +2281,7 @@ New workstream: track **labor** the way the SME tracks **material**. Source-of-t
 ### New (from v3.0 — procurement chain)
 
 24. **Vendor master maintenance UI** — vendors get inline-added during PO creation, but there's no top-level "vendors admin" tab. Admin currently has to use Master DB Editor → `vendors` table. Build a dedicated vendor manager in Admin Portal with bulk import + duplicate detection.
-25. **Reminder cadence is hardcoded T-2 / T-1 / T-0.** Some sites want T-7 / T-3 / T-1 / T-0 (longer lead time). Add `app_settings.reminder_offsets` as a JSON list and read it in `sweep_delivery_reminders()`.
+25. ~~**Reminder cadence is hardcoded T-2 / T-1 / T-0.**~~ ✅ **DONE** — `get_reminder_offsets()`/`set_reminder_offsets()` read/write `app_settings.reminder_offsets` (JSON, normalized non-neg-int desc, default [2,1,0]); `sweep_delivery_reminders()` now drives its cadence from it (canonical T-2/1/0 event keys preserved, custom offsets get generic key+label). Admin → Settings "🔔 Delivery Reminder Cadence" input. +1 `bug_check` regression. `database.py`, `pages_internal/admin_portal.py`.
 26. **Per-warehouse SLA dashboards.** Throughput report exists but no live "warehouse health" page. Add: average ack time, average receive time, partial-delivery rate, RL/BL split ratio per WH.
 27. **Mobile-optimised warehouse PWA.** Warehouse floor users would benefit from a barcode-scanner-first PWA for receive + DN preparation. PWA framework already lives in `pwa/`.
 28. **Force-close UNDO window.** Currently force-closing is terminal. Add a 24-hour grace where admin can revert (with audit trail).

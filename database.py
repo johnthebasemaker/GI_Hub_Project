@@ -10561,6 +10561,40 @@ def list_reschedule_requests_for_site(
             conn.close()
 
 
+def get_reminder_offsets(conn: sqlite3.Connection = None) -> list[int]:
+    """Backlog #25 — configurable delivery-reminder cadence. Reads the
+    `app_settings` 'reminder_offsets' JSON list (days-before-due; e.g.
+    [7, 3, 1, 0]); defaults to [2, 1, 0] when unset or invalid. Values are
+    coerced to non-negative ints, de-duplicated, and sorted descending so the
+    earliest (largest-offset) reminder is processed first."""
+    import json
+    default = [2, 1, 0]
+    raw = get_app_setting("reminder_offsets", "", conn=conn)
+    if not raw:
+        return default
+    try:
+        vals = json.loads(raw)
+        out = sorted({int(v) for v in vals if int(v) >= 0}, reverse=True)
+        return out or default
+    except (ValueError, TypeError):
+        return default
+
+
+def set_reminder_offsets(offsets, conn: sqlite3.Connection = None) -> list[int]:
+    """Persist the delivery-reminder cadence (see get_reminder_offsets).
+    Normalizes (non-negative ints, de-duped, descending) then stores as a JSON
+    list; returns the normalized list. Empty/invalid input falls back to
+    the [2, 1, 0] default rather than disabling reminders."""
+    import json
+    try:
+        norm = sorted({int(v) for v in offsets if int(v) >= 0}, reverse=True)
+    except (ValueError, TypeError):
+        norm = []
+    norm = norm or [2, 1, 0]
+    set_app_setting("reminder_offsets", json.dumps(norm), conn=conn)
+    return norm
+
+
 def sweep_delivery_reminders(
     today: datetime.date | None = None,
     conn: sqlite3.Connection = None,
@@ -10583,17 +10617,21 @@ def sweep_delivery_reminders(
     try:
         # Build the list of (offset, target_iso) tuples we're firing today.
         targets: list[tuple[int, str]] = []
-        for offset in (2, 1, 0):
+        for offset in get_reminder_offsets(conn=conn):
             d = today + datetime.timedelta(days=offset)
             targets.append((offset, d.isoformat()))
 
         for offset, iso in targets:
+            # Keep the canonical T-2/T-1/T-0 event keys (so config.WHATSAPP_
+            # TRIGGERS gating is unchanged); any custom offset gets a generic
+            # key + label so the cadence is fully data-driven.
             event_key = {
                 2: "delivery_reminder_t_minus_2",
                 1: "delivery_reminder_t_minus_1",
                 0: "delivery_reminder_t_zero",
-            }[offset]
-            label = {2: "in 2 days", 1: "tomorrow", 0: "today"}[offset]
+            }.get(offset, f"delivery_reminder_t_minus_{offset}")
+            label = {2: "in 2 days", 1: "tomorrow", 0: "today"}.get(
+                offset, f"in {offset} days")
 
             # ── POs landing on this date ──────────────────────────────
             pos = conn.execute(
