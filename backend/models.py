@@ -13,10 +13,10 @@ ARCHITECTURAL RULES honoured here (see handoff.md SME Canon):
      sme_materials_view) that ALIAS the sme_* tables. Views are NOT modeled as
      tables here — see SME_AND_DERIVED_VIEWS at the bottom; they must be
      re-created as PostgreSQL views at migration time.
-  2. No rowid in PostgreSQL. The 4 ledger tables that relied on SQLite's
-     implicit rowid (consumption, receipts, returns, system_settings) get an
-     explicit SERIAL `id` PK below (marked ⚠). All ORDER BY rowid call sites
-     must switch to these PKs — see the rowid-audit list in the PR/handoff.
+  2. No rowid in PostgreSQL. system_settings has already been migrated to an
+     explicit `id` PK in SQLite. The remaining PK-less ledger tables
+     (consumption, receipts, returns) get a SERIAL `id` here (marked ⚠); the
+     Phase-5 copy-script populates id := sqlite rowid to preserve references.
   3. sme_inventory_seed stays strictly separate from ERP `inventory`; live SME
      Available_Qty is DERIVED via sme_materials_view (never stored).
   4. Site_ID columns preserved verbatim for multi-site scoping.
@@ -555,7 +555,6 @@ class StockReservations(Base):
 
 class SystemSettings(Base):
     __tablename__ = "system_settings"
-    # ⚠ Postgres SERIAL PK — SQLite used implicit rowid (rowid audit).
     id = Column(Integer, primary_key=True, autoincrement=True)
     category = Column(Text)
     value = Column(Text)
@@ -593,6 +592,8 @@ class Users(Base):
     Warehouse_ID = Column(Text)
     Phone_Number = Column(Text)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    totp_secret = Column(Text)
+    totp_enabled = Column(Integer, server_default=text('0'))
     __table_args__ = (
         CheckConstraint("role IN ('admin','logistics','hod','warehouse_user','supervisor','store_keeper')"),
     )
@@ -1225,7 +1226,7 @@ SME_AND_DERIVED_VIEWS = {
         'CREATE VIEW equipment AS SELECT id, Site_ID AS site_id, Equipment_Tag_No AS equipment_tag, Name AS name, Location AS location, Type AS type, Substrate AS substrate, Lining_System_Code AS lining_system_code, Lining_System_Short_Name AS lining_system_short_name, Lining_Type AS lining_type, Material_Spec AS "Material Spec.", Design AS design, Lining_System AS "Lining_System", Lining_Area_Location AS "Lining_Area/location", Sl_No AS "Sl. #", Project AS project, WBS_No AS "WBS #", IO_No AS "IO#", Sub_Location AS "Sub_Location", Drawing_No AS "Drawing #", Dia_L AS "Dia / L", Ht_W AS "Ht. /W", Equipment_Total_SQM AS "Equipment Total SQM", Remaraks AS remaraks, Lining_System AS lining_systems, Surface_Area_SQM AS surface_area_sqm FROM sme_equipment'
     ),
     'locations': (
-        "CREATE VIEW locations AS SELECT value AS name, '#64748B' AS badge_color, MIN(rowid) AS sort_order, '' AS added_at FROM system_settings WHERE category = 'sme_location' GROUP BY value"
+        "CREATE VIEW locations AS SELECT value AS name, '#64748B' AS badge_color, MIN(id) AS sort_order, '' AS added_at FROM system_settings WHERE category = 'sme_location' GROUP BY value"
     ),
     'recipe': (
         'CREATE VIEW recipe AS SELECT id, Lining_System_Code AS lining_system_code, Lining_System_Name AS lining_system_short_name, Lining_Type AS lining_type, Lining_System AS lining_system, Substrate AS substrate, System_Keys AS system_keys, Lining_Thickness AS lining_thickness, Material_Code AS material_code, COALESCE(Material_Description, Material_Name) AS material_description, Material_Name AS material_name, For_1_SQM AS for_1_sqm, UOM AS uom, Nature AS nature, Package_Size AS package_size, Sl_No AS "Sl. #" FROM sme_recipe'
@@ -1237,7 +1238,7 @@ SME_AND_DERIVED_VIEWS = {
         'CREATE VIEW sqm_progress AS SELECT Site_ID AS site_id, Equipment_Tag_No AS equipment_tag, Lining_System_Code AS lining_system_code, Original_SQM AS original_sqm, (COALESCE(Done_SQM,0) + COALESCE(Done_SQM_staged,0)) AS done_sqm FROM sme_sqm_progress'
     ),
     'types': (
-        "CREATE VIEW types AS SELECT value AS name, MIN(rowid) AS sort_order, '' AS added_at FROM system_settings WHERE category = 'sme_equipment_type' GROUP BY value"
+        "CREATE VIEW types AS SELECT value AS name, MIN(id) AS sort_order, '' AS added_at FROM system_settings WHERE category = 'sme_equipment_type' GROUP BY value"
     ),
     'v_expiring_stock': (
         "CREATE VIEW v_expiring_stock AS SELECT TRIM(r.SAP_Code) AS SAP_Code, i.Equipment_Description AS Equipment_Description, i.UOM AS UOM, COALESCE(r.Site_ID, 'HQ') AS Site_ID, r.Quantity AS Quantity, r.Supplier AS Supplier, r.PR_Number AS PR_Number, r.Expiry_Date AS Expiry_Date, CAST(julianday(date(r.Expiry_Date)) - julianday(date('now')) AS INTEGER) AS Days_Until_Expiry, CASE WHEN julianday(date(r.Expiry_Date)) < julianday(date('now')) THEN 'Expired' WHEN julianday(date(r.Expiry_Date)) <= julianday(date('now','+30 days')) THEN 'Short-Dated' ELSE 'Good' END AS Expiry_Status FROM receipts r LEFT JOIN inventory i ON TRIM(i.SAP_Code) = TRIM(r.SAP_Code) WHERE r.Expiry_Date IS NOT NULL AND r.Expiry_Date != '' AND date(r.Expiry_Date) IS NOT NULL"

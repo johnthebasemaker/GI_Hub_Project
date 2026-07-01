@@ -188,8 +188,8 @@ even then the pre-cutover `.db` is a full snapshot.
 | 2 — Portability helpers | ✅ Helpers done | `db_dialect`, `column_exists`, `now_sql`, `days_ago_sql`, `date_diff_days_sql` added; 1 proof-of-pattern site migrated. |
 | 3 — Portable SQL (route ~185 legacy sites through Phase-2 helpers + named params) | 🔶 In progress | Sub-phase A (`PRAGMA table_info` → `column_exists()` in `init_db()`) started. 10/~55 `init_db()` self-heal call sites done (1 Phase-2 + 6 routine increment 1 + 3 interactive increment 2). Param-style (`?` → named params) not yet started. |
 | 4 — Dual-backend CI | ⏳ Not started | Gated on Phase 3 completing. |
-| 5 — Cutover | ⏳ Not started | Gated on Phase 4 green. |
-| 6 — Server | ⏳ Not started | Gated on Phase 5. |
+| 5 — Cutover | 🔶 Copy script written + dry-run-validated | `backend/migrate_sqlite_to_postgres.py` (schema from models.py, ledger `id:=rowid`, typed coercion, per-table parity, view recreation). Validated SQLite→SQLite (real `gi_database.db` → PARITY OK). Awaits a live Postgres run + Phase-4 dual-CI. |
+| 6 — Server | 🔶 Compose service added | `postgres` service + `pg-data` volume in `docker-compose.yml` (migration target; app still on SQLite). |
 
 **Remaining-counts snapshot** (repo-wide, `grep -rn <pattern> --include=*.py . \| wc -l`, run at the start of each session and trusted over this table if they disagree):
 
@@ -220,6 +220,14 @@ even then the pre-cutover `.db` is a full snapshot.
 ---
 
 ## 8. Run Log
+
+### 2026-07-01 (late) · actor=interactive · branch=`main` · Phase-5 copy script + PG service
+- **Files:** `backend/migrate_sqlite_to_postgres.py` (new), `docker-compose.yml` (postgres service + pg-data volume), `backend/models.py` (regenerated: steady-state), `bug_check.py` (+2 checks: migration dry-run, plus parity now steady-state), `docs/`, `handoff.md`.
+- **Copy script** — `run_migration(source_sqlite, target_url, wipe, chunk)`: creates the target schema from `models.py`, copies every table in dependency order, populates **`id := sqlite rowid`** for the 3 deferred ledger tables (preserves `posted_txn_ref`), **coerces** SQLite loose-typed values (empty/junk in numeric/date/bool cols → NULL, counted), fixes PG sequences (`setval`), recreates the 14 views, and does per-table **row-count parity**. `--dry-run` targets a throwaway SQLite so it validates with no live Postgres.
+- **Validated:** real `gi_database.db` → dry-run **OVERALL PARITY OK** (all 64 tables, all 14 views). Regression-covered by `check_sqlite_to_pg_migration_dryrun`. Full `.venv`: **594/0 · 21/21**.
+- **⚠ Latent bug found by the dry-run (NOT yet fixed — needs sign-off, RBAC-adjacent):** `init_db()`'s two `users` role-CHECK rebuilds (recreate-and-copy) **drop the `totp_secret`/`totp_enabled` columns** because they were self-healed *before* the rebuilds (line ~511) and aren't in the rebuild's column list. On a brand-new DB they vanish on the 1st `init_db` and only reappear on the 2nd startup. Production DBs (many startups) are fine. Recommended fix: move the totp self-heal to *after* both `users` rebuilds, or add `totp_*` to the rebuild CREATE + INSERT lists. `models.py`/parity now use the steady-state (2×`init_db`) schema so 2FA columns are represented.
+- **Vestigial dropped columns (safe, legacy — confirm none are load-bearing):** `consumption.{Technician,status,WBS}`, `receipts.WBS`, `inventory.Sl_No`, `pending_issues.Technician`, `rejected_issues_archive.Technician`. A canonical `init_db` doesn't create these; the copy reports them rather than silently dropping.
+- **Next:** stand up the `postgres` service locally → run the copy for real → Phase-4 dual-CI (`bug_check`/crawler against Postgres) → decide the totp fix.
 
 ### 2026-07-01 (evening) · actor=interactive · branch=`main` · ROUTINE PAUSED
 - **Files touched:** `backend/models.py` (new), `database.py`, `pages_internal/hod_portal.py`, `bug_check.py`, this doc, `handoff.md`.

@@ -27,6 +27,7 @@ volumes:
   certbot-etc:    # Let's Encrypt certs + account state (/etc/letsencrypt)
   certbot-www:    # ACME HTTP-01 challenge webroot (/var/www/certbot)
   gi-backups:     # backup destination — see note below
+  pg-data:        # PostgreSQL data dir (Phase 5 migration target; NOT yet prod)
   # ⚠️ OFFSITE GAP: with Hetzner snapshots disabled, this named volume is our
   # ONLY backup, and it lives on the SAME VPS disk as gi-data. It protects
   # against DB corruption / bad writes / accidental deletes, but NOT against
@@ -114,6 +115,32 @@ services:
     networks: [gi-net]
     restart: unless-stopped
     # no host ports — reached via nginx /api/
+
+  # ---- PostgreSQL: Phase 5 migration TARGET (NOT yet the app's runtime) ----
+  # SQLite stays authoritative until cutover. This service lets us stand up
+  # Postgres to (a) create the schema from backend/models.py and (b) run
+  # backend/migrate_sqlite_to_postgres.py. After Phase 4 dual-CI is green, flip
+  # the app by setting DATABASE_URL for the streamlit/worker/fastapi services:
+  #   DATABASE_URL=postgresql+psycopg2://gihub:<pw>@postgres:5432/gihub
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=gihub
+      - POSTGRES_DB=gihub
+      # Provide via the server's .env / Docker secrets — never hardcode a real one:
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-gihub_dev_only}
+      - TZ=Asia/Riyadh
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    networks: [gi-net]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gihub -d gihub"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Expose ONLY for a local migration run; keep internal in prod:
+    # ports: ["127.0.0.1:5432:5432"]
 
   # ---- WhatsApp worker: drains the queue via the Meta Cloud API -----------
   # Reuses the app image but runs whatsapp_worker.py instead of Streamlit. The

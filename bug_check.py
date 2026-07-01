@@ -1288,6 +1288,9 @@ def check_models_schema_parity() -> None:
     _tmp = os.path.join(tempfile.mkdtemp(), "parity.db")
     fresh = sqlite3.connect(_tmp)
     try:
+        # init_db TWICE → steady-state schema (the users rebuilds drop totp_*
+        # on the first pass; they stabilise on the second, as in production).
+        database.init_db(fresh)
         database.init_db(fresh)
         live_tables = [r[0] for r in fresh.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
@@ -1310,6 +1313,43 @@ def check_models_schema_parity() -> None:
                ("system_settings", "id")}
     extra = model_only - allowed
     assert not extra, f"unexpected model-only columns (update models.py or DB): {extra}"
+
+
+def check_sqlite_to_pg_migration_dryrun() -> None:
+    """Phase 5 — the SQLite→target copy script reproduces every table's row
+    count, creates all views, and populates ledger `id := rowid` (validated
+    SQLite→SQLite so it needs no live Postgres)."""
+    import sqlite3, tempfile, os, importlib.util
+    src = os.path.join(tempfile.mkdtemp(), "m_src.db")
+    c = sqlite3.connect(src)
+    database.init_db(c); database.init_db(c)  # steady-state schema
+    c.execute("INSERT INTO receipts (Date, SAP_Code, Quantity, Site_ID) "
+              "VALUES ('2026-01-01','S1',5,'HQ')")
+    c.execute("INSERT INTO consumption (Date, SAP_Code, Quantity, Site_ID) "
+              "VALUES ('2026-01-02','S1',2,'HQ')")
+    c.commit(); c.close()
+
+    spec = importlib.util.spec_from_file_location(
+        "_mig", "backend/migrate_sqlite_to_postgres.py")
+    mig = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mig)
+    tgt = "sqlite:///" + os.path.join(tempfile.mkdtemp(), "m_tgt.db")
+    rep = mig.run_migration(src, tgt, wipe=True)
+
+    bad = [t for t, i in rep["tables"].items() if not i["ok"]]
+    assert not bad, f"row-count parity failed for: {bad}"
+    vfail = {v: s for v, s in rep["views"].items() if s != "ok"}
+    assert not vfail, f"view creation failed: {vfail}"
+    assert rep["ok"], "overall migration parity not ok"
+
+    from sqlalchemy import create_engine, text
+    e = create_engine(tgt)
+    try:
+        with e.connect() as conn:
+            rid = conn.execute(text("SELECT id FROM receipts ORDER BY id")).fetchall()
+            assert rid and rid[0][0] == 1, "ledger id not populated from rowid"
+    finally:
+        e.dispose()
 
 
 def check_per_site_unit_cost() -> None:
@@ -9371,6 +9411,8 @@ def main() -> int:
               check_system_settings_id_pk)
     run_check("Postgres",     "models.py schema parity with live DB",
               check_models_schema_parity)
+    run_check("Postgres",     "SQLite→target copy: parity + ledger id=rowid",
+              check_sqlite_to_pg_migration_dryrun)
     run_check("Valuation",    "Per-site Unit_Cost override + fallback (#15)",
               check_per_site_unit_cost)
     run_check("Returnable",  "Tool loan → mark returned",
