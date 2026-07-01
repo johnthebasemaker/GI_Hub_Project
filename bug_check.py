@@ -1282,6 +1282,15 @@ def check_per_site_unit_cost() -> None:
     assert abs(vb.get("SITE-A", 0) - 5 * 25.0) < 1e-6, "SITE-A not valued at override"
     assert abs(vb.get("SITE-B", 0) - 3 * 10.0) < 1e-6, "SITE-B should use global"
 
+    # The migrated per-site receipts report honours the override too.
+    rdf_a, _ = database.report_daily_receipts("2026-01-01", "2026-01-01", "SITE-A")
+    row_a = rdf_a[rdf_a["SAP_Code"] == "SAP-COST"].iloc[0]
+    assert abs(float(row_a["Unit_Cost"]) - 25.0) < 1e-6, "receipts report ignored site cost"
+    assert abs(float(row_a["Receipt_Value_SAR"]) - 5 * 25.0) < 1e-6
+    rdf_b, _ = database.report_daily_receipts("2026-01-01", "2026-01-01", "SITE-B")
+    row_b = rdf_b[rdf_b["SAP_Code"] == "SAP-COST"].iloc[0]
+    assert abs(float(row_b["Unit_Cost"]) - 10.0) < 1e-6, "SITE-B receipts should use global"
+
     # Negative rejected; clear falls back to global.
     bad, _ = database.set_site_unit_cost("SAP-COST", "SITE-A", -5, updated_by="t")
     assert not bad, "negative cost should be rejected"

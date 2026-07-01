@@ -2908,8 +2908,10 @@ def report_wbs_consumption(
             "SELECT COALESCE(c.wbs,'(no WBS)') AS WBS_Number, "
             "       COUNT(*)                 AS Consumption_Rows, "
             "       COALESCE(SUM(c.Quantity),0) AS Consumption_Qty, "
-            "       COALESCE(SUM(c.Quantity * COALESCE(i.Unit_Cost,0)),0) AS Consumption_Value_SAR "
+            "       COALESCE(SUM(c.Quantity * COALESCE(sc.Unit_Cost, i.Unit_Cost, 0)),0) AS Consumption_Value_SAR "
             "FROM consumption c LEFT JOIN inventory i ON c.SAP_Code = i.SAP_Code "
+            "  LEFT JOIN inventory_site_costs sc ON sc.SAP_Code = c.SAP_Code "
+            "     AND sc.Site_ID = COALESCE(c.Site_ID,'HQ') "
             f"WHERE c.Date BETWEEN ? AND ?{where_site_c} "
             "GROUP BY COALESCE(c.wbs,'(no WBS)')",
             conn, params=params_c,
@@ -2918,8 +2920,10 @@ def report_wbs_consumption(
             "SELECT COALESCE(r.wbs,'(no WBS)') AS WBS_Number, "
             "       COUNT(*)                 AS Receipt_Rows, "
             "       COALESCE(SUM(r.Quantity),0) AS Receipt_Qty, "
-            "       COALESCE(SUM(r.Quantity * COALESCE(i.Unit_Cost,0)),0) AS Receipt_Value_SAR "
+            "       COALESCE(SUM(r.Quantity * COALESCE(sc.Unit_Cost, i.Unit_Cost, 0)),0) AS Receipt_Value_SAR "
             "FROM receipts r LEFT JOIN inventory i ON r.SAP_Code = i.SAP_Code "
+            "  LEFT JOIN inventory_site_costs sc ON sc.SAP_Code = r.SAP_Code "
+            "     AND sc.Site_ID = COALESCE(r.Site_ID,'HQ') "
             f"WHERE r.Date BETWEEN ? AND ?{where_site_r} "
             "GROUP BY COALESCE(r.wbs,'(no WBS)')",
             conn, params=params_r,
@@ -6720,8 +6724,10 @@ def report_daily_receipts(
             "       COALESCE(r.Expiry_Date,'') AS Expiry_Date, "
             "       COALESCE(r.Remarks,'') AS Remarks, "
             "       COALESCE(r.Site_ID,'HQ') AS Site, "
-            "       COALESCE(i.Unit_Cost, 0) AS Unit_Cost "
+            "       COALESCE(sc.Unit_Cost, i.Unit_Cost, 0) AS Unit_Cost "
             "FROM receipts r LEFT JOIN inventory i ON r.SAP_Code = i.SAP_Code "
+            "  LEFT JOIN inventory_site_costs sc ON sc.SAP_Code = r.SAP_Code "
+            "     AND sc.Site_ID = COALESCE(r.Site_ID,'HQ') "
             "WHERE r.Date BETWEEN ? AND ?"
         )
         params: list = [date_from, date_to]
@@ -6802,10 +6808,22 @@ def report_monthly_summary(
         # that's about to be closed by the outer `finally` — otherwise we
         # double-close (`_owns` made `conn.close()` run, leaving a closed
         # handle that the next pd.read_sql can't use).
-        costs = pd.read_sql(
-            "SELECT SAP_Code, COALESCE(Unit_Cost, 0) AS Unit_Cost FROM inventory",
-            conn,
-        )
+        # Backlog #15 — when the report is scoped to one site, value it at that
+        # site's per-site cost override (else global). The all-sites rollup
+        # keeps the global cost (one cost per SAP across sites).
+        if site_id:
+            costs = pd.read_sql(
+                "SELECT i.SAP_Code, "
+                "       COALESCE(sc.Unit_Cost, i.Unit_Cost, 0) AS Unit_Cost "
+                "FROM inventory i LEFT JOIN inventory_site_costs sc "
+                "  ON sc.SAP_Code = i.SAP_Code AND sc.Site_ID = ?",
+                conn, params=(site_id,),
+            )
+        else:
+            costs = pd.read_sql(
+                "SELECT SAP_Code, COALESCE(Unit_Cost, 0) AS Unit_Cost FROM inventory",
+                conn,
+            )
     finally:
         if _owns:
             conn.close()
