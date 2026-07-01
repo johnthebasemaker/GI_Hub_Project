@@ -2624,12 +2624,20 @@ def _render_returns_tab(user: dict, site_id: str) -> None:
                         st.warning(f"Approved #{rid}, but email draft failed: {sent_msg}")
                     st.rerun()
         with cB:
-            if st.button("✗ Reject", key=f"_ret_rej_{rid}",
-                         use_container_width=True):
-                reject_return_request(rid, approver=user["username"],
-                                      reason="Rejected by HOD")
-                st.toast(f"Rejected #{rid}", icon="🚫")
-                st.rerun()
+            with st.popover("✗ Reject", use_container_width=True):
+                _rej_reason = st.text_input(
+                    "Reason (required to reject)",
+                    key=f"_ret_rej_reason_{rid}",
+                )
+                if st.button("Confirm Reject", key=f"_ret_rej_{rid}",
+                             use_container_width=True):
+                    if not _rej_reason.strip():
+                        st.error("Reason required.")
+                    else:
+                        reject_return_request(rid, approver=user["username"],
+                                              reason=_rej_reason.strip())
+                        st.toast(f"Rejected #{rid}", icon="🚫")
+                        st.rerun()
 
 
 # ===========================================================================
@@ -2788,13 +2796,24 @@ def _render_qr_approval_tab(user: dict, site_id: str) -> None:
                     st.toast(f"Approved {len(picked_ids)} request(s)", icon="✅")
                     st.rerun()
             with ba2:
-                if st.button(f"✗ Reject Selected ({len(picked_ids)})",
-                             disabled=not picked_ids, key="_qr_bulk_rej"):
-                    for rid in picked_ids:
-                        reject_qr_request(rid, approver=user["username"],
-                                          reason="Rejected by HOD")
-                    st.toast(f"Rejected {len(picked_ids)} request(s)", icon="🚫")
-                    st.rerun()
+                with st.popover(f"✗ Reject Selected ({len(picked_ids)})",
+                                disabled=not picked_ids,
+                                use_container_width=True):
+                    _qr_rej_reason = st.text_input(
+                        "Reason (required to reject)",
+                        key="_qr_bulk_rej_reason",
+                    )
+                    if st.button("Confirm Reject", key="_qr_bulk_rej",
+                                 use_container_width=True):
+                        if not _qr_rej_reason.strip():
+                            st.error("Reason required.")
+                        else:
+                            for rid in picked_ids:
+                                reject_qr_request(rid, approver=user["username"],
+                                                  reason=_qr_rej_reason.strip())
+                            st.toast(f"Rejected {len(picked_ids)} request(s)",
+                                     icon="🚫")
+                            st.rerun()
     with sub_approved:
         df_a = list_qr_requests(site_id=site_id, status="approved")
         if df_a.empty:

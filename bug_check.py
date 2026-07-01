@@ -868,6 +868,15 @@ def check_returns_reject() -> None:
     assert database.reject_return_request(rid, approver=TEST_HOD, reason="auto-reject")
     df = database.get_pending_returns("HQ")
     assert not (df["id"] == rid).any(), "Rejected return should leave pending list"
+    # Feature #21 — the HOD-entered reject reason must be persisted, not dropped.
+    _conn = database.get_connection()
+    try:
+        _rr = _conn.execute(
+            "SELECT rejection_reason FROM pending_returns WHERE id=?", (rid,)
+        ).fetchone()[0]
+    finally:
+        _conn.close()
+    assert _rr == "auto-reject", f"return rejection_reason not stored (got {_rr!r})"
 
 
 # ---------------------------------------------------------------------------
@@ -922,6 +931,15 @@ def check_qr_flow() -> None:
     database.reject_qr_request(rid2, approver=TEST_HOD, reason="test reject")
     df3 = database.list_qr_requests(site_id="HQ", status="rejected")
     assert (df3["id"] == rid2).any(), "rejected QR not in rejected list"
+    # Feature #21 — the HOD-entered reject reason must be persisted, not dropped.
+    _conn = database.get_connection()
+    try:
+        _qrr = _conn.execute(
+            "SELECT rejection_reason FROM qr_approval_requests WHERE id=?", (rid2,)
+        ).fetchone()[0]
+    finally:
+        _conn.close()
+    assert _qrr == "test reject", f"QR rejection_reason not stored (got {_qrr!r})"
 
 
 # ---------------------------------------------------------------------------
