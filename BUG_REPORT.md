@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-07-01T23:02:27`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_tnect8to/bug_check.db`  
-**Total checks:** 594  
-**Passing:** 594  
+**Run at:** `2026-07-01T23:26:51`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_mkbq1rtc/bug_check.db`  
+**Total checks:** 595  
+**Passing:** 595  
 **Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -21,7 +21,8 @@ _None — every check passed._
 - ✅ Opening_Stock edits logged, not new items (#23)
 - ✅ log_audit_action writes row
 
-### Auth — 1/1
+### Auth — 2/2
+- ✅ totp_* survive a fresh DB's first init_db
 - ✅ user-mgmt tab: no shadowed log_audit_action (Reject user)
 
 ### Auth/2FA — 2/2
