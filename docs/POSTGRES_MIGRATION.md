@@ -152,6 +152,35 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 7. Progress Ledger (single source of truth)
 
+> ### 🤖 Coordination protocol — READ BEFORE ANY MIGRATION WORK
+> **Two workers touch this migration:** the *interactive Claude Code session* (a
+> human + Claude in this repo) and the *scheduled routine* (`GI-Hub autonomous`,
+> runs Mon/Wed/Fri on the cloud → PR on a `claude/*` branch, laptop-off). They
+> stay in sync through **this ledger + the §8 Run Log + a one-line `🤖 Migration
+> status` pointer in `handoff.md`** — nothing else.
+>
+> **Both workers, every time, in order:**
+> 1. **Read** this §7 ledger, the last §8 Run Log entry, and `git log --oneline -30`.
+> 2. **Verify against reality** — re-grep the remaining-counts below; if they
+>    disagree with the code, trust the code and fix the table. Never redo a
+>    site that's already converted.
+> 3. Do **one bounded increment** (≤~10 sites) per the "Next action".
+> 4. **Update** this ledger + append a §8 Run Log entry + refresh the `handoff.md`
+>    pointer — *in the same change* as the code.
+> 5. **Analyse & explain the diff**, then push (routine → PR, never merge;
+>    interactive → commit after showing the human).
+>
+> **Files that carry the shared state (keep all three in sync):**
+> `docs/POSTGRES_MIGRATION.md` (§7 ledger + §8 log) · `handoff.md` (the `🤖
+> Migration status` line) · `MEMORY.md`/AI-memory holds only the *decisions*, not
+> progress. The routine PR only ever touches `claude/*` so it can't collide with
+> direct-to-main commits — worst case is a rebase.
+>
+> **`FRONTEND_GO: NO`** — the FastAPI + React (API-first, incremental) work is
+> **gated**. No worker starts it until Postgres cutover (Phase 5) is done *and* a
+> human flips this to `FRONTEND_GO: YES (approved by <name>)`. It gets its own
+> phased plan + its own routine when that happens.
+
 | Phase | Status | Notes |
 |---|---|---|
 | 0 — Inventory/plan | ✅ Done | No code. |
