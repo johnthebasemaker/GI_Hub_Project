@@ -38,6 +38,7 @@ from database import (
     get_connection,
     archive_rejected_returns,
     audit_opening_stock_changes,
+    cleanup_upload_disk_mirror,
     get_pending_requests,
     update_request_status,
     process_receipt_delivery,
@@ -1897,6 +1898,43 @@ def _render_settings_tab(user: dict) -> None:
                     "pending_returns", f"archived={n}",
                 )
                 st.success(f"Archived {n} rejected return(s).")
+            except Exception as e:
+                st.error(f"Cleanup failed: {e}")
+
+    # ── Cleanup old upload disk mirror (backlog #19) ─────────────────────────
+    st.write("")
+    cud1, cud2 = st.columns([4, 1])
+    with cud1:
+        _prev = cleanup_upload_disk_mirror(older_than_days=180, dry_run=True)
+        st.markdown(
+            f'<div style="color:{_C["crit"]};font-size:13px;font-weight:600;">'
+            f'Cleanup old upload files</div>'
+            f'<div style="color:{_C["muted"]};font-size:11.5px;">'
+            f'Delete disk copies under <code>uploads/</code> older than 180 days '
+            f'and prune empty folders. Document BLOBs live in the database '
+            f'(authoritative), so this only reclaims disk space — no document '
+            f'is lost. <b>{_prev["files"]:,} file(s) / '
+            f'{_prev["bytes"]/1e6:.1f} MB</b> currently qualify.</div>',
+            unsafe_allow_html=True,
+        )
+    with cud2:
+        up_confirm = st.text_input(
+            "Type CLEAN to confirm",
+            key="_adm_uploadcleanup_confirm",
+            label_visibility="collapsed",
+            placeholder="CLEAN",
+        )
+        if st.button("Run Cleanup", key="_adm_uploadcleanup_run",
+                     disabled=up_confirm.strip() != "CLEAN"):
+            try:
+                r = cleanup_upload_disk_mirror(older_than_days=180)
+                log_audit_action(
+                    user["username"], "CLEANUP_UPLOADS", "uploads",
+                    f"files={r['files']} bytes={r['bytes']} dirs={r['dirs_pruned']}",
+                )
+                st.success(
+                    f"Removed {r['files']:,} file(s), "
+                    f"{r['bytes']/1e6:.1f} MB, pruned {r['dirs_pruned']} folder(s).")
             except Exception as e:
                 st.error(f"Cleanup failed: {e}")
     st.markdown("</div>", unsafe_allow_html=True)

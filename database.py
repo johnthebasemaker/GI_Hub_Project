@@ -3059,6 +3059,47 @@ def save_entry_attachment(
             conn.close()
 
 
+def cleanup_upload_disk_mirror(
+    older_than_days: int = 180, dry_run: bool = False, root: str = None,
+) -> dict:
+    """Backlog #19 — reclaim disk space from the uploads/ mirror. DB BLOBs are
+    authoritative (documents are served from `file_blob`, never from disk), so
+    deleting stale disk copies never loses a document. Removes files whose mtime
+    is older than `older_than_days`, then prunes any directories left empty.
+    Returns {'files', 'bytes', 'dirs_pruned'}. `dry_run=True` reports what would
+    be removed without touching disk. `root` overrides UPLOADS_ROOT (tests)."""
+    import time as _time
+    base = root or UPLOADS_ROOT
+    stats = {"files": 0, "bytes": 0, "dirs_pruned": 0}
+    if not os.path.isdir(base):
+        return stats
+    cutoff = _time.time() - int(older_than_days) * 86400
+    for dirpath, _dirnames, filenames in os.walk(base, topdown=False):
+        for fn in filenames:
+            fp = os.path.join(dirpath, fn)
+            try:
+                st = os.stat(fp)
+            except OSError:
+                continue
+            if st.st_mtime < cutoff:
+                if not dry_run:
+                    try:
+                        os.remove(fp)
+                    except OSError:
+                        continue
+                stats["files"] += 1
+                stats["bytes"] += st.st_size
+        # Prune a now-empty directory (never the root itself).
+        if not dry_run and os.path.abspath(dirpath) != os.path.abspath(base):
+            try:
+                if not os.listdir(dirpath):
+                    os.rmdir(dirpath)
+                    stats["dirs_pruned"] += 1
+            except OSError:
+                pass
+    return stats
+
+
 def save_mtc_document(
     site_id: str,
     sap_code: str,

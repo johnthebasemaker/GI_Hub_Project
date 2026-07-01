@@ -982,6 +982,35 @@ def check_reminder_offsets_config() -> None:
     database.set_app_setting("reminder_offsets", "")  # leave clean
 
 
+def check_upload_cleanup() -> None:
+    """Backlog #19 — cleanup_upload_disk_mirror() removes only old files, keeps
+    recent ones, prunes empty dirs, and dry_run touches nothing."""
+    import os, time, tempfile
+    root = tempfile.mkdtemp()
+    old_dir = os.path.join(root, "HQ", "receipt", "R-1")
+    new_dir = os.path.join(root, "HQ", "receipt", "R-2")
+    os.makedirs(old_dir); os.makedirs(new_dir)
+    old_f = os.path.join(old_dir, "old.pdf")
+    new_f = os.path.join(new_dir, "new.pdf")
+    with open(old_f, "wb") as fh: fh.write(b"x" * 100)
+    with open(new_f, "wb") as fh: fh.write(b"y" * 50)
+    old_time = time.time() - 200 * 86400   # 200 days old
+    os.utime(old_f, (old_time, old_time))
+
+    # dry_run: reports the old file, deletes nothing.
+    prev = database.cleanup_upload_disk_mirror(older_than_days=180, dry_run=True, root=root)
+    assert prev["files"] == 1 and prev["bytes"] == 100, f"dry_run miscount: {prev}"
+    assert os.path.exists(old_f), "dry_run must not delete"
+
+    # real run: old file + its emptied dir gone, new file untouched.
+    res = database.cleanup_upload_disk_mirror(older_than_days=180, root=root)
+    assert res["files"] == 1 and res["bytes"] == 100, f"cleanup miscount: {res}"
+    assert not os.path.exists(old_f), "old file should be deleted"
+    assert os.path.exists(new_f), "recent file must survive"
+    assert not os.path.isdir(old_dir), "emptied dir should be pruned"
+    assert res["dirs_pruned"] >= 1, "expected at least one pruned dir"
+
+
 # ---------------------------------------------------------------------------
 # Returnable items (tool loans)
 # ---------------------------------------------------------------------------
@@ -8970,6 +8999,8 @@ def main() -> int:
               check_opening_stock_audit)
     run_check("Reminders",   "Delivery cadence configurable + normalized (#25)",
               check_reminder_offsets_config)
+    run_check("Uploads",     "Disk-mirror cleanup: old removed, recent kept (#19)",
+              check_upload_cleanup)
     run_check("Returnable",  "Tool loan → mark returned",
               check_returnable_items)
     run_check("QR",          "Submit → approve / reject",
