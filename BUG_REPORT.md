@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-07-01T23:26:51`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_mkbq1rtc/bug_check.db`  
-**Total checks:** 595  
-**Passing:** 595  
+**Run at:** `2026-07-01T23:59:22`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_8z9fxks4/bug_check.db`  
+**Total checks:** 596  
+**Passing:** 596  
 **Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -270,10 +270,11 @@ _None — every check passed._
 - ✅ client.detect gate-off writes NO telemetry row
 - ✅ get_locate_anything_summary computes rates safely
 
-### Postgres — 5/5
+### Postgres — 6/6
 - ✅ system_settings id PK + SME views via MIN(id)
 - ✅ models.py schema parity with live DB
 - ✅ SQLite→target copy: parity + ledger id=rowid
+- ✅ dual-CI harness: view + semantic parity (dry-run)
 - ✅ Phase 1 engine seam (SQLite default, no behavior change)
 - ✅ Phase 2 portability helpers (dialect-correct SQL)
 
