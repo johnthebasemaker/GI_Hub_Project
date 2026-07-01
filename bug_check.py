@@ -935,6 +935,34 @@ def check_returns_archive() -> None:
     assert arch_by and arch_by[0] == "tester", "archived_by not recorded"
 
 
+def check_opening_stock_audit() -> None:
+    """Backlog #23 — audit_opening_stock_changes() logs only changed existing
+    items, ignoring unchanged rows and newly-added items."""
+    old = pd.DataFrame({
+        "SAP_Code": ["OS-A", "OS-B", "OS-C"],
+        "Opening_Stock": [10, 5, 0],
+    })
+    new = pd.DataFrame({
+        "SAP_Code": ["OS-A", "OS-B", "OS-C", "OS-D"],
+        "Opening_Stock": [10, 7, 0, 3],   # B changed; A/C same; D is new
+    })
+    n = database.audit_opening_stock_changes(old, new, by_user="tester")
+    assert n == 1, f"expected 1 logged change, got {n}"
+
+    conn = database.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT details FROM system_audit_log "
+            "WHERE action_type='OPENING_STOCK_EDIT'"
+        ).fetchall()
+    finally:
+        conn.close()
+    joined = " | ".join(r[0] for r in rows)
+    assert "SAP=OS-B" in joined, "changed item B not audited"
+    assert "SAP=OS-A" not in joined, "unchanged item A should not be audited"
+    assert "SAP=OS-D" not in joined, "new item D should not be audited as an edit"
+
+
 # ---------------------------------------------------------------------------
 # Returnable items (tool loans)
 # ---------------------------------------------------------------------------
@@ -8919,6 +8947,8 @@ def main() -> int:
               check_returns_reject)
     run_check("Returns",     "Cleanup archives only old rejected rows (#20)",
               check_returns_archive)
+    run_check("Audit",       "Opening_Stock edits logged, not new items (#23)",
+              check_opening_stock_audit)
     run_check("Returnable",  "Tool loan → mark returned",
               check_returnable_items)
     run_check("QR",          "Submit → approve / reject",

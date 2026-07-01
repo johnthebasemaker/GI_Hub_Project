@@ -5072,6 +5072,49 @@ def log_audit_action(username: str, action_type: str, target_table: str, details
     finally:
         conn.close()
 
+
+def audit_opening_stock_changes(old_df, new_df, by_user: str) -> int:
+    """Backlog #23 — log every Opening_Stock edit made through the Master DB
+    Editor. Compares the pre-edit `old_df` against the saved `new_df` (both
+    inventory frames keyed by SAP_Code) and writes one OPENING_STOCK_EDIT audit
+    row per changed existing item ("SAP=X: <old> -> <new>"). Returns the number
+    of changes logged. New items (SAP not previously present) are not treated as
+    edits — their opening value is set at creation, which is the intended path.
+    """
+    if old_df is None or new_df is None:
+        return 0
+    if "SAP_Code" not in old_df.columns or "SAP_Code" not in new_df.columns:
+        return 0
+    if "Opening_Stock" not in old_df.columns or "Opening_Stock" not in new_df.columns:
+        return 0
+
+    def _num(v):
+        try:
+            if v is None:
+                return 0.0
+            f = float(v)
+            return 0.0 if f != f else f  # NaN → 0
+        except (TypeError, ValueError):
+            return 0.0
+
+    old_map = {str(r.SAP_Code): _num(r.Opening_Stock)
+               for r in old_df[["SAP_Code", "Opening_Stock"]].itertuples()}
+    n = 0
+    for r in new_df[["SAP_Code", "Opening_Stock"]].itertuples():
+        sap = str(r.SAP_Code)
+        if sap not in old_map:
+            continue  # newly-created item, not an edit
+        new_v = _num(r.Opening_Stock)
+        old_v = old_map[sap]
+        if abs(new_v - old_v) > 1e-9:
+            log_audit_action(
+                by_user, "OPENING_STOCK_EDIT", "inventory",
+                f"SAP={sap}: {old_v:g} -> {new_v:g}",
+            )
+            n += 1
+    return n
+
+
 def submit_registration_request(username: str, password_hash: str, role: str, site_id: str, phone: str) -> tuple[bool, str]:
     """Puts a new user into the pending queue for Admin approval (Now includes Phone Number).
 

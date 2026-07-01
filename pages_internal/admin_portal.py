@@ -37,6 +37,7 @@ from config import (
 from database import (
     get_connection,
     archive_rejected_returns,
+    audit_opening_stock_changes,
     get_pending_requests,
     update_request_status,
     process_receipt_delivery,
@@ -850,12 +851,21 @@ def _render_master_db_editor_tab(user: dict) -> None:
             if st.button("💾 Save Table Updates", type="primary"):
                 try:
                     save_df = edited_df.drop(columns=["🏷️ Print Label"], errors="ignore")
+                    # Backlog #23 — capture Opening_Stock edits BEFORE the
+                    # DELETE/re-insert overwrites the old values.
+                    if selected_table == "inventory":
+                        _os_changes = audit_opening_stock_changes(
+                            target_df, save_df, user["username"])
+                    else:
+                        _os_changes = 0
                     c.execute(f"DELETE FROM {selected_table}")
                     save_df.to_sql(selected_table, conn, if_exists="append", index=False)
                     conn.commit()
 
                     log_audit_action(user["username"], "DB_EDIT", selected_table,
                                      f"Admin bulk updated records in {selected_table}")
+                    if _os_changes:
+                        st.caption(f"📝 Logged {_os_changes} Opening_Stock change(s) to the audit trail.")
 
                     bust_inventory_cache()
                     bust_settings_cache()
