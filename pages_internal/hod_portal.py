@@ -1748,6 +1748,28 @@ def _render_pr_tab(user: dict, site_id: str) -> None:
     # ── 4) NOTIFY LOGISTICS (preserved: Outlook email + PDF download) ───
     st.divider()
     st.markdown("**📧 Notify Logistics (Pending Balance Follow-up)**")
+    # Backlog #29 — surface in-app procurement-chain adoption; once it clears
+    # 80%, flag these legacy email/PDF buttons for deprecation.
+    try:
+        from database import get_procurement_adoption
+        _adopt = get_procurement_adoption()
+        if _adopt["total"]:
+            if _adopt["pct"] >= 80.0:
+                st.warning(
+                    f"🚫 **Legacy path — slated for removal.** The in-app "
+                    f"Logistics chain now handles **{_adopt['pct']}%** of PRs "
+                    f"({_adopt['adopted']}/{_adopt['total']}). Prefer the "
+                    f"\"🚚 Submit PR(s) to Logistics Portal\" flow above; these "
+                    f"email/PDF buttons will be retired."
+                )
+            else:
+                st.caption(
+                    f"In-app procurement adoption: {_adopt['pct']}% "
+                    f"({_adopt['adopted']}/{_adopt['total']} PRs). Email/PDF "
+                    f"follow-up is deprecated once adoption reaches 80%."
+                )
+    except Exception:
+        pass
     open_prs_only = pr_df[pr_df["status"] == "open"]["PR_Number"].unique()
 
     if len(open_prs_only) > 0:

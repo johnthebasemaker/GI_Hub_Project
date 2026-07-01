@@ -1185,6 +1185,32 @@ def check_report_scheduler() -> None:
     assert "Inactive" not in labels, "inactive schedule wrongly selected"
 
 
+def check_procurement_adoption() -> None:
+    """Backlog #29 — adoption ratio counts PRs past 'site_draft' vs all PRs;
+    deprecation flag trips at the 80% threshold."""
+    base = database.get_procurement_adoption()
+    conn = database.get_connection()
+    try:
+        cur = conn.cursor()
+        # 3 adopted (submitted/in_po/closed) + 2 not (site_draft/NULL).
+        for pr, ls in [("PR-AD1", "submitted"), ("PR-AD2", "in_po"),
+                       ("PR-AD3", "closed"), ("PR-AD4", "site_draft"),
+                       ("PR-AD5", None)]:
+            cur.execute("INSERT INTO pr_master (PR_Number, SAP_Code, "
+                        "Requested_Qty, logistics_status) VALUES (?,?,?,?)",
+                        (pr, "SAP-AD", 1.0, ls))
+        conn.commit()
+    finally:
+        conn.close()
+    after = database.get_procurement_adoption()
+    assert after["total"] == base["total"] + 5, "total PR count wrong"
+    assert after["adopted"] == base["adopted"] + 3, "adopted count wrong"
+    # Threshold helper: compute the true pct and check the boundary both ways.
+    pct = after["pct"]
+    assert database.procurement_email_deprecated(threshold_pct=pct) is True
+    assert database.procurement_email_deprecated(threshold_pct=pct + 0.1) is False
+
+
 # ---------------------------------------------------------------------------
 # Returnable items (tool loans)
 # ---------------------------------------------------------------------------
@@ -9183,6 +9209,8 @@ def main() -> int:
               check_vendor_master)
     run_check("Reports",      "Scheduler due-ness + active/due selection (#13)",
               check_report_scheduler)
+    run_check("Procurement",  "Email-path adoption metric + deprecation flag (#29)",
+              check_procurement_adoption)
     run_check("Returnable",  "Tool loan → mark returned",
               check_returnable_items)
     run_check("QR",          "Submit → approve / reject",

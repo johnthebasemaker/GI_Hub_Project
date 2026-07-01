@@ -8003,6 +8003,36 @@ def bulk_import_vendors(records, created_by: str = "",
             conn.close()
 
 
+def get_procurement_adoption(conn: sqlite3.Connection = None) -> dict:
+    """Backlog #29 — procurement-chain adoption: the share of PRs that entered
+    the in-app Logistics chain (logistics_status past 'site_draft') vs all PRs.
+    Returns {'total','adopted','pct'} (pct 0..100). Once high, the legacy email/
+    PDF PR follow-up buttons can be formally deprecated."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        total = conn.execute(
+            "SELECT COUNT(DISTINCT PR_Number) FROM pr_master").fetchone()[0] or 0
+        adopted = conn.execute(
+            "SELECT COUNT(DISTINCT PR_Number) FROM pr_master WHERE "
+            "logistics_status IN ('submitted','in_po','closed','force_closed')"
+        ).fetchone()[0] or 0
+        pct = round(100.0 * adopted / total, 1) if total else 0.0
+        return {"total": int(total), "adopted": int(adopted), "pct": pct}
+    finally:
+        if _owns:
+            conn.close()
+
+
+def procurement_email_deprecated(
+    threshold_pct: float = 80.0, conn: sqlite3.Connection = None,
+) -> bool:
+    """Backlog #29 — True once in-app procurement adoption ≥ threshold (default
+    80%); the HOD PR tab then flags the legacy email/PDF buttons as deprecated."""
+    return get_procurement_adoption(conn=conn)["pct"] >= float(threshold_pct)
+
+
 # ---------------------------------------------------------------------------
 # App notifications (in-app inbox)
 # ---------------------------------------------------------------------------
