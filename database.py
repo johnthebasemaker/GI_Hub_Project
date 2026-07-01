@@ -620,20 +620,18 @@ def init_db(conn: sqlite3.Connection = None) -> None:
 
     # Self-heal: add Lot_Number to every movement table so each
     # transaction can reference the master lot row it touched.
+    # Phase 3 — uses the portable column_exists() helper (identical on SQLite).
     for _tbl in ("receipts", "consumption", "pending_issues", "pending_receipts"):
-        c.execute(f"PRAGMA table_info({_tbl})")
-        _cols = {r[1] for r in c.fetchall()}
-        if "Lot_Number" not in _cols:
+        if not column_exists(_tbl, "Lot_Number", conn=conn):
             c.execute(f"ALTER TABLE {_tbl} ADD COLUMN Lot_Number TEXT")
 
     # FEFO override reason. NULL = followed FEFO suggestion.
     # Non-null = store keeper deliberately picked a different lot AND
     # explained why. Persisted on the consumption ledger row so reports
     # and audits can filter for the exception.
+    # Phase 3 — uses the portable column_exists() helper (identical on SQLite).
     for _tbl in ("pending_issues", "consumption"):
-        c.execute(f"PRAGMA table_info({_tbl})")
-        _cols = {r[1] for r in c.fetchall()}
-        if "FEFO_Override" not in _cols:
+        if not column_exists(_tbl, "FEFO_Override", conn=conn):
             c.execute(f"ALTER TABLE {_tbl} ADD COLUMN FEFO_Override TEXT")
 
     # ── One-time backfill: legacy receipts → lot master ──────────────────
