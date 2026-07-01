@@ -1271,6 +1271,41 @@ def check_system_settings_id_pk() -> None:
         conn.close()
 
 
+def check_system_settings_migration_on_existing_db() -> None:
+    """Regression — init_db must migrate system_settings to an `id` PK even on an
+    EXISTING DB where the locations/types compat views already reference it AND an
+    orphan system_settings_new remains from an interrupted rebuild. Fresh-DB tests
+    missed this (views don't exist yet); it broke real production startups with
+    'error in view locations: no such table: system_settings'."""
+    import sqlite3, tempfile, os
+    p = os.path.join(tempfile.mkdtemp(), "existing.db")
+    c = sqlite3.connect(p)
+    # Simulate a pre-migration production DB: system_settings without `id`, the
+    # two compat views that reference it, and a leftover orphan table.
+    c.execute("CREATE TABLE system_settings (category TEXT, value TEXT, Site_ID TEXT)")
+    c.execute("INSERT INTO system_settings VALUES ('sme_location','LocX','HQ')")
+    c.execute("INSERT INTO system_settings VALUES ('sme_equipment_type','TypeX','HQ')")
+    c.execute("CREATE VIEW locations AS SELECT value AS name, MIN(rowid) AS sort_order "
+              "FROM system_settings WHERE category='sme_location' GROUP BY value")
+    c.execute("CREATE VIEW types AS SELECT value AS name, MIN(rowid) AS sort_order "
+              "FROM system_settings WHERE category='sme_equipment_type' GROUP BY value")
+    c.execute("CREATE TABLE system_settings_new (id INTEGER PRIMARY KEY, category TEXT)")
+    c.commit()
+    try:
+        database.init_db(c)  # must NOT raise (the bug raised at the RENAME)
+        cols = {r[1] for r in c.execute("PRAGMA table_info(system_settings)")}
+        assert "id" in cols, "id PK not added when views already existed"
+        orphan = c.execute("SELECT 1 FROM sqlite_master "
+                           "WHERE name='system_settings_new'").fetchone()
+        assert not orphan, "orphan system_settings_new not cleaned up"
+        assert c.execute("SELECT COUNT(*) FROM system_settings").fetchone()[0] >= 2, \
+            "data lost during migration"
+        assert c.execute("SELECT COUNT(*) FROM locations").fetchone()[0] >= 1, \
+            "locations view broken after migration"
+    finally:
+        c.close()
+
+
 def check_models_schema_parity() -> None:
     """backend/models.py must stay in sync with the live schema: every live
     table+column appears in the models; the only model-only columns are the
@@ -9452,6 +9487,8 @@ def main() -> int:
               check_dn_fefo_suggestion)
     run_check("Postgres",     "system_settings id PK + SME views via MIN(id)",
               check_system_settings_id_pk)
+    run_check("Postgres",     "system_settings migrates on EXISTING db (views+orphan)",
+              check_system_settings_migration_on_existing_db)
     run_check("Postgres",     "models.py schema parity with live DB",
               check_models_schema_parity)
     run_check("Auth",         "totp_* survive a fresh DB's first init_db",

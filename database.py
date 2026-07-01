@@ -377,6 +377,14 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     # Guarded + idempotent; must run BEFORE the locations/types views are created.
     _ss_cols = [r[1] for r in c.execute("PRAGMA table_info(system_settings)")]
     if "id" not in _ss_cols:
+        # On an EXISTING DB the locations/types compat views already reference
+        # system_settings, so SQLite's view-integrity check would block the table
+        # swap (RENAME → "error in view locations"). Drop those views first (they
+        # are recreated later in this same init_db with MIN(id)); also clear any
+        # orphan table left by a previously-interrupted rebuild. Order matters.
+        c.execute("DROP VIEW IF EXISTS locations")
+        c.execute("DROP VIEW IF EXISTS types")
+        c.execute("DROP TABLE IF EXISTS system_settings_new")
         _keep = [col for col in _ss_cols if col != "id"]
         _collist = ", ".join(_keep)
         c.execute(

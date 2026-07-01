@@ -221,6 +221,12 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-02 · actor=interactive · branch=`main` · 🚑 HOTFIX: system_settings rebuild crashed existing DBs
+- **Symptom:** the app's global error boundary fired on localhost. Root cause: the `system_settings` `id`-PK rebuild (added earlier) crashed `init_db` on any **existing** DB — the `locations`/`types` compat views already reference `system_settings`, so SQLite's view-integrity check blocked `RENAME system_settings_new → system_settings` ("error in view locations: no such table"). It left an **orphan `system_settings_new`**, so every subsequent startup then failed at `CREATE ... already exists`. Fresh-DB tests (all of them) never hit this because the views don't exist yet when the rebuild runs.
+- **Fix (`database.py`):** before the rebuild, `DROP VIEW IF EXISTS locations/types` (recreated later in the same `init_db`) and `DROP TABLE IF EXISTS system_settings_new` (clears the orphan). Idempotent; auto-repairs a stuck DB on next startup. Verified against a copy of the real broken DB → recovers cleanly, 30 rows preserved, orphan gone, views queryable.
+- **Regression test:** `check_system_settings_migration_on_existing_db` builds the exact broken state (views + orphan) and asserts recovery — **fails on the pre-fix code, passes after.** This closes the fresh-DB-only blind spot.
+- **Tests:** full `.venv` **597/0 · 21/21**. Committed the code fix only (the working-tree `gi_database.db` was locked by the running app; it self-heals on restart).
+
 ### 2026-07-01 (night) · actor=interactive · branch=`main` · Phase-4 dual-CI harness + totp fix
 - **Files:** `backend/dual_ci.py` (new), `.github/workflows/postgres-dual-ci.yml` (new), `backend/migrate_sqlite_to_postgres.py` (PG view overrides), `backend/models.py` (regenerated: raw view SQL), `database.py` (totp fix), `bug_check.py` (+3 checks), docs, handoff.
 - **totp fix:** relocated the `users.totp_*` self-heal to AFTER both role-CHECK rebuilds (via `column_exists`) so a fresh DB's 1st `init_db` keeps 2FA columns. Regression test added.
