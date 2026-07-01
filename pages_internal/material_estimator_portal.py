@@ -781,7 +781,7 @@ section.main > div.block-container { padding-top: 78px !important; }
   width:3px; height:100%; background:var(--amber); border-radius:99px 0 0 99px;
 }
 [data-testid="stMetricLabel"] { font-family:'JetBrains Mono',monospace!important; font-size:.58rem!important; letter-spacing:.13em; text-transform:uppercase; color:var(--t4)!important; padding-left:.5rem; }
-[data-testid="stMetricValue"] { font-family:'JetBrains Mono',monospace!important; font-size:1.9rem!important; font-weight:700!important; color:var(--t0)!important; padding-left:.5rem; }
+[data-testid="stMetricValue"] { font-family:'JetBrains Mono',monospace!important; font-size:clamp(1rem, 1.6vw, 1.9rem)!important; white-space:nowrap!important; font-weight:700!important; color:var(--t0)!important; padding-left:.5rem; }
 [data-testid="stMetricDelta"] { font-size:.72rem!important; }
 
 /* ── ALERT BOXES ── */
