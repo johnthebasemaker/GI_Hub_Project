@@ -5164,6 +5164,53 @@ def audit_opening_stock_changes(old_df, new_df, by_user: str) -> int:
     return n
 
 
+def crash_safe_replace_table(table: str, df, conn: sqlite3.Connection) -> int:
+    """Backlog #10 — replace ALL rows of `table` with `df` atomically.
+
+    The old Master DB Editor did `DELETE` then `to_sql(append)` with a bare
+    commit: if the insert failed mid-way (bad value, NOT NULL, disk error) the
+    table was left empty or partial — silent data loss. This stages `df` into a
+    temp table FIRST (which validates every row is writable), then swaps within
+    a single transaction. Any failure `rollback`s, so the original rows are
+    always preserved — never a partial/empty table. Returns rows written.
+
+    The caller owns `conn` (the editor already holds one). Only columns present
+    in both the real table and `df` are copied (extraneous editor columns are
+    ignored, exactly as a schema-aligned append would do)."""
+    import re
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table or ""):
+        raise ValueError(f"unsafe table name: {table!r}")
+    tmp = f"_edit_stage_{table}"
+    cur = conn.cursor()
+    cur.execute(f'DROP TABLE IF EXISTS "{tmp}"')
+    # Stage + validate BEFORE touching the real table. A bad row raises here,
+    # with the real table still fully intact.
+    df.to_sql(tmp, conn, if_exists="replace", index=False)
+    conn.commit()
+    try:
+        real_cols = [r[1] for r in cur.execute(f'PRAGMA table_info("{table}")')]
+        tmp_cols  = [r[1] for r in cur.execute(f'PRAGMA table_info("{tmp}")')]
+        shared = [c for c in real_cols if c in tmp_cols]
+        collist = ", ".join(f'"{c}"' for c in shared)
+        # DELETE + INSERT in one uncommitted transaction → rollback undoes the
+        # DELETE if the copy fails, so we never lose the original rows.
+        cur.execute(f'DELETE FROM "{table}"')
+        cur.execute(
+            f'INSERT INTO "{table}" ({collist}) SELECT {collist} FROM "{tmp}"')
+        n = cur.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+        conn.commit()
+        return int(n)
+    except Exception:
+        conn.rollback()   # original rows restored
+        raise
+    finally:
+        try:
+            cur.execute(f'DROP TABLE IF EXISTS "{tmp}"')
+            conn.commit()
+        except sqlite3.Error:
+            pass
+
+
 def submit_registration_request(username: str, password_hash: str, role: str, site_id: str, phone: str) -> tuple[bool, str]:
     """Puts a new user into the pending queue for Admin approval (Now includes Phone Number).
 

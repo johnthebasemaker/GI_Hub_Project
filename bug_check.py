@@ -1075,6 +1075,46 @@ def check_force_close_undo() -> None:
     assert not ok3 and "window" in msg3.lower(), f"expired window not blocked: {msg3}"
 
 
+def check_crash_safe_replace() -> None:
+    """Backlog #10 — crash_safe_replace_table swaps atomically; a failed write
+    preserves the ORIGINAL rows (no partial/empty table)."""
+    import pandas as pd
+    conn = database.get_connection()
+    try:
+        conn.execute("DROP TABLE IF EXISTS _csr_demo")
+        conn.execute("CREATE TABLE _csr_demo (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        conn.execute("INSERT INTO _csr_demo (id, name) VALUES (1,'alpha'),(2,'beta')")
+        conn.commit()
+
+        # Happy path — full replace succeeds.
+        good = pd.DataFrame({"id": [10, 11, 12], "name": ["x", "y", "z"]})
+        n = database.crash_safe_replace_table("_csr_demo", good, conn)
+        assert n == 3, f"expected 3 rows written, got {n}"
+        rows = conn.execute("SELECT id FROM _csr_demo ORDER BY id").fetchall()
+        assert [r[0] for r in rows] == [10, 11, 12], "replace didn't take"
+
+        # Failure path — a NOT NULL violation must roll back, keeping the 3 rows.
+        bad = pd.DataFrame({"id": [20, 21], "name": ["ok", None]})
+        try:
+            database.crash_safe_replace_table("_csr_demo", bad, conn)
+            raised = False
+        except Exception:
+            raised = True
+        assert raised, "expected the bad replace to raise"
+        rows = conn.execute("SELECT id FROM _csr_demo ORDER BY id").fetchall()
+        assert [r[0] for r in rows] == [10, 11, 12], \
+            f"DATA LOSS: original rows not preserved after failed replace: {rows}"
+        # No stray temp table left behind.
+        left = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='_edit_stage__csr_demo'").fetchone()
+        assert left is None, "staging temp table leaked"
+    finally:
+        conn.execute("DROP TABLE IF EXISTS _csr_demo")
+        conn.commit()
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Returnable items (tool loans)
 # ---------------------------------------------------------------------------
@@ -9067,6 +9107,8 @@ def main() -> int:
               check_upload_cleanup)
     run_check("Force-close",  "Undo restores prior state within window (#28)",
               check_force_close_undo)
+    run_check("DB Editor",    "Crash-safe replace preserves rows on failure (#10)",
+              check_crash_safe_replace)
     run_check("Returnable",  "Tool loan → mark returned",
               check_returnable_items)
     run_check("QR",          "Submit → approve / reject",

@@ -42,6 +42,7 @@
 > ### 📍 WHERE WE ARE — read this first
 >
 > **DONE this session (all committed + pushed, newest first):**
+> - **Crash-safe Master DB Editor save (backlog #10)** — `crash_safe_replace_table()` (stage→swap→rollback-on-failure) replaces the bare DELETE+to_sql; original rows always preserved on error. +1 regression proves no data loss. `database.py`, `pages_internal/admin_portal.py`.
 > - **Force-close undo window (backlog #28)** — `force_close_target()` snapshots prior state → JSON; `undo_force_close()` restores it verbatim within 24h (no double-undo, no past-window); `get_undoable_force_closures()` + Logistics "↩️ Undo" panel. +1 regression. `database.py`, `pages_internal/logistics_portal.py`.
 > - **uploads/ disk-mirror cleanup (backlog #19)** — `cleanup_upload_disk_mirror()` (dry-run + injectable root) + Admin Danger-Zone "Cleanup old upload files" button (live qualifying-count, CLEAN-confirm, audit). BLOBs authoritative → non-destructive. +1 regression. `database.py`, `pages_internal/admin_portal.py`.
 > - **Configurable delivery-reminder cadence (backlog #25)** — `get/set_reminder_offsets()` + `app_settings.reminder_offsets` (JSON, default [2,1,0]); `sweep_delivery_reminders()` data-driven; Admin → Settings cadence input. +1 regression. `database.py`, `pages_internal/admin_portal.py`.
@@ -2252,9 +2253,7 @@ New workstream: track **labor** the way the SME tracks **material**. Source-of-t
    - SQLite + WAL handles ~10-25 concurrent comfortably; past that, contention bites
    - Already structured for it: all SQL lives in `database.py`. The PWA FastAPI layer in `pwa/api.py` is the bridge
 
-10. **Master DB Editor save = DELETE then INSERT-all**
-    - Crash-unsafe; one mid-write failure loses rows
-    - Industry pattern: posted ledger rows are immutable. Corrections via reversal documents (which our Stock Adjustment flow already implements correctly — extend the discipline to other tables)
+10. ~~**Master DB Editor save = DELETE then INSERT-all**~~ ✅ **DONE (crash-safety)** — `crash_safe_replace_table()` stages `df` into a temp table (validates every row) then swaps within one transaction; any failure `rollback`s so the ORIGINAL rows are always preserved (never partial/empty). Editor save now calls it. +1 `bug_check` regression proves no data loss on a failed write. `database.py`, `pages_internal/admin_portal.py`. (The deeper immutable-ledger/reversal redesign remains a separate, larger effort — this closes the acute data-loss risk.)
 
 11. **Lot splitting / merging / quarantine UI**
     - Schema supports `Status` transitions but there's no UI for them — admin/HOD has to use Master DB Editor

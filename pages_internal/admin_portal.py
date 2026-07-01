@@ -39,6 +39,7 @@ from database import (
     archive_rejected_returns,
     audit_opening_stock_changes,
     cleanup_upload_disk_mirror,
+    crash_safe_replace_table,
     get_pending_requests,
     update_request_status,
     process_receipt_delivery,
@@ -861,12 +862,13 @@ def _render_master_db_editor_tab(user: dict) -> None:
                             target_df, save_df, user["username"])
                     else:
                         _os_changes = 0
-                    c.execute(f"DELETE FROM {selected_table}")
-                    save_df.to_sql(selected_table, conn, if_exists="append", index=False)
-                    conn.commit()
+                    # Backlog #10 — atomic, crash-safe replace (stage → swap →
+                    # rollback-on-failure) so a mid-write error never empties
+                    # or partially fills the table.
+                    _rows = crash_safe_replace_table(selected_table, save_df, conn)
 
                     log_audit_action(user["username"], "DB_EDIT", selected_table,
-                                     f"Admin bulk updated records in {selected_table}")
+                                     f"Admin bulk updated {_rows} records in {selected_table}")
                     if _os_changes:
                         st.caption(f"📝 Logged {_os_changes} Opening_Stock change(s) to the audit trail.")
 
