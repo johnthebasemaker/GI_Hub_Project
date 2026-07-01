@@ -1,9 +1,9 @@
 # Bug Check Report
 
-**Run at:** `2026-07-01T16:42:26`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_9buhzl8w/bug_check.db`  
-**Total checks:** 590  
-**Passing:** 570  
+**Run at:** `2026-07-01T17:21:19`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_yagawz4t/bug_check.db`  
+**Total checks:** 591  
+**Passing:** 571  
 **Failing:** 20  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
@@ -23,7 +23,7 @@ _The harness writes a fresh SQLite file under your system temp dir, seeds it, ex
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 3217, in check_module_imports
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 3270, in check_module_imports
     assert not failed, "Module import failures:\n  " + "\n  ".join(failed)
            ^^^^^^^^^^
 AssertionError: Module import failures:
@@ -41,7 +41,7 @@ AssertionError: Module import failures:
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 1423, in check_mailer_drafts
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 1476, in check_mailer_drafts
     import mailer
   File "/Users/johnsonandrew/GI_Hub_Project/mailer.py", line 25, in <module>
     from dotenv import load_dotenv
@@ -56,7 +56,7 @@ ModuleNotFoundError: No module named 'dotenv'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 1464, in check_user_mgmt_no_unbound_log_audit
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 1517, in check_user_mgmt_no_unbound_log_audit
     import auth
   File "/Users/johnsonandrew/GI_Hub_Project/auth.py", line 24, in <module>
     import bcrypt
@@ -71,7 +71,7 @@ ModuleNotFoundError: No module named 'bcrypt'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 3112, in check_2fa_flow
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 3165, in check_2fa_flow
     auth = importlib.import_module("auth")
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/importlib/__init__.py", line 90, in import_module
@@ -88,7 +88,7 @@ ModuleNotFoundError: No module named 'bcrypt'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 5988, in check_r15_po_pdf_three_items
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 6041, in check_r15_po_pdf_three_items
     assert ok, msg
            ^^
 AssertionError: pdfplumber not installed
@@ -102,7 +102,7 @@ AssertionError: pdfplumber not installed
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 6151, in check_r15_pr_report_keeps_uom_column
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 6204, in check_r15_pr_report_keeps_uom_column
     rp = importlib.import_module("pages_internal.reports_page")
          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/importlib/__init__.py", line 90, in import_module
@@ -119,7 +119,7 @@ ModuleNotFoundError: No module named 'fpdf'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 6315, in check_r16_generate_pr_pdf_has_new_columns
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 6368, in check_r16_generate_pr_pdf_has_new_columns
     from reports import generate_pr_pdf
   File "/Users/johnsonandrew/GI_Hub_Project/reports.py", line 1, in <module>
     from fpdf import FPDF
@@ -134,7 +134,7 @@ ModuleNotFoundError: No module named 'fpdf'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7094, in check_7f_recipes_cover_all_roles
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7147, in check_7f_recipes_cover_all_roles
     from build_manual_pdf import ROLE_MANUAL_RECIPES
   File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
     from fpdf import FPDF
@@ -149,7 +149,7 @@ ModuleNotFoundError: No module named 'fpdf'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7103, in check_7f_slice_sk_keeps_own
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7156, in check_7f_slice_sk_keeps_own
     from build_manual_pdf import slice_markdown_for_role
   File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
     from fpdf import FPDF
@@ -164,7 +164,7 @@ ModuleNotFoundError: No module named 'fpdf'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7110, in check_7f_slice_sk_drops_logistics
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7163, in check_7f_slice_sk_drops_logistics
     from build_manual_pdf import slice_markdown_for_role
   File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
     from fpdf import FPDF
@@ -179,7 +179,7 @@ ModuleNotFoundError: No module named 'fpdf'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7119, in check_7f_slice_supervisor_keeps_own
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7172, in check_7f_slice_supervisor_keeps_own
     from build_manual_pdf import slice_markdown_for_role
   File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
     from fpdf import FPDF
@@ -194,7 +194,7 @@ ModuleNotFoundError: No module named 'fpdf'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7126, in check_7f_slice_hod_keeps_reports
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7179, in check_7f_slice_hod_keeps_reports
     from build_manual_pdf import slice_markdown_for_role
   File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
     from fpdf import FPDF
@@ -209,7 +209,7 @@ ModuleNotFoundError: No module named 'fpdf'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7133, in check_7f_slice_admin_full
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7186, in check_7f_slice_admin_full
     from build_manual_pdf import slice_markdown_for_role
   File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
     from fpdf import FPDF
@@ -224,7 +224,7 @@ ModuleNotFoundError: No module named 'fpdf'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7140, in check_7f_parse_image_block
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7193, in check_7f_parse_image_block
     from build_manual_pdf import parse_markdown
   File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
     from fpdf import FPDF
@@ -239,7 +239,7 @@ ModuleNotFoundError: No module named 'fpdf'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7152, in check_7f_render_image_missing_no_crash
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7205, in check_7f_render_image_missing_no_crash
     from build_manual_pdf import ManualPDF
   File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
     from fpdf import FPDF
@@ -254,7 +254,7 @@ ModuleNotFoundError: No module named 'fpdf'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7163, in check_7f_role_pdf_starts_with_magic
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7216, in check_7f_role_pdf_starts_with_magic
     from build_manual_pdf import build_role_manual_pdf
   File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
     from fpdf import FPDF
@@ -269,7 +269,7 @@ ModuleNotFoundError: No module named 'fpdf'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7176, in check_7f_admin_equals_master
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7229, in check_7f_admin_equals_master
     from build_manual_pdf import build_manual_pdf, build_role_manual_pdf
   File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
     from fpdf import FPDF
@@ -284,7 +284,7 @@ ModuleNotFoundError: No module named 'fpdf'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7185, in check_7f_unknown_role_falls_back
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7238, in check_7f_unknown_role_falls_back
     from build_manual_pdf import build_role_manual_pdf
   File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
     from fpdf import FPDF
@@ -299,7 +299,7 @@ ModuleNotFoundError: No module named 'fpdf'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7933, in check_8d_panel_renders_with_sidecar_down
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7986, in check_8d_panel_renders_with_sidecar_down
     mod = importlib.import_module("pages_internal.admin_portal")
           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/importlib/__init__.py", line 90, in import_module
@@ -316,7 +316,7 @@ ModuleNotFoundError: No module named 'bcrypt'
 Traceback (most recent call last):
   File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
     fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 3503, in check_pages_internal_exports_resolve
+  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 3556, in check_pages_internal_exports_resolve
     assert hasattr(pkg, name), f"pages_internal missing export: {name}"
            ^^^^^^^^^^^^^^^^^^
   File "/Users/johnsonandrew/GI_Hub_Project/pages_internal/__init__.py", line 51, in __getattr__
@@ -1026,6 +1026,9 @@ ModuleNotFoundError: No module named 'bcrypt'
 
 ### Uploads — 1/1
 - ✅ Disk-mirror cleanup: old removed, recent kept (#19)
+
+### Valuation — 1/1
+- ✅ Per-site Unit_Cost override + fallback (#15)
 
 ### Vendors — 1/1
 - ✅ Master add/update/status + bulk import dedupe (#24)
