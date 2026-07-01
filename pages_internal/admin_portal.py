@@ -821,6 +821,22 @@ def _render_master_db_editor_tab(user: dict) -> None:
                 )
 
             if selected_table == "inventory":
+                # Backlog #22 — flag legacy items still on the default 'Others'
+                # category (or NULL) so the team can backfill real categories.
+                if "Category" in target_df.columns:
+                    _cat = target_df["Category"].fillna("Others").replace("", "Others")
+                    _legacy = target_df[_cat == "Others"]
+                    if not _legacy.empty:
+                        st.warning(
+                            f"🏷️ {len(_legacy):,} item(s) still uncategorised "
+                            f"(Category = 'Others'). Set a real category below so "
+                            f"reports and filters group them correctly."
+                        )
+                        _show = [c for c in ("SAP_Code", "Material_Code",
+                                             "Material_Name") if c in _legacy.columns]
+                        with st.expander(f"Show {len(_legacy):,} uncategorised item(s)"):
+                            st.dataframe(_legacy[_show] if _show else _legacy,
+                                         width="stretch", hide_index=True)
                 target_df.insert(0, "🏷️ Print Label", False)
                 col_cfg = {"🏷️ Print Label": st.column_config.CheckboxColumn("🏷️ Print Label", default=False)}
             else:
