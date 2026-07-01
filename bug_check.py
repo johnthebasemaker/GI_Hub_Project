@@ -879,6 +879,62 @@ def check_returns_reject() -> None:
     assert _rr == "auto-reject", f"return rejection_reason not stored (got {_rr!r})"
 
 
+def check_returns_archive() -> None:
+    """Backlog #20 — archive_rejected_returns() moves only OLD rejected rows to
+    returns_history; recent-rejected and awaiting-HOD rows stay put."""
+    conn = database.get_connection()
+    try:
+        cur = conn.cursor()
+        # (a) OLD rejected (approved_at 40 days ago) → SHOULD archive.
+        cur.execute(
+            "INSERT INTO pending_returns (Site_ID, SAP_Code, Quantity, "
+            "Return_Reason, Return_DN_No, submitted_by, status, approved_by, "
+            "approved_at, rejection_reason) "
+            "VALUES (?,?,?,?,?,?, 'rejected', ?, datetime('now','-40 days'), ?)",
+            ("HQ", "SAP-OLD", 1, "old", "RDN-OLD", TEST_SK, TEST_HOD, "stale"),
+        )
+        old_id = cur.lastrowid
+        # (b) RECENT rejected (today) → should NOT archive.
+        cur.execute(
+            "INSERT INTO pending_returns (Site_ID, SAP_Code, Quantity, "
+            "Return_Reason, Return_DN_No, submitted_by, status, approved_by, "
+            "approved_at, rejection_reason) "
+            "VALUES (?,?,?,?,?,?, 'rejected', ?, datetime('now'), ?)",
+            ("HQ", "SAP-NEW", 1, "new", "RDN-NEW", TEST_SK, TEST_HOD, "fresh"),
+        )
+        new_id = cur.lastrowid
+        # (c) OLD but still awaiting HOD → should NOT archive (not rejected).
+        cur.execute(
+            "INSERT INTO pending_returns (Site_ID, SAP_Code, Quantity, "
+            "Return_Reason, Return_DN_No, submitted_by, status, submitted_at) "
+            "VALUES (?,?,?,?,?,?, 'pending_hod', datetime('now','-40 days'))",
+            ("HQ", "SAP-PEND", 1, "pend", "RDN-PEND", TEST_SK),
+        )
+        pend_id = cur.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+
+    n = database.archive_rejected_returns(older_than_days=30, by_user="tester")
+    assert n == 1, f"expected 1 row archived, got {n}"
+
+    conn = database.get_connection()
+    try:
+        pend = {r[0] for r in conn.execute("SELECT id FROM pending_returns")}
+        arch = {r[0] for r in conn.execute(
+            "SELECT original_id FROM returns_history")}
+        arch_by = conn.execute(
+            "SELECT archived_by FROM returns_history WHERE original_id=?",
+            (old_id,)).fetchone()
+    finally:
+        conn.close()
+    assert old_id not in pend, "old rejected row should leave pending_returns"
+    assert old_id in arch, "old rejected row should be in returns_history"
+    assert new_id in pend, "recent rejected row must stay in pending_returns"
+    assert pend_id in pend, "awaiting-HOD row must stay in pending_returns"
+    assert arch_by and arch_by[0] == "tester", "archived_by not recorded"
+
+
 # ---------------------------------------------------------------------------
 # Returnable items (tool loans)
 # ---------------------------------------------------------------------------
@@ -8861,6 +8917,8 @@ def main() -> int:
               check_returns_flow)
     run_check("Returns",     "Reject removes from pending list",
               check_returns_reject)
+    run_check("Returns",     "Cleanup archives only old rejected rows (#20)",
+              check_returns_archive)
     run_check("Returnable",  "Tool loan → mark returned",
               check_returnable_items)
     run_check("QR",          "Submit → approve / reject",

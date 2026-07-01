@@ -36,6 +36,7 @@ from config import (
 )
 from database import (
     get_connection,
+    archive_rejected_returns,
     get_pending_requests,
     update_request_status,
     process_receipt_delivery,
@@ -1803,6 +1804,42 @@ def _render_settings_tab(user: dict) -> None:
                 st.error(f"Purge failed: {e}")
             finally:
                 _c.close()
+
+    # ── Cleanup rejected returns (backlog #20) — archive-then-delete ──────────
+    st.write("")
+    crr1, crr2 = st.columns([4, 1])
+    with crr1:
+        st.markdown(
+            f'<div style="color:{_C["crit"]};font-size:13px;font-weight:600;">'
+            f'Cleanup rejected returns</div>'
+            f'<div style="color:{_C["muted"]};font-size:11.5px;">'
+            f'Archive <code>pending_returns</code> rows in '
+            f'<code>status=rejected</code> older than 30 days into '
+            f'<code>returns_history</code> (audit trail preserved), then remove '
+            f'them from the pending list. Does not touch the '
+            f'<code>returns</code> ledger or awaiting-HOD rows.</div>',
+            unsafe_allow_html=True,
+        )
+    with crr2:
+        rr_confirm = st.text_input(
+            "Type CLEANUP to confirm",
+            key="_adm_retcleanup_confirm",
+            label_visibility="collapsed",
+            placeholder="CLEANUP",
+        )
+        if st.button("Run Cleanup", key="_adm_retcleanup_run",
+                     disabled=rr_confirm.strip() != "CLEANUP"):
+            try:
+                n = archive_rejected_returns(
+                    older_than_days=30, by_user=user["username"],
+                )
+                log_audit_action(
+                    user["username"], "ARCHIVE_REJECTED_RETURNS",
+                    "pending_returns", f"archived={n}",
+                )
+                st.success(f"Archived {n} rejected return(s).")
+            except Exception as e:
+                st.error(f"Cleanup failed: {e}")
     st.markdown("</div>", unsafe_allow_html=True)
 
 

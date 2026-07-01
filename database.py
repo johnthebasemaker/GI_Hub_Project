@@ -985,6 +985,46 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         )
     """)
 
+    # ── returns_history — terminal archive for HOD-rejected pending returns ──
+    # Backlog #20: rejected pending_returns rows otherwise accumulate forever.
+    # The admin "Cleanup rejected returns" button copies rows here (copy-then-
+    # delete, mirroring rejected_issues_archive) so pending_returns stays lean
+    # while the audit trail is preserved. These rows never touched the `returns`
+    # ledger (only HOD approval writes there), so archiving has zero effect on
+    # stock identity math.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS returns_history (
+            archive_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            original_id      INTEGER,
+            Site_ID          TEXT,
+            SAP_Code         TEXT,
+            Material_Code    TEXT,
+            Equipment_Description TEXT,
+            Quantity         REAL,
+            Return_Reason    TEXT,
+            Return_DN_No     TEXT,
+            received_date    TEXT,
+            received_dn_no   TEXT,
+            received_qty     REAL,
+            PR_Number        TEXT,
+            Lot_Number       TEXT,
+            override_required INTEGER,
+            override_reason  TEXT,
+            status           TEXT,
+            submitted_by     TEXT,
+            submitted_at     DATETIME,
+            approved_by      TEXT,
+            approved_at      DATETIME,
+            rejection_reason TEXT,
+            archived_by      TEXT,
+            archived_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS ix_returns_history_site "
+        "ON returns_history(Site_ID, archived_at)"
+    )
+
     # ── Phase A: MTC documents for rubber materials
     # Captured at SK submit time. file_blob optional (logistics flow when missing).
     c.execute("""
@@ -3367,6 +3407,55 @@ def reject_return_request(
         )
         conn.commit()
         return True
+    finally:
+        if _owns:
+            conn.close()
+
+
+# The pending_returns columns copied verbatim into returns_history (order-matched
+# to the INSERT below). Excludes the archive-only metadata columns.
+_RETURNS_ARCHIVE_COLS = (
+    "id", "Site_ID", "SAP_Code", "Material_Code", "Equipment_Description",
+    "Quantity", "Return_Reason", "Return_DN_No", "received_date",
+    "received_dn_no", "received_qty", "PR_Number", "Lot_Number",
+    "override_required", "override_reason", "status", "submitted_by",
+    "submitted_at", "approved_by", "approved_at", "rejection_reason",
+)
+
+
+def archive_rejected_returns(
+    older_than_days: int = 30, by_user: str = "system",
+    conn: sqlite3.Connection = None,
+) -> int:
+    """Backlog #20 — copy-then-delete HOD-rejected pending_returns rows older
+    than `older_than_days` into returns_history, keeping the staging table lean
+    while preserving the audit trail. Returns the number of rows archived.
+
+    Only touches rows with status='rejected'; the `returns` ledger and pending
+    (awaiting-HOD) rows are never affected, so stock identity math is untouched.
+    Idempotent-safe: re-running only archives rows that still qualify.
+    """
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        cutoff = days_ago_sql(int(older_than_days))
+        # COALESCE(approved_at, submitted_at): prefer the rejection timestamp,
+        # fall back to submission for any legacy row that never got one.
+        where = (
+            "status = 'rejected' "
+            f"AND COALESCE(approved_at, submitted_at) < {cutoff}"
+        )
+        _src = ", ".join(_RETURNS_ARCHIVE_COLS)
+        _dst = _src.replace("id,", "original_id,", 1)
+        n = conn.execute(
+            f"INSERT INTO returns_history ({_dst}, archived_by) "
+            f"SELECT {_src}, ? FROM pending_returns WHERE {where}",
+            (by_user,),
+        ).rowcount
+        conn.execute(f"DELETE FROM pending_returns WHERE {where}")
+        conn.commit()
+        return n
     finally:
         if _owns:
             conn.close()
