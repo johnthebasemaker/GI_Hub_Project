@@ -221,6 +221,14 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-02 · actor=interactive · branch=`main` · Step 2 increment 2 — init_db PG-guard + read_sql
+- **read_sql (265 sites) — ZERO changes needed.** Verified `pd.read_sql(sql, conn, params)` works THROUGH the `_EngineConnection` facade (pandas 3.0 DBAPI path uses `cursor.execute` + `description`, which the facade provides with `?`→`%s` translation). So all 265 sites work on Postgres unchanged.
+- **`init_db` PG-guard.** On Postgres, `init_db` now early-returns via `_init_db_postgres()` — `models.Base.metadata.create_all()` (tables, idempotent) + recreate the 14 views (PG-native override for `v_expiring_stock`). The SQLite self-heal DDL (PRAGMA/AUTOINCREMENT/rebuilds/`date()`) is skipped entirely. Data is loaded by the migration, not seeded here. `backend/` is now a package (`__init__.py`) so `database.py` can import `models`.
+- **SQLite unchanged:** the guard is `if db_dialect(conn)=='postgresql'`; on SQLite it's skipped. Verified on a copy of the **real DB** (init_db + get_connection + inventory/v_site_stock/users) — OK.
+- **CI:** the dual_ci facade smoke now also calls `init_db()` on Postgres (asserts the app can *start* on PG) and runs `read_sql` through the facade on PG.
+- **Tests:** `check_pg_compat_seam` extended (read_sql-through-facade). **598/0 · 21/21.**
+- **Where this leaves us:** with the migration + this seam, the app should now be able to run on Postgres (get_connection facade + read_sql + init_db-guard). Remaining before a confident cutover: run the full `bug_check` against Postgres in CI (behavioural dual-CI) to shake out any last type-affinity / SQL-dialect edge cases, and finish the `PRAGMA table_info`→`column_exists` sweep (only relevant to SQLite self-heal, which PG skips, but keeps the code portable).
+
 ### 2026-07-02 · actor=interactive · branch=`main` · Step 2 increment 1 — runtime connection seam
 - **What:** wired `get_connection()` to the engine behind the `DATABASE_URL` dialect switch. New `_qmark_to_pyformat()` (translates `?`→`%s`, escapes `%`, skips string/identifier/comment contexts) + `_EngineConnection`/`_EngineCursor` — a `sqlite3.Connection`-compatible facade over the SQLAlchemy raw DBAPI connection (`execute`, `cursor`, `commit/rollback/close`, `fetchone/all/many`, `rowcount`, `description`, `lastrowid` via `SELECT lastval()` on PG, context manager). **SQLite path 100% unchanged** — the facade activates ONLY when `DATABASE_URL` is Postgres and no explicit `db_file` is passed.
 - **Audit that scoped it:** 155 `PRAGMA`, 265 `read_sql`, 51 `.lastrowid`, 63 `.cursor()`, 0 `executemany`/`executescript`, 1 `row_factory`, 1 context-manager. So `read_sql`-on-PG (pandas needs an engine/params) and `init_db`-on-PG (PRAGMA/DDL) are explicitly **later increments** — increment 1 is the execute-path seam only.

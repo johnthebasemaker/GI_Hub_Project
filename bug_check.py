@@ -1298,6 +1298,13 @@ def check_pg_compat_seam() -> None:
     assert up.rowcount == 1, f"rowcount wrong: {up.rowcount}"
     fac.commit()
     assert fac.cursor().execute("SELECT a FROM t").fetchall() == [(22,)]
+    # pandas read_sql must work THROUGH the facade (so the 265 read_sql sites
+    # need no changes on Postgres — the facade translates ? and pandas uses it).
+    import pandas as _pd, warnings as _w
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        _df = _pd.read_sql("SELECT a FROM t WHERE a = ?", fac, params=(22,))
+    assert list(_df["a"]) == [22], f"read_sql via facade wrong: {_df.to_dict()}"
     fac.close()
 
     # The default get_connection() (no DATABASE_URL) is still raw sqlite3.

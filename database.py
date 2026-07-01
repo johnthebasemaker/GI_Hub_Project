@@ -270,6 +270,30 @@ class _EngineConnection:
         return False
 
 
+def _init_db_postgres() -> None:
+    """Ensure the PostgreSQL schema (tables + views) exists, from
+    `backend/models.py`. Idempotent — the SQLite self-heal path is skipped
+    entirely. Row DATA is loaded by `backend/migrate_sqlite_to_postgres.py`,
+    not seeded here (the migration copies users/settings/etc. from SQLite)."""
+    from sqlalchemy import text
+    try:
+        from backend import models
+        from backend import migrate_sqlite_to_postgres as _mig
+    except ImportError:  # backend/ dir directly on sys.path (tooling)
+        import models  # type: ignore
+        import migrate_sqlite_to_postgres as _mig  # type: ignore
+    engine = get_engine()
+    models.Base.metadata.create_all(engine)   # tables (idempotent)
+    with engine.begin() as c:
+        for vname, vsql in models.SME_AND_DERIVED_VIEWS.items():
+            v = _mig.PG_VIEW_OVERRIDES.get(vname, vsql)   # PG-native where needed
+            try:
+                c.execute(text(f'DROP VIEW IF EXISTS "{vname}" CASCADE'))
+                c.execute(text(v))
+            except Exception:  # noqa: BLE001 — a broken view never blocks startup
+                pass
+
+
 # ---------------------------------------------------------------------------
 # PostgreSQL migration — Phase 1 engine seam (see docs/POSTGRES_MIGRATION.md)
 # ---------------------------------------------------------------------------
@@ -412,6 +436,14 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     Initialise all tables and apply self-healing schema alignment.
     If `conn` is None, a new connection to DB_FILE is opened and closed here.
     """
+    # PostgreSQL — the SQLite self-heal DDL below (PRAGMA / AUTOINCREMENT /
+    # table rebuilds / date() funcs) does not apply on PG. There the schema is
+    # owned by backend/models.py and populated by the migration copy script, so
+    # init_db just ensures tables + views exist and returns.
+    if db_dialect(conn) == "postgresql":
+        _init_db_postgres()
+        return
+
     _owns_conn = conn is None
     if _owns_conn:
         conn = get_connection()

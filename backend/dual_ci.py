@@ -65,6 +65,10 @@ def _facade_smoke() -> dict:
     PARAMETER (must NOT be translated), lastrowid, and rowcount. Only meaningful
     when DATABASE_URL is Postgres (that's when get_connection returns the facade)."""
     import database
+    import pandas as pd
+    # init_db on PG must take the guard path (create_all + views), not the SQLite
+    # self-heal DDL — this asserts the app can *start* on Postgres.
+    database.init_db()
     conn = database.get_connection()
     try:
         conn.execute("DROP TABLE IF EXISTS _facade_smoke")
@@ -78,12 +82,19 @@ def _facade_smoke() -> dict:
             "SELECT a, b FROM _facade_smoke WHERE a = ?", (7,)).fetchone()
         up = conn.execute("UPDATE _facade_smoke SET a = ? WHERE id = ?", (9, lid))
         rc = up.rowcount
+        # read_sql THROUGH the facade on real Postgres (the 265-site path).
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            df = pd.read_sql("SELECT a, b FROM _facade_smoke WHERE id = ?", conn,
+                             params=(lid,))
+        rs_ok = (len(df) == 1 and int(df.iloc[0]["a"]) == 9 and df.iloc[0]["b"] == "x'?%y")
         conn.execute("DROP TABLE _facade_smoke")
         conn.commit()
         ok = (lid == 1 and got is not None and got[0] == 7
-              and got[1] == "x'?%y" and rc == 1)
+              and got[1] == "x'?%y" and rc == 1 and rs_ok)
         return {"ok": ok, "lastrowid": lid, "select": list(got) if got else None,
-                "rowcount": rc}
+                "rowcount": rc, "read_sql_ok": rs_ok}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     finally:
