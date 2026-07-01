@@ -74,14 +74,26 @@ ADJUSTMENT_REASONS = {
 # ---------------------------------------------------------------------------
 # CONNECTION
 # ---------------------------------------------------------------------------
-def get_connection(db_file: str = None) -> sqlite3.Connection:
-    """Return a SQLite connection. Pass db_file=':memory:' for in-memory testing.
+def get_connection(db_file: str = None):
+    """Return a DB connection.
+
+    Default (and whenever `db_file` is given) → a raw `sqlite3.Connection`,
+    exactly as before. When `DATABASE_URL` targets PostgreSQL *and* no explicit
+    `db_file` override is requested, returns a `_EngineConnection` — a
+    sqlite3-compatible facade over the SQLAlchemy engine that translates `?`
+    placeholders to `%s`. SQLite behaviour is 100% unchanged.
 
     Cloud filesystems (Streamlit Community, NFS) sometimes reject WAL mode.
     Each PRAGMA is attempted independently so one failure never blocks the
     rest. A separate corruption probe deletes and recreates the file only
     when the schema bytes themselves are unreadable.
     """
+    # Phase 3 — PostgreSQL path (engine seam wired). Only when the resolved
+    # DATABASE_URL is Postgres AND the caller didn't request a specific SQLite
+    # file (tests / the bootstrap always pass an explicit sqlite path).
+    if db_file is None and db_dialect() == "postgresql":
+        return _EngineConnection(get_engine().raw_connection(), "postgresql")
+
     import os
     target = db_file or DB_FILE
 
@@ -118,6 +130,144 @@ def get_connection(db_file: str = None) -> sqlite3.Connection:
             pass
 
     return conn
+
+
+# ---------------------------------------------------------------------------
+# PostgreSQL runtime seam — sqlite3-compatible facade + paramstyle translation
+# ---------------------------------------------------------------------------
+# Lets the existing `?`-placeholder SQL run on psycopg2 unchanged, and gives the
+# psycopg2 connection the sqlite3.Connection convenience API the codebase uses
+# (conn.execute(...), cursor.lastrowid, etc.). Active ONLY when DATABASE_URL is
+# Postgres; the SQLite path never touches any of this.
+
+def _qmark_to_pyformat(sql: str) -> str:
+    """Translate qmark (`?`) placeholders to psycopg2 pyformat (`%s`), and escape
+    literal `%` as `%%`. `?`/`%` inside string literals, quoted identifiers, and
+    `--` / `/* */` comments are left untouched."""
+    out = []
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch == "'":                       # single-quoted string literal
+            out.append(ch); i += 1
+            while i < n:
+                out.append(sql[i])
+                if sql[i] == "'":
+                    if i + 1 < n and sql[i + 1] == "'":   # escaped ''
+                        out.append(sql[i + 1]); i += 2; continue
+                    i += 1; break
+                i += 1
+            continue
+        if ch == '"':                       # double-quoted identifier
+            out.append(ch); i += 1
+            while i < n:
+                out.append(sql[i])
+                if sql[i] == '"':
+                    i += 1; break
+                i += 1
+            continue
+        if ch == '-' and i + 1 < n and sql[i + 1] == '-':      # line comment
+            while i < n and sql[i] != '\n':
+                out.append(sql[i]); i += 1
+            continue
+        if ch == '/' and i + 1 < n and sql[i + 1] == '*':      # block comment
+            out.append('/*'); i += 2
+            while i < n and not (sql[i] == '*' and i + 1 < n and sql[i + 1] == '/'):
+                out.append(sql[i]); i += 1
+            if i < n:
+                out.append('*/'); i += 2
+            continue
+        if ch == '%':
+            out.append('%%'); i += 1; continue
+        if ch == '?':
+            out.append('%s'); i += 1; continue
+        out.append(ch); i += 1
+    return ''.join(out)
+
+
+class _EngineCursor:
+    """Cursor facade: translates paramstyle for non-SQLite dialects and exposes
+    the sqlite3 cursor attributes the codebase reads (lastrowid, rowcount, …)."""
+
+    def __init__(self, raw_cursor, dialect):
+        self._cur = raw_cursor
+        self._dialect = dialect
+
+    def execute(self, sql, params=None):
+        s = sql if self._dialect == "sqlite" else _qmark_to_pyformat(sql)
+        if params is None or params == () or params == []:
+            self._cur.execute(s)
+        else:
+            self._cur.execute(
+                s, tuple(params) if isinstance(params, (list, tuple)) else params)
+        return self
+
+    def fetchone(self):  return self._cur.fetchone()
+    def fetchall(self):  return self._cur.fetchall()
+
+    def fetchmany(self, size=None):
+        return self._cur.fetchmany(size) if size is not None else self._cur.fetchmany()
+
+    @property
+    def rowcount(self):    return self._cur.rowcount
+    @property
+    def description(self): return self._cur.description
+
+    @property
+    def lastrowid(self):
+        if self._dialect == "sqlite":
+            return self._cur.lastrowid
+        # psycopg2 has no lastrowid — the session-scoped last sequence value is
+        # the id of the row just inserted into a SERIAL-PK table.
+        try:
+            self._cur.execute("SELECT lastval()")
+            return self._cur.fetchone()[0]
+        except Exception:  # noqa: BLE001 — no sequence used yet in this session
+            return None
+
+    def __iter__(self):  return iter(self._cur)
+
+    def close(self):
+        try:
+            self._cur.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class _EngineConnection:
+    """`sqlite3.Connection`-compatible facade over a SQLAlchemy raw DBAPI
+    connection. Used only when DATABASE_URL targets a non-SQLite backend."""
+
+    def __init__(self, raw_conn, dialect):
+        self._conn = raw_conn
+        self._dialect = dialect
+
+    def execute(self, sql, params=None):
+        return _EngineCursor(self._conn.cursor(), self._dialect).execute(sql, params)
+
+    def cursor(self):
+        return _EngineCursor(self._conn.cursor(), self._dialect)
+
+    def commit(self):    self._conn.commit()
+    def rollback(self):  self._conn.rollback()
+
+    def close(self):
+        try:
+            self._conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # `with conn:` — sqlite3 semantics: commit on success, rollback on error,
+    # do NOT close (matches the codebase's single context-manager use).
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self.commit()
+        else:
+            self.rollback()
+        return False
 
 
 # ---------------------------------------------------------------------------

@@ -30,7 +30,9 @@ import sqlite3
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)                      # backend/  (models, migrate)
+sys.path.insert(0, os.path.dirname(_HERE))     # repo root (database)
 import models  # noqa: E402
 import migrate_sqlite_to_postgres as mig  # noqa: E402
 
@@ -55,6 +57,37 @@ def _num_eq(a, b, tol: float = 1e-6) -> bool:
         return abs(float(a) - float(b)) <= tol
     except (TypeError, ValueError):
         return str(a) == str(b)
+
+
+def _facade_smoke() -> dict:
+    """Exercise database.get_connection() (the sqlite3-compat facade) end-to-end
+    on the real target — `?` placeholders, a `?`/`%`/`'` value passed as a
+    PARAMETER (must NOT be translated), lastrowid, and rowcount. Only meaningful
+    when DATABASE_URL is Postgres (that's when get_connection returns the facade)."""
+    import database
+    conn = database.get_connection()
+    try:
+        conn.execute("DROP TABLE IF EXISTS _facade_smoke")
+        conn.execute("CREATE TABLE _facade_smoke "
+                     "(id SERIAL PRIMARY KEY, a INTEGER, b TEXT)")
+        conn.commit()
+        cur = conn.execute(
+            "INSERT INTO _facade_smoke (a, b) VALUES (?, ?)", (7, "x'?%y"))
+        lid = cur.lastrowid
+        got = conn.execute(
+            "SELECT a, b FROM _facade_smoke WHERE a = ?", (7,)).fetchone()
+        up = conn.execute("UPDATE _facade_smoke SET a = ? WHERE id = ?", (9, lid))
+        rc = up.rowcount
+        conn.execute("DROP TABLE _facade_smoke")
+        conn.commit()
+        ok = (lid == 1 and got is not None and got[0] == 7
+              and got[1] == "x'?%y" and rc == 1)
+        return {"ok": ok, "lastrowid": lid, "select": list(got) if got else None,
+                "rowcount": rc}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        conn.close()
 
 
 def run(source_path: str, target_url: str) -> dict:
@@ -106,6 +139,15 @@ def run(source_path: str, target_url: str) -> dict:
     finally:
         src.close()
         engine.dispose()
+
+    # Facade smoke — only when the target is Postgres (get_connection returns the
+    # compat facade). On a SQLite dry-run get_connection is raw sqlite3, so skip.
+    import database
+    if database.db_dialect() == "postgresql":
+        fs = _facade_smoke()
+        result["facade"] = fs
+        if not fs["ok"]:
+            result["ok"] = False
     return result
 
 
@@ -125,6 +167,11 @@ def _print(result: dict) -> None:
     print("\n[3] Semantic aggregate parity:")
     for label, i in result["semantic"].items():
         print(f"  {'✅' if i['ok'] else '❌'} {label:34} {i['source']} → {i['target']}")
+
+    if "facade" in result:
+        f = result["facade"]
+        print("\n[4] get_connection() facade smoke (Postgres):")
+        print(f"  {'✅' if f['ok'] else '❌'} {f}")
 
     print(f"\n== DUAL-CI: {'✅ PASS' if result['ok'] else '❌ FAIL'} ==")
 

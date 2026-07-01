@@ -1271,6 +1271,43 @@ def check_system_settings_id_pk() -> None:
         conn.close()
 
 
+def check_pg_compat_seam() -> None:
+    """Step 2 — the qmark→pyformat translator + the sqlite3-compatible connection
+    facade behave correctly, and the SQLite default path is unchanged."""
+    import sqlite3, tempfile, os
+    q = database._qmark_to_pyformat
+    assert q("SELECT * FROM t WHERE a=? AND b=?") == "SELECT * FROM t WHERE a=%s AND b=%s"
+    assert q("SELECT 'a?b', ? FROM t") == "SELECT 'a?b', %s FROM t"      # ? in string kept
+    assert q("SELECT 'it''s ?', ?") == "SELECT 'it''s ?', %s"           # escaped '' kept
+    assert q("SELECT x % 2, ?") == "SELECT x %% 2, %s"                   # % escaped
+    assert q("SELECT ? -- a ? here\n, ?") == "SELECT %s -- a ? here\n, %s"  # ? in comment kept
+    assert q('SELECT "we?rd", ?') == 'SELECT "we?rd", %s'               # ? in identifier kept
+
+    # Facade over a raw sqlite3 conn (dialect='sqlite' → passthrough) must behave
+    # like sqlite3 for the connection/cursor API the app relies on.
+    p = os.path.join(tempfile.mkdtemp(), "facade.db")
+    raw = sqlite3.connect(p)
+    raw.execute("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, a INTEGER)")
+    raw.commit()
+    fac = database._EngineConnection(raw, "sqlite")
+    cur = fac.execute("INSERT INTO t (a) VALUES (?)", (11,))
+    assert cur.lastrowid == 1, f"lastrowid wrong: {cur.lastrowid}"
+    fac.commit()
+    assert fac.execute("SELECT a FROM t WHERE a=?", (11,)).fetchone()[0] == 11
+    up = fac.execute("UPDATE t SET a=? WHERE a=?", (22, 11))
+    assert up.rowcount == 1, f"rowcount wrong: {up.rowcount}"
+    fac.commit()
+    assert fac.cursor().execute("SELECT a FROM t").fetchall() == [(22,)]
+    fac.close()
+
+    # The default get_connection() (no DATABASE_URL) is still raw sqlite3.
+    c = database.get_connection()
+    try:
+        assert isinstance(c, sqlite3.Connection), type(c)
+    finally:
+        c.close()
+
+
 def check_system_settings_migration_on_existing_db() -> None:
     """Regression — init_db must migrate system_settings to an `id` PK even on an
     EXISTING DB where the locations/types compat views already reference it AND an
@@ -9485,6 +9522,8 @@ def main() -> int:
               check_procurement_adoption)
     run_check("DN FEFO",      "Material→SAP map + earliest-expiry suggestion (#30)",
               check_dn_fefo_suggestion)
+    run_check("Postgres",     "qmark→pyformat + sqlite3-compat conn facade (step 2)",
+              check_pg_compat_seam)
     run_check("Postgres",     "system_settings id PK + SME views via MIN(id)",
               check_system_settings_id_pk)
     run_check("Postgres",     "system_settings migrates on EXISTING db (views+orphan)",
