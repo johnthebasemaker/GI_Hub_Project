@@ -1211,6 +1211,40 @@ def check_procurement_adoption() -> None:
     assert database.procurement_email_deprecated(threshold_pct=pct + 0.1) is False
 
 
+def check_dn_fefo_suggestion() -> None:
+    """Backlog #30 — suggest_fefo_lot_for_material maps Material_Code→SAP_Code
+    and returns the earliest-expiry open lot at the destination site."""
+    conn = database.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO inventory (SAP_Code, Material_Code, "
+                    "Equipment_Description) VALUES ('SAP-FEFO','MC-FEFO','Widget')")
+        # Two open lots at site FSITE: later + earlier expiry; one exhausted.
+        for lot, exp, rq in [("LOT-LATE", "2027-12-31", 10),
+                             ("LOT-EARLY", "2026-09-01", 10)]:
+            cur.execute("INSERT INTO lots (Lot_Number, SAP_Code, Site_ID, "
+                        "Received_Date, Expiry_Date, Status) "
+                        "VALUES (?, 'SAP-FEFO', 'FSITE', '2026-01-01', ?, 'open')",
+                        (lot, exp))
+            cur.execute("INSERT INTO receipts (SAP_Code, Site_ID, Quantity, "
+                        "Date, Lot_Number) VALUES ('SAP-FEFO','FSITE',?, "
+                        "'2026-01-01', ?)", (rq, lot))
+        conn.commit()
+    finally:
+        conn.close()
+
+    sug = database.suggest_fefo_lot_for_material("MC-FEFO", "FSITE")
+    assert sug is not None, "expected a FEFO suggestion"
+    assert sug["SAP_Code"] == "SAP-FEFO", "Material_Code not mapped to SAP_Code"
+    assert sug["Lot_Number"] == "LOT-EARLY", \
+        f"FEFO should pick earliest expiry, got {sug['Lot_Number']}"
+    assert sug["Expiry_Date"] == "2026-09-01"
+
+    # No mapping → None; wrong site → None (no open lots there).
+    assert database.suggest_fefo_lot_for_material("NOPE", "FSITE") is None
+    assert database.suggest_fefo_lot_for_material("MC-FEFO", "OTHER-SITE") is None
+
+
 # ---------------------------------------------------------------------------
 # Returnable items (tool loans)
 # ---------------------------------------------------------------------------
@@ -9211,6 +9245,8 @@ def main() -> int:
               check_report_scheduler)
     run_check("Procurement",  "Email-path adoption metric + deprecation flag (#29)",
               check_procurement_adoption)
+    run_check("DN FEFO",      "Material→SAP map + earliest-expiry suggestion (#30)",
+              check_dn_fefo_suggestion)
     run_check("Returnable",  "Tool loan → mark returned",
               check_returnable_items)
     run_check("QR",          "Submit → approve / reject",

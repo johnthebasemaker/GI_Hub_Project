@@ -7800,6 +7800,41 @@ def suggest_fefo_lot_for_consumption(
     return str(df.iloc[0]["Lot_Number"])
 
 
+def suggest_fefo_lot_for_material(
+    material_code: str, site_id: str, conn: sqlite3.Connection = None,
+) -> dict | None:
+    """Backlog #30 — FEFO lot suggestion for a warehouse DN line. PO lines
+    carry Material_Code (not SAP_Code), so we map Material_Code → SAP_Code via
+    inventory (1:1) then return the earliest-expiry OPEN lot at the destination
+    site. Returns {'SAP_Code','Lot_Number','Expiry_Date'} or None (no mapping /
+    no open lots). Purely a suggestion — the warehouse can override on the DN."""
+    if not material_code or not str(material_code).strip():
+        return None
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT SAP_Code FROM inventory WHERE Material_Code = ? "
+            "AND SAP_Code IS NOT NULL LIMIT 1", (str(material_code).strip(),)
+        ).fetchone()
+        if not row:
+            return None
+        sap = row[0]
+        df = get_lots_for_item(sap, site_id=site_id, only_open=True, conn=conn)
+        if df is None or df.empty:
+            return None
+        top = df.iloc[0]
+        return {
+            "SAP_Code": str(sap),
+            "Lot_Number": str(top["Lot_Number"]),
+            "Expiry_Date": str(top["Expiry_Date"] or ""),
+        }
+    finally:
+        if _owns:
+            conn.close()
+
+
 # ===========================================================================
 # Phase C — Procurement chain helpers (Logistics + Warehouse portals)
 # ===========================================================================

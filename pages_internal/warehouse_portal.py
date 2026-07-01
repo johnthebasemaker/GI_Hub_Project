@@ -398,6 +398,28 @@ def _tab_prepare_dn(user: dict, wh_id: str) -> None:
     items_disp["Lot_Number"] = ""
     items_disp["Expiry_Date"] = ""
     items_disp["Remarks"]    = ""
+
+    # Backlog #30 — optional FEFO auto-suggest. Maps each line's Material_Code
+    # to its SAP_Code and pre-fills the earliest-expiry open lot at the
+    # DESTINATION site. Fully editable; opt-in so it never surprises the user.
+    auto_fefo = st.checkbox(
+        "🔎 Auto-suggest FEFO lots (earliest expiry at destination site)",
+        value=False, key="_wh_dn_fefo",
+        help="Pre-fills Lot_Number + Expiry_Date per line from the destination "
+             "site's open lots. You can still edit any value before saving.",
+    )
+    if auto_fefo and "Material_Code" in items_disp.columns:
+        from database import suggest_fefo_lot_for_material
+        _hits = 0
+        for _idx, _r in items_disp.iterrows():
+            _sug = suggest_fefo_lot_for_material(_r.get("Material_Code"), site_pick)
+            if _sug:
+                items_disp.at[_idx, "Lot_Number"] = _sug["Lot_Number"]
+                items_disp.at[_idx, "Expiry_Date"] = _sug["Expiry_Date"]
+                _hits += 1
+        st.caption(f"FEFO suggested lots for {_hits} of {len(items_disp)} line(s) "
+                   f"(no suggestion where the destination site has no open lot).")
+
     cols_show = [c for c in [
         "id", "Material_Code", "Description", "UOM", "rl_bl_family",
         "Qty", "Delivered_Qty", "Returned_Qty",
@@ -408,7 +430,9 @@ def _tab_prepare_dn(user: dict, wh_id: str) -> None:
         use_container_width=True, height=320,
         disabled=[c for c in cols_show if c not in
                   ("Ship Qty", "Lot_Number", "Expiry_Date", "Remarks")],
-        key="_wh_dn_editor",
+        # Key includes the FEFO flag so toggling rebuilds the editor with the
+        # freshly-suggested defaults instead of stale widget state.
+        key=f"_wh_dn_editor_{po_pick}_{int(auto_fefo)}",
     )
 
     st.markdown("#### DN header")
