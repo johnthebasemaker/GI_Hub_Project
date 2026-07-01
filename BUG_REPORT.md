@@ -1,7 +1,7 @@
 # Bug Check Report
 
-**Run at:** `2026-07-01T13:41:07`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_76pshj3y/bug_check.db`  
+**Run at:** `2026-07-01T15:50:46`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_hp_lld5l/bug_check.db`  
 **Total checks:** 582  
 **Passing:** 562  
 **Failing:** 20  
