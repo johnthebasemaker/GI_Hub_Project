@@ -55,6 +55,8 @@ from database import (
     set_app_setting,
     get_reminder_offsets,
     set_reminder_offsets,
+    get_site_unit_costs,
+    set_site_unit_cost,
     get_whatsapp_log,
     list_bug_reports,
     update_bug_report,
@@ -1455,6 +1457,46 @@ def _render_whatsapp_console_tab(user: dict) -> None:
                 st.toast(f"✅ Cadence saved: {saved}", icon="🔔")
             except ValueError:
                 st.error("Enter whole numbers only, e.g. 7, 3, 1, 0")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ── Per-site Unit Cost overrides (backlog #15) ──────────────────────
+        st.write("")
+        st.markdown(
+            f'<div style="background:{_C["surf2"]};border:1px solid {_C["border"]};'
+            f'border-radius:10px;padding:16px;">'
+            f'<div style="color:{_C["text"]};font-size:13px;font-weight:600;'
+            f'margin-bottom:12px;">💲 Per-Site Unit Cost</div>'
+            f'<div style="color:{_C["muted"]};font-size:11.5px;margin-bottom:8px;">'
+            f'Override an item\'s standard cost for one site. Valuation uses the '
+            f'site cost where set, else the global cost — so nothing changes '
+            f'until you add an override. Leave the cost blank + Save to clear.</div>',
+            unsafe_allow_html=True,
+        )
+        _sc = get_site_unit_costs()
+        if not _sc.empty:
+            st.dataframe(_sc, width="stretch", hide_index=True)
+        oc1, oc2, oc3, oc4 = st.columns([2, 1.5, 1.5, 1])
+        with oc1:
+            sc_sap = st.text_input("SAP Code", key="_adm_sc_sap")
+        with oc2:
+            sc_site = st.text_input("Site ID", key="_adm_sc_site")
+        with oc3:
+            sc_cost = st.text_input("Unit Cost (blank = clear)", key="_adm_sc_cost")
+        with oc4:
+            st.write(""); st.write("")
+            if st.button("💾 Save", key="_adm_sc_save",
+                         disabled=not (sc_sap.strip() and sc_site.strip())):
+                ok, msg = set_site_unit_cost(
+                    sc_sap.strip(), sc_site.strip(),
+                    sc_cost.strip() if sc_cost.strip() else None,
+                    updated_by=user["username"])
+                if ok:
+                    log_audit_action(user["username"], "SET_SITE_UNIT_COST",
+                                     "inventory_site_costs",
+                                     f"{sc_sap.strip()}@{sc_site.strip()}={sc_cost.strip() or 'cleared'}")
+                    st.success(msg); st.rerun()
+                else:
+                    st.error(msg)
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.write("")

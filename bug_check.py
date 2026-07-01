@@ -1245,6 +1245,50 @@ def check_dn_fefo_suggestion() -> None:
     assert database.suggest_fefo_lot_for_material("MC-FEFO", "OTHER-SITE") is None
 
 
+def check_per_site_unit_cost() -> None:
+    """Backlog #15 — per-site cost override resolves before global; valuation
+    honours it; no change until an override exists."""
+    conn = database.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO inventory (SAP_Code, Equipment_Description, "
+                    "Unit_Cost) VALUES ('SAP-COST','Bolt', 10.0)")
+        # Stock: 5 units at SITE-A, 3 at SITE-B.
+        cur.execute("INSERT INTO receipts (SAP_Code, Site_ID, Quantity, Date) "
+                    "VALUES ('SAP-COST','SITE-A',5,'2026-01-01')")
+        cur.execute("INSERT INTO receipts (SAP_Code, Site_ID, Quantity, Date) "
+                    "VALUES ('SAP-COST','SITE-B',3,'2026-01-01')")
+        conn.commit()
+    finally:
+        conn.close()
+
+    # No override yet → effective == global (10).
+    assert database.get_effective_unit_cost("SAP-COST", "SITE-A") == 10.0
+    base_total = database.get_total_inventory_value()
+
+    # Set SITE-A cost to 25; SITE-B still falls back to global 10.
+    ok, _ = database.set_site_unit_cost("SAP-COST", "SITE-A", 25.0, updated_by="tester")
+    assert ok
+    assert database.get_effective_unit_cost("SAP-COST", "SITE-A") == 25.0
+    assert database.get_effective_unit_cost("SAP-COST", "SITE-B") == 10.0  # fallback
+
+    # Company total rose by 5 units * (25-10) = 75.
+    after_total = database.get_total_inventory_value()
+    assert abs(after_total - base_total - 75.0) < 1e-6, \
+        f"site-aware total wrong: base={base_total} after={after_total}"
+
+    # Per-site value reflects the override for SITE-A only.
+    vb = database.get_value_by_site().set_index("Site_ID")["Stock_Value"]
+    assert abs(vb.get("SITE-A", 0) - 5 * 25.0) < 1e-6, "SITE-A not valued at override"
+    assert abs(vb.get("SITE-B", 0) - 3 * 10.0) < 1e-6, "SITE-B should use global"
+
+    # Negative rejected; clear falls back to global.
+    bad, _ = database.set_site_unit_cost("SAP-COST", "SITE-A", -5, updated_by="t")
+    assert not bad, "negative cost should be rejected"
+    database.set_site_unit_cost("SAP-COST", "SITE-A", None)
+    assert database.get_effective_unit_cost("SAP-COST", "SITE-A") == 10.0
+
+
 # ---------------------------------------------------------------------------
 # Returnable items (tool loans)
 # ---------------------------------------------------------------------------
@@ -9247,6 +9291,8 @@ def main() -> int:
               check_procurement_adoption)
     run_check("DN FEFO",      "Material→SAP map + earliest-expiry suggestion (#30)",
               check_dn_fefo_suggestion)
+    run_check("Valuation",    "Per-site Unit_Cost override + fallback (#15)",
+              check_per_site_unit_cost)
     run_check("Returnable",  "Tool loan → mark returned",
               check_returnable_items)
     run_check("QR",          "Submit → approve / reject",

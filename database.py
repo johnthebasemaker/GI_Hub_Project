@@ -1782,6 +1782,28 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         "ON inventory_site_overrides(Site_ID)"
     )
 
+    # ── inventory_site_costs (backlog #15) — per-site Unit_Cost override ─────
+    # SAP allows site-specific standard cost. Kept in a DEDICATED table (not
+    # inventory_site_overrides, whose Minimum_Qty is NOT NULL) so a cost-only
+    # override needs no phantom min-qty. Valuation resolves
+    # COALESCE(site cost, inventory.Unit_Cost, 0) — so behaviour is UNCHANGED
+    # until a site override is explicitly set.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS inventory_site_costs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            SAP_Code    TEXT NOT NULL,
+            Site_ID     TEXT NOT NULL,
+            Unit_Cost   REAL NOT NULL,
+            updated_by  TEXT,
+            updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(SAP_Code, Site_ID)
+        )
+    """)
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS ix_inv_site_cost_site "
+        "ON inventory_site_costs(Site_ID)"
+    )
+
     # 2. UNIQUE partial index on inventory.Material_Code so duplicate codes
     #    can't be inserted via the new Logistics Material Details upload.
     #    Partial (WHERE NOT NULL) so legacy NULL-Material_Code rows aren't
@@ -7298,6 +7320,89 @@ def validate_eod_no_negative_stock(
 # Stock value = Current_Stock × inventory.Unit_Cost.
 # `site_id=None` returns the whole company; pass a site for the HOD view.
 # ===========================================================================
+def get_effective_unit_cost(
+    sap_code: str, site_id: str | None = None,
+    conn: sqlite3.Connection = None,
+) -> float:
+    """Backlog #15 — resolve the effective standard cost for an item at a site:
+    the per-site override (inventory_site_costs) if one exists, else the global
+    inventory.Unit_Cost, else 0. Behaviour is unchanged for any item without a
+    per-site override."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        if site_id:
+            row = conn.execute(
+                "SELECT Unit_Cost FROM inventory_site_costs "
+                "WHERE SAP_Code=? AND Site_ID=?", (sap_code, site_id)).fetchone()
+            if row and row[0] is not None:
+                return float(row[0])
+        row = conn.execute(
+            "SELECT Unit_Cost FROM inventory WHERE SAP_Code=?",
+            (sap_code,)).fetchone()
+        return float(row[0]) if row and row[0] is not None else 0.0
+    finally:
+        if _owns:
+            conn.close()
+
+
+def set_site_unit_cost(
+    sap_code: str, site_id: str, unit_cost: float,
+    updated_by: str = "", conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Backlog #15 — upsert a per-site Unit_Cost override. A value < 0 is
+    rejected; passing None/'' clears the override (falls back to global)."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        if unit_cost is None or unit_cost == "":
+            conn.execute("DELETE FROM inventory_site_costs "
+                         "WHERE SAP_Code=? AND Site_ID=?", (sap_code, site_id))
+            conn.commit()
+            return True, f"Cleared site cost for {sap_code}@{site_id}"
+        uc = float(unit_cost)
+        if uc < 0:
+            return False, "Unit cost cannot be negative"
+        conn.execute(
+            "INSERT INTO inventory_site_costs (SAP_Code, Site_ID, Unit_Cost, updated_by) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT(SAP_Code, Site_ID) DO UPDATE SET "
+            "  Unit_Cost=excluded.Unit_Cost, updated_by=excluded.updated_by, "
+            "  updated_at=CURRENT_TIMESTAMP",
+            (sap_code, site_id, uc, updated_by),
+        )
+        conn.commit()
+        return True, f"Set {sap_code}@{site_id} = {uc:g}"
+    except (ValueError, TypeError):
+        return False, "Unit cost must be a number"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_site_unit_costs(conn: sqlite3.Connection = None) -> pd.DataFrame:
+    """Backlog #15 — all per-site cost overrides with the global cost alongside,
+    for the admin editor."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        return pd.read_sql(
+            "SELECT sc.SAP_Code, i.Equipment_Description, sc.Site_ID, "
+            "       sc.Unit_Cost AS Site_Unit_Cost, "
+            "       COALESCE(i.Unit_Cost,0) AS Global_Unit_Cost, "
+            "       sc.updated_by, sc.updated_at "
+            "FROM inventory_site_costs sc "
+            "LEFT JOIN inventory i ON i.SAP_Code = sc.SAP_Code "
+            "ORDER BY sc.SAP_Code, sc.Site_ID", conn,
+        )
+    finally:
+        if _owns:
+            conn.close()
+
+
 def get_inventory_valuation(
     site_id: str | None = None,
     conn: sqlite3.Connection = None,
@@ -7305,6 +7410,9 @@ def get_inventory_valuation(
     """
     Per-item valuation. Returns SAP_Code, Description, UOM, Current_Stock,
     Unit_Cost, Stock_Value (and Site_ID when not aggregated).
+
+    Backlog #15 — when `site_id` is given, Unit_Cost resolves the per-site
+    override (inventory_site_costs) before the global inventory.Unit_Cost.
     """
     _owns = conn is None
     if _owns:
@@ -7330,13 +7438,15 @@ def get_inventory_valuation(
                           COALESCE(i.Material_Code,'') AS Material_Code,
                           i.Equipment_Description,
                           COALESCE(i.UOM,'') AS UOM,
-                          COALESCE(i.Unit_Cost, 0) AS Unit_Cost,
+                          COALESCE(sc.Unit_Cost, i.Unit_Cost, 0) AS Unit_Cost,
                           COALESCE(s.Current_Stock, 0) AS Current_Stock,
                           ? AS Site_ID
                    FROM inventory i
                    LEFT JOIN v_site_stock s
-                     ON s.SAP_Code = i.SAP_Code AND s.Site_ID = ?""",
-                conn, params=(site_id, site_id),
+                     ON s.SAP_Code = i.SAP_Code AND s.Site_ID = ?
+                   LEFT JOIN inventory_site_costs sc
+                     ON sc.SAP_Code = i.SAP_Code AND sc.Site_ID = ?""",
+                conn, params=(site_id, site_id, site_id),
             )
     finally:
         if _owns:
@@ -7355,7 +7465,14 @@ def get_total_inventory_value(
     site_id: str | None = None,
     conn: sqlite3.Connection = None,
 ) -> float:
-    """Single-number SAR rollup for KPI cards."""
+    """Single-number SAR rollup for KPI cards.
+
+    Backlog #15 — the company-wide total (site_id=None) sums the per-site value
+    (get_value_by_site), so per-site cost overrides are honoured instead of
+    valuing all sites at the global cost."""
+    if site_id is None:
+        vb = get_value_by_site(conn=conn)
+        return float(vb["Stock_Value"].sum()) if (vb is not None and not vb.empty) else 0.0
     df = get_inventory_valuation(site_id=site_id, conn=conn)
     if df is None or df.empty:
         return 0.0
@@ -7371,12 +7488,17 @@ def get_value_by_site(conn: sqlite3.Connection = None) -> pd.DataFrame:
     if _owns:
         conn = get_connection()
     try:
+        # Backlog #15 — value each (SAP, Site) at its per-site cost override if
+        # present, else the global cost. Unchanged where no override exists.
         df = pd.read_sql(
             """SELECT COALESCE(s.Site_ID,'HQ') AS Site_ID,
-                      SUM(COALESCE(s.Current_Stock,0) * COALESCE(i.Unit_Cost,0))
+                      SUM(COALESCE(s.Current_Stock,0)
+                          * COALESCE(sc.Unit_Cost, i.Unit_Cost, 0))
                           AS Stock_Value
                FROM v_site_stock s
                LEFT JOIN inventory i ON i.SAP_Code = s.SAP_Code
+               LEFT JOIN inventory_site_costs sc
+                 ON sc.SAP_Code = s.SAP_Code AND sc.Site_ID = s.Site_ID
                GROUP BY COALESCE(s.Site_ID,'HQ')
                ORDER BY Stock_Value DESC""",
             conn,
