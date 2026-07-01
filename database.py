@@ -506,13 +506,11 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     usr_cols = {row[1] for row in c.fetchall()}
     if "Phone_Number" not in usr_cols:
         c.execute("ALTER TABLE users ADD COLUMN Phone_Number TEXT")
-    # 2FA (TOTP) — opt-in per user. totp_secret holds the base32 shared secret;
-    # totp_enabled flips to 1 only after the user confirms a code at enrollment.
-    if "totp_secret" not in usr_cols:
-        c.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT")
-    if "totp_enabled" not in usr_cols:
-        c.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0")
-        
+    # NOTE: the 2FA totp_* columns are self-healed AFTER the two users role-CHECK
+    # rebuilds further down (search "users.totp_* — added POST-rebuild"). Adding
+    # them here would be silently dropped by those rebuilds' recreate-and-copy on
+    # a brand-new DB's first init_db (the bug the Phase-5 migration dry-run found).
+
     # Phase 3 — uses the portable column_exists() helper (identical on SQLite).
     if not column_exists("pending_users", "Phone_Number", conn=conn):
         c.execute("ALTER TABLE pending_users ADD COLUMN Phone_Number TEXT")
@@ -1529,6 +1527,17 @@ def init_db(conn: sqlite3.Connection = None) -> None:
             # the existing seed roles; the new roles will simply fail to insert
             # until the rebuild succeeds on next startup.
             pass
+
+    # ── users.totp_* — added POST-rebuild (2FA opt-in) ────────────────────────
+    # MUST come after BOTH users role-CHECK rebuilds above: those recreate the
+    # users table from a fixed column list, so adding totp_* earlier would drop it
+    # on a brand-new DB's first init_db (found by the Phase-5 migration dry-run).
+    # totp_secret = base32 shared secret; totp_enabled flips to 1 only after the
+    # user confirms a code at enrollment. Portable via column_exists() (Phase 3).
+    if not column_exists("users", "totp_secret", conn=conn):
+        c.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT")
+    if not column_exists("users", "totp_enabled", conn=conn):
+        c.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0")
 
     # ── Read-only Stock Views (Phase 3 — AI NL search backbone) ───────────────
     # These views encapsulate the EXACT Identity formula used by

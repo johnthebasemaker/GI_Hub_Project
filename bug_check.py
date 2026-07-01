@@ -1315,6 +1315,22 @@ def check_models_schema_parity() -> None:
     assert not extra, f"unexpected model-only columns (update models.py or DB): {extra}"
 
 
+def check_users_totp_survives_fresh_init() -> None:
+    """Regression — the 2FA totp_* columns must survive a brand-new DB's FIRST
+    init_db. The users role-CHECK rebuilds used to drop them (added pre-rebuild);
+    they're now self-healed AFTER both rebuilds."""
+    import sqlite3, tempfile, os
+    p = os.path.join(tempfile.mkdtemp(), "fresh_totp.db")
+    conn = sqlite3.connect(p)
+    try:
+        database.init_db(conn)  # SINGLE pass — the failing case
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
+        assert "totp_secret" in cols, "totp_secret dropped on first init_db"
+        assert "totp_enabled" in cols, "totp_enabled dropped on first init_db"
+    finally:
+        conn.close()
+
+
 def check_sqlite_to_pg_migration_dryrun() -> None:
     """Phase 5 — the SQLite→target copy script reproduces every table's row
     count, creates all views, and populates ledger `id := rowid` (validated
@@ -9411,6 +9427,8 @@ def main() -> int:
               check_system_settings_id_pk)
     run_check("Postgres",     "models.py schema parity with live DB",
               check_models_schema_parity)
+    run_check("Auth",         "totp_* survive a fresh DB's first init_db",
+              check_users_totp_survives_fresh_init)
     run_check("Postgres",     "SQLite→target copy: parity + ledger id=rowid",
               check_sqlite_to_pg_migration_dryrun)
     run_check("Valuation",    "Per-site Unit_Cost override + fallback (#15)",
