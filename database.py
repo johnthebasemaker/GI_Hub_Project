@@ -325,9 +325,8 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         )
     """)
     # Self-healing: add whatsapp_alert_sent to tables that predate the column
-    c.execute("PRAGMA table_info(returnable_items)")
-    _ri_cols = {row[1] for row in c.fetchall()}
-    if "whatsapp_alert_sent" not in _ri_cols:
+    # Phase 3 — uses the portable column_exists() helper (identical on SQLite).
+    if not column_exists("returnable_items", "whatsapp_alert_sent", conn=conn):
         c.execute("ALTER TABLE returnable_items ADD COLUMN whatsapp_alert_sent INTEGER DEFAULT 0")
 
     c.execute("""
@@ -495,9 +494,8 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     if "totp_enabled" not in usr_cols:
         c.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0")
         
-    c.execute("PRAGMA table_info(pending_users)")
-    pnd_cols = {row[1] for row in c.fetchall()}
-    if "Phone_Number" not in pnd_cols:
+    # Phase 3 — uses the portable column_exists() helper (identical on SQLite).
+    if not column_exists("pending_users", "Phone_Number", conn=conn):
         c.execute("ALTER TABLE pending_users ADD COLUMN Phone_Number TEXT")
 
     c.execute("""
@@ -512,11 +510,10 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     """)
     # Self-heal: error_message + attempts so the admin console can show why a
     # message landed in 'failed' and we can retry it without losing context.
-    c.execute("PRAGMA table_info(whatsapp_queue)")
-    _wq_cols = {row[1] for row in c.fetchall()}
-    if "error_message" not in _wq_cols:
+    # Phase 3 — uses the portable column_exists() helper (identical on SQLite).
+    if not column_exists("whatsapp_queue", "error_message", conn=conn):
         c.execute("ALTER TABLE whatsapp_queue ADD COLUMN error_message TEXT")
-    if "attempts" not in _wq_cols:
+    if not column_exists("whatsapp_queue", "attempts", conn=conn):
         c.execute("ALTER TABLE whatsapp_queue ADD COLUMN attempts INTEGER DEFAULT 0")
 
     # ── Self-Healing: Columns for PRs (Module 6) ───────────────────────
@@ -1536,24 +1533,21 @@ def init_db(conn: sqlite3.Connection = None) -> None:
 
     # Self-heal: 4 CV-audit cols on returnable_items so existing loans get
     # NULL/0 defaults and the Smart Scan flow (Phase 6D) has somewhere to write.
-    c.execute("PRAGMA table_info(returnable_items)")
-    _ri_cols_6a = {row[1] for row in c.fetchall()}
+    # Phase 3 — uses the portable column_exists() helper (identical on SQLite).
     for _col, _ddl in (
         ("cv_detected",    "INTEGER DEFAULT 0"),
         ("cv_confidence",  "REAL"),
         ("cv_employee_id", "TEXT"),
         ("cv_tool_class",  "TEXT"),
     ):
-        if _col not in _ri_cols_6a:
+        if not column_exists("returnable_items", _col, conn=conn):
             c.execute(f"ALTER TABLE returnable_items ADD COLUMN {_col} {_ddl}")
 
     # ── Phase 7A: Employee Site Binding ──────────────────────────────────────
     # Self-heal Site_ID on employees so the Supervisor Material Request flow
     # (Phase 7B) can filter the worker dropdown to the supervisor's site.
     # NULL = legacy / unassigned; Admin backfills via the bulk-assign widget.
-    c.execute("PRAGMA table_info(employees)")
-    _emp_cols_7a = {row[1] for row in c.fetchall()}
-    if "Site_ID" not in _emp_cols_7a:
+    if not column_exists("employees", "Site_ID", conn=conn):
         c.execute("ALTER TABLE employees ADD COLUMN Site_ID TEXT")
     c.execute("CREATE INDEX IF NOT EXISTS ix_employees_site ON employees(Site_ID)")
 
@@ -1628,9 +1622,8 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         _r12_cols = {row[1] for row in c.fetchall()}
         if "Requested_By" not in _r12_cols:
             c.execute(f"ALTER TABLE {_tbl} ADD COLUMN Requested_By TEXT")
-    c.execute("PRAGMA table_info(supervisor_material_request_items)")
-    _smr_item_cols = {row[1] for row in c.fetchall()}
-    if "line_status" not in _smr_item_cols:
+    # Phase 3 — uses the portable column_exists() helper (identical on SQLite).
+    if not column_exists("supervisor_material_request_items", "line_status", conn=conn):
         c.execute(
             "ALTER TABLE supervisor_material_request_items "
             "ADD COLUMN line_status TEXT DEFAULT 'active'"
