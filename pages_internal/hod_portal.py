@@ -2428,7 +2428,7 @@ def _render_site_config_tab(user: dict, site_id: str) -> None:
         try:
             import pandas as _pd
             site_vals = _pd.read_sql(
-                "SELECT rowid, value FROM system_settings WHERE category=? AND Site_ID=? ORDER BY value",
+                "SELECT id, value FROM system_settings WHERE category=? AND Site_ID=? ORDER BY value",
                 conn_cfg, params=(category, site_id)
             )
         finally:
@@ -2453,7 +2453,7 @@ def _render_site_config_tab(user: dict, site_id: str) -> None:
                         unsafe_allow_html=True,
                     )
                 with c2:
-                    if st.button("🗑️", key=f"_del_{category}_{row['rowid']}",
+                    if st.button("🗑️", key=f"_del_{category}_{row['id']}",
                                  use_container_width=True, help="Delete this value"):
                         ok, msg = delete_site_dropdown_value(category, row["value"], site_id=site_id)
                         if ok:

@@ -195,18 +195,39 @@ even then the pre-cutover `.db` is a full snapshot.
 
 | Pattern | Count |
 |---|---:|
-| `PRAGMA table_info(...)` | 85 (was 88 before this run, 94 two runs ago) |
-| `execute(...?...)` in `database.py` (single-line regex, undercounts true total — most `?` sites span multiple lines) | 9 |
+| `PRAGMA table_info(...)` | 85 |
+| `execute(...?...)` in `database.py` (single-line regex, undercounts) | 9 |
 | `date('now'` | 17 |
 | `julianday` | 8 |
+| `rowid` in SQL (ORDER BY / SELECT col) — breaks in PG | 8 remaining (was 9; `system_settings` group fixed) |
 
-**Next action:** Continue Phase 3 sub-phase A — pick the next ~10 `PRAGMA table_info` self-heal call sites in `database.py::init_db()` (grep `PRAGMA table_info` in database.py, skip any already converted) and route them through `column_exists()`, following the exact pattern used for `stock_adjustments.Lot_Number` (Phase 2), the 6 sites converted in routine increment 1 (`returnable_items`, `pending_users`, `whatsapp_queue`, `employees`, `supervisor_material_request_items`), and the 3 blocks converted in interactive increment 2 (`pending_receipts.rejection_reason`, plus the `receipts`/`pending_receipts` DN/PO/Warehouse trace-ref loops).
+**⏸️ ROUTINE PAUSED (2026-07-01).** Per user direction, the autonomous `GI-Hub autonomous` routine is **paused**; Postgres is now **built interactively in this repo on `main`**. The coordination box below still applies if the routine is ever resumed, but for now there is a single worker. `FRONTEND_GO` stays **NO** (backend schema prep is allowed; FastAPI/React code is not).
+
+**🔎 Rowid audit (Postgres has no `rowid`).** 4 tables had no explicit PK and relied on SQLite's implicit rowid: `consumption`, `receipts`, `returns`, `system_settings`. **`system_settings` migrated** — given an explicit `id INTEGER PRIMARY KEY` (rowid→id copy) and its 4 SQL sites fixed (`locations`/`types` compat views → `MIN(id)`; HOD dropdown editor `SELECT id` + delete key). **Remaining rowid SQL sites (all on `receipts`), deferred to the Phase-5 cutover copy-script** (adding a PK to the frozen identity-math ledger tables is a reviewed step, not a bundled sweep):
+- `database.py:3342` `SELECT r.rowid AS receipt_id`
+- `database.py:5970` `SELECT r.rowid AS rid` · `:5980` `ORDER BY r.rowid DESC`
+- `database.py:6011` `ORDER BY rowid DESC` (Bin_Location lookup)
+- `database.py:6737` `ORDER BY r.Date DESC, r.rowid DESC`
+- (`consumption`/`returns` have no rowid SQL usage; they only need a SERIAL `id` created at cutover.)
+- `cur.lastrowid` (~25 sites) are the DBAPI cursor attribute, NOT SQL — they become `RETURNING id` in the SQLAlchemy path, tracked separately.
+
+**📐 `backend/models.py`** — SQLAlchemy 2.0 Declarative schema for the future FastAPI+PostgreSQL backend, auto-generated from the authoritative live schema (64 tables + 14 documented views). SME compat views kept as views (Canon rule 1); the 4 ledger tables carry a SERIAL `id`. Not wired to runtime. Guarded by a `bug_check` schema-parity test (`models.py` ⊇ live schema; only the ledger `id`s may be model-only).
+
+**Next action:** (interactive) Continue Phase 3 sub-phase A — pick the next ~10 `PRAGMA table_info` self-heal call sites in `database.py::init_db()` (grep `PRAGMA table_info` in database.py, skip any already converted) and route them through `column_exists()`, following the exact pattern used for `stock_adjustments.Lot_Number` (Phase 2), the 6 sites converted in routine increment 1 (`returnable_items`, `pending_users`, `whatsapp_queue`, `employees`, `supervisor_material_request_items`), and the 3 blocks converted in interactive increment 2 (`pending_receipts.rejection_reason`, plus the `receipts`/`pending_receipts` DN/PO/Warehouse trace-ref loops).
 
 > ⚠️ **The easy, unambiguously-safe single-column sites in `init_db()` are now largely exhausted.** What remains splits into two harder buckets, each needing a *closer read, not a batch swap*: (a) **sensitive** blocks — `users`/`pending_users` RBAC table-rebuilds, cost fields (`inventory.Unit_Cost`, `receipts.Unit_Cost`), and EOD/approval columns (`consumption."Approved By"`, the `Approved`-drop probe); and (b) **multi-column-reuse** blocks where a single `PRAGMA` read feeds a large column loop (`pr_master` 520/1375, `receipts` 787, `pending_receipts` 803, the `EXTENDED_ISSUE_COLS` loop 753/756, the `rejected_issues_archive` set-difference at 1709). The (b) blocks are mechanically convertible to a per-column `column_exists()` loop (the `returnable_items` precedent) but trade 1 PRAGMA for N calls — fine at init but review the diff. Triage (a) individually. **Continue avoiding**: `users`/`pending_users` login-adjacent RBAC columns beyond what's already done, and any site inside `receipts`/`consumption`/`returns`/`pending_issues`/`pending_receipts`/`pr_master` self-heal blocks that sit directly in the identity-math or EOD-commit code paths — those need a closer read (not a mechanical swap) because of the Section-2 guardrails, so triage them individually rather than batch-converting. Once all `PRAGMA table_info` self-heal sites in `init_db()` are converted, move to sub-phase B (`date('now')`/`julianday` → `now_sql()`/`date_diff_days_sql()`), then sub-phase C (`?` → named params).
 
 ---
 
 ## 8. Run Log
+
+### 2026-07-01 (evening) · actor=interactive · branch=`main` · ROUTINE PAUSED
+- **Files touched:** `backend/models.py` (new), `database.py`, `pages_internal/hod_portal.py`, `bug_check.py`, this doc, `handoff.md`.
+- **What:** Backend-prep pivot (FastAPI+PostgreSQL groundwork; no endpoints/React). (1) Generated `backend/models.py` — SQLAlchemy 2.0 Declarative for all 64 tables (+ 14 views documented, kept as views per SME Canon), introspected from the live `init_db()` schema; the 4 PK-less ledger tables get a SERIAL `id`. (2) Rowid audit across `database.py` + `pages_internal/` — 8 real SQL rowid sites found (rest are `cur.lastrowid` cursor attrs / comments). (3) Migrated `system_settings` to an explicit `id INTEGER PRIMARY KEY` via a guarded, idempotent rowid→id rebuild (runs before the `locations`/`types` views); fixed its 4 SQL sites (both SME compat views → `MIN(id)`, added `DROP VIEW IF EXISTS` so existing DBs pick up the change; HOD dropdown editor `SELECT id` + delete key). (4) Added 2 guardrail checks: `system_settings` id-PK + SME-views integrity, and `models.py` ↔ live-schema parity (isolated fresh `init_db`).
+- **Deferred (by design):** `receipts`/`consumption`/`returns` `id` PK — these are the frozen identity-math ledger tables; adding a PK is a reviewed Phase-5 cutover-copy step, not a bundled sweep. Their 4 `receipts` rowid SQL sites stay on `rowid` (valid on SQLite) until then.
+- **Test results (full `.venv`):** `bug_check.py` **593 passed / 0 failed** · UI crawler `test_ui_crawler.py` **21/21**. (Prior sessions' "20 failures" were an artifact of running system `python3` without optional deps — resolved by using `.venv/bin/python`.) `system_settings` rebuild verified idempotent (id survives repeated `init_db`); SME `locations`/`types` views confirmed to still return data via `MIN(id)`.
+- **Guardrails:** SQLite stays default + fully working; SME business logic untouched (only the two compat views' sort-key expression `rowid→id`, behaviour-identical); identity math / EOD / RBAC / price masking untouched; `FRONTEND_GO` still NO.
+- **Next:** await user confirmation on the deferred ledger-table PK approach; then either continue Phase 3 sub-phase A or begin the Phase-5 copy-script (SQLite→PG) design.
 
 ### 2026-07-01 · actor=interactive · branch=`main`
 - **Files touched:** `database.py` + this doc (`docs/POSTGRES_MIGRATION.md` §7/§8) + `handoff.md` pointer.

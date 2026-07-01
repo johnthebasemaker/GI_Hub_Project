@@ -1245,6 +1245,73 @@ def check_dn_fefo_suggestion() -> None:
     assert database.suggest_fefo_lot_for_material("MC-FEFO", "OTHER-SITE") is None
 
 
+def check_system_settings_id_pk() -> None:
+    """Postgres portability — system_settings has an explicit `id` PK (no rowid
+    in PG) and the SME locations/types views still return data via MIN(id)."""
+    conn = database.get_connection()
+    try:
+        info = conn.execute("PRAGMA table_info(system_settings)").fetchall()
+        cols = [r[1] for r in info]
+        pk = [r[1] for r in info if r[5]]
+        assert "id" in cols, "system_settings.id column missing"
+        assert pk == ["id"], f"system_settings PK should be [id], got {pk}"
+        # The SME compat views (which used MIN(rowid)) must still surface data.
+        conn.execute("INSERT INTO system_settings (category, value, Site_ID) "
+                     "VALUES ('sme_location','ZLocTest', NULL)")
+        conn.execute("INSERT INTO system_settings (category, value, Site_ID) "
+                     "VALUES ('sme_equipment_type','ZTypeTest', NULL)")
+        conn.commit()
+        locs = [r[0] for r in conn.execute("SELECT name FROM locations")]
+        types = [r[0] for r in conn.execute("SELECT name FROM types")]
+        assert "ZLocTest" in locs, "locations view lost data after id migration"
+        assert "ZTypeTest" in types, "types view lost data after id migration"
+        so = conn.execute("SELECT sort_order FROM locations WHERE name='ZLocTest'").fetchone()[0]
+        assert so is not None, "locations.sort_order (MIN(id)) is NULL"
+    finally:
+        conn.close()
+
+
+def check_models_schema_parity() -> None:
+    """backend/models.py must stay in sync with the live schema: every live
+    table+column appears in the models; the only model-only columns are the
+    documented Postgres-target ledger `id` PKs not yet added to SQLite."""
+    import importlib.util, sqlite3, tempfile, os
+    spec = importlib.util.spec_from_file_location("_gimodels", "backend/models.py")
+    M = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(M)
+    model_cols = {t: {c.name for c in tbl.columns}
+                  for t, tbl in M.Base.metadata.tables.items()}
+
+    # Compare against a FRESH, isolated init_db — the canonical schema — not the
+    # shared bug_check DB, which other checks mutate at runtime (e.g. commit_eod
+    # can add a transient `status` column to consumption).
+    _tmp = os.path.join(tempfile.mkdtemp(), "parity.db")
+    fresh = sqlite3.connect(_tmp)
+    try:
+        database.init_db(fresh)
+        live_tables = [r[0] for r in fresh.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%'")]
+        live_cols = {t: {r[1] for r in fresh.execute(f'PRAGMA table_info("{t}")')}
+                     for t in live_tables}
+    finally:
+        fresh.close()
+
+    missing_tables = set(live_cols) - set(model_cols)
+    assert not missing_tables, f"tables in DB but not in models.py: {missing_tables}"
+
+    model_only = set()
+    for t, cols in live_cols.items():
+        miss = cols - model_cols[t]
+        assert not miss, f"columns in `{t}` missing from models.py: {miss}"
+        model_only |= {(t, c) for c in (model_cols[t] - cols)}
+
+    allowed = {("consumption", "id"), ("receipts", "id"), ("returns", "id"),
+               ("system_settings", "id")}
+    extra = model_only - allowed
+    assert not extra, f"unexpected model-only columns (update models.py or DB): {extra}"
+
+
 def check_per_site_unit_cost() -> None:
     """Backlog #15 — per-site cost override resolves before global; valuation
     honours it; no change until an override exists."""
@@ -9300,6 +9367,10 @@ def main() -> int:
               check_procurement_adoption)
     run_check("DN FEFO",      "Material→SAP map + earliest-expiry suggestion (#30)",
               check_dn_fefo_suggestion)
+    run_check("Postgres",     "system_settings id PK + SME views via MIN(id)",
+              check_system_settings_id_pk)
+    run_check("Postgres",     "models.py schema parity with live DB",
+              check_models_schema_parity)
     run_check("Valuation",    "Per-site Unit_Cost override + fallback (#15)",
               check_per_site_unit_cost)
     run_check("Returnable",  "Tool loan → mark returned",

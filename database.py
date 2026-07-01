@@ -370,6 +370,25 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     """)
 
     c.execute("CREATE TABLE IF NOT EXISTS system_settings (category TEXT, value TEXT)")
+    # PostgreSQL portability — system_settings relied on SQLite's implicit rowid
+    # for ordering (the SME `locations`/`types` compat views + the HOD dropdown
+    # editor). Postgres has no rowid, so give it an explicit `id` PK and copy
+    # rowid → id once, preserving the existing sort order + delete keys exactly.
+    # Guarded + idempotent; must run BEFORE the locations/types views are created.
+    _ss_cols = [r[1] for r in c.execute("PRAGMA table_info(system_settings)")]
+    if "id" not in _ss_cols:
+        _keep = [col for col in _ss_cols if col != "id"]
+        _collist = ", ".join(_keep)
+        c.execute(
+            "CREATE TABLE system_settings_new (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            + ", ".join(f"{col} TEXT" for col in _keep) + ")"
+        )
+        c.execute(
+            f"INSERT INTO system_settings_new (id, {_collist}) "
+            f"SELECT rowid, {_collist} FROM system_settings"
+        )
+        c.execute("DROP TABLE system_settings")
+        c.execute("ALTER TABLE system_settings_new RENAME TO system_settings")
     # Self-heal: per-site dropdown support
     try:
         c.execute("ALTER TABLE system_settings ADD COLUMN Site_ID TEXT")
@@ -2166,12 +2185,15 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     # in the dropdown, regardless of how many sites it's seeded for.
     # Brown Field is "Brown Field" whether seeded into HQ or CNCEC; the
     # SME UI treats locations as project-internal names, not per-site.
+    # DROP+CREATE (not create-once) so the MIN(id) portability fix propagates to
+    # existing DBs whose view text still said MIN(rowid).
     try:
+        c.execute("DROP VIEW IF EXISTS locations")
         c.execute("""
             CREATE VIEW locations AS
             SELECT value AS name,
                    '#64748B' AS badge_color,
-                   MIN(rowid) AS sort_order,
+                   MIN(id) AS sort_order,
                    '' AS added_at
             FROM system_settings
             WHERE category = 'sme_location'
@@ -2180,10 +2202,11 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     except sqlite3.Error:
         pass
     try:
+        c.execute("DROP VIEW IF EXISTS types")
         c.execute("""
             CREATE VIEW types AS
             SELECT value AS name,
-                   MIN(rowid) AS sort_order,
+                   MIN(id) AS sort_order,
                    '' AS added_at
             FROM system_settings
             WHERE category = 'sme_equipment_type'
