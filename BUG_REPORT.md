@@ -1,329 +1,16 @@
 # Bug Check Report
 
-**Run at:** `2026-07-01T17:21:19`  
-**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_yagawz4t/bug_check.db`  
-**Total checks:** 591  
-**Passing:** 571  
-**Failing:** 20  
+**Run at:** `2026-07-01T22:26:28`  
+**Throwaway DB:** `/var/folders/wc/nfgzq5_n3j126zwndxprnd_00000gn/T/gi_bugcheck_rafxofg0/bug_check.db`  
+**Total checks:** 593  
+**Passing:** 593  
+**Failing:** 0  
 
 _The harness writes a fresh SQLite file under your system temp dir, seeds it, exercises every flow, then deletes the temp dir. `gi_database.db` is never touched._
 
-## ❌ Failures (20)
+## ❌ Failures (0)
 
-### Module load · import every page module
-- **Error:** `Module import failures:
-  mailer → ModuleNotFoundError: No module named 'dotenv'
-  auth → ModuleNotFoundError: No module named 'bcrypt'
-  reports → ModuleNotFoundError: No module named 'fpdf'
-  pages_internal.admin_portal → ModuleNotFoundError: No module named 'bcrypt'
-  pages_internal.reports_page → ModuleNotFoundError: No module named 'fpdf'`
-- **Hint:** Look for missing imports or top-level NameErrors.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 3270, in check_module_imports
-    assert not failed, "Module import failures:\n  " + "\n  ".join(failed)
-           ^^^^^^^^^^
-AssertionError: Module import failures:
-  mailer → ModuleNotFoundError: No module named 'dotenv'
-  auth → ModuleNotFoundError: No module named 'bcrypt'
-  reports → ModuleNotFoundError: No module named 'fpdf'
-  pages_internal.admin_portal → ModuleNotFoundError: No module named 'bcrypt'
-  pages_internal.reports_page → ModuleNotFoundError: No module named 'fpdf'
-```
-
-### Mailer · Draft helpers (Outlook / mailto patched)
-- **Error:** `ModuleNotFoundError: No module named 'dotenv'`
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 1476, in check_mailer_drafts
-    import mailer
-  File "/Users/johnsonandrew/GI_Hub_Project/mailer.py", line 25, in <module>
-    from dotenv import load_dotenv
-ModuleNotFoundError: No module named 'dotenv'
-```
-
-### Auth · user-mgmt tab: no shadowed log_audit_action (Reject user)
-- **Error:** `ModuleNotFoundError: No module named 'bcrypt'`
-- **Hint:** inline 'from database import log_audit_action' made it a local → UnboundLocalError when rejecting a pending user.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 1517, in check_user_mgmt_no_unbound_log_audit
-    import auth
-  File "/Users/johnsonandrew/GI_Hub_Project/auth.py", line 24, in <module>
-    import bcrypt
-ModuleNotFoundError: No module named 'bcrypt'
-```
-
-### Auth/2FA · TOTP lifecycle (stage→verify→enable→reset)
-- **Error:** `ModuleNotFoundError: No module named 'bcrypt'`
-- **Hint:** Opt-in; staged secret stays disabled until a code confirms; admin reset clears it; enable requires a secret (no lock-in).
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 3165, in check_2fa_flow
-    auth = importlib.import_module("auth")
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/importlib/__init__.py", line 90, in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-ModuleNotFoundError: No module named 'bcrypt'
-```
-
-### Round 15 · process_po_pdf extracts 3 items from sample PDF
-- **Error:** `pdfplumber not installed`
-- **Hint:** Regression guard against PO#4710003114.pdf two-line layout.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 6041, in check_r15_po_pdf_three_items
-    assert ok, msg
-           ^^
-AssertionError: pdfplumber not installed
-```
-
-### Round 15 · _ALWAYS_KEEP includes UOM for PR report
-- **Error:** `ModuleNotFoundError: No module named 'fpdf'`
-- **Hint:** UoM column survives the strip-empty helper.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 6204, in check_r15_pr_report_keeps_uom_column
-    rp = importlib.import_module("pages_internal.reports_page")
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/importlib/__init__.py", line 90, in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-ModuleNotFoundError: No module named 'fpdf'
-```
-
-### Round 16 · generate_pr_pdf renders new PO # + UoM columns
-- **Error:** `ModuleNotFoundError: No module named 'fpdf'`
-- **Hint:** Back-compat path (no po_map kwarg) still produces a valid PDF.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 6368, in check_r16_generate_pr_pdf_has_new_columns
-    from reports import generate_pr_pdf
-  File "/Users/johnsonandrew/GI_Hub_Project/reports.py", line 1, in <module>
-    from fpdf import FPDF
-ModuleNotFoundError: No module named 'fpdf'
-```
-
-### Phase 7F · ROLE_MANUAL_RECIPES covers all 6 production roles
-- **Error:** `ModuleNotFoundError: No module named 'fpdf'`
-- **Hint:** Every role from config.ROLES must have an entry.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7147, in check_7f_recipes_cover_all_roles
-    from build_manual_pdf import ROLE_MANUAL_RECIPES
-  File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
-    from fpdf import FPDF
-ModuleNotFoundError: No module named 'fpdf'
-```
-
-### Phase 7F · slice_markdown_for_role('store_keeper') keeps SK chapter
-- **Error:** `ModuleNotFoundError: No module named 'fpdf'`
-- **Hint:** Slicer extracts chapter 4 for the SK booklet.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7156, in check_7f_slice_sk_keeps_own
-    from build_manual_pdf import slice_markdown_for_role
-  File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
-    from fpdf import FPDF
-ModuleNotFoundError: No module named 'fpdf'
-```
-
-### Phase 7F · slice_markdown_for_role('store_keeper') drops Logistics
-- **Error:** `ModuleNotFoundError: No module named 'fpdf'`
-- **Hint:** Cross-role chapters must NOT bleed into SK booklet.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7163, in check_7f_slice_sk_drops_logistics
-    from build_manual_pdf import slice_markdown_for_role
-  File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
-    from fpdf import FPDF
-ModuleNotFoundError: No module named 'fpdf'
-```
-
-### Phase 7F · slice_markdown_for_role('supervisor') keeps Supervisor chapter
-- **Error:** `ModuleNotFoundError: No module named 'fpdf'`
-- **Hint:** Chapter 5 must appear in supervisor booklet.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7172, in check_7f_slice_supervisor_keeps_own
-    from build_manual_pdf import slice_markdown_for_role
-  File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
-    from fpdf import FPDF
-ModuleNotFoundError: No module named 'fpdf'
-```
-
-### Phase 7F · slice_markdown_for_role('hod') keeps Reports chapter
-- **Error:** `ModuleNotFoundError: No module named 'fpdf'`
-- **Hint:** HOD booklet must include chapter 8 per recipe.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7179, in check_7f_slice_hod_keeps_reports
-    from build_manual_pdf import slice_markdown_for_role
-  File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
-    from fpdf import FPDF
-ModuleNotFoundError: No module named 'fpdf'
-```
-
-### Phase 7F · slice_markdown_for_role('admin') returns full markdown
-- **Error:** `ModuleNotFoundError: No module named 'fpdf'`
-- **Hint:** Admin recipe == 'ALL' → unchanged passthrough.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7186, in check_7f_slice_admin_full
-    from build_manual_pdf import slice_markdown_for_role
-  File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
-    from fpdf import FPDF
-ModuleNotFoundError: No module named 'fpdf'
-```
-
-### Phase 7F · parse_markdown recognises image syntax
-- **Error:** `ModuleNotFoundError: No module named 'fpdf'`
-- **Hint:** ![alt](path) on its own line → Block(kind='img').
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7193, in check_7f_parse_image_block
-    from build_manual_pdf import parse_markdown
-  File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
-    from fpdf import FPDF
-ModuleNotFoundError: No module named 'fpdf'
-```
-
-### Phase 7F · render_image handles missing file (placeholder)
-- **Error:** `ModuleNotFoundError: No module named 'fpdf'`
-- **Hint:** Missing PNG renders the grey placeholder card; never raises.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7205, in check_7f_render_image_missing_no_crash
-    from build_manual_pdf import ManualPDF
-  File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
-    from fpdf import FPDF
-ModuleNotFoundError: No module named 'fpdf'
-```
-
-### Phase 7F · build_role_manual_pdf returns valid PDF bytes
-- **Error:** `ModuleNotFoundError: No module named 'fpdf'`
-- **Hint:** Output must start with %PDF- magic bytes.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7216, in check_7f_role_pdf_starts_with_magic
-    from build_manual_pdf import build_role_manual_pdf
-  File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
-    from fpdf import FPDF
-ModuleNotFoundError: No module named 'fpdf'
-```
-
-### Phase 7F · build_role_manual_pdf('admin') == build_manual_pdf
-- **Error:** `ModuleNotFoundError: No module named 'fpdf'`
-- **Hint:** Admin recipe is the master full PDF — identical chapter content.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7229, in check_7f_admin_equals_master
-    from build_manual_pdf import build_manual_pdf, build_role_manual_pdf
-  File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
-    from fpdf import FPDF
-ModuleNotFoundError: No module named 'fpdf'
-```
-
-### Phase 7F · build_role_manual_pdf(unknown role) falls back to master
-- **Error:** `ModuleNotFoundError: No module named 'fpdf'`
-- **Hint:** Unknown role_key → master PDF, no exception.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7238, in check_7f_unknown_role_falls_back
-    from build_manual_pdf import build_role_manual_pdf
-  File "/Users/johnsonandrew/GI_Hub_Project/build_manual_pdf.py", line 39, in <module>
-    from fpdf import FPDF
-ModuleNotFoundError: No module named 'fpdf'
-```
-
-### Phase 8D · _render_locate_anything_panel doesn't crash with sidecar down
-- **Error:** `ModuleNotFoundError: No module named 'bcrypt'`
-- **Hint:** Streamlit import surface + helper invocation under AppTest.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 7986, in check_8d_panel_renders_with_sidecar_down
-    mod = importlib.import_module("pages_internal.admin_portal")
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/importlib/__init__.py", line 90, in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-ModuleNotFoundError: No module named 'bcrypt'
-```
-
-### Material Estimator · pages_internal exports resolve (no cold-start ImportError)
-- **Error:** `ModuleNotFoundError: No module named 'bcrypt'`
-- **Hint:** every page_* export is importable; SME portal no longer re-enters the half-built package at module level.
-- **Trace:**
-```
-Traceback (most recent call last):
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 73, in run_check
-    fn()
-  File "/Users/johnsonandrew/GI_Hub_Project/bug_check.py", line 3556, in check_pages_internal_exports_resolve
-    assert hasattr(pkg, name), f"pages_internal missing export: {name}"
-           ^^^^^^^^^^^^^^^^^^
-  File "/Users/johnsonandrew/GI_Hub_Project/pages_internal/__init__.py", line 51, in __getattr__
-    module = importlib.import_module(f".{mod}", __name__)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-ModuleNotFoundError: No module named 'bcrypt'
-```
+_None — every check passed._
 
 ## ✅ Passing by area
 
@@ -334,11 +21,11 @@ ModuleNotFoundError: No module named 'bcrypt'
 - ✅ Opening_Stock edits logged, not new items (#23)
 - ✅ log_audit_action writes row
 
-### Auth — 0/1
-- ❌ user-mgmt tab: no shadowed log_audit_action (Reject user)
+### Auth — 1/1
+- ✅ user-mgmt tab: no shadowed log_audit_action (Reject user)
 
-### Auth/2FA — 1/2
-- ❌ TOTP lifecycle (stage→verify→enable→reset)
+### Auth/2FA — 2/2
+- ✅ TOTP lifecycle (stage→verify→enable→reset)
 - ✅ 2FA login gate + self-service + admin reset wired
 
 ### Bulk Badges — 1/1
@@ -397,8 +84,8 @@ ModuleNotFoundError: No module named 'bcrypt'
 - ✅ Attached rubber MTC stored as BLOB
 - ✅ Missing MTC → mark_emailed flow
 
-### Mailer — 0/1
-- ❌ Draft helpers (Outlook / mailto patched)
+### Mailer — 1/1
+- ✅ Draft helpers (Outlook / mailto patched)
 
 ### Maintenance — 1/1
 - ✅ maintenance_mode toggle actually blocks non-admins
@@ -412,8 +99,8 @@ ModuleNotFoundError: No module named 'bcrypt'
 - ✅ attendance workbook parser (shared by UI + bootstrap)
 - ✅ bulk import — replace-by-date idempotent vs append
 
-### Material Estimator — 6/7
-- ❌ pages_internal exports resolve (no cold-start ImportError)
+### Material Estimator — 7/7
+- ✅ pages_internal exports resolve (no cold-start ImportError)
 - ✅ Dashboard filters cross-filter Code <-> Substrate
 - ✅ KPI drill-down is a centered modal (not clipped popover)
 - ✅ equipment loader: Substrate≠Lining_Type, area SQM sums
@@ -424,8 +111,8 @@ ModuleNotFoundError: No module named 'bcrypt'
 ### Math — 1/1
 - ✅ Identity: Closing = Opening + R − C − Rt
 
-### Module load — 0/1
-- ❌ import every page module
+### Module load — 1/1
+- ✅ import every page module
 
 ### Notifications — 1/1
 - ✅ mark_all_notifications_read scopes correctly
@@ -522,18 +209,18 @@ ModuleNotFoundError: No module named 'bcrypt'
 - ✅ list_user_drafts returns multi-form DataFrame
 - ✅ requirements.txt declares streamlit-local-storage
 
-### Phase 7F — 1/12
-- ❌ ROLE_MANUAL_RECIPES covers all 6 production roles
-- ❌ slice_markdown_for_role('store_keeper') keeps SK chapter
-- ❌ slice_markdown_for_role('store_keeper') drops Logistics
-- ❌ slice_markdown_for_role('supervisor') keeps Supervisor chapter
-- ❌ slice_markdown_for_role('hod') keeps Reports chapter
-- ❌ slice_markdown_for_role('admin') returns full markdown
-- ❌ parse_markdown recognises image syntax
-- ❌ render_image handles missing file (placeholder)
-- ❌ build_role_manual_pdf returns valid PDF bytes
-- ❌ build_role_manual_pdf('admin') == build_manual_pdf
-- ❌ build_role_manual_pdf(unknown role) falls back to master
+### Phase 7F — 12/12
+- ✅ ROLE_MANUAL_RECIPES covers all 6 production roles
+- ✅ slice_markdown_for_role('store_keeper') keeps SK chapter
+- ✅ slice_markdown_for_role('store_keeper') drops Logistics
+- ✅ slice_markdown_for_role('supervisor') keeps Supervisor chapter
+- ✅ slice_markdown_for_role('hod') keeps Reports chapter
+- ✅ slice_markdown_for_role('admin') returns full markdown
+- ✅ parse_markdown recognises image syntax
+- ✅ render_image handles missing file (placeholder)
+- ✅ build_role_manual_pdf returns valid PDF bytes
+- ✅ build_role_manual_pdf('admin') == build_manual_pdf
+- ✅ build_role_manual_pdf(unknown role) falls back to master
 - ✅ docs/screenshots/ has the seed placeholder PNGs
 
 ### Phase 8A — 10/10
@@ -568,8 +255,8 @@ ModuleNotFoundError: No module named 'bcrypt'
 - ✅ gate guard: toggle OFF + YOLO empty → sidecar HTTP NOT called
 - ✅ gate guard: YOLO confident → sidecar HTTP NOT called
 
-### Phase 8D — 1/2
-- ❌ _render_locate_anything_panel doesn't crash with sidecar down
+### Phase 8D — 2/2
+- ✅ _render_locate_anything_panel doesn't crash with sidecar down
 - ✅ panel toggle ON path stores '1' in app_settings
 
 ### Phase 8E — 8/8
@@ -582,7 +269,9 @@ ModuleNotFoundError: No module named 'bcrypt'
 - ✅ client.detect gate-off writes NO telemetry row
 - ✅ get_locate_anything_summary computes rates safely
 
-### Postgres — 2/2
+### Postgres — 4/4
+- ✅ system_settings id PK + SME views via MIN(id)
+- ✅ models.py schema parity with live DB
 - ✅ Phase 1 engine seam (SQLite default, no behavior change)
 - ✅ Phase 2 portability helpers (dialect-correct SQL)
 
@@ -697,7 +386,7 @@ ModuleNotFoundError: No module named 'bcrypt'
 - ✅ prep_image_for_vision honours EXIF orientation
 - ✅ prep_image_for_vision raises ImagePrepError on bad bytes
 
-### Round 15 — 13/15
+### Round 15 — 15/15
 - ✅ inventory_site_overrides schema + UNIQUE
 - ✅ next_sap_code increments from max numeric tail
 - ✅ next_temp_material_code persists + increments
@@ -706,20 +395,20 @@ ModuleNotFoundError: No module named 'bcrypt'
 - ✅ bulk_upsert_materials overwrite path updates in place
 - ✅ set/get_site_min_qty COALESCEs override over default
 - ✅ inventory.Material_Code UNIQUE index enforced
-- ❌ process_po_pdf extracts 3 items from sample PDF
+- ✅ process_po_pdf extracts 3 items from sample PDF
 - ✅ process_po_pdf synthetic two-line layout fixture
 - ✅ list_pending_hod_dns falls back via PO/PR Site_ID
 - ✅ request_reschedule routes to warehouse post-receive
 - ✅ request_reschedule keeps logistics for PO-level
 - ✅ CONSUMPTION_EXPORT_COLS unchanged
-- ❌ _ALWAYS_KEEP includes UOM for PR report
+- ✅ _ALWAYS_KEEP includes UOM for PR report
 
-### Round 16 — 4/5
+### Round 16 — 5/5
 - ✅ submit_dn_for_logistics writes status='pending_hod'
 - ✅ submit_dn_for_logistics fans out HOD + Logistics notifications
 - ✅ legacy pending_logistics DNs migrate to pending_hod
 - ✅ get_pr_with_po_numbers comma-joins per PR line
-- ❌ generate_pr_pdf renders new PO # + UoM columns
+- ✅ generate_pr_pdf renders new PO # + UoM columns
 
 ### Round 17 — 13/13
 - ✅ sme_equipment table + key columns present
