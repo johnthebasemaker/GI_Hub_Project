@@ -1145,6 +1145,46 @@ def check_vendor_master() -> None:
     assert res == {"added": 1, "skipped": 1, "errors": 1}, res
 
 
+def check_report_scheduler() -> None:
+    """Backlog #13 — report_schedule_due honours daily/weekly/monthly cadence;
+    due_report_schedules selects only active + due rows."""
+    import datetime as dt
+    D = database.report_schedule_due
+    today = dt.date(2026, 7, 1)
+    # Never run → always due.
+    assert D("Daily at 06:00", None, today) is True
+    # Daily: due if ≥1 day since last run.
+    assert D("Daily at 06:00", "2026-06-30 06:00:00", today) is True
+    assert D("Daily at 06:00", "2026-07-01 06:00:00", today) is False
+    # Weekly: due only after 7 days.
+    assert D("Weekly Mon 07:00", "2026-06-27 07:00:00", today) is False  # 4d
+    assert D("Weekly Mon 07:00", "2026-06-24 07:00:00", today) is True   # 7d
+    # Monthly: due only after 28 days.
+    assert D("1st of month 06:00", "2026-06-20 06:00:00", today) is False
+    assert D("1st of month 06:00", "2026-06-01 06:00:00", today) is True  # 30d
+
+    # Selection: active+due included; inactive excluded; not-due excluded.
+    conn = database.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO report_schedules (label, report_type, frequency, "
+                    "recipients, active, last_run) VALUES "
+                    "('Due one','daily','Daily at 06:00','a@x.com',1,'2026-06-01 06:00:00')")
+        cur.execute("INSERT INTO report_schedules (label, report_type, frequency, "
+                    "recipients, active, last_run) VALUES "
+                    "('Not due','daily','Daily at 06:00','a@x.com',1,'2026-07-01 06:00:00')")
+        cur.execute("INSERT INTO report_schedules (label, report_type, frequency, "
+                    "recipients, active, last_run) VALUES "
+                    "('Inactive','daily','Daily at 06:00','a@x.com',0,NULL)")
+        conn.commit()
+    finally:
+        conn.close()
+    labels = {r["label"] for r in database.due_report_schedules(now=today)}
+    assert "Due one" in labels, "active+due schedule not selected"
+    assert "Not due" not in labels, "same-day schedule wrongly selected"
+    assert "Inactive" not in labels, "inactive schedule wrongly selected"
+
+
 # ---------------------------------------------------------------------------
 # Returnable items (tool loans)
 # ---------------------------------------------------------------------------
@@ -9141,6 +9181,8 @@ def main() -> int:
               check_crash_safe_replace)
     run_check("Vendors",      "Master add/update/status + bulk import dedupe (#24)",
               check_vendor_master)
+    run_check("Reports",      "Scheduler due-ness + active/due selection (#13)",
+              check_report_scheduler)
     run_check("Returnable",  "Tool loan → mark returned",
               check_returnable_items)
     run_check("QR",          "Submit → approve / reject",

@@ -560,6 +560,76 @@ def _maybe_run_returnable_reminders() -> None:
         print(f"❌ returnable_reminders crashed: {e}")
 
 
+def _maybe_run_report_schedules() -> None:
+    """Backlog #13 — fire due report_schedules at most once per local day.
+
+    For each active+due schedule (see database.due_report_schedules), generate
+    the report and save it to the archive (mirroring the UI 'Run Now' path),
+    then mark_schedule_run so weekly/monthly cadences don't re-fire early.
+    Every schedule runs in its own try/except so one bad report never blocks
+    the others, and the whole sweep is guarded so the worker never crashes.
+    Marker key: app_settings.report_schedules_last_run (day stamp)."""
+    try:
+        import datetime as _dt
+        import database as _db
+        today = _dt.date.today()
+        today_iso = today.isoformat()
+        conn = _db.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_settings "
+                "WHERE key='report_schedules_last_run'").fetchone()
+            if row and row[0] == today_iso:
+                return
+            due = _db.due_report_schedules(now=today, conn=conn)
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES "
+                "  ('report_schedules_last_run', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (today_iso,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        if not due:
+            return
+        # Lazy import — keeps reports_page (which imports streamlit) out of the
+        # module load path for standalone worker use.
+        from pages_internal.reports_page import (
+            _run_report, _encode_report, _save_to_archive,
+        )
+        ran = 0
+        for sch in due:
+            try:
+                rt = sch.get("report_type")
+                fmt = sch.get("format") or "PDF"
+                site_id = sch.get("site_id")
+                freq = (sch.get("frequency") or "").lower()
+                window = 30 if "month" in freq else 7 if "week" in freq else 1
+                date_from = today - _dt.timedelta(days=window)
+                df_data, summary = _run_report(rt, date_from, today, site_id)
+                payload, _mime, _fname = _encode_report(
+                    report_type=rt, fmt=fmt, df=df_data, summary=summary,
+                    site_label=str(site_id or "All Sites"),
+                    date_from=date_from, date_to=today, generated_by="scheduler",
+                )
+                _save_to_archive(
+                    name=f"[Scheduled] {sch.get('label')} — {today_iso}",
+                    report_type=rt, generated_by="scheduler", fmt=fmt,
+                    payload=payload, site_label=str(site_id or "All Sites"),
+                    date_from=date_from, date_to=today,
+                )
+                _db.mark_schedule_run(int(sch["id"]))
+                ran += 1
+            except Exception as e:
+                print(f"❌ report schedule id={sch.get('id')} failed: {e}")
+        if ran:
+            print(f"🗓️ Report scheduler: generated {ran} scheduled report(s) on {today_iso}")
+    except Exception as e:
+        print(f"❌ report_schedules sweep crashed: {e}")
+
+
 def run_worker_loop() -> None:
     """Infinite poll loop. Safe to run as a daemon thread."""
     print("🟢 WhatsApp worker loop started")
@@ -578,6 +648,8 @@ def run_worker_loop() -> None:
         _maybe_run_returnable_reminders()
         # Phase 7E — Form drafts prune, idempotent within a day
         _maybe_run_form_drafts_prune()
+        # Backlog #13 — scheduled reports, idempotent within a day
+        _maybe_run_report_schedules()
         time.sleep(60)
 
 

@@ -6534,6 +6534,43 @@ def mark_schedule_run(
             conn.close()
 
 
+def report_schedule_due(frequency: str, last_run, now=None) -> bool:
+    """Backlog #13 — is a schedule due to run? The daemon sweeps once/day, so
+    we gate on days elapsed since `last_run`: daily ≥1, weekly ≥7, monthly ≥28.
+    Never run before → due. `frequency` is the free-text label ('Daily at
+    06:00', 'Weekly Mon 07:00', '1st of month 06:00'); `last_run` is an ISO
+    datetime string or None; `now` is a date (defaults to today)."""
+    import datetime as _dt
+    now = now or _dt.date.today()
+    f = (frequency or "").lower()
+    interval = 28 if "month" in f else 7 if "week" in f else 1
+    if not last_run:
+        return True
+    try:
+        lr = str(last_run)[:10]  # 'YYYY-MM-DD' prefix of the timestamp
+        last_d = _dt.date.fromisoformat(lr)
+    except (ValueError, TypeError):
+        return True  # unparseable → treat as never run
+    return (now - last_d).days >= interval
+
+
+def due_report_schedules(now=None, conn: sqlite3.Connection = None) -> list:
+    """Backlog #13 — active schedules whose next run is due (see
+    report_schedule_due). Returns a list of dict rows."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        rows = pd.read_sql(
+            "SELECT * FROM report_schedules WHERE COALESCE(active,1)=1", conn,
+        ).to_dict("records")
+    finally:
+        if _owns:
+            conn.close()
+    return [r for r in rows
+            if report_schedule_due(r.get("frequency"), r.get("last_run"), now)]
+
+
 def add_archive_entry(
     name: str, report_type: str, generated_by: str,
     format: str, size_bytes: int, file_path: str,

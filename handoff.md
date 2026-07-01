@@ -42,6 +42,7 @@
 > ### 📍 WHERE WE ARE — read this first
 >
 > **DONE this session (all committed + pushed, newest first):**
+> - **Report scheduler daemon (backlog #13)** — `report_schedule_due()`/`due_report_schedules()` + worker `_maybe_run_report_schedules()` (once/day, generate→archive→mark_schedule_run, fully guarded). +1 regression. `database.py`, `whatsapp_worker.py`.
 > - **Vendor master admin tab (backlog #24)** — Admin "🏭 Vendors" tab (list/add/edit/activate/bulk-import-Excel with dup detection) + `update_vendor`/`set_vendor_status`/`bulk_import_vendors`. +1 regression. `database.py`, `pages_internal/admin_portal.py`.
 > - **Crash-safe Master DB Editor save (backlog #10)** — `crash_safe_replace_table()` (stage→swap→rollback-on-failure) replaces the bare DELETE+to_sql; original rows always preserved on error. +1 regression proves no data loss. `database.py`, `pages_internal/admin_portal.py`.
 > - **Force-close undo window (backlog #28)** — `force_close_target()` snapshots prior state → JSON; `undo_force_close()` restores it verbatim within 24h (no double-undo, no past-window); `get_undoable_force_closures()` + Logistics "↩️ Undo" panel. +1 regression. `database.py`, `pages_internal/logistics_portal.py`.
@@ -2265,7 +2266,7 @@ New workstream: track **labor** the way the SME tracks **material**. Source-of-t
 
 ### P3 — Polish / nice-to-have
 
-13. **Scheduled report cron** — `report_schedules` table + UI exist but there's no actual cron daemon firing them
+13. ~~**Scheduled report cron**~~ ✅ **DONE** — `report_schedule_due()` (daily≥1/weekly≥7/monthly≥28 days-elapsed) + `due_report_schedules()`; worker `_maybe_run_report_schedules()` fires due active schedules once/day (generate → archive via the streamlit-free `_run_report`/`_encode_report`/`_save_to_archive`, then `mark_schedule_run`), each per-schedule + whole-sweep guarded so it never crashes the worker. +1 `bug_check` regression. `database.py`, `whatsapp_worker.py`.
 14. **Dashboard tile editor** — admin can pick which KPI cards appear in the hero strips
 15. **Per-site Unit_Cost** (today: one cost per item across sites; SAP allows site-specific). Touches valuation math everywhere — high impact
 16. **AI Insights regen scheduling** — currently on-demand only
