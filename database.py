@@ -7879,6 +7879,93 @@ def list_vendors(
             conn.close()
 
 
+_VENDOR_EDITABLE = (
+    "Vendor_Name", "Address", "Contact_Name", "Contact_Phone",
+    "Contact_Email", "Default_Inco_Terms", "Default_Payment_Terms",
+)
+
+
+def update_vendor(vendor_code: str, conn: sqlite3.Connection = None,
+                  **fields) -> tuple[bool, str]:
+    """Backlog #24 — update an existing vendor's editable fields (matched on
+    Vendor_Code). Unknown/empty field names are ignored."""
+    sets = {k: v for k, v in fields.items() if k in _VENDOR_EDITABLE}
+    if not sets:
+        return False, "No updatable fields supplied"
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        assigns = ", ".join(f'"{k}"=?' for k in sets)
+        params = [str(v).strip() if v is not None else None for v in sets.values()]
+        params.append(vendor_code.strip())
+        n = conn.execute(
+            f"UPDATE vendors SET {assigns} WHERE Vendor_Code=?", params).rowcount
+        conn.commit()
+        return (n > 0), (f"Updated {vendor_code}" if n else f"{vendor_code} not found")
+    except sqlite3.Error as e:
+        return False, f"DB error: {e}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+def set_vendor_status(vendor_code: str, status: str,
+                      conn: sqlite3.Connection = None) -> tuple[bool, str]:
+    """Backlog #24 — activate/deactivate a vendor (soft delete; POs keep their
+    historical Vendor_Code reference)."""
+    if status not in ("active", "inactive"):
+        return False, "status must be 'active' or 'inactive'"
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        n = conn.execute("UPDATE vendors SET status=? WHERE Vendor_Code=?",
+                         (status, vendor_code.strip())).rowcount
+        conn.commit()
+        return (n > 0), (f"{vendor_code} set {status}" if n else "not found")
+    finally:
+        if _owns:
+            conn.close()
+
+
+def bulk_import_vendors(records, created_by: str = "",
+                        conn: sqlite3.Connection = None) -> dict:
+    """Backlog #24 — import vendor rows (list of dicts / DataFrame records).
+    Requires Vendor_Code + Vendor_Name per row. Existing Vendor_Codes are
+    skipped (duplicate detection via the UNIQUE constraint), blank/invalid rows
+    counted as errors. Returns {'added','skipped','errors'}."""
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    out = {"added": 0, "skipped": 0, "errors": 0}
+    try:
+        for r in records:
+            g = (lambda k: str(r.get(k, "") or "").strip())
+            code, name = g("Vendor_Code"), g("Vendor_Name")
+            if not code or not name:
+                out["errors"] += 1
+                continue
+            ok, msg = add_vendor(
+                code, name, address=g("Address"),
+                contact_name=g("Contact_Name"), contact_phone=g("Contact_Phone"),
+                contact_email=g("Contact_Email"),
+                default_inco_terms=g("Default_Inco_Terms"),
+                default_payment_terms=g("Default_Payment_Terms"),
+                created_by=created_by, conn=conn,
+            )
+            if ok:
+                out["added"] += 1
+            elif "already exists" in msg:
+                out["skipped"] += 1
+            else:
+                out["errors"] += 1
+        return out
+    finally:
+        if _owns:
+            conn.close()
+
+
 # ---------------------------------------------------------------------------
 # App notifications (in-app inbox)
 # ---------------------------------------------------------------------------

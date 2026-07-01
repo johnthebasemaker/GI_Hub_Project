@@ -1115,6 +1115,36 @@ def check_crash_safe_replace() -> None:
         conn.close()
 
 
+def check_vendor_master() -> None:
+    """Backlog #24 — vendor add/update/status + bulk import with dup detection."""
+    ok, _ = database.add_vendor("V-CHK-1", "Alpha Supplies", created_by="tester")
+    assert ok, "add_vendor failed"
+    # Duplicate rejected.
+    ok2, msg2 = database.add_vendor("V-CHK-1", "Dup", created_by="tester")
+    assert not ok2 and "already exists" in msg2
+
+    # Update editable field.
+    ok3, _ = database.update_vendor("V-CHK-1", Vendor_Name="Alpha Supplies Ltd",
+                                    Contact_Phone="123")
+    assert ok3
+    vdf = database.list_vendors(active_only=True)
+    row = vdf.set_index("Vendor_Code").loc["V-CHK-1"]
+    assert row["Vendor_Name"] == "Alpha Supplies Ltd" and str(row["Contact_Phone"]) == "123"
+
+    # Deactivate → drops from active list, appears with active_only=False.
+    database.set_vendor_status("V-CHK-1", "inactive")
+    assert "V-CHK-1" not in database.list_vendors(active_only=True)["Vendor_Code"].tolist()
+    assert "V-CHK-1" in database.list_vendors(active_only=False)["Vendor_Code"].tolist()
+
+    # Bulk import: one new, one dup (existing), one invalid (blank name).
+    res = database.bulk_import_vendors([
+        {"Vendor_Code": "V-CHK-2", "Vendor_Name": "Beta Traders"},
+        {"Vendor_Code": "V-CHK-1", "Vendor_Name": "Alpha again"},  # dup
+        {"Vendor_Code": "V-CHK-3", "Vendor_Name": ""},             # invalid
+    ], created_by="tester")
+    assert res == {"added": 1, "skipped": 1, "errors": 1}, res
+
+
 # ---------------------------------------------------------------------------
 # Returnable items (tool loans)
 # ---------------------------------------------------------------------------
@@ -9109,6 +9139,8 @@ def main() -> int:
               check_force_close_undo)
     run_check("DB Editor",    "Crash-safe replace preserves rows on failure (#10)",
               check_crash_safe_replace)
+    run_check("Vendors",      "Master add/update/status + bulk import dedupe (#24)",
+              check_vendor_master)
     run_check("Returnable",  "Tool loan → mark returned",
               check_returnable_items)
     run_check("QR",          "Submit → approve / reject",

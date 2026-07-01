@@ -42,6 +42,7 @@
 > ### 📍 WHERE WE ARE — read this first
 >
 > **DONE this session (all committed + pushed, newest first):**
+> - **Vendor master admin tab (backlog #24)** — Admin "🏭 Vendors" tab (list/add/edit/activate/bulk-import-Excel with dup detection) + `update_vendor`/`set_vendor_status`/`bulk_import_vendors`. +1 regression. `database.py`, `pages_internal/admin_portal.py`.
 > - **Crash-safe Master DB Editor save (backlog #10)** — `crash_safe_replace_table()` (stage→swap→rollback-on-failure) replaces the bare DELETE+to_sql; original rows always preserved on error. +1 regression proves no data loss. `database.py`, `pages_internal/admin_portal.py`.
 > - **Force-close undo window (backlog #28)** — `force_close_target()` snapshots prior state → JSON; `undo_force_close()` restores it verbatim within 24h (no double-undo, no past-window); `get_undoable_force_closures()` + Logistics "↩️ Undo" panel. +1 regression. `database.py`, `pages_internal/logistics_portal.py`.
 > - **uploads/ disk-mirror cleanup (backlog #19)** — `cleanup_upload_disk_mirror()` (dry-run + injectable root) + Admin Danger-Zone "Cleanup old upload files" button (live qualifying-count, CLEAN-confirm, audit). BLOBs authoritative → non-destructive. +1 regression. `database.py`, `pages_internal/admin_portal.py`.
@@ -2281,7 +2282,7 @@ New workstream: track **labor** the way the SME tracks **material**. Source-of-t
 
 ### New (from v3.0 — procurement chain)
 
-24. **Vendor master maintenance UI** — vendors get inline-added during PO creation, but there's no top-level "vendors admin" tab. Admin currently has to use Master DB Editor → `vendors` table. Build a dedicated vendor manager in Admin Portal with bulk import + duplicate detection.
+24. ~~**Vendor master maintenance UI**~~ ✅ **DONE** — new Admin → "🏭 Vendors" tab: list (active/inactive toggle), add, edit, activate/deactivate, and Excel bulk import with duplicate detection. Helpers `update_vendor()`, `set_vendor_status()`, `bulk_import_vendors()` (added/skipped/errors). +1 `bug_check` regression. `database.py`, `pages_internal/admin_portal.py`.
 25. ~~**Reminder cadence is hardcoded T-2 / T-1 / T-0.**~~ ✅ **DONE** — `get_reminder_offsets()`/`set_reminder_offsets()` read/write `app_settings.reminder_offsets` (JSON, normalized non-neg-int desc, default [2,1,0]); `sweep_delivery_reminders()` now drives its cadence from it (canonical T-2/1/0 event keys preserved, custom offsets get generic key+label). Admin → Settings "🔔 Delivery Reminder Cadence" input. +1 `bug_check` regression. `database.py`, `pages_internal/admin_portal.py`.
 26. **Per-warehouse SLA dashboards.** Throughput report exists but no live "warehouse health" page. Add: average ack time, average receive time, partial-delivery rate, RL/BL split ratio per WH.
 27. **Mobile-optimised warehouse PWA.** Warehouse floor users would benefit from a barcode-scanner-first PWA for receive + DN preparation. PWA framework already lives in `pwa/`.

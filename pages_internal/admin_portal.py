@@ -40,6 +40,11 @@ from database import (
     audit_opening_stock_changes,
     cleanup_upload_disk_mirror,
     crash_safe_replace_table,
+    list_vendors,
+    add_vendor,
+    update_vendor,
+    set_vendor_status,
+    bulk_import_vendors,
     get_pending_requests,
     update_request_status,
     process_receipt_delivery,
@@ -228,6 +233,8 @@ def page_admin_portal(user: dict) -> None:
         "🛠️ Tool Catalogue",
         # Lot lifecycle — cross-site quarantine / expire / dispose
         "🧪 Lot Management",
+        # Vendor master maintenance (backlog #24)
+        "🏭 Vendors",
     ]
     tabs = st.tabs(tab_labels)
     with tabs[0]: _render_overview_tab(user)
@@ -246,6 +253,130 @@ def page_admin_portal(user: dict) -> None:
     with tabs[13]:
         from pages_internal.lot_management import render_lot_management
         render_lot_management(user, site_id=None)   # admin → cross-site
+    with tabs[14]: _render_vendors_tab(user)
+
+
+# ===========================================================================
+# TAB — VENDOR MASTER (backlog #24)
+# ===========================================================================
+def _render_vendors_tab(user: dict) -> None:
+    st.subheader("🏭 Vendor Master")
+    st.caption("Maintain the vendor master directly (POs inline-add vendors; "
+               "this is the dedicated manager with bulk import + edit).")
+
+    show_inactive = st.checkbox("Show inactive vendors", value=False,
+                                key="_adm_vendor_show_inactive")
+    vdf = list_vendors(active_only=not show_inactive)
+    st.caption(f"{len(vdf):,} vendor(s)")
+    if not vdf.empty:
+        _cols = [c for c in ["Vendor_Code", "Vendor_Name", "Contact_Name",
+                             "Contact_Phone", "Contact_Email",
+                             "Default_Inco_Terms", "Default_Payment_Terms",
+                             "status"] if c in vdf.columns]
+        st.dataframe(vdf[_cols], width="stretch", hide_index=True)
+
+    # ── Add a single vendor ─────────────────────────────────────────────────
+    with st.expander("➕ Add vendor"):
+        a1, a2 = st.columns(2)
+        with a1:
+            v_code = st.text_input("Vendor Code*", key="_adm_v_code")
+            v_name = st.text_input("Vendor Name*", key="_adm_v_name")
+            v_cname = st.text_input("Contact Name", key="_adm_v_cname")
+            v_phone = st.text_input("Contact Phone", key="_adm_v_phone")
+        with a2:
+            v_email = st.text_input("Contact Email", key="_adm_v_email")
+            v_addr = st.text_input("Address", key="_adm_v_addr")
+            v_inco = st.text_input("Default Inco Terms", key="_adm_v_inco")
+            v_pay = st.text_input("Default Payment Terms", key="_adm_v_pay")
+        if st.button("Add vendor", type="primary", key="_adm_v_add_btn",
+                     disabled=not (v_code.strip() and v_name.strip())):
+            ok, msg = add_vendor(
+                v_code, v_name, address=v_addr, contact_name=v_cname,
+                contact_phone=v_phone, contact_email=v_email,
+                default_inco_terms=v_inco, default_payment_terms=v_pay,
+                created_by=user["username"],
+            )
+            if ok:
+                log_audit_action(user["username"], "ADD_VENDOR", "vendors",
+                                 f"code={v_code.strip()}")
+                st.success(msg); st.rerun()
+            else:
+                st.error(msg)
+
+    # ── Edit / (de)activate an existing vendor ──────────────────────────────
+    if not vdf.empty:
+        with st.expander("✏️ Edit / activate / deactivate"):
+            pick = st.selectbox(
+                "Vendor", vdf["Vendor_Code"].tolist(),
+                format_func=lambda c: f"{c} · "
+                f"{vdf.set_index('Vendor_Code').loc[c, 'Vendor_Name']}",
+                key="_adm_v_edit_pick",
+            )
+            row = vdf.set_index("Vendor_Code").loc[pick]
+            e1, e2 = st.columns(2)
+            with e1:
+                en = st.text_input("Vendor Name", value=str(row.get("Vendor_Name") or ""),
+                                   key="_adm_ve_name")
+                ec = st.text_input("Contact Name", value=str(row.get("Contact_Name") or ""),
+                                   key="_adm_ve_cname")
+                ep = st.text_input("Contact Phone", value=str(row.get("Contact_Phone") or ""),
+                                   key="_adm_ve_phone")
+            with e2:
+                ee = st.text_input("Contact Email", value=str(row.get("Contact_Email") or ""),
+                                   key="_adm_ve_email")
+                ei = st.text_input("Default Inco Terms",
+                                   value=str(row.get("Default_Inco_Terms") or ""),
+                                   key="_adm_ve_inco")
+                epay = st.text_input("Default Payment Terms",
+                                     value=str(row.get("Default_Payment_Terms") or ""),
+                                     key="_adm_ve_pay")
+            b1, b2 = st.columns(2)
+            with b1:
+                if st.button("💾 Save changes", key="_adm_ve_save"):
+                    ok, msg = update_vendor(
+                        pick, Vendor_Name=en, Contact_Name=ec, Contact_Phone=ep,
+                        Contact_Email=ee, Default_Inco_Terms=ei,
+                        Default_Payment_Terms=epay)
+                    if ok:
+                        log_audit_action(user["username"], "UPDATE_VENDOR",
+                                         "vendors", f"code={pick}")
+                        st.success(msg); st.rerun()
+                    else:
+                        st.error(msg)
+            with b2:
+                _cur = str(row.get("status") or "active")
+                _new = "inactive" if _cur == "active" else "active"
+                if st.button(f"{'🚫 Deactivate' if _new=='inactive' else '✅ Reactivate'}",
+                             key="_adm_ve_status"):
+                    ok, msg = set_vendor_status(pick, _new)
+                    if ok:
+                        log_audit_action(user["username"], "VENDOR_STATUS",
+                                         "vendors", f"code={pick} -> {_new}")
+                        st.success(msg); st.rerun()
+                    else:
+                        st.error(msg)
+
+    # ── Bulk import from Excel ──────────────────────────────────────────────
+    with st.expander("📥 Bulk import from Excel"):
+        st.caption("Columns: Vendor_Code, Vendor_Name (required) + optional "
+                   "Address, Contact_Name, Contact_Phone, Contact_Email, "
+                   "Default_Inco_Terms, Default_Payment_Terms. Existing codes "
+                   "are skipped (duplicate detection).")
+        up = st.file_uploader("Vendor spreadsheet (.xlsx)", type=["xlsx"],
+                              key="_adm_v_bulk")
+        if up is not None and st.button("Import", key="_adm_v_bulk_btn"):
+            try:
+                import pandas as _pd
+                bdf = _pd.read_excel(up)
+                res = bulk_import_vendors(bdf.to_dict("records"),
+                                          created_by=user["username"])
+                log_audit_action(user["username"], "BULK_IMPORT_VENDORS",
+                                 "vendors", str(res))
+                st.success(f"Added {res['added']}, skipped {res['skipped']} "
+                           f"(duplicates), errors {res['errors']}.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Import failed: {e}")
 
 
 # ===========================================================================
