@@ -109,6 +109,32 @@ def _make_coercer(col):
     return lambda v: v  # Text / LargeBinary — passthrough
 
 
+# PostgreSQL-native view definitions for views whose SQLite text uses dialect-
+# specific functions. Used only when the target is Postgres; otherwise the
+# SQLite view text (models.SME_AND_DERIVED_VIEWS) is used verbatim.
+#   v_expiring_stock: SQLite julianday()/date('now') → PG date arithmetic. The
+#   `~ '^\d{4}-\d{2}-\d{2}'` guard ensures ::date never errors on a malformed
+#   string (SQLite's date() returned NULL; PG's cast would raise).
+PG_VIEW_OVERRIDES: dict[str, str] = {
+    "v_expiring_stock": (
+        "CREATE VIEW v_expiring_stock AS "
+        "SELECT TRIM(r.SAP_Code) AS SAP_Code, "
+        "       i.Equipment_Description AS Equipment_Description, i.UOM AS UOM, "
+        "       COALESCE(r.Site_ID,'HQ') AS Site_ID, r.Quantity AS Quantity, "
+        "       r.Supplier AS Supplier, r.PR_Number AS PR_Number, "
+        "       r.Expiry_Date AS Expiry_Date, "
+        "       (r.Expiry_Date::date - CURRENT_DATE) AS Days_Until_Expiry, "
+        "       CASE WHEN r.Expiry_Date::date < CURRENT_DATE THEN 'Expired' "
+        "            WHEN r.Expiry_Date::date <= CURRENT_DATE + 30 THEN 'Short-Dated' "
+        "            ELSE 'Good' END AS Expiry_Status "
+        "FROM receipts r LEFT JOIN inventory i "
+        "  ON TRIM(i.SAP_Code) = TRIM(r.SAP_Code) "
+        "WHERE r.Expiry_Date IS NOT NULL AND r.Expiry_Date <> '' "
+        "  AND r.Expiry_Date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'"
+    ),
+}
+
+
 # Tables that lack an explicit `id` in SQLite → populate id := rowid on copy.
 def _needs_rowid_id(src_cols: list[str], tgt_cols: list[str]) -> bool:
     return ("id" in tgt_cols) and ("id" not in src_cols)
@@ -204,8 +230,12 @@ def run_migration(
                         f"'id'), COALESCE((SELECT MAX(id) FROM {table.name}), 1), "
                         f"(SELECT COUNT(*) FROM {table.name}) > 0)"))
 
-        # Recreate views (best-effort; dialect-sensitive ones may need review).
+        # Recreate views. Use a PG-native override where the SQLite text uses
+        # dialect-specific functions (e.g. v_expiring_stock); otherwise the
+        # portable SQLite text works on both.
         for vname, vsql in models.SME_AND_DERIVED_VIEWS.items():
+            if is_pg and vname in PG_VIEW_OVERRIDES:
+                vsql = PG_VIEW_OVERRIDES[vname]
             try:
                 conn.execute(text(f'DROP VIEW IF EXISTS "{vname}"'
                                   + (" CASCADE" if is_pg else "")))

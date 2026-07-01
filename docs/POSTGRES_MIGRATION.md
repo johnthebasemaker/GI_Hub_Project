@@ -187,7 +187,7 @@ even then the pre-cutover `.db` is a full snapshot.
 | 1 — Engine seam | ✅ Done | `get_database_url()` / `get_engine()`; `get_connection()` untouched. |
 | 2 — Portability helpers | ✅ Helpers done | `db_dialect`, `column_exists`, `now_sql`, `days_ago_sql`, `date_diff_days_sql` added; 1 proof-of-pattern site migrated. |
 | 3 — Portable SQL (route ~185 legacy sites through Phase-2 helpers + named params) | 🔶 In progress | Sub-phase A (`PRAGMA table_info` → `column_exists()` in `init_db()`) started. 10/~55 `init_db()` self-heal call sites done (1 Phase-2 + 6 routine increment 1 + 3 interactive increment 2). Param-style (`?` → named params) not yet started. |
-| 4 — Dual-backend CI | ⏳ Not started | Gated on Phase 3 completing. |
+| 4 — Dual-backend CI | 🔶 Data-layer harness done | `backend/dual_ci.py` (migrate + per-view + semantic parity) + `.github/workflows/postgres-dual-ci.yml` (postgres:16 service → runs on push, no local Docker). Validates schema/types/data/views on real PG. Full *behavioural* CI (bug_check on PG) still needs `get_connection()` wired to the engine. |
 | 5 — Cutover | 🔶 Copy script written + dry-run-validated | `backend/migrate_sqlite_to_postgres.py` (schema from models.py, ledger `id:=rowid`, typed coercion, per-table parity, view recreation). Validated SQLite→SQLite (real `gi_database.db` → PARITY OK). Awaits a live Postgres run + Phase-4 dual-CI. |
 | 6 — Server | 🔶 Compose service added | `postgres` service + `pg-data` volume in `docker-compose.yml` (migration target; app still on SQLite). |
 
@@ -220,6 +220,15 @@ even then the pre-cutover `.db` is a full snapshot.
 ---
 
 ## 8. Run Log
+
+### 2026-07-01 (night) · actor=interactive · branch=`main` · Phase-4 dual-CI harness + totp fix
+- **Files:** `backend/dual_ci.py` (new), `.github/workflows/postgres-dual-ci.yml` (new), `backend/migrate_sqlite_to_postgres.py` (PG view overrides), `backend/models.py` (regenerated: raw view SQL), `database.py` (totp fix), `bug_check.py` (+3 checks), docs, handoff.
+- **totp fix:** relocated the `users.totp_*` self-heal to AFTER both role-CHECK rebuilds (via `column_exists`) so a fresh DB's 1st `init_db` keeps 2FA columns. Regression test added.
+- **Dual-CI harness** (`backend/dual_ci.py`): migrates SQLite→target then checks per-table + per-**view** row-count parity and **semantic aggregates** (identity-math totals, lot balances, expiry counts). `--dry-run` = SQLite→SQLite (local, no PG). **GitHub Actions workflow** stands up a `postgres:16` service and runs `bug_check` (SQLite) + `dual_ci` (PG) on push — dual-backend CI with **no local Docker** (neither the sandbox nor the user's Mac has Docker/PG).
+- **PG view override:** `v_expiring_stock` rewritten for Postgres (`julianday`/`date('now')` → `::date` arithmetic + `CURRENT_DATE`, with a `~ '^[0-9]{4}-...'` guard so the cast never errors). Other 13 views are portable.
+- **⚠ Two bugs the harness caught (both fixed):** (1) the model generator **flattened view SQL whitespace**, which swallowed `v_lot_balance`'s `--` line comment (rest of the query became a comment → broken view). Now stores **raw** view SQL (newlines preserved). (2) confirmed `system_settings`/SME views survive.
+- **Tests:** full `.venv` **596/0 · 21/21**. Dry-run dual-CI PASS on the real `gi_database.db` (all 64 tables, all 14 views queryable, semantic aggregates match).
+- **Next:** the real Postgres run happens in **GitHub Actions** on push (watch the "Postgres dual-CI" workflow). Once green there, the remaining gap to cutover is wiring `get_connection()` to the SQLAlchemy engine (so the *app* + full `bug_check` run on PG) — Phase 3 completion + a behavioural dual-CI.
 
 ### 2026-07-01 (late) · actor=interactive · branch=`main` · Phase-5 copy script + PG service
 - **Files:** `backend/migrate_sqlite_to_postgres.py` (new), `docker-compose.yml` (postgres service + pg-data volume), `backend/models.py` (regenerated: steady-state), `bug_check.py` (+2 checks: migration dry-run, plus parity now steady-state), `docs/`, `handoff.md`.

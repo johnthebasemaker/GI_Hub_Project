@@ -1368,6 +1368,33 @@ def check_sqlite_to_pg_migration_dryrun() -> None:
         e.dispose()
 
 
+def check_dual_ci_harness_dryrun() -> None:
+    """Phase 4 — the dual-CI harness passes end-to-end in dry-run (SQLite→SQLite):
+    every migrated view is queryable (guards the v_lot_balance `--`-comment
+    regression) and the semantic aggregates match."""
+    import sqlite3, tempfile, os, importlib.util
+    src = os.path.join(tempfile.mkdtemp(), "dci_src.db")
+    c = sqlite3.connect(src)
+    database.init_db(c); database.init_db(c)
+    c.execute("INSERT INTO lots (Lot_Number, SAP_Code, Site_ID, Received_Date, Status) "
+              "VALUES ('L1','S1','HQ','2026-01-01','open')")
+    c.execute("INSERT INTO receipts (Date, SAP_Code, Quantity, Site_ID, Lot_Number) "
+              "VALUES ('2026-01-01','S1',9,'HQ','L1')")
+    c.commit(); c.close()
+
+    spec = importlib.util.spec_from_file_location("_dci", "backend/dual_ci.py")
+    dci = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dci)
+    tgt = "sqlite:///" + os.path.join(tempfile.mkdtemp(), "dci_tgt.db")
+    res = dci.run(src, tgt)
+
+    vbad = {v: i for v, i in res["views"].items() if not i["ok"]}
+    assert not vbad, f"view parity failed (queryability regression?): {vbad}"
+    sbad = {k: i for k, i in res["semantic"].items() if not i["ok"]}
+    assert not sbad, f"semantic parity failed: {sbad}"
+    assert res["ok"], "dual-CI harness reported failure"
+
+
 def check_per_site_unit_cost() -> None:
     """Backlog #15 — per-site cost override resolves before global; valuation
     honours it; no change until an override exists."""
@@ -9431,6 +9458,8 @@ def main() -> int:
               check_users_totp_survives_fresh_init)
     run_check("Postgres",     "SQLite→target copy: parity + ledger id=rowid",
               check_sqlite_to_pg_migration_dryrun)
+    run_check("Postgres",     "dual-CI harness: view + semantic parity (dry-run)",
+              check_dual_ci_harness_dryrun)
     run_check("Valuation",    "Per-site Unit_Cost override + fallback (#15)",
               check_per_site_unit_cost)
     run_check("Returnable",  "Tool loan → mark returned",
