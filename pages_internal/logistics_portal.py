@@ -50,6 +50,8 @@ from database import (
     assign_po_to_warehouse,
     list_pending_reschedules, decide_reschedule,
     force_close_target,
+    get_undoable_force_closures,
+    undo_force_close,
     raise_vendor_return, list_vendor_returns,
     list_force_closures,
     get_sites,
@@ -994,6 +996,29 @@ def _tab_force_close(user: dict) -> None:
                 reason, closed_by=user["username"],
             )
             (st.success if ok else st.error)(msg)
+
+    # ── Undo window (backlog #28) ────────────────────────────────────────────
+    st.divider()
+    st.markdown("#### ↩️ Undo a force-close (within 24h)")
+    st.caption("Reverts the target to its exact status before force-close. "
+               "Available for 24 hours; each closure can be undone once.")
+    und = get_undoable_force_closures()
+    if und.empty:
+        st.caption("Nothing to undo — no reversible force-closures in the last 24h.")
+    else:
+        for _, r in und.iterrows():
+            uc1, uc2 = st.columns([5, 1])
+            with uc1:
+                st.markdown(
+                    f"**{str(r['target_type']).upper()} {r['target_ref']}** · "
+                    f"by {r['closed_by']} · {r['closed_at']} · "
+                    f"_{str(r['reason'])[:60]}_"
+                )
+            with uc2:
+                if st.button("↩️ Undo", key=f"_logi_undo_{int(r['id'])}"):
+                    ok, msg = undo_force_close(int(r["id"]), by_user=user["username"])
+                    (st.success if ok else st.error)(msg)
+                    st.rerun()
 
     st.divider()
     st.markdown("#### Recent force-closures (audit)")

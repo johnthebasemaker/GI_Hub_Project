@@ -1011,6 +1011,70 @@ def check_upload_cleanup() -> None:
     assert res["dirs_pruned"] >= 1, "expected at least one pruned dir"
 
 
+def check_force_close_undo() -> None:
+    """Backlog #28 — undo_force_close restores exact prior statuses within the
+    window, refuses double-undo, and refuses once the window elapses."""
+    conn = database.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO purchase_orders (PO_Number, Site_ID, status) "
+                    "VALUES ('PO-UNDO','HQ','open')")
+        cur.execute("INSERT INTO po_items (PO_Number, Qty, line_status) "
+                    "VALUES ('PO-UNDO', 5, 'open')"); i1 = cur.lastrowid
+        cur.execute("INSERT INTO po_items (PO_Number, Qty, line_status) "
+                    "VALUES ('PO-UNDO', 3, 'partially_delivered')"); i2 = cur.lastrowid
+        cur.execute("INSERT INTO po_items (PO_Number, Qty, line_status) "
+                    "VALUES ('PO-UNDO', 2, 'delivered')"); i3 = cur.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+
+    ok, msg = database.force_close_target("po", "PO-UNDO", "test reason", "tester")
+    assert ok, msg
+    conn = database.get_connection()
+    try:
+        assert conn.execute("SELECT status FROM purchase_orders WHERE PO_Number='PO-UNDO'"
+                            ).fetchone()[0] == "force_closed"
+        rows = dict(conn.execute("SELECT id, line_status FROM po_items WHERE PO_Number='PO-UNDO'").fetchall())
+        assert rows[i1] == "force_closed" and rows[i2] == "force_closed"
+        assert rows[i3] == "delivered", "delivered line must not be force-closed"
+        cid = conn.execute("SELECT id FROM po_force_closures WHERE PO_Number='PO-UNDO' "
+                           "ORDER BY id DESC").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert (database.get_undoable_force_closures()["id"] == cid).any(), "closure not listed as undoable"
+
+    ok, msg = database.undo_force_close(cid, "admin")
+    assert ok, msg
+    conn = database.get_connection()
+    try:
+        assert conn.execute("SELECT status FROM purchase_orders WHERE PO_Number='PO-UNDO'"
+                            ).fetchone()[0] == "open", "PO status not restored"
+        rows = dict(conn.execute("SELECT id, line_status FROM po_items WHERE PO_Number='PO-UNDO'").fetchall())
+        assert rows[i1] == "open", "line 1 not restored to open"
+        assert rows[i2] == "partially_delivered", f"line 2 exact prior not restored: {rows[i2]}"
+        assert rows[i3] == "delivered"
+    finally:
+        conn.close()
+
+    ok2, msg2 = database.undo_force_close(cid, "admin")
+    assert not ok2 and "Already reverted" in msg2, f"double-undo not blocked: {msg2}"
+
+    # Window enforcement — backdate a fresh closure 30h and expect refusal.
+    database.force_close_target("po", "PO-UNDO", "again", "tester")
+    conn = database.get_connection()
+    try:
+        cid2 = conn.execute("SELECT id FROM po_force_closures WHERE PO_Number='PO-UNDO' "
+                            "AND reverted_at IS NULL ORDER BY id DESC").fetchone()[0]
+        conn.execute("UPDATE po_force_closures SET closed_at=datetime('now','-30 hours') WHERE id=?", (cid2,))
+        conn.commit()
+    finally:
+        conn.close()
+    ok3, msg3 = database.undo_force_close(cid2, "admin")
+    assert not ok3 and "window" in msg3.lower(), f"expired window not blocked: {msg3}"
+
+
 # ---------------------------------------------------------------------------
 # Returnable items (tool loans)
 # ---------------------------------------------------------------------------
@@ -9001,6 +9065,8 @@ def main() -> int:
               check_reminder_offsets_config)
     run_check("Uploads",     "Disk-mirror cleanup: old removed, recent kept (#19)",
               check_upload_cleanup)
+    run_check("Force-close",  "Undo restores prior state within window (#28)",
+              check_force_close_undo)
     run_check("Returnable",  "Tool loan → mark returned",
               check_returnable_items)
     run_check("QR",          "Submit → approve / reject",

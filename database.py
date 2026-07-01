@@ -1328,9 +1328,17 @@ def init_db(conn: sqlite3.Connection = None) -> None:
             reason          TEXT    NOT NULL,
             closed_by       TEXT    NOT NULL,
             closed_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
-            notes           TEXT
+            notes           TEXT,
+            prior_state     TEXT,           -- JSON snapshot for undo (#28)
+            reverted_at     DATETIME,       -- set when an admin undoes (#28)
+            reverted_by     TEXT
         )
     """)
+    # Backlog #28 self-heal — older DBs predate the undo columns.
+    # Phase 3 — uses the portable column_exists() helper (identical on SQLite).
+    for _fc_col in ("prior_state", "reverted_at", "reverted_by"):
+        if not column_exists("po_force_closures", _fc_col, conn=conn):
+            c.execute(f"ALTER TABLE po_force_closures ADD COLUMN {_fc_col} TEXT")
 
     # delivery_reminders_sent — idempotency log for the T-2/T-1/T-0 sweep.
     # The UNIQUE constraint stops duplicate fires for the same (ref, offset)
@@ -9174,6 +9182,10 @@ def force_close_target(
         site_id = None
         pr_number = None
         po_number = None
+        # Backlog #28 — snapshot the exact prior state so undo restores it
+        # verbatim (statuses aren't otherwise recoverable after the overwrite).
+        import json as _json
+        prior: dict = {"type": target_type}
 
         if target_type == "pr":
             pr_number = target_ref
@@ -9181,6 +9193,12 @@ def force_close_target(
                 "SELECT DISTINCT COALESCE(Site_ID,'HQ') FROM pr_master "
                 "WHERE PR_Number = ?", (target_ref,)).fetchone()
             site_id = row[0] if row else None
+            _snap = conn.execute(
+                "SELECT status, logistics_status FROM pr_master "
+                "WHERE PR_Number = ?", (target_ref,)).fetchone()
+            if _snap:
+                prior["pr_status"] = _snap[0]
+                prior["pr_logistics_status"] = _snap[1]
             conn.execute(
                 "UPDATE pr_master SET status='closed', "
                 "    logistics_status='force_closed' "
@@ -9193,6 +9211,17 @@ def force_close_target(
                 "WHERE PO_Number = ?", (target_ref,)).fetchone()
             if row:
                 pr_number, site_id = row
+            _snap = conn.execute(
+                "SELECT status FROM purchase_orders WHERE PO_Number = ?",
+                (target_ref,)).fetchone()
+            prior["po_status"] = _snap[0] if _snap else "open"
+            # Only the lines this call will flip (matches the UPDATE below).
+            prior["items"] = [
+                {"id": r[0], "line_status": r[1]} for r in conn.execute(
+                    "SELECT id, line_status FROM po_items "
+                    "WHERE PO_Number = ? AND line_status NOT IN "
+                    "('delivered','closed')", (target_ref,)).fetchall()
+            ]
             conn.execute(
                 "UPDATE purchase_orders "
                 "SET status='force_closed', closed_at=CURRENT_TIMESTAMP, "
@@ -9218,6 +9247,11 @@ def force_close_target(
                 "WHERE pi.id = ?", (item_id,)).fetchone()
             if row:
                 po_number, pr_number, site_id = row
+            _snap = conn.execute(
+                "SELECT line_status FROM po_items WHERE id = ?",
+                (item_id,)).fetchone()
+            prior["items"] = [{"id": item_id,
+                               "line_status": _snap[0] if _snap else "open"}]
             conn.execute(
                 "UPDATE po_items SET line_status='force_closed', close_reason=? "
                 "WHERE id = ?", (reason, item_id),
@@ -9226,10 +9260,10 @@ def force_close_target(
         conn.execute(
             "INSERT INTO po_force_closures "
             "(target_type, target_ref, Site_ID, PR_Number, PO_Number, "
-            " reason, closed_by, notes) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " reason, closed_by, notes, prior_state) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (target_type, str(target_ref), site_id, pr_number, po_number,
-             reason, closed_by, notes),
+             reason, closed_by, notes, _json.dumps(prior)),
         )
         conn.commit()
 
@@ -9263,6 +9297,125 @@ def force_close_target(
         except Exception:
             pass
         return True, f"Force-closed {target_type} {target_ref}"
+    except sqlite3.Error as e:
+        return False, f"DB error: {e}"
+    finally:
+        if _owns:
+            conn.close()
+
+
+FORCE_CLOSE_UNDO_HOURS = 24  # Backlog #28 — grace window for reverting
+
+
+def get_undoable_force_closures(
+    within_hours: int = FORCE_CLOSE_UNDO_HOURS, conn: sqlite3.Connection = None,
+) -> pd.DataFrame:
+    """Backlog #28 — force-closures still inside the undo window and not yet
+    reverted. Drives the admin "Undo" list. A generous 2-day SQL prefilter is
+    narrowed to the precise hour window in Python."""
+    import datetime as _dt
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        df = pd.read_sql(
+            "SELECT id, target_type, target_ref, PR_Number, PO_Number, "
+            "       reason, closed_by, closed_at "
+            "FROM po_force_closures "
+            "WHERE reverted_at IS NULL AND prior_state IS NOT NULL "
+            f"  AND closed_at > {days_ago_sql(2)} "  # generous DB-side prefilter
+            "ORDER BY closed_at DESC", conn,
+        )
+    finally:
+        if _owns:
+            conn.close()
+    if df.empty:
+        return df
+    now = _dt.datetime.utcnow()
+
+    def _within(ts):
+        try:
+            return (now - _dt.datetime.strptime(
+                str(ts), "%Y-%m-%d %H:%M:%S")).total_seconds() / 3600.0 <= within_hours
+        except (ValueError, TypeError):
+            return True  # unparseable → let the admin try (undo re-checks)
+    return df[df["closed_at"].map(_within)].reset_index(drop=True)
+
+
+def undo_force_close(
+    closure_id: int, by_user: str, within_hours: int = FORCE_CLOSE_UNDO_HOURS,
+    conn: sqlite3.Connection = None,
+) -> tuple[bool, str]:
+    """Backlog #28 — revert a force-closure within the grace window, restoring
+    the exact prior statuses captured at close time. Idempotent-safe: a closure
+    already reverted (or past the window, or missing its snapshot) is refused."""
+    import json as _json, datetime as _dt
+    _owns = conn is None
+    if _owns:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT target_type, target_ref, PR_Number, PO_Number, closed_at, "
+            "       prior_state, reverted_at "
+            "FROM po_force_closures WHERE id = ?", (int(closure_id),)).fetchone()
+        if not row:
+            return False, "Closure not found"
+        ttype, tref, pr_number, po_number, closed_at, prior_json, reverted_at = row
+        if reverted_at:
+            return False, "Already reverted"
+        if not prior_json:
+            return False, "No prior-state snapshot (closed before undo was added)"
+        # Enforce the grace window (closed_at is UTC, like CURRENT_TIMESTAMP).
+        try:
+            closed_dt = _dt.datetime.strptime(closed_at, "%Y-%m-%d %H:%M:%S")
+            age_h = (_dt.datetime.utcnow() - closed_dt).total_seconds() / 3600.0
+            if age_h > within_hours:
+                return False, (f"Undo window elapsed "
+                               f"({age_h:.1f}h > {within_hours}h)")
+        except (ValueError, TypeError):
+            pass  # unparseable timestamp — don't block the revert
+
+        prior = _json.loads(prior_json)
+        if ttype == "pr":
+            conn.execute(
+                "UPDATE pr_master SET status=?, logistics_status=? "
+                "WHERE PR_Number = ?",
+                (prior.get("pr_status", "open"),
+                 prior.get("pr_logistics_status"), tref),
+            )
+        elif ttype == "po":
+            conn.execute(
+                "UPDATE purchase_orders SET status=?, closed_at=NULL, "
+                "    closed_by=NULL, close_reason=NULL WHERE PO_Number = ?",
+                (prior.get("po_status", "open"), tref),
+            )
+            for it in prior.get("items", []):
+                conn.execute(
+                    "UPDATE po_items SET line_status=?, close_reason=NULL "
+                    "WHERE id = ?", (it.get("line_status", "open"), it["id"]),
+                )
+        else:  # po_item
+            for it in prior.get("items", []):
+                conn.execute(
+                    "UPDATE po_items SET line_status=?, close_reason=NULL "
+                    "WHERE id = ?", (it.get("line_status", "open"), it["id"]),
+                )
+
+        conn.execute(
+            "UPDATE po_force_closures "
+            "SET reverted_at=CURRENT_TIMESTAMP, reverted_by=? WHERE id = ?",
+            (by_user, int(closure_id)),
+        )
+        conn.commit()
+        try:
+            log_audit_action(
+                by_user, f"UNDO_FORCE_CLOSE_{ttype.upper()}",
+                "po_force_closures",
+                f"closure_id={closure_id} target={ttype}:{tref}",
+            )
+        except Exception:
+            pass
+        return True, f"Reverted force-close of {ttype} {tref}"
     except sqlite3.Error as e:
         return False, f"DB error: {e}"
     finally:
