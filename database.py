@@ -558,9 +558,8 @@ def init_db(conn: sqlite3.Connection = None) -> None:
         )
 
     # ── pending_receipts: workflow_state (allows 'rejected' for HOD UI) ─
-    c.execute("PRAGMA table_info(pending_receipts)")
-    pr_rcpt_cols = {row[1] for row in c.fetchall()}
-    if "rejection_reason" not in pr_rcpt_cols:
+    # Phase 3 — uses the portable column_exists() helper (identical on SQLite).
+    if not column_exists("pending_receipts", "rejection_reason", conn=conn):
         c.execute("ALTER TABLE pending_receipts ADD COLUMN rejection_reason TEXT")
 
     # ── Unit_Cost (standard-cost model, currency = SAR) ──────────────────
@@ -1393,18 +1392,15 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     # ── Self-heal: receipts carry the upstream DN/PO/Warehouse refs ───────
     # These let the Site SK Receipt Staging show a "🚚 from warehouse" chip
     # and let auditors trace a stock movement back to its originating PO.
-    c.execute("PRAGMA table_info(receipts)")
-    _rec_cols2 = {row[1] for row in c.fetchall()}
+    # Phase 3 — uses the portable column_exists() helper (identical on SQLite).
     for _col in ("DN_Number", "Warehouse_ID", "PO_Number_Source"):
-        if _col not in _rec_cols2:
+        if not column_exists("receipts", _col, conn=conn):
             try:
                 c.execute(f"ALTER TABLE receipts ADD COLUMN {_col} TEXT")
             except sqlite3.OperationalError:
                 pass
-    c.execute("PRAGMA table_info(pending_receipts)")
-    _prc_cols2 = {row[1] for row in c.fetchall()}
     for _col in ("DN_Number", "Warehouse_ID", "PO_Number_Source"):
-        if _col not in _prc_cols2:
+        if not column_exists("pending_receipts", _col, conn=conn):
             try:
                 c.execute(f"ALTER TABLE pending_receipts ADD COLUMN {_col} TEXT")
             except sqlite3.OperationalError:
