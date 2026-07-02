@@ -8,7 +8,7 @@ port of the SQLite view definitions in backend/models.py, with:
   * mixed-case identifiers double-quoted (PG folds unquoted names),
   * every non-aggregated column added to GROUP BY (PG is strict; SQLite is not),
   * SQLite date math (julianday / date('now') / date('now','+30 days'))
-    rewritten as PG date arithmetic (date - date -> int days; CURRENT_DATE(+30)).
+    rewritten as PG date arithmetic (date - date -> int days; ((now() AT TIME ZONE 'UTC')::date)(+30)).
 
 Parity against the SQLite views on the real data is asserted by
 backend/api/parity_check.py — run it after changing any SQL here.
@@ -148,13 +148,13 @@ SELECT
     r."Supplier"                         AS "Supplier",
     r."PR_Number"                        AS "PR_Number",
     r."Expiry_Date"                      AS "Expiry_Date",
-    (CAST(substring(r."Expiry_Date" FROM 1 FOR 10) AS date) - CURRENT_DATE)
+    (CAST(substring(r."Expiry_Date" FROM 1 FOR 10) AS date) - ((now() AT TIME ZONE 'UTC')::date))
                                          AS "Days_Until_Expiry",
     CASE
-        WHEN CAST(substring(r."Expiry_Date" FROM 1 FOR 10) AS date) < CURRENT_DATE
+        WHEN CAST(substring(r."Expiry_Date" FROM 1 FOR 10) AS date) < ((now() AT TIME ZONE 'UTC')::date)
             THEN 'Expired'
         WHEN CAST(substring(r."Expiry_Date" FROM 1 FOR 10) AS date)
-             <= (CURRENT_DATE + 30)
+             <= (((now() AT TIME ZONE 'UTC')::date) + 30)
             THEN 'Short-Dated'
         ELSE 'Good'
     END                                  AS "Expiry_Status"

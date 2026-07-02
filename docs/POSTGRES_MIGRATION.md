@@ -221,6 +221,10 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-03 · actor=interactive · branch=`main` · 📓 New-stack handoff doc + expiring-view timezone fix
+- **Handoff:** added `docs/NEW_STACK_HANDOFF.md` — the self-contained fresh-chat entry point (run steps, logins, golden rules, DONE list, and the explicit NOT-yet-ported backlog: in-app notifications, WhatsApp, email/mailer, local-LLM/OCR, CV, user-registration/-management/2FA-enrollment, reservations, QR, reports, man-hours, admin console, PR-creation UI, DN-approval chain, peripheral tabs). `handoff.md` points to it.
+- **Fix:** `v_expiring_stock` port used PG `CURRENT_DATE` (local tz) vs SQLite `date('now')` (UTC) — when the calendar rolled over mid-session, `Days_Until_Expiry` read −7 vs −6 (rows otherwise identical), failing parity. Pinned the PG port to **UTC** (`(now() AT TIME ZONE 'UTC')::date`) so it matches SQLite regardless of tz/rollover. **Parity PASS 5/5 again.** `bug_check` 599/0, crawler 21/21, dual_ci 64/64. Local PG reset pristine.
+
 ### 2026-07-02 · actor=interactive · branch=`main` · 🧪 SME Material Estimator (READ-ONLY) — last major portal
 - **Constraint honoured:** SME is **frozen** in Streamlit (SME Canon). The new build only **reads** the `sme_*` tables — never writes them. Ordering uses explicit keys, never rowid (Rule 1).
 - **Backend** (`sme.py`, `require_level(2)` = hod/admin): `GET /sme/summary` (equipment/recipes/materials counts, total + planned + done SQM, equipment-by-lining-system), `/sme/equipment`, `/sme/recipes`, `/sme/sqm-progress`, `/sme/materials`. **`SQL_SME_MATERIALS`** is a Postgres-native port of the SQLite `sme_materials_view` (derived `Available_Qty = seed + received − consumed`, joined SAP_Code→inventory.Material_Code); added to the parity harness (`DERIVED_SME`) → **parity PASS 22/22** (now 5 derived views gated: live/by-site/lots/expiring/**sme_materials**).

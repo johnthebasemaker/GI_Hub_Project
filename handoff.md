@@ -41,6 +41,8 @@
 
 > ### 📍 WHERE WE ARE — read this first
 >
+> **🆕 CONTINUING THE NEW REACT/FASTAPI/POSTGRES BUILD? → START WITH [`docs/NEW_STACK_HANDOFF.md`](docs/NEW_STACK_HANDOFF.md).** It is the self-contained fresh-chat entry point: how to run it, login creds, golden rules (don't touch `database.py`; SME frozen; keep local PG == SQLite), the full DONE list, and the explicit PENDING/NOT-yet-ported backlog (in-app notifications, WhatsApp, email/mailer, local-LLM/OCR, CV, user-registration + user-management + 2FA-enrollment, reservations, QR, reports, man-hours, admin console, PR-creation UI, DN-approval chain, peripheral logistics/warehouse tabs). Per-slice detail is in `docs/POSTGRES_MIGRATION.md` §8.
+>
 > **The 3-tier stack now exists (all local, all verified):** Streamlit+SQLite (unchanged, production) ‖ **NEW** FastAPI+PostgreSQL API (`backend/api/`, `./run_api.sh` → :8000/docs) ‖ **NEW** React/AntD SPA (`frontend/`, `npm run dev` → :5173). The React app talks to the API via a Vite `/api`→:8000 proxy. Both new tiers are the future direction; the live app is still Streamlit+SQLite.
 >
 > ### 🧭 DID / DOING / WANT (the plan the user set 2026-07-02)
