@@ -1,44 +1,54 @@
-import { Layout, Menu, Tag, Typography } from 'antd'
+import { Button, Layout, Menu, Space, Tag, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { DashboardOutlined, FormOutlined, StockOutlined } from '@ant-design/icons'
+import { DashboardOutlined, FormOutlined, LogoutOutlined, StockOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth } from '../api/hooks'
+import { useAuth } from '../auth/AuthContext'
 import { READ_ENTITIES, WRITE_ENTITIES } from '../config/entities'
 
 const { Header, Sider, Content } = Layout
 
-const menuItems: MenuProps['items'] = [
-  { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
-  { key: '/stock', icon: <StockOutlined />, label: 'Stock' },
-  {
-    key: 'entry',
-    label: 'Data Entry',
-    type: 'group',
-    children: [
-      { key: '/entry/receive', icon: <FormOutlined />, label: 'Receive Stock' },
-      { key: '/entry/issue', icon: <FormOutlined />, label: 'Issue Stock' },
-      { key: '/entry/return', icon: <FormOutlined />, label: 'Return Stock' },
-      { key: '/entry/adjust', icon: <FormOutlined />, label: 'Stock Adjustment' },
-    ],
-  },
-  {
-    key: 'records',
-    label: 'Records',
-    type: 'group',
-    children: READ_ENTITIES.map((e) => ({ key: `/records/${e.key}`, label: e.label })),
-  },
-  {
-    key: 'master',
-    label: 'Master Data',
-    type: 'group',
-    children: WRITE_ENTITIES.map((e) => ({ key: `/master/${e.key}`, label: e.label })),
-  },
-]
+// Nav is role-gated by the signed-in user's hierarchy level (admin 4 … store_keeper 0).
+function buildMenu(level: number): MenuProps['items'] {
+  const items: MenuProps['items'] = [
+    { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
+    { key: '/stock', icon: <StockOutlined />, label: 'Stock' },
+    {
+      key: 'entry',
+      label: 'Data Entry',
+      type: 'group',
+      children: [
+        { key: '/entry/receive', icon: <FormOutlined />, label: 'Receive Stock' },
+        { key: '/entry/issue', icon: <FormOutlined />, label: 'Issue Stock' },
+        { key: '/entry/return', icon: <FormOutlined />, label: 'Return Stock' },
+        { key: '/entry/adjust', icon: <FormOutlined />, label: 'Stock Adjustment' },
+      ],
+    },
+    {
+      key: 'records',
+      label: 'Records',
+      type: 'group',
+      children: READ_ENTITIES.map((e) => ({ key: `/records/${e.key}`, label: e.label })),
+    },
+  ]
+  // Master data (vendors/warehouses/employees) — admin & logistics only.
+  if (level >= 3) {
+    items.push({
+      key: 'master',
+      label: 'Master Data',
+      type: 'group',
+      children: WRITE_ENTITIES.map((e) => ({ key: `/master/${e.key}`, label: e.label })),
+    })
+  }
+  return items
+}
 
 export default function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const { data: health } = useHealth()
+  const { user, logout } = useAuth()
+  const level = user?.level ?? 0
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -54,7 +64,7 @@ export default function AppLayout() {
         <Menu
           mode="inline"
           selectedKeys={[location.pathname]}
-          items={menuItems}
+          items={buildMenu(level)}
           onClick={({ key }) => navigate(key)}
           style={{ borderInlineEnd: 'none' }}
         />
@@ -71,7 +81,7 @@ export default function AppLayout() {
           }}
         >
           <Typography.Text strong>Warehouse & Inventory</Typography.Text>
-          <span>
+          <Space size="middle">
             {health ? (
               <Tag color="green">
                 {health.dialect} · {health.database}
@@ -79,7 +89,15 @@ export default function AppLayout() {
             ) : (
               <Tag color="red">API offline</Tag>
             )}
-          </span>
+            {user && (
+              <Typography.Text type="secondary">
+                {user.label} · {user.username}
+              </Typography.Text>
+            )}
+            <Button size="small" icon={<LogoutOutlined />} onClick={logout}>
+              Sign out
+            </Button>
+          </Space>
         </Header>
         <Content style={{ margin: 24 }}>
           <Outlet />

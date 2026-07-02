@@ -6,19 +6,20 @@ boundary and input validation; the business rules live in the service.
 
   POST /entry/receipts   — post a goods receipt (ports process_receipt_delivery)
 
-Actor: until auth lands, the acting username comes from an `X-Actor` header
-(defaults to "api"). When JWT is added this becomes the authenticated user.
+Actor: the acting username is the authenticated user (JWT via get_current_user),
+recorded on the ledger row and in the audit log. All entry routes require auth.
 """
 from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import LargeBinary
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .auth import get_current_user
 from .db import get_session
 from .services import ledger
 
@@ -89,7 +90,7 @@ class AdjustmentIn(BaseModel):
 @router.post("/receipts", status_code=201, summary="Post a goods receipt")
 async def create_receipt(
     body: ReceiptIn = Body(...),
-    actor: str = Header("api", alias="X-Actor"),
+    user: dict = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     if body.extra:
@@ -102,7 +103,7 @@ async def create_receipt(
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
-            result = await ledger.post_receipt(session, username=actor, data=data)
+            result = await ledger.post_receipt(session, username=user["username"], data=data)
         return result
     except HTTPException:
         raise
@@ -113,14 +114,14 @@ async def create_receipt(
 @router.post("/consumption", status_code=201, summary="Post a material issue (consumption)")
 async def create_consumption(
     body: ConsumptionIn = Body(...),
-    actor: str = Header("api", alias="X-Actor"),
+    user: dict = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     try:
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
-            return await ledger.post_consumption(session, username=actor, data=body.model_dump())
+            return await ledger.post_consumption(session, username=user["username"], data=body.model_dump())
     except HTTPException:
         raise
     except (IntegrityError, DataError) as e:
@@ -130,14 +131,14 @@ async def create_consumption(
 @router.post("/returns", status_code=201, summary="Post a return (reduces stock)")
 async def create_return(
     body: ReturnIn = Body(...),
-    actor: str = Header("api", alias="X-Actor"),
+    user: dict = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     try:
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
-            return await ledger.post_return(session, username=actor, data=body.model_dump())
+            return await ledger.post_return(session, username=user["username"], data=body.model_dump())
     except HTTPException:
         raise
     except (IntegrityError, DataError) as e:
@@ -147,7 +148,7 @@ async def create_return(
 @router.post("/adjustments", status_code=201, summary="Post a stock-count adjustment")
 async def create_adjustment(
     body: AdjustmentIn = Body(...),
-    actor: str = Header("api", alias="X-Actor"),
+    user: dict = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     if body.reason_code not in ledger.ADJUSTMENT_REASONS:
@@ -158,7 +159,7 @@ async def create_adjustment(
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
-            return await ledger.post_adjustment(session, username=actor, data=body.model_dump())
+            return await ledger.post_adjustment(session, username=user["username"], data=body.model_dump())
     except HTTPException:
         raise
     except (IntegrityError, DataError) as e:
@@ -166,5 +167,5 @@ async def create_adjustment(
 
 
 @router.get("/adjustment-reasons", tags=["data entry"], summary="Reason codes for adjustments")
-async def adjustment_reasons():
+async def adjustment_reasons(user: dict = Depends(get_current_user)):
     return ledger.ADJUSTMENT_REASONS

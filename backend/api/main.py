@@ -31,6 +31,8 @@ if _ROOT not in sys.path:
 
 from backend import models  # noqa: E402
 
+from .auth import get_current_user  # noqa: E402
+from .auth import router as auth_router  # noqa: E402
 from .config import CORS_ORIGINS  # noqa: E402
 from .crud import make_read_router  # noqa: E402
 from .db import engine, get_session  # noqa: E402
@@ -87,18 +89,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Auth (open): login + JWT + /auth/me.
+app.include_router(auth_router)
+
+# Everything below requires a valid bearer token. `get_current_user` guards the
+# read entities + derived stock; the entry routes self-guard (they need the
+# authenticated username as the ledger actor).
+_auth = [Depends(get_current_user)]
+
 for e in ENTITIES:
     app.include_router(make_read_router(
         _MD.tables[e["name"]],
         prefix=e["prefix"], tag=e["tag"],
         id_col=e["id_col"], site_col=e["site_col"],
         writable=e.get("writable", False),
-    ))
+    ), dependencies=_auth)
 
 # Derived (computed) stock endpoints — /stock/live, /by-site, /lots, /expiring.
-app.include_router(stock_router)
+app.include_router(stock_router, dependencies=_auth)
 
-# Data-entry (ledger write) endpoints — /entry/receipts, …
+# Data-entry (ledger write) endpoints — /entry/receipts, … (self-guarded).
 app.include_router(entry_router)
 
 
@@ -118,7 +128,8 @@ async def health(session: AsyncSession = Depends(get_session)):
     }
 
 
-@app.get("/meta/sites", tags=["meta"], summary="Distinct Site_IDs (for a site picker)")
+@app.get("/meta/sites", tags=["meta"], summary="Distinct Site_IDs (for a site picker)",
+         dependencies=[Depends(get_current_user)])
 async def sites(session: AsyncSession = Depends(get_session)):
     inv = _MD.tables["inventory"]
     col = inv.c["Site_ID"]
@@ -127,7 +138,8 @@ async def sites(session: AsyncSession = Depends(get_session)):
 
 
 @app.get("/meta/inventory-summary", tags=["meta"],
-         summary="Exact inventory item counts by site and by category")
+         summary="Exact inventory item counts by site and by category",
+         dependencies=[Depends(get_current_user)])
 async def inventory_summary(session: AsyncSession = Depends(get_session)):
     inv = _MD.tables["inventory"]
     site_c, cat_c = inv.c["Site_ID"], inv.c["Category"]

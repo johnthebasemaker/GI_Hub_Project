@@ -6,6 +6,7 @@ import { ConfigProvider, App as AntApp } from 'antd'
 import 'antd/dist/reset.css'
 import './index.css'
 import App from './App.tsx'
+import { AuthProvider } from './auth/AuthContext'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 15_000, refetchOnWindowFocus: false } },
@@ -17,7 +18,9 @@ createRoot(document.getElementById('root')!).render(
       <ConfigProvider theme={{ token: { colorPrimary: '#1677ff' } }}>
         <AntApp>
           <BrowserRouter>
-            <App />
+            <AuthProvider>
+              <App />
+            </AuthProvider>
           </BrowserRouter>
         </AntApp>
       </ConfigProvider>

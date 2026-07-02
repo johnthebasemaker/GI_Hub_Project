@@ -8,8 +8,12 @@ import ReceivePage from './pages/ReceivePage'
 import IssuePage from './pages/IssuePage'
 import ReturnPage from './pages/ReturnPage'
 import AdjustPage from './pages/AdjustPage'
+import LoginPage from './pages/LoginPage'
+import { useAuth } from './auth/AuthContext'
 
 export default function App() {
+  const { user } = useAuth()
+  if (!user) return <LoginPage />
   return (
     <Routes>
       <Route element={<AppLayout />}>
