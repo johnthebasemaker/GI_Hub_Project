@@ -221,6 +221,17 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-02 · actor=interactive · branch=`main` · 🧾 Ledger services — Consumption (FEFO) + Returns + Stock Adjustments
+- **Completed the ledger write core** (all four ops now: receipt/issue/return/adjust), ported from `database.py`:
+  - **Consumption** (`post_consumption`, ports the staging→consumption write + `suggest_fefo_lot_for_consumption`:8165): FEFO auto-tags the earliest-expiry open lot when no lot is given (reuses the parity-tested lot-balance SQL); **ALLOW-AND-LOG** — over-issue is permitted and recorded with a `warning`, never blocked (honours the locked [[fefo-enforcement-decision]]); audit `POST_CONSUMPTION`.
+  - **Returns** (`post_return`, ports `approve_return_request`:3666): inserts into `returns` (reduces stock via identity); audit `POST_RETURN`.
+  - **Adjustments** (`post_adjustment`, ports `insert_stock_adjustment`:7241 + `approve_stock_adjustment`:7301 as one direct action): variance>0 → synthetic **receipt**, variance<0 → synthetic **consumption** (STOCK_ADJUSTMENT tag), optional **lot disposal** (`lots.Status='disposed'`); writes the `stock_adjustments` row (approved) + audit `POST_ADJUSTMENT`. Reason codes = `ADJUSTMENT_REASONS` (verbatim).
+- **Endpoints** (`backend/api/entry.py`): `POST /entry/{consumption,returns,adjustments}` + `GET /entry/adjustment-reasons`. Validation: 404 unknown-SAP, 422 bad reason_code, 400 zero-variance / integrity.
+- **Verified live on real PG:** issue 1002 33.9→32.9 (−1) ✓; over-issue qty 9999 → `warning` returned, still posted (allow-and-log) ✓; return 1001 3.01→2.51 (−0.5) ✓; adjustment surplus system3/counted5 → synthetic receipt R:72, 1003 3.1→5.1 (+2) ✓; 422/400 guards ✓. **All test rows deleted → local PG == SQLite** (derived-view parity re-run **PASS** 306/51/10/2).
+- **Frontend:** `IssuePage` / `ReturnPage` / `AdjustPage` (antd forms, searchable material + site, reason dropdown from API) under the **Data Entry** nav; new mutation hooks (`useConsumptionEntry`/`useReturnEntry`/`useAdjustmentEntry`, invalidate stock+ledger reads). `npm run build` green; console clean.
+- **Untouched:** Streamlit/SQLite — `bug_check` **599/0**, `database.py` not modified.
+- **Next:** auth (login + JWT, bcrypt/TOTP/roles) → per-portal screens. Hardening TODO: automated service-parity test (rolled-back-txn) in CI.
+
 ### 2026-07-02 · actor=interactive · branch=`main` · 🧾 Ledger services layer — Receipts slice (service → API → React), business-rule parity
 - **Goal (user directive):** bring the new build to full parity with the Streamlit app — every tab + real data-entry — improving where the old app was capped. Started the **ledger services layer** (real transactional writes), Receipts first as an end-to-end vertical slice.
 - **Old-app map:** ran a full sweep of `pages_internal/` + `database.py` (15 roles, 80+ tabs, 50+ write ops). Ported the exact receipt rules from `process_receipt_delivery()` (database.py:5062), `auto_generate_lot_number()` (:7818), `create_or_get_lot()` (:7824), `log_audit_action()` (:5375).

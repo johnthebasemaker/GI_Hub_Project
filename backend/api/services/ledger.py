@@ -13,10 +13,11 @@ so these compose and roll back together on any error.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import os
 import sys
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Ensure `backend.models` importable regardless of launch context.
@@ -25,12 +26,49 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from backend import models  # noqa: E402
 
+from ..stock import SQL_LOT_BALANCE  # noqa: E402  (parity-tested lot-balance SQL)
+
 _MD = models.Base.metadata
 receipts_t = _MD.tables["receipts"]
+consumption_t = _MD.tables["consumption"]
+returns_t = _MD.tables["returns"]
 lots_t = _MD.tables["lots"]
 inventory_t = _MD.tables["inventory"]
 pr_master_t = _MD.tables["pr_master"]
+adjustments_t = _MD.tables["stock_adjustments"]
 audit_t = _MD.tables["system_audit_log"]
+
+# Stock-adjustment reason codes — identical to database.py:61 (ADJUSTMENT_REASONS).
+ADJUSTMENT_REASONS = {
+    "cycle_count": "Cycle count correction",
+    "damaged": "Damaged / unusable",
+    "expired_disposal": "Expired — disposed",
+    "miscount_in": "Miscount — found extra",
+    "miscount_out": "Miscount — short",
+    "lost": "Lost / unaccounted",
+    "theft": "Suspected theft",
+    "return_to_supplier": "Returned to supplier",
+    "other": "Other (see notes)",
+}
+
+# FEFO lot picker: earliest-expiry OPEN lot with remaining qty (ports
+# suggest_fefo_lot_for_consumption + get_lots_for_item ordering).
+_FEFO_PICK = f"""
+SELECT "Lot_Number" FROM ({SQL_LOT_BALANCE}) lb
+WHERE "SAP_Code" = :sap AND "Site_ID" = :site
+  AND "Status" = 'open' AND "Remaining_Qty" > 0
+ORDER BY CASE WHEN "Expiry_Date" IS NULL OR "Expiry_Date" = '' THEN 1 ELSE 0 END,
+         "Expiry_Date" ASC, "Received_Date" ASC
+LIMIT 1
+"""
+
+# Current site stock for one SAP (identity: received − consumed − returned).
+_SITE_STOCK_ONE = """
+SELECT
+  COALESCE((SELECT SUM("Quantity") FROM receipts    WHERE TRIM("SAP_Code")=:sap AND COALESCE("Site_ID",'HQ')=:site),0)
+- COALESCE((SELECT SUM("Quantity") FROM consumption WHERE TRIM("SAP_Code")=:sap AND COALESCE("Site_ID",'HQ')=:site),0)
+- COALESCE((SELECT SUM("Quantity") FROM returns     WHERE TRIM("SAP_Code")=:sap AND COALESCE("Site_ID",'HQ')=:site),0)
+"""
 
 
 def auto_generate_lot_number(received_date: str, sap_code: str) -> str:
@@ -125,3 +163,124 @@ async def post_receipt(session: AsyncSession, *, username: str, data: dict) -> d
 
     return {"receipt_id": new_id, "lot_number": lot or None,
             "pr_status": pr_status, "message": "Receipt posted"}
+
+
+async def fefo_lot(session: AsyncSession, sap: str, site: str) -> str | None:
+    """Earliest-expiry open lot to consume from first (None → un-lotted item)."""
+    row = (await session.execute(text(_FEFO_PICK), {"sap": sap.strip(), "site": site})).first()
+    return row[0] if row else None
+
+
+async def _site_available(session: AsyncSession, sap: str, site: str) -> float:
+    val = (await session.execute(text(_SITE_STOCK_ONE), {"sap": sap.strip(), "site": site})).scalar_one()
+    return float(val or 0)
+
+
+async def post_consumption(session: AsyncSession, *, username: str, data: dict) -> dict:
+    """Post a material issue (consumption). Ports the staging→consumption write.
+
+    FEFO: when no explicit Lot_Number is given, tag the earliest-expiry open lot
+    (suggest_fefo_lot_for_consumption). ALLOW-AND-LOG: consumption exceeding
+    available stock is permitted and recorded (locked FEFO decision), returned as
+    a `warning` rather than blocked.
+    """
+    sap = data["SAP_Code"].strip()
+    site = data["Site_ID"]
+    qty = float(data["Quantity"])
+    lot = (data.get("Lot_Number") or "").strip()
+    if not lot:
+        lot = await fefo_lot(session, sap, site)
+
+    avail = await _site_available(session, sap, site)
+    warning = (f"issue {qty:g} exceeds available {avail:g} at {site} "
+               f"(allowed & logged)") if qty > avail else None
+
+    values = {
+        "Date": data["Date"], "SAP_Code": sap, "Quantity": qty, "Site_ID": site,
+        "Work_Type": data.get("Work_Type") or None,
+        "Issued_To": data.get("Issued_To") or None,
+        "Issued_By": data.get("Issued_By") or username,
+        "PR_Number": data.get("PR_Number") or None,
+        "Tank_No": data.get("Tank_No") or None,
+        "Serial_No": data.get("Serial_No") or None,
+        "Remarks": data.get("Remarks") or None,
+        "Requested_By": data.get("Requested_By") or None,
+        "FEFO_Override": data.get("FEFO_Override") or None,
+        "Lot_Number": lot or None,
+    }
+    new_id = (await session.execute(
+        insert(consumption_t).values(**values).returning(consumption_t.c["id"]))).scalar_one()
+
+    await write_audit(session, username, "POST_CONSUMPTION", "consumption",
+                      f"id={new_id} sap={sap} site={site} qty={qty:g} "
+                      f"lot={lot or '-'}" + (" OVERDRAW" if warning else ""))
+    return {"consumption_id": new_id, "lot_number": lot or None,
+            "warning": warning, "message": "Consumption posted"}
+
+
+async def post_return(session: AsyncSession, *, username: str, data: dict) -> dict:
+    """Post a return to the `returns` ledger (reduces stock). Ports approve_return_request."""
+    sap = data["SAP_Code"].strip()
+    site = data["Site_ID"]
+    qty = float(data["Quantity"])
+    new_id = (await session.execute(insert(returns_t).values(
+        Date=data["Date"], SAP_Code=sap, Quantity=qty,
+        Reason=data.get("Reason") or None, Remarks=data.get("Remarks") or None,
+        Site_ID=site).returning(returns_t.c["id"]))).scalar_one()
+    await write_audit(session, username, "POST_RETURN", "returns",
+                      f"id={new_id} sap={sap} site={site} qty={qty:g} "
+                      f"reason={data.get('Reason') or '-'}")
+    return {"return_id": new_id, "message": "Return posted"}
+
+
+async def post_adjustment(session: AsyncSession, *, username: str, data: dict) -> dict:
+    """Post a stock-count adjustment. Ports insert_stock_adjustment + approve_stock_adjustment
+    as one direct action: variance>0 → synthetic receipt, variance<0 → synthetic
+    consumption (STOCK_ADJUSTMENT tag); optional lot disposal. Identity math preserved.
+    """
+    sap = data["SAP_Code"].strip()
+    site = data["Site_ID"]
+    system_qty = float(data["system_qty"])
+    counted_qty = float(data["counted_qty"])
+    reason = data["reason_code"]
+    notes = (data.get("notes") or "").strip()
+    lot = (data.get("Lot_Number") or "").strip() or None
+    variance = counted_qty - system_qty
+    today = _dt.date.today().isoformat()
+
+    adj_id = (await session.execute(insert(adjustments_t).values(
+        Site_ID=site, SAP_Code=sap, system_qty=system_qty, counted_qty=counted_qty,
+        variance=variance, reason_code=reason, notes=notes, status="approved",
+        submitted_by=username, approved_by=username, Lot_Number=lot,
+    ).returning(adjustments_t.c["id"]))).scalar_one()
+
+    ref_tag = f"adj#{adj_id} reason={reason}"
+    remark = f"{ref_tag} · {notes}".strip(" ·")
+    if variance < 0:
+        cvals = {"Date": today, "SAP_Code": sap, "Quantity": abs(variance),
+                 "Site_ID": site, "Work_Type": "STOCK_ADJUSTMENT",
+                 "Remarks": remark, "Issued_By": username, "Issued_To": "ADJUSTMENT"}
+        if lot:
+            cvals["Lot_Number"] = lot
+        cid = (await session.execute(
+            insert(consumption_t).values(**cvals).returning(consumption_t.c["id"]))).scalar_one()
+        posted = f"C:{cid}"
+    else:
+        rvals = {"Date": today, "SAP_Code": sap, "Quantity": variance,
+                 "Site_ID": site, "Supplier": "STOCK_ADJUSTMENT", "Remarks": remark}
+        rid = (await session.execute(
+            insert(receipts_t).values(**rvals).returning(receipts_t.c["id"]))).scalar_one()
+        posted = f"R:{rid}"
+
+    await session.execute(update(adjustments_t).where(
+        adjustments_t.c["id"] == adj_id).values(posted_txn_ref=posted))
+    if lot:
+        await session.execute(update(lots_t).where(
+            (lots_t.c["Lot_Number"] == lot) & (lots_t.c["SAP_Code"] == sap)
+            & (lots_t.c["Site_ID"] == site)).values(Status="disposed"))
+
+    await write_audit(session, username, "POST_ADJUSTMENT", "stock_adjustments",
+                      f"id={adj_id} sap={sap} site={site} var={variance:+g} "
+                      f"posted={posted}" + (f" lot={lot}→disposed" if lot else ""))
+    return {"adjustment_id": adj_id, "variance": variance, "posted": posted,
+            "message": "Adjustment posted"}

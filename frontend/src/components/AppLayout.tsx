@@ -14,7 +14,12 @@ const menuItems: MenuProps['items'] = [
     key: 'entry',
     label: 'Data Entry',
     type: 'group',
-    children: [{ key: '/entry/receive', icon: <FormOutlined />, label: 'Receive Stock' }],
+    children: [
+      { key: '/entry/receive', icon: <FormOutlined />, label: 'Receive Stock' },
+      { key: '/entry/issue', icon: <FormOutlined />, label: 'Issue Stock' },
+      { key: '/entry/return', icon: <FormOutlined />, label: 'Return Stock' },
+      { key: '/entry/adjust', icon: <FormOutlined />, label: 'Stock Adjustment' },
+    ],
   },
   {
     key: 'records',

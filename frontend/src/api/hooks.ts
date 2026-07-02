@@ -64,15 +64,31 @@ export function useDelete(path: string) {
   })
 }
 
-// Ledger data entry: post a goods receipt, then refresh the affected views.
-export function useReceiptEntry() {
+// Ledger data entry: post a write, then refresh the affected read views.
+function invalidateLedger(qc: ReturnType<typeof useQueryClient>, extra: string[] = []) {
+  for (const k of ['/stock/live', '/stock/by-site', '/stock/lots', '/stock/expiring', ...extra]) {
+    qc.invalidateQueries({ queryKey: [k] })
+  }
+}
+
+function useLedgerPost(path: string, extra: string[]) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: Row) => api.post('/entry/receipts', body).then((r) => r.data),
-    onSuccess: () => {
-      for (const k of ['/stock/live', '/stock/by-site', '/stock/lots', '/receipts']) {
-        qc.invalidateQueries({ queryKey: [k] })
-      }
-    },
+    mutationFn: (body: Row) => api.post(path, body).then((r) => r.data),
+    onSuccess: () => invalidateLedger(qc, extra),
+  })
+}
+
+export const useReceiptEntry = () => useLedgerPost('/entry/receipts', ['/receipts'])
+export const useConsumptionEntry = () => useLedgerPost('/entry/consumption', ['/consumption'])
+export const useReturnEntry = () => useLedgerPost('/entry/returns', ['/returns'])
+export const useAdjustmentEntry = () =>
+  useLedgerPost('/entry/adjustments', ['/receipts', '/consumption'])
+
+export function useAdjustmentReasons() {
+  return useQuery({
+    queryKey: ['adjustment-reasons'],
+    queryFn: async () =>
+      (await api.get<Record<string, string>>('/entry/adjustment-reasons')).data,
   })
 }
