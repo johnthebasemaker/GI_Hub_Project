@@ -63,3 +63,16 @@ export function useDelete(path: string) {
     onSuccess: () => qc.invalidateQueries({ queryKey: [path] }),
   })
 }
+
+// Ledger data entry: post a goods receipt, then refresh the affected views.
+export function useReceiptEntry() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Row) => api.post('/entry/receipts', body).then((r) => r.data),
+    onSuccess: () => {
+      for (const k of ['/stock/live', '/stock/by-site', '/stock/lots', '/receipts']) {
+        qc.invalidateQueries({ queryKey: [k] })
+      }
+    },
+  })
+}

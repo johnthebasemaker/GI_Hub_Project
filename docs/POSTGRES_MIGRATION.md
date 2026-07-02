@@ -221,6 +221,15 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-02 · actor=interactive · branch=`main` · 🧾 Ledger services layer — Receipts slice (service → API → React), business-rule parity
+- **Goal (user directive):** bring the new build to full parity with the Streamlit app — every tab + real data-entry — improving where the old app was capped. Started the **ledger services layer** (real transactional writes), Receipts first as an end-to-end vertical slice.
+- **Old-app map:** ran a full sweep of `pages_internal/` + `database.py` (15 roles, 80+ tabs, 50+ write ops). Ported the exact receipt rules from `process_receipt_delivery()` (database.py:5062), `auto_generate_lot_number()` (:7818), `create_or_get_lot()` (:7824), `log_audit_action()` (:5375).
+- **Backend:** `backend/api/services/ledger.py` — `post_receipt()` (async, Core over PG): insert receipt (base + validated extra logistics cols), **auto lot** when expiry given (`LOT-<YYYYMMDD>-<SAP>`), **mirror into `lots` master** (idempotent, Status='open'), **PR-fulfilment auto-close** (Σreceived ≥ Σrequested → pr_master.status='closed'), **audit** row (`POST_RECEIPT`). `backend/api/entry.py` — `POST /entry/receipts` (pydantic `ReceiptIn`, extra-col allow-list, `X-Actor` header until auth; owns the `async with session.begin()` txn, 404 unknown-SAP, 400 integrity).
+- **Verified live on real PG:** SAP 1001 @ CNCEC 3.01 → **8.01** after a qty-5 receipt (identity math ✓); lot `LOT-20260702-1001` auto-created (Received 5 / Remaining 5 / open) ✓; audit row `tester|POST_RECEIPT|receipts|id=71 …` ✓; test rows then deleted to keep local PG == SQLite.
+- **Frontend:** `frontend/src/pages/ReceivePage.tsx` — antd Form (Site, searchable Material, Qty, dates, Supplier, PR, Lot, Remarks) wired to `useReceiptEntry()` (invalidates stock/receipts). New **Data Entry** nav group. `npm run build` green; console clean.
+- **Untouched:** Streamlit/SQLite — `bug_check` **599/0**. `database.py` not modified (services are a separate async layer).
+- **Next slices:** consumption/issue (FEFO via `get_fefo_lots()` :4668), returns, stock adjustments; then auth; then per-portal screens. Hardening TODO: an automated service-parity test (post-in-rolled-back-txn) alongside `parity_check.py`.
+
 ### 2026-07-02 · actor=interactive · branch=`main` · ⚛️ React frontend (Vite + TS + Ant Design) on the FastAPI+PG stack
 - **What:** new `frontend/` SPA — the first UI on the Postgres/API stack (Streamlit+SQLite stays the live app). Vite + React + TypeScript, **Ant Design**, **TanStack Query**, React Router, axios. Vite dev-proxy maps `/api` → uvicorn `:8000` (no CORS in dev).
 - **Screens (config-driven off `src/config/entities.ts`):** Dashboard (KPI cards + inventory-by-category + expiring stock), Stock (tabs = derived views live/by-site/lots/expiring, with Site_ID + within-days filters), Records (generic read browsers for inventory/receipts/consumption/returns/lots/POs/equipment — server pagination + site filter), Master Data (add/edit/delete modals for vendors/warehouses/employees → the API's writable entities).

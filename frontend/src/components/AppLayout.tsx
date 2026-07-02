@@ -1,6 +1,6 @@
 import { Layout, Menu, Tag, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { DashboardOutlined, StockOutlined } from '@ant-design/icons'
+import { DashboardOutlined, FormOutlined, StockOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth } from '../api/hooks'
 import { READ_ENTITIES, WRITE_ENTITIES } from '../config/entities'
@@ -10,6 +10,12 @@ const { Header, Sider, Content } = Layout
 const menuItems: MenuProps['items'] = [
   { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
   { key: '/stock', icon: <StockOutlined />, label: 'Stock' },
+  {
+    key: 'entry',
+    label: 'Data Entry',
+    type: 'group',
+    children: [{ key: '/entry/receive', icon: <FormOutlined />, label: 'Receive Stock' }],
+  },
   {
     key: 'records',
     label: 'Records',
