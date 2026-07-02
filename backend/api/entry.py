@@ -4,7 +4,8 @@ backend/api/entry.py — data-entry endpoints (ledger writes) for the new UI.
 Thin HTTP layer over backend/api/services/ledger.py. Owns the transaction
 boundary and input validation; the business rules live in the service.
 
-  POST /entry/receipts   — post a goods receipt (ports process_receipt_delivery)
+  POST /entry/*  — stage a receipt/issue/return/adjustment (status=pending_hod) for
+                 HOD approval; the HOD portal commits them to the ledger.
 
 Actor: the acting username is the authenticated user (JWT via get_current_user),
 recorded on the ledger row and in the audit log. All entry routes require auth.
@@ -87,7 +88,7 @@ class AdjustmentIn(BaseModel):
     Lot_Number: Optional[str] = Field(None, description="set → dispose this lot")
 
 
-@router.post("/receipts", status_code=201, summary="Post a goods receipt")
+@router.post("/receipts", status_code=201, summary="Submit a goods receipt for HOD approval")
 async def create_receipt(
     body: ReceiptIn = Body(...),
     user: dict = Depends(get_current_user),
@@ -103,7 +104,7 @@ async def create_receipt(
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
-            result = await ledger.post_receipt(session, username=user["username"], data=data)
+            result = await ledger.stage_receipt(session, username=user["username"], data=data)
         return result
     except HTTPException:
         raise
@@ -111,7 +112,7 @@ async def create_receipt(
         raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
 
 
-@router.post("/consumption", status_code=201, summary="Post a material issue (consumption)")
+@router.post("/consumption", status_code=201, summary="Submit a material issue for HOD approval")
 async def create_consumption(
     body: ConsumptionIn = Body(...),
     user: dict = Depends(get_current_user),
@@ -121,14 +122,14 @@ async def create_consumption(
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
-            return await ledger.post_consumption(session, username=user["username"], data=body.model_dump())
+            return await ledger.stage_consumption(session, username=user["username"], data=body.model_dump())
     except HTTPException:
         raise
     except (IntegrityError, DataError) as e:
         raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
 
 
-@router.post("/returns", status_code=201, summary="Post a return (reduces stock)")
+@router.post("/returns", status_code=201, summary="Submit a return for HOD approval")
 async def create_return(
     body: ReturnIn = Body(...),
     user: dict = Depends(get_current_user),
@@ -138,14 +139,14 @@ async def create_return(
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
-            return await ledger.post_return(session, username=user["username"], data=body.model_dump())
+            return await ledger.stage_return(session, username=user["username"], data=body.model_dump())
     except HTTPException:
         raise
     except (IntegrityError, DataError) as e:
         raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
 
 
-@router.post("/adjustments", status_code=201, summary="Post a stock-count adjustment")
+@router.post("/adjustments", status_code=201, summary="Submit a stock-count adjustment for HOD approval")
 async def create_adjustment(
     body: AdjustmentIn = Body(...),
     user: dict = Depends(get_current_user),
@@ -159,7 +160,7 @@ async def create_adjustment(
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
-            return await ledger.post_adjustment(session, username=user["username"], data=body.model_dump())
+            return await ledger.stage_adjustment(session, username=user["username"], data=body.model_dump())
     except HTTPException:
         raise
     except (IntegrityError, DataError) as e:

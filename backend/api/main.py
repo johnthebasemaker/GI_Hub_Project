@@ -37,6 +37,7 @@ from .config import CORS_ORIGINS  # noqa: E402
 from .crud import make_read_router  # noqa: E402
 from .db import engine, get_session  # noqa: E402
 from .entry import router as entry_router  # noqa: E402
+from .hod import router as hod_router  # noqa: E402
 from .stock import router as stock_router  # noqa: E402
 
 _MD = models.Base.metadata
@@ -108,8 +109,11 @@ for e in ENTITIES:
 # Derived (computed) stock endpoints — /stock/live, /by-site, /lots, /expiring.
 app.include_router(stock_router, dependencies=_auth)
 
-# Data-entry (ledger write) endpoints — /entry/receipts, … (self-guarded).
+# Data-entry (staging) endpoints — /entry/receipts, … (self-guarded).
 app.include_router(entry_router)
+
+# HOD portal — approvals (commit staged entries) + burn-rate (self-guarded, ≥hod).
+app.include_router(hod_router)
 
 
 @app.get("/", include_in_schema=False)

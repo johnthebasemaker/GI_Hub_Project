@@ -1,6 +1,6 @@
 import { Button, Layout, Menu, Space, Tag, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { DashboardOutlined, FormOutlined, LogoutOutlined, StockOutlined } from '@ant-design/icons'
+import { AuditOutlined, DashboardOutlined, FireOutlined, FormOutlined, LogoutOutlined, StockOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -31,6 +31,18 @@ function buildMenu(level: number): MenuProps['items'] {
       children: READ_ENTITIES.map((e) => ({ key: `/records/${e.key}`, label: e.label })),
     },
   ]
+  // HOD portal — approvals + burn-rate — hod & admin (level ≥ 2).
+  if (level >= 2) {
+    items.push({
+      key: 'hod',
+      label: 'HOD',
+      type: 'group',
+      children: [
+        { key: '/hod/approvals', icon: <AuditOutlined />, label: 'Approvals' },
+        { key: '/hod/burn-rate', icon: <FireOutlined />, label: 'Burn Rate' },
+      ],
+    })
+  }
   // Master data (vendors/warehouses/employees) — admin & logistics only.
   if (level >= 3) {
     items.push({

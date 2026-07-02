@@ -92,3 +92,41 @@ export function useAdjustmentReasons() {
       (await api.get<Record<string, string>>('/entry/adjustment-reasons')).data,
   })
 }
+
+// --- HOD approvals ----------------------------------------------------------
+export function useHodCounts(siteId?: string) {
+  return useQuery({
+    queryKey: ['/hod/pending', siteId],
+    queryFn: async () =>
+      (await api.get<Record<string, number>>('/hod/pending', { params: siteId ? { site_id: siteId } : {} })).data,
+  })
+}
+
+export function useHodPending(kind: string, siteId?: string) {
+  return useQuery({
+    queryKey: [`/hod/pending/${kind}`, siteId],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>(`/hod/pending/${kind}`, { params: siteId ? { site_id: siteId } : {} })).data.items,
+  })
+}
+
+export function useHodDecision() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ kind, id, action, reason }:
+      { kind: string; id: number; action: 'approve' | 'reject'; reason?: string }) =>
+      api.post(`/hod/pending/${kind}/${id}/${action}`, action === 'reject' ? { reason } : {}).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['/hod/pending'] })
+      invalidateLedger(qc, ['/receipts', '/consumption', '/returns'])
+    },
+  })
+}
+
+export function useBurnRate(siteId: string | undefined, days: number) {
+  return useQuery({
+    queryKey: ['/hod/burn-rate', siteId, days],
+    queryFn: async () =>
+      (await api.get('/hod/burn-rate', { params: { ...(siteId ? { site_id: siteId } : {}), days } })).data,
+  })
+}

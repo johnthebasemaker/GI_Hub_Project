@@ -17,7 +17,7 @@ import datetime as _dt
 import os
 import sys
 
-from sqlalchemy import func, insert, select, text, update
+from sqlalchemy import delete, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Ensure `backend.models` importable regardless of launch context.
@@ -37,6 +37,12 @@ inventory_t = _MD.tables["inventory"]
 pr_master_t = _MD.tables["pr_master"]
 adjustments_t = _MD.tables["stock_adjustments"]
 audit_t = _MD.tables["system_audit_log"]
+# Staging tables (SK submits → HOD approves → committed to the ledger).
+pending_receipts_t = _MD.tables["pending_receipts"]
+pending_issues_t = _MD.tables["pending_issues"]
+pending_returns_t = _MD.tables["pending_returns"]
+
+PENDING = "pending_hod"
 
 # Stock-adjustment reason codes — identical to database.py:61 (ADJUSTMENT_REASONS).
 ADJUSTMENT_REASONS = {
@@ -233,54 +239,181 @@ async def post_return(session: AsyncSession, *, username: str, data: dict) -> di
     return {"return_id": new_id, "message": "Return posted"}
 
 
-async def post_adjustment(session: AsyncSession, *, username: str, data: dict) -> dict:
-    """Post a stock-count adjustment. Ports insert_stock_adjustment + approve_stock_adjustment
-    as one direct action: variance>0 → synthetic receipt, variance<0 → synthetic
-    consumption (STOCK_ADJUSTMENT tag); optional lot disposal. Identity math preserved.
-    """
+# ===========================================================================
+# STAGING (Store Keeper submits) → pending_* / stock_adjustments (pending_hod).
+# The post_* functions above are the COMMIT step, reused by the approvals below.
+# ===========================================================================
+async def stage_receipt(session: AsyncSession, *, username: str, data: dict) -> dict:
+    sap = data["SAP_Code"].strip()
+    values = {
+        "Date": data["Date"], "SAP_Code": sap, "Quantity": float(data["Quantity"]),
+        "Supplier": data.get("Supplier") or None, "Remarks": data.get("Remarks") or None,
+        "Site_ID": data["Site_ID"], "Expiry_Date": data.get("Expiry_Date") or None,
+        "PR_Number": data.get("PR_Number") or None,
+        "Lot_Number": (data.get("Lot_Number") or "").strip() or None, "status": PENDING,
+    }
+    values.update(data.get("extra") or {})
+    pid = (await session.execute(insert(pending_receipts_t).values(**values)
+           .returning(pending_receipts_t.c["id"]))).scalar_one()
+    await write_audit(session, username, "STAGE_RECEIPT", "pending_receipts",
+                      f"id={pid} sap={sap} site={data['Site_ID']} qty={float(data['Quantity']):g}")
+    return {"pending_id": pid, "status": PENDING, "message": "Receipt submitted for HOD approval"}
+
+
+async def stage_consumption(session: AsyncSession, *, username: str, data: dict) -> dict:
+    sap = data["SAP_Code"].strip()
+    values = {
+        "Date": data["Date"], "SAP_Code": sap, "Quantity": float(data["Quantity"]),
+        "Work_Type": data.get("Work_Type") or None, "Issued_To": data.get("Issued_To") or None,
+        "Issued_By": data.get("Issued_By") or username, "PR_Number": data.get("PR_Number") or None,
+        "Tank_No": data.get("Tank_No") or None, "Serial_No": data.get("Serial_No") or None,
+        "Remarks": data.get("Remarks") or None, "Requested_By": data.get("Requested_By") or None,
+        "Lot_Number": (data.get("Lot_Number") or "").strip() or None,
+        "FEFO_Override": data.get("FEFO_Override") or None,
+        "Site_ID": data["Site_ID"], "status": PENDING,
+    }
+    pid = (await session.execute(insert(pending_issues_t).values(**values)
+           .returning(pending_issues_t.c["id"]))).scalar_one()
+    await write_audit(session, username, "STAGE_ISSUE", "pending_issues",
+                      f"id={pid} sap={sap} site={data['Site_ID']} qty={float(data['Quantity']):g}")
+    return {"pending_id": pid, "status": PENDING, "message": "Issue submitted for HOD approval"}
+
+
+async def stage_return(session: AsyncSession, *, username: str, data: dict) -> dict:
+    sap = data["SAP_Code"].strip()
+    values = {
+        "Site_ID": data["Site_ID"], "SAP_Code": sap, "Quantity": float(data["Quantity"]),
+        "Return_Reason": data.get("Reason") or "return",
+        "Return_DN_No": data.get("Return_DN_No") or "",
+        "PR_Number": data.get("PR_Number") or None,
+        "Lot_Number": data.get("Lot_Number") or None,
+        "override_required": 0, "override_reason": data.get("Remarks") or "",
+        "status": PENDING, "submitted_by": username,
+    }
+    pid = (await session.execute(insert(pending_returns_t).values(**values)
+           .returning(pending_returns_t.c["id"]))).scalar_one()
+    await write_audit(session, username, "STAGE_RETURN", "pending_returns",
+                      f"id={pid} sap={sap} site={data['Site_ID']} qty={float(data['Quantity']):g}")
+    return {"pending_id": pid, "status": PENDING, "message": "Return submitted for HOD approval"}
+
+
+async def stage_adjustment(session: AsyncSession, *, username: str, data: dict) -> dict:
     sap = data["SAP_Code"].strip()
     site = data["Site_ID"]
-    system_qty = float(data["system_qty"])
-    counted_qty = float(data["counted_qty"])
-    reason = data["reason_code"]
-    notes = (data.get("notes") or "").strip()
-    lot = (data.get("Lot_Number") or "").strip() or None
-    variance = counted_qty - system_qty
-    today = _dt.date.today().isoformat()
-
+    variance = float(data["counted_qty"]) - float(data["system_qty"])
     adj_id = (await session.execute(insert(adjustments_t).values(
-        Site_ID=site, SAP_Code=sap, system_qty=system_qty, counted_qty=counted_qty,
-        variance=variance, reason_code=reason, notes=notes, status="approved",
-        submitted_by=username, approved_by=username, Lot_Number=lot,
+        Site_ID=site, SAP_Code=sap, system_qty=float(data["system_qty"]),
+        counted_qty=float(data["counted_qty"]), variance=variance,
+        reason_code=data["reason_code"], notes=(data.get("notes") or "").strip(),
+        status=PENDING, submitted_by=username,
+        Lot_Number=(data.get("Lot_Number") or "").strip() or None,
     ).returning(adjustments_t.c["id"]))).scalar_one()
+    await write_audit(session, username, "SUBMIT_ADJUSTMENT", "stock_adjustments",
+                      f"id={adj_id} sap={sap} site={site} var={variance:+g} reason={data['reason_code']}")
+    return {"pending_id": adj_id, "status": PENDING, "message": "Adjustment submitted for HOD approval"}
 
-    ref_tag = f"adj#{adj_id} reason={reason}"
-    remark = f"{ref_tag} · {notes}".strip(" ·")
+
+# ===========================================================================
+# APPROVE (HOD commits) — write the ledger via post_* then retire the pending row.
+# REJECT — mark the pending row rejected (no ledger write).
+# ===========================================================================
+async def _load_pending(session: AsyncSession, table, pid: int) -> dict | None:
+    row = (await session.execute(select(table).where(
+        (table.c["id"] == pid) & (table.c["status"] == PENDING)))).mappings().first()
+    return dict(row) if row else None
+
+
+async def commit_receipt(session: AsyncSession, *, approver: str, pending_id: int) -> dict:
+    row = await _load_pending(session, pending_receipts_t, pending_id)
+    if row is None:
+        return {"error": "not found or already handled"}
+    res = await post_receipt(session, username=approver, data=row)
+    await session.execute(delete(pending_receipts_t).where(pending_receipts_t.c["id"] == pending_id))
+    return {"committed": True, **res}
+
+
+async def commit_consumption(session: AsyncSession, *, approver: str, pending_id: int) -> dict:
+    row = await _load_pending(session, pending_issues_t, pending_id)
+    if row is None:
+        return {"error": "not found or already handled"}
+    res = await post_consumption(session, username=approver, data=row)
+    await session.execute(delete(pending_issues_t).where(pending_issues_t.c["id"] == pending_id))
+    return {"committed": True, **res}
+
+
+async def commit_return(session: AsyncSession, *, approver: str, pending_id: int) -> dict:
+    row = await _load_pending(session, pending_returns_t, pending_id)
+    if row is None:
+        return {"error": "not found or already handled"}
+    data = {"Date": _dt.date.today().isoformat(), "SAP_Code": row["SAP_Code"],
+            "Quantity": row["Quantity"], "Site_ID": row["Site_ID"],
+            "Reason": row.get("Return_Reason"),
+            "Remarks": f"Return DN: {row.get('Return_DN_No') or ''} · approved by {approver}".strip()}
+    res = await post_return(session, username=approver, data=data)
+    await session.execute(update(pending_returns_t).where(pending_returns_t.c["id"] == pending_id)
+                          .values(status="approved", approved_by=approver, approved_at=func.now()))
+    return {"committed": True, **res}
+
+
+async def commit_adjustment(session: AsyncSession, *, approver: str, pending_id: int) -> dict:
+    row = await _load_pending(session, adjustments_t, pending_id)
+    if row is None:
+        return {"error": "not found or already handled"}
+    sap, site = row["SAP_Code"], row["Site_ID"]
+    variance = float(row["variance"])
+    reason, notes, lot = row["reason_code"], row.get("notes") or "", row.get("Lot_Number")
+    today = _dt.date.today().isoformat()
+    remark = f"adj#{pending_id} reason={reason} · {notes}".strip(" ·")
     if variance < 0:
-        cvals = {"Date": today, "SAP_Code": sap, "Quantity": abs(variance),
-                 "Site_ID": site, "Work_Type": "STOCK_ADJUSTMENT",
-                 "Remarks": remark, "Issued_By": username, "Issued_To": "ADJUSTMENT"}
+        cvals = {"Date": today, "SAP_Code": sap, "Quantity": abs(variance), "Site_ID": site,
+                 "Work_Type": "STOCK_ADJUSTMENT", "Remarks": remark,
+                 "Issued_By": approver, "Issued_To": "ADJUSTMENT"}
         if lot:
             cvals["Lot_Number"] = lot
-        cid = (await session.execute(
-            insert(consumption_t).values(**cvals).returning(consumption_t.c["id"]))).scalar_one()
+        cid = (await session.execute(insert(consumption_t).values(**cvals)
+               .returning(consumption_t.c["id"]))).scalar_one()
         posted = f"C:{cid}"
     else:
-        rvals = {"Date": today, "SAP_Code": sap, "Quantity": variance,
-                 "Site_ID": site, "Supplier": "STOCK_ADJUSTMENT", "Remarks": remark}
-        rid = (await session.execute(
-            insert(receipts_t).values(**rvals).returning(receipts_t.c["id"]))).scalar_one()
+        rvals = {"Date": today, "SAP_Code": sap, "Quantity": variance, "Site_ID": site,
+                 "Supplier": "STOCK_ADJUSTMENT", "Remarks": remark}
+        rid = (await session.execute(insert(receipts_t).values(**rvals)
+               .returning(receipts_t.c["id"]))).scalar_one()
         posted = f"R:{rid}"
-
-    await session.execute(update(adjustments_t).where(
-        adjustments_t.c["id"] == adj_id).values(posted_txn_ref=posted))
+    await session.execute(update(adjustments_t).where(adjustments_t.c["id"] == pending_id)
+                          .values(status="approved", approved_by=approver,
+                                  approved_at=func.now(), posted_txn_ref=posted))
     if lot:
         await session.execute(update(lots_t).where(
             (lots_t.c["Lot_Number"] == lot) & (lots_t.c["SAP_Code"] == sap)
             & (lots_t.c["Site_ID"] == site)).values(Status="disposed"))
+    await write_audit(session, approver, "APPROVE_ADJUSTMENT", "stock_adjustments",
+                      f"id={pending_id} sap={sap} site={site} var={variance:+g} posted={posted}"
+                      + (f" lot={lot}→disposed" if lot else ""))
+    return {"committed": True, "adjustment_id": pending_id, "variance": variance, "posted": posted}
 
-    await write_audit(session, username, "POST_ADJUSTMENT", "stock_adjustments",
-                      f"id={adj_id} sap={sap} site={site} var={variance:+g} "
-                      f"posted={posted}" + (f" lot={lot}→disposed" if lot else ""))
-    return {"adjustment_id": adj_id, "variance": variance, "posted": posted,
-            "message": "Adjustment posted"}
+
+_REJECT = {
+    "receipt": pending_receipts_t,
+    "issue": pending_issues_t,
+    "return": pending_returns_t,
+    "adjustment": adjustments_t,
+}
+
+
+async def reject_pending(session: AsyncSession, *, approver: str, kind: str,
+                         pending_id: int, reason: str = "") -> dict:
+    table = _REJECT[kind]
+    vals: dict = {"status": "rejected"}
+    if "rejection_reason" in table.c:
+        vals["rejection_reason"] = reason or ""
+    if "approved_by" in table.c:
+        vals["approved_by"] = approver
+    if "approved_at" in table.c:
+        vals["approved_at"] = func.now()
+    res = await session.execute(update(table).where(
+        (table.c["id"] == pending_id) & (table.c["status"] == PENDING)).values(**vals))
+    if res.rowcount == 0:
+        return {"error": "not found or already handled"}
+    await write_audit(session, approver, f"REJECT_{kind.upper()}", table.name,
+                      f"id={pending_id} reason={reason or '-'}")
+    return {"rejected": True, "id": pending_id}

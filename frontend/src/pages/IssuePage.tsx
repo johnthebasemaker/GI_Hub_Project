@@ -53,8 +53,7 @@ export default function IssuePage() {
     }
     try {
       const res = await consume.mutateAsync(payload)
-      message.success(`Issue posted${res.lot_number ? ` (lot ${res.lot_number})` : ''}`)
-      if (res.warning) message.warning(res.warning, 6)
+      message.success(res.message ?? 'Submitted for HOD approval')
       form.resetFields(['SAP_Code', 'Quantity', 'Issued_To', 'PR_Number', 'Tank_No', 'Serial_No', 'Lot_Number', 'Remarks'])
     } catch (e) {
       message.error(errMsg(e))

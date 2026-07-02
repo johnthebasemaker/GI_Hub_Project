@@ -107,6 +107,16 @@ async def get_current_user(
     return _public(p["sub"], p.get("role"), p.get("site_id"))
 
 
+def require_level(min_level: int):
+    """Dependency factory: 403 unless the user's role level ≥ min_level
+    (store_keeper 0 · warehouse/supervisor 1 · hod 2 · logistics 3 · admin 4)."""
+    async def _dep(user: dict = Depends(get_current_user)) -> dict:
+        if user["level"] < min_level:
+            raise HTTPException(403, "insufficient role for this action")
+        return user
+    return _dep
+
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 

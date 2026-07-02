@@ -42,8 +42,8 @@ export default function ReturnPage() {
       Remarks: v.Remarks || null,
     }
     try {
-      await ret.mutateAsync(payload)
-      message.success('Return posted')
+      const res = await ret.mutateAsync(payload)
+      message.success(res.message ?? 'Submitted for HOD approval')
       form.resetFields(['SAP_Code', 'Quantity', 'Reason', 'Remarks'])
     } catch (e) {
       message.error(errMsg(e))

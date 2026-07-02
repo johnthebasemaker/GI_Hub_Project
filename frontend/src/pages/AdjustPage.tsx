@@ -43,8 +43,7 @@ export default function AdjustPage() {
     }
     try {
       const res = await adjust.mutateAsync(payload)
-      const dir = res.variance >= 0 ? `surplus +${res.variance}` : `shortage ${res.variance}`
-      message.success(`Adjustment posted (${dir}, ${res.posted})`)
+      message.success(res.message ?? 'Submitted for HOD approval')
       form.resetFields(['SAP_Code', 'system_qty', 'counted_qty', 'reason_code', 'Lot_Number', 'notes'])
     } catch (e) {
       message.error(errMsg(e))

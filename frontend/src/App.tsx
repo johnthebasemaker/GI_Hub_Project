@@ -9,6 +9,8 @@ import IssuePage from './pages/IssuePage'
 import ReturnPage from './pages/ReturnPage'
 import AdjustPage from './pages/AdjustPage'
 import LoginPage from './pages/LoginPage'
+import ApprovalsPage from './pages/ApprovalsPage'
+import BurnRatePage from './pages/BurnRatePage'
 import { useAuth } from './auth/AuthContext'
 
 export default function App() {
@@ -23,6 +25,8 @@ export default function App() {
         <Route path="entry/issue" element={<IssuePage />} />
         <Route path="entry/return" element={<ReturnPage />} />
         <Route path="entry/adjust" element={<AdjustPage />} />
+        <Route path="hod/approvals" element={<ApprovalsPage />} />
+        <Route path="hod/burn-rate" element={<BurnRatePage />} />
         <Route path="records/:key" element={<RecordsPage />} />
         <Route path="master/:key" element={<MasterDataPage />} />
       </Route>

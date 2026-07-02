@@ -47,10 +47,7 @@ export default function ReceivePage() {
     }
     try {
       const res = await receipt.mutateAsync(payload)
-      const extra = [res.lot_number ? `lot ${res.lot_number}` : null, res.pr_status]
-        .filter(Boolean)
-        .join(' · ')
-      message.success(`Receipt posted${extra ? ` (${extra})` : ''}`)
+      message.success(res.message ?? 'Submitted for HOD approval')
       form.resetFields(['SAP_Code', 'Quantity', 'Supplier', 'Expiry_Date', 'PR_Number', 'Lot_Number', 'Remarks'])
     } catch (e) {
       message.error(errMsg(e))
