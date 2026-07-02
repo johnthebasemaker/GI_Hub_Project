@@ -37,21 +37,20 @@
 
 ---
 
-**Last update:** 2026-07-02 — **New React frontend on the FastAPI+PostgreSQL stack.** Backend v1/v2 (read API, parity-tested derived stock, master-data writes) + a Vite/React/AntD SPA (`frontend/`) that runs locally against the API. Streamlit/SQLite untouched. Tests: **599 bug_check / 0 · UI crawler 21/21 · derived-view parity PASS · frontend `npm run build` green**. Per-item detail in commit messages (`git log --oneline`).
+**Last update:** 2026-07-02 — **Operational ERP is feature-complete on the new FastAPI+PostgreSQL+React stack.** Built end-to-end + verified: auth/roles · staged data-entry · HOD approvals/burn-rate · **full procurement loop** (Supervisor requests → SK · site PR → HOD → Logistics PO → assign → Warehouse receive → DN → ship → site receive → HOD approve → ledger). Only the **SME Material Estimator** remains (next). Streamlit/SQLite untouched. Tests: **599 bug_check / 0 · UI crawler 21/21 · derived-view parity PASS · dual_ci 64/64 · frontend `npm run build` green**. Per-item detail in commit messages (`git log --oneline`).
 
 > ### 📍 WHERE WE ARE — read this first
 >
 > **The 3-tier stack now exists (all local, all verified):** Streamlit+SQLite (unchanged, production) ‖ **NEW** FastAPI+PostgreSQL API (`backend/api/`, `./run_api.sh` → :8000/docs) ‖ **NEW** React/AntD SPA (`frontend/`, `npm run dev` → :5173). The React app talks to the API via a Vite `/api`→:8000 proxy. Both new tiers are the future direction; the live app is still Streamlit+SQLite.
 >
 > ### 🧭 DID / DOING / WANT (the plan the user set 2026-07-02)
-> - **DID:** stood up the whole new stack end-to-end — FastAPI backend v1 (read API) + v2 (parity-tested derived stock + master-data CRUD) + a React/AntD SPA (Dashboard, Stock, Records browsers, Master-Data CRUD), all running locally against real Postgres data. Streamlit/SQLite untouched.
-> - **DOING (current goal):** bring the **new React/FastAPI build to FULL feature parity with the live Streamlit app** — *every tab, all data, real data-entry* — in the new design + structure, done efficiently, and **improving where the old app was limited** (pending backlog items + new ideas welcome here). The live Streamlit app keeps running throughout.
-> - **WANT (roadmap, in order):**
->   1. **Ledger services layer** (FastAPI) — real transactional writes for goods-receipt / consumption-issue / returns / lot create+transfer / stock adjustments, porting the old business rules (FEFO, `system_audit_log`, auto lot creation, qty validation, Site_ID scoping, cost). This unblocks all data-entry. Each service gets a **parity test** vs the SQLite logic (like `parity_check.py`). *(started next)*
->   2. **Auth** — login screen + JWT; port users/roles/bcrypt/TOTP from the old app; role-gated routes.
->   3. **Screen-by-screen parity** — recreate each old portal's tabs (warehouse / HOD / logistics / admin / supervisor / SME estimator) as React pages wired to services, with charts/exports. Improve UX where the old one was awkward.
->   4. **Polish + new ideas** — charts/dashboards beyond the old app, better filtering, anything the old app capped.
->   - **Parity checklist (every old tab/feature):** being generated from a full sweep of `pages_internal/` + `database.py`; will be appended to `docs/POSTGRES_MIGRATION.md` §9 (or a new `docs/PARITY_CHECKLIST.md`).
+> - **DID (all committed + pushed, verified on real PG, SQLite/Streamlit untouched):**
+>   1. ✅ **Ledger services layer** — receipt / consumption (FEFO, allow-and-log) / returns / adjustments, each ported + verified.
+>   2. ✅ **Staging → HOD approval** — data-entry stages to `pending_*`; HOD Approvals commits (reuses the ledger services).
+>   3. ✅ **Auth** — login + JWT + bcrypt/TOTP + role-gated nav.
+>   4. ✅ **Portals** — HOD (approvals/burn-rate/PR-submit) · Logistics (PR→PO→assign) · Warehouse (receive→DN→ship) · Site receiving (DN→pending_receipts, **loop closed**) · Supervisor (requests→SK→pending_issues).
+> - **DOING (current):** the **SME Material Estimator** — the last major portal (reads the `sme_*` compat views: equipment / recipe/BOM / sqm_progress / sme_materials_view). Scope core read/dashboard screens first, then outward. **⚠️ SME is FROZEN in the Streamlit app (SME Canon in this handoff) — the new build only READS the sme_* views; do NOT touch the drop-in.**
+> - **WANT (after SME):** deferred peripheral tabs (Logistics reschedules/force-close/vendor-returns/history/manual-PO; Warehouse returns-from-site/history; Admin console; Reports; Man-Hours) · service-level parity tests in CI · 2FA-enrollment UI · per-endpoint (not just nav) role checks · then the React app can become the primary UI (cutover decision) with `JWT_SECRET`/deploy.
 >   - **Deploy (Hetzner) stays parked** until the user asks.
 >
 > **DONE this session (all committed + pushed, newest first):**
