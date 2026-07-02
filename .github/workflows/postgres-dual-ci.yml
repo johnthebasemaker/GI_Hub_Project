@@ -78,3 +78,11 @@ jobs:
         env:
           DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
         run: python backend/dual_ci.py --source gi_database.db
+
+      # Accuracy guard for the FastAPI backend's derived-stock SQL: assert each
+      # ported Postgres query matches its SQLite reporting view row-for-row on the
+      # real data. Runs after dual_ci has populated Postgres from gi_database.db.
+      - name: Derived-view parity (SQLite views vs ported PG SQL)
+        env:
+          DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
+        run: python backend/api/parity_check.py --source gi_database.db

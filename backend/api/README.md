@@ -34,7 +34,9 @@ URLs are auto-normalised to the asyncpg driver):
 DATABASE_URL=postgresql://user:pass@host:5432/db ./run_api.sh
 ```
 
-## Endpoints (v1 — read only)
+## Endpoints
+
+### Meta + entities (read)
 
 | Method | Path | Notes |
 |---|---|---|
@@ -46,17 +48,46 @@ DATABASE_URL=postgresql://user:pass@host:5432/db ./run_api.sh
 
 Entities: `inventory` (PK `SAP_Code`), `receipts`, `consumption`, `returns`,
 `lots`, `purchase-orders`, `equipment`, `employees`, `vendors`, `warehouses`.
+List responses are `{total, limit, offset, count, items}`, ordered by the
+explicit primary key. Entities with a `Site_ID` column accept `?site_id=`.
 
-List responses are `{total, limit, offset, count, items}`. Rows are ordered by
-the explicit primary key. Entities with a `Site_ID` column accept `?site_id=`.
+### Derived stock (computed — v2)
+
+Postgres-native ports of the SQLite reporting views, computed at request time
+(`backend/api/stock.py`). Row-for-row parity with the SQLite views is asserted by
+`backend/api/parity_check.py` (also runs in CI).
+
+| Method | Path | Mirrors | Notes |
+|---|---|---|---|
+| GET | `/stock/live` | `v_live_stock` | current stock per SAP_Code (global) |
+| GET | `/stock/by-site` | `v_site_stock` | per SAP_Code + Site_ID; `?site_id=` |
+| GET | `/stock/lots` | `v_lot_balance` | per-lot remaining qty; `?site_id=` |
+| GET | `/stock/expiring` | `v_expiring_stock` | days-to-expiry + status; `?site_id=&within_days=` |
+
+### Writes (v2 — master data only)
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/{entity}` | create; returns the new row (201) |
+| PUT | `/{entity}/{id}` | update given fields; returns the row |
+| DELETE | `/{entity}/{id}` | delete by id |
+
+Writable entities: **`vendors`, `warehouses`, `employees`** only (reference data,
+no ledger business rules). `created_at`/`updated_at` are auto-managed. Unknown or
+secret columns → 422; constraint violations → 400.
+
+**Ledger tables stay read-only** (`receipts`/`consumption`/`returns`/`inventory`/
+`lots`/`purchase-orders`) — their writes carry identity-math / FEFO / audit logic
+that must be ported into a dedicated **services layer** (a later milestone), not
+issued as naive INSERTs. Attempting to POST them returns 405.
 
 ## Design notes / guardrails
 
-- **Read-only.** Writes (POST/PUT/DELETE) are intentionally deferred to v2.
-- **Accuracy first.** v1 serves raw table rows and *exact* GROUP BY counts only.
-  Derived/computed figures (e.g. "live stock", which is a SQLite view today) are
-  deferred to v2 so they can be ported to Postgres *with parity tests* rather
-  than reimplemented by hand.
+- **Writes are scoped to master data** (vendors/warehouses/employees). Ledger
+  writes are deferred to a services layer (see above) — accuracy over speed.
+- **Accuracy first.** Derived figures are *ports of the SQLite views* verified
+  row-for-row against SQLite by `parity_check.py` (in CI), never hand-estimated.
+  Non-derived reads are raw table rows / exact GROUP BY counts.
 - **Secrets excluded.** Credential-bearing tables (`users`, `pending_users`,
   `*_tokens`, `qr_approval_requests`) are not exposed, and any column whose name
   looks secret (password/token/hash/…) plus all binary blobs are scrubbed from

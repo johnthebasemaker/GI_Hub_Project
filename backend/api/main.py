@@ -34,6 +34,7 @@ from backend import models  # noqa: E402
 from .config import CORS_ORIGINS  # noqa: E402
 from .crud import make_read_router  # noqa: E402
 from .db import engine, get_session  # noqa: E402
+from .stock import router as stock_router  # noqa: E402
 
 _MD = models.Base.metadata
 
@@ -41,6 +42,11 @@ _MD = models.Base.metadata
 # Read-only, non-secret business tables. Adding another is a one-line entry.
 # (Deliberately excluded: users / pending_users / *_tokens / qr_approval_requests
 #  — they carry credentials or one-time secrets.)
+# `writable: True` adds POST/PUT/DELETE. Only the master-data (reference) tables
+# are writable — they have no ledger business rules. Ledger tables (receipts /
+# consumption / returns / inventory / lots / purchase_orders) stay READ-ONLY
+# here: their writes carry identity-math / FEFO / audit logic that must be ported
+# into a services layer (a dedicated later milestone), not naive INSERTs.
 ENTITIES = [
     {"name": "inventory",       "prefix": "/inventory",       "tag": "inventory",       "id_col": "SAP_Code", "site_col": "Site_ID"},
     {"name": "receipts",        "prefix": "/receipts",        "tag": "receipts",        "id_col": "id",       "site_col": "Site_ID"},
@@ -49,9 +55,9 @@ ENTITIES = [
     {"name": "lots",            "prefix": "/lots",            "tag": "lots",            "id_col": "id",       "site_col": "Site_ID"},
     {"name": "purchase_orders", "prefix": "/purchase-orders", "tag": "purchase_orders", "id_col": "id",       "site_col": "Site_ID"},
     {"name": "sme_equipment",   "prefix": "/equipment",       "tag": "equipment",       "id_col": "id",       "site_col": "Site_ID"},
-    {"name": "employees",       "prefix": "/employees",       "tag": "employees",       "id_col": "id",       "site_col": "Site_ID"},
-    {"name": "vendors",         "prefix": "/vendors",         "tag": "vendors",         "id_col": "id",       "site_col": None},
-    {"name": "warehouses",      "prefix": "/warehouses",      "tag": "warehouses",      "id_col": "id",       "site_col": None},
+    {"name": "employees",       "prefix": "/employees",       "tag": "employees",       "id_col": "id",       "site_col": "Site_ID", "writable": True},
+    {"name": "vendors",         "prefix": "/vendors",         "tag": "vendors",         "id_col": "id",       "site_col": None,       "writable": True},
+    {"name": "warehouses",      "prefix": "/warehouses",      "tag": "warehouses",      "id_col": "id",       "site_col": None,       "writable": True},
 ]
 
 
@@ -85,7 +91,11 @@ for e in ENTITIES:
         _MD.tables[e["name"]],
         prefix=e["prefix"], tag=e["tag"],
         id_col=e["id_col"], site_col=e["site_col"],
+        writable=e.get("writable", False),
     ))
+
+# Derived (computed) stock endpoints — /stock/live, /by-site, /lots, /expiring.
+app.include_router(stock_router)
 
 
 @app.get("/", include_in_schema=False)

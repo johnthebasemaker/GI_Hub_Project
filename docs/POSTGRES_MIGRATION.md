@@ -221,6 +221,14 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-02 · actor=interactive · branch=`main` · 🧱 FastAPI backend v2 — derived stock (parity-tested) + master-data writes
+- **Derived stock endpoints** (`backend/api/stock.py`, `/stock/*`): PG-native ports of the SQLite reporting views, computed at request time (views are NOT created on PG — the API computes them). `live`→`v_live_stock`, `by-site`→`v_site_stock`, `lots`→`v_lot_balance`, `expiring`→`v_expiring_stock`. Ports handle the real SQLite→PG gaps: quoted mixed-case identifiers, **all non-agg cols added to GROUP BY** (PG strict), and `julianday`/`date('now'[,'+30 days'])` → PG date arithmetic (`date - date` → int days, `CURRENT_DATE(+30)`), with a regex guard + `substring(...,1,10)` cast so junk expiry text can't 500 (SQLite `date()` is lenient; PG cast raises).
+- **Accuracy proven — `backend/api/parity_check.py`:** compares each ported PG query against its SQLite `v_*` view as an **order-independent, value-normalised multiset** on the real data → **PARITY PASS** for all four (live 306, by-site 51, lots 10, expiring 2). Wired as a **CI step** in `postgres-dual-ci.yml` (runs after dual_ci populates PG). Note: `/stock/by-site?site_id=HQ` = 0 rows is *correct* (v_site_stock is activity-based; all movement is CNCEC) — parity confirms it.
+- **Master-data writes** (`crud.py` `writable=True`): POST/PUT/DELETE for **vendors / warehouses / employees** only. Generic Core insert/update/delete with `.returning(*)`; `created_at`/`updated_at` auto-set via `func.now()`; unknown/secret/blob cols → 422; `IntegrityError`/`DataError` → 400. **Ledger tables stay read-only** (receipts/consumption/returns/inventory/lots/purchase-orders → POST 405) — their writes need the identity-math/FEFO/audit **services layer** (a later milestone), not naive INSERTs.
+- **Verified live** on real PG: vendor create→read→update→delete cycle (auto `created_at`, 404 after delete, count restored to 2); `/receipts` POST→405; bad col→422; empty POST→400; 27 OpenAPI paths.
+- **Tests:** Streamlit/SQLite untouched — `bug_check` **599/0**, crawler **21/21**. Derived-view parity **PASS** (SQLite vs PG). `backend/api/README.md` updated.
+- **Next:** the React frontend (the remaining `FRONTEND_GO` item). Backend follow-ups when needed: ledger services layer (transactional writes) + optional JWT auth.
+
 ### 2026-07-02 · actor=interactive · branch=`main` · 🚀 FastAPI REST backend v1 (async, PostgreSQL) — runnable & viewable locally
 - **What:** built the decoupled REST API foundation the pivot pointed to. New package `backend/api/`:
   - `db.py` — async engine (`create_async_engine` + asyncpg, `pool_pre_ping`) + `async_sessionmaker`/`AsyncSession` dependency (architecture **rule #5**).
