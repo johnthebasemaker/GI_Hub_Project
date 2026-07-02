@@ -257,3 +257,32 @@ export function useDnItems(dn: string | null) {
       (await api.get<{ items: Row[] }>(`/warehouse/dns/${dn}/items`)).data.items,
   })
 }
+
+// --- site receiving (incoming DNs → stage receipts; closes the loop) ---------
+export function useIncomingDns(siteId?: string) {
+  return useQuery({
+    queryKey: ['/site/incoming-dns', siteId],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/site/incoming-dns', { params: siteId ? { site_id: siteId } : {} })).data.items,
+  })
+}
+
+export function useSiteDnItems(dn: string | null) {
+  return useQuery({
+    queryKey: ['/site/incoming-dns', dn, 'items'],
+    enabled: !!dn,
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>(`/site/incoming-dns/${dn}/items`)).data.items,
+  })
+}
+
+export function useReceiveDn() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (dn: string) => api.post(`/site/dns/${dn}/receive`).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['/site/incoming-dns'] })
+      qc.invalidateQueries({ queryKey: ['/hod/pending'] })
+    },
+  })
+}

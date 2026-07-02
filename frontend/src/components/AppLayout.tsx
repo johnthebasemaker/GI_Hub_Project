@@ -23,6 +23,7 @@ function buildMenu(level: number, role: string): MenuProps['items'] {
         { key: '/entry/issue', icon: <FormOutlined />, label: 'Issue Stock' },
         { key: '/entry/return', icon: <FormOutlined />, label: 'Return Stock' },
         { key: '/entry/adjust', icon: <FormOutlined />, label: 'Stock Adjustment' },
+        { key: '/site/incoming', icon: <InboxOutlined />, label: 'Incoming Deliveries' },
       ],
     },
     {

@@ -17,7 +17,7 @@ import datetime as _dt
 import os
 import sys
 
-from sqlalchemy import delete, func, insert, select, text, update
+from sqlalchemy import LargeBinary, delete, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Ensure `backend.models` importable regardless of launch context.
@@ -43,6 +43,17 @@ pending_issues_t = _MD.tables["pending_issues"]
 pending_returns_t = _MD.tables["pending_returns"]
 
 PENDING = "pending_hod"
+
+# Trace/logistics columns to carry from a staged pending_receipt onto the
+# committed receipt (e.g. DN_Number / PO_Number_Source / Warehouse_ID from a
+# warehouse delivery). = receipts columns ∩ pending_receipts columns, minus the
+# ones post_receipt already handles, minus blobs.
+_POST_RECEIPT_BASE = {"id", "Date", "SAP_Code", "Quantity", "Supplier",
+                      "Remarks", "Site_ID", "Expiry_Date", "PR_Number", "Lot_Number"}
+_RECEIPT_TRACE_COLS = {
+    c.name for c in receipts_t.columns
+    if c.name not in _POST_RECEIPT_BASE and not isinstance(c.type, LargeBinary)
+} & {c.name for c in pending_receipts_t.columns}
 
 # Stock-adjustment reason codes — identical to database.py:61 (ADJUSTMENT_REASONS).
 ADJUSTMENT_REASONS = {
@@ -327,7 +338,12 @@ async def commit_receipt(session: AsyncSession, *, approver: str, pending_id: in
     row = await _load_pending(session, pending_receipts_t, pending_id)
     if row is None:
         return {"error": "not found or already handled"}
-    res = await post_receipt(session, username=approver, data=row)
+    # Carry DN/PO/warehouse trace fields onto the committed receipt.
+    data = dict(row)
+    extra = {k: row[k] for k in _RECEIPT_TRACE_COLS if row.get(k) is not None}
+    if extra:
+        data["extra"] = {**(data.get("extra") or {}), **extra}
+    res = await post_receipt(session, username=approver, data=data)
     await session.execute(delete(pending_receipts_t).where(pending_receipts_t.c["id"] == pending_id))
     return {"committed": True, **res}
 

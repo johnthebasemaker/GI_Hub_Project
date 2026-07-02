@@ -24,6 +24,8 @@ purchase_orders_t = _MD.tables["purchase_orders"]
 po_items_t = _MD.tables["po_items"]
 delivery_notes_t = _MD.tables["delivery_notes"]
 dn_items_t = _MD.tables["dn_items"]
+pending_receipts_t = _MD.tables["pending_receipts"]
+inventory_t = _MD.tables["inventory"]
 
 
 def _rows(res):
@@ -235,3 +237,70 @@ async def ship_dn(session: AsyncSession, *, username: str, dn_number: str) -> di
         return {"error": "DN not found or not in a shippable state"}
     await write_audit(session, username, "SHIP_DN", "delivery_notes", f"DN={dn_number}")
     return {"shipped": True, "dn_number": dn_number, "status": "in_transit"}
+
+
+# --- site side: incoming DNs → stage receipts (closes the loop) --------------
+async def incoming_dns(session: AsyncSession, site_id: str | None):
+    """In-transit DNs headed to a site (what the site SK is about to receive)."""
+    conds = ['status = \'in_transit\'']
+    params: dict = {}
+    if site_id:
+        conds.append('"Site_ID" = :site')
+        params["site"] = site_id
+    sql = text(f'''
+        SELECT "DN_Number", "PO_Number", "Warehouse_ID", "Site_ID", rl_bl_family,
+               "DN_Date", "Vehicle_No", "Driver_Name", status
+        FROM delivery_notes WHERE {" AND ".join(conds)}
+        ORDER BY "DN_Number" DESC''')
+    return _rows(await session.execute(sql, params))
+
+
+async def stage_dn_receipt(session: AsyncSession, *, username: str, dn_number: str,
+                           actor_site: str | None) -> dict:
+    """Site receives an in-transit DN → stage one pending_receipts row per line
+    (status=pending_hod) at the destination site, so it flows into the HOD
+    Approvals → Receipts queue (approve → commit_receipt → ledger). Maps
+    Material_Code → SAP_Code via inventory (ports sk_mark_dn_received's mapping),
+    then flips the DN to 'received'."""
+    dn = (await session.execute(select(
+        delivery_notes_t.c["PO_Number"], delivery_notes_t.c["Site_ID"],
+        delivery_notes_t.c["Warehouse_ID"], delivery_notes_t.c["status"],
+    ).where(delivery_notes_t.c["DN_Number"] == dn_number))).first()
+    if dn is None:
+        return {"error": "DN not found"}
+    po_no, site_id, wh_id, status = dn
+    if status != "in_transit":
+        return {"error": f"DN status is {status} — only in_transit DNs can be received"}
+    # Site scoping: a site user can only receive DNs for their own site (admin any).
+    if actor_site and site_id != actor_site:
+        return {"error": f"DN is for site {site_id}, not your site ({actor_site})"}
+
+    items = await dn_lines(session, dn_number)
+    if not items:
+        return {"error": "DN has no items"}
+
+    staged = 0
+    for it in items:
+        qty = float(it.get("Qty") or 0)
+        if qty <= 0:
+            continue
+        mat = it.get("Material_Code")
+        sap_row = (await session.execute(select(inventory_t.c["SAP_Code"])
+                   .where(inventory_t.c["Material_Code"] == mat).limit(1))).first()
+        sap = sap_row[0] if sap_row else mat
+        await session.execute(insert(pending_receipts_t).values(
+            Date=_dt.date.today().isoformat(), SAP_Code=sap, Quantity=qty, Site_ID=site_id,
+            Supplier="WAREHOUSE", DN_No=dn_number, DN_Number=dn_number, Warehouse_ID=wh_id,
+            PO_Number_Source=po_no, Lot_Number=it.get("Lot_Number"),
+            Expiry_Date=it.get("Expiry_Date"), Remarks=f"Received via DN {dn_number}",
+            status="pending_hod"))
+        await session.execute(update(dn_items_t).where(dn_items_t.c["id"] == it["id"])
+                              .values(status="received", sk_received_qty=qty))
+        staged += 1
+
+    await session.execute(update(delivery_notes_t).where(delivery_notes_t.c["DN_Number"] == dn_number)
+                          .values(status="received", sk_received_at=func.now(), sk_received_by=username))
+    await write_audit(session, username, "DN_RECEIVE_STAGED", "pending_receipts",
+                      f"DN={dn_number} PO={po_no} site={site_id} lines={staged}")
+    return {"received": True, "dn_number": dn_number, "staged": staged, "site_id": site_id,
+            "message": f"Staged {staged} receipt(s) from DN {dn_number} for HOD approval"}
