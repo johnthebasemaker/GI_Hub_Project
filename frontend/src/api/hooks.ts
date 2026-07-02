@@ -130,3 +130,70 @@ export function useBurnRate(siteId: string | undefined, days: number) {
       (await api.get('/hod/burn-rate', { params: { ...(siteId ? { site_id: siteId } : {}), days } })).data,
   })
 }
+
+// --- procurement (PR → PO → assign) -----------------------------------------
+export function useHodPrs(siteId?: string) {
+  return useQuery({
+    queryKey: ['/hod/prs', siteId],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/hod/prs', { params: siteId ? { site_id: siteId } : {} })).data.items,
+  })
+}
+
+export function useSubmitPr() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ pr, site }: { pr: string; site: string }) =>
+      api.post(`/hod/prs/${pr}/submit`, null, { params: { site_id: site } }).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['/hod/prs'] })
+      qc.invalidateQueries({ queryKey: ['/logistics/prs'] })
+    },
+  })
+}
+
+export function useLogisticsPrs(siteId?: string) {
+  return useQuery({
+    queryKey: ['/logistics/prs', siteId],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/logistics/prs', { params: siteId ? { site_id: siteId } : {} })).data.items,
+  })
+}
+
+export function useLogisticsPos(status?: string) {
+  return useQuery({
+    queryKey: ['/logistics/pos', status],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/logistics/pos', { params: status ? { status } : {} })).data.items,
+  })
+}
+
+export function usePoItems(po: string | null) {
+  return useQuery({
+    queryKey: ['/logistics/pos', po, 'items'],
+    enabled: !!po,
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>(`/logistics/pos/${po}/items`)).data.items,
+  })
+}
+
+export function useCreatePo() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Row) => api.post('/logistics/pos', body).then((r) => r.data),
+    onSuccess: () => {
+      for (const k of ['/logistics/prs', '/logistics/pos', '/hod/prs']) {
+        qc.invalidateQueries({ queryKey: [k] })
+      }
+    },
+  })
+}
+
+export function useAssignPo() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ po, body }: { po: string; body: Row }) =>
+      api.post(`/logistics/pos/${po}/assign`, body).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/logistics/pos'] }),
+  })
+}

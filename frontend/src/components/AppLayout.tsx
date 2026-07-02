@@ -1,6 +1,6 @@
 import { Button, Layout, Menu, Space, Tag, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AuditOutlined, DashboardOutlined, FireOutlined, FormOutlined, LogoutOutlined, StockOutlined } from '@ant-design/icons'
+import { AuditOutlined, CarOutlined, DashboardOutlined, FireOutlined, FormOutlined, LogoutOutlined, ProfileOutlined, StockOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -40,7 +40,17 @@ function buildMenu(level: number): MenuProps['items'] {
       children: [
         { key: '/hod/approvals', icon: <AuditOutlined />, label: 'Approvals' },
         { key: '/hod/burn-rate', icon: <FireOutlined />, label: 'Burn Rate' },
+        { key: '/hod/prs', icon: <ProfileOutlined />, label: 'Purchase Requests' },
       ],
+    })
+  }
+  // Logistics portal — PR queue → PO → assign — logistics & admin (level ≥ 3).
+  if (level >= 3) {
+    items.push({
+      key: 'logistics',
+      label: 'Logistics',
+      type: 'group',
+      children: [{ key: '/logistics', icon: <CarOutlined />, label: 'Procurement' }],
     })
   }
   // Master data (vendors/warehouses/employees) — admin & logistics only.

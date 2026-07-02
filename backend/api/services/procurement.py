@@ -1,0 +1,201 @@
+"""
+backend/api/services/procurement.py — the PR → PO → warehouse chain.
+
+Ports the Logistics-side procurement logic from database.py:
+  * submit_pr        — submit_pr_to_logistics()  (HOD flips a PR to 'submitted')
+  * pr_queue         — list_prs_for_logistics()   (the Logistics queue)
+  * create_po_from_pr— create_po_manual()         (header + po_items + flip PR 'in_po')
+  * assign_po        — assign_po_to_warehouse()
+
+RL/BL family separation is preserved: each po_item is tagged via
+classify_rl_bl_family (RL and BL must never share a PO group).
+"""
+from __future__ import annotations
+
+import datetime as _dt
+
+from sqlalchemy import func, insert, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .ledger import _MD, write_audit  # reuse metadata + audit writer
+
+pr_master_t = _MD.tables["pr_master"]
+purchase_orders_t = _MD.tables["purchase_orders"]
+po_items_t = _MD.tables["po_items"]
+po_assignments_t = _MD.tables["po_assignments"]
+warehouses_t = _MD.tables["warehouses"]
+
+# RL/BL family tokens — verbatim from config.py (RL_BL_FAMILY_TOKENS).
+_RL_BL_TOKENS = {
+    "RL": ("RL-", "RUBBER LINING", "RUBBER-LINING"),
+    "BL": ("BL-", "BRICK LINING", "BRICK-LINING", "BRICK MATERIAL"),
+}
+
+
+def classify_rl_bl_family(material_code: str | None, description: str | None) -> str | None:
+    blob = f"{material_code or ''} {description or ''}".upper()
+    for family, tokens in _RL_BL_TOKENS.items():
+        if any(tok in blob for tok in tokens):
+            return family
+    return None
+
+
+def _rows(res):
+    return [dict(m) for m in res.mappings().all()]
+
+
+# --- reads -------------------------------------------------------------------
+async def hod_prs(session: AsyncSession, site_id: str | None):
+    """Site PRs grouped by PR_Number — the HOD's own queue (to submit)."""
+    where = '"status" = \'open\''
+    params: dict = {}
+    if site_id:
+        where += " AND COALESCE(\"Site_ID\",'HQ') = :site"
+        params["site"] = site_id
+    sql = text(f'''
+        SELECT "PR_Number", COALESCE("Site_ID",'HQ') AS "Site_ID",
+               COUNT(*) AS line_count, SUM("Requested_Qty") AS total_qty,
+               MAX(COALESCE(logistics_status,'site_draft')) AS logistics_status
+        FROM pr_master WHERE {where}
+        GROUP BY "PR_Number", COALESCE("Site_ID",'HQ')
+        ORDER BY "PR_Number" DESC''')
+    return _rows(await session.execute(sql, params))
+
+
+async def pr_queue(session: AsyncSession, site_id: str | None):
+    """The Logistics queue — PRs submitted and still open."""
+    where = ("COALESCE(logistics_status,'site_draft') = 'submitted' "
+             "AND \"status\" = 'open'")
+    params: dict = {}
+    if site_id:
+        where += " AND COALESCE(\"Site_ID\",'HQ') = :site"
+        params["site"] = site_id
+    sql = text(f'''
+        SELECT "PR_Number", COALESCE("Site_ID",'HQ') AS "Site_ID",
+               COUNT(*) AS line_count, SUM("Requested_Qty") AS total_qty,
+               MIN(submitted_to_logistics_at) AS submitted_at
+        FROM pr_master WHERE {where}
+        GROUP BY "PR_Number", COALESCE("Site_ID",'HQ')
+        ORDER BY submitted_at DESC''')
+    return _rows(await session.execute(sql, params))
+
+
+async def pr_lines(session: AsyncSession, pr_number: str, site_id: str | None):
+    stmt = select(
+        pr_master_t.c["id"], pr_master_t.c["PR_Number"], pr_master_t.c["Site_ID"],
+        pr_master_t.c["SAP_Code"], pr_master_t.c["Material_Code"], pr_master_t.c["Material_Name"],
+        pr_master_t.c["Requested_Qty"], pr_master_t.c["UOM"], pr_master_t.c["Est_Cost_SAR"],
+        pr_master_t.c["logistics_status"],
+    ).where(pr_master_t.c["PR_Number"] == pr_number)
+    if site_id:
+        stmt = stmt.where(func.coalesce(pr_master_t.c["Site_ID"], "HQ") == site_id)
+    return _rows(await session.execute(stmt.order_by(pr_master_t.c["id"])))
+
+
+async def po_list(session: AsyncSession, status: str | None):
+    where, params = "", {}
+    if status:
+        where = "WHERE status = :status"
+        params["status"] = status
+    sql = text(f'''
+        SELECT "PO_Number", "PR_Number", "Site_ID", "Vendor_Name", "PO_Date",
+               "Expected_Delivery", status, created_by, created_at
+        FROM purchase_orders {where}
+        ORDER BY "PO_Number" DESC LIMIT 500''')
+    return _rows(await session.execute(sql, params))
+
+
+async def po_items(session: AsyncSession, po_number: str):
+    stmt = select(
+        po_items_t.c["id"], po_items_t.c["line_no"], po_items_t.c["Material_Code"],
+        po_items_t.c["Description"], po_items_t.c["Qty"], po_items_t.c["UOM"],
+        po_items_t.c["Unit_Price"], po_items_t.c["Total_Price"], po_items_t.c["PR_Number"],
+        po_items_t.c["rl_bl_family"], po_items_t.c["line_status"],
+    ).where(po_items_t.c["PO_Number"] == po_number).order_by(po_items_t.c["line_no"])
+    return _rows(await session.execute(stmt))
+
+
+# --- mutations ---------------------------------------------------------------
+async def submit_pr(session: AsyncSession, *, username: str, pr_number: str, site_id: str) -> dict:
+    res = await session.execute(update(pr_master_t).where(
+        (pr_master_t.c["PR_Number"] == pr_number)
+        & (func.coalesce(pr_master_t.c["Site_ID"], "HQ") == site_id)
+        & (func.coalesce(pr_master_t.c["logistics_status"], "site_draft").in_(["site_draft", "submitted"]))
+    ).values(logistics_status="submitted", submitted_to_logistics_at=func.now(),
+             submitted_to_logistics_by=username))
+    if res.rowcount == 0:
+        return {"error": f"PR {pr_number} has no eligible lines to submit"}
+    await write_audit(session, username, "SUBMIT_PR_TO_LOGISTICS", "pr_master",
+                      f"PR={pr_number} site={site_id} lines={res.rowcount}")
+    return {"submitted": True, "pr_number": pr_number, "lines": res.rowcount}
+
+
+async def create_po_from_pr(session: AsyncSession, *, username: str, pr_number: str,
+                            site_id: str, po_number: str, vendor_code: str | None = None,
+                            vendor_name: str | None = None,
+                            expected_delivery: str | None = None) -> dict:
+    lines = (await session.execute(select(pr_master_t).where(
+        (pr_master_t.c["PR_Number"] == pr_number)
+        & (func.coalesce(pr_master_t.c["Site_ID"], "HQ") == site_id)
+        & (func.coalesce(pr_master_t.c["logistics_status"], "site_draft") == "submitted")
+    ))).mappings().all()
+    if not lines:
+        return {"error": "no submitted PR lines for this PR/site"}
+
+    exists = (await session.execute(select(func.count()).select_from(purchase_orders_t)
+              .where(purchase_orders_t.c["PO_Number"] == po_number))).scalar_one()
+    if exists:
+        return {"error": f"PO {po_number} already exists"}
+
+    today = _dt.date.today().isoformat()
+    await session.execute(insert(purchase_orders_t).values(
+        PO_Number=po_number, PR_Number=pr_number, Site_ID=site_id,
+        Vendor_Code=vendor_code, Vendor_Name=vendor_name, PO_Date=today,
+        Expected_Delivery=expected_delivery, source="api", created_by=username, status="open"))
+
+    for idx, ln in enumerate(lines, start=1):
+        mat = (ln.get("Material_Code") or "").strip()
+        desc = ln.get("Material_Name") or ""
+        qty = float(ln.get("Requested_Qty") or 0)
+        unit = float(ln.get("Est_Cost_SAR") or 0)
+        await session.execute(insert(po_items_t).values(
+            PO_Number=po_number, line_no=idx, Material_Code=mat, Description=desc,
+            Qty=qty, UOM=ln.get("UOM"), Unit_Price=unit, Total_Price=round(qty * unit, 2),
+            PR_Number=pr_number, WBS_Number=ln.get("WBS_Number"), Network=ln.get("Network"),
+            Plant=ln.get("Plant"), rl_bl_family=classify_rl_bl_family(mat, desc), line_status="open"))
+
+    await session.execute(update(pr_master_t).where(
+        (pr_master_t.c["PR_Number"] == pr_number)
+        & (func.coalesce(pr_master_t.c["Site_ID"], "HQ") == site_id)
+        & (func.coalesce(pr_master_t.c["logistics_status"], "site_draft") == "submitted")
+    ).values(logistics_status="in_po"))
+
+    await write_audit(session, username, "CREATE_PO", "purchase_orders",
+                      f"PO={po_number} PR={pr_number} site={site_id} lines={len(lines)}")
+    return {"created": True, "po_number": po_number, "lines": len(lines)}
+
+
+async def assign_po(session: AsyncSession, *, username: str, po_number: str, warehouse_id: str,
+                    expected_delivery: str | None = None, notes: str = "") -> dict:
+    active = (await session.execute(select(func.count()).select_from(warehouses_t).where(
+        (warehouses_t.c["Warehouse_ID"] == warehouse_id)
+        & (warehouses_t.c["status"] == "active")))).scalar_one()
+    if not active:
+        return {"error": f"warehouse {warehouse_id} not active / not found"}
+    po = (await session.execute(select(purchase_orders_t.c["status"])
+          .where(purchase_orders_t.c["PO_Number"] == po_number))).first()
+    if po is None:
+        return {"error": f"PO {po_number} not found"}
+    if po[0] in ("closed", "force_closed", "cancelled"):
+        return {"error": f"PO {po_number} is {po[0]} — cannot assign"}
+
+    await session.execute(insert(po_assignments_t).values(
+        PO_Number=po_number, Warehouse_ID=warehouse_id, Expected_Delivery=expected_delivery,
+        assigned_by=username, notes=notes or "", status="assigned"))
+    if expected_delivery:
+        await session.execute(update(purchase_orders_t).where(
+            purchase_orders_t.c["PO_Number"] == po_number).values(
+            Expected_Delivery=func.coalesce(purchase_orders_t.c["Expected_Delivery"], expected_delivery)))
+    await write_audit(session, username, "ASSIGN_PO", "po_assignments",
+                      f"PO={po_number} warehouse={warehouse_id}")
+    return {"assigned": True, "po_number": po_number, "warehouse_id": warehouse_id}

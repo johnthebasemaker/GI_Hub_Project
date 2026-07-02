@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .auth import require_level
 from .db import get_session
-from .services import ledger
+from .services import ledger, procurement
 
 router = APIRouter(prefix="/hod", tags=["HOD approvals"],
                    dependencies=[Depends(require_level(2))])
@@ -130,3 +130,21 @@ async def burn_rate(site_id: Optional[str] = None, days: int = 30,
     ''')
     return {"days": days, "since": cutoff,
             "items": _rows(await session.execute(sql, params))}
+
+
+@router.get("/prs", summary="Site purchase requests (grouped) — to submit to Logistics")
+async def hod_pr_list(site_id: Optional[str] = None,
+                      session: AsyncSession = Depends(get_session)):
+    return {"items": await procurement.hod_prs(session, site_id)}
+
+
+@router.post("/prs/{pr_number}/submit", summary="Submit a PR to Logistics")
+async def hod_pr_submit(pr_number: str, site_id: str,
+                        user: dict = Depends(require_level(2)),
+                        session: AsyncSession = Depends(get_session)):
+    async with session.begin():
+        res = await procurement.submit_pr(session, username=user["username"],
+                                          pr_number=pr_number, site_id=site_id)
+    if res.get("error"):
+        raise HTTPException(409, res["error"])
+    return res
