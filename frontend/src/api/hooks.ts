@@ -197,3 +197,63 @@ export function useAssignPo() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['/logistics/pos'] }),
   })
 }
+
+// --- warehouse (assignment → receive → DN → outbound) -----------------------
+export function useWhAssignments(warehouseId?: string) {
+  return useQuery({
+    queryKey: ['/warehouse/assignments', warehouseId],
+    enabled: !!warehouseId,
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/warehouse/assignments', { params: { warehouse_id: warehouseId } })).data.items,
+  })
+}
+
+export function useWhAssignmentItems(assignmentId: number | null) {
+  return useQuery({
+    queryKey: ['/warehouse/assignments', assignmentId, 'items'],
+    enabled: !!assignmentId,
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>(`/warehouse/assignments/${assignmentId}/items`)).data.items,
+  })
+}
+
+function useWhMutation<V>(fn: (v: V) => Promise<Row>) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['/warehouse/assignments'] })
+      qc.invalidateQueries({ queryKey: ['/warehouse/dns'] })
+      qc.invalidateQueries({ queryKey: ['/logistics/pos'] })
+    },
+  })
+}
+
+export const useWhAck = () =>
+  useWhMutation((id: number) => api.post(`/warehouse/assignments/${id}/acknowledge`).then((r) => r.data as Row))
+export const useWhReceive = () =>
+  useWhMutation(({ id, received }: { id: number; received: Record<string, number> }) =>
+    api.post(`/warehouse/assignments/${id}/receive`, { received }).then((r) => r.data as Row))
+export const useCreateDn = () =>
+  useWhMutation((body: Row) => api.post('/warehouse/dns', body).then((r) => r.data as Row))
+export const useShipDn = () =>
+  useWhMutation((dn: string) => api.post(`/warehouse/dns/${dn}/ship`).then((r) => r.data as Row))
+
+export function useWhDns(warehouseId?: string, status?: string) {
+  return useQuery({
+    queryKey: ['/warehouse/dns', warehouseId, status],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/warehouse/dns', {
+        params: { ...(warehouseId ? { warehouse_id: warehouseId } : {}), ...(status ? { status } : {}) },
+      })).data.items,
+  })
+}
+
+export function useDnItems(dn: string | null) {
+  return useQuery({
+    queryKey: ['/warehouse/dns', dn, 'items'],
+    enabled: !!dn,
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>(`/warehouse/dns/${dn}/items`)).data.items,
+  })
+}

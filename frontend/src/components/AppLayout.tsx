@@ -1,6 +1,6 @@
 import { Button, Layout, Menu, Space, Tag, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AuditOutlined, CarOutlined, DashboardOutlined, FireOutlined, FormOutlined, LogoutOutlined, ProfileOutlined, StockOutlined } from '@ant-design/icons'
+import { AuditOutlined, CarOutlined, DashboardOutlined, FireOutlined, FormOutlined, InboxOutlined, LogoutOutlined, ProfileOutlined, StockOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -8,8 +8,9 @@ import { READ_ENTITIES, WRITE_ENTITIES } from '../config/entities'
 
 const { Header, Sider, Content } = Layout
 
-// Nav is role-gated by the signed-in user's hierarchy level (admin 4 … store_keeper 0).
-function buildMenu(level: number): MenuProps['items'] {
+// Nav is role-gated by the signed-in user's hierarchy level (admin 4 … store_keeper 0)
+// plus exact-role gates for the parallel-ladder portals (warehouse).
+function buildMenu(level: number, role: string): MenuProps['items'] {
   const items: MenuProps['items'] = [
     { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
     { key: '/stock', icon: <StockOutlined />, label: 'Stock' },
@@ -53,6 +54,15 @@ function buildMenu(level: number): MenuProps['items'] {
       children: [{ key: '/logistics', icon: <CarOutlined />, label: 'Procurement' }],
     })
   }
+  // Warehouse portal — warehouse_user / logistics / admin (exact roles).
+  if (['warehouse_user', 'logistics', 'admin'].includes(role)) {
+    items.push({
+      key: 'warehouse',
+      label: 'Warehouse',
+      type: 'group',
+      children: [{ key: '/warehouse', icon: <InboxOutlined />, label: 'Receiving & DN' }],
+    })
+  }
   // Master data (vendors/warehouses/employees) — admin & logistics only.
   if (level >= 3) {
     items.push({
@@ -86,7 +96,7 @@ export default function AppLayout() {
         <Menu
           mode="inline"
           selectedKeys={[location.pathname]}
-          items={buildMenu(level)}
+          items={buildMenu(level, user?.role ?? '')}
           onClick={({ key }) => navigate(key)}
           style={{ borderInlineEnd: 'none' }}
         />

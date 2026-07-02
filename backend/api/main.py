@@ -40,6 +40,7 @@ from .entry import router as entry_router  # noqa: E402
 from .hod import router as hod_router  # noqa: E402
 from .logistics import router as logistics_router  # noqa: E402
 from .stock import router as stock_router  # noqa: E402
+from .warehouse import router as warehouse_router  # noqa: E402
 
 _MD = models.Base.metadata
 
@@ -118,6 +119,9 @@ app.include_router(hod_router)
 
 # Logistics portal — PR queue → create PO → assign to warehouse (self-guarded, ≥logistics).
 app.include_router(logistics_router)
+
+# Warehouse portal — assignment → receive → DN → outbound (self-guarded, warehouse/admin).
+app.include_router(warehouse_router)
 
 
 @app.get("/", include_in_schema=False)

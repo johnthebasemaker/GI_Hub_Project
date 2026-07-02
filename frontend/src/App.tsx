@@ -13,6 +13,7 @@ import ApprovalsPage from './pages/ApprovalsPage'
 import BurnRatePage from './pages/BurnRatePage'
 import HodPrsPage from './pages/HodPrsPage'
 import LogisticsPage from './pages/LogisticsPage'
+import WarehousePage from './pages/WarehousePage'
 import { useAuth } from './auth/AuthContext'
 
 export default function App() {
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="hod/burn-rate" element={<BurnRatePage />} />
         <Route path="hod/prs" element={<HodPrsPage />} />
         <Route path="logistics" element={<LogisticsPage />} />
+        <Route path="warehouse" element={<WarehousePage />} />
         <Route path="records/:key" element={<RecordsPage />} />
         <Route path="master/:key" element={<MasterDataPage />} />
       </Route>

@@ -117,6 +117,18 @@ def require_level(min_level: int):
     return _dep
 
 
+def require_roles(*roles: str):
+    """Dependency factory: 403 unless the user's role is one of `roles`
+    (admin is always allowed). For the parallel-ladder roles (warehouse_user,
+    supervisor) that a level check can't isolate."""
+    allowed = set(roles) | {"admin"}
+    async def _dep(user: dict = Depends(get_current_user)) -> dict:
+        if user["role"] not in allowed:
+            raise HTTPException(403, "this action is restricted to: " + ", ".join(sorted(allowed)))
+        return user
+    return _dep
+
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
