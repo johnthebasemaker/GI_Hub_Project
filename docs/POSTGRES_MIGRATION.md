@@ -221,6 +221,13 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-02 · actor=interactive · branch=`main` · 🧭 STRATEGIC PIVOT — Streamlit-on-PG parked; PG = FastAPI foundation; data-layer proven on real PG
+- **Decision (user-approved):** the existing Streamlit app **stays on SQLite**. Reason, confirmed against a **local Postgres** installed this session: the whole raw-SQL surface uses unquoted mixed-case identifiers (`SAP_Code`, `Site_ID`, …) — PG folds them to lowercase and can't match the case-preserved columns. Scope is ~1,320 lines / 170 `df["Mixed_Case"]` keys / 74 SQL aliases — a full retrofit (lowercase schema + result-remap) is large/risky with no clean shortcut. **The Postgres schema (`models.py`) + copy script are the foundation for the future FastAPI backend** (ORM-based → quotes identifiers → no case problem). This matches the original `FRONTEND_GO: NO` plan.
+- **What now works, verified on REAL local Postgres 16** (`brew install postgresql@16`, port 5433): `backend/dual_ci.py` → **table parity 64/64 ✅, semantic aggregates ✅, `get_connection()` facade + `?`-params + `read_sql` + `init_db` (create_all) all ✅.** The DATA-LAYER migration is proven end-to-end on Postgres.
+- **Scoped out of the PG path (intentional):** the 14 SQL views (SQLite/Streamlit legacy — FastAPI computes those via ORM). `run_migration(create_views=…)` defaults to skip-on-PG; `dual_ci` skips view checks on PG; `_init_db_postgres()` creates tables only. `backend/pg_smoke.py` (behavioural Streamlit-on-PG) is retained but **removed from CI** (its premise is parked).
+- **Local PG for ongoing verification:** installed + a throwaway cluster in scratchpad, so PG work is now verified locally (no CI paste loops).
+- **Tests:** SQLite `.venv` **599/0 · 21/21**; dual_ci dry-run (SQLite) PASS with views; dual_ci vs real local PG **PASS**. CI (GitHub Actions) should now be green on the data-layer job.
+
 ### 2026-07-02 · actor=interactive · branch=`main` · CI fixes (first real PG run surfaced two)
 - **First live Actions run went red at the `bug_check` step (exit 2)** — two real bugs the CI caught:
   1. The workflow set `DATABASE_URL` at **job level**, so it bled into the SQLite `bug_check` step → `db_dialect()`→postgresql → `init_db` took the PG path mid-suite → crash. **Fix:** `DATABASE_URL` is now scoped to only the `dual_ci` + `pg_smoke` steps; `bug_check.py` also defensively `os.environ.pop("DATABASE_URL")` at startup (it's the SQLite suite).

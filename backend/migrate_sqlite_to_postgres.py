@@ -156,14 +156,23 @@ def run_migration(
     chunk: int = 1000,
     wipe: bool = False,
     echo: bool = False,
+    create_views: bool = None,
 ) -> dict:
     """Copy `source_path` (SQLite file) into `target_url`. Returns a report:
     {'tables': {name: {source, target, ok, dropped_columns}}, 'views': {name:
-    'ok'|error}, 'ok': bool}. Never mutates the source DB."""
+    'ok'|error}, 'ok': bool}. Never mutates the source DB.
+
+    create_views: whether to recreate the SQL views on the target. Default
+    (None) = create on SQLite, SKIP on Postgres — the views are SQLite/Streamlit
+    legacy (raw SQL with unquoted mixed-case identifiers Postgres can't resolve).
+    The Postgres target is the FastAPI foundation; that layer computes those
+    aggregations via the ORM, so the views aren't migrated to PG."""
     src = sqlite3.connect(source_path)  # read-only usage
     src_tables = _sqlite_tables(src)
     engine = create_engine(target_url, echo=echo)
     is_pg = engine.dialect.name == "postgresql"
+    if create_views is None:
+        create_views = not is_pg
 
     if wipe:
         # Drop views first (they depend on tables), then all tables.
@@ -230,20 +239,20 @@ def run_migration(
                         f"'id'), COALESCE((SELECT MAX(id) FROM {table.name}), 1), "
                         f"(SELECT COUNT(*) FROM {table.name}) > 0)"))
 
-        # Recreate views. Use a PG-native override where the SQLite text uses
-        # dialect-specific functions (e.g. v_expiring_stock); otherwise the
-        # portable SQLite text works on both.
-        for vname, vsql in models.SME_AND_DERIVED_VIEWS.items():
-            if is_pg and vname in PG_VIEW_OVERRIDES:
-                vsql = PG_VIEW_OVERRIDES[vname]
-            try:
-                conn.execute(text(f'DROP VIEW IF EXISTS "{vname}"'
-                                  + (" CASCADE" if is_pg else "")))
-                conn.execute(text(vsql))
-                report["views"][vname] = "ok"
-            except Exception as e:  # noqa: BLE001 — report, don't abort
-                report["views"][vname] = f"FAILED: {type(e).__name__}: {e}"
-                report["ok"] = False
+        # Recreate views only when requested (SQLite by default; skipped on PG —
+        # the views are SQLite/Streamlit legacy, see run_migration docstring).
+        if create_views:
+            for vname, vsql in models.SME_AND_DERIVED_VIEWS.items():
+                if is_pg and vname in PG_VIEW_OVERRIDES:
+                    vsql = PG_VIEW_OVERRIDES[vname]
+                try:
+                    conn.execute(text(f'DROP VIEW IF EXISTS "{vname}"'
+                                      + (" CASCADE" if is_pg else "")))
+                    conn.execute(text(vsql))
+                    report["views"][vname] = "ok"
+                except Exception as e:  # noqa: BLE001 — report, don't abort
+                    report["views"][vname] = f"FAILED: {type(e).__name__}: {e}"
+                    report["ok"] = False
 
     # Parity: compare source vs target row counts.
     with engine.connect() as conn:

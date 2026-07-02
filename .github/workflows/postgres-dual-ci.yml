@@ -70,12 +70,11 @@ jobs:
       - name: SQLite regression suite (bug_check.py)
         run: python bug_check.py          # SQLite only (no DATABASE_URL here)
 
-      - name: Dual-CI — migrate + parity (SQLite → PostgreSQL)
+      # Data-layer migration to Postgres (tables + row parity + facade smoke).
+      # Views + full Streamlit-on-PG behaviour are intentionally out of scope —
+      # PG is the FastAPI foundation; Streamlit stays on SQLite. (pg_smoke.py is
+      # retained but not run in CI; see docs/POSTGRES_MIGRATION.md.)
+      - name: Dual-CI — data-layer migrate + parity (SQLite → PostgreSQL)
         env:
           DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
         run: python backend/dual_ci.py --source gi_database.db
-
-      - name: Behavioural smoke — real app code paths on PostgreSQL
-        env:
-          DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
-        run: python backend/pg_smoke.py --source gi_database.db

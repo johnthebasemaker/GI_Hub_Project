@@ -39,15 +39,23 @@ import migrate_sqlite_to_postgres as mig  # noqa: E402
 from sqlalchemy import create_engine, text  # noqa: E402
 
 
-# Portable (no rowid / julianday / etc.) scalar queries that MUST return the
-# same value on both backends. Catches type-affinity + view-dialect drift.
+# Table-based scalar checks — MUST match on both backends (data-layer parity).
+# Mixed-case identifiers are DOUBLE-QUOTED so the same SQL runs on both SQLite
+# and Postgres (PG folds unquoted identifiers to lowercase).
 SEMANTIC_CHECKS: dict[str, str] = {
     "inventory rows":              "SELECT COUNT(*) FROM inventory",
-    "receipts SUM(Quantity)":      "SELECT COALESCE(ROUND(SUM(Quantity), 3), 0) FROM receipts",
-    "consumption SUM(Quantity)":   "SELECT COALESCE(ROUND(SUM(Quantity), 3), 0) FROM consumption",
-    "returns SUM(Quantity)":       "SELECT COALESCE(ROUND(SUM(Quantity), 3), 0) FROM returns",
-    "v_site_stock SUM(Current_Stock)": "SELECT COALESCE(ROUND(SUM(Current_Stock), 3), 0) FROM v_site_stock",
-    "v_lot_balance SUM(Remaining_Qty)": "SELECT COALESCE(ROUND(SUM(Remaining_Qty), 3), 0) FROM v_lot_balance",
+    "receipts SUM(Quantity)":      'SELECT COALESCE(ROUND(CAST(SUM("Quantity") AS NUMERIC), 3), 0) FROM receipts',
+    "consumption SUM(Quantity)":   'SELECT COALESCE(ROUND(CAST(SUM("Quantity") AS NUMERIC), 3), 0) FROM consumption',
+    "returns SUM(Quantity)":       'SELECT COALESCE(ROUND(CAST(SUM("Quantity") AS NUMERIC), 3), 0) FROM returns',
+    "system_audit_log rows":       "SELECT COUNT(*) FROM system_audit_log",
+}
+
+# View-based checks — only meaningful where the SQL views exist (SQLite). The
+# views are NOT migrated to Postgres (SQLite/Streamlit legacy; the FastAPI layer
+# computes these via the ORM), so these are skipped on a Postgres target.
+VIEW_SEMANTIC_CHECKS: dict[str, str] = {
+    "v_site_stock SUM(Current_Stock)": 'SELECT COALESCE(ROUND(SUM("Current_Stock"), 3), 0) FROM v_site_stock',
+    "v_lot_balance SUM(Remaining_Qty)": 'SELECT COALESCE(ROUND(SUM("Remaining_Qty"), 3), 0) FROM v_lot_balance',
     "v_expiring_stock rows":       "SELECT COUNT(*) FROM v_expiring_stock",
 }
 
@@ -112,28 +120,35 @@ def run(source_path: str, target_url: str) -> dict:
 
     src = sqlite3.connect(source_path)
     engine = create_engine(target_url)
+    is_pg = engine.dialect.name == "postgresql"
+    # Views are migrated only on SQLite (parked on PG — see run_migration).
+    checks = dict(SEMANTIC_CHECKS)
+    if not is_pg:
+        checks.update(VIEW_SEMANTIC_CHECKS)
     try:
         with engine.connect() as tconn:
-            # 2. Per-view row-count parity (source SQLite vs target).
+            # 2. Per-view row-count parity — SQLite target only (no views on PG).
             vparity = {}
-            for vname in models.SME_AND_DERIVED_VIEWS:
-                try:
-                    s = src.execute(f'SELECT COUNT(*) FROM "{vname}"').fetchone()[0]
-                except Exception as e:  # noqa: BLE001
-                    s = f"ERR:{type(e).__name__}"
-                try:
-                    t = tconn.execute(text(f'SELECT COUNT(*) FROM "{vname}"')).scalar()
-                except Exception as e:  # noqa: BLE001
-                    t = f"ERR:{type(e).__name__}"
-                ok = _num_eq(s, t)
-                vparity[vname] = {"source": s, "target": t, "ok": ok}
-                if not ok:
-                    result["ok"] = False
+            if not is_pg:
+                for vname in models.SME_AND_DERIVED_VIEWS:
+                    try:
+                        s = src.execute(f'SELECT COUNT(*) FROM "{vname}"').fetchone()[0]
+                    except Exception as e:  # noqa: BLE001
+                        s = f"ERR:{type(e).__name__}"
+                    try:
+                        t = tconn.execute(text(f'SELECT COUNT(*) FROM "{vname}"')).scalar()
+                    except Exception as e:  # noqa: BLE001
+                        t = f"ERR:{type(e).__name__}"
+                    ok = _num_eq(s, t)
+                    vparity[vname] = {"source": s, "target": t, "ok": ok}
+                    if not ok:
+                        result["ok"] = False
             result["views"] = vparity
+            result["views_skipped"] = is_pg
 
-            # 3. Semantic aggregate parity.
+            # 3. Semantic aggregate parity (table-based always; view-based SQLite-only).
             sem = {}
-            for label, sql in SEMANTIC_CHECKS.items():
+            for label, sql in checks.items():
                 try:
                     s = src.execute(sql).fetchone()[0]
                 except Exception as e:  # noqa: BLE001
@@ -168,12 +183,19 @@ def _print(result: dict) -> None:
     print(f"\n[1] Table parity: {len(m['tables']) - len(tbad)}/{len(m['tables'])} ok"
           + (f"  ❌ {tbad}" if tbad else "  ✅"))
     vbad = [v for v, s in m["views"].items() if s != "ok"]
-    print(f"[1] View creation: {len(m['views']) - len(vbad)}/{len(m['views'])} ok"
-          + (f"  ❌ {vbad}" if vbad else "  ✅"))
+    if m["views"]:
+        print(f"[1] View creation: {len(m['views']) - len(vbad)}/{len(m['views'])} ok"
+              + (f"  ❌ {vbad}" if vbad else "  ✅"))
+    else:
+        print("[1] View creation: skipped (views not migrated to Postgres)")
 
-    print("\n[2] View row-count parity (SQLite → target):")
-    for v, i in sorted(result["views"].items()):
-        print(f"  {'✅' if i['ok'] else '❌'} {v:24} {i['source']} → {i['target']}")
+    if result.get("views_skipped"):
+        print("\n[2] View row-count parity: skipped on Postgres "
+              "(views are SQLite/Streamlit legacy; FastAPI computes via ORM)")
+    else:
+        print("\n[2] View row-count parity (SQLite → target):")
+        for v, i in sorted(result["views"].items()):
+            print(f"  {'✅' if i['ok'] else '❌'} {v:24} {i['source']} → {i['target']}")
 
     print("\n[3] Semantic aggregate parity:")
     for label, i in result["semantic"].items():

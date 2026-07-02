@@ -275,23 +275,17 @@ def _init_db_postgres() -> None:
     `backend/models.py`. Idempotent — the SQLite self-heal path is skipped
     entirely. Row DATA is loaded by `backend/migrate_sqlite_to_postgres.py`,
     not seeded here (the migration copies users/settings/etc. from SQLite)."""
-    from sqlalchemy import text
     try:
         from backend import models
-        from backend import migrate_sqlite_to_postgres as _mig
     except ImportError:  # backend/ dir directly on sys.path (tooling)
         import models  # type: ignore
-        import migrate_sqlite_to_postgres as _mig  # type: ignore
     engine = get_engine()
     models.Base.metadata.create_all(engine)   # tables (idempotent)
-    with engine.begin() as c:
-        for vname, vsql in models.SME_AND_DERIVED_VIEWS.items():
-            v = _mig.PG_VIEW_OVERRIDES.get(vname, vsql)   # PG-native where needed
-            try:
-                c.execute(text(f'DROP VIEW IF EXISTS "{vname}" CASCADE'))
-                c.execute(text(v))
-            except Exception:  # noqa: BLE001 — a broken view never blocks startup
-                pass
+    # NOTE: the SQL views (v_site_stock, equipment, …) are NOT created on
+    # Postgres — they're SQLite/Streamlit legacy (raw SQL with unquoted
+    # mixed-case identifiers PG can't resolve). The FastAPI layer that will use
+    # this PG schema computes those aggregations via the ORM. See
+    # docs/POSTGRES_MIGRATION.md (Streamlit-on-PG parked).
 
 
 # ---------------------------------------------------------------------------
