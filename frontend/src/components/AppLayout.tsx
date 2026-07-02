@@ -1,6 +1,6 @@
 import { Button, Layout, Menu, Space, Tag, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AuditOutlined, CarOutlined, DashboardOutlined, FireOutlined, FormOutlined, InboxOutlined, LogoutOutlined, ProfileOutlined, StockOutlined } from '@ant-design/icons'
+import { AuditOutlined, CarOutlined, DashboardOutlined, FireOutlined, FormOutlined, InboxOutlined, LogoutOutlined, ProfileOutlined, SolutionOutlined, StockOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -24,6 +24,7 @@ function buildMenu(level: number, role: string): MenuProps['items'] {
         { key: '/entry/return', icon: <FormOutlined />, label: 'Return Stock' },
         { key: '/entry/adjust', icon: <FormOutlined />, label: 'Stock Adjustment' },
         { key: '/site/incoming', icon: <InboxOutlined />, label: 'Incoming Deliveries' },
+        { key: '/sk/requests', icon: <SolutionOutlined />, label: 'Supervisor Requests' },
       ],
     },
     {
@@ -53,6 +54,15 @@ function buildMenu(level: number, role: string): MenuProps['items'] {
       label: 'Logistics',
       type: 'group',
       children: [{ key: '/logistics', icon: <CarOutlined />, label: 'Procurement' }],
+    })
+  }
+  // Supervisor portal — supervisor / admin (exact roles).
+  if (['supervisor', 'admin'].includes(role)) {
+    items.push({
+      key: 'supervisor',
+      label: 'Supervisor',
+      type: 'group',
+      children: [{ key: '/supervisor', icon: <SolutionOutlined />, label: 'Material Requests' }],
     })
   }
   // Warehouse portal — warehouse_user / logistics / admin (exact roles).

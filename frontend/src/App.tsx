@@ -15,6 +15,8 @@ import HodPrsPage from './pages/HodPrsPage'
 import LogisticsPage from './pages/LogisticsPage'
 import WarehousePage from './pages/WarehousePage'
 import IncomingDeliveriesPage from './pages/IncomingDeliveriesPage'
+import SupervisorPage from './pages/SupervisorPage'
+import SkRequestsPage from './pages/SkRequestsPage'
 import { useAuth } from './auth/AuthContext'
 
 export default function App() {
@@ -30,6 +32,8 @@ export default function App() {
         <Route path="entry/return" element={<ReturnPage />} />
         <Route path="entry/adjust" element={<AdjustPage />} />
         <Route path="site/incoming" element={<IncomingDeliveriesPage />} />
+        <Route path="supervisor" element={<SupervisorPage />} />
+        <Route path="sk/requests" element={<SkRequestsPage />} />
         <Route path="hod/approvals" element={<ApprovalsPage />} />
         <Route path="hod/burn-rate" element={<BurnRatePage />} />
         <Route path="hod/prs" element={<HodPrsPage />} />

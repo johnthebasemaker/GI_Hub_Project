@@ -286,3 +286,39 @@ export function useReceiveDn() {
     },
   })
 }
+
+// --- supervisor material requests (SMR) -------------------------------------
+export function useSmrList(params: { mine?: boolean; site_id?: string; status?: string }) {
+  return useQuery({
+    queryKey: ['/requests', params],
+    queryFn: async () => (await api.get<{ items: Row[] }>('/requests', { params })).data.items,
+  })
+}
+
+export function useSmrItems(id: number | null) {
+  return useQuery({
+    queryKey: ['/requests', id, 'items'],
+    enabled: !!id,
+    queryFn: async () => (await api.get<{ items: Row[] }>(`/requests/${id}/items`)).data.items,
+  })
+}
+
+export function useCreateSmr() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Row) => api.post('/requests', body).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/requests'] }),
+  })
+}
+
+export function useSmrDecision() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, action, reason }: { id: number; action: 'approve' | 'reject'; reason?: string }) =>
+      api.post(`/requests/${id}/${action}`, action === 'reject' ? { reason } : {}).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['/requests'] })
+      qc.invalidateQueries({ queryKey: ['/hod/pending'] })
+    },
+  })
+}

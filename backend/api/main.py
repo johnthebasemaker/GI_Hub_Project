@@ -40,6 +40,7 @@ from .entry import router as entry_router  # noqa: E402
 from .hod import router as hod_router  # noqa: E402
 from .logistics import router as logistics_router  # noqa: E402
 from .receiving import router as receiving_router  # noqa: E402
+from .requests import router as requests_router  # noqa: E402
 from .stock import router as stock_router  # noqa: E402
 from .warehouse import router as warehouse_router  # noqa: E402
 
@@ -126,6 +127,9 @@ app.include_router(warehouse_router)
 
 # Site receiving — in-transit DN → stage pending_receipts (closes the loop; self-guarded).
 app.include_router(receiving_router)
+
+# Supervisor material requests — create → SK approve → pending_issues (self-guarded).
+app.include_router(requests_router)
 
 
 @app.get("/", include_in_schema=False)
