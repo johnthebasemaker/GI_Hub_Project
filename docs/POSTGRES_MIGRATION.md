@@ -221,6 +221,19 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-02 · actor=interactive · branch=`main` · Step 2 increment 3 — behavioural dual-CI + runtime dialect fixes (wave 1)
+- **Behavioural harness:** `backend/pg_smoke.py` migrates the DB then runs 16 real `database.py` code paths through `get_connection()` and reports per-path pass/fail (isolated, so one run lists everything). Wired as a CI step in `postgres-dual-ci.yml` (runs on real PG). `--dry-run` validates structurally on SQLite (16/16 on the real DB).
+- **Runtime dialect fixes (verifiable on SQLite, no-ops there):**
+  - `rowid` → `rowid_ref()` helper (`rowid` on SQLite, `id` on PG) at the 5 receipts read sites (`get_receipt_history`, activity feed, `get_item_bin_locations`, `report_daily_receipts`).
+  - `datetime('now')` → `now_sql()` in `get_overdue_unreported_items`.
+  - `INSERT OR IGNORE` → `sql_insert_or_ignore()` helper (`ON CONFLICT DO NOTHING` on PG) at 3 sites (`process_receipt_delivery`, `create_or_get_lot`, `record_cross_site_view`).
+  - Unit test `check_pg_sql_helpers` covers both dialects (no PG needed).
+- **⏭️ WAVE 2 (remaining runtime dialect-isms — need per-caller work / CI verification):**
+  - `date('now', ?)` / `datetime('now', ?)` param-modifier sites (5): `get_consumption_value_window`, `list_supervisor_requests`, `list_smr_history`, `report_supervisor_intent_vs_actual`, `get_locate_anything_summary` — the `?` carries a SQLite modifier string ('-30 days'); PG needs `INTERVAL`. Convert to pass an int + `days_ago_sql()`.
+  - `INSERT OR REPLACE` → upsert (2): `next_temp_material_code` (app_settings), `insert_sme_inventory_seed` — need `ON CONFLICT (target) DO UPDATE`.
+  - Add these functions to `pg_smoke` as they're fixed (CI turns them green).
+- **Tests:** `.venv` **599/0 · 21/21**; pg_smoke dry-run 16/16 on real data. SQLite path unchanged (all fixes are no-ops on SQLite via the helpers).
+
 ### 2026-07-02 · actor=interactive · branch=`main` · Step 2 increment 2 — init_db PG-guard + read_sql
 - **read_sql (265 sites) — ZERO changes needed.** Verified `pd.read_sql(sql, conn, params)` works THROUGH the `_EngineConnection` facade (pandas 3.0 DBAPI path uses `cursor.execute` + `description`, which the facade provides with `?`→`%s` translation). So all 265 sites work on Postgres unchanged.
 - **`init_db` PG-guard.** On Postgres, `init_db` now early-returns via `_init_db_postgres()` — `models.Base.metadata.create_all()` (tables, idempotent) + recreate the 14 views (PG-native override for `v_expiring_stock`). The SQLite self-heal DDL (PRAGMA/AUTOINCREMENT/rebuilds/`date()`) is skipped entirely. Data is loaded by the migration, not seeded here. `backend/` is now a package (`__init__.py`) so `database.py` can import `models`.

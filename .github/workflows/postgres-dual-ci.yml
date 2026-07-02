@@ -75,3 +75,6 @@ jobs:
 
       - name: Dual-CI — migrate + parity (SQLite → PostgreSQL)
         run: python backend/dual_ci.py --source gi_database.db
+
+      - name: Behavioural smoke — real app code paths on PostgreSQL
+        run: python backend/pg_smoke.py --source gi_database.db

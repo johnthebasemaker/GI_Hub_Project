@@ -428,6 +428,26 @@ def date_diff_days_sql(later: str, earlier: str, dialect: str = None) -> str:
     return f"CAST(julianday({later}) - julianday({earlier}) AS INTEGER)"
 
 
+def rowid_ref(alias: str = "", dialect: str = None) -> str:
+    """Portable reference to a ledger row's implicit id. The SQLite ledger
+    tables (receipts/consumption/returns) have no explicit PK, so runtime SQL
+    used `rowid`; on Postgres the migration gives them a SERIAL `id`. Returns
+    `rowid` on SQLite / `id` on Postgres, optionally qualified by `alias`."""
+    col = "id" if (dialect or db_dialect()) == "postgresql" else "rowid"
+    return f"{alias}.{col}" if alias else col
+
+
+def sql_insert_or_ignore(stmt: str, dialect: str = None) -> str:
+    """Portable dedup-insert. SQLite `INSERT OR IGNORE INTO …` has no Postgres
+    equivalent; there we emit `INSERT INTO … ON CONFLICT DO NOTHING`. Pass the
+    full statement beginning with `INSERT OR IGNORE INTO`; returns it unchanged
+    on SQLite. (DO NOTHING needs no conflict target in PG.)"""
+    if (dialect or db_dialect()) == "postgresql":
+        return stmt.replace("INSERT OR IGNORE INTO", "INSERT INTO", 1) \
+            + " ON CONFLICT DO NOTHING"
+    return stmt
+
+
 # ---------------------------------------------------------------------------
 # SCHEMA INIT — accepts external conn for testability
 # ---------------------------------------------------------------------------
@@ -3561,7 +3581,7 @@ def get_returnable_receipts(
         conn = get_connection()
     try:
         df = pd.read_sql(
-            "SELECT r.rowid AS receipt_id, r.Date, r.SAP_Code, "
+            f"SELECT {rowid_ref('r')} AS receipt_id, r.Date, r.SAP_Code, "
             "       COALESCE(i.Material_Code,'') AS Material_Code, "
             "       i.Equipment_Description, i.UOM, "
             "       r.Quantity AS received_qty, "
@@ -5092,10 +5112,11 @@ def process_receipt_delivery(
         if lot_number:
             try:
                 conn.execute(
-                    "INSERT OR IGNORE INTO lots "
-                    "(Lot_Number, SAP_Code, Site_ID, Received_Date, "
-                    " Expiry_Date, Supplier, PR_Number) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    sql_insert_or_ignore(
+                        "INSERT OR IGNORE INTO lots "
+                        "(Lot_Number, SAP_Code, Site_ID, Received_Date, "
+                        " Expiry_Date, Supplier, PR_Number) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)"),
                     (lot_number, sap_code, site_id, date,
                      expiry_date or None, supplier or None, pr_number or None),
                 )
@@ -5796,11 +5817,11 @@ def get_overdue_unreported_items(
     if _owns:
         conn = get_connection()
     df = pd.read_sql(
-        """SELECT id, material_name, uom, qty, borrower_name,
+        f"""SELECT id, material_name, uom, qty, borrower_name,
                   borrower_phone, expected_return_time, Site_ID
            FROM returnable_items
            WHERE status = 'borrowed'
-             AND expected_return_time < datetime('now')
+             AND expected_return_time < {now_sql()}
              AND whatsapp_alert_sent = 0
              AND COALESCE(Site_ID, 'HQ') = ?""",
         conn, params=(site_id,),
@@ -6189,7 +6210,7 @@ def get_receipt_history(
         conn = get_connection()
     try:
         df = pd.read_sql(
-            """SELECT r.rowid AS rid, r.Date, r.SAP_Code,
+            f"""SELECT {rowid_ref('r')} AS rid, r.Date, r.SAP_Code,
                       i.Equipment_Description AS Material_Name,
                       r.Quantity, COALESCE(r.Supplier,'') AS Supplier,
                       COALESCE(r.PR_Number,'') AS PR_Number,
@@ -6199,7 +6220,7 @@ def get_receipt_history(
                FROM receipts r
                LEFT JOIN inventory i ON r.SAP_Code = i.SAP_Code
                WHERE COALESCE(r.Site_ID,'HQ') = ?
-               ORDER BY r.rowid DESC
+               ORDER BY {rowid_ref('r')} DESC
                LIMIT ?""",
             conn, params=(site_id, int(limit)),
         )
@@ -6230,7 +6251,7 @@ def get_item_bin_locations(
             "SELECT Bin_Location FROM receipts "
             "WHERE TRIM(SAP_Code) = ? AND COALESCE(Site_ID,'HQ') = ? "
             "  AND COALESCE(TRIM(Bin_Location),'') <> '' "
-            "ORDER BY rowid DESC",
+            f"ORDER BY {rowid_ref()} DESC",
             (sap, site_id),
         ).fetchall()
     except Exception:
@@ -6956,7 +6977,7 @@ def report_daily_receipts(
         if site_id:
             q += " AND COALESCE(r.Site_ID,'HQ') = ?"
             params.append(site_id)
-        q += " ORDER BY r.Date DESC, r.rowid DESC"
+        q += f" ORDER BY r.Date DESC, {rowid_ref('r')} DESC"
         df = pd.read_sql(q, conn, params=tuple(params))
     finally:
         if _owns:
@@ -7830,10 +7851,11 @@ def create_or_get_lot(
         conn = get_connection()
     try:
         conn.execute(
-            "INSERT OR IGNORE INTO lots "
-            "(Lot_Number, SAP_Code, Site_ID, Received_Date, "
-            " Expiry_Date, Supplier, PR_Number) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            sql_insert_or_ignore(
+                "INSERT OR IGNORE INTO lots "
+                "(Lot_Number, SAP_Code, Site_ID, Received_Date, "
+                " Expiry_Date, Supplier, PR_Number) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)"),
             (lot_number, sap_code, site_id, received_date,
              expiry_date or None, supplier or None, pr_number or None),
         )
@@ -13614,9 +13636,10 @@ def record_cross_site_view(
         conn = get_connection()
     try:
         cur = conn.execute(
-            "INSERT OR IGNORE INTO cross_site_views "
-            "(viewer_username, viewer_site_id, target_site_id, view_date) "
-            "VALUES (?, ?, ?, ?)",
+            sql_insert_or_ignore(
+                "INSERT OR IGNORE INTO cross_site_views "
+                "(viewer_username, viewer_site_id, target_site_id, view_date) "
+                "VALUES (?, ?, ?, ?)"),
             (viewer_username, viewer_site_id, target_site_id, today),
         )
         conn.commit()

@@ -1315,6 +1315,20 @@ def check_pg_compat_seam() -> None:
         c.close()
 
 
+def check_pg_sql_helpers() -> None:
+    """Runtime dialect helpers emit the right SQL per backend (no PG needed)."""
+    # rowid_ref: SQLite ledger tables use rowid; Postgres uses the SERIAL id.
+    assert database.rowid_ref("r", dialect="sqlite") == "r.rowid"
+    assert database.rowid_ref("r", dialect="postgresql") == "r.id"
+    assert database.rowid_ref(dialect="sqlite") == "rowid"
+    assert database.rowid_ref(dialect="postgresql") == "id"
+    # sql_insert_or_ignore: unchanged on SQLite; ON CONFLICT DO NOTHING on PG.
+    s = "INSERT OR IGNORE INTO lots (a, b) VALUES (?, ?)"
+    assert database.sql_insert_or_ignore(s, dialect="sqlite") == s
+    assert database.sql_insert_or_ignore(s, dialect="postgresql") == \
+        "INSERT INTO lots (a, b) VALUES (?, ?) ON CONFLICT DO NOTHING"
+
+
 def check_system_settings_migration_on_existing_db() -> None:
     """Regression — init_db must migrate system_settings to an `id` PK even on an
     EXISTING DB where the locations/types compat views already reference it AND an
@@ -9531,6 +9545,8 @@ def main() -> int:
               check_dn_fefo_suggestion)
     run_check("Postgres",     "qmark→pyformat + sqlite3-compat conn facade (step 2)",
               check_pg_compat_seam)
+    run_check("Postgres",     "runtime dialect helpers (rowid_ref, insert_or_ignore)",
+              check_pg_sql_helpers)
     run_check("Postgres",     "system_settings id PK + SME views via MIN(id)",
               check_system_settings_id_pk)
     run_check("Postgres",     "system_settings migrates on EXISTING db (views+orphan)",
