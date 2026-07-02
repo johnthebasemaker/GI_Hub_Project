@@ -322,3 +322,26 @@ export function useSmrDecision() {
     },
   })
 }
+
+// --- SME estimator (read-only) ----------------------------------------------
+export function useSmeSummary(siteId?: string) {
+  return useQuery({
+    queryKey: ['/sme/summary', siteId],
+    queryFn: async () => (await api.get('/sme/summary', { params: siteId ? { site_id: siteId } : {} })).data,
+  })
+}
+
+function useSmeList(path: string, params: Record<string, unknown> = {}) {
+  return useQuery({
+    queryKey: [path, params],
+    queryFn: async () => (await api.get<{ items: Row[] }>(path, { params })).data.items,
+  })
+}
+
+export const useSmeEquipment = (siteId?: string) =>
+  useSmeList('/sme/equipment', siteId ? { site_id: siteId } : {})
+export const useSmeRecipes = (lsc?: string) =>
+  useSmeList('/sme/recipes', lsc ? { lining_system_code: lsc } : {})
+export const useSmeSqm = (siteId?: string) =>
+  useSmeList('/sme/sqm-progress', siteId ? { site_id: siteId } : {})
+export const useSmeMaterials = () => useSmeList('/sme/materials')

@@ -1,6 +1,6 @@
 import { Button, Layout, Menu, Space, Tag, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AuditOutlined, CarOutlined, DashboardOutlined, FireOutlined, FormOutlined, InboxOutlined, LogoutOutlined, ProfileOutlined, SolutionOutlined, StockOutlined } from '@ant-design/icons'
+import { AuditOutlined, CarOutlined, DashboardOutlined, ExperimentOutlined, FireOutlined, FormOutlined, InboxOutlined, LogoutOutlined, ProfileOutlined, SolutionOutlined, StockOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -45,6 +45,12 @@ function buildMenu(level: number, role: string): MenuProps['items'] {
         { key: '/hod/burn-rate', icon: <FireOutlined />, label: 'Burn Rate' },
         { key: '/hod/prs', icon: <ProfileOutlined />, label: 'Purchase Requests' },
       ],
+    })
+    items.push({
+      key: 'sme',
+      label: 'SME Estimator',
+      type: 'group',
+      children: [{ key: '/sme', icon: <ExperimentOutlined />, label: 'Estimator' }],
     })
   }
   // Logistics portal — PR queue → PO → assign — logistics & admin (level ≥ 3).

@@ -41,6 +41,7 @@ from .hod import router as hod_router  # noqa: E402
 from .logistics import router as logistics_router  # noqa: E402
 from .receiving import router as receiving_router  # noqa: E402
 from .requests import router as requests_router  # noqa: E402
+from .sme import router as sme_router  # noqa: E402
 from .stock import router as stock_router  # noqa: E402
 from .warehouse import router as warehouse_router  # noqa: E402
 
@@ -130,6 +131,9 @@ app.include_router(receiving_router)
 
 # Supervisor material requests — create → SK approve → pending_issues (self-guarded).
 app.include_router(requests_router)
+
+# SME Material Estimator — READ-ONLY over the frozen sme_* tables (self-guarded, ≥hod).
+app.include_router(sme_router)
 
 
 @app.get("/", include_in_schema=False)

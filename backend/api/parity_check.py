@@ -31,7 +31,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))  # repo root
 
 from sqlalchemy import create_engine, text  # noqa: E402
 
-from backend.api import stock  # noqa: E402
+from backend.api import sme, stock  # noqa: E402
+
+# All derived-view ports to parity-check: stock views + the SME materials view.
+_ALL_DERIVED = {**stock.DERIVED, **sme.DERIVED_SME}
 
 
 def _norm(v):
@@ -71,7 +74,7 @@ def run(source_path: str, target_url: str) -> dict:
     results, ok_all = {}, True
     try:
         with engine.connect() as tconn:
-            for key, spec in stock.DERIVED.items():
+            for key, spec in _ALL_DERIVED.items():
                 view = spec["view"]
                 try:
                     s_rows = _sqlite_view_rows(src, view)
