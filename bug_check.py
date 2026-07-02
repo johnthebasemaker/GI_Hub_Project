@@ -46,6 +46,10 @@ _orig_popen = subprocess.Popen
 subprocess.Popen = lambda *a, **kw: None  # type: ignore[assignment]
 platform.system = lambda: "Linux"          # avoid Windows COM path
 
+# This is the SQLite regression suite — force SQLite even if the environment
+# (e.g. CI) exports DATABASE_URL for the Postgres steps. Individual PG-seam
+# checks set/restore DATABASE_URL locally as needed.
+os.environ.pop("DATABASE_URL", None)
 os.environ.setdefault("LOGISTICS_EMAIL", "qa-dummy@example.invalid")
 sys.path.insert(0, str(REPO_ROOT))
 

@@ -103,9 +103,6 @@ class DnItems(Base):
     sk_received_qty = Column(Float)
     status = Column(Text, server_default=text("'pending'"))
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
-    __table_args__ = (
-        CheckConstraint("status IN ('pending','received','partial','returned','cancelled')"),
-    )
 
 class Employees(Base):
     __tablename__ = "employees"
@@ -119,9 +116,6 @@ class Employees(Base):
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     updated_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     Site_ID = Column(Text)
-    __table_args__ = (
-        CheckConstraint("status IN ('active','inactive','suspended')"),
-    )
 
 class EntryAttachments(Base):
     __tablename__ = "entry_attachments"
@@ -139,9 +133,6 @@ class EntryAttachments(Base):
     disk_path = Column(Text)
     uploaded_by = Column(Text, nullable=False)
     uploaded_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
-    __table_args__ = (
-        CheckConstraint("doc_type IN ('consumption','receipt','return')"),
-    )
 
 class FormDrafts(Base):
     __tablename__ = "form_drafts"
@@ -224,9 +215,6 @@ class MtcDocuments(Base):
     submitted_by = Column(Text, nullable=False)
     submitted_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     logistics_emailed_at = Column(DateTime)
-    __table_args__ = (
-        CheckConstraint("status IN ('attached','missing','sent_to_logistics')"),
-    )
 
 class PendingIssues(Base):
     __tablename__ = "pending_issues"
@@ -306,9 +294,6 @@ class PendingReturns(Base):
     approved_by = Column(Text)
     approved_at = Column(DateTime)
     rejection_reason = Column(Text)
-    __table_args__ = (
-        CheckConstraint("status IN ('pending_hod','approved','rejected')"),
-    )
 
 class PendingUsers(Base):
     __tablename__ = "pending_users"
@@ -337,10 +322,6 @@ class PoRescheduleRequests(Base):
     decided_by = Column(Text)
     decided_at = Column(DateTime)
     decision_notes = Column(Text)
-    __table_args__ = (
-        CheckConstraint("requested_by_role IN ('warehouse_user','hod','admin')"),
-        CheckConstraint("status IN ('pending','approved','rejected')"),
-    )
 
 class PoReturns(Base):
     __tablename__ = "po_returns"
@@ -359,10 +340,6 @@ class PoReturns(Base):
     closed_at = Column(DateTime)
     closed_by = Column(Text)
     notes = Column(Text)
-    __table_args__ = (
-        CheckConstraint("raised_by_role IN ('logistics','warehouse_user','hod','store_keeper','admin')"),
-        CheckConstraint("status IN ('open','vendor_acknowledged','resupplied','cancelled')"),
-    )
 
 class PoShipmentSchedule(Base):
     __tablename__ = "po_shipment_schedule"
@@ -375,9 +352,6 @@ class PoShipmentSchedule(Base):
     status = Column(Text, server_default=text("'pending'"))
     notes = Column(Text)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
-    __table_args__ = (
-        CheckConstraint("status IN ('pending','shipped','delivered','delayed','cancelled')"),
-    )
 
 class PwaTokens(Base):
     __tablename__ = "pwa_tokens"
@@ -400,9 +374,6 @@ class QrApprovalRequests(Base):
     approved_by = Column(Text)
     approved_at = Column(DateTime)
     rejection_reason = Column(Text)
-    __table_args__ = (
-        CheckConstraint("status IN ('pending','approved','rejected')"),
-    )
 
 class Receipts(Base):
     __tablename__ = "receipts"
@@ -475,9 +446,6 @@ class Requests(Base):
     reviewed_by = Column(Text)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     updated_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
-    __table_args__ = (
-        CheckConstraint("status IN ('pending','approved','rejected','fulfilled')"),
-    )
 
 class Returns(Base):
     __tablename__ = "returns"
@@ -535,9 +503,6 @@ class StockAdjustments(Base):
     rejection_reason = Column(Text)
     posted_txn_ref = Column(Text)
     Lot_Number = Column(Text)
-    __table_args__ = (
-        CheckConstraint("status IN ('pending_hod','approved','rejected')"),
-    )
 
 class StockReservations(Base):
     __tablename__ = "stock_reservations"
@@ -549,9 +514,6 @@ class StockReservations(Base):
     status = Column(Text, server_default=text("'active'"))
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     released_at = Column(DateTime)
-    __table_args__ = (
-        CheckConstraint("status IN ('active','released')"),
-    )
 
 class SystemSettings(Base):
     __tablename__ = "system_settings"
@@ -594,9 +556,6 @@ class Users(Base):
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     totp_secret = Column(Text)
     totp_enabled = Column(Integer, server_default=text('0'))
-    __table_args__ = (
-        CheckConstraint("role IN ('admin','logistics','hod','warehouse_user','supervisor','store_keeper')"),
-    )
 
 class WbsMaster(Base):
     __tablename__ = "wbs_master"
@@ -609,7 +568,6 @@ class WbsMaster(Base):
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     __table_args__ = (
         UniqueConstraint("WBS_Number", "Site_ID"),
-        CheckConstraint("status IN ('active','closed')"),
     )
 
 
@@ -638,9 +596,6 @@ class SmeConsumptionLog(Base):
     rejected_at = Column(DateTime)
     rejected_reason = Column(Text)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
-    __table_args__ = (
-        CheckConstraint("status IN ('staged','committed','rejected')"),
-    )
 
 class SmeEquipment(Base):
     __tablename__ = "sme_equipment"
@@ -743,8 +698,6 @@ class MhEmployees(Base):
     updated_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     __table_args__ = (
         UniqueConstraint("Site_ID", "Employee_Code"),
-        CheckConstraint("Worker_Type IN ('OWN','Supply')"),
-        CheckConstraint("status IN ('active','inactive')"),
     )
 
 class MhManhourEstimates(Base):
@@ -777,7 +730,6 @@ class MhProduction(Base):
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     __table_args__ = (
         UniqueConstraint("Site_ID", "Work_Date", "Equipment_Tag", "System_Code"),
-        CheckConstraint("Distribution_Method IN ('even','by_hours','manual')"),
     )
 
 class MhTimesheets(Base):
@@ -847,9 +799,6 @@ class DeliveryNotes(Base):
     rejection_reason = Column(Text)
     created_by = Column(Text, nullable=False)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
-    __table_args__ = (
-        CheckConstraint("status IN ('draft','pending_logistics','logistics_approved','pending_hod','hod_approved','pending_sk','received','rejected','cancelled')"),
-    )
 
 class PoAssignments(Base):
     __tablename__ = "po_assignments"
@@ -864,9 +813,6 @@ class PoAssignments(Base):
     acknowledged_by = Column(Text)
     status = Column(Text, server_default=text("'assigned'"))
     notes = Column(Text)
-    __table_args__ = (
-        CheckConstraint("status IN ('assigned','acknowledged','received','partial','closed','cancelled')"),
-    )
 
 class PoForceClosures(Base):
     __tablename__ = "po_force_closures"
@@ -883,9 +829,6 @@ class PoForceClosures(Base):
     prior_state = Column(Text)
     reverted_at = Column(DateTime)
     reverted_by = Column(Text)
-    __table_args__ = (
-        CheckConstraint("target_type IN ('pr','po','po_item')"),
-    )
 
 class PoItems(Base):
     __tablename__ = "po_items"
@@ -908,9 +851,6 @@ class PoItems(Base):
     line_status = Column(Text, server_default=text("'open'"))
     close_reason = Column(Text)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
-    __table_args__ = (
-        CheckConstraint("line_status IN ('open','partially_delivered','delivered','returned','closed','force_closed')"),
-    )
 
 class PrMaster(Base):
     __tablename__ = "pr_master"
@@ -935,9 +875,6 @@ class PrMaster(Base):
     submitted_to_logistics_at = Column(DateTime)
     submitted_to_logistics_by = Column(Text)
     logistics_status = Column(Text, server_default=text("'site_draft'"))
-    __table_args__ = (
-        CheckConstraint("status IN ('open','closed')"),
-    )
 
 class PurchaseOrders(Base):
     __tablename__ = "purchase_orders"
@@ -975,10 +912,6 @@ class PurchaseOrders(Base):
     closed_at = Column(DateTime)
     closed_by = Column(Text)
     close_reason = Column(Text)
-    __table_args__ = (
-        CheckConstraint("source IN ('manual','pdf_upload')"),
-        CheckConstraint("status IN ('open','partially_delivered','delivered','closed','force_closed','cancelled')"),
-    )
 
 class SupervisorMaterialRequestItems(Base):
     __tablename__ = "supervisor_material_request_items"
@@ -1012,9 +945,6 @@ class SupervisorMaterialRequests(Base):
     sk_decided_at = Column(DateTime)
     sk_reject_reason = Column(Text)
     posted_pending_ids = Column(Text)
-    __table_args__ = (
-        CheckConstraint("status IN ('pending_sk','approved','rejected','cancelled')"),
-    )
 
 class Vendors(Base):
     __tablename__ = "vendors"
@@ -1030,9 +960,6 @@ class Vendors(Base):
     status = Column(Text, server_default=text("'active'"))
     created_by = Column(Text)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
-    __table_args__ = (
-        CheckConstraint("status IN ('active','inactive')"),
-    )
 
 class Warehouses(Base):
     __tablename__ = "warehouses"
@@ -1046,9 +973,6 @@ class Warehouses(Base):
     status = Column(Text, server_default=text("'active'"))
     created_by = Column(Text)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
-    __table_args__ = (
-        CheckConstraint("status IN ('active','inactive')"),
-    )
 
 
 # ==========================================================================
@@ -1072,9 +996,6 @@ class AppNotifications(Base):
     related_ref = Column(Text)
     read_at = Column(DateTime)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
-    __table_args__ = (
-        CheckConstraint("severity IN ('info','warning','critical','success')"),
-    )
 
 class DeliveryRemindersSent(Base):
     __tablename__ = "delivery_reminders_sent"
@@ -1161,9 +1082,6 @@ class LotTransfers(Base):
     kind = Column(Text, server_default=text("'split'"))
     by_user = Column(Text)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
-    __table_args__ = (
-        CheckConstraint("kind IN ('split','merge')"),
-    )
 
 class Lots(Base):
     __tablename__ = "lots"
@@ -1179,7 +1097,6 @@ class Lots(Base):
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     __table_args__ = (
         UniqueConstraint("Lot_Number", "SAP_Code", "Site_ID"),
-        CheckConstraint("Status IN ('open','exhausted','expired','disposed','quarantine')"),
     )
 
 
@@ -1198,10 +1115,6 @@ class BugReports(Base):
     admin_response = Column(Text)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     updated_at = Column(DateTime)
-    __table_args__ = (
-        CheckConstraint("type IN ('bug','feature')"),
-        CheckConstraint("status IN ('open','in_review','closed')"),
-    )
 
 class SystemAuditLog(Base):
     __tablename__ = "system_audit_log"

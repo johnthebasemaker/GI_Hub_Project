@@ -221,6 +221,12 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-02 · actor=interactive · branch=`main` · CI fixes (first real PG run surfaced two)
+- **First live Actions run went red at the `bug_check` step (exit 2)** — two real bugs the CI caught:
+  1. The workflow set `DATABASE_URL` at **job level**, so it bled into the SQLite `bug_check` step → `db_dialect()`→postgresql → `init_db` took the PG path mid-suite → crash. **Fix:** `DATABASE_URL` is now scoped to only the `dual_ci` + `pg_smoke` steps; `bug_check.py` also defensively `os.environ.pop("DATABASE_URL")` at startup (it's the SQLite suite).
+  2. **`models.py` CHECK constraints used unquoted identifiers** (`CHECK (Worker_Type IN …)`) — Postgres folds `Worker_Type`→`worker_type`, which doesn't match the quoted `"Worker_Type"` column → `create_all` fails on PG (would also break dual_ci/pg_smoke). **Fix:** regenerated `models.py` WITHOUT CHECK constraints (enum rules stay enforced in app code + the SQLite schema; PG can get validated CHECKs later). All 64 tables now compile cleanly to the PG dialect.
+- **Verified locally:** bug_check 599/0 (SQLite-forced), all 64 tables PG-DDL-compile, dual_ci dry-run PASS. Re-pushed for the next Actions run.
+
 ### 2026-07-02 · actor=interactive · branch=`main` · Step 2 increment 3 — behavioural dual-CI + runtime dialect fixes (wave 1)
 - **Behavioural harness:** `backend/pg_smoke.py` migrates the DB then runs 16 real `database.py` code paths through `get_connection()` and reports per-path pass/fail (isolated, so one run lists everything). Wired as a CI step in `postgres-dual-ci.yml` (runs on real PG). `--dry-run` validates structurally on SQLite (16/16 on the real DB).
 - **Runtime dialect fixes (verifiable on SQLite, no-ops there):**

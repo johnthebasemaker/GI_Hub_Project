@@ -50,9 +50,6 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
-    env:
-      DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
-
     steps:
       - uses: actions/checkout@v4
 
@@ -71,10 +68,14 @@ jobs:
           pip install psycopg2-binary
 
       - name: SQLite regression suite (bug_check.py)
-        run: python bug_check.py
+        run: python bug_check.py          # SQLite only (no DATABASE_URL here)
 
       - name: Dual-CI — migrate + parity (SQLite → PostgreSQL)
+        env:
+          DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
         run: python backend/dual_ci.py --source gi_database.db
 
       - name: Behavioural smoke — real app code paths on PostgreSQL
+        env:
+          DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
         run: python backend/pg_smoke.py --source gi_database.db
