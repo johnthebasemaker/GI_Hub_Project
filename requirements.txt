@@ -19,6 +19,14 @@ fastapi
 uvicorn[standard]
 httpx  # for pytest TestClient
 
+# FastAPI REST backend (backend/api/) — the decoupled foundation for the React
+# frontend. Async SQLAlchemy over PostgreSQL, so it needs the async PG driver
+# (asyncpg) and greenlet (SQLAlchemy's sync<->async bridge). This is a SEPARATE
+# process from Streamlit, which stays on SQLite (psycopg2-binary below is still
+# the driver for the sync migration/dual-CI tooling). Run with ./run_api.sh.
+asyncpg>=0.29
+greenlet>=3.0
+
 # Phase 6B — Employee QR badges (encode) + decode for camera scanning (6D)
 # pyzbar wraps the native `libzbar` library — on macOS run `brew install zbar`,
 # on Debian/Ubuntu `apt install libzbar0` before pip install.

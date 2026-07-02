@@ -221,6 +221,19 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-02 · actor=interactive · branch=`main` · 🚀 FastAPI REST backend v1 (async, PostgreSQL) — runnable & viewable locally
+- **What:** built the decoupled REST API foundation the pivot pointed to. New package `backend/api/`:
+  - `db.py` — async engine (`create_async_engine` + asyncpg, `pool_pre_ping`) + `async_sessionmaker`/`AsyncSession` dependency (architecture **rule #5**).
+  - `config.py` — reads `DATABASE_URL`, normalises psycopg2/plain-postgres URLs onto the **asyncpg** driver; default `postgresql+asyncpg://postgres@127.0.0.1:5433/gihub`; CORS origins for the future React dev server.
+  - `crud.py` — generic **read-only router factory** over a SQLAlchemy Core `Table` (from `models.Base.metadata`). Uses `result.mappings()` so columns with awkward names (`"Approved By"` with a space, `Dia_L`) serialise by their true DB name. Orders by explicit PK (**rule #2**); `?site_id=` filter for site-scoped tables (**rule #4**); drops `LargeBinary` blobs + scrubs secret-named columns.
+  - `main.py` — app wiring: `/health`, `/meta/sites`, `/meta/inventory-summary` (exact GROUP BY counts) + list/detail for **10 core entities** (inventory[PK SAP_Code]/receipts/consumption/returns/lots/purchase-orders/equipment/employees/vendors/warehouses). Credential tables (users/pending_users/*_tokens/qr_approval_requests) **not exposed** (rule #3 isolation).
+  - `run_api.sh` + `backend/api/README.md`; `requirements.txt` += `asyncpg`, `greenlet`.
+- **Scope (accuracy-first):** **read-only** v1. Writes (POST/PUT/DELETE) and any **derived** figure (e.g. "live stock", currently a SQLite view) are **deferred to v2** — those views get ported to PG *with parity tests*, not hand-rolled, so results stay exact. v1 serves raw rows + exact counts only.
+- **Verified live on the real PG data** (`gihub` on 5433): `/health` ok (dialect=postgresql); `/meta/sites` → [CNCEC, HQ]; `/meta/inventory-summary` total 306; site scoping `?site_id=HQ` → total 13; detail by string PK (`/inventory/1001`) + int PK (`/receipts/1`); blob excluded from `purchase-orders`; missing→404, bad-int→422; `/docs` 200; 23 OpenAPI paths.
+- **Tests:** Streamlit/SQLite **completely untouched** — `bug_check.py` **599/0**, `test_ui_crawler.py` **21/21**. The API is a **separate process**; psycopg2 still drives the sync migration/dual-CI.
+- **Run it:** `./run_api.sh` → open **http://localhost:8000/docs**. Prereq: local PG populated (via `backend/dual_ci.py` / `migrate_sqlite_to_postgres.py`).
+- **Next:** v2 = write endpoints + ported derived views (parity-tested) + optional JWT auth; then the React frontend (still the open `FRONTEND_GO` item — user green-lit the backend only).
+
 ### 2026-07-02 · actor=interactive · branch=`main` · 🧭 STRATEGIC PIVOT — Streamlit-on-PG parked; PG = FastAPI foundation; data-layer proven on real PG
 - **Decision (user-approved):** the existing Streamlit app **stays on SQLite**. Reason, confirmed against a **local Postgres** installed this session: the whole raw-SQL surface uses unquoted mixed-case identifiers (`SAP_Code`, `Site_ID`, …) — PG folds them to lowercase and can't match the case-preserved columns. Scope is ~1,320 lines / 170 `df["Mixed_Case"]` keys / 74 SQL aliases — a full retrofit (lowercase schema + result-remap) is large/risky with no clean shortcut. **The Postgres schema (`models.py`) + copy script are the foundation for the future FastAPI backend** (ORM-based → quotes identifiers → no case problem). This matches the original `FRONTEND_GO: NO` plan.
 - **What now works, verified on REAL local Postgres 16** (`brew install postgresql@16`, port 5433): `backend/dual_ci.py` → **table parity 64/64 ✅, semantic aggregates ✅, `get_connection()` facade + `?`-params + `read_sql` + `init_db` (create_all) all ✅.** The DATA-LAYER migration is proven end-to-end on Postgres.
