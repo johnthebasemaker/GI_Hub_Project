@@ -531,6 +531,37 @@ export function useDisable2fa() {
   })
 }
 
+// --- registration + access requests -----------------------------------------
+export function useRegister() {
+  return useMutation({
+    mutationFn: (body: Row) => api.post('/auth/register', body).then((r) => r.data),
+  })
+}
+
+export function usePendingUsers() {
+  return useQuery({
+    queryKey: ['/admin/pending-users'],
+    queryFn: async () => (await api.get<{ items: Row[] }>('/admin/pending-users')).data.items,
+  })
+}
+
+function usePendingMutation<V>(fn: (v: V) => Promise<Row>) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['/admin/pending-users'] })
+      qc.invalidateQueries({ queryKey: ['/admin/users'] })
+    },
+  })
+}
+export const useApprovePending = () =>
+  usePendingMutation(({ id, body }: { id: number; body: Row }) =>
+    api.post(`/admin/pending-users/${id}/approve`, body).then((r) => r.data))
+export const useRejectPending = () =>
+  usePendingMutation((id: number) =>
+    api.post(`/admin/pending-users/${id}/reject`).then((r) => r.data))
+
 // --- reports (downloadable exports) -----------------------------------------
 export function useReports() {
   return useQuery({

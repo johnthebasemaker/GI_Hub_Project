@@ -24,7 +24,7 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import jwt_secret
@@ -38,6 +38,7 @@ from backend import models  # noqa: E402
 _MD = models.Base.metadata
 users_t = _MD.tables["users"]
 audit_t = _MD.tables["system_audit_log"]
+pending_users_t = _MD.tables["pending_users"]
 
 # Resolved once at import — in production a weak/absent key raises here (fail-fast).
 JWT_SECRET = jwt_secret()
@@ -54,6 +55,10 @@ ROLE_META = {
     "supervisor":     {"label": "Supervisor",         "level": 1},
     "store_keeper":   {"label": "Store Keeper",       "level": 0},
 }
+
+# Self-service registrants may request any role EXCEPT admin (no self-elevation);
+# the approving admin can still override the role at approval time.
+_REGISTERABLE_ROLES = set(ROLE_META) - {"admin"}
 
 _bearer = HTTPBearer(auto_error=False)
 _DUMMY_HASH = "$2b$12$0000000000000000000000000000000000000000000000000000"
@@ -144,6 +149,15 @@ class TwoFAIn(BaseModel):
     code: str
 
 
+class RegisterIn(BaseModel):
+    username: str
+    password: str
+    role: str
+    site_id: str | None = None
+    phone_number: str | None = None
+    warehouse_id: str | None = None
+
+
 async def _fetch_user(session: AsyncSession, username: str):
     return (await session.execute(select(
         users_t.c["username"], users_t.c["password_hash"], users_t.c["role"],
@@ -196,6 +210,42 @@ async def login_2fa(body: TwoFAIn, session: AsyncSession = Depends(get_session))
 @router.get("/me", summary="Current authenticated user")
 async def me(user: dict = Depends(get_current_user)):
     return user
+
+
+@router.post("/register", status_code=201,
+             summary="Request access → a pending_users row for an admin to approve")
+async def register(body: RegisterIn, session: AsyncSession = Depends(get_session)):
+    uname = (body.username or "").strip()
+    if not uname:
+        raise HTTPException(422, "username is required")
+    if len(body.password or "") < 6:
+        raise HTTPException(422, "password must be at least 6 characters")
+    if body.role not in _REGISTERABLE_ROLES:
+        raise HTTPException(422, f"role must be one of {sorted(_REGISTERABLE_ROLES)}")
+
+    taken = (await session.execute(select(func.count()).select_from(users_t)
+             .where(users_t.c["username"] == uname))).scalar_one()
+    if taken:
+        raise HTTPException(409, "username already exists")
+
+    pw_hash = bcrypt.hashpw(body.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    values = dict(username=uname, password_hash=pw_hash, role=body.role,
+                  Site_ID=(body.site_id or ""), Phone_Number=(body.phone_number or None),
+                  Warehouse_ID=(body.warehouse_id or None), status="pending")
+    # username is UNIQUE in pending_users — if a prior (rejected) request exists,
+    # revive it rather than colliding.
+    prior = (await session.execute(select(pending_users_t.c["id"], pending_users_t.c["status"])
+             .where(pending_users_t.c["username"] == uname))).first()
+    if prior is not None:
+        if prior.status == "pending":
+            raise HTTPException(409, "a request for this username is already pending")
+        await session.execute(update(pending_users_t)
+                              .where(pending_users_t.c["id"] == prior.id).values(**values))
+    else:
+        await session.execute(insert(pending_users_t).values(**values))
+    await session.commit()
+    await _audit(session, uname, "REQUEST_ACCESS", f"role={body.role} site={body.site_id or '-'}")
+    return {"requested": True, "username": uname}
 
 
 # --- 2FA self-enrollment -----------------------------------------------------

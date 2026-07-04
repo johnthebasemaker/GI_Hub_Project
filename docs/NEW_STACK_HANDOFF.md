@@ -63,7 +63,7 @@ DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
   .venv/bin/python backend/api/parity_check.py --source gi_database.db  # 5 derived views PASS
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
-  .venv/bin/python -m backend.api.service_tests                 # 44/44 (rolled-back services + auth/role guards + JWT hardening)
+  .venv/bin/python -m backend.api.service_tests                 # 50/50 (rolled-back services + auth/role guards + JWT + registration)
 npm run build --prefix frontend                                 # tsc + vite green
 ```
 
@@ -156,8 +156,9 @@ Full role → workflow loop runs on Postgres. **~89 API endpoints.**
   **NOT ported.**
 - **Computer Vision / Smart Scan (YOLOv8)** — returnable-tool auto-detection. **NOT
   ported** (gated off in prod anyway).
-- **User registration + approval** ("Request Access" → `pending_users` → admin
-  approves). **NOT ported** — the new app only *logs in* existing users.
+- ~~**User registration + approval**~~ ✅ **DONE 2026-07-04** — public `POST /auth/register`
+  → `pending_users` → admin **Access Requests** page approve/reject (`/admin/pending-users`).
+  Self-registrants can't request admin; approver overrides role/warehouse.
 - ~~**User management UI**~~ ✅ **DONE 2026-07-04** (Admin console) — add / reset password /
   reset 2FA / delete / warehouse-bind. NOTE: users have no `status` column, so "disable" =
   **delete** (last-admin & self guards).
@@ -224,8 +225,8 @@ readiness** (JWT_SECRET fail-fast · code-split bundle) have all landed (2026-07
 stack is feature-rich, self-sufficient, and ship-ready — only the **deploy + make-React-primary
 decision** (yours) remains for actual cutover. Highest-value next options: **(a)** the
 peripheral Logistics/Warehouse tabs, **(b)** more notification events (HOD-approval
-outcomes, staging→HOD), **(c)** user registration + approval (`pending_users`), **(d)** report
-scheduler/archive, or **(e)** pull the trigger on **cutover** (deploy). WhatsApp/mail/LLM are larger — scope first.
+outcomes, staging→HOD), **(c)** report scheduler/archive, or **(d)** pull the trigger on
+**cutover** (deploy). WhatsApp/mail/LLM are larger — scope first.
 
 ## 6. Where the detail lives
 - Per-slice build log + verification: `docs/POSTGRES_MIGRATION.md` §8 (newest first).

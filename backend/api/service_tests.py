@@ -228,6 +228,24 @@ async def test_auth_guards():
         r = await ac.get("/reports/stock", params={"format": "docx"}, headers=H(admin_t))
         check("bad report format → 400", r.status_code == 400, f"got {r.status_code}")
 
+        # Registration + access requests (non-persisting: only failing paths + reads).
+        r = await ac.post("/auth/register", json={"username": "svc_admin_wannabe",
+                          "password": "secret123", "role": "admin"})
+        check("register requesting admin role → 422 (no self-elevation)",
+              r.status_code == 422, f"got {r.status_code}")
+        r = await ac.post("/auth/register", json={"username": "admin",
+                          "password": "secret123", "role": "store_keeper"})
+        check("register an existing username → 409", r.status_code == 409, f"got {r.status_code}")
+        r = await ac.post("/auth/register", json={"username": "svc_x", "password": "no",
+                          "role": "store_keeper"})
+        check("register short password → 422", r.status_code == 422, f"got {r.status_code}")
+        r = await ac.get("/admin/pending-users", headers=H(worker_t))
+        check("worker → 403 on /admin/pending-users", r.status_code == 403, f"got {r.status_code}")
+        r = await ac.get("/admin/pending-users", headers=H(admin_t))
+        check("admin → 200 on /admin/pending-users", r.status_code == 200, f"got {r.status_code}")
+        r = await ac.post("/admin/pending-users/999999/approve", headers=H(admin_t), json={})
+        check("approve a non-existent request → 404", r.status_code == 404, f"got {r.status_code}")
+
 
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""

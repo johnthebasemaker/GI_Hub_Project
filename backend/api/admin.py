@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Optional
 
 import bcrypt
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import DataError, IntegrityError
@@ -28,6 +28,7 @@ from .services.ledger import _MD, write_audit  # reflected metadata + audit writ
 users_t = _MD.tables["users"]
 audit_t = _MD.tables["system_audit_log"]
 inventory_t = _MD.tables["inventory"]
+pending_users_t = _MD.tables["pending_users"]
 
 # Ledger/movement tables that reference inventory by SAP_Code — an item with any
 # of these rows must NOT be deleted (it would orphan history / break identity math).
@@ -87,6 +88,11 @@ class InventoryUpdateIn(BaseModel):
     Expiry_Date: Optional[str] = None
     Unit_Cost: Optional[float] = None
     Opening_Stock: Optional[float] = None
+
+
+class ApprovePendingIn(BaseModel):
+    role: Optional[str] = None          # override the requested role
+    warehouse_id: Optional[str] = None  # override the requested warehouse binding
 
 
 # --- helpers -----------------------------------------------------------------
@@ -374,3 +380,73 @@ async def delete_inventory(sap_code: str,
                               .where(func.trim(inventory_t.c["SAP_Code"]) == sap))
         await write_audit(session, actor["username"], "DELETE_INVENTORY", "inventory", f"SAP={sap}")
     return {"deleted": True, "SAP_Code": sap}
+
+
+# --- access requests (pending_users) -----------------------------------------
+# Self-service /auth/register creates pending_users rows; an admin approves
+# (→ a real users row) or rejects them here. Secrets are never returned.
+_PENDING_COLS = (
+    pending_users_t.c["id"], pending_users_t.c["username"], pending_users_t.c["role"],
+    pending_users_t.c["Site_ID"], pending_users_t.c["Warehouse_ID"],
+    pending_users_t.c["Phone_Number"], pending_users_t.c["status"],
+    pending_users_t.c["created_at"],
+)
+
+
+@router.get("/pending-users", summary="Access requests (default: pending)")
+async def list_pending_users(status: str = "pending",
+                             session: AsyncSession = Depends(get_session)):
+    stmt = select(*_PENDING_COLS)
+    if status:
+        stmt = stmt.where(pending_users_t.c["status"] == status)
+    stmt = stmt.order_by(pending_users_t.c["id"].desc())
+    return {"items": [dict(m) for m in (await session.execute(stmt)).mappings().all()]}
+
+
+@router.post("/pending-users/{pid}/approve", summary="Approve a request → create the user")
+async def approve_pending_user(pid: int, body: ApprovePendingIn = Body(default=ApprovePendingIn()),
+                               actor: dict = Depends(require_level(4)),
+                               session: AsyncSession = Depends(get_session)):
+    try:
+        async with session.begin():
+            row = (await session.execute(select(pending_users_t)
+                   .where(pending_users_t.c["id"] == pid))).mappings().first()
+            if row is None:
+                raise HTTPException(404, f"request {pid} not found")
+            if row["status"] != "pending":
+                raise HTTPException(409, f"request already {row['status']}")
+            role = body.role or row["role"]
+            if role not in ROLE_META:
+                raise HTTPException(422, f"unknown role {role!r}")
+            if (await _get_user(session, row["username"])) is not None:
+                raise HTTPException(409, f"username {row['username']!r} already exists")
+            wh = body.warehouse_id if body.warehouse_id is not None else row["Warehouse_ID"]
+            await session.execute(insert(users_t).values(
+                username=row["username"], password_hash=row["password_hash"], role=role,
+                Site_ID=row["Site_ID"], Phone_Number=row["Phone_Number"], Warehouse_ID=wh))
+            await session.execute(update(pending_users_t)
+                                  .where(pending_users_t.c["id"] == pid).values(status="approved"))
+            await write_audit(session, actor["username"], "APPROVE_USER", "users",
+                              f"username={row['username']} role={role}")
+    except HTTPException:
+        raise
+    except (IntegrityError, DataError) as e:
+        raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
+    return {"approved": True, "username": row["username"], "role": role}
+
+
+@router.post("/pending-users/{pid}/reject", summary="Reject an access request")
+async def reject_pending_user(pid: int, actor: dict = Depends(require_level(4)),
+                              session: AsyncSession = Depends(get_session)):
+    async with session.begin():
+        row = (await session.execute(select(pending_users_t.c["username"], pending_users_t.c["status"])
+               .where(pending_users_t.c["id"] == pid))).first()
+        if row is None:
+            raise HTTPException(404, f"request {pid} not found")
+        if row.status != "pending":
+            raise HTTPException(409, f"request already {row.status}")
+        await session.execute(update(pending_users_t)
+                              .where(pending_users_t.c["id"] == pid).values(status="rejected"))
+        await write_audit(session, actor["username"], "REJECT_USER", "pending_users",
+                          f"username={row.username}")
+    return {"rejected": True, "id": pid}

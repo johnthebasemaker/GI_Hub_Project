@@ -1,7 +1,7 @@
 import { Suspense } from 'react'
 import { Button, Layout, Menu, Space, Spin, Tag, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AuditOutlined, BarChartOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, TeamOutlined } from '@ant-design/icons'
+import { AuditOutlined, BarChartOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, TeamOutlined, UserAddOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -105,6 +105,7 @@ function buildMenu(level: number, role: string): MenuProps['items'] {
       type: 'group',
       children: [
         { key: '/admin/users', icon: <TeamOutlined />, label: 'Users' },
+        { key: '/admin/pending', icon: <UserAddOutlined />, label: 'Access Requests' },
         { key: '/admin/inventory', icon: <DatabaseOutlined />, label: 'Inventory' },
         { key: '/admin/audit', icon: <FileSearchOutlined />, label: 'Audit Log' },
       ],

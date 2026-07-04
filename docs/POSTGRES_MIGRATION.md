@@ -221,6 +221,14 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-04 · actor=interactive · branch=`main` · 🙋 User registration + approval (self-service onboarding)
+- **Gap closed:** the new app only *logged in* existing users; admins had to hand-create every account. Now there's a self-service Request-Access → admin-approval onboarding flow (`pending_users`).
+- **Backend:** `POST /auth/register` (**public**, `auth.py`) bcrypt-hashes the password into `pending_users` (status `pending`). Guards: username not already in `users` (409), not already pending (409, revives a rejected row via upsert), password ≥6 (422), and the requested role **cannot be admin** (422 — no self-elevation). Admin side (`admin.py`, level 4): `GET /admin/pending-users` (no `password_hash`), `POST /admin/pending-users/{id}/approve` (copies the row into `users` — role/warehouse overridable — carrying the bcrypt hash, marks pending `approved`, audits `APPROVE_USER`), `POST .../reject` (marks `rejected`, audits `REJECT_USER`). **+4 endpoints (89 paths).**
+- **Verified live (PG):** register→201; guards existing-username-409, admin-role-422, short-pw-422, dup-pending-409; admin list (no secret leak), worker→403; approve with role override → user created → **logs in** (bcrypt carried over); re-approve→409, re-register-existing→409. **In-browser:** LoginPage **Request access** form (role defaulted — fixed a React form-reuse bug with distinct `key`s) → submit → "await approval"; admin **Access Requests** page → Approve modal (role/warehouse) → user created (`ui_reg` logs in as store_keeper, pending row `approved`). Console clean.
+- **Frontend:** LoginPage register mode, `PendingUsersPage` (+ **Admin → Access Requests** nav, lazy route), `useRegister`/`usePendingUsers`/`useApprovePending`/`useRejectPending`.
+- **Tests:** `service_tests.py` +6 (admin-role-422, existing-409, short-pw-422, worker-403, admin-list-200, approve-404) → **50/50 PASS**.
+- **Verified:** service_tests **50/0**; dual_ci **PASS**, parity **PASS**; `bug_check` **599/0**, crawler **21/21**, build green. Test users PG-only → reset (8 users). `database.py`/Streamlit untouched. Local PG == SQLite.
+
 ### 2026-07-04 · actor=interactive · branch=`main` · 🚀 Cutover prep (non-deploy) — JWT_SECRET hardening + frontend code-split
 - Two ship-readiness items; **no deploy** (Hetzner stays parked) and React-primary/cutover stays the user's call.
 - **JWT_SECRET hardening** (`config.py::jwt_secret()` + `is_production()`): the dev default was insecure (22 bytes → PyJWT `InsecureKeyLengthWarning`). Now — in **production** (`GI_ENV=production`) a missing / too-short (<32) / dev-default key **raises at import (fail-fast)**, so the app refuses to boot with a weak signing key; in **dev** it falls back to a long (56-char) obvious placeholder → no warning, no setup. `auth.py` resolves `JWT_SECRET = jwt_secret()` at import. **Deploy note:** production MUST set a strong `JWT_SECRET`.

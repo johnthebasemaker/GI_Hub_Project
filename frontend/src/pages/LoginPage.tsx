@@ -1,18 +1,30 @@
 import { useState } from 'react'
-import { App, Button, Card, Form, Input, Typography } from 'antd'
+import { App, Button, Card, Form, Input, Select, Typography } from 'antd'
 import { LockOutlined, SafetyOutlined, UserOutlined } from '@ant-design/icons'
 import { useAuth } from '../auth/AuthContext'
+import { useRegister } from '../api/hooks'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
-  return x?.response?.data?.detail ?? x?.message ?? 'Login failed'
+  return x?.response?.data?.detail ?? x?.message ?? 'Something went wrong'
 }
+
+// Self-registrants may request any role except admin.
+const REGISTER_ROLES = [
+  { value: 'store_keeper', label: 'Store Keeper' },
+  { value: 'supervisor', label: 'Supervisor' },
+  { value: 'hod', label: 'Head of Department' },
+  { value: 'warehouse_user', label: 'Warehouse' },
+  { value: 'logistics', label: 'Logistics' },
+]
 
 export default function LoginPage() {
   const { message } = App.useApp()
   const { login, loginMfa } = useAuth()
   const [loading, setLoading] = useState(false)
   const [mfaToken, setMfaToken] = useState<string | null>(null)
+  const [mode, setMode] = useState<'login' | 'register'>('login')
+  const register = useRegister()
 
   const onLogin = async (v: { username: string; password: string }) => {
     setLoading(true)
@@ -40,26 +52,55 @@ export default function LoginPage() {
     }
   }
 
+  const onRegister = async (v: Record<string, unknown>) => {
+    try {
+      await register.mutateAsync(v)
+      message.success('Request submitted — an admin will review it before you can sign in.')
+      setMode('login')
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
+
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: '#f0f2f5',
-      }}
-    >
-      <Card style={{ width: 360 }}>
+    <div style={{
+      minHeight: '100vh', display: 'flex', alignItems: 'center',
+      justifyContent: 'center', background: '#f0f2f5',
+    }}>
+      <Card style={{ width: 380 }}>
         <div style={{ textAlign: 'center', marginBottom: 16 }}>
-          <Typography.Title level={3} style={{ marginBottom: 0 }}>
-            GI Hub
-          </Typography.Title>
-          <Typography.Text type="secondary">ERP Console — sign in</Typography.Text>
+          <Typography.Title level={3} style={{ marginBottom: 0 }}>GI Hub</Typography.Title>
+          <Typography.Text type="secondary">
+            {mode === 'register' ? 'ERP Console — request access' : 'ERP Console — sign in'}
+          </Typography.Text>
         </div>
 
-        {!mfaToken ? (
-          <Form layout="vertical" onFinish={onLogin}>
+        {mode === 'register' ? (
+          <Form key="register" layout="vertical" onFinish={onRegister} initialValues={{ role: 'store_keeper' }}>
+            <Form.Item name="username" rules={[{ required: true, message: 'Username' }]}>
+              <Input prefix={<UserOutlined />} placeholder="Username" autoFocus />
+            </Form.Item>
+            <Form.Item name="password" rules={[{ required: true, min: 6, message: 'At least 6 characters' }]}>
+              <Input.Password prefix={<LockOutlined />} placeholder="Password (min 6)" />
+            </Form.Item>
+            <Form.Item name="role" label="Requested role" rules={[{ required: true }]}>
+              <Select options={REGISTER_ROLES} />
+            </Form.Item>
+            <Form.Item name="site_id" label="Site (optional)">
+              <Input placeholder="e.g. CNCEC" />
+            </Form.Item>
+            <Form.Item name="phone_number" label="Phone (optional)">
+              <Input placeholder="Phone number" />
+            </Form.Item>
+            <Button type="primary" htmlType="submit" block loading={register.isPending}>
+              Request access
+            </Button>
+            <Button type="link" block onClick={() => setMode('login')}>
+              Back to sign in
+            </Button>
+          </Form>
+        ) : !mfaToken ? (
+          <Form key="login" layout="vertical" onFinish={onLogin}>
             <Form.Item name="username" rules={[{ required: true, message: 'Username' }]}>
               <Input prefix={<UserOutlined />} placeholder="Username" autoFocus />
             </Form.Item>
@@ -68,6 +109,9 @@ export default function LoginPage() {
             </Form.Item>
             <Button type="primary" htmlType="submit" block loading={loading}>
               Sign in
+            </Button>
+            <Button type="link" block onClick={() => setMode('register')}>
+              Request access
             </Button>
           </Form>
         ) : (

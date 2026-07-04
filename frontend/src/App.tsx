@@ -25,6 +25,7 @@ const SupervisorPage = lazy(() => import('./pages/SupervisorPage'))
 const SkRequestsPage = lazy(() => import('./pages/SkRequestsPage'))
 const SmePage = lazy(() => import('./pages/SmePage'))
 const UsersPage = lazy(() => import('./pages/UsersPage'))
+const PendingUsersPage = lazy(() => import('./pages/PendingUsersPage'))
 const AuditLogPage = lazy(() => import('./pages/AuditLogPage'))
 const InventoryAdminPage = lazy(() => import('./pages/InventoryAdminPage'))
 const SecurityPage = lazy(() => import('./pages/SecurityPage'))
@@ -54,6 +55,7 @@ export default function App() {
         <Route path="records/:key" element={<RecordsPage />} />
         <Route path="master/:key" element={<MasterDataPage />} />
         <Route path="admin/users" element={<UsersPage />} />
+        <Route path="admin/pending" element={<PendingUsersPage />} />
         <Route path="admin/inventory" element={<InventoryAdminPage />} />
         <Route path="admin/audit" element={<AuditLogPage />} />
         <Route path="reports" element={<ReportsPage />} />
