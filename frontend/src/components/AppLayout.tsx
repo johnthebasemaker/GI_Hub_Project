@@ -1,4 +1,5 @@
-import { Button, Layout, Menu, Space, Tag, Typography } from 'antd'
+import { Suspense } from 'react'
+import { Button, Layout, Menu, Space, Spin, Tag, Typography } from 'antd'
 import type { MenuProps } from 'antd'
 import { AuditOutlined, BarChartOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, TeamOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
@@ -175,7 +176,9 @@ export default function AppLayout() {
           </Space>
         </Header>
         <Content style={{ margin: 24 }}>
-          <Outlet />
+          <Suspense fallback={<div style={{ textAlign: 'center', padding: 64 }}><Spin /></div>}>
+            <Outlet />
+          </Suspense>
         </Content>
       </Layout>
     </Layout>

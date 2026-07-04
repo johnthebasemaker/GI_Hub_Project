@@ -63,7 +63,7 @@ DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
   .venv/bin/python backend/api/parity_check.py --source gi_database.db  # 5 derived views PASS
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
-  .venv/bin/python -m backend.api.service_tests                 # 40/40 (rolled-back services + auth/role guards)
+  .venv/bin/python -m backend.api.service_tests                 # 44/44 (rolled-back services + auth/role guards + JWT hardening)
 npm run build --prefix frontend                                 # tsc + vite green
 ```
 
@@ -205,22 +205,27 @@ Full role → workflow loop runs on Postgres. **~89 API endpoints.**
   stay open by design; entry/receiving stay `get_current_user` (store-keeper stages → HOD
   approves). If you want site-scoped reads (a store keeper only seeing their own site's
   records), that's a further, larger change — not done.
-- **Real `JWT_SECRET`** (dev default today) + **deploy** (Hetzner is parked per the
-  user) + a **cutover decision** (make React primary, re-sync data).
-- **Frontend bundle** is one ~1.3 MB chunk — code-split later.
+- ~~**Real `JWT_SECRET`**~~ ✅ **DONE 2026-07-04** — `config.jwt_secret()`: production
+  (`GI_ENV=production`) **fails fast** on a missing/weak/dev-default key; dev uses a safe
+  long placeholder. **Deploy MUST set a strong `JWT_SECRET`** (≥32 chars) + `GI_ENV=production`.
+- ~~**Frontend bundle** ~1.3 MB~~ ✅ **DONE 2026-07-04** — route-based `React.lazy` code-split;
+  initial bundle **1,354 → 288 kB**.
+- **Still pending for cutover:** **deploy** (Hetzner parked per the user) + the **decision
+  to make React primary** (re-sync data, point users at it). Non-deploy readiness is done.
 
 ---
 
 ## 5. Suggested next steps (ask the user which)
-The operational + estimator core is complete; **procurement runs end-to-end** (PR
-creation), the **Admin console** (users · audit viewer · **inventory Master-DB editor**),
-the **in-app notification bell**, **2FA self-enrollment**, **Reports** (Excel/PDF/CSV
-export), and a **hardening pass** (service+guard tests in CI · master-data write gate)
-have all landed (2026-07-04). The new stack is now essentially self-sufficient. Highest-value
-next options: **(a)** the peripheral Logistics/Warehouse tabs, **(b)** more notification
-events (HOD-approval outcomes, staging→HOD, reschedules), **(c)** user registration +
-approval (`pending_users`), **(d)** report scheduler/archive, or **(e)** the **cutover**
-prep (real `JWT_SECRET`, make React primary, deploy). WhatsApp/mail/LLM are larger — scope first.
+The operational + estimator core is complete; **procurement end-to-end** (PR creation),
+the **Admin console** (users · audit viewer · **inventory Master-DB editor**), the
+**in-app notification bell**, **2FA self-enrollment**, **Reports** (Excel/PDF/CSV), a
+**hardening pass** (service+guard tests in CI · master-data write gate), and **cutover
+readiness** (JWT_SECRET fail-fast · code-split bundle) have all landed (2026-07-04). The new
+stack is feature-rich, self-sufficient, and ship-ready — only the **deploy + make-React-primary
+decision** (yours) remains for actual cutover. Highest-value next options: **(a)** the
+peripheral Logistics/Warehouse tabs, **(b)** more notification events (HOD-approval
+outcomes, staging→HOD), **(c)** user registration + approval (`pending_users`), **(d)** report
+scheduler/archive, or **(e)** pull the trigger on **cutover** (deploy). WhatsApp/mail/LLM are larger — scope first.
 
 ## 6. Where the detail lives
 - Per-slice build log + verification: `docs/POSTGRES_MIGRATION.md` §8 (newest first).

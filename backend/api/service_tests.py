@@ -229,6 +229,39 @@ async def test_auth_guards():
         check("bad report format → 400", r.status_code == 400, f"got {r.status_code}")
 
 
+def test_config_jwt():
+    """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""
+    import os
+    from .config import _DEV_JWT_SECRET, jwt_secret
+    saved = {k: os.environ.get(k) for k in ("GI_ENV", "JWT_SECRET")}
+    try:
+        os.environ.pop("GI_ENV", None)
+        os.environ.pop("JWT_SECRET", None)
+        check("dev jwt_secret ≥ 32 chars (no HMAC warning)", len(jwt_secret()) >= 32)
+        os.environ["GI_ENV"] = "production"
+        try:
+            jwt_secret()
+            raised = False
+        except RuntimeError:
+            raised = True
+        check("production without JWT_SECRET fails fast", raised)
+        os.environ["JWT_SECRET"] = "x" * 40
+        check("production accepts a strong secret", jwt_secret() == "x" * 40)
+        os.environ["JWT_SECRET"] = _DEV_JWT_SECRET
+        try:
+            jwt_secret()
+            rejected = False
+        except RuntimeError:
+            rejected = True
+        check("production rejects the dev-default secret", rejected)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -236,6 +269,7 @@ async def main() -> int:
     await test_smr_create_and_approve()
     await test_receipt_ledger()
     await test_notification_visibility()
+    test_config_jwt()
     print("\n B. auth/role guards")
     await test_auth_guards()
     await engine.dispose()

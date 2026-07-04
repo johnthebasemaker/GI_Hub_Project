@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .config import jwt_secret
 from .db import get_session
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -38,7 +39,8 @@ _MD = models.Base.metadata
 users_t = _MD.tables["users"]
 audit_t = _MD.tables["system_audit_log"]
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-insecure-change-me")
+# Resolved once at import — in production a weak/absent key raises here (fail-fast).
+JWT_SECRET = jwt_secret()
 JWT_ALG = "HS256"
 ACCESS_TTL = _dt.timedelta(hours=8)
 MFA_TTL = _dt.timedelta(minutes=5)

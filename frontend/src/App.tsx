@@ -1,29 +1,34 @@
+import { lazy } from 'react'
 import { Route, Routes } from 'react-router-dom'
 import AppLayout from './components/AppLayout'
-import Dashboard from './pages/Dashboard'
-import StockPage from './pages/StockPage'
-import RecordsPage from './pages/RecordsPage'
-import MasterDataPage from './pages/MasterDataPage'
-import ReceivePage from './pages/ReceivePage'
-import IssuePage from './pages/IssuePage'
-import ReturnPage from './pages/ReturnPage'
-import AdjustPage from './pages/AdjustPage'
 import LoginPage from './pages/LoginPage'
-import ApprovalsPage from './pages/ApprovalsPage'
-import BurnRatePage from './pages/BurnRatePage'
-import HodPrsPage from './pages/HodPrsPage'
-import LogisticsPage from './pages/LogisticsPage'
-import WarehousePage from './pages/WarehousePage'
-import IncomingDeliveriesPage from './pages/IncomingDeliveriesPage'
-import SupervisorPage from './pages/SupervisorPage'
-import SkRequestsPage from './pages/SkRequestsPage'
-import SmePage from './pages/SmePage'
-import UsersPage from './pages/UsersPage'
-import AuditLogPage from './pages/AuditLogPage'
-import InventoryAdminPage from './pages/InventoryAdminPage'
-import SecurityPage from './pages/SecurityPage'
-import ReportsPage from './pages/ReportsPage'
 import { useAuth } from './auth/AuthContext'
+
+// Route pages are code-split — each becomes its own chunk, loaded on demand,
+// so the initial bundle stays small. AppLayout renders a <Suspense> around the
+// <Outlet>, so the sidebar stays put while a page chunk loads.
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const StockPage = lazy(() => import('./pages/StockPage'))
+const RecordsPage = lazy(() => import('./pages/RecordsPage'))
+const MasterDataPage = lazy(() => import('./pages/MasterDataPage'))
+const ReceivePage = lazy(() => import('./pages/ReceivePage'))
+const IssuePage = lazy(() => import('./pages/IssuePage'))
+const ReturnPage = lazy(() => import('./pages/ReturnPage'))
+const AdjustPage = lazy(() => import('./pages/AdjustPage'))
+const ApprovalsPage = lazy(() => import('./pages/ApprovalsPage'))
+const BurnRatePage = lazy(() => import('./pages/BurnRatePage'))
+const HodPrsPage = lazy(() => import('./pages/HodPrsPage'))
+const LogisticsPage = lazy(() => import('./pages/LogisticsPage'))
+const WarehousePage = lazy(() => import('./pages/WarehousePage'))
+const IncomingDeliveriesPage = lazy(() => import('./pages/IncomingDeliveriesPage'))
+const SupervisorPage = lazy(() => import('./pages/SupervisorPage'))
+const SkRequestsPage = lazy(() => import('./pages/SkRequestsPage'))
+const SmePage = lazy(() => import('./pages/SmePage'))
+const UsersPage = lazy(() => import('./pages/UsersPage'))
+const AuditLogPage = lazy(() => import('./pages/AuditLogPage'))
+const InventoryAdminPage = lazy(() => import('./pages/InventoryAdminPage'))
+const SecurityPage = lazy(() => import('./pages/SecurityPage'))
+const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 
 export default function App() {
   const { user } = useAuth()

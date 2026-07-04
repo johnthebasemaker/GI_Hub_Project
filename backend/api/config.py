@@ -42,3 +42,32 @@ CORS_ORIGINS = [
     "http://localhost:5173", "http://127.0.0.1:5173",   # Vite default
     "http://localhost:3000", "http://127.0.0.1:3000",   # CRA / Next default
 ]
+
+
+# --- environment + secrets ---------------------------------------------------
+# The dev JWT signing key. Deliberately long (≥32 bytes) so PyJWT doesn't warn
+# about HMAC key length in local dev — but it is refused in production.
+_DEV_JWT_SECRET = "dev-insecure-change-me-not-for-production-use-0123456789"
+
+
+def is_production() -> bool:
+    """True when GI_ENV names a production environment."""
+    return os.environ.get("GI_ENV", "dev").strip().lower() in ("prod", "production")
+
+
+def jwt_secret() -> str:
+    """Resolve the JWT signing key.
+
+    In production (GI_ENV=production) a strong secret is MANDATORY: a missing,
+    too-short (<32 chars), or the dev-default key raises at startup — the app
+    refuses to boot with an insecure signing key. In dev it falls back to a
+    long-but-obvious placeholder so local runs work without any setup.
+    """
+    s = os.environ.get("JWT_SECRET", "").strip()
+    if is_production():
+        if not s or s == _DEV_JWT_SECRET or len(s) < 32:
+            raise RuntimeError(
+                "JWT_SECRET must be set to a strong secret (≥32 chars) when "
+                "GI_ENV=production — refusing to start with an insecure signing key.")
+        return s
+    return s or _DEV_JWT_SECRET
