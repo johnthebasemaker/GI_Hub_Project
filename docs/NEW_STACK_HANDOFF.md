@@ -62,6 +62,8 @@ DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
   .venv/bin/python backend/dual_ci.py --source gi_database.db   # 64/64 table parity
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
   .venv/bin/python backend/api/parity_check.py --source gi_database.db  # 5 derived views PASS
+DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
+  .venv/bin/python -m backend.api.service_tests                 # 29/29 (rolled-back services + auth/role guards)
 npm run build --prefix frontend                                 # tsc + vite green
 ```
 
@@ -184,11 +186,14 @@ Full role → workflow loop runs on Postgres. **~80 API endpoints.**
   design** — all writes go through the services/staging.
 
 ### 4c. Hardening / infra
-- **Service-level parity tests in CI** (today only the 5 derived-view ports are gated;
-  the write services are verified manually then cleaned). Add rolled-back-txn service
-  tests.
-- **Per-endpoint role checks** — nav is role-gated and portal routers self-guard, but
-  some generic *reads* allow any authenticated user. Tighten if needed.
+- ~~**Service-level tests in CI**~~ ✅ **DONE 2026-07-04** — `backend/api/service_tests.py`
+  (rolled-back service invariants + httpx auth/role guards), gated in `postgres-dual-ci.yml`.
+  **29 checks.** Extend it whenever you add a write service.
+- ~~**Per-endpoint role checks**~~ ✅ **DONE 2026-07-04** — audited every route; the one gap
+  (master-data **writes** were auth-only) is fixed → `write_dep=require_level(3)`. Reads
+  stay open by design; entry/receiving stay `get_current_user` (store-keeper stages → HOD
+  approves). If you want site-scoped reads (a store keeper only seeing their own site's
+  records), that's a further, larger change — not done.
 - **Real `JWT_SECRET`** (dev default today) + **deploy** (Hetzner is parked per the
   user) + a **cutover decision** (make React primary, re-sync data).
 - **Frontend bundle** is one ~1.3 MB chunk — code-split later.
@@ -196,14 +201,15 @@ Full role → workflow loop runs on Postgres. **~80 API endpoints.**
 ---
 
 ## 5. Suggested next steps (ask the user which)
-The operational + estimator core is complete, **procurement runs end-to-end** (PR
-creation), the **Admin console** (users + audit viewer), and the **in-app notification
-bell** have all landed (2026-07-04). Highest-value next options:
+The operational + estimator core is complete; **procurement runs end-to-end** (PR
+creation), the **Admin console** (users + audit viewer), the **in-app notification
+bell**, and a **hardening pass** (service+guard tests in CI · master-data write gate)
+have all landed (2026-07-04). Highest-value next options:
 **(a)** Reports (generate/export), **(b)** the peripheral Logistics/Warehouse tabs,
-**(c)** hardening (service CI tests, per-endpoint roles) before cutover, **(d)** finish
-the admin surface — inventory **Master-DB editor** + **2FA enrollment/QR** + user
-registration-approval, or **(e)** more notification events (HOD-approval outcomes,
-staging→HOD, reschedules). WhatsApp/mail/LLM are larger integrations — scope first.
+**(c)** finish the admin surface — inventory **Master-DB editor** + **2FA enrollment/QR**
++ user registration-approval, **(d)** more notification events (HOD-approval outcomes,
+staging→HOD, reschedules), or **(e)** the **cutover** prep (real `JWT_SECRET`, make React
+primary, deploy). WhatsApp/mail/LLM are larger integrations — scope first.
 
 ## 6. Where the detail lives
 - Per-slice build log + verification: `docs/POSTGRES_MIGRATION.md` §8 (newest first).

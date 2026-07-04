@@ -32,7 +32,7 @@ if _ROOT not in sys.path:
 from backend import models  # noqa: E402
 
 from .admin import router as admin_router  # noqa: E402
-from .auth import get_current_user  # noqa: E402
+from .auth import get_current_user, require_level  # noqa: E402
 from .auth import router as auth_router  # noqa: E402
 from .config import CORS_ORIGINS  # noqa: E402
 from .crud import make_read_router  # noqa: E402
@@ -111,6 +111,9 @@ for e in ENTITIES:
         prefix=e["prefix"], tag=e["tag"],
         id_col=e["id_col"], site_col=e["site_col"],
         writable=e.get("writable", False),
+        # Reads: any authenticated user. Writes (master data): level ≥ 3
+        # (logistics/admin) — mirrors the frontend Master-Data nav gate.
+        write_dep=require_level(3),
     ), dependencies=_auth)
 
 # Derived (computed) stock endpoints — /stock/live, /by-site, /lots, /expiring.

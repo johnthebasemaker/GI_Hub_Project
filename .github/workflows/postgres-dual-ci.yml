@@ -86,3 +86,11 @@ jobs:
         env:
           DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
         run: python backend/api/parity_check.py --source gi_database.db
+
+      # Service-level invariants (rolled back — no persistence) + auth/role guards
+      # driven through the real ASGI app. Runs after dual_ci has populated Postgres.
+      - name: Service + guard tests (rolled-back services, HTTP auth/role gates)
+        env:
+          DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
+          JWT_SECRET: ci-only-service-test-secret-key-32bytes-min
+        run: python -m backend.api.service_tests

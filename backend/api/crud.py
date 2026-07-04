@@ -44,7 +44,11 @@ def _is_sensitive(name: str) -> bool:
 
 def make_read_router(table, *, prefix: str, tag: str, id_col: str,
                      site_col: Optional[str] = None,
-                     writable: bool = False) -> APIRouter:
+                     writable: bool = False, write_dep=None) -> APIRouter:
+    """Reads are open to any authenticated user (the router is included behind
+    get_current_user in main). Writes (when `writable`) are additionally gated
+    by `write_dep` — a role dependency (e.g. require_level(3)) so a low-privilege
+    user cannot mutate master data via the API even though the nav hides it."""
     # Columns safe to emit: everything except binary blobs and secret-named cols.
     out_cols = [
         c for c in table.columns
@@ -111,6 +115,9 @@ def make_read_router(table, *, prefix: str, tag: str, id_col: str,
         return router
 
     # ---- writes (only for entities flagged writable) ------------------------
+    # Role guard applied to every mutating route (create/update/delete).
+    _wguard = [Depends(write_dep)] if write_dep is not None else []
+
     def _clean_body(body: dict) -> dict:
         if not isinstance(body, dict):
             raise HTTPException(422, "request body must be a JSON object")
@@ -125,7 +132,7 @@ def make_read_router(table, *, prefix: str, tag: str, id_col: str,
             cleaned[k] = v
         return cleaned
 
-    @router.post("", status_code=201, summary=f"Create {tag}")
+    @router.post("", status_code=201, dependencies=_wguard, summary=f"Create {tag}")
     async def create_item(body: dict = Body(...),
                           session: AsyncSession = Depends(get_session)):
         data = _clean_body(body)
@@ -142,7 +149,7 @@ def make_read_router(table, *, prefix: str, tag: str, id_col: str,
             raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
         return dict(row)
 
-    @router.put("/{item_id}", summary=f"Update {tag} by {id_col}")
+    @router.put("/{item_id}", dependencies=_wguard, summary=f"Update {tag} by {id_col}")
     async def update_item(item_id: str, body: dict = Body(...),
                           session: AsyncSession = Depends(get_session)):
         data = _clean_body(body)
@@ -163,7 +170,7 @@ def make_read_router(table, *, prefix: str, tag: str, id_col: str,
             raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
         return dict(row)
 
-    @router.delete("/{item_id}", summary=f"Delete {tag} by {id_col}")
+    @router.delete("/{item_id}", dependencies=_wguard, summary=f"Delete {tag} by {id_col}")
     async def delete_item(item_id: str,
                           session: AsyncSession = Depends(get_session)):
         try:
