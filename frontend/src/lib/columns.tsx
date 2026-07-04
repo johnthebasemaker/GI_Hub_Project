@@ -2,7 +2,7 @@ import type { ColumnsType } from 'antd/es/table'
 import type { Row } from '../api/client'
 
 function renderCell(v: unknown) {
-  if (v === null || v === undefined) return <span style={{ color: '#bbb' }}>—</span>
+  if (v === null || v === undefined) return <span style={{ opacity: 0.35 }}>—</span>
   if (typeof v === 'boolean') return v ? 'true' : 'false'
   if (typeof v === 'object') return JSON.stringify(v)
   return String(v)

@@ -73,8 +73,9 @@ export default function SecurityPage() {
               a code to turn on 2FA.
             </Typography.Paragraph>
             <div style={{ textAlign: 'center', marginBottom: 12 }}>
+              {/* White frame keeps the QR quiet-zone scannable on the dark theme */}
               <img src={pending.qr} alt="2FA QR code" width={180} height={180}
-                style={{ border: '1px solid #f0f0f0', borderRadius: 8 }} />
+                style={{ border: '1px solid var(--gi-line)', borderRadius: 8, background: '#fff', padding: 6 }} />
             </div>
             <Alert type="info" showIcon style={{ marginBottom: 12 }}
               title={<span>Manual key: <Typography.Text code copyable>{pending.secret}</Typography.Text></span>} />

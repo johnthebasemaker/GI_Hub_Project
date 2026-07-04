@@ -1,7 +1,10 @@
-import { Card, Col, Row, Statistic, Table, Typography } from 'antd'
+import { Card, Col, Row, Table, Typography } from 'antd'
+import { CloudServerOutlined, EnvironmentOutlined, InboxOutlined, WarningOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useHealth, useInventorySummary, useList, useSites } from '../api/hooks'
 import BrowseTable from '../components/BrowseTable'
+import KpiCard from '../components/KpiCard'
+import { status } from '../theme/tokens'
 
 interface CatRow {
   Category: string | null
@@ -18,6 +21,7 @@ export default function Dashboard() {
   const { data: summary } = useInventorySummary()
   const { data: sites } = useSites()
   const expiring = useList('/stock/expiring', { limit: 1 })
+  const expiringCount = expiring.data?.total ?? 0
 
   return (
     <div>
@@ -25,38 +29,42 @@ export default function Dashboard() {
         Dashboard
       </Typography.Title>
 
-      <Row gutter={[16, 16]}>
+      <Row gutter={[16, 16]} className="gi-cascade">
         <Col xs={12} md={6}>
-          <Card>
-            <Statistic title="Inventory items" value={summary?.total_items ?? 0} />
-          </Card>
+          <KpiCard
+            title="Inventory items"
+            value={summary?.total_items ?? 0}
+            icon={<InboxOutlined />}
+          />
         </Col>
         <Col xs={12} md={6}>
-          <Card>
-            <Statistic title="Sites" value={sites?.length ?? 0} />
-          </Card>
+          <KpiCard
+            title="Sites"
+            value={sites?.length ?? 0}
+            icon={<EnvironmentOutlined />}
+            tint={status.info}
+          />
         </Col>
         <Col xs={12} md={6}>
-          <Card>
-            <Statistic
-              title="Expiring / expired lots"
-              value={expiring.data?.total ?? 0}
-              styles={{ content: { color: (expiring.data?.total ?? 0) > 0 ? '#cf1322' : undefined } }}
-            />
-          </Card>
+          <KpiCard
+            title="Expiring / expired lots"
+            value={expiringCount}
+            icon={<WarningOutlined />}
+            tint={expiringCount > 0 ? status.critical : status.ok}
+            valueColor={expiringCount > 0 ? status.critical : undefined}
+          />
         </Col>
         <Col xs={12} md={6}>
-          <Card>
-            <Statistic
-              title="Database"
-              value={health ? health.dialect : '—'}
-              styles={{ content: { fontSize: 20 } }}
-            />
-          </Card>
+          <KpiCard
+            title="Database"
+            value={health ? health.dialect : '—'}
+            icon={<CloudServerOutlined />}
+            tint={status.ok}
+          />
         </Col>
       </Row>
 
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }} className="gi-cascade">
         <Col xs={24} lg={10}>
           <Card title="Inventory by category" size="small">
             <Table<CatRow>
