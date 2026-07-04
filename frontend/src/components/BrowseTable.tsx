@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
-import { Alert, Select, Space, Table } from 'antd'
+import { Alert, Select, Skeleton, Space, Table } from 'antd'
 import { useList, useSites } from '../api/hooks'
 import type { ListParams } from '../api/hooks'
 import { buildColumns } from '../lib/columns'
@@ -56,6 +56,10 @@ export default function BrowseTable({ path, hasSite, extraParams, toolbarExtra }
           message={(error as Error).message}
         />
       )}
+      {/* First load = shimmer skeleton; refetches keep the spinner overlay */}
+      {isFetching && !data ? (
+        <Skeleton active title={false} paragraph={{ rows: 8 }} />
+      ) : (
       <Table
         size="small"
         loading={isFetching}
@@ -63,6 +67,7 @@ export default function BrowseTable({ path, hasSite, extraParams, toolbarExtra }
         dataSource={rows.map((r, i) => ({ ...r, __rk: i }))}
         rowKey="__rk"
         scroll={{ x: 'max-content' }}
+        sticky={{ offsetHeader: 64 }}
         pagination={{
           current: page,
           pageSize,
@@ -75,6 +80,7 @@ export default function BrowseTable({ path, hasSite, extraParams, toolbarExtra }
           },
         }}
       />
+      )}
     </div>
   )
 }

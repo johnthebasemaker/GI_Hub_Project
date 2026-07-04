@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Badge, Button, Empty, Popover, Spin, Typography } from 'antd'
 import { BellOutlined, CheckOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
@@ -15,10 +15,10 @@ function NotifRow({ n, onClick }: { n: Row; onClick: (n: Row) => void }) {
   return (
     <div
       onClick={() => onClick(n)}
+      className={`gi-notif-row${n.read_at ? '' : ' gi-notif-unread'}`}
       style={{
         display: 'flex', gap: 8, padding: '8px 8px', borderRadius: 6,
         cursor: linked ? 'pointer' : 'default',
-        background: n.read_at ? undefined : 'rgba(212,175,55,0.08)',
       }}
     >
       <span style={{
@@ -47,6 +47,19 @@ export default function NotificationBell() {
   const { data: items, isFetching } = useNotifications(open)
   const markRead = useMarkNotifRead()
   const markAll = useMarkAllNotifRead()
+
+  // One gentle ring when the unread count goes UP (new notification).
+  const [ringing, setRinging] = useState(false)
+  const prevUnread = useRef(unread)
+  useEffect(() => {
+    const increased = unread > prevUnread.current
+    prevUnread.current = unread
+    if (increased) {
+      setRinging(true)
+      const t = setTimeout(() => setRinging(false), 600)
+      return () => clearTimeout(t)
+    }
+  }, [unread])
 
   const onItemClick = (n: Row) => {
     if (!n.read_at) markRead.mutate(Number(n.id))
@@ -81,7 +94,12 @@ export default function NotificationBell() {
   return (
     <Popover content={content} trigger="click" open={open} onOpenChange={setOpen} placement="bottomRight">
       <Badge count={unread} size="small" overflowCount={99}>
-        <Button type="text" icon={<BellOutlined style={{ fontSize: 18 }} />} aria-label="Notifications" />
+        <Button
+          type="text"
+          className={ringing ? 'gi-bell-ring' : undefined}
+          icon={<BellOutlined style={{ fontSize: 18 }} />}
+          aria-label="Notifications"
+        />
       </Badge>
     </Popover>
   )

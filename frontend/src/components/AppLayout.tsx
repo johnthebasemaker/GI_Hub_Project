@@ -1,5 +1,5 @@
 import { Suspense } from 'react'
-import { Button, ConfigProvider, Layout, Menu, Space, Spin, Tooltip, Typography } from 'antd'
+import { Button, ConfigProvider, Layout, Menu, Skeleton, Space, Tooltip, Typography } from 'antd'
 import type { MenuProps } from 'antd'
 import { AuditOutlined, BarChartOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, MoonOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, SunOutlined, TeamOutlined, UserAddOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
@@ -195,8 +195,18 @@ export default function AppLayout() {
           </Space>
         </Header>
         <Content style={{ margin: 24 }}>
-          <Suspense fallback={<div style={{ textAlign: 'center', padding: 64 }}><Spin /></div>}>
-            <Outlet />
+          {/* Keyed wrapper = fade+rise route transition on every navigation;
+              the Skeleton covers lazy page-chunk loads. */}
+          <Suspense
+            fallback={
+              <div className="gi-page">
+                <Skeleton active title={{ width: 220 }} paragraph={{ rows: 5 }} />
+              </div>
+            }
+          >
+            <div key={location.pathname} className="gi-page">
+              <Outlet />
+            </div>
           </Suspense>
         </Content>
       </Layout>
