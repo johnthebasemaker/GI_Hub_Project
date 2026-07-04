@@ -417,3 +417,68 @@ export function useAuditMeta() {
       (await api.get<{ action_types: string[]; target_tables: string[] }>('/admin/audit/meta')).data,
   })
 }
+
+// --- notifications (sidebar bell) -------------------------------------------
+export function useUnreadCount() {
+  return useQuery({
+    queryKey: ['/notifications/unread-count'],
+    queryFn: async () => (await api.get<{ unread: number }>('/notifications/unread-count')).data.unread,
+    // The badge refreshes after your own actions (mutations invalidate this
+    // key) and whenever the window regains focus (refetchOnWindowFocus default).
+    // No refetchInterval: a background-polling query does not reliably re-render
+    // on invalidation while the tab is hidden.
+    refetchOnWindowFocus: true,
+  })
+}
+
+export function useNotifications(enabled: boolean) {
+  return useQuery({
+    queryKey: ['/notifications'],
+    enabled,
+    queryFn: async () => (await api.get<{ items: Row[] }>('/notifications', { params: { limit: 30 } })).data.items,
+  })
+}
+
+const UNREAD_KEY = ['/notifications/unread-count']
+
+// Optimistically adjust the badge count so it updates the instant you act,
+// then reconcile with the server. Rolls back on error.
+export function useMarkNotifRead() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api.post(`/notifications/${id}/read`).then((r) => r.data),
+    onMutate: async () => {
+      await qc.cancelQueries({ queryKey: UNREAD_KEY })
+      const prev = qc.getQueryData<number>(UNREAD_KEY)
+      qc.setQueryData<number>(UNREAD_KEY, (n) => Math.max(0, (n ?? 1) - 1))
+      return { prev }
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev !== undefined) qc.setQueryData(UNREAD_KEY, ctx.prev)
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['/notifications'] })
+      qc.invalidateQueries({ queryKey: UNREAD_KEY })
+    },
+  })
+}
+
+export function useMarkAllNotifRead() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.post('/notifications/read-all').then((r) => r.data),
+    onMutate: async () => {
+      await qc.cancelQueries({ queryKey: UNREAD_KEY })
+      const prev = qc.getQueryData<number>(UNREAD_KEY)
+      qc.setQueryData(UNREAD_KEY, 0)
+      return { prev }
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev !== undefined) qc.setQueryData(UNREAD_KEY, ctx.prev)
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['/notifications'] })
+      qc.invalidateQueries({ queryKey: UNREAD_KEY })
+    },
+  })
+}

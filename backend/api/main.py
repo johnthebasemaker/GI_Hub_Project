@@ -40,6 +40,7 @@ from .db import engine, get_session  # noqa: E402
 from .entry import router as entry_router  # noqa: E402
 from .hod import router as hod_router  # noqa: E402
 from .logistics import router as logistics_router  # noqa: E402
+from .notifications import router as notifications_router  # noqa: E402
 from .receiving import router as receiving_router  # noqa: E402
 from .requests import router as requests_router  # noqa: E402
 from .sme import router as sme_router  # noqa: E402
@@ -138,6 +139,9 @@ app.include_router(sme_router)
 
 # Admin console — user management + audit-log viewer (self-guarded, admin only).
 app.include_router(admin_router)
+
+# In-app notifications — the sidebar bell feed (self-scoped to the current user).
+app.include_router(notifications_router, dependencies=_auth)
 
 
 @app.get("/", include_in_schema=False)

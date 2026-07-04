@@ -5,6 +5,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
 import { READ_ENTITIES, WRITE_ENTITIES } from '../config/entities'
+import NotificationBell from './NotificationBell'
 
 const { Header, Sider, Content } = Layout
 
@@ -150,6 +151,7 @@ export default function AppLayout() {
             ) : (
               <Tag color="red">API offline</Tag>
             )}
+            <NotificationBell />
             {user && (
               <Typography.Text type="secondary">
                 {user.label} · {user.username}

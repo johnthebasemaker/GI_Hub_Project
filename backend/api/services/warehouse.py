@@ -18,6 +18,7 @@ from sqlalchemy import case, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .ledger import _MD, write_audit
+from .notifications import notify
 
 po_assignments_t = _MD.tables["po_assignments"]
 purchase_orders_t = _MD.tables["purchase_orders"]
@@ -236,6 +237,15 @@ async def ship_dn(session: AsyncSession, *, username: str, dn_number: str) -> di
     if res.rowcount == 0:
         return {"error": "DN not found or not in a shippable state"}
     await write_audit(session, username, "SHIP_DN", "delivery_notes", f"DN={dn_number}")
+    dest = (await session.execute(select(
+        delivery_notes_t.c["Site_ID"], delivery_notes_t.c["PO_Number"]
+    ).where(delivery_notes_t.c["DN_Number"] == dn_number))).first()
+    if dest is not None:
+        await notify(session, event_key="dn_shipped", recipient_role="store_keeper",
+                     recipient_site=dest[0],
+                     title=f"Delivery {dn_number} incoming",
+                     body=f"DN for PO {dest[1] or '—'} is in transit — receive it under Incoming Deliveries.",
+                     link_page="/site/incoming", related_table="delivery_notes", related_ref=dn_number)
     return {"shipped": True, "dn_number": dn_number, "status": "in_transit"}
 
 

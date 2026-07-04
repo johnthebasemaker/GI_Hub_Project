@@ -121,17 +121,22 @@ parity_check against a `postgres:16` service.
   create (bcrypt) / edit role+site+warehouse+phone / reset password / reset 2FA / delete,
   with last-admin & self-delete guards — plus a filterable **audit-log viewer** over
   `system_audit_log`. Every mutation is itself audited.
+- **In-app notifications (sidebar bell):** per-user feed over `app_notifications` — new
+  services fire `notify()` on `submit_pr`→logistics, `assign_po`→warehouse, `ship_dn`→site
+  store-keeper, `create_smr`→SK, `approve_smr`→the supervisor. Bell = badge + popover with
+  mark-read / mark-all; visibility is role/site/warehouse/user scoped (isolation + a
+  mark-read guard). Surfaces the migrated notifications too.
 
-Full role → workflow loop runs on Postgres. **~76 API endpoints.**
+Full role → workflow loop runs on Postgres. **~80 API endpoints.**
 
 ---
 
 ## 4. 🚧 PENDING — NOT yet on the new stack (the real backlog)
 
 ### 4a. Cross-cutting systems NOT ported (the user asked to confirm these)
-- **In-app notifications** — the old app fires `queue_app_notification` on every
-  procurement event (`app_notifications` table + a sidebar bell). The new services
-  deliberately **omit** notifications. → build a `/notifications` feed + bell.
+- ~~**In-app notifications**~~ ✅ **DONE 2026-07-04** — `services/notifications.py` +
+  `/notifications` router + `NotificationBell`; wired to 5 procurement events. NOT yet
+  wired: HOD-approval outcomes, staging-submitted (→HOD), DN reschedules, cross-site views.
 - **WhatsApp** — `whatsapp_queue` + `whatsapp_worker.py` + Twilio/Meta sender. Fires on
   PR/PO/DN/reschedule events. **NOT ported.**
 - **Email / mailer** — `mailer.py` (SMTP/Outlook), scheduled-report dispatch, delivery
@@ -192,13 +197,13 @@ Full role → workflow loop runs on Postgres. **~76 API endpoints.**
 
 ## 5. Suggested next steps (ask the user which)
 The operational + estimator core is complete, **procurement runs end-to-end** (PR
-creation, 2026-07-04), and the **Admin console** (user management + audit viewer,
-2026-07-04) has landed. Highest-value next options:
-**(a)** in-app notifications feed (bell), **(b)** Reports (generate/export), **(c)** the
-peripheral Logistics/Warehouse tabs, **(d)** hardening (service CI tests, per-endpoint
-roles) before cutover, or **(e)** finish the admin surface — inventory **Master-DB editor**
-+ **2FA enrollment/QR** + user registration-approval.
-Notifications/WhatsApp/mail/LLM are larger integrations — scope explicitly before starting.
+creation), the **Admin console** (users + audit viewer), and the **in-app notification
+bell** have all landed (2026-07-04). Highest-value next options:
+**(a)** Reports (generate/export), **(b)** the peripheral Logistics/Warehouse tabs,
+**(c)** hardening (service CI tests, per-endpoint roles) before cutover, **(d)** finish
+the admin surface — inventory **Master-DB editor** + **2FA enrollment/QR** + user
+registration-approval, or **(e)** more notification events (HOD-approval outcomes,
+staging→HOD, reschedules). WhatsApp/mail/LLM are larger integrations — scope first.
 
 ## 6. Where the detail lives
 - Per-slice build log + verification: `docs/POSTGRES_MIGRATION.md` §8 (newest first).

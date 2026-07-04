@@ -18,6 +18,7 @@ from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .ledger import _MD, write_audit  # reuse metadata + audit writer
+from .notifications import notify
 
 pr_master_t = _MD.tables["pr_master"]
 purchase_orders_t = _MD.tables["purchase_orders"]
@@ -211,6 +212,10 @@ async def submit_pr(session: AsyncSession, *, username: str, pr_number: str, sit
         return {"error": f"PR {pr_number} has no eligible lines to submit"}
     await write_audit(session, username, "SUBMIT_PR_TO_LOGISTICS", "pr_master",
                       f"PR={pr_number} site={site_id} lines={res.rowcount}")
+    await notify(session, event_key="pr_submitted_to_logistics", recipient_role="logistics",
+                 title=f"New PR {pr_number} from {site_id}",
+                 body=f"{res.rowcount} line(s) awaiting PO issuance.",
+                 link_page="/logistics", related_table="pr_master", related_ref=pr_number)
     return {"submitted": True, "pr_number": pr_number, "lines": res.rowcount}
 
 
@@ -282,4 +287,9 @@ async def assign_po(session: AsyncSession, *, username: str, po_number: str, war
             Expected_Delivery=func.coalesce(purchase_orders_t.c["Expected_Delivery"], expected_delivery)))
     await write_audit(session, username, "ASSIGN_PO", "po_assignments",
                       f"PO={po_number} warehouse={warehouse_id}")
+    await notify(session, event_key="po_assigned_to_warehouse", recipient_role="warehouse_user",
+                 recipient_warehouse=warehouse_id,
+                 title=f"PO {po_number} assigned to {warehouse_id}",
+                 body="Acknowledge and receive it in the Warehouse portal.",
+                 link_page="/warehouse", related_table="po_assignments", related_ref=po_number)
     return {"assigned": True, "po_number": po_number, "warehouse_id": warehouse_id}
