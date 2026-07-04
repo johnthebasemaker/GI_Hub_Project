@@ -140,6 +140,14 @@ export function useHodPrs(siteId?: string) {
   })
 }
 
+export function useCreatePr() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Row) => api.post('/hod/prs', body).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/hod/prs'] }),
+  })
+}
+
 export function useSubmitPr() {
   const qc = useQueryClient()
   return useMutation({

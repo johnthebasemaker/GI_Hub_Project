@@ -47,6 +47,24 @@ class RejectIn(BaseModel):
     reason: Optional[str] = None
 
 
+class PRLineIn(BaseModel):
+    SAP_Code: str
+    Requested_Qty: float
+    Material_Code: Optional[str] = None
+    Material_Name: Optional[str] = None
+    UOM: Optional[str] = None
+    Est_Cost_SAR: Optional[float] = None
+    Notes: Optional[str] = None
+
+
+class CreatePRIn(BaseModel):
+    site_id: str
+    lines: list[PRLineIn]
+    supplier: Optional[str] = None
+    notes: Optional[str] = None
+    delivery_date: Optional[str] = None
+
+
 def _rows(res):
     return [dict(m) for m in res.mappings().all()]
 
@@ -136,6 +154,28 @@ async def burn_rate(site_id: Optional[str] = None, days: int = 30,
 async def hod_pr_list(site_id: Optional[str] = None,
                       session: AsyncSession = Depends(get_session)):
     return {"items": await procurement.hod_prs(session, site_id)}
+
+
+@router.post("/prs", status_code=201, summary="Create a site PR (draft) from lines")
+async def hod_pr_create(body: CreatePRIn = Body(...),
+                        user: dict = Depends(require_level(2)),
+                        session: AsyncSession = Depends(get_session)):
+    if not body.lines:
+        raise HTTPException(422, "add at least one line")
+    try:
+        async with session.begin():
+            res = await procurement.create_pr(
+                session, username=user["username"], site_id=body.site_id,
+                lines=[ln.model_dump() for ln in body.lines],
+                supplier=body.supplier, notes=body.notes,
+                delivery_date=body.delivery_date)
+        if res.get("error"):
+            raise HTTPException(409, res["error"])
+        return res
+    except HTTPException:
+        raise
+    except (IntegrityError, DataError) as e:
+        raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
 
 
 @router.post("/prs/{pr_number}/submit", summary="Submit a PR to Logistics")

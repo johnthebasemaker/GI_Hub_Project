@@ -24,6 +24,7 @@ purchase_orders_t = _MD.tables["purchase_orders"]
 po_items_t = _MD.tables["po_items"]
 po_assignments_t = _MD.tables["po_assignments"]
 warehouses_t = _MD.tables["warehouses"]
+inventory_t = _MD.tables["inventory"]
 
 # RL/BL family tokens — verbatim from config.py (RL_BL_FAMILY_TOKENS).
 _RL_BL_TOKENS = {
@@ -42,6 +43,26 @@ def classify_rl_bl_family(material_code: str | None, description: str | None) ->
 
 def _rows(res):
     return [dict(m) for m in res.mappings().all()]
+
+
+async def _next_pr_number(session: AsyncSession) -> str:
+    """Auto-generate a site PR number: PR-YYYYMMDD-NNNN (sequence resets daily).
+
+    Mirrors the SMR numbering in services/supervisor.py — take the newest row
+    with today's prefix and increment its suffix.
+    """
+    today = _dt.date.today().strftime("%Y%m%d")
+    prefix = f"PR-{today}-"
+    last = (await session.execute(select(pr_master_t.c["PR_Number"]).where(
+        pr_master_t.c["PR_Number"].like(prefix + "%")
+    ).order_by(pr_master_t.c["id"].desc()).limit(1))).scalar_one_or_none()
+    nxt = 1
+    if last:
+        try:
+            nxt = int(str(last).split("-")[-1]) + 1
+        except (ValueError, IndexError):
+            nxt = 1
+    return f"{prefix}{nxt:04d}"
 
 
 # --- reads -------------------------------------------------------------------
@@ -116,6 +137,69 @@ async def po_items(session: AsyncSession, po_number: str):
 
 
 # --- mutations ---------------------------------------------------------------
+async def create_pr(session: AsyncSession, *, username: str, site_id: str,
+                    lines: list[dict], supplier: str | None = None,
+                    notes: str | None = None, delivery_date: str | None = None) -> dict:
+    """Create one site PR (draft) from a set of lines — ports insert_manual_pr().
+
+    Each line is validated + enriched against the ERP inventory master (SAP_Code
+    must exist; Material_Code / Material_Name / UOM are backfilled when blank).
+    Rows land status='open', workflow_state='draft', logistics_status='site_draft'
+    so the HOD's queue lists them for submission to Logistics. Returns the
+    auto-generated PR_Number.
+    """
+    if not (site_id or "").strip():
+        return {"error": "site is required"}
+    if not lines:
+        return {"error": "add at least one line"}
+
+    prepared: list[dict] = []
+    for ln in lines:
+        sap = str(ln.get("SAP_Code") or "").strip()
+        if not sap:
+            return {"error": "every line needs a SAP_Code"}
+        try:
+            qty = float(ln.get("Requested_Qty") or 0)
+        except (TypeError, ValueError):
+            return {"error": f"line {sap}: qty is not a number"}
+        if qty <= 0:
+            return {"error": f"line {sap}: qty must be > 0"}
+        inv = (await session.execute(select(
+            inventory_t.c["Material_Code"], inventory_t.c["Equipment_Description"],
+            inventory_t.c["UOM"],
+        ).where(func.trim(inventory_t.c["SAP_Code"]) == sap).limit(1))).first()
+        if inv is None:
+            return {"error": f"SAP {sap} not in inventory master"}
+        try:
+            est = float(ln.get("Est_Cost_SAR") or 0)
+        except (TypeError, ValueError):
+            est = 0.0
+        prepared.append({
+            "SAP_Code": sap,
+            "Material_Code": (str(ln.get("Material_Code") or "").strip() or (inv[0] or "")),
+            "Material_Name": (str(ln.get("Material_Name") or "").strip() or (inv[1] or "")),
+            "Requested_Qty": qty,
+            "UOM": (str(ln.get("UOM") or "").strip() or (inv[2] or "")),
+            "Est_Cost_SAR": est,
+            "Notes": (str(ln.get("Notes") or "").strip() or (notes or "")),
+        })
+
+    pr_number = await _next_pr_number(session)
+    for ln in prepared:
+        await session.execute(insert(pr_master_t).values(
+            PR_Number=pr_number, Site_ID=site_id, SAP_Code=ln["SAP_Code"],
+            Material_Code=ln["Material_Code"], Material_Name=ln["Material_Name"],
+            Requested_Qty=ln["Requested_Qty"], UOM=ln["UOM"],
+            Est_Cost_SAR=ln["Est_Cost_SAR"], Supplier=(supplier or None),
+            Notes=(ln["Notes"] or None), Delivery_Date=(delivery_date or None),
+            status="open", workflow_state="draft", logistics_status="site_draft"))
+
+    await write_audit(session, username, "CREATE_PR", "pr_master",
+                      f"PR={pr_number} site={site_id} lines={len(prepared)}")
+    return {"created": True, "pr_number": pr_number, "site_id": site_id,
+            "lines": len(prepared)}
+
+
 async def submit_pr(session: AsyncSession, *, username: str, pr_number: str, site_id: str) -> dict:
     res = await session.execute(update(pr_master_t).where(
         (pr_master_t.c["PR_Number"] == pr_number)

@@ -4,7 +4,7 @@ Single entry point for continuing the **new React + FastAPI + PostgreSQL** build
 GI Hub. The **live Streamlit app is unchanged and stays on SQLite** — the new stack
 is a *separate* set of processes. Per-slice history is in
 [`docs/POSTGRES_MIGRATION.md` §8](POSTGRES_MIGRATION.md). SME rules live in
-[`handoff.md`](../handoff.md) (SME Canon). Last updated 2026-07-03.
+[`handoff.md`](../handoff.md) (SME Canon). Last updated 2026-07-04.
 
 ---
 
@@ -114,8 +114,11 @@ parity_check against a `postgres:16` service.
   → HOD Approvals.
 - **SME estimator (read-only):** summary + equipment + recipes/BOM + SQM progress +
   materials (derived `Available_Qty`, parity-tested).
+- **PR creation (HOD):** raise a site PR from scratch — multi-line form (material
+  picker off the inventory master, auto-assigned `PR-YYYYMMDD-NNNN`), then submit to
+  Logistics. Procurement now runs end-to-end on the new stack (no more migrated-only PRs).
 
-Full role → workflow loop runs on Postgres. **66 API endpoints.**
+Full role → workflow loop runs on Postgres. **67 API endpoints.**
 
 ---
 
@@ -146,10 +149,9 @@ Full role → workflow loop runs on Postgres. **66 API endpoints.**
 - **PWA scan-and-stage** (the separate Phase-4 FastAPI PWA) — out of scope of this build.
 
 ### 4b. Portal tabs / features not yet built
-- **PR creation** — the new app can *submit* an existing PR to Logistics and create a
-  PO from it, but there's **no UI to create a PR** (HOD/supervisor entering PR lines).
-  PRs currently come from migrated data. Build a PR-entry form next if procurement
-  needs it end-to-end.
+- ~~**PR creation**~~ ✅ **DONE 2026-07-04** — HOD → Purchase Requests → **Create PR**
+  tab (`POST /hod/prs`, `create_pr` service, auto `PR-YYYYMMDD-NNNN`). Procurement now
+  runs end-to-end from the new stack.
 - **DN approval chain** — SIMPLIFIED: warehouse DN → site receive → HOD approves the
   *receipt* (via staging). The old **Logistics-approve + HOD-approve DN** steps are not
   ported (approval moved to receipt level). Decide if the DN-level approvals are wanted.
@@ -184,11 +186,12 @@ Full role → workflow loop runs on Postgres. **66 API endpoints.**
 ---
 
 ## 5. Suggested next steps (ask the user which)
-The operational + estimator core is complete. Highest-value next options:
+The operational + estimator core is complete, and **procurement now runs end-to-end**
+(PR creation landed 2026-07-04). Highest-value next options:
 **(a)** in-app notifications feed (bell), **(b)** Admin console — users + audit-log
 viewer + inventory Master-DB editor, **(c)** Reports (generate/export), **(d)** the
-peripheral Logistics/Warehouse tabs, **(e)** PR-creation UI to make procurement fully
-end-to-end, or **(f)** hardening (service CI tests, per-endpoint roles) before cutover.
+peripheral Logistics/Warehouse tabs, or **(e)** hardening (service CI tests, per-endpoint
+roles) before cutover.
 Notifications/WhatsApp/mail/LLM are larger integrations — scope explicitly before starting.
 
 ## 6. Where the detail lives
