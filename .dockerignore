@@ -45,3 +45,7 @@ UI_CRAWLER_REPORT.md
 docker-compose*.yml
 Dockerfile*
 .dockerignore
+
+# Node / frontend build artifacts (images build these fresh)
+**/node_modules/
+frontend/dist/

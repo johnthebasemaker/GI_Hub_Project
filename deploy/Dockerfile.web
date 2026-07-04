@@ -1,0 +1,24 @@
+# ============================================================================
+# deploy/Dockerfile.web — nginx serving the React SPA + proxying /api → api.
+#
+# Build context is the REPO ROOT (docker-compose.prod.yml `context: ..`).
+# Stage 1 builds the Vite bundle; stage 2 is nginx serving those static files
+# and reverse-proxying /api/ to the `api` service (single origin → no CORS).
+# ============================================================================
+
+# ---- Stage 1: build the React bundle ---------------------------------------
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build          # tsc -b && vite build → /app/dist
+
+# ---- Stage 2: nginx runtime ------------------------------------------------
+FROM nginx:1.27-alpine AS runtime
+# Our server config (SPA fallback + /api proxy + TLS + ACME webroot).
+COPY deploy/nginx.conf /etc/nginx/templates/default.conf.template
+COPY --from=build /app/dist /usr/share/nginx/html
+# nginx:alpine's entrypoint runs envsubst on /etc/nginx/templates/*.template →
+# /etc/nginx/conf.d/, so ${DOMAIN} in nginx.conf is filled from the env.
+EXPOSE 80 443

@@ -211,8 +211,12 @@ Full role → workflow loop runs on Postgres. **~89 API endpoints.**
   long placeholder. **Deploy MUST set a strong `JWT_SECRET`** (≥32 chars) + `GI_ENV=production`.
 - ~~**Frontend bundle** ~1.3 MB~~ ✅ **DONE 2026-07-04** — route-based `React.lazy` code-split;
   initial bundle **1,354 → 288 kB**.
-- **Still pending for cutover:** **deploy** (Hetzner parked per the user) + the **decision
-  to make React primary** (re-sync data, point users at it). Non-deploy readiness is done.
+- ✅ **Deploy kit DONE 2026-07-04** — turnkey `deploy/` (Docker compose: Postgres + FastAPI +
+  nginx SPA/`/api`-proxy/TLS + certbot) + runbook [`docs/DEPLOY.md`](DEPLOY.md). **Not run
+  against a server** — build/run it on the box when ready.
+- **Still pending for cutover (user's call):** **provision + run** the Hetzner box (parked) +
+  the **one-time SQLite→PG data migration** (runbook §4, `dual_ci`) + the **decision to make
+  React primary** (point users at it). That's the whole remaining gap.
 
 ---
 

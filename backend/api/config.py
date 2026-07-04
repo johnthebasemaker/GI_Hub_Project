@@ -37,11 +37,17 @@ def async_database_url() -> str:
     return url
 
 
-# CORS origins for the future React dev server(s). Adjust when the frontend lands.
-CORS_ORIGINS = [
-    "http://localhost:5173", "http://127.0.0.1:5173",   # Vite default
-    "http://localhost:3000", "http://127.0.0.1:3000",   # CRA / Next default
-]
+# CORS origins. In production behind a single-origin reverse proxy (nginx serves
+# the SPA and proxies /api → the API), CORS isn't needed at all. If you ever split
+# origins, set CORS_ORIGINS as a comma-separated env var; otherwise the dev
+# defaults (the Vite/CRA dev servers) apply.
+_env_cors = os.environ.get("CORS_ORIGINS", "").strip()
+CORS_ORIGINS = (
+    [o.strip() for o in _env_cors.split(",") if o.strip()] if _env_cors else [
+        "http://localhost:5173", "http://127.0.0.1:5173",   # Vite default
+        "http://localhost:3000", "http://127.0.0.1:3000",   # CRA / Next default
+    ]
+)
 
 
 # --- environment + secrets ---------------------------------------------------

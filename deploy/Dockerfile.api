@@ -1,0 +1,42 @@
+# ============================================================================
+# deploy/Dockerfile.api — the NEW-STACK FastAPI backend (async → PostgreSQL).
+#
+# This is the React/FastAPI/Postgres stack's API, NOT the Streamlit app or the
+# RAG sidecar (those have their own Dockerfiles at the repo root). Internal-only:
+# it is reached through nginx (the `web` service) at /api/; no host ports.
+#
+# Build context is the REPO ROOT (see docker-compose.prod.yml `context: ..`),
+# because the API imports backend/models.py, database.py's models, etc.
+# ============================================================================
+
+# ---- Stage 1: builder — install deps into a venv ---------------------------
+FROM python:3.12-slim AS builder
+ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+COPY requirements.txt .
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+# ---- Stage 2: runtime ------------------------------------------------------
+FROM python:3.12-slim AS runtime
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PATH="/opt/venv/bin:$PATH"
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 tini \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd --create-home --uid 10001 gihub
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+# Copy the repo (the root .dockerignore excludes .venv / *.db / uploads / .git /
+# Dockerfile* / compose files). The API needs backend/**, and the in-container
+# data migration (backend/dual_ci.py) needs the models + helpers too.
+COPY . /app
+RUN chown -R gihub:gihub /app
+
+USER gihub
+EXPOSE 8000
+ENTRYPOINT ["/usr/bin/tini", "--"]
+# 4 uvicorn workers — tune to the box (roughly 2×CPU). GI_ENV=production makes
+# auth.py refuse to boot without a strong JWT_SECRET (config.jwt_secret).
+CMD ["uvicorn", "backend.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

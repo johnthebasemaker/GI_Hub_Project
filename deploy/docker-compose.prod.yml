@@ -1,0 +1,94 @@
+# ============================================================================
+# deploy/docker-compose.prod.yml — NEW-STACK production (React + FastAPI + PG).
+#
+# This is the React/FastAPI/Postgres stack (the one made feature-complete in the
+# 2026-07 build), NOT the Streamlit app at the repo-root docker-compose.yml.
+# Run it from THIS directory:  docker compose -f docker-compose.prod.yml ...
+# Build context is the repo root (`context: ..`).
+#
+# Services (only `web` binds host ports):
+#   db      postgres:16   internal          system of record
+#   api     FastAPI        internal :8000   async → Postgres
+#   web     nginx          :80 + :443       SPA + /api proxy + TLS
+#   certbot certbot        no ports          cert issuance + auto-renew
+#
+# Secrets come from deploy/.env (copy .env.example → .env and fill it in).
+# ============================================================================
+
+name: gi-hub-newstack
+
+networks:
+  gi-new:
+    driver: bridge
+
+volumes:
+  pg-data-prod:     # PostgreSQL data — the system of record. BACK THIS UP.
+  certbot-etc:      # /etc/letsencrypt (certs + account)
+  certbot-www:      # ACME HTTP-01 webroot
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pg-data-prod:/var/lib/postgresql/data
+    networks: [gi-new]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      GI_ENV: production
+      JWT_SECRET: ${JWT_SECRET}
+      # asyncpg URL (config.async_database_url normalises psycopg2/plain forms too).
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      # Single-origin behind nginx → CORS unused; set only if you split origins.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+    networks: [gi-new]
+    # No host ports — reached only via nginx (`web`) at /api/.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    restart: unless-stopped
+    depends_on: [api]
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - certbot-etc:/etc/letsencrypt:ro
+      - certbot-www:/var/www/certbot:ro
+    networks: [gi-new]
+
+  # Cert issuance is bootstrapped by deploy/init-letsencrypt.sh; this service
+  # just renews every 12h and lets nginx pick it up on its own reload cycle.
+  certbot:
+    image: certbot/certbot
+    restart: unless-stopped
+    volumes:
+      - certbot-etc:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
