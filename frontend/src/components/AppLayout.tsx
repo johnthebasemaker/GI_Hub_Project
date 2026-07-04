@@ -1,11 +1,13 @@
 import { Suspense } from 'react'
-import { Button, Layout, Menu, Space, Spin, Tag, Typography } from 'antd'
+import { Button, ConfigProvider, Layout, Menu, Space, Spin, Tooltip, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AuditOutlined, BarChartOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, TeamOutlined, UserAddOutlined } from '@ant-design/icons'
+import { AuditOutlined, BarChartOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, MoonOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, SunOutlined, TeamOutlined, UserAddOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
 import { READ_ENTITIES, WRITE_ENTITIES } from '../config/entities'
+import { useThemeMode } from '../theme/ThemeContext'
+import { siderTheme } from '../theme/themes'
 import NotificationBell from './NotificationBell'
 
 const { Header, Sider, Content } = Layout
@@ -124,50 +126,61 @@ export default function AppLayout() {
   const location = useLocation()
   const { data: health } = useHealth()
   const { user, logout } = useAuth()
+  const { mode, toggle } = useThemeMode()
   const level = user?.level ?? 0
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Sider width={220} theme="light" style={{ borderRight: '1px solid #f0f0f0' }}>
-        <div style={{ padding: '18px 16px 8px' }}>
-          <Typography.Title level={4} style={{ margin: 0 }}>
-            GI&nbsp;Hub
-          </Typography.Title>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            ERP Console
-          </Typography.Text>
-        </div>
-        <Menu
-          mode="inline"
-          selectedKeys={[location.pathname]}
-          items={buildMenu(level, user?.role ?? '')}
-          onClick={({ key }) => navigate(key)}
-          style={{ borderInlineEnd: 'none' }}
-        />
-      </Sider>
+      {/* The brand rail is always navy, whatever the app mode */}
+      <ConfigProvider theme={siderTheme}>
+        <Sider
+          width={232}
+          className="gi-sider"
+          breakpoint="lg"
+          collapsedWidth={0}
+          style={{ height: '100vh', position: 'sticky', top: 0, overflowY: 'auto' }}
+        >
+          <div className="gi-brand">
+            <div className="gi-wordmark">GI&nbsp;Hub</div>
+            <div className="gi-brand-sub">ERP CONSOLE</div>
+          </div>
+          <Menu
+            mode="inline"
+            selectedKeys={[location.pathname]}
+            items={buildMenu(level, user?.role ?? '')}
+            onClick={({ key }) => navigate(key)}
+          />
+        </Sider>
+      </ConfigProvider>
       <Layout>
         <Header
+          className="gi-header"
           style={{
-            background: '#fff',
-            borderBottom: '1px solid #f0f0f0',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
             paddingInline: 24,
           }}
         >
-          <Typography.Text strong>Warehouse & Inventory</Typography.Text>
+          <Typography.Text strong className="gi-header-title">Warehouse &amp; Inventory</Typography.Text>
           <Space size="middle">
-            {health ? (
-              <Tag color="green">
-                {health.dialect} · {health.database}
-              </Tag>
-            ) : (
-              <Tag color="red">API offline</Tag>
-            )}
+            <span className="gi-health">
+              <span className={`gi-health-dot ${health ? 'ok' : 'err'}`} />
+              <Typography.Text type="secondary" className="gi-health-label" style={{ fontSize: 12 }}>
+                {health ? `${health.dialect} · ${health.database}` : 'API offline'}
+              </Typography.Text>
+            </span>
+            <Tooltip title={mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
+              <Button
+                type="text"
+                aria-label="Toggle color theme"
+                icon={mode === 'dark' ? <SunOutlined /> : <MoonOutlined />}
+                onClick={toggle}
+              />
+            </Tooltip>
             <NotificationBell />
             {user && (
-              <Typography.Text type="secondary">
+              <Typography.Text type="secondary" className="gi-user-label">
                 {user.label} · {user.username}
               </Typography.Text>
             )}

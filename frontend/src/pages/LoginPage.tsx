@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { App, Button, Card, Form, Input, Select, Typography } from 'antd'
+import { App, Button, ConfigProvider, Form, Input, Select } from 'antd'
 import { LockOutlined, SafetyOutlined, UserOutlined } from '@ant-design/icons'
 import { useAuth } from '../auth/AuthContext'
 import { useRegister } from '../api/hooks'
+import { darkTheme } from '../theme/themes'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -62,72 +63,73 @@ export default function LoginPage() {
     }
   }
 
+  // The login screen is always navy (the flagship first impression),
+  // independent of the in-app light/dark toggle.
   return (
-    <div style={{
-      minHeight: '100vh', display: 'flex', alignItems: 'center',
-      justifyContent: 'center', background: '#f0f2f5',
-    }}>
-      <Card style={{ width: 380 }}>
-        <div style={{ textAlign: 'center', marginBottom: 16 }}>
-          <Typography.Title level={3} style={{ marginBottom: 0 }}>GI Hub</Typography.Title>
-          <Typography.Text type="secondary">
-            {mode === 'register' ? 'ERP Console — request access' : 'ERP Console — sign in'}
-          </Typography.Text>
-        </div>
+    <ConfigProvider theme={darkTheme}>
+      <div className="gi-login">
+        <div className="gi-login-card gi-stagger">
+          <div className="gi-login-head">
+            <div className="gi-wordmark">GI&nbsp;Hub</div>
+            <div className="gi-brand-sub">
+              {mode === 'register' ? 'ERP CONSOLE — REQUEST ACCESS' : 'ERP CONSOLE — SIGN IN'}
+            </div>
+          </div>
 
-        {mode === 'register' ? (
-          <Form key="register" layout="vertical" onFinish={onRegister} initialValues={{ role: 'store_keeper' }}>
-            <Form.Item name="username" rules={[{ required: true, message: 'Username' }]}>
-              <Input prefix={<UserOutlined />} placeholder="Username" autoFocus />
-            </Form.Item>
-            <Form.Item name="password" rules={[{ required: true, min: 6, message: 'At least 6 characters' }]}>
-              <Input.Password prefix={<LockOutlined />} placeholder="Password (min 6)" />
-            </Form.Item>
-            <Form.Item name="role" label="Requested role" rules={[{ required: true }]}>
-              <Select options={REGISTER_ROLES} />
-            </Form.Item>
-            <Form.Item name="site_id" label="Site (optional)">
-              <Input placeholder="e.g. CNCEC" />
-            </Form.Item>
-            <Form.Item name="phone_number" label="Phone (optional)">
-              <Input placeholder="Phone number" />
-            </Form.Item>
-            <Button type="primary" htmlType="submit" block loading={register.isPending}>
-              Request access
-            </Button>
-            <Button type="link" block onClick={() => setMode('login')}>
-              Back to sign in
-            </Button>
-          </Form>
-        ) : !mfaToken ? (
-          <Form key="login" layout="vertical" onFinish={onLogin}>
-            <Form.Item name="username" rules={[{ required: true, message: 'Username' }]}>
-              <Input prefix={<UserOutlined />} placeholder="Username" autoFocus />
-            </Form.Item>
-            <Form.Item name="password" rules={[{ required: true, message: 'Password' }]}>
-              <Input.Password prefix={<LockOutlined />} placeholder="Password" />
-            </Form.Item>
-            <Button type="primary" htmlType="submit" block loading={loading}>
-              Sign in
-            </Button>
-            <Button type="link" block onClick={() => setMode('register')}>
-              Request access
-            </Button>
-          </Form>
-        ) : (
-          <Form layout="vertical" onFinish={onMfa}>
-            <Form.Item name="code" rules={[{ required: true, message: '6-digit code' }]}>
-              <Input prefix={<SafetyOutlined />} placeholder="Authenticator code" autoFocus />
-            </Form.Item>
-            <Button type="primary" htmlType="submit" block loading={loading}>
-              Verify
-            </Button>
-            <Button type="link" block onClick={() => setMfaToken(null)}>
-              Back
-            </Button>
-          </Form>
-        )}
-      </Card>
-    </div>
+          {mode === 'register' ? (
+            <Form key="register" layout="vertical" onFinish={onRegister} initialValues={{ role: 'store_keeper' }}>
+              <Form.Item name="username" rules={[{ required: true, message: 'Username' }]}>
+                <Input prefix={<UserOutlined />} placeholder="Username" autoFocus />
+              </Form.Item>
+              <Form.Item name="password" rules={[{ required: true, min: 6, message: 'At least 6 characters' }]}>
+                <Input.Password prefix={<LockOutlined />} placeholder="Password (min 6)" />
+              </Form.Item>
+              <Form.Item name="role" label="Requested role" rules={[{ required: true }]}>
+                <Select options={REGISTER_ROLES} />
+              </Form.Item>
+              <Form.Item name="site_id" label="Site (optional)">
+                <Input placeholder="e.g. CNCEC" />
+              </Form.Item>
+              <Form.Item name="phone_number" label="Phone (optional)">
+                <Input placeholder="Phone number" />
+              </Form.Item>
+              <Button type="primary" htmlType="submit" block loading={register.isPending}>
+                Request access
+              </Button>
+              <Button type="link" block onClick={() => setMode('login')}>
+                Back to sign in
+              </Button>
+            </Form>
+          ) : !mfaToken ? (
+            <Form key="login" layout="vertical" onFinish={onLogin}>
+              <Form.Item name="username" rules={[{ required: true, message: 'Username' }]}>
+                <Input prefix={<UserOutlined />} placeholder="Username" autoFocus />
+              </Form.Item>
+              <Form.Item name="password" rules={[{ required: true, message: 'Password' }]}>
+                <Input.Password prefix={<LockOutlined />} placeholder="Password" />
+              </Form.Item>
+              <Button type="primary" htmlType="submit" block loading={loading}>
+                Sign in
+              </Button>
+              <Button type="link" block onClick={() => setMode('register')}>
+                Request access
+              </Button>
+            </Form>
+          ) : (
+            <Form layout="vertical" onFinish={onMfa}>
+              <Form.Item name="code" rules={[{ required: true, message: '6-digit code' }]}>
+                <Input prefix={<SafetyOutlined />} placeholder="Authenticator code" autoFocus />
+              </Form.Item>
+              <Button type="primary" htmlType="submit" block loading={loading}>
+                Verify
+              </Button>
+              <Button type="link" block onClick={() => setMfaToken(null)}>
+                Back
+              </Button>
+            </Form>
+          )}
+        </div>
+      </div>
+    </ConfigProvider>
   )
 }

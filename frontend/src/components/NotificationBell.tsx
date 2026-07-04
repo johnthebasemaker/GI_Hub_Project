@@ -4,9 +4,10 @@ import { BellOutlined, CheckOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useMarkAllNotifRead, useMarkNotifRead, useNotifications, useUnreadCount } from '../api/hooks'
 import type { Row } from '../api/client'
+import { status } from '../theme/tokens'
 
 const SEV_COLOR: Record<string, string> = {
-  info: '#1677ff', success: '#52c41a', warning: '#faad14', critical: '#ff4d4f',
+  info: status.info, success: status.ok, warning: status.low, critical: status.critical,
 }
 
 function NotifRow({ n, onClick }: { n: Row; onClick: (n: Row) => void }) {
@@ -17,7 +18,7 @@ function NotifRow({ n, onClick }: { n: Row; onClick: (n: Row) => void }) {
       style={{
         display: 'flex', gap: 8, padding: '8px 8px', borderRadius: 6,
         cursor: linked ? 'pointer' : 'default',
-        background: n.read_at ? undefined : 'rgba(22,119,255,0.06)',
+        background: n.read_at ? undefined : 'rgba(212,175,55,0.08)',
       }}
     >
       <span style={{
@@ -26,7 +27,11 @@ function NotifRow({ n, onClick }: { n: Row; onClick: (n: Row) => void }) {
       }} />
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ fontWeight: n.read_at ? 400 : 600, fontSize: 13 }}>{String(n.title)}</div>
-        {n.body ? <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.65)' }}>{String(n.body)}</div> : null}
+        {n.body ? (
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
+            {String(n.body)}
+          </Typography.Text>
+        ) : null}
         <Typography.Text type="secondary" style={{ fontSize: 11 }}>
           {String(n.created_at ?? '')}{linked ? '  ·  open →' : ''}
         </Typography.Text>
