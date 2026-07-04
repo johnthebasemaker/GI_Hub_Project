@@ -7,6 +7,7 @@ import 'antd/dist/reset.css'
 import './index.css'
 import App from './App.tsx'
 import { AuthProvider } from './auth/AuthContext'
+import ErrorBoundary from './components/ErrorBoundary'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 15_000, refetchOnWindowFocus: false } },
@@ -19,7 +20,9 @@ createRoot(document.getElementById('root')!).render(
         <AntApp>
           <BrowserRouter>
             <AuthProvider>
-              <App />
+              <ErrorBoundary>
+                <App />
+              </ErrorBoundary>
             </AuthProvider>
           </BrowserRouter>
         </AntApp>
