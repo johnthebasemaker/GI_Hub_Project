@@ -353,3 +353,67 @@ export const useSmeRecipes = (lsc?: string) =>
 export const useSmeSqm = (siteId?: string) =>
   useSmeList('/sme/sqm-progress', siteId ? { site_id: siteId } : {})
 export const useSmeMaterials = () => useSmeList('/sme/materials')
+
+// --- admin console (users + audit log) --------------------------------------
+export function useAdminUsers() {
+  return useQuery({
+    queryKey: ['/admin/users'],
+    queryFn: async () => (await api.get<{ items: Row[] }>('/admin/users')).data.items,
+  })
+}
+
+export function useAdminRoles() {
+  return useQuery({
+    queryKey: ['/admin/roles'],
+    queryFn: async () => (await api.get<{ roles: Row[] }>('/admin/roles')).data.roles,
+  })
+}
+
+function useUserMutation<V>(fn: (v: V) => Promise<Row>) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/admin/users'] }),
+  })
+}
+
+export const useCreateUser = () =>
+  useUserMutation((body: Row) => api.post('/admin/users', body).then((r) => r.data))
+export const useUpdateUser = () =>
+  useUserMutation(({ username, body }: { username: string; body: Row }) =>
+    api.patch(`/admin/users/${encodeURIComponent(username)}`, body).then((r) => r.data))
+export const useResetPassword = () =>
+  useUserMutation(({ username, password }: { username: string; password: string }) =>
+    api.post(`/admin/users/${encodeURIComponent(username)}/reset-password`, { password }).then((r) => r.data))
+export const useResetUser2fa = () =>
+  useUserMutation((username: string) =>
+    api.post(`/admin/users/${encodeURIComponent(username)}/reset-2fa`).then((r) => r.data))
+export const useDeleteUser = () =>
+  useUserMutation((username: string) =>
+    api.delete(`/admin/users/${encodeURIComponent(username)}`).then((r) => r.data))
+
+export interface AuditParams {
+  username?: string
+  action_type?: string
+  target_table?: string
+  q?: string
+  limit?: number
+  offset?: number
+}
+
+export function useAuditLog(params: AuditParams) {
+  return useQuery({
+    queryKey: ['/admin/audit', params],
+    queryFn: async () =>
+      (await api.get<{ total: number; items: Row[] }>('/admin/audit', { params })).data,
+    placeholderData: (prev) => prev,
+  })
+}
+
+export function useAuditMeta() {
+  return useQuery({
+    queryKey: ['/admin/audit/meta'],
+    queryFn: async () =>
+      (await api.get<{ action_types: string[]; target_tables: string[] }>('/admin/audit/meta')).data,
+  })
+}

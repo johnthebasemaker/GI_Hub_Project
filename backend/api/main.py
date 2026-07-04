@@ -31,6 +31,7 @@ if _ROOT not in sys.path:
 
 from backend import models  # noqa: E402
 
+from .admin import router as admin_router  # noqa: E402
 from .auth import get_current_user  # noqa: E402
 from .auth import router as auth_router  # noqa: E402
 from .config import CORS_ORIGINS  # noqa: E402
@@ -134,6 +135,9 @@ app.include_router(requests_router)
 
 # SME Material Estimator — READ-ONLY over the frozen sme_* tables (self-guarded, ≥hod).
 app.include_router(sme_router)
+
+# Admin console — user management + audit-log viewer (self-guarded, admin only).
+app.include_router(admin_router)
 
 
 @app.get("/", include_in_schema=False)

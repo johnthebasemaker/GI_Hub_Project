@@ -117,8 +117,12 @@ parity_check against a `postgres:16` service.
 - **PR creation (HOD):** raise a site PR from scratch — multi-line form (material
   picker off the inventory master, auto-assigned `PR-YYYYMMDD-NNNN`), then submit to
   Logistics. Procurement now runs end-to-end on the new stack (no more migrated-only PRs).
+- **Admin console (admin only, level 4):** **user management** — list (no secrets) /
+  create (bcrypt) / edit role+site+warehouse+phone / reset password / reset 2FA / delete,
+  with last-admin & self-delete guards — plus a filterable **audit-log viewer** over
+  `system_audit_log`. Every mutation is itself audited.
 
-Full role → workflow loop runs on Postgres. **67 API endpoints.**
+Full role → workflow loop runs on Postgres. **~76 API endpoints.**
 
 ---
 
@@ -139,9 +143,10 @@ Full role → workflow loop runs on Postgres. **67 API endpoints.**
   ported** (gated off in prod anyway).
 - **User registration + approval** ("Request Access" → `pending_users` → admin
   approves). **NOT ported** — the new app only *logs in* existing users.
-- **User management UI** (admin add/reset/disable users, warehouse binding, **2FA
-  reset**) and **2FA enrollment** (login *verifies* TOTP but there's no enroll/QR
-  screen). **NOT ported.**
+- ~~**User management UI**~~ ✅ **DONE 2026-07-04** (Admin console) — add / reset password /
+  reset 2FA / delete / warehouse-bind. NOTE: users have no `status` column, so "disable" =
+  **delete** (last-admin & self guards). Still NOT done: **2FA enrollment** (login
+  *verifies* TOTP but there's no enroll/QR screen) and **user registration + approval**.
 - **Reservations** (`stock_reservations`, Available = Current − Reserved). **NOT
   ported.**
 - **QR codes** — bin labels, employee badges, QR-approval flow. **NOT ported.**
@@ -155,8 +160,8 @@ Full role → workflow loop runs on Postgres. **67 API endpoints.**
 - **DN approval chain** — SIMPLIFIED: warehouse DN → site receive → HOD approves the
   *receipt* (via staging). The old **Logistics-approve + HOD-approve DN** steps are not
   ported (approval moved to receipt level). Decide if the DN-level approvals are wanted.
-- **Admin console** — only vendors/warehouses/employees CRUD exists. Missing: **Master
-  DB Editor (inventory CRUD)**, global sites, **audit-log viewer**, settings/maintenance
+- **Admin console** — ✅ user management + **audit-log viewer** DONE (2026-07-04). Still
+  missing: **Master DB Editor (inventory CRUD)**, global sites, settings/maintenance
   mode, backup, tool catalogue, logistics oversight.
 - **HOD:** Cross-Site requests, My Requests, Site Config, DOC, QR Approval, In-Transit
   visibility, Lot Management UI (quarantine/dispose — backend lot-disposal exists via
@@ -186,12 +191,13 @@ Full role → workflow loop runs on Postgres. **67 API endpoints.**
 ---
 
 ## 5. Suggested next steps (ask the user which)
-The operational + estimator core is complete, and **procurement now runs end-to-end**
-(PR creation landed 2026-07-04). Highest-value next options:
-**(a)** in-app notifications feed (bell), **(b)** Admin console — users + audit-log
-viewer + inventory Master-DB editor, **(c)** Reports (generate/export), **(d)** the
-peripheral Logistics/Warehouse tabs, or **(e)** hardening (service CI tests, per-endpoint
-roles) before cutover.
+The operational + estimator core is complete, **procurement runs end-to-end** (PR
+creation, 2026-07-04), and the **Admin console** (user management + audit viewer,
+2026-07-04) has landed. Highest-value next options:
+**(a)** in-app notifications feed (bell), **(b)** Reports (generate/export), **(c)** the
+peripheral Logistics/Warehouse tabs, **(d)** hardening (service CI tests, per-endpoint
+roles) before cutover, or **(e)** finish the admin surface — inventory **Master-DB editor**
++ **2FA enrollment/QR** + user registration-approval.
 Notifications/WhatsApp/mail/LLM are larger integrations — scope explicitly before starting.
 
 ## 6. Where the detail lives

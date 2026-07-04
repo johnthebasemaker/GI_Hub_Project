@@ -18,6 +18,8 @@ import IncomingDeliveriesPage from './pages/IncomingDeliveriesPage'
 import SupervisorPage from './pages/SupervisorPage'
 import SkRequestsPage from './pages/SkRequestsPage'
 import SmePage from './pages/SmePage'
+import UsersPage from './pages/UsersPage'
+import AuditLogPage from './pages/AuditLogPage'
 import { useAuth } from './auth/AuthContext'
 
 export default function App() {
@@ -43,6 +45,8 @@ export default function App() {
         <Route path="warehouse" element={<WarehousePage />} />
         <Route path="records/:key" element={<RecordsPage />} />
         <Route path="master/:key" element={<MasterDataPage />} />
+        <Route path="admin/users" element={<UsersPage />} />
+        <Route path="admin/audit" element={<AuditLogPage />} />
       </Route>
     </Routes>
   )

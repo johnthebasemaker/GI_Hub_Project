@@ -1,6 +1,6 @@
 import { Button, Layout, Menu, Space, Tag, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AuditOutlined, CarOutlined, DashboardOutlined, ExperimentOutlined, FireOutlined, FormOutlined, InboxOutlined, LogoutOutlined, ProfileOutlined, SolutionOutlined, StockOutlined } from '@ant-design/icons'
+import { AuditOutlined, CarOutlined, DashboardOutlined, ExperimentOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, ProfileOutlined, SolutionOutlined, StockOutlined, TeamOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -87,6 +87,18 @@ function buildMenu(level: number, role: string): MenuProps['items'] {
       label: 'Master Data',
       type: 'group',
       children: WRITE_ENTITIES.map((e) => ({ key: `/master/${e.key}`, label: e.label })),
+    })
+  }
+  // Admin console — user management + audit-log viewer — admin only (level 4).
+  if (level >= 4) {
+    items.push({
+      key: 'admin',
+      label: 'Admin',
+      type: 'group',
+      children: [
+        { key: '/admin/users', icon: <TeamOutlined />, label: 'Users' },
+        { key: '/admin/audit', icon: <FileSearchOutlined />, label: 'Audit Log' },
+      ],
     })
   }
   return items
