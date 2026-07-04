@@ -8,6 +8,22 @@ is a *separate* set of processes. Per-slice history is in
 
 ---
 
+## 🎯 CURRENT STATUS (2026-07-04) — read this first
+The new stack is **feature-complete, hardened, and ship-ready.** Ten build slices
+landed (see §3 and `POSTGRES_MIGRATION.md` §8), all on `main`, all green:
+**bug_check 599/0 · crawler 21/21 · dual_ci 64/64 · derived-view parity · service+guard 52/52.**
+A **turnkey deploy kit** now exists (`deploy/` + [`docs/DEPLOY.md`](DEPLOY.md)) but has
+**NOT been run against any server.**
+
+**The ONLY thing left is the actual cutover, and it's the user's call:**
+provision the (parked) Hetzner box → run the kit → do the one-time SQLite→PostgreSQL
+data migration (`dual_ci`) → point users at React. **No feature work is in progress.**
+Optional, non-blocking improvement ideas are catalogued in §5 (nothing there is
+started — pick from it only if the user asks). Do NOT deploy or migrate data without
+the user's explicit go-ahead + target details.
+
+---
+
 ## 0. GOLDEN RULES — do not break old or new
 
 1. **Never edit `database.py` or the Streamlit app / `pages_internal/`** for new-stack
@@ -220,18 +236,46 @@ Full role → workflow loop runs on Postgres. **~89 API endpoints.**
 
 ---
 
-## 5. Suggested next steps (ask the user which)
-The operational + estimator core is complete; **procurement end-to-end** (PR creation),
-the **Admin console** (users · audit viewer · **inventory Master-DB editor**), the
-**in-app notification bell**, **2FA self-enrollment**, **Reports** (Excel/PDF/CSV), a
-**hardening pass** (service+guard tests in CI · master-data write gate), and **cutover
-readiness** (JWT_SECRET fail-fast · code-split bundle) have all landed (2026-07-04). The new
-stack is feature-rich, self-sufficient, and ship-ready — only the **deploy + make-React-primary
-decision** (yours) remains for actual cutover. Highest-value next options: **(a)** the
-peripheral Logistics/Warehouse tabs, **(b)** report scheduler/archive, or **(c)** pull the
-trigger on **cutover** (deploy). (Notifications now cover procurement + staging→HOD +
-approve/reject→submitter; only DN-reschedule/cross-site events remain unwired.)
-WhatsApp/mail/LLM are larger — scope first.
+## 5. Improvement backlog (OPTIONAL — nothing here is started)
+The build is done; these are ideas from a 2026-07-04 architecture review, ranked.
+**None are in progress.** Pursue any only if the user asks. Current data volume is
+tiny (receipts ~70, consumption 1 row, audit ~657), so perf items are "before scale,"
+not urgent.
+
+**Tier 1 — genuinely worth doing (small, real gaps):**
+- **Alembic migrations (BE/DB).** Post-cutover, Postgres is the system of record but
+  there's NO schema-evolution path — schema = `backend/models.py` + `dual_ci` copy from
+  SQLite. Add Alembic so new columns/tables can ship safely. *Biggest real infra gap.*
+- **CI: build + typecheck the frontend (infra).** `postgres-dual-ci.yml` runs bug_check/
+  dual_ci/parity/service_tests but **not** `npm ci && npm run build` — frontend type errors
+  only surface locally. One cheap step.
+- **React error boundary (FE).** A component crash today = white screen (the Streamlit app
+  has a boundary; the React app doesn't). Add a top-level boundary with a friendly fallback.
+- **Rate-limit public auth (BE/security).** `/auth/login` + `/auth/register` are now
+  internet-facing after deploy, with no throttling → brute-force/abuse risk. Add slowapi
+  or a small middleware.
+
+**Tier 2 — for a real multi-site / at-scale rollout:**
+- **Site-scoped reads (BE/security).** THE known multi-tenancy gap: any authenticated user
+  can read any site's records (reads are open by design; only writes are role-gated). Scope
+  reads to the user's `Site_ID` (admin/logistics see all) if sites shouldn't see each other.
+- **DB indexes on hot columns (DB/perf).** No indexes beyond PKs. Before real volume, add
+  indexes on `SAP_Code` / `Site_ID` / `Date` for receipts/consumption/returns/lots (the
+  derived-stock queries `TRIM(SAP_Code)`-join + GROUP BY these). Cheap insurance.
+- **Normalize `SAP_Code` whitespace (DB).** Source data has stray spaces (`" 1002 "`), which
+  is why queries `TRIM()` everywhere; a one-time trim (on the SQLite source) would let
+  indexes work and simplify SQL. Touches the frozen data layer — do carefully.
+
+**Tier 3 — nice-to-have / later:**
+- Frontend E2E smoke tests (Playwright) — no UI tests exist; service_tests cover the API only.
+- Friendlier session-expiry UX (the 401 interceptor hard-logs-out; add a "session expired" toast).
+- Structured logging + request IDs for prod observability. · Dark mode / a11y polish.
+- DB foreign keys for referential integrity (stricter; risky on migrated data).
+- Feature parity leftovers: peripheral Logistics/Warehouse tabs (reschedules, force-close,
+  vendor-returns, history, manual PO); report scheduler/archive; DN-reschedule/cross-site
+  notification events; SME reporting tabs (frozen — read-only); Man-Hours portal.
+- **Not ported (Streamlit-only, intentional):** WhatsApp, email/mailer, local-LLM (Ollama)
+  Q&A + OCR, computer-vision. Larger integrations — only if the business needs them post-cutover.
 
 ## 6. Where the detail lives
 - Per-slice build log + verification: `docs/POSTGRES_MIGRATION.md` §8 (newest first).
