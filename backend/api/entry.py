@@ -23,8 +23,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .auth import get_current_user
 from .db import get_session
 from .services import ledger
+from .services.notifications import notify
 
 router = APIRouter(prefix="/entry", tags=["data entry"])
+
+
+async def _notify_hod_staged(session, *, kind_label: str, site_id: str, actor: str,
+                             ref, detail: str) -> None:
+    """Tell the site's HOD(s) that a new entry is waiting for approval."""
+    await notify(session, event_key="entry_staged", recipient_role="hod",
+                 recipient_site=site_id, title=f"{kind_label} awaiting approval",
+                 body=f"{detail} — submitted by {actor}", link_page="/hod/approvals",
+                 related_table="pending", related_ref=str(ref))
 
 # Columns a client may pass under `extra` on a receipt: real receipts columns
 # minus the ones handled explicitly, minus id/blobs.
@@ -105,6 +115,9 @@ async def create_receipt(
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
             result = await ledger.stage_receipt(session, username=user["username"], data=data)
+            await _notify_hod_staged(session, kind_label="Receipt", site_id=body.Site_ID,
+                                     actor=user["username"], ref=result.get("pending_id"),
+                                     detail=f"{body.SAP_Code} · qty {body.Quantity:g} · {body.Site_ID}")
         return result
     except HTTPException:
         raise
@@ -122,7 +135,11 @@ async def create_consumption(
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
-            return await ledger.stage_consumption(session, username=user["username"], data=body.model_dump())
+            result = await ledger.stage_consumption(session, username=user["username"], data=body.model_dump())
+            await _notify_hod_staged(session, kind_label="Issue", site_id=body.Site_ID,
+                                     actor=user["username"], ref=result.get("pending_id"),
+                                     detail=f"{body.SAP_Code} · qty {body.Quantity:g} · {body.Site_ID}")
+            return result
     except HTTPException:
         raise
     except (IntegrityError, DataError) as e:
@@ -139,7 +156,11 @@ async def create_return(
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
-            return await ledger.stage_return(session, username=user["username"], data=body.model_dump())
+            result = await ledger.stage_return(session, username=user["username"], data=body.model_dump())
+            await _notify_hod_staged(session, kind_label="Return", site_id=body.Site_ID,
+                                     actor=user["username"], ref=result.get("pending_id"),
+                                     detail=f"{body.SAP_Code} · qty {body.Quantity:g} · {body.Site_ID}")
+            return result
     except HTTPException:
         raise
     except (IntegrityError, DataError) as e:
@@ -160,7 +181,12 @@ async def create_adjustment(
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
-            return await ledger.stage_adjustment(session, username=user["username"], data=body.model_dump())
+            result = await ledger.stage_adjustment(session, username=user["username"], data=body.model_dump())
+            variance = body.counted_qty - body.system_qty
+            await _notify_hod_staged(session, kind_label="Adjustment", site_id=body.Site_ID,
+                                     actor=user["username"], ref=result.get("id") or result.get("pending_id"),
+                                     detail=f"{body.SAP_Code} · variance {variance:+g} · {body.Site_ID}")
+            return result
     except HTTPException:
         raise
     except (IntegrityError, DataError) as e:

@@ -63,7 +63,7 @@ DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
   .venv/bin/python backend/api/parity_check.py --source gi_database.db  # 5 derived views PASS
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
-  .venv/bin/python -m backend.api.service_tests                 # 50/50 (rolled-back services + auth/role guards + JWT + registration)
+  .venv/bin/python -m backend.api.service_tests                 # 52/52 (rolled-back services + auth/role guards + JWT + registration + submitter-resolution)
 npm run build --prefix frontend                                 # tsc + vite green
 ```
 
@@ -145,8 +145,8 @@ Full role → workflow loop runs on Postgres. **~89 API endpoints.**
 
 ### 4a. Cross-cutting systems NOT ported (the user asked to confirm these)
 - ~~**In-app notifications**~~ ✅ **DONE 2026-07-04** — `services/notifications.py` +
-  `/notifications` router + `NotificationBell`; wired to 5 procurement events. NOT yet
-  wired: HOD-approval outcomes, staging-submitted (→HOD), DN reschedules, cross-site views.
+  `/notifications` router + `NotificationBell`; wired to 5 procurement events **+ staging→HOD
+  + HOD approve/reject→submitter**. NOT yet wired: DN reschedules, cross-site views.
 - **WhatsApp** — `whatsapp_queue` + `whatsapp_worker.py` + Twilio/Meta sender. Fires on
   PR/PO/DN/reschedule events. **NOT ported.**
 - **Email / mailer** — `mailer.py` (SMTP/Outlook), scheduled-report dispatch, delivery
@@ -224,9 +224,10 @@ the **Admin console** (users · audit viewer · **inventory Master-DB editor**),
 readiness** (JWT_SECRET fail-fast · code-split bundle) have all landed (2026-07-04). The new
 stack is feature-rich, self-sufficient, and ship-ready — only the **deploy + make-React-primary
 decision** (yours) remains for actual cutover. Highest-value next options: **(a)** the
-peripheral Logistics/Warehouse tabs, **(b)** more notification events (HOD-approval
-outcomes, staging→HOD), **(c)** report scheduler/archive, or **(d)** pull the trigger on
-**cutover** (deploy). WhatsApp/mail/LLM are larger — scope first.
+peripheral Logistics/Warehouse tabs, **(b)** report scheduler/archive, or **(c)** pull the
+trigger on **cutover** (deploy). (Notifications now cover procurement + staging→HOD +
+approve/reject→submitter; only DN-reschedule/cross-site events remain unwired.)
+WhatsApp/mail/LLM are larger — scope first.
 
 ## 6. Where the detail lives
 - Per-slice build log + verification: `docs/POSTGRES_MIGRATION.md` §8 (newest first).

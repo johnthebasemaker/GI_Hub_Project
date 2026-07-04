@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .auth import require_level
 from .db import get_session
 from .services import ledger, procurement
+from .services.notifications import notify
 
 router = APIRouter(prefix="/hod", tags=["HOD approvals"],
                    dependencies=[Depends(require_level(2))])
@@ -41,6 +42,20 @@ _COMMIT = {
 # reject_pending uses singular kind names
 _REJECT_KIND = {"receipts": "receipt", "issues": "issue",
                 "returns": "return", "adjustments": "adjustment"}
+
+# Column holding the submitter's username per pending kind, so an approve/reject
+# can notify them. Receipts don't store the submitter on the row → None → skip.
+_SUBMITTER_COL = {"receipts": None, "issues": "Issued_By",
+                  "returns": "submitted_by", "adjustments": "submitted_by"}
+
+
+async def _submitter(session: AsyncSession, kind: str, pid: int):
+    col = _SUBMITTER_COL.get(kind)
+    if not col:
+        return None
+    t = _TABLES[kind]
+    return (await session.execute(
+        select(t.c[col]).where(t.c["id"] == pid))).scalar_one_or_none()
 
 
 class RejectIn(BaseModel):
@@ -101,9 +116,15 @@ async def approve(kind: str, pid: int, user: dict = Depends(require_level(2)),
         raise HTTPException(404, f"unknown kind {kind!r}")
     try:
         async with session.begin():
+            submitter = await _submitter(session, kind, pid)  # read before commit removes the row
             res = await _COMMIT[kind](session, approver=user["username"], pending_id=pid)
-        if res.get("error"):
-            raise HTTPException(409, res["error"])
+            if res.get("error"):
+                raise HTTPException(409, res["error"])
+            if submitter and submitter != user["username"]:
+                await notify(session, recipient_user=submitter, event_key="entry_approved",
+                             severity="success", title=f"Your {_REJECT_KIND[kind]} was approved",
+                             body=f"Approved by {user['username']} and committed to the ledger.",
+                             related_table="pending", related_ref=str(pid))
         return res
     except HTTPException:
         raise
@@ -118,11 +139,18 @@ async def reject(kind: str, pid: int, body: RejectIn = Body(default=RejectIn()),
     if kind not in _REJECT_KIND:
         raise HTTPException(404, f"unknown kind {kind!r}")
     async with session.begin():
+        submitter = await _submitter(session, kind, pid)
         res = await ledger.reject_pending(session, approver=user["username"],
                                           kind=_REJECT_KIND[kind], pending_id=pid,
                                           reason=body.reason or "")
-    if res.get("error"):
-        raise HTTPException(409, res["error"])
+        if res.get("error"):
+            raise HTTPException(409, res["error"])
+        if submitter and submitter != user["username"]:
+            await notify(session, recipient_user=submitter, event_key="entry_rejected",
+                         severity="warning", title=f"Your {_REJECT_KIND[kind]} was rejected",
+                         body=(f"Rejected by {user['username']}: {body.reason}" if body.reason
+                               else f"Rejected by {user['username']}."),
+                         related_table="pending", related_ref=str(pid))
     return res
 
 

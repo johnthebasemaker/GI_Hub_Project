@@ -221,6 +221,12 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-04 · actor=interactive · branch=`main` · 🔔 More notification events (staging → HOD · approve/reject → submitter)
+- Extends the notification bell to close the data-entry feedback loop. **Backend-only** — the bell already renders any notification.
+- **Wired at the router layer** (NOT in `ledger.py` — that would be circular, since `notifications` imports `_MD` from `ledger`): `entry.py` fires `entry_staged` (recipient_role=hod + site) after each of the 4 stages (receipt/issue/return/adjustment) so the site HOD sees waiting work; `hod.py` fires `entry_approved` (success) / `entry_rejected` (warning) to the **original submitter** (`recipient_user`) on approve/reject. The submitter is resolved per kind via `_SUBMITTER_COL` — issues=`Issued_By`, returns/adjustments=`submitted_by`, **receipts=None** (`stage_receipt` doesn't store a submitter on the row → the submitter notification is gracefully skipped for receipts).
+- **Verified live (PG):** worker stages receipt → HOD@CNCEC sees "Receipt awaiting approval"; worker stages issue → HOD approves → worker sees "Your issue was approved" (success); worker stages return → HOD rejects → worker sees "Your return was rejected: …" (warning). `service_tests` +2 rolled-back checks for `_submitter` (return-submitter resolved; receipts→None) → **52/52 PASS**.
+- **Verified:** service_tests **52/0**; dual_ci **PASS**, parity **PASS**; `bug_check` **599/0**, crawler **21/21**, build green. `database.py`/Streamlit untouched. Local PG == SQLite.
+
 ### 2026-07-04 · actor=interactive · branch=`main` · 🙋 User registration + approval (self-service onboarding)
 - **Gap closed:** the new app only *logged in* existing users; admins had to hand-create every account. Now there's a self-service Request-Access → admin-approval onboarding flow (`pending_users`).
 - **Backend:** `POST /auth/register` (**public**, `auth.py`) bcrypt-hashes the password into `pending_users` (status `pending`). Guards: username not already in `users` (409), not already pending (409, revives a rejected row via upsert), password ≥6 (422), and the requested role **cannot be admin** (422 — no self-elevation). Admin side (`admin.py`, level 4): `GET /admin/pending-users` (no `password_hash`), `POST /admin/pending-users/{id}/approve` (copies the row into `users` — role/warehouse overridable — carrying the bcrypt hash, marks pending `approved`, audits `APPROVE_USER`), `POST .../reject` (marks `rejected`, audits `REJECT_USER`). **+4 endpoints (89 paths).**

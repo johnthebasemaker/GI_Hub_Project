@@ -131,6 +131,21 @@ async def test_receipt_ledger():
         await s.rollback()
 
 
+async def test_submitter_resolution():
+    """hod._submitter maps each pending kind to its submitter column (receipts=None)."""
+    from . import hod
+    async with SessionLocal() as s:
+        r = await ledger.stage_return(s, username="svc_sub", data={
+            "Date": "2026-07-04", "SAP_Code": "1001", "Quantity": 1, "Site_ID": "CNCEC"})
+        sub = await hod._submitter(s, "returns", r["pending_id"])
+        check("_submitter resolves the return's submitter", sub == "svc_sub", f"got {sub}")
+        rr = await ledger.stage_receipt(s, username="svc_sub", data={
+            "Date": "2026-07-04", "SAP_Code": "1001", "Quantity": 1, "Site_ID": "CNCEC"})
+        none_sub = await hod._submitter(s, "receipts", rr["pending_id"])
+        check("_submitter is None for receipts (no submitter column)", none_sub is None, f"got {none_sub}")
+        await s.rollback()
+
+
 async def test_notification_visibility():
     async with SessionLocal() as s:
         await notifications.notify(s, event_key="svc_role_ev", title="t", recipient_role="logistics")
@@ -286,6 +301,7 @@ async def main() -> int:
     await test_create_and_submit_pr()
     await test_smr_create_and_approve()
     await test_receipt_ledger()
+    await test_submitter_resolution()
     await test_notification_visibility()
     test_config_jwt()
     print("\n B. auth/role guards")
