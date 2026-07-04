@@ -221,6 +221,14 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-04 · actor=interactive · branch=`main` · 📊 Reports — downloadable Excel / PDF / CSV exports
+- **Gap closed:** exportable reports were the biggest capability the old app still had over the new stack. Now the live data downloads in three formats.
+- **Backend** (`reports.py`, gated level ≥ 2 = hod/logistics/admin): `GET /reports` (list + each report's filters) and `GET /reports/{key}?format=xlsx|pdf|csv`. Six reports — **stock** (per site), **expiring** (≤N days), **consumption** (last N days), **receipts** (last N days), **purchase-orders** (by status), **inventory** (master). Each is one query (reuses `SQL_SITE_STOCK`/`SQL_EXPIRING`); one row-set → any format via `to_xlsx` (openpyxl, navy header, freeze panes, autosized cols), `to_pdf` (fpdf landscape, branded header, latin-1 safe), `to_csv` (UTF-8 BOM). Served as `StreamingResponse` with a `Content-Disposition` filename. **+2 endpoints (85 paths).** Read-only — no writes.
+- **Verified live (PG):** `/reports` lists 6; stock.xlsx = valid zip (PK), sheet "Current Stock by Site", 51 rows (matches the by-site view); stock.pdf = `%PDF`; consumption.csv has a BOM header; inventory.xlsx honours `site_id=CNCEC` (291 rows, all CNCEC); guards worker→**403**, unknown→**404**, bad-format→**400**, no-token→**401**. **In-browser (admin):** Reports page (6 cards + per-report filters + Excel/PDF/CSV buttons) → clicking Excel round-trips `GET /reports/stock?format=xlsx` **200** + a "downloaded" toast; console clean.
+- **Frontend:** `ReportsPage` (card per report, site/days/status filters, authenticated blob download via axios `responseType:'blob'` → object-URL save) + a **Reports** nav group (level ≥ 2) + `useReports`/`downloadReport` hooks.
+- **Tests:** `service_tests.py` +5 report checks (worker-403, list, xlsx content-type, 404, 400) → **40/40 PASS**. Gated in CI.
+- **Verified:** service_tests **40/0**; dual_ci **PASS**, parity **PASS**; `bug_check` **599/0**, crawler **21/21**, build green. `database.py`/Streamlit untouched. Local PG == SQLite.
+
 ### 2026-07-04 · actor=interactive · branch=`main` · 🗂️ Finish admin surface — inventory Master-DB editor + 2FA enrollment
 - **Two gaps closed** toward new-stack self-sufficiency: inventory was **read-only** (you still needed Streamlit to add/edit a master item — a cutover blocker), and 2FA could be *verified*/*reset* but never *enrolled*.
 - **Inventory editor** (`admin.py`, admin-only level 4): `POST /admin/inventory` (SAP unique → 409), `PATCH /admin/inventory/{sap}` (**Opening_Stock changes get an explicit `OPENING_STOCK_EDIT` audit** since they feed the identity math), `DELETE /admin/inventory/{sap}` (**guarded — refuses if the SAP has any rows in receipts/consumption/returns/lots/pending_*/pr_master**, so it can't orphan history). Every write audited (CREATE/UPDATE/DELETE_INVENTORY). Reads still via the open `/inventory`. **+3 endpoints.**

@@ -530,3 +530,29 @@ export function useDisable2fa() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['/auth/2fa/status'] }),
   })
 }
+
+// --- reports (downloadable exports) -----------------------------------------
+export function useReports() {
+  return useQuery({
+    queryKey: ['/reports'],
+    queryFn: async () => (await api.get<{ reports: Row[] }>('/reports')).data.reports,
+  })
+}
+
+// Authenticated file download: the axios `api` instance carries the bearer
+// token, so we fetch the file as a blob and trigger a browser save.
+export async function downloadReport(key: string, format: string, params: Record<string, unknown>) {
+  const res = await api.get(`/reports/${key}`, {
+    params: { format, ...params }, responseType: 'blob',
+  })
+  const cd = (res.headers['content-disposition'] as string | undefined) ?? ''
+  const name = cd.match(/filename="?([^"]+)"?/)?.[1] ?? `${key}.${format}`
+  const url = URL.createObjectURL(res.data as Blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}

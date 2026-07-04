@@ -22,6 +22,7 @@ import UsersPage from './pages/UsersPage'
 import AuditLogPage from './pages/AuditLogPage'
 import InventoryAdminPage from './pages/InventoryAdminPage'
 import SecurityPage from './pages/SecurityPage'
+import ReportsPage from './pages/ReportsPage'
 import { useAuth } from './auth/AuthContext'
 
 export default function App() {
@@ -50,6 +51,7 @@ export default function App() {
         <Route path="admin/users" element={<UsersPage />} />
         <Route path="admin/inventory" element={<InventoryAdminPage />} />
         <Route path="admin/audit" element={<AuditLogPage />} />
+        <Route path="reports" element={<ReportsPage />} />
         <Route path="security" element={<SecurityPage />} />
       </Route>
     </Routes>

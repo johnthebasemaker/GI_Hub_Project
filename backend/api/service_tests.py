@@ -213,6 +213,21 @@ async def test_auth_guards():
         r = await ac.post("/auth/2fa/disable", headers=H(worker_t), json={"code": "000000"})
         check("2fa disable when not enabled → 409", r.status_code == 409, f"got {r.status_code}")
 
+        # Reports (read-only, level ≥ 2): role gate + format validation.
+        r = await ac.get("/reports/stock", params={"format": "xlsx"}, headers=H(worker_t))
+        check("worker (lvl 0) → 403 on a report", r.status_code == 403, f"got {r.status_code}")
+        r = await ac.get("/reports", headers=H(admin_t))
+        check("admin → 200 on /reports list",
+              r.status_code == 200 and len(r.json().get("reports", [])) >= 1, f"got {r.status_code}")
+        r = await ac.get("/reports/stock", params={"format": "xlsx"}, headers=H(admin_t))
+        check("stock report xlsx → 200 + spreadsheet content-type",
+              r.status_code == 200 and "spreadsheetml" in r.headers.get("content-type", ""),
+              f"got {r.status_code} / {r.headers.get('content-type')}")
+        r = await ac.get("/reports/nope", params={"format": "xlsx"}, headers=H(admin_t))
+        check("unknown report → 404", r.status_code == 404, f"got {r.status_code}")
+        r = await ac.get("/reports/stock", params={"format": "docx"}, headers=H(admin_t))
+        check("bad report format → 400", r.status_code == 400, f"got {r.status_code}")
+
 
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
