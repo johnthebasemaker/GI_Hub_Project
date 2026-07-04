@@ -85,3 +85,8 @@ qrcode>=7.4
 # FastAPI backend auth (backend/api/auth.py) — signs/verifies the login JWT.
 # bcrypt (above) hashes passwords; pyotp (above) does the TOTP 2FA.
 PyJWT>=2.8
+
+# Alembic — schema migrations for the new-stack Postgres (system of record
+# post-cutover). Manages backend/models.py tables; SME/derived views stay with
+# dual_ci. See backend/alembic/README.
+alembic>=1.13

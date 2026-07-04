@@ -74,6 +74,14 @@ docker compose -f docker-compose.prod.yml run --rm \
   api python backend/dual_ci.py --source /data/gi_database.db
 # expect:  == DUAL-CI: ✅ PASS ==   (64/64 tables, identity-math parity)
 ```
+Then hand the schema over to Alembic for future changes — `dual_ci` already
+created the tables, so **stamp** the baseline (don't upgrade):
+```bash
+docker compose -f docker-compose.prod.yml run --rm \
+  -e DATABASE_URL=postgresql+psycopg2://gihub:YOUR_PG_PASSWORD@db:5432/gihub \
+  api alembic -c backend/alembic.ini stamp head
+```
+After this, schema changes go through Alembic (`backend/alembic/README.md`).
 
 ## 5. Verify
 ```bash
