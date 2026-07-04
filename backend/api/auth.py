@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import jwt_secret
 from .db import get_session
+from .ratelimit import rate_limit
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT not in sys.path:
@@ -171,7 +172,8 @@ async def _audit(session: AsyncSession, username: str, action: str, details: str
     await session.commit()
 
 
-@router.post("/login", summary="Username + password → JWT (or a 2FA challenge)")
+@router.post("/login", summary="Username + password → JWT (or a 2FA challenge)",
+             dependencies=[rate_limit(10, 60)])
 async def login(body: LoginIn, session: AsyncSession = Depends(get_session)):
     row = await _fetch_user(session, body.username)
     if row is None:
@@ -192,7 +194,8 @@ async def login(body: LoginIn, session: AsyncSession = Depends(get_session)):
             "user": _public(row.username, row.role, row.Site_ID)}
 
 
-@router.post("/login/2fa", summary="Complete login with a TOTP code")
+@router.post("/login/2fa", summary="Complete login with a TOTP code",
+             dependencies=[rate_limit(10, 60)])
 async def login_2fa(body: TwoFAIn, session: AsyncSession = Depends(get_session)):
     p = _decode(body.mfa_token, "mfa")
     row = await _fetch_user(session, p["sub"])
@@ -213,7 +216,8 @@ async def me(user: dict = Depends(get_current_user)):
 
 
 @router.post("/register", status_code=201,
-             summary="Request access → a pending_users row for an admin to approve")
+             summary="Request access → a pending_users row for an admin to approve",
+             dependencies=[rate_limit(5, 60)])
 async def register(body: RegisterIn, session: AsyncSession = Depends(get_session)):
     uname = (body.username or "").strip()
     if not uname:

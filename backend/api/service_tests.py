@@ -261,6 +261,14 @@ async def test_auth_guards():
         r = await ac.post("/admin/pending-users/999999/approve", headers=H(admin_t), json={})
         check("approve a non-existent request → 404", r.status_code == 404, f"got {r.status_code}")
 
+        # Rate limiting on public auth (isolated by a unique X-Real-IP so it does
+        # not affect the other logins in this suite; login cap is 10/min).
+        rl = {"X-Real-IP": "203.0.113.7"}
+        codes = [(await ac.post("/auth/login", json={"username": "nobody", "password": "x"}, headers=rl)).status_code
+                 for _ in range(12)]
+        check("public /auth/login is rate-limited (429 past the cap)", 429 in codes, f"codes={codes}")
+        check("attempts under the cap are 401, not 429", codes[0] == 401, f"first={codes[0]}")
+
 
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""
