@@ -69,6 +69,14 @@ body {
 .gi-sider {
   background: var(--gi-sider-bg) !important;
   border-right: 1px solid rgba(212, 175, 55, 0.14);
+  /* Never clip — the collapsed-state reopen trigger sits outside the rail */
+  overflow: visible !important;
+}
+
+/* Scrolling happens one level down so the trigger stays unclipped */
+.gi-sider-scroll {
+  height: 100%;
+  overflow-y: auto;
 }
 
 .gi-brand {

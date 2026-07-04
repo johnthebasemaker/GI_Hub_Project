@@ -133,23 +133,28 @@ export default function AppLayout() {
     <Layout style={{ minHeight: '100vh' }}>
       {/* The brand rail is always navy, whatever the app mode */}
       <ConfigProvider theme={siderTheme}>
+        {/* Collapse only below md (true mobile) — and never set overflow on the
+            Sider itself: it would clip the zero-width reopen trigger that hangs
+            outside the collapsed rail. The inner wrapper scrolls instead. */}
         <Sider
           width={232}
           className="gi-sider"
-          breakpoint="lg"
+          breakpoint="md"
           collapsedWidth={0}
-          style={{ height: '100vh', position: 'sticky', top: 0, overflowY: 'auto' }}
+          style={{ height: '100vh', position: 'sticky', top: 0 }}
         >
-          <div className="gi-brand">
-            <div className="gi-wordmark">GI&nbsp;Hub</div>
-            <div className="gi-brand-sub">ERP CONSOLE</div>
+          <div className="gi-sider-scroll">
+            <div className="gi-brand">
+              <div className="gi-wordmark">GI&nbsp;Hub</div>
+              <div className="gi-brand-sub">ERP CONSOLE</div>
+            </div>
+            <Menu
+              mode="inline"
+              selectedKeys={[location.pathname]}
+              items={buildMenu(level, user?.role ?? '')}
+              onClick={({ key }) => navigate(key)}
+            />
           </div>
-          <Menu
-            mode="inline"
-            selectedKeys={[location.pathname]}
-            items={buildMenu(level, user?.role ?? '')}
-            onClick={({ key }) => navigate(key)}
-          />
         </Sider>
       </ConfigProvider>
       <Layout>
