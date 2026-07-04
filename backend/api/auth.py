@@ -24,7 +24,7 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import get_session
@@ -194,3 +194,77 @@ async def login_2fa(body: TwoFAIn, session: AsyncSession = Depends(get_session))
 @router.get("/me", summary="Current authenticated user")
 async def me(user: dict = Depends(get_current_user)):
     return user
+
+
+# --- 2FA self-enrollment -----------------------------------------------------
+# Login already *verifies* TOTP and an admin can *reset* it; this lets a user
+# turn 2FA on for their own account. The secret is stored on enroll but 2FA is
+# only enabled once a code is verified, so a half-finished enroll never locks
+# anyone out (login only challenges when totp_enabled = 1).
+class CodeIn(BaseModel):
+    code: str
+
+
+def _qr_data_uri(uri: str) -> str:
+    import base64
+    import io
+
+    import qrcode
+    buf = io.BytesIO()
+    qrcode.make(uri).save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+@router.get("/2fa/status", summary="Is 2FA enabled for the current user?")
+async def twofa_status(user: dict = Depends(get_current_user),
+                       session: AsyncSession = Depends(get_session)):
+    row = await _fetch_user(session, user["username"])
+    return {"enabled": bool(row and row.totp_enabled)}
+
+
+@router.post("/2fa/enroll", summary="Begin 2FA enrollment → secret + QR (not enabled yet)")
+async def twofa_enroll(user: dict = Depends(get_current_user),
+                       session: AsyncSession = Depends(get_session)):
+    import pyotp
+    row = await _fetch_user(session, user["username"])
+    if row is None:
+        raise HTTPException(404, "user not found")
+    if row.totp_enabled:
+        raise HTTPException(409, "2FA is already enabled")
+    secret = pyotp.random_base32()
+    uri = pyotp.TOTP(secret).provisioning_uri(name=user["username"], issuer_name="GI Hub")
+    await session.execute(update(users_t).where(users_t.c["username"] == user["username"])
+                          .values(totp_secret=secret))
+    await session.commit()
+    await _audit(session, user["username"], "2FA_ENROLL", "enrollment started")
+    return {"secret": secret, "otpauth_uri": uri, "qr": _qr_data_uri(uri)}
+
+
+@router.post("/2fa/verify", summary="Confirm a code to enable 2FA")
+async def twofa_verify(body: CodeIn, user: dict = Depends(get_current_user),
+                       session: AsyncSession = Depends(get_session)):
+    row = await _fetch_user(session, user["username"])
+    if row is None or not row.totp_secret:
+        raise HTTPException(409, "no enrollment in progress — call /2fa/enroll first")
+    if not _verify_totp(row.totp_secret, body.code):
+        raise HTTPException(400, "invalid 2FA code")
+    await session.execute(update(users_t).where(users_t.c["username"] == user["username"])
+                          .values(totp_enabled=1))
+    await session.commit()
+    await _audit(session, user["username"], "2FA_ENABLED", "verified + enabled")
+    return {"enabled": True}
+
+
+@router.post("/2fa/disable", summary="Disable 2FA (requires a valid current code)")
+async def twofa_disable(body: CodeIn, user: dict = Depends(get_current_user),
+                        session: AsyncSession = Depends(get_session)):
+    row = await _fetch_user(session, user["username"])
+    if row is None or not row.totp_enabled:
+        raise HTTPException(409, "2FA is not enabled")
+    if not _verify_totp(row.totp_secret, body.code):
+        raise HTTPException(400, "invalid 2FA code")
+    await session.execute(update(users_t).where(users_t.c["username"] == user["username"])
+                          .values(totp_secret=None, totp_enabled=0))
+    await session.commit()
+    await _audit(session, user["username"], "2FA_DISABLED", "disabled by user")
+    return {"disabled": True}

@@ -196,6 +196,23 @@ async def test_auth_guards():
         check("admin → 200 on /admin/users",
               (await ac.get("/admin/users", headers=H(admin_t))).status_code == 200)
 
+        # Inventory editor guards (non-persisting: duplicate SAP + delete-with-movements).
+        r = await ac.post("/admin/inventory", headers=H(worker_t), json={"SAP_Code": "svc_x"})
+        check("worker → 403 on POST /admin/inventory", r.status_code == 403, f"got {r.status_code}")
+        r = await ac.post("/admin/inventory", headers=H(admin_t), json={"SAP_Code": "1001"})
+        check("admin → 409 creating a duplicate SAP (no persist)", r.status_code == 409, f"got {r.status_code}")
+        r = await ac.request("DELETE", "/admin/inventory/1001", headers=H(admin_t))
+        check("admin → 409 deleting an item with movements", r.status_code == 409, f"got {r.status_code}")
+
+        # 2FA self-enrollment guards (non-persisting).
+        r = await ac.get("/auth/2fa/status", headers=H(worker_t))
+        check("2fa status → 200 for any authed user",
+              r.status_code == 200 and r.json().get("enabled") is False, f"got {r.status_code}")
+        r = await ac.post("/auth/2fa/verify", headers=H(worker_t), json={"code": "000000"})
+        check("2fa verify without enrollment → 409", r.status_code == 409, f"got {r.status_code}")
+        r = await ac.post("/auth/2fa/disable", headers=H(worker_t), json={"code": "000000"})
+        check("2fa disable when not enabled → 409", r.status_code == 409, f"got {r.status_code}")
+
 
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")

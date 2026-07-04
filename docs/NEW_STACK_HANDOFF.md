@@ -63,7 +63,7 @@ DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
   .venv/bin/python backend/api/parity_check.py --source gi_database.db  # 5 derived views PASS
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
-  .venv/bin/python -m backend.api.service_tests                 # 29/29 (rolled-back services + auth/role guards)
+  .venv/bin/python -m backend.api.service_tests                 # 35/35 (rolled-back services + auth/role guards)
 npm run build --prefix frontend                                 # tsc + vite green
 ```
 
@@ -128,8 +128,13 @@ parity_check against a `postgres:16` service.
   store-keeper, `create_smr`→SK, `approve_smr`→the supervisor. Bell = badge + popover with
   mark-read / mark-all; visibility is role/site/warehouse/user scoped (isolation + a
   mark-read guard). Surfaces the migrated notifications too.
+- **Inventory Master-DB editor (admin):** add / edit / delete inventory master items
+  (`/admin/inventory`) — opening-stock edits audited, delete blocked if the item has ledger
+  movements. Closes the last read-only master-data gap.
+- **2FA self-enrollment:** `Account → Security` — enroll (QR + manual key) → verify → on;
+  disable with a code. Login already challenged enabled users; now they can turn it on.
 
-Full role → workflow loop runs on Postgres. **~80 API endpoints.**
+Full role → workflow loop runs on Postgres. **~87 API endpoints.**
 
 ---
 
@@ -152,8 +157,10 @@ Full role → workflow loop runs on Postgres. **~80 API endpoints.**
   approves). **NOT ported** — the new app only *logs in* existing users.
 - ~~**User management UI**~~ ✅ **DONE 2026-07-04** (Admin console) — add / reset password /
   reset 2FA / delete / warehouse-bind. NOTE: users have no `status` column, so "disable" =
-  **delete** (last-admin & self guards). Still NOT done: **2FA enrollment** (login
-  *verifies* TOTP but there's no enroll/QR screen) and **user registration + approval**.
+  **delete** (last-admin & self guards).
+- ~~**2FA enrollment**~~ ✅ **DONE 2026-07-04** — `Account → Security` (`/auth/2fa/{status,
+  enroll,verify,disable}`, QR + manual key). Still NOT done: **user registration + approval**
+  (`pending_users` → admin approves).
 - **Reservations** (`stock_reservations`, Available = Current − Reserved). **NOT
   ported.**
 - **QR codes** — bin labels, employee badges, QR-approval flow. **NOT ported.**
@@ -167,8 +174,8 @@ Full role → workflow loop runs on Postgres. **~80 API endpoints.**
 - **DN approval chain** — SIMPLIFIED: warehouse DN → site receive → HOD approves the
   *receipt* (via staging). The old **Logistics-approve + HOD-approve DN** steps are not
   ported (approval moved to receipt level). Decide if the DN-level approvals are wanted.
-- **Admin console** — ✅ user management + **audit-log viewer** DONE (2026-07-04). Still
-  missing: **Master DB Editor (inventory CRUD)**, global sites, settings/maintenance
+- **Admin console** — ✅ user management + **audit-log viewer** + **inventory Master-DB
+  editor** all DONE (2026-07-04). Still missing: global sites, settings/maintenance
   mode, backup, tool catalogue, logistics oversight.
 - **HOD:** Cross-Site requests, My Requests, Site Config, DOC, QR Approval, In-Transit
   visibility, Lot Management UI (quarantine/dispose — backend lot-disposal exists via
@@ -202,14 +209,14 @@ Full role → workflow loop runs on Postgres. **~80 API endpoints.**
 
 ## 5. Suggested next steps (ask the user which)
 The operational + estimator core is complete; **procurement runs end-to-end** (PR
-creation), the **Admin console** (users + audit viewer), the **in-app notification
-bell**, and a **hardening pass** (service+guard tests in CI · master-data write gate)
-have all landed (2026-07-04). Highest-value next options:
+creation), the **Admin console** (users · audit viewer · **inventory Master-DB editor**),
+the **in-app notification bell**, **2FA self-enrollment**, and a **hardening pass**
+(service+guard tests in CI · master-data write gate) have all landed (2026-07-04). The new
+stack is now essentially self-sufficient. Highest-value next options:
 **(a)** Reports (generate/export), **(b)** the peripheral Logistics/Warehouse tabs,
-**(c)** finish the admin surface — inventory **Master-DB editor** + **2FA enrollment/QR**
-+ user registration-approval, **(d)** more notification events (HOD-approval outcomes,
-staging→HOD, reschedules), or **(e)** the **cutover** prep (real `JWT_SECRET`, make React
-primary, deploy). WhatsApp/mail/LLM are larger integrations — scope first.
+**(c)** more notification events (HOD-approval outcomes, staging→HOD, reschedules),
+**(d)** user registration + approval (`pending_users`), or **(e)** the **cutover** prep
+(real `JWT_SECRET`, make React primary, deploy). WhatsApp/mail/LLM are larger — scope first.
 
 ## 6. Where the detail lives
 - Per-slice build log + verification: `docs/POSTGRES_MIGRATION.md` §8 (newest first).

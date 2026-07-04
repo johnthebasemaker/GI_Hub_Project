@@ -20,6 +20,8 @@ import SkRequestsPage from './pages/SkRequestsPage'
 import SmePage from './pages/SmePage'
 import UsersPage from './pages/UsersPage'
 import AuditLogPage from './pages/AuditLogPage'
+import InventoryAdminPage from './pages/InventoryAdminPage'
+import SecurityPage from './pages/SecurityPage'
 import { useAuth } from './auth/AuthContext'
 
 export default function App() {
@@ -46,7 +48,9 @@ export default function App() {
         <Route path="records/:key" element={<RecordsPage />} />
         <Route path="master/:key" element={<MasterDataPage />} />
         <Route path="admin/users" element={<UsersPage />} />
+        <Route path="admin/inventory" element={<InventoryAdminPage />} />
         <Route path="admin/audit" element={<AuditLogPage />} />
+        <Route path="security" element={<SecurityPage />} />
       </Route>
     </Routes>
   )

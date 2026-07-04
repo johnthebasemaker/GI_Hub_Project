@@ -27,6 +27,13 @@ from .services.ledger import _MD, write_audit  # reflected metadata + audit writ
 
 users_t = _MD.tables["users"]
 audit_t = _MD.tables["system_audit_log"]
+inventory_t = _MD.tables["inventory"]
+
+# Ledger/movement tables that reference inventory by SAP_Code — an item with any
+# of these rows must NOT be deleted (it would orphan history / break identity math).
+_SAP_REFS = [_MD.tables[t] for t in (
+    "receipts", "consumption", "returns", "lots",
+    "pending_receipts", "pending_issues", "pending_returns", "pr_master")]
 
 MIN_PW = 6  # minimum password length for create / reset
 
@@ -54,6 +61,32 @@ class UpdateUserIn(BaseModel):
 
 class PasswordIn(BaseModel):
     password: str
+
+
+class InventoryCreateIn(BaseModel):
+    SAP_Code: str
+    Equipment_Description: Optional[str] = None
+    Material_Code: Optional[str] = None
+    Category: Optional[str] = None
+    UOM: Optional[str] = None
+    Minimum_Qty: Optional[float] = None
+    Site_ID: Optional[str] = None
+    Expiry_Date: Optional[str] = None
+    Unit_Cost: Optional[float] = None
+    Opening_Stock: Optional[float] = None
+
+
+class InventoryUpdateIn(BaseModel):
+    # None = leave unchanged.
+    Equipment_Description: Optional[str] = None
+    Material_Code: Optional[str] = None
+    Category: Optional[str] = None
+    UOM: Optional[str] = None
+    Minimum_Qty: Optional[float] = None
+    Site_ID: Optional[str] = None
+    Expiry_Date: Optional[str] = None
+    Unit_Cost: Optional[float] = None
+    Opening_Stock: Optional[float] = None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -253,3 +286,91 @@ async def audit_log(username: Optional[str] = None, action_type: Optional[str] =
         stmt.order_by(audit_t.c["id"].desc()).limit(limit).offset(offset))).all()
     return {"total": total, "limit": limit, "offset": offset,
             "items": [dict(r._mapping) for r in rows]}
+
+
+# --- inventory master editor -------------------------------------------------
+# Reads still go through the open /inventory router; these admin-only writes add
+# the safety the generic CRUD lacks: opening-stock audit + a delete guard that
+# refuses to orphan an item that already has ledger movements.
+async def _sap_exists(session: AsyncSession, sap: str) -> bool:
+    return (await session.execute(select(func.count()).select_from(inventory_t)
+            .where(func.trim(inventory_t.c["SAP_Code"]) == sap))).scalar_one() > 0
+
+
+async def _sap_movements(session: AsyncSession, sap: str) -> int:
+    total = 0
+    for t in _SAP_REFS:
+        total += (await session.execute(select(func.count()).select_from(t)
+                  .where(func.trim(t.c["SAP_Code"]) == sap))).scalar_one()
+    return total
+
+
+@router.post("/inventory", status_code=201, summary="Add an inventory master item")
+async def create_inventory(body: InventoryCreateIn,
+                           actor: dict = Depends(require_level(4)),
+                           session: AsyncSession = Depends(get_session)):
+    sap = (body.SAP_Code or "").strip()
+    if not sap:
+        raise HTTPException(422, "SAP_Code is required")
+    values = {k: v for k, v in body.model_dump().items() if v is not None}
+    values["SAP_Code"] = sap
+    try:
+        async with session.begin():
+            if await _sap_exists(session, sap):
+                raise HTTPException(409, f"SAP_Code {sap!r} already exists")
+            await session.execute(insert(inventory_t).values(**values))
+            await write_audit(session, actor["username"], "CREATE_INVENTORY", "inventory",
+                              f"SAP={sap} opening={values.get('Opening_Stock', 0)}")
+    except HTTPException:
+        raise
+    except IntegrityError as e:
+        raise HTTPException(409, f"IntegrityError: {e.orig}")
+    except DataError as e:
+        raise HTTPException(400, f"DataError: {e.orig}")
+    return {"created": True, "SAP_Code": sap}
+
+
+@router.patch("/inventory/{sap_code}", summary="Edit an inventory master item")
+async def update_inventory(sap_code: str, body: InventoryUpdateIn,
+                           actor: dict = Depends(require_level(4)),
+                           session: AsyncSession = Depends(get_session)):
+    values = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not values:
+        raise HTTPException(422, "no fields to update")
+    sap = sap_code.strip()
+    try:
+        async with session.begin():
+            cur = (await session.execute(select(inventory_t.c["Opening_Stock"])
+                   .where(func.trim(inventory_t.c["SAP_Code"]) == sap))).first()
+            if cur is None:
+                raise HTTPException(404, f"SAP_Code {sap!r} not found")
+            # Opening_Stock feeds the identity math — audit any change explicitly.
+            if "Opening_Stock" in values and float(values["Opening_Stock"]) != float(cur[0] or 0):
+                await write_audit(session, actor["username"], "OPENING_STOCK_EDIT", "inventory",
+                                  f"SAP={sap} {cur[0]} → {values['Opening_Stock']}")
+            await session.execute(update(inventory_t)
+                                  .where(func.trim(inventory_t.c["SAP_Code"]) == sap).values(**values))
+            await write_audit(session, actor["username"], "UPDATE_INVENTORY", "inventory",
+                              f"SAP={sap} fields={','.join(values)}")
+    except HTTPException:
+        raise
+    except (IntegrityError, DataError) as e:
+        raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
+    return {"updated": True, "SAP_Code": sap}
+
+
+@router.delete("/inventory/{sap_code}", summary="Delete an inventory item (only if it has no movements)")
+async def delete_inventory(sap_code: str,
+                           actor: dict = Depends(require_level(4)),
+                           session: AsyncSession = Depends(get_session)):
+    sap = sap_code.strip()
+    async with session.begin():
+        if not await _sap_exists(session, sap):
+            raise HTTPException(404, f"SAP_Code {sap!r} not found")
+        moves = await _sap_movements(session, sap)
+        if moves:
+            raise HTTPException(409, f"cannot delete {sap!r}: it has {moves} ledger movement(s)")
+        await session.execute(delete(inventory_t)
+                              .where(func.trim(inventory_t.c["SAP_Code"]) == sap))
+        await write_audit(session, actor["username"], "DELETE_INVENTORY", "inventory", f"SAP={sap}")
+    return {"deleted": True, "SAP_Code": sap}

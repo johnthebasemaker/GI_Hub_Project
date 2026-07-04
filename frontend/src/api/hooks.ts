@@ -482,3 +482,51 @@ export function useMarkAllNotifRead() {
     },
   })
 }
+
+// --- admin inventory master editor ------------------------------------------
+function useInventoryMutation<V>(fn: (v: V) => Promise<Row>) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['/inventory'] })
+      qc.invalidateQueries({ queryKey: ['inventory-summary'] })
+    },
+  })
+}
+export const useCreateInventory = () =>
+  useInventoryMutation((body: Row) => api.post('/admin/inventory', body).then((r) => r.data))
+export const useUpdateInventory = () =>
+  useInventoryMutation(({ sap, body }: { sap: string; body: Row }) =>
+    api.patch(`/admin/inventory/${encodeURIComponent(sap)}`, body).then((r) => r.data))
+export const useDeleteInventory = () =>
+  useInventoryMutation((sap: string) =>
+    api.delete(`/admin/inventory/${encodeURIComponent(sap)}`).then((r) => r.data))
+
+// --- 2FA self-enrollment ----------------------------------------------------
+export function use2faStatus() {
+  return useQuery({
+    queryKey: ['/auth/2fa/status'],
+    queryFn: async () => (await api.get<{ enabled: boolean }>('/auth/2fa/status')).data.enabled,
+  })
+}
+export function useEnroll2fa() {
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ secret: string; otpauth_uri: string; qr: string }>('/auth/2fa/enroll').then((r) => r.data),
+  })
+}
+export function useVerify2fa() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (code: string) => api.post('/auth/2fa/verify', { code }).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/auth/2fa/status'] }),
+  })
+}
+export function useDisable2fa() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (code: string) => api.post('/auth/2fa/disable', { code }).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/auth/2fa/status'] }),
+  })
+}
