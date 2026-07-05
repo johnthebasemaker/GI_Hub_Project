@@ -1,9 +1,10 @@
 import { Suspense } from 'react'
-import { Button, ConfigProvider, Layout, Menu, Skeleton, Space, Tooltip, Typography } from 'antd'
+import type { ReactNode } from 'react'
+import { Badge, Button, ConfigProvider, Layout, Menu, Skeleton, Space, Tooltip, Typography } from 'antd'
 import type { MenuProps } from 'antd'
 import { AuditOutlined, BarChartOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, MoonOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, SunOutlined, TeamOutlined, UserAddOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { useHealth } from '../api/hooks'
+import { useHealth, useWorkQueues } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
 import { READ_ENTITIES, WRITE_ENTITIES } from '../config/entities'
 import { useThemeMode } from '../theme/ThemeContext'
@@ -12,9 +13,25 @@ import NotificationBell from './NotificationBell'
 
 const { Header, Sider, Content } = Layout
 
+// Nav label + live work-queue count (gold badge = work waiting for you).
+function withCount(label: string, count?: number): ReactNode {
+  if (!count) return label
+  return (
+    <span className="gi-nav-flex">
+      {label}
+      <Badge
+        count={count}
+        size="small"
+        overflowCount={99}
+        style={{ backgroundColor: 'var(--gi-gold)', color: '#001F40', fontWeight: 600 }}
+      />
+    </span>
+  )
+}
+
 // Nav is role-gated by the signed-in user's hierarchy level (admin 4 … store_keeper 0)
 // plus exact-role gates for the parallel-ladder portals (warehouse).
-function buildMenu(level: number, role: string): MenuProps['items'] {
+function buildMenu(level: number, role: string, q: Record<string, number>): MenuProps['items'] {
   const items: MenuProps['items'] = [
     { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
     { key: '/stock', icon: <StockOutlined />, label: 'Stock' },
@@ -27,8 +44,8 @@ function buildMenu(level: number, role: string): MenuProps['items'] {
         { key: '/entry/issue', icon: <FormOutlined />, label: 'Issue Stock' },
         { key: '/entry/return', icon: <FormOutlined />, label: 'Return Stock' },
         { key: '/entry/adjust', icon: <FormOutlined />, label: 'Stock Adjustment' },
-        { key: '/site/incoming', icon: <InboxOutlined />, label: 'Incoming Deliveries' },
-        { key: '/sk/requests', icon: <SolutionOutlined />, label: 'Supervisor Requests' },
+        { key: '/site/incoming', icon: <InboxOutlined />, label: withCount('Incoming Deliveries', q.incoming_dns) },
+        { key: '/sk/requests', icon: <SolutionOutlined />, label: withCount('Supervisor Requests', q.sk_requests) },
       ],
     },
     {
@@ -45,7 +62,7 @@ function buildMenu(level: number, role: string): MenuProps['items'] {
       label: 'HOD',
       type: 'group',
       children: [
-        { key: '/hod/approvals', icon: <AuditOutlined />, label: 'Approvals' },
+        { key: '/hod/approvals', icon: <AuditOutlined />, label: withCount('Approvals', q.approvals) },
         { key: '/hod/burn-rate', icon: <FireOutlined />, label: 'Burn Rate' },
         { key: '/hod/prs', icon: <ProfileOutlined />, label: 'Purchase Requests' },
       ],
@@ -87,7 +104,7 @@ function buildMenu(level: number, role: string): MenuProps['items'] {
       key: 'warehouse',
       label: 'Warehouse',
       type: 'group',
-      children: [{ key: '/warehouse', icon: <InboxOutlined />, label: 'Receiving & DN' }],
+      children: [{ key: '/warehouse', icon: <InboxOutlined />, label: withCount('Receiving & DN', q.warehouse) }],
     })
   }
   // Master data (vendors/warehouses/employees) — admin & logistics only.
@@ -125,6 +142,7 @@ export default function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const { data: health } = useHealth()
+  const { data: queues } = useWorkQueues()
   const { user, logout } = useAuth()
   const { mode, toggle } = useThemeMode()
   const level = user?.level ?? 0
@@ -151,7 +169,7 @@ export default function AppLayout() {
             <Menu
               mode="inline"
               selectedKeys={[location.pathname]}
-              items={buildMenu(level, user?.role ?? '')}
+              items={buildMenu(level, user?.role ?? '', queues ?? {})}
               onClick={({ key }) => navigate(key)}
             />
           </div>

@@ -141,6 +141,14 @@ body {
   box-shadow: 2px 2px 10px rgba(0, 0, 0, 0.4);
 }
 
+/* Nav label + work-queue badge on one row, badge pushed to the right edge */
+.gi-nav-flex {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .gi-header {
   position: sticky;
   top: 0;

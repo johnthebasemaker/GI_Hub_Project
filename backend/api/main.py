@@ -180,6 +180,56 @@ async def sites(user: dict = Depends(get_current_user),
     return {"sites": [r[0] for r in res.all()]}
 
 
+@app.get("/meta/work-queues", tags=["meta"],
+         summary="Pending-work counts for the sidebar badges (role- and site-aware)")
+async def work_queues(user: dict = Depends(get_current_user),
+                      session: AsyncSession = Depends(get_session)):
+    """One cheap round-trip for every badge the caller's nav actually shows.
+    Counts honour site scoping exactly like the pages they link to."""
+    scope = site_scope(user)  # None = global · '' = site-less scoped user (matches nothing)
+
+    async def _cnt(tname: str, *where) -> int:
+        t = _MD.tables[tname]
+        stmt = select(func.count()).select_from(t)
+        for cond in where:
+            stmt = stmt.where(cond)
+        return (await session.execute(stmt)).scalar_one()
+
+    def _site(tname: str):
+        return [] if scope is None else [_MD.tables[tname].c["Site_ID"] == scope]
+
+    out: dict[str, int] = {}
+
+    # HOD approvals — staged entries awaiting approve/reject (nav: level ≥ 2).
+    if user["level"] >= 2:
+        total = 0
+        for n in ("pending_receipts", "pending_issues", "pending_returns",
+                  "stock_adjustments"):
+            total += await _cnt(n, _MD.tables[n].c["status"] == "pending_hod", *_site(n))
+        out["approvals"] = total
+
+    # In-transit DNs headed to the site (nav: everyone).
+    out["incoming_dns"] = await _cnt(
+        "delivery_notes",
+        _MD.tables["delivery_notes"].c["status"] == "in_transit",
+        *_site("delivery_notes"))
+
+    # Supervisor material requests awaiting the store keeper (nav: everyone).
+    out["sk_requests"] = await _cnt(
+        "supervisor_material_requests",
+        _MD.tables["supervisor_material_requests"].c["status"] == "pending_sk",
+        *_site("supervisor_material_requests"))
+
+    # Warehouse workload — assignments not yet fully received
+    # (nav: warehouse_user / logistics / admin; warehouses aren't site-bound).
+    if user["role"] in ("warehouse_user", "logistics", "admin"):
+        t = _MD.tables["po_assignments"]
+        out["warehouse"] = await _cnt(
+            "po_assignments", t.c["status"].in_(("assigned", "acknowledged", "partial")))
+
+    return out
+
+
 @app.get("/meta/inventory-summary", tags=["meta"],
          summary="Exact inventory item counts by site and by category")
 async def inventory_summary(user: dict = Depends(get_current_user),

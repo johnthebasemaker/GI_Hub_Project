@@ -418,6 +418,19 @@ export function useAuditMeta() {
   })
 }
 
+// --- work-queue badges (sidebar) ---------------------------------------------
+// One round-trip for every count the caller's nav shows (role- & site-aware).
+export function useWorkQueues() {
+  return useQuery({
+    queryKey: ['/meta/work-queues'],
+    queryFn: async () => (await api.get<Record<string, number>>('/meta/work-queues')).data,
+    refetchOnWindowFocus: true,
+    // Gentle visible-tab polling; hidden tabs rely on the focus refetch
+    // (background intervals don't reliably re-render — see useUnreadCount).
+    refetchInterval: 60_000,
+  })
+}
+
 // --- notifications (sidebar bell) -------------------------------------------
 export function useUnreadCount() {
   return useQuery({

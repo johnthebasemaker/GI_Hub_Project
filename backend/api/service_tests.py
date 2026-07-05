@@ -396,6 +396,17 @@ async def test_site_scoping():
         check("scoped hod report for a foreign site → 403", r.status_code == 403,
               f"got {r.status_code}")
 
+        # Work-queue badge counts are role- and site-aware.
+        j = (await ac.get("/meta/work-queues", headers=H(worker_t))).json()
+        check("work-queues: store keeper gets site queues but no approvals",
+              "approvals" not in j and "incoming_dns" in j and "sk_requests" in j, str(j))
+        j = (await ac.get("/meta/work-queues", headers=H(hod_t))).json()
+        check("work-queues: hod gets the approvals count",
+              isinstance(j.get("approvals"), int), str(j))
+        j = (await ac.get("/meta/work-queues", headers=H(admin_t))).json()
+        check("work-queues: admin gets the warehouse workload too",
+              isinstance(j.get("warehouse"), int), str(j))
+
 
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""
