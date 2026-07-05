@@ -270,6 +270,86 @@ async def test_auth_guards():
         check("attempts under the cap are 401, not 429", codes[0] == 401, f"first={codes[0]}")
 
 
+async def test_site_scoping():
+    """Multi-site isolation: below logistics (level 3), every read is pinned to
+    the caller's own Site_ID; admin/logistics stay global."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        async def token(u, p):
+            r = await ac.post("/auth/login", json={"username": u, "password": p})
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        worker_t = await token("worker", "floor2026")   # store_keeper @ CNCEC
+        hod_t = await token("hod", "hod2026")           # hod @ CNCEC (level 2 → scoped)
+        admin_t = await token("admin", "admin2026")     # level 4 → global
+
+        r = await ac.get("/receipts", params={"limit": 500}, headers=H(worker_t))
+        items = r.json().get("items", [])
+        check("scoped list returns only own-site rows",
+              r.status_code == 200 and len(items) > 0
+              and all((i.get("Site_ID") or "").strip() == "CNCEC" for i in items),
+              f"status={r.status_code} n={len(items)}")
+
+        r = await ac.get("/receipts", params={"site_id": "HQ"}, headers=H(worker_t))
+        check("scoped user asking for another site → 403", r.status_code == 403,
+              f"got {r.status_code}")
+
+        ra = (await ac.get("/receipts", params={"limit": 1}, headers=H(admin_t))).json()
+        rw = (await ac.get("/receipts", params={"limit": 1}, headers=H(worker_t))).json()
+        check("admin sees at least as many rows as a scoped user",
+              ra.get("total", 0) >= rw.get("total", 0), f"{ra.get('total')} vs {rw.get('total')}")
+
+        # Cross-site get-one must 404 (not leak existence). Only checkable when a
+        # foreign-site row exists in the data.
+        foreign = (await ac.get("/receipts", params={"limit": 1, "site_id": "HQ"},
+                                headers=H(admin_t))).json().get("items", [])
+        if foreign:
+            r = await ac.get(f"/receipts/{foreign[0]['id']}", headers=H(worker_t))
+            check("scoped get-one of another site's row → 404", r.status_code == 404,
+                  f"got {r.status_code}")
+        else:
+            check("scoped get-one of another site's row → 404 (skipped: no HQ receipts)", True)
+
+        check("scoped user → 403 on /stock/live (cross-site aggregate)",
+              (await ac.get("/stock/live", headers=H(worker_t))).status_code == 403)
+        check("admin → 200 on /stock/live",
+              (await ac.get("/stock/live", headers=H(admin_t))).status_code == 200)
+
+        r = await ac.get("/stock/by-site", params={"limit": 500}, headers=H(worker_t))
+        rows = r.json().get("items", [])
+        check("stock/by-site forced to the user's own site",
+              r.status_code == 200 and all(i.get("Site_ID") == "CNCEC" for i in rows),
+              f"status={r.status_code}")
+
+        r = await ac.get("/meta/sites", headers=H(worker_t))
+        check("meta/sites returns only the user's site", r.json().get("sites") == ["CNCEC"],
+              str(r.json()))
+        r = await ac.get("/meta/sites", headers=H(admin_t))
+        check("meta/sites unrestricted for admin", len(r.json().get("sites", [])) >= 1)
+
+        r = await ac.get("/meta/inventory-summary", headers=H(worker_t))
+        bs = r.json().get("by_site", [])
+        check("inventory-summary by_site scoped to one site",
+              len(bs) <= 1 and all(x.get("Site_ID") == "CNCEC" for x in bs), str(bs))
+
+        r = await ac.get("/hod/pending", params={"site_id": "HQ"}, headers=H(hod_t))
+        check("scoped hod asking for a foreign approvals queue → 403",
+              r.status_code == 403, f"got {r.status_code}")
+        r = await ac.get("/hod/pending", headers=H(hod_t))
+        check("scoped hod pending counts → 200 (own site)", r.status_code == 200)
+
+        r = await ac.get("/reports/stock", params={"format": "csv"}, headers=H(hod_t))
+        check("scoped hod report → 200 (forced to own site)", r.status_code == 200,
+              f"got {r.status_code}")
+        r = await ac.get("/reports/stock", params={"format": "csv", "site_id": "HQ"},
+                         headers=H(hod_t))
+        check("scoped hod report for a foreign site → 403", r.status_code == 403,
+              f"got {r.status_code}")
+
+
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""
     import os
@@ -314,6 +394,8 @@ async def main() -> int:
     test_config_jwt()
     print("\n B. auth/role guards")
     await test_auth_guards()
+    print("\n C. site scoping (multi-site isolation)")
+    await test_site_scoping()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

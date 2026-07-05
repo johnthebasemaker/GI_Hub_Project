@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { InputNumber, Space, Tabs, Typography } from 'antd'
+import { useAuth } from '../auth/AuthContext'
 import BrowseTable from '../components/BrowseTable'
 
 function ExpiringTable() {
@@ -25,15 +26,21 @@ function ExpiringTable() {
 }
 
 export default function StockPage() {
+  const { user } = useAuth()
+  // The global (cross-site) view is restricted to logistics/admin — the server
+  // 403s it for site-scoped users, so don't offer the tab at all.
+  const global = (user?.level ?? 0) >= 3
   return (
     <div>
       <Typography.Title level={3} style={{ marginTop: 0 }}>
         Stock (derived)
       </Typography.Title>
       <Tabs
-        defaultActiveKey="live"
+        defaultActiveKey={global ? 'live' : 'by-site'}
         items={[
-          { key: 'live', label: 'Live (global)', children: <BrowseTable path="/stock/live" /> },
+          ...(global
+            ? [{ key: 'live', label: 'Live (global)', children: <BrowseTable path="/stock/live" /> }]
+            : []),
           { key: 'by-site', label: 'By site', children: <BrowseTable path="/stock/by-site" hasSite /> },
           { key: 'lots', label: 'Lot balances', children: <BrowseTable path="/stock/lots" hasSite /> },
           { key: 'expiring', label: 'Expiring', children: <ExpiringTable /> },

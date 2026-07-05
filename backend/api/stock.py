@@ -17,11 +17,16 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .auth import get_current_user, resolve_site_param, site_scope
 from .db import get_session
+
+
+def _empty_page(limit: int, offset: int) -> dict:
+    return {"total": 0, "limit": limit, "offset": offset, "count": 0, "items": []}
 
 # --- ported view SQL (Postgres dialect) --------------------------------------
 
@@ -202,21 +207,35 @@ async def _paged(session: AsyncSession, key: str, *, site_id: Optional[str],
 
 @router.get("/live", summary="Live stock per SAP_Code (global) — v_live_stock")
 async def stock_live(limit: int = Query(200, ge=1, le=5000), offset: int = Query(0, ge=0),
+                     user: dict = Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)):
+    # This view aggregates across ALL sites (it has no Site_ID column), so a
+    # site-scoped user reading it would leak other sites' quantities.
+    if site_scope(user) is not None:
+        raise HTTPException(403, "the global stock view is restricted to "
+                                 "logistics/admin — use /stock/by-site")
     return await _paged(session, "live", site_id=None, limit=limit, offset=offset)
 
 
 @router.get("/by-site", summary="Current stock per SAP_Code + Site_ID — v_site_stock")
 async def stock_by_site(limit: int = Query(200, ge=1, le=5000), offset: int = Query(0, ge=0),
                         site_id: Optional[str] = Query(None, description="Filter by Site_ID"),
+                        user: dict = Depends(get_current_user),
                         session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, site_id)
+    if site_id == "":
+        return _empty_page(limit, offset)
     return await _paged(session, "by-site", site_id=site_id, limit=limit, offset=offset)
 
 
 @router.get("/lots", summary="Per-lot remaining quantity — v_lot_balance")
 async def stock_lots(limit: int = Query(200, ge=1, le=5000), offset: int = Query(0, ge=0),
                      site_id: Optional[str] = Query(None, description="Filter by Site_ID"),
+                     user: dict = Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, site_id)
+    if site_id == "":
+        return _empty_page(limit, offset)
     return await _paged(session, "lots", site_id=site_id, limit=limit, offset=offset)
 
 
@@ -225,7 +244,11 @@ async def stock_expiring(limit: int = Query(200, ge=1, le=5000), offset: int = Q
                          site_id: Optional[str] = Query(None, description="Filter by Site_ID"),
                          within_days: Optional[int] = Query(
                              None, description="Only rows expiring within N days (incl. already expired)"),
+                         user: dict = Depends(get_current_user),
                          session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, site_id)
+    if site_id == "":
+        return _empty_page(limit, offset)
     extra_where, extra_params = "", {}
     if within_days is not None:
         extra_where = 'sub."Days_Until_Expiry" <= :within_days'

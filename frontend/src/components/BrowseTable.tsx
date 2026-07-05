@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { Alert, Select, Skeleton, Space, Table } from 'antd'
 import { useList, useSites } from '../api/hooks'
 import type { ListParams } from '../api/hooks'
+import { useAuth } from '../auth/AuthContext'
 import { buildColumns } from '../lib/columns'
 
 interface Props {
@@ -18,6 +19,10 @@ export default function BrowseTable({ path, hasSite, extraParams, toolbarExtra }
   const [pageSize, setPageSize] = useState(20)
   const [siteId, setSiteId] = useState<string | undefined>(undefined)
   const { data: sites } = useSites()
+  const { user } = useAuth()
+  // Below logistics (level 3) the server pins reads to the user's own site,
+  // so a site picker would be a no-op (or a 403) — hide it.
+  const siteScoped = (user?.level ?? 0) < 3
 
   const params: ListParams = {
     limit: pageSize,
@@ -30,9 +35,9 @@ export default function BrowseTable({ path, hasSite, extraParams, toolbarExtra }
 
   return (
     <div>
-      {(hasSite || toolbarExtra) && (
+      {((hasSite && !siteScoped) || toolbarExtra) && (
         <Space style={{ marginBottom: 12 }} wrap>
-          {hasSite && (
+          {hasSite && !siteScoped && (
             <Select
               allowClear
               placeholder="All sites"

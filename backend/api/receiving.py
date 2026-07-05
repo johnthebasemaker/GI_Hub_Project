@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import get_current_user
+from .auth import get_current_user, resolve_site_param
 from .db import get_session
 from .services import warehouse as wh
 
@@ -31,9 +31,12 @@ def _actor_site(user: dict) -> Optional[str]:
 async def incoming_dns(site_id: Optional[str] = None,
                        user: dict = Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)):
-    # Default to the user's own site; admins (no site) see all unless they filter.
-    scope = site_id or _actor_site(user)
-    return {"items": await wh.incoming_dns(session, scope)}
+    # Site-scoped users are pinned to their own site (403 asking for another;
+    # no site at all → nothing). admin/logistics see all unless they filter.
+    site_id = resolve_site_param(user, site_id)
+    if site_id == "":
+        return {"items": []}
+    return {"items": await wh.incoming_dns(session, site_id)}
 
 
 @router.get("/incoming-dns/{dn_number}/items", summary="DN line items")

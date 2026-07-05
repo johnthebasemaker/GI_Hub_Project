@@ -19,7 +19,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import require_level
+from .auth import require_level, resolve_site_param, site_scope
 from .db import get_session
 from .services import ledger, procurement
 from .services.notifications import notify
@@ -84,11 +84,31 @@ def _rows(res):
     return [dict(m) for m in res.mappings().all()]
 
 
+async def _guard_pending_site(session: AsyncSession, kind: str, pid: int, user: dict) -> None:
+    """403 when a site-scoped HOD acts on another site's staged row. A missing
+    row passes through — the commit/reject service raises its own not-found."""
+    scope = site_scope(user)
+    if scope is None:
+        return
+    t = _TABLES[kind]
+    row_site = (await session.execute(
+        select(t.c["Site_ID"]).where(t.c["id"] == pid))).scalar_one_or_none()
+    if row_site is None:
+        return
+    if scope == "" or (row_site or "").strip() != scope:
+        raise HTTPException(403, "this item belongs to another site")
+
+
 @router.get("/pending", summary="Pending-approval counts per type")
 async def pending_counts(site_id: Optional[str] = None,
+                         user: dict = Depends(require_level(2)),
                          session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, site_id)
     out = {}
     for k, t in _TABLES.items():
+        if site_id == "":
+            out[k] = 0
+            continue
         stmt = select(func.count()).select_from(t).where(t.c["status"] == ledger.PENDING)
         if site_id:
             stmt = stmt.where(t.c["Site_ID"] == site_id)
@@ -98,9 +118,13 @@ async def pending_counts(site_id: Optional[str] = None,
 
 @router.get("/pending/{kind}", summary="List pending items of a type")
 async def pending_list(kind: str, site_id: Optional[str] = None,
+                       user: dict = Depends(require_level(2)),
                        session: AsyncSession = Depends(get_session)):
     if kind not in _TABLES:
         raise HTTPException(404, f"unknown kind {kind!r}")
+    site_id = resolve_site_param(user, site_id)
+    if site_id == "":
+        return {"items": []}
     t = _TABLES[kind]
     stmt = select(t).where(t.c["status"] == ledger.PENDING)
     if site_id:
@@ -116,6 +140,7 @@ async def approve(kind: str, pid: int, user: dict = Depends(require_level(2)),
         raise HTTPException(404, f"unknown kind {kind!r}")
     try:
         async with session.begin():
+            await _guard_pending_site(session, kind, pid, user)
             submitter = await _submitter(session, kind, pid)  # read before commit removes the row
             res = await _COMMIT[kind](session, approver=user["username"], pending_id=pid)
             if res.get("error"):
@@ -139,6 +164,7 @@ async def reject(kind: str, pid: int, body: RejectIn = Body(default=RejectIn()),
     if kind not in _REJECT_KIND:
         raise HTTPException(404, f"unknown kind {kind!r}")
     async with session.begin():
+        await _guard_pending_site(session, kind, pid, user)
         submitter = await _submitter(session, kind, pid)
         res = await ledger.reject_pending(session, approver=user["username"],
                                           kind=_REJECT_KIND[kind], pending_id=pid,
@@ -156,8 +182,13 @@ async def reject(kind: str, pid: int, body: RejectIn = Body(default=RejectIn()),
 
 @router.get("/burn-rate", summary="Consumption by material over the last N days")
 async def burn_rate(site_id: Optional[str] = None, days: int = 30,
+                    user: dict = Depends(require_level(2)),
                     session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, site_id)
     days = max(1, min(days, 365))
+    if site_id == "":
+        return {"days": days, "since": (_dt.date.today() - _dt.timedelta(days=days)).isoformat(),
+                "items": []}
     cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
     where = '"Date" >= :cutoff'
     params = {"cutoff": cutoff, "days": days}
@@ -180,7 +211,11 @@ async def burn_rate(site_id: Optional[str] = None, days: int = 30,
 
 @router.get("/prs", summary="Site purchase requests (grouped) — to submit to Logistics")
 async def hod_pr_list(site_id: Optional[str] = None,
+                      user: dict = Depends(require_level(2)),
                       session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, site_id)
+    if site_id == "":
+        return {"items": []}
     return {"items": await procurement.hod_prs(session, site_id)}
 
 
@@ -190,6 +225,10 @@ async def hod_pr_create(body: CreatePRIn = Body(...),
                         session: AsyncSession = Depends(get_session)):
     if not body.lines:
         raise HTTPException(422, "add at least one line")
+    # A site-scoped HOD may only raise PRs for their own site.
+    scope = site_scope(user)
+    if scope is not None and body.site_id != scope:
+        raise HTTPException(403, "you may only create PRs for your own site")
     try:
         async with session.begin():
             res = await procurement.create_pr(
@@ -210,6 +249,9 @@ async def hod_pr_create(body: CreatePRIn = Body(...),
 async def hod_pr_submit(pr_number: str, site_id: str,
                         user: dict = Depends(require_level(2)),
                         session: AsyncSession = Depends(get_session)):
+    scope = site_scope(user)
+    if scope is not None and site_id != scope:
+        raise HTTPException(403, "you may only submit PRs for your own site")
     async with session.begin():
         res = await procurement.submit_pr(session, username=user["username"],
                                           pr_number=pr_number, site_id=site_id)

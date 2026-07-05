@@ -22,7 +22,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import require_level
+from .auth import require_level, resolve_site_param, site_scope
 from .db import get_session
 from .stock import SQL_EXPIRING, SQL_SITE_STOCK
 
@@ -54,9 +54,14 @@ async def rep_stock(session, *, site_id=None, **_):
     return "Current Stock by Site", cols, rows
 
 
-async def rep_expiring(session, *, within_days=30, **_):
-    sql = f'SELECT * FROM ({SQL_EXPIRING}) e WHERE e."Days_Until_Expiry" <= :w ORDER BY e."Days_Until_Expiry"'
-    cols, rows = await _run(session, sql, {"w": max(0, min(within_days, 3650))})
+async def rep_expiring(session, *, within_days=30, site_id=None, **_):
+    where = 'e."Days_Until_Expiry" <= :w'
+    params: dict = {"w": max(0, min(within_days, 3650))}
+    if site_id:
+        where += ' AND e."Site_ID" = :site'
+        params["site"] = site_id
+    sql = f'SELECT * FROM ({SQL_EXPIRING}) e WHERE {where} ORDER BY e."Days_Until_Expiry"'
+    cols, rows = await _run(session, sql, params)
     return f"Expiring Stock (≤ {within_days} days)", cols, rows
 
 
@@ -92,11 +97,15 @@ async def rep_receipts(session, *, site_id=None, days=30, **_):
     return f"Goods Receipts (last {days} days)", cols, rows
 
 
-async def rep_purchase_orders(session, *, status=None, **_):
-    where, params = "", {}
+async def rep_purchase_orders(session, *, status=None, site_id=None, **_):
+    conds, params = [], {}
     if status:
-        where = "WHERE status = :status"
+        conds.append("status = :status")
         params["status"] = status
+    if site_id:
+        conds.append('"Site_ID" = :site')
+        params["site"] = site_id
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
     sql = f'''
         SELECT "PO_Number", "PR_Number", "Site_ID", "Vendor_Name", "PO_Date",
                "Expected_Delivery", status, created_by, created_at
@@ -122,13 +131,13 @@ async def rep_inventory(session, *, site_id=None, **_):
 REPORTS = {
     "stock":           {"fn": rep_stock,           "label": "Current Stock",   "filters": ["site_id"],
                         "desc": "Current stock per item and site (received − consumed − returned)."},
-    "expiring":        {"fn": rep_expiring,        "label": "Expiring Stock",  "filters": ["within_days"],
+    "expiring":        {"fn": rep_expiring,        "label": "Expiring Stock",  "filters": ["site_id", "within_days"],
                         "desc": "Lots by days-to-expiry, flagged expired / short-dated."},
     "consumption":     {"fn": rep_consumption,     "label": "Consumption",     "filters": ["site_id", "days"],
                         "desc": "Consumption per item over a period."},
     "receipts":        {"fn": rep_receipts,        "label": "Goods Receipts",  "filters": ["site_id", "days"],
                         "desc": "Goods receipts over a period."},
-    "purchase-orders": {"fn": rep_purchase_orders, "label": "Purchase Orders", "filters": ["status"],
+    "purchase-orders": {"fn": rep_purchase_orders, "label": "Purchase Orders", "filters": ["site_id", "status"],
                         "desc": "Purchase orders with status."},
     "inventory":       {"fn": rep_inventory,       "label": "Inventory Master","filters": ["site_id"],
                         "desc": "The full inventory master list."},
@@ -240,6 +249,11 @@ async def download_report(key: str, format: str = Query("xlsx"),
         raise HTTPException(404, f"unknown report {key!r}")
     if format not in _FORMATS:
         raise HTTPException(400, f"format must be one of {sorted(_FORMATS)}")
+    # Site scoping: every report is forced to the caller's own site below
+    # logistics level; a scoped user with no site gets a clear 403.
+    site_id = resolve_site_param(user, site_id)
+    if site_scope(user) is not None and site_id == "":
+        raise HTTPException(403, "no site is assigned to your account — reports unavailable")
     title, columns, rows = await REPORTS[key]["fn"](
         session, site_id=site_id, days=days, within_days=within_days, status=status)
     render, media = _FORMATS[format]

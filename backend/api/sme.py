@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import require_level
+from .auth import require_level, resolve_site_param
 from .db import get_session
 from .services.ledger import _MD
 
@@ -61,9 +61,14 @@ def _rows(res):
 
 
 @router.get("/summary", summary="SME KPIs (equipment / SQM / recipes / materials)")
-async def summary(site_id: Optional[str] = None, session: AsyncSession = Depends(get_session)):
+async def summary(site_id: Optional[str] = None,
+                  user: dict = Depends(require_level(2)),
+                  session: AsyncSession = Depends(get_session)):
+    # None → no filter (admin/logistics). '' (scoped user without a site) is
+    # kept as a real filter value — it matches no rows, so it fails closed.
+    site_id = resolve_site_param(user, site_id)
     eq = sme_equipment_t
-    eqf = eq.c["Site_ID"] == site_id if site_id else None
+    eqf = eq.c["Site_ID"] == site_id if site_id is not None else None
 
     def _w(stmt):
         return stmt.where(eqf) if eqf is not None else stmt
@@ -74,7 +79,7 @@ async def summary(site_id: Optional[str] = None, session: AsyncSession = Depends
     materials = (await session.execute(select(func.count()).select_from(_MD.tables["sme_inventory_seed"]))).scalar_one()
 
     sqm = sme_sqm_t
-    sqmf = sqm.c["Site_ID"] == site_id if site_id else None
+    sqmf = sqm.c["Site_ID"] == site_id if site_id is not None else None
     orig = select(func.coalesce(func.sum(sqm.c["Original_SQM"]), 0))
     done = select(func.coalesce(func.sum(sqm.c["Done_SQM"]), 0))
     if sqmf is not None:
@@ -95,14 +100,17 @@ async def summary(site_id: Optional[str] = None, session: AsyncSession = Depends
 
 
 @router.get("/equipment", summary="SME equipment master")
-async def equipment(site_id: Optional[str] = None, session: AsyncSession = Depends(get_session)):
+async def equipment(site_id: Optional[str] = None,
+                    user: dict = Depends(require_level(2)),
+                    session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, site_id)
     e = sme_equipment_t
     stmt = select(
         e.c["id"], e.c["Site_ID"], e.c["Equipment_Tag_No"], e.c["Name"], e.c["Location"],
         e.c["Type"], e.c["Substrate"], e.c["Lining_System_Code"], e.c["Lining_System"],
         e.c["Surface_Area_SQM"], e.c["Equipment_Total_SQM"],
     )
-    if site_id:
+    if site_id is not None:
         stmt = stmt.where(e.c["Site_ID"] == site_id)
     return {"items": _rows(await session.execute(stmt.order_by(e.c["id"])))}
 
@@ -120,13 +128,16 @@ async def recipes(lining_system_code: Optional[str] = None, session: AsyncSessio
 
 
 @router.get("/sqm-progress", summary="SQM progress per equipment/system")
-async def sqm_progress(site_id: Optional[str] = None, session: AsyncSession = Depends(get_session)):
+async def sqm_progress(site_id: Optional[str] = None,
+                       user: dict = Depends(require_level(2)),
+                       session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, site_id)
     s = sme_sqm_t
     stmt = select(
         s.c["Site_ID"], s.c["Equipment_Tag_No"], s.c["Lining_System_Code"],
         s.c["Original_SQM"], s.c["Done_SQM"],
     )
-    if site_id:
+    if site_id is not None:
         stmt = stmt.where(s.c["Site_ID"] == site_id)
     # Explicit composite key order (no rowid) — SME Canon Rule 1.
     stmt = stmt.order_by(s.c["Site_ID"], s.c["Equipment_Tag_No"], s.c["Lining_System_Code"])

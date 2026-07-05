@@ -137,6 +137,35 @@ def require_roles(*roles: str):
     return _dep
 
 
+# --- Site scoping (reads) -----------------------------------------------------
+# Multi-site isolation (Tier-2 hardening): below logistics (level 3), a user may
+# only read rows belonging to their own Site_ID. admin + logistics stay global.
+SITE_SCOPE_MIN_LEVEL = 3
+
+
+def site_scope(user: dict) -> str | None:
+    """None → unrestricted (admin/logistics). Otherwise the only Site_ID this
+    user may read — possibly '' for a site-less scoped user (e.g. a warehouse
+    account), which every consumer must treat as *matches nothing* (fail-closed),
+    never as a wildcard."""
+    if user.get("level", 0) >= SITE_SCOPE_MIN_LEVEL:
+        return None
+    return (user.get("site_id") or "").strip()
+
+
+def resolve_site_param(user: dict, requested: str | None) -> str | None:
+    """Resolve a ?site_id= query param under scoping. Unrestricted users get
+    exactly what they asked for (None = no filter). Scoped users always get
+    their own site; explicitly requesting a different one is a 403 so the
+    boundary is visible rather than silently rewritten."""
+    scope = site_scope(user)
+    if scope is None:
+        return requested
+    if requested is not None and requested != scope:
+        raise HTTPException(403, "you may only read data for your own site")
+    return scope
+
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 

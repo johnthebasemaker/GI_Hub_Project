@@ -32,7 +32,7 @@ if _ROOT not in sys.path:
 from backend import models  # noqa: E402
 
 from .admin import router as admin_router  # noqa: E402
-from .auth import get_current_user, require_level  # noqa: E402
+from .auth import get_current_user, require_level, site_scope  # noqa: E402
 from .auth import router as auth_router  # noqa: E402
 from .config import CORS_ORIGINS  # noqa: E402
 from .crud import make_read_router  # noqa: E402
@@ -167,9 +167,13 @@ async def health(session: AsyncSession = Depends(get_session)):
     }
 
 
-@app.get("/meta/sites", tags=["meta"], summary="Distinct Site_IDs (for a site picker)",
-         dependencies=[Depends(get_current_user)])
-async def sites(session: AsyncSession = Depends(get_session)):
+@app.get("/meta/sites", tags=["meta"], summary="Distinct Site_IDs (for a site picker)")
+async def sites(user: dict = Depends(get_current_user),
+                session: AsyncSession = Depends(get_session)):
+    scope = site_scope(user)
+    if scope is not None:
+        # Scoped users only ever pick their own site ('' → no site → empty).
+        return {"sites": [scope] if scope else []}
     inv = _MD.tables["inventory"]
     col = inv.c["Site_ID"]
     res = await session.execute(select(distinct(col)).where(col.isnot(None)).order_by(col))
@@ -177,17 +181,24 @@ async def sites(session: AsyncSession = Depends(get_session)):
 
 
 @app.get("/meta/inventory-summary", tags=["meta"],
-         summary="Exact inventory item counts by site and by category",
-         dependencies=[Depends(get_current_user)])
-async def inventory_summary(session: AsyncSession = Depends(get_session)):
+         summary="Exact inventory item counts by site and by category")
+async def inventory_summary(user: dict = Depends(get_current_user),
+                            session: AsyncSession = Depends(get_session)):
     inv = _MD.tables["inventory"]
     site_c, cat_c = inv.c["Site_ID"], inv.c["Category"]
+    scope = site_scope(user)
+    if scope == "":
+        return {"total_items": 0, "by_site": [], "by_category": []}
+
+    def _w(stmt):
+        return stmt.where(site_c == scope) if scope is not None else stmt
 
     by_site = (await session.execute(
-        select(site_c, func.count()).group_by(site_c).order_by(site_c))).all()
+        _w(select(site_c, func.count())).group_by(site_c).order_by(site_c))).all()
     by_cat = (await session.execute(
-        select(cat_c, func.count()).group_by(cat_c).order_by(cat_c))).all()
-    total = (await session.execute(select(func.count()).select_from(inv))).scalar_one()
+        _w(select(cat_c, func.count())).group_by(cat_c).order_by(cat_c))).all()
+    total = (await session.execute(
+        _w(select(func.count()).select_from(inv)))).scalar_one()
 
     return {
         "total_items": total,

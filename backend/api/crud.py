@@ -28,6 +28,7 @@ from sqlalchemy import (
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .auth import get_current_user, resolve_site_param, site_scope
 from .db import get_session
 
 # Case-insensitive substrings that mark a column as secret; never serialised.
@@ -88,13 +89,21 @@ def make_read_router(table, *, prefix: str, tag: str, id_col: str,
             description=(f"Filter by {site_col}" if site_col
                          else "(this entity has no site scoping)"),
         ),
+        user: dict = Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ):
         base = select(*out_cols)
         cnt = select(func.count()).select_from(table)
-        if site_column is not None and site_id is not None:
-            base = base.where(site_column == site_id)
-            cnt = cnt.where(site_column == site_id)
+        if site_column is not None:
+            # Site scoping: below logistics the filter is forced to the user's
+            # own site (403 if they ask for another; '' = no site → no rows).
+            site_id = resolve_site_param(user, site_id)
+            if site_id == "":
+                return {"total": 0, "limit": limit, "offset": offset,
+                        "count": 0, "items": []}
+            if site_id is not None:
+                base = base.where(site_column == site_id)
+                cnt = cnt.where(site_column == site_id)
         base = base.order_by(id_column).limit(limit).offset(offset)
 
         items = [dict(m) for m in (await session.execute(base)).mappings().all()]
@@ -104,11 +113,20 @@ def make_read_router(table, *, prefix: str, tag: str, id_col: str,
 
     @router.get("/{item_id}", summary=f"Get one {tag} by {id_col}")
     async def get_item(item_id: str,
+                       user: dict = Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)):
         stmt = select(*out_cols).where(id_column == _coerce_id(item_id))
         row = (await session.execute(stmt)).mappings().first()
         if row is None:
             raise HTTPException(404, f"{tag} {item_id!r} not found")
+        if site_column is not None:
+            # A scoped user gets 404 (not 403) for another site's row — the
+            # response must not leak that the id exists.
+            scope = site_scope(user)
+            if scope is not None:
+                row_site = (row.get(site_col) or "").strip()
+                if scope == "" or row_site != scope:
+                    raise HTTPException(404, f"{tag} {item_id!r} not found")
         return dict(row)
 
     if not writable:
