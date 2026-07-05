@@ -750,6 +750,34 @@ export async function downloadPrPdf(prNumber: string, siteId?: string) {
   URL.revokeObjectURL(url)
 }
 
+// --- SME read-parity (Phase 8) ---------------------------------------------------
+export function useSmeEquipmentReport(siteId?: string) {
+  return useQuery({
+    queryKey: ['/sme/equipment-report', siteId],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/sme/equipment-report',
+        { params: siteId ? { site_id: siteId } : {} })).data.items,
+  })
+}
+
+export function useSmeComparison(siteId?: string) {
+  return useQuery({
+    queryKey: ['/sme/consumption-comparison', siteId],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/sme/consumption-comparison',
+        { params: siteId ? { site_id: siteId } : {} })).data.items,
+  })
+}
+
+export function useSmeDemandMatrix(siteId?: string) {
+  return useQuery({
+    queryKey: ['/sme/demand-matrix', siteId],
+    queryFn: async () =>
+      (await api.get<{ lines: Row[]; totals: Row[]; allocation_order: string }>(
+        '/sme/demand-matrix', { params: siteId ? { site_id: siteId } : {} })).data,
+  })
+}
+
 // --- Report archive + schedules -------------------------------------------------
 export function useReportArchive(reportType?: string) {
   return useQuery({

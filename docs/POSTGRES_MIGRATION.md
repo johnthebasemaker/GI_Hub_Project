@@ -221,6 +221,26 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-05 · actor=interactive · branch=`main` · 🧪 Parity build Phase 8 — SME read-parity (Phase 7 SKIPPED — Meta hold)
+**SME Canon held: 9 routes on /sme, ALL GET, zero insert/update/delete (audited).** New in
+`backend/api/sme.py` (all ≥ hod, site-scoped via resolve_site_param):
+- **/sme/equipment-report** — per-tag rollup (systems, planned/done/remaining SQM, % complete);
+  Python group-over-SELECT, explicit tag ordering (Canon Rule 1).
+- **/sme/consumption-comparison** — expected vs actual per material over `sme_consumption_log`
+  (+ committed/pending/rejected row counts; recipe-name join deduped via GROUP BY subselect).
+- **/sme/demand-matrix** — read-only port of the legacy allocation engine: demand = remaining
+  SQM × For_1_SQM per recipe line, then cascade allocation against the derived available pool
+  (SQL_SME_MATERIALS). The legacy drag-priority order is interactive UI state → the port uses a
+  FIXED deterministic order (tag asc, system numeric asc), stated in the response.
+- **/sme/export/{key}** — xlsx/csv/pdf of equipment-report · consumption-comparison ·
+  demand-matrix · demand-totals (≈ legacy Net Order List) · materials, reusing reports renderers.
+- FE: SmePage grows Equipment Report / Consumption Comparison / Demand Matrix tabs + XLSX
+  export buttons (Dashboard tab already existed).
+- **Verified:** service_tests **129 → 137/137** incl. invariants (allocated+shortfall==demand;
+  totals reconcile with lines); parity 5/5 (sme_materials 22=22); build green; live: 247 demand
+  lines → 19 totals, 26 equipment rollups, comparison 0 rows (no staged SME consumption yet —
+  correct empty state). Gotcha: sme.py never imported HTTPException before (no error paths).
+
 ### 2026-07-05 · actor=interactive · branch=`main` · 📄 Parity build Phase 6 — documents & PDF/label generators
 - **New `backend/api/documents.py`** (DRY — reuses `reports.py` renderers + one FPDF grid backbone):
   - **QR bin labels** `GET /documents/qr-labels` (inventory SAP QR grid, 3×4, site-scoped) and

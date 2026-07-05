@@ -617,6 +617,36 @@ async def test_site_scoping():
         check("scoped hod employee export → 200 (forced to own site)",
               r.status_code == 200, f"got {r.status_code}")
 
+        # Phase-8 SME read-parity (pure reads; SME Canon — no write endpoints exist).
+        r = await ac.get("/sme/equipment-report", headers=H(hod_t))
+        check("SME equipment report → 200 + items",
+              r.status_code == 200 and isinstance(r.json().get("items"), list),
+              f"got {r.status_code}")
+        r = await ac.get("/sme/consumption-comparison", headers=H(hod_t))
+        check("SME consumption comparison → 200 + items",
+              r.status_code == 200 and isinstance(r.json().get("items"), list),
+              f"got {r.status_code}")
+        r = await ac.get("/sme/demand-matrix", headers=H(hod_t))
+        dm = r.json() if r.status_code == 200 else {}
+        check("SME demand matrix → 200 with lines + totals",
+              r.status_code == 200 and {"lines", "totals"} <= set(dm),
+              f"got {r.status_code}")
+        check("demand lines hold allocated + shortfall == demand",
+              all(abs(l["Allocated_Qty"] + l["Shortfall_Qty"] - l["Demand_Qty"]) < 1e-6
+                  for l in dm.get("lines", [])))
+        line_sum = sum(l["Demand_Qty"] for l in dm.get("lines", []))
+        tot_sum = sum(t["Demand_Qty"] for t in dm.get("totals", []))
+        check("demand totals reconcile with the lines",
+              abs(line_sum - tot_sum) < 1e-3, f"{line_sum} vs {tot_sum}")
+        r = await ac.get("/sme/export/demand-totals", params={"format": "xlsx"}, headers=H(hod_t))
+        check("SME export → 200 + spreadsheet",
+              r.status_code == 200 and "spreadsheet" in r.headers.get("content-type", ""),
+              f"got {r.status_code}")
+        r = await ac.get("/sme/export/nope", headers=H(hod_t))
+        check("unknown SME export → 404", r.status_code == 404, f"got {r.status_code}")
+        r = await ac.get("/sme/demand-matrix", headers=H(worker_t))
+        check("worker (lvl 0) → 403 on SME views", r.status_code == 403, f"got {r.status_code}")
+
 
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""

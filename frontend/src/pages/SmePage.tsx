@@ -1,11 +1,41 @@
 import { useState } from 'react'
-import { Card, Col, Row, Select, Space, Statistic, Table, Tabs, Typography } from 'antd'
+import { App, Button, Card, Col, Row, Select, Space, Statistic, Table, Tabs, Typography } from 'antd'
+import { FileExcelOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import {
-  useSites, useSmeEquipment, useSmeMaterials, useSmeRecipes, useSmeSqm, useSmeSummary,
+  downloadDocument, useSites, useSmeComparison, useSmeDemandMatrix, useSmeEquipment,
+  useSmeEquipmentReport, useSmeMaterials, useSmeRecipes, useSmeSqm, useSmeSummary,
 } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 import { buildColumns } from '../lib/columns'
+
+// One-click XLSX export of an SME view (read-only server render).
+function ExportButton({ exportKey, siteId }: { exportKey: string; siteId?: string }) {
+  const { message } = App.useApp()
+  const [busy, setBusy] = useState(false)
+  return (
+    <Button
+      icon={<FileExcelOutlined />}
+      size="small"
+      loading={busy}
+      style={{ marginBottom: 12 }}
+      onClick={async () => {
+        setBusy(true)
+        try {
+          await downloadDocument(`/sme/export/${exportKey}`,
+            { format: 'xlsx', ...(siteId ? { site_id: siteId } : {}) },
+            `sme-${exportKey}.xlsx`)
+        } catch {
+          message.error('Export failed')
+        } finally {
+          setBusy(false)
+        }
+      }}
+    >
+      Export XLSX
+    </Button>
+  )
+}
 
 function num(v: unknown) {
   return v == null ? 0 : Number(v)
@@ -59,6 +89,25 @@ function Dashboard({ siteId }: { siteId?: string }) {
   )
 }
 
+function DemandMatrix({ siteId }: { siteId?: string }) {
+  const { data, isFetching } = useSmeDemandMatrix(siteId)
+  return (
+    <div>
+      <Space wrap style={{ marginBottom: 4 }}>
+        <ExportButton exportKey="demand-matrix" siteId={siteId} />
+        <ExportButton exportKey="demand-totals" siteId={siteId} />
+      </Space>
+      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+        {data?.allocation_order ?? ''}
+      </Typography.Paragraph>
+      <Typography.Title level={5} style={{ marginTop: 0 }}>Per-material totals (net order list)</Typography.Title>
+      <SmeTable rows={data?.totals} loading={isFetching} />
+      <Typography.Title level={5}>Allocation detail (per equipment × material)</Typography.Title>
+      <SmeTable rows={data?.lines} loading={isFetching} />
+    </div>
+  )
+}
+
 export default function SmePage() {
   const { data: sites } = useSites()
   const [siteId, setSiteId] = useState<string | undefined>(undefined)
@@ -66,6 +115,8 @@ export default function SmePage() {
   const recipes = useSmeRecipes()
   const sqm = useSmeSqm(siteId)
   const materials = useSmeMaterials()
+  const eqReport = useSmeEquipmentReport(siteId)
+  const comparison = useSmeComparison(siteId)
 
   return (
     <div>
@@ -87,7 +138,34 @@ export default function SmePage() {
           { key: 'equip', label: 'Equipment', children: <SmeTable rows={equipment.data} loading={equipment.isFetching} /> },
           { key: 'recipes', label: 'Recipes / BOM', children: <SmeTable rows={recipes.data} loading={recipes.isFetching} /> },
           { key: 'sqm', label: 'SQM Progress', children: <SmeTable rows={sqm.data} loading={sqm.isFetching} /> },
-          { key: 'materials', label: 'Materials', children: <SmeTable rows={materials.data} loading={materials.isFetching} /> },
+          {
+            key: 'materials', label: 'Materials',
+            children: (
+              <div>
+                <ExportButton exportKey="materials" siteId={siteId} />
+                <SmeTable rows={materials.data} loading={materials.isFetching} />
+              </div>
+            ),
+          },
+          {
+            key: 'eq-report', label: 'Equipment Report',
+            children: (
+              <div>
+                <ExportButton exportKey="equipment-report" siteId={siteId} />
+                <SmeTable rows={eqReport.data} loading={eqReport.isFetching} />
+              </div>
+            ),
+          },
+          {
+            key: 'comparison', label: 'Consumption Comparison',
+            children: (
+              <div>
+                <ExportButton exportKey="consumption-comparison" siteId={siteId} />
+                <SmeTable rows={comparison.data} loading={comparison.isFetching} />
+              </div>
+            ),
+          },
+          { key: 'demand', label: 'Demand Matrix', children: <DemandMatrix siteId={siteId} /> },
         ]}
       />
     </div>
