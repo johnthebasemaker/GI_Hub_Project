@@ -480,7 +480,165 @@ function EstimatorTab({ site }: TabProps) {
       <Table size="small" loading={isFetching} columns={columns} dataSource={data?.items ?? []}
         rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
         pagination={{ pageSize: 15, showTotal: (t) => `${t} estimates` }} />
+      <div style={{ marginTop: 16 }}>
+        <AutoDraftCard site={site} />
+      </div>
     </div>
+  )
+}
+
+// --- 🤖 Auto-draft estimates from SME demand (Phase 11C) ------------------------
+interface DraftItem extends ApiRow {
+  Equipment_Tag: string; System_Code: string; Location: string | null
+  Remaining_SQM: number; Norm_Used: number | null; Norm_Source: string | null
+  Draft_Manhours: number | null
+}
+
+function AutoDraftCard({ site }: TabProps) {
+  const { message } = App.useApp()
+  const qc = useQueryClient()
+  const [normOverride, setNormOverride] = useState<number | null>(null)
+  const [drafts, setDrafts] = useState<DraftItem[]>([])
+  const [siteNorm, setSiteNorm] = useState<number | null>(null)
+  const [hint, setHint] = useState<string | null>(null)
+  const [selected, setSelected] = useState<Key[]>([])
+  const key = (r: DraftItem) => `${r.Equipment_Tag}·${r.System_Code}`
+
+  const preview = useMutation({
+    mutationFn: () => api.get('/mh/estimates/auto-draft', {
+      params: { ...sp(site), ...(normOverride ? { norm: normOverride } : {}) },
+    }).then((r) => r.data),
+    onSuccess: (r) => {
+      setDrafts(r.items)
+      setSiteNorm(r.site_norm)
+      setHint(r.hint)
+      setSelected(r.items.filter((x: DraftItem) => x.Draft_Manhours != null).map(key))
+    },
+    onError: (e) => message.error(errMsg(e)),
+  })
+
+  const save = useMutation({
+    mutationFn: () => {
+      const rows = drafts
+        .filter((d) => selected.includes(key(d)) && d.Draft_Manhours != null)
+        .map((d) => ({
+          equipment_tag: d.Equipment_Tag, system_code: d.System_Code,
+          estimated_manhours: d.Draft_Manhours, estimated_sqm: d.Remaining_SQM,
+          location: d.Location,
+          basis: `auto-draft: ${d.Remaining_SQM} SQM × ${d.Norm_Used} MH/SQM (${d.Norm_Source})`,
+        }))
+      return api.post('/mh/estimates/auto-draft', { ...sp(site), rows }).then((r) => r.data)
+    },
+    onSuccess: (r) => {
+      message.success(`${r.saved} estimate(s) saved`)
+      setDrafts([]); setSelected([])
+      for (const k of ['/mh/estimates', '/mh/variance', '/mh/scorecard']) {
+        qc.invalidateQueries({ queryKey: [k] })
+      }
+    },
+    onError: (e) => message.error(errMsg(e)),
+  })
+
+  const patchMh = (r: DraftItem, v: number | null) =>
+    setDrafts((ds) => ds.map((d) => (key(d) === key(r) ? { ...d, Draft_Manhours: v } : d)))
+
+  const columns: ColumnsType<DraftItem> = [
+    { title: 'Tag', dataIndex: 'Equipment_Tag' },
+    { title: 'Sys', dataIndex: 'System_Code', width: 60 },
+    { title: 'Location', dataIndex: 'Location', render: (v) => v ?? '—' },
+    { title: 'Remaining SQM', dataIndex: 'Remaining_SQM', align: 'right', width: 125 },
+    { title: 'Norm', key: 'n', align: 'right', width: 130,
+      render: (_: unknown, r) => r.Norm_Used == null ? '—'
+        : <>{r.Norm_Used} <Tag>{r.Norm_Source}</Tag></> },
+    { title: 'Draft MH (editable)', key: 'mh', width: 150,
+      render: (_: unknown, r) => (
+        <InputNumber size="small" min={0} value={r.Draft_Manhours}
+          onChange={(v) => patchMh(r, v)} style={{ width: 110 }} />
+      ) },
+  ]
+
+  const savable = drafts.filter((d) => selected.includes(key(d)) && d.Draft_Manhours != null)
+  return (
+    <Card size="small" title="🤖 Auto-draft from SME demand" style={{ marginBottom: 16 }}>
+      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+        Drafts an estimate for every SME scope with remaining SQM and no estimate yet:
+        remaining SQM × MH/SQM norm (the scope's own history when it exists, else the
+        site norm). Review, edit, deselect — nothing saves until you approve.
+      </Typography.Paragraph>
+      <Space wrap style={{ marginBottom: 12 }}>
+        <Space size={4}>
+          <Typography.Text type="secondary">Norm override (MH/SQM)</Typography.Text>
+          <InputNumber min={0.001} step={0.05} value={normOverride}
+            onChange={setNormOverride} placeholder="auto" style={{ width: 100 }} />
+        </Space>
+        <Button onClick={() => preview.mutate()} loading={preview.isPending}>
+          Preview drafts
+        </Button>
+        {siteNorm != null && <Tag color="blue">site norm {siteNorm} MH/SQM</Tag>}
+        {drafts.length > 0 && (
+          <Button type="primary" loading={save.isPending} disabled={savable.length === 0}
+            onClick={() => save.mutate()}>
+            💾 Save {savable.length} estimate(s)
+          </Button>
+        )}
+      </Space>
+      {hint && <Typography.Paragraph type="warning">{hint}</Typography.Paragraph>}
+      {drafts.length > 0 && (
+        <Table size="small" columns={columns} dataSource={drafts} rowKey={key}
+          rowSelection={{ selectedRowKeys: selected, onChange: setSelected }}
+          scroll={{ x: 'max-content' }}
+          pagination={{ pageSize: 10, showTotal: (t) => `${t} draftable scopes` }} />
+      )}
+    </Card>
+  )
+}
+
+// --- 📅 Manpower forecast (Phase 11C) -------------------------------------------
+function ForecastCard({ site }: TabProps) {
+  const [crew, setCrew] = useState(10)
+  const [hpd, setHpd] = useState(8)
+  const params = useMemo(() => ({ ...sp(site), crew_size: crew, hours_per_day: hpd }),
+    [site, crew, hpd])
+  const { data, isFetching } = useMh<{
+    items: ApiRow[]
+    rollup: { scopes: number; total_remaining_manhours: number; days_to_complete: number }
+  }>('/mh/forecast', params)
+
+  const columns: ColumnsType<ApiRow> = [
+    { title: 'Tag', dataIndex: 'Equipment_Tag' },
+    { title: 'Sys', dataIndex: 'System_Code', width: 60 },
+    { title: 'Basis', dataIndex: 'Basis', width: 90,
+      render: (v: string) => <Tag color={v === 'estimate' ? 'blue' : 'default'}>{v}</Tag> },
+    { title: 'Remaining SQM', dataIndex: 'Remaining_SQM', align: 'right', width: 125,
+      render: (v) => v ?? '—' },
+    { title: 'Remaining MH', dataIndex: 'Remaining_Manhours', align: 'right', width: 120 },
+    { title: 'Days to complete', dataIndex: 'Days_To_Complete', align: 'right', width: 135 },
+  ]
+
+  return (
+    <Card size="small" title="📅 Manpower forecast" style={{ marginTop: 16 }}>
+      <Space wrap style={{ marginBottom: 12 }}>
+        <Space size={4}>
+          <Typography.Text type="secondary">Crew size</Typography.Text>
+          <InputNumber min={1} max={1000} value={crew}
+            onChange={(v) => setCrew(v ?? 10)} style={{ width: 80 }} />
+        </Space>
+        <Space size={4}>
+          <Typography.Text type="secondary">Hours/day</Typography.Text>
+          <InputNumber min={1} max={24} value={hpd}
+            onChange={(v) => setHpd(v ?? 8)} style={{ width: 80 }} />
+        </Space>
+        {data && (
+          <Tag color="gold">
+            {data.rollup.scopes} open scopes · {data.rollup.total_remaining_manhours} MH
+            remaining · ≈ {data.rollup.days_to_complete} crew-days
+          </Tag>
+        )}
+      </Space>
+      <Table size="small" loading={isFetching} columns={columns} dataSource={data?.items ?? []}
+        rowKey={(r) => `${r.Equipment_Tag}·${r.System_Code}`} scroll={{ x: 'max-content' }}
+        pagination={{ pageSize: 10, showTotal: (t) => `${t} scopes` }} />
+    </Card>
   )
 }
 
@@ -635,6 +793,7 @@ function ScorecardTab({ site }: TabProps) {
         onRow={(r) => (r.Reconciliation === 'drift'
           ? { style: { background: 'rgba(220,53,69,0.12)' } } : {})}
         pagination={{ pageSize: 15, showTotal: (t) => `${t} scopes` }} />
+      <ForecastCard site={site} />
     </div>
   )
 }

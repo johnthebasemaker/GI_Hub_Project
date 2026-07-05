@@ -1142,6 +1142,71 @@ async def test_manhours():
                   r.status_code == 200 and "spreadsheet" in r.headers.get("content-type", ""),
                   f"got {r.status_code}")
 
+            # ---- Phase-11C: planning automation ------------------------------
+            # Auto-draft preview: only unestimated SME scopes with remaining SQM;
+            # the seeded history (33.5 h over 70 SQM) yields a real site norm.
+            ad = (await ac.get("/mh/estimates/auto-draft", headers=H(hod_t))).json()
+            check("auto-draft preview: unestimated scopes only, site norm learned",
+                  len(ad["items"]) > 0 and ad["site_norm"] is not None
+                  and not any(x["Equipment_Tag"] == rtag and x["System_Code"] == rsys
+                              for x in ad["items"]), f"{len(ad['items'])} rows, norm={ad['site_norm']}")
+            check("draft math: Draft_MH == Remaining_SQM × Norm_Used on every row",
+                  all(x["Draft_Manhours"] is not None
+                      and abs(x["Draft_Manhours"] - round(x["Remaining_SQM"] * x["Norm_Used"], 1)) < 0.11
+                      for x in ad["items"]), str(ad["items"][:2]))
+            ad5 = (await ac.get("/mh/estimates/auto-draft", headers=H(hod_t),
+                                params={"norm": 0.5})).json()
+            check("norm override: every draft = remaining × 0.5, source 'override'",
+                  all(x["Norm_Source"] == "override"
+                      and abs(x["Draft_Manhours"] - round(x["Remaining_SQM"] * 0.5, 1)) < 0.11
+                      for x in ad5["items"]), str(ad5["items"][:1]))
+
+            # Save two reviewed drafts (edited MH) → they appear as estimates and
+            # leave the draftable pool.
+            pick = ad["items"][:2]
+            r = await ac.post("/mh/estimates/auto-draft", headers=H(hod_t), json={
+                "rows": [{"equipment_tag": x["Equipment_Tag"],
+                          "system_code": x["System_Code"],
+                          "estimated_manhours": 123.0,
+                          "estimated_sqm": x["Remaining_SQM"],
+                          "location": x["Location"], "basis": "svc auto-draft"}
+                         for x in pick]})
+            check("auto-draft save → 2 estimates", r.status_code == 200
+                  and r.json().get("saved") == 2, r.text[:120])
+            ests = (await ac.get("/mh/estimates", headers=H(hod_t))).json()["items"]
+            check("saved drafts land in mh_manhour_estimates with the reviewed MH",
+                  sum(1 for e in ests if e["Basis"] == "svc auto-draft"
+                      and float(e["Estimated_Manhours"]) == 123.0) == 2, "")
+            ad2 = (await ac.get("/mh/estimates/auto-draft", headers=H(hod_t))).json()
+            check("saved scopes leave the draftable pool",
+                  len(ad2["items"]) == len(ad["items"]) - 2,
+                  f"{len(ad['items'])} → {len(ad2['items'])}")
+            r = await ac.post("/mh/estimates/auto-draft", headers=H(hod_t), json={"rows": []})
+            check("auto-draft save with no rows → 422", r.status_code == 422,
+                  f"got {r.status_code}")
+
+            # Manpower forecast: estimate-based remaining (10 est − 8 actual = 2)
+            # + norm-based scopes; fully-consumed SVC-TAG/99 drops out.
+            fc = (await ac.get("/mh/forecast", headers=H(hod_t),
+                               params={"crew_size": 10, "hours_per_day": 8})).json()
+            fr = next((x for x in fc["items"] if x["Equipment_Tag"] == rtag
+                       and x["System_Code"] == rsys), None)
+            check("forecast: estimate-based scope has 2 MH remaining",
+                  fr is not None and fr["Basis"] == "estimate"
+                  and fr["Remaining_Manhours"] == 2.0 and fr["Days_To_Complete"] > 0,
+                  str(fr))
+            check("forecast: fully-consumed scope drops out (SVC-TAG 25.5h > 20 est)",
+                  not any(x["Equipment_Tag"] == "SVC-TAG" for x in fc["items"]), "")
+            check("forecast: norm-based scopes included + rollup sums",
+                  any(x["Basis"] == "norm" for x in fc["items"])
+                  and fc["rollup"]["total_remaining_manhours"] > 0
+                  and fc["rollup"]["days_to_complete"] > 0, str(fc["rollup"]))
+            r = await ac.get("/mh/forecast", headers=H(hod_t), params={"crew_size": 0})
+            check("forecast crew_size=0 → 422", r.status_code == 422, f"got {r.status_code}")
+            r = await ac.get("/mh/forecast", headers=H(worker_t))
+            check("worker (lvl 0) → 403 on the forecast", r.status_code == 403,
+                  f"got {r.status_code}")
+
             # Exports reuse the shared report renderers.
             r = await ac.get("/mh/export/variance", headers=H(hod_t),
                              params={"format": "xlsx"})

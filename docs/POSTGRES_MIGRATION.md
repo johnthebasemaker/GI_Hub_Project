@@ -221,6 +221,27 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-06 · actor=interactive · branch=`main` · 🤖 Phase 11C — planning automation (auto-draft estimates + manpower forecast)
+Closes the Man-Hours integration. Zero schema changes; sme_* still read-only (writes land
+exclusively in mh_manhour_estimates); exact {hod, admin} lock inherited from the router.
+- **GET /mh/estimates/auto-draft** (preview): a draft for every SME scope with remaining
+  SQM and NO estimate yet — remaining × MH/SQM norm, preferring the scope's own learned
+  norm over the site norm, with an explicit `?norm=` override (and a hint when no
+  productivity history exists yet). Estimated scopes are never overwritten silently.
+- **POST /mh/estimates/auto-draft** (save): bulk upsert of the REVIEWED rows (≤200) —
+  mirrors the HOD auto-draft-PR pattern: preview → edit → approve, nothing saves unseen.
+- **GET /mh/forecast**: days-to-complete per scope for a crew — estimate-based remaining
+  (max(est − actual, 0)) plus norm-based scopes; fully-consumed scopes drop out; site
+  rollup (total remaining MH ÷ crew × hours/day). crew_size 1–1000, hours/day 1–24.
+- **FE**: 🤖 Auto-draft card on the Estimator tab (norm override, editable Draft-MH
+  column, row selection, "Save N estimates") + 📅 Manpower-forecast card on the Scorecard
+  tab (crew/hours inputs, per-scope days, rollup tag).
+- **Verified:** service_tests **221 → 233/233** (draft math on every row, norm override,
+  save→pool-shrink round-trip, estimate-based 2-MH remaining, fully-consumed drop-out,
+  norm-based rows + rollup, 422 guards, worker 403; zero residue); build green; live: 65
+  real scopes draft at a 0.5 override ("Save 65 estimate(s)"), forecast shows the real
+  0050/1 estimate (15 MH ≈ 0.2 crew-days), clean console.
+
 ### 2026-07-06 · actor=interactive · branch=`main` · 🔗 Phase 11B — SME link layer + Equipment Scorecard
 The SME↔MH interconnect (user-approved Architecture A: **read-only join layer**, no link
 tables, sme_* NEVER written — verified by a code audit for insert/update/delete on sme_*).

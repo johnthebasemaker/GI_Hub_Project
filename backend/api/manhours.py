@@ -550,6 +550,155 @@ async def delete_estimate(est_id: int, user: dict = Depends(require_roles("hod")
     return {"deleted": est_id}
 
 
+# --- Phase 11C: planning automation over the 11B join layer ------------------------
+async def _auto_draft_items(session: AsyncSession, sid: Optional[str],
+                            norm_override: Optional[float]) -> dict:
+    """Draft labor estimates for every SME scope that has remaining SQM and no
+    estimate yet: remaining × MH/SQM norm. The scope's own learned norm wins;
+    otherwise the site norm (or an explicit override). READ-ONLY against sme_*."""
+    sme = await _sme_scopes(session, sid)
+    prog = await _sme_progress(session, sid)
+    est = await _estimate_map(session, sid)
+    prodv = await _productivity_rows(session, sid)
+    scope_norms = {(r["Equipment_Tag"], r["System_Code"]): r["MH_per_SQM"]
+                   for r in prodv["items"] if r["MH_per_SQM"]}
+    site_norm = norm_override if norm_override else prodv["site_norm"]["mh_per_sqm"]
+
+    items = []
+    for key in sorted(sme, key=lambda k: (str(k[0]), str(k[1]))):
+        if key in est:
+            continue  # already estimated — never overwrite silently
+        s, p = sme[key], prog.get(key)
+        planned = float((p and p["original_sqm"]) or s["surface_sqm"] or 0)
+        done = float((p and p["done_sqm"]) or 0)
+        remaining = max(planned - done, 0.0)
+        if remaining <= 0:
+            continue
+        if norm_override:
+            norm, source = norm_override, "override"
+        elif key in scope_norms:
+            norm, source = scope_norms[key], "scope"
+        else:
+            norm, source = site_norm, "site"
+        items.append({
+            "Equipment_Tag": key[0], "System_Code": key[1],
+            "Location": s["location"], "Remaining_SQM": round(remaining, 2),
+            "Norm_Used": round(norm, 3) if norm else None,
+            "Norm_Source": source if norm else None,
+            "Draft_Manhours": round(remaining * norm, 1) if norm else None,
+        })
+    return {"items": items, "site_norm": site_norm,
+            "hint": None if site_norm else
+            "no productivity history yet — pass ?norm= to draft with a manual MH/SQM norm"}
+
+
+@router.get("/estimates/auto-draft",
+            summary="Preview draft estimates: SME remaining SQM × MH/SQM norm")
+async def auto_draft_preview(site_id: Optional[str] = None, norm: Optional[float] = None,
+                             user: dict = Depends(require_roles("hod")),
+                             session: AsyncSession = Depends(get_session)):
+    if norm is not None and norm <= 0:
+        raise HTTPException(422, "norm must be > 0")
+    sid = resolve_site_param(user, site_id)
+    return await _auto_draft_items(session, sid, norm)
+
+
+class DraftRow(BaseModel):
+    equipment_tag: str
+    system_code: str
+    estimated_manhours: float
+    estimated_sqm: Optional[float] = None
+    location: Optional[str] = None
+    basis: Optional[str] = None
+
+
+class AutoDraftIn(BaseModel):
+    rows: list[DraftRow]
+    site_id: Optional[str] = None
+
+
+@router.post("/estimates/auto-draft",
+             summary="Save reviewed draft estimates (bulk upsert into mh_manhour_estimates)")
+async def auto_draft_save(body: AutoDraftIn = Body(...),
+                          user: dict = Depends(require_roles("hod")),
+                          session: AsyncSession = Depends(get_session)):
+    sid = _write_site(user, body.site_id)
+    if not body.rows:
+        raise HTTPException(422, "no rows to save")
+    if len(body.rows) > 200:
+        raise HTTPException(422, "at most 200 estimates per save")
+    saved = 0
+    for row in body.rows:
+        tag, sc = _clean(row.equipment_tag), _clean(row.system_code)
+        if not tag or not sc or row.estimated_manhours < 0:
+            raise HTTPException(422, f"bad draft row: {row.equipment_tag}/{row.system_code}")
+        stmt = pg_insert(estimates_t).values(
+            Site_ID=sid, Location=_clean(row.location), Equipment_Tag=tag,
+            System_Code=sc, Estimated_Manhours=float(row.estimated_manhours),
+            Estimated_SQM=row.estimated_sqm,
+            Basis=_clean(row.basis) or "auto-draft (SME remaining SQM × norm)",
+            created_by=user["username"])
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["Site_ID", "Equipment_Tag", "System_Code"],
+            set_={"Location": stmt.excluded.Location,
+                  "Estimated_Manhours": stmt.excluded.Estimated_Manhours,
+                  "Estimated_SQM": stmt.excluded.Estimated_SQM,
+                  "Basis": stmt.excluded.Basis,
+                  "updated_at": _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)})
+        await session.execute(stmt)
+        saved += 1
+    await write_audit(session, user["username"], "MH_ESTIMATE_AUTODRAFT",
+                      "mh_manhour_estimates", f"{sid} rows={saved}")
+    await session.commit()
+    return {"saved": saved}
+
+
+@router.get("/forecast",
+            summary="Manpower forecast: days-to-complete per scope for a crew size")
+async def forecast(crew_size: int = 10, hours_per_day: float = 8.0,
+                   site_id: Optional[str] = None,
+                   user: dict = Depends(require_roles("hod")),
+                   session: AsyncSession = Depends(get_session)):
+    """Remaining man-hours per scope ÷ (crew × hours/day). Scopes WITH an
+    estimate use max(estimated − actual, 0); scopes without one fall back to
+    remaining SQM × the productivity norm. Fully-consumed scopes drop out."""
+    if not (1 <= crew_size <= 1000):
+        raise HTTPException(422, "crew_size must be 1–1000")
+    if not (1.0 <= hours_per_day <= 24.0):
+        raise HTTPException(422, "hours_per_day must be 1–24")
+    sid = resolve_site_param(user, site_id)
+
+    est = await _estimate_map(session, sid)
+    hours = await _labor_hours(session, sid)
+    drafts = await _auto_draft_items(session, sid, None)  # unestimated scopes
+    capacity = crew_size * hours_per_day
+
+    items = []
+    for key, e in sorted(est.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):
+        actual = float(hours.get(key, {}).get("hours") or 0)
+        remaining_mh = max(float(e["est_mh"]) - actual, 0.0)
+        if remaining_mh <= 0:
+            continue
+        items.append({"Equipment_Tag": key[0], "System_Code": key[1],
+                      "Basis": "estimate", "Remaining_SQM": None,
+                      "Remaining_Manhours": round(remaining_mh, 1),
+                      "Days_To_Complete": round(remaining_mh / capacity, 2)})
+    for d in drafts["items"]:
+        if d["Draft_Manhours"] is None:
+            continue
+        items.append({"Equipment_Tag": d["Equipment_Tag"],
+                      "System_Code": d["System_Code"], "Basis": "norm",
+                      "Remaining_SQM": d["Remaining_SQM"],
+                      "Remaining_Manhours": d["Draft_Manhours"],
+                      "Days_To_Complete": round(d["Draft_Manhours"] / capacity, 2)})
+    items.sort(key=lambda r: (str(r["Equipment_Tag"]), str(r["System_Code"])))
+    total_mh = round(sum(r["Remaining_Manhours"] for r in items), 1)
+    return {"items": items, "crew_size": crew_size, "hours_per_day": hours_per_day,
+            "rollup": {"scopes": len(items), "total_remaining_manhours": total_mh,
+                       "days_to_complete": round(total_mh / capacity, 1),
+                       "site_norm": drafts["site_norm"]}}
+
+
 # --- Estimate vs Actual (inline port of the legacy v_mh_estimate_vs_actual view) ---
 SQL_MH_VARIANCE = '''
 SELECT e."Site_ID", e."Equipment_Tag", e."System_Code", e."Location",
