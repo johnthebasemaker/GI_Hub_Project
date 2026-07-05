@@ -431,6 +431,35 @@ async def test_site_scoping():
         check("unbound warehouse_user fails closed (scope='')",
               warehouse_scope({"role": "warehouse_user", "warehouse_id": ""}) == "")
 
+        # HOD operations pack (non-persisting guard checks; commit machinery is
+        # covered by the rolled-back suite-A service tests).
+        r = await ac.patch("/hod/pending/returns/999999", headers=H(hod_t),
+                           json={"fields": {"Quantity": 5}})
+        check("edit of a non-existent staged row → 404", r.status_code == 404,
+              f"got {r.status_code}")
+        r = await ac.patch("/hod/pending/returns/1", headers=H(hod_t),
+                           json={"fields": {"status": "approved"}})
+        check("editing a non-whitelisted field → 422", r.status_code == 422,
+              f"got {r.status_code}")
+        r = await ac.get("/hod/preflight", headers=H(hod_t))
+        check("negative-stock pre-flight → 200 + items list",
+              r.status_code == 200 and isinstance(r.json().get("items"), list),
+              f"got {r.status_code}")
+        r = await ac.post("/hod/pending/issues/bulk-approve", headers=H(hod_t),
+                          json={"ids": []})
+        check("bulk-approve with no ids → 422", r.status_code == 422, f"got {r.status_code}")
+        r = await ac.get("/hod/low-stock", headers=H(hod_t))
+        check("low-stock view → 200 for a scoped hod", r.status_code == 200,
+              f"got {r.status_code}")
+        r = await ac.post("/hod/prs/auto-draft", headers=H(hod_t), json={"site_id": "HQ"})
+        check("scoped hod auto-drafting a foreign-site PR → 403", r.status_code == 403,
+              f"got {r.status_code}")
+        r = await ac.get("/hod/prs/PR-NOPE-0000/pdf", headers=H(hod_t))
+        check("PDF of a non-existent PR → 404", r.status_code == 404, f"got {r.status_code}")
+        r = await ac.get("/hod/preflight", headers=H(worker_t))
+        check("worker (lvl 0) → 403 on the HOD ops pack", r.status_code == 403,
+              f"got {r.status_code}")
+
 
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""

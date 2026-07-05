@@ -583,6 +583,72 @@ export function useReports() {
   })
 }
 
+// --- HOD operations pack ------------------------------------------------------
+export function useHodPreflight(siteId?: string) {
+  return useQuery({
+    queryKey: ['/hod/preflight', siteId],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/hod/preflight', { params: siteId ? { site_id: siteId } : {} })).data.items,
+  })
+}
+
+export function useHodEditPending() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ kind, id, fields }: { kind: string; id: number; fields: Record<string, unknown> }) =>
+      api.patch(`/hod/pending/${kind}/${id}`, { fields }).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['/hod/pending'] })
+      qc.invalidateQueries({ queryKey: ['/hod/preflight'] })
+    },
+  })
+}
+
+export function useHodBulkApprove() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ kind, ids }: { kind: string; ids: number[] }) =>
+      api.post(`/hod/pending/${kind}/bulk-approve`, { ids }).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['/hod/pending'] })
+      qc.invalidateQueries({ queryKey: ['/hod/preflight'] })
+      qc.invalidateQueries({ queryKey: ['/meta/work-queues'] })
+      invalidateLedger(qc, ['/receipts', '/consumption', '/returns'])
+    },
+  })
+}
+
+export function useLowStock(siteId?: string) {
+  return useQuery({
+    queryKey: ['/hod/low-stock', siteId],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/hod/low-stock', { params: siteId ? { site_id: siteId } : {} })).data.items,
+  })
+}
+
+export function useAutoDraftPr() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ siteId }: { siteId: string }) =>
+      api.post('/hod/prs/auto-draft', { site_id: siteId }).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/hod/prs'] }),
+  })
+}
+
+export async function downloadPrPdf(prNumber: string, siteId?: string) {
+  const res = await api.get(`/hod/prs/${encodeURIComponent(prNumber)}/pdf`, {
+    params: siteId ? { site_id: siteId } : {}, responseType: 'blob',
+  })
+  const url = URL.createObjectURL(res.data as Blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${prNumber}.pdf`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
 // Authenticated file download: the axios `api` instance carries the bearer
 // token, so we fetch the file as a blob and trigger a browser save.
 export async function downloadReport(key: string, format: string, params: Record<string, unknown>) {

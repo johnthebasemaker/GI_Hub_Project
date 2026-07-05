@@ -221,6 +221,23 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-05 · actor=interactive · branch=`main` · 🏗️ Parity build Steps 1–2 — role locks + HOD operations pack
+From the user-approved feature-parity audit (see the audit in-session; plan phases 1–10).
+- **Step 1 (security):** `/entry/*` staging writes exact-locked to store_keeper(+admin) —
+  legacy Entry Log parity; nav group hidden for other roles. **Warehouse_ID server binding:**
+  JWT/user carry `warehouse_id`; warehouse_user pinned on assignments/DNs (param + row-level
+  guards, DN-create 403 cross-warehouse; unbound → fail closed); FE pins the picker.
+- **Step 2 (HOD ops pack):** PATCH edit of staged rows pre-approval (per-kind whitelist —
+  NB returns use `Return_Reason`; adjustments recompute `variance`), `GET /hod/preflight`
+  (negative-stock deficit table over pending issues), bulk-approve (per-id transactions),
+  `GET /hod/low-stock` (+30d burn, days-of-supply, suggested reorder) + LowStockPage +
+  nav, `POST /hod/prs/auto-draft` (below-minimum → draft PR via create_pr), PR PDF download
+  (shared fpdf renderer). ApprovalsPage: edit modal + row-selection bulk commit + pre-flight
+  banner.
+- **Verified:** service_tests **84 → 92/92** · build green · live: hod nav lost Data Entry,
+  PATCH edit persisted + audited, low-stock (0 rows = matches SQLite v_site_stock), route
+  order gotcha fixed (`/hod/preflight`, not `/pending/preflight`).
+
 ### 2026-07-05 · actor=interactive · branch=`main` · 🔒 Security + UX hardening — site scoping · token refresh · nav badges (+ segregation Phase A)
 Four user-approved slices (commits `b85a00d` · `16b799c` · `a28d9a1` · `9cf48b4`):
 - **Segregation Phase A (repo).** `REPO_MAP.md` = the monorepo boundary contract (legacy /

@@ -5,9 +5,9 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { Dayjs } from 'dayjs'
-import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
+import { DownloadOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useAuth } from '../auth/AuthContext'
-import { useCreatePr, useHodPrs, useList, useSites, useSubmitPr } from '../api/hooks'
+import { downloadPrPdf, useCreatePr, useHodPrs, useList, useSites, useSubmitPr } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 
 function errMsg(e: unknown): string {
@@ -160,14 +160,30 @@ function PrQueue() {
     {
       title: 'Action',
       key: '__act',
-      render: (_: unknown, r: ApiRow) =>
-        r.logistics_status === 'in_po' ? (
-          <Typography.Text type="secondary">in PO</Typography.Text>
-        ) : (
-          <Popconfirm title="Submit this PR to Logistics?" onConfirm={() => doSubmit(r)}>
-            <Button size="small" type="primary">Submit to Logistics</Button>
-          </Popconfirm>
-        ),
+      render: (_: unknown, r: ApiRow) => (
+        <Space>
+          {r.logistics_status === 'in_po' ? (
+            <Typography.Text type="secondary">in PO</Typography.Text>
+          ) : (
+            <Popconfirm title="Submit this PR to Logistics?" onConfirm={() => doSubmit(r)}>
+              <Button size="small" type="primary">Submit to Logistics</Button>
+            </Popconfirm>
+          )}
+          <Button
+            size="small"
+            icon={<DownloadOutlined />}
+            onClick={async () => {
+              try {
+                await downloadPrPdf(String(r.PR_Number), String(r.Site_ID))
+              } catch {
+                message.error('PDF download failed')
+              }
+            }}
+          >
+            PDF
+          </Button>
+        </Space>
+      ),
     },
   ]
 
