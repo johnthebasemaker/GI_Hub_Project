@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
 import {
-  App, Button, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Typography,
+  App, Button, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
   useCreateDn, useDnItems, useList, useShipDn, useWhAck, useWhAssignmentItems,
-  useWhAssignments, useWhDns, useWhReceive,
+  useWhAssignments, useWhCreateReturn, useWhDisposition, useWhDns, useWhHistory,
+  useWhReceive, useWhReturns,
 } from '../api/hooks'
 import type { Row } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
@@ -221,6 +222,137 @@ function DeliveryNotes({ warehouseId }: { warehouseId?: string }) {
   )
 }
 
+const DISPOSITIONS = ['hold', 'return_to_vendor', 'scrap', 'rework', 'closed']
+const DISPO_COLOR: Record<string, string> = {
+  open: 'gold', hold: 'orange', return_to_vendor: 'volcano',
+  scrap: 'red', rework: 'blue', closed: 'green',
+}
+
+function ReturnsFromSite() {
+  const { message } = App.useApp()
+  const { data: items, isFetching } = useWhReturns()
+  const create = useWhCreateReturn()
+  const dispo = useWhDisposition()
+  const [open, setOpen] = useState(false)
+  const [form] = Form.useForm()
+
+  const submit = async () => {
+    const v = await form.validateFields()
+    try {
+      await create.mutateAsync(v)
+      message.success('Return recorded — logistics notified')
+      setOpen(false)
+      form.resetFields()
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
+
+  const setStatus = async (id: number, status: string) => {
+    try {
+      await dispo.mutateAsync({ id, status })
+      message.success(`Return #${id} → ${status}`)
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
+
+  const columns: ColumnsType<Row> = [
+    { title: 'ID', dataIndex: 'id', width: 60 },
+    { title: 'PO', dataIndex: 'PO_Number', width: 120 },
+    { title: 'DN', dataIndex: 'DN_Number', width: 110, render: (v) => v ?? '—' },
+    { title: 'Material', dataIndex: 'Material_Code', render: (v) => v ?? '—' },
+    { title: 'Qty', dataIndex: 'Qty', align: 'right', width: 80 },
+    { title: 'Reason', dataIndex: 'Reason', ellipsis: true },
+    { title: 'Raised by', dataIndex: 'raised_by', width: 110 },
+    { title: 'Status', dataIndex: 'status', width: 140,
+      render: (v: string) => <Tag color={DISPO_COLOR[v] ?? 'default'}>{v}</Tag> },
+    {
+      title: 'Disposition', key: '__d', width: 190,
+      render: (_: unknown, r: Row) =>
+        r.status === 'closed' ? (
+          <Typography.Text type="secondary">closed</Typography.Text>
+        ) : (
+          <Select
+            size="small"
+            style={{ width: 170 }}
+            placeholder="Set disposition"
+            options={DISPOSITIONS.map((d) => ({ value: d, label: d.replace(/_/g, ' ') }))}
+            onChange={(v) => setStatus(Number(r.id), v)}
+          />
+        ),
+    },
+  ]
+
+  return (
+    <div>
+      <Button type="primary" style={{ marginBottom: 12 }} onClick={() => setOpen(true)}>
+        Record return from site
+      </Button>
+      <Table size="small" loading={isFetching} columns={columns} dataSource={items ?? []}
+        rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
+        pagination={{ pageSize: 20, showTotal: (t) => `${t} returns` }} />
+      <Modal title="Record a return received from a site" open={open} onOk={submit}
+        onCancel={() => setOpen(false)} confirmLoading={create.isPending} okText="Record"
+        destroyOnHidden>
+        <Form form={form} layout="vertical" preserve={false}>
+          <Form.Item name="PO_Number" label="PO Number" rules={[{ required: true }]}>
+            <Input placeholder="PO the material came from" />
+          </Form.Item>
+          <Form.Item name="DN_Number" label="DN Number (optional)"><Input /></Form.Item>
+          <Form.Item name="Material_Code" label="Material code (optional)"><Input /></Form.Item>
+          <Form.Item name="Qty" label="Quantity" rules={[{ required: true }]}>
+            <InputNumber style={{ width: '100%' }} min={0.001} />
+          </Form.Item>
+          <Form.Item name="Reason" label="Reason" rules={[{ required: true }]}>
+            <Select options={['damaged', 'over-receipt', 'quality issue', 'wrong item', 'other']
+              .map((v) => ({ value: v, label: v }))} />
+          </Form.Item>
+          <Form.Item name="notes" label="Notes (optional)"><Input.TextArea rows={2} /></Form.Item>
+        </Form>
+      </Modal>
+    </div>
+  )
+}
+
+function HistoryTab({ warehouseId }: { warehouseId?: string }) {
+  const { data, isFetching } = useWhHistory(warehouseId)
+  return (
+    <div>
+      <Space style={{ marginBottom: 12 }} wrap>
+        {(data?.throughput.dn_by_status ?? []).map((r) => (
+          <Tag key={String(r.status)} color={String(r.status) === 'in_transit' ? 'gold' : 'default'}>
+            {String(r.status)}: {String(r.n)}
+          </Tag>
+        ))}
+        {(data?.throughput.dn_by_family ?? []).map((r) => (
+          <Tag key={`f-${r.family}`} color="blue">{String(r.family)}: {String(r.n)}</Tag>
+        ))}
+      </Space>
+      <Typography.Title level={5}>Completed delivery notes</Typography.Title>
+      <Table size="small" loading={isFetching} dataSource={data?.dns ?? []}
+        rowKey={(r) => String(r.DN_Number)} scroll={{ x: 'max-content' }}
+        columns={[
+          { title: 'DN', dataIndex: 'DN_Number' }, { title: 'PO', dataIndex: 'PO_Number' },
+          { title: 'Site', dataIndex: 'Site_ID' }, { title: 'Family', dataIndex: 'rl_bl_family' },
+          { title: 'Date', dataIndex: 'DN_Date' },
+          { title: 'Status', dataIndex: 'status', render: (v: string) => <Tag>{v}</Tag> },
+        ] as ColumnsType<Row>}
+        pagination={{ pageSize: 10 }} />
+      <Typography.Title level={5}>Fulfilled assignments</Typography.Title>
+      <Table size="small" loading={isFetching} dataSource={data?.assignments ?? []}
+        rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
+        columns={[
+          { title: 'ID', dataIndex: 'id', width: 60 }, { title: 'PO', dataIndex: 'PO_Number' },
+          { title: 'Warehouse', dataIndex: 'Warehouse_ID' },
+          { title: 'Assigned', dataIndex: 'assigned_at' },
+          { title: 'Status', dataIndex: 'status', render: (v: string) => <Tag color="green">{v}</Tag> },
+        ] as ColumnsType<Row>}
+        pagination={{ pageSize: 10 }} />
+    </div>
+  )
+}
+
 export default function WarehousePage() {
   const { user } = useAuth()
   // Warehouse users are server-pinned to their bound Warehouse_ID — no picker.
@@ -252,6 +384,8 @@ export default function WarehousePage() {
         items={[
           { key: 'assignments', label: 'Incoming Assignments', children: <Assignments warehouseId={active} /> },
           { key: 'dns', label: 'Delivery Notes', children: <DeliveryNotes warehouseId={active} /> },
+          { key: 'returns', label: 'Returns from Site', children: <ReturnsFromSite /> },
+          { key: 'history', label: 'History', children: <HistoryTab warehouseId={active} /> },
         ]}
       />
     </div>

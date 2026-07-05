@@ -221,6 +221,21 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-05 · actor=interactive · branch=`main` · 🏭 Parity build Step 3 — warehouse completion (returns-from-site + history)
+- **Returns-from-site (disposition workflow):** built on the existing (previously unused)
+  `po_returns` table — NO new table/migration. `GET/POST /warehouse/returns` +
+  `POST /warehouse/returns/{id}/disposition` (open → hold | return_to_vendor | scrap |
+  rework → closed; closed is terminal → 409). Warehouse-bound users guarded via the PO's
+  assignment (403 cross-warehouse; unbound fail-closed); every action audited; logistics
+  notified on create + return_to_vendor. NB the legacy audit's "returns_from_site /
+  return_disposition" table names were paraphrases — `po_returns` is the real mechanism.
+- **History & throughput:** `GET /warehouse/history` — completed DNs (status ∉ prepared/
+  in_transit), fulfilled assignments, DN counts by status + RL/BL family; warehouse-scoped.
+- **FE:** WarehousePage gains "Returns from Site" (record modal + per-row disposition
+  select) and "History" (throughput tags + two tables) tabs.
+- **Verified:** service_tests **92 → 98/98** · build green · live: create→disposition→close
+  →409 lifecycle + all 4 tabs render.
+
 ### 2026-07-05 · actor=interactive · branch=`main` · 🏗️ Parity build Steps 1–2 — role locks + HOD operations pack
 From the user-approved feature-parity audit (see the audit in-session; plan phases 1–10).
 - **Step 1 (security):** `/entry/*` staging writes exact-locked to store_keeper(+admin) —

@@ -460,6 +460,30 @@ async def test_site_scoping():
         check("worker (lvl 0) → 403 on the HOD ops pack", r.status_code == 403,
               f"got {r.status_code}")
 
+        # Warehouse completion pack (non-persisting guard checks).
+        r = await ac.get("/warehouse/returns", headers=H(admin_t))
+        check("returns-from-site queue → 200 for admin",
+              r.status_code == 200 and isinstance(r.json().get("items"), list),
+              f"got {r.status_code}")
+        r = await ac.get("/warehouse/returns", headers=H(worker_t))
+        check("worker → 403 on the warehouse returns queue", r.status_code == 403,
+              f"got {r.status_code}")
+        r = await ac.post("/warehouse/returns", headers=H(admin_t), json={})
+        check("recording a return with an empty body → 422", r.status_code == 422,
+              f"got {r.status_code}")
+        r = await ac.post("/warehouse/returns/999999/disposition", headers=H(admin_t),
+                          json={"status": "hold"})
+        check("disposition of a non-existent return → 404", r.status_code == 404,
+              f"got {r.status_code}")
+        r = await ac.post("/warehouse/returns/1/disposition", headers=H(admin_t),
+                          json={"status": "yeet"})
+        check("invalid disposition value → 422", r.status_code == 422, f"got {r.status_code}")
+        r = await ac.get("/warehouse/history", headers=H(admin_t))
+        j = r.json() if r.status_code == 200 else {}
+        check("warehouse history → 200 with dns/assignments/throughput",
+              r.status_code == 200 and {"dns", "assignments", "throughput"} <= set(j),
+              f"got {r.status_code}")
+
 
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""

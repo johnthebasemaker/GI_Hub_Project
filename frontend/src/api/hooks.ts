@@ -583,6 +583,44 @@ export function useReports() {
   })
 }
 
+// --- Warehouse: returns-from-site + history ------------------------------------
+export function useWhReturns(status?: string) {
+  return useQuery({
+    queryKey: ['/warehouse/returns', status],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/warehouse/returns', { params: status ? { status } : {} })).data.items,
+  })
+}
+
+export function useWhCreateReturn() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api.post('/warehouse/returns', body).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/warehouse/returns'] }),
+  })
+}
+
+export function useWhDisposition() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, status, notes }: { id: number; status: string; notes?: string }) =>
+      api.post(`/warehouse/returns/${id}/disposition`, { status, notes }).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/warehouse/returns'] }),
+  })
+}
+
+export function useWhHistory(warehouseId?: string) {
+  return useQuery({
+    queryKey: ['/warehouse/history', warehouseId],
+    queryFn: async () =>
+      (await api.get('/warehouse/history', { params: warehouseId ? { warehouse_id: warehouseId } : {} })).data as {
+        dns: Row[]; assignments: Row[];
+        throughput: { dn_by_status: Row[]; dn_by_family: Row[] }
+      },
+  })
+}
+
 // --- HOD operations pack ------------------------------------------------------
 export function useHodPreflight(siteId?: string) {
   return useQuery({

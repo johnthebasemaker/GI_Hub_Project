@@ -13,12 +13,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sqlalchemy import select
+from sqlalchemy import func, insert, select, text, update
 
 from .auth import require_roles, resolve_warehouse_param, warehouse_scope
 from .db import get_session
 from .services import warehouse as wh
-from .services.ledger import _MD
+from .services.ledger import _MD, write_audit
+from .services.notifications import notify
 
 router = APIRouter(prefix="/warehouse", tags=["warehouse"],
                    dependencies=[Depends(require_roles("warehouse_user", "logistics"))])
@@ -27,6 +28,11 @@ _ROLE = require_roles("warehouse_user", "logistics")
 
 _po_assignments_t = _MD.tables["po_assignments"]
 _delivery_notes_t = _MD.tables["delivery_notes"]
+_po_returns_t = _MD.tables["po_returns"]
+
+# Disposition lifecycle for a return-from-site (legacy warehouse-portal tab):
+# open → hold | return_to_vendor | scrap | rework → closed.
+DISPOSITIONS = ("hold", "return_to_vendor", "scrap", "rework", "closed")
 
 
 async def _guard_row_warehouse(session: AsyncSession, table, key_col: str,
@@ -151,6 +157,152 @@ async def dns(warehouse_id: Optional[str] = None, status: Optional[str] = None,
 @router.get("/dns/{dn_number}/items", summary="DN line items")
 async def dn_items(dn_number: str, session: AsyncSession = Depends(get_session)):
     return {"items": await wh.dn_lines(session, dn_number)}
+
+
+# --- Returns from site (disposition workflow over po_returns) -----------------
+class ReturnFromSiteIn(BaseModel):
+    PO_Number: str
+    Qty: float = Field(..., gt=0)
+    Reason: str
+    DN_Number: Optional[str] = None
+    po_item_id: Optional[int] = None
+    Material_Code: Optional[str] = None
+    Expected_Resupply: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class DispositionIn(BaseModel):
+    status: str
+    notes: Optional[str] = None
+
+
+async def _guard_po_warehouse(session: AsyncSession, po_number: str, user: dict) -> None:
+    """A warehouse-bound user may only touch returns for POs assigned to their
+    own warehouse."""
+    scope = warehouse_scope(user)
+    if scope is None:
+        return
+    if scope == "":
+        raise HTTPException(403, "no warehouse is bound to your account")
+    n = (await session.execute(
+        select(func.count()).select_from(_po_assignments_t)
+        .where(_po_assignments_t.c["PO_Number"] == po_number,
+               _po_assignments_t.c["Warehouse_ID"] == scope))).scalar_one()
+    if n == 0:
+        raise HTTPException(403, "this PO is not assigned to your warehouse")
+
+
+@router.get("/returns", summary="Returns-from-site queue (disposition workflow)")
+async def list_returns(status: Optional[str] = None,
+                       user: dict = Depends(_ROLE),
+                       session: AsyncSession = Depends(get_session)):
+    t = _po_returns_t
+    stmt = select(t)
+    if status:
+        stmt = stmt.where(t.c["status"] == status)
+    scope = warehouse_scope(user)
+    if scope == "":
+        return {"items": []}
+    if scope is not None:
+        stmt = stmt.where(t.c["PO_Number"].in_(
+            select(_po_assignments_t.c["PO_Number"])
+            .where(_po_assignments_t.c["Warehouse_ID"] == scope)))
+    stmt = stmt.order_by(t.c["id"].desc()).limit(500)
+    return {"items": [dict(m) for m in (await session.execute(stmt)).mappings().all()]}
+
+
+@router.post("/returns", status_code=201, summary="Record a return received from a site")
+async def create_return_from_site(body: ReturnFromSiteIn = Body(...),
+                                  user: dict = Depends(_ROLE),
+                                  session: AsyncSession = Depends(get_session)):
+    async with session.begin():
+        await _guard_po_warehouse(session, body.PO_Number, user)
+        rid = (await session.execute(insert(_po_returns_t).values(
+            PO_Number=body.PO_Number, po_item_id=body.po_item_id,
+            DN_Number=body.DN_Number, Material_Code=body.Material_Code,
+            Qty=body.Qty, Reason=body.Reason,
+            raised_by_role=user["role"], raised_by=user["username"],
+            Expected_Resupply=body.Expected_Resupply, status="open",
+            notes=body.notes).returning(_po_returns_t.c["id"]))).scalar_one()
+        await write_audit(session, user["username"], "RETURN_FROM_SITE", "po_returns",
+                          f"id={rid} po={body.PO_Number} qty={body.Qty:g} reason={body.Reason}")
+        await notify(session, event_key="vendor_return_raised", recipient_role="logistics",
+                     severity="warning", title="Return from site recorded",
+                     body=f"{body.PO_Number}: qty {body.Qty:g} — {body.Reason}",
+                     related_table="po_returns", related_ref=str(rid))
+    return {"created": True, "id": rid}
+
+
+@router.post("/returns/{rid}/disposition", summary="Set a return's disposition")
+async def set_return_disposition(rid: int, body: DispositionIn = Body(...),
+                                 user: dict = Depends(_ROLE),
+                                 session: AsyncSession = Depends(get_session)):
+    if body.status not in DISPOSITIONS:
+        raise HTTPException(422, f"status must be one of {sorted(DISPOSITIONS)}")
+    async with session.begin():
+        row = (await session.execute(
+            select(_po_returns_t.c["PO_Number"], _po_returns_t.c["status"])
+            .where(_po_returns_t.c["id"] == rid))).first()
+        if row is None:
+            raise HTTPException(404, f"return {rid} not found")
+        if row.status == "closed":
+            raise HTTPException(409, "this return is already closed")
+        await _guard_po_warehouse(session, row.PO_Number, user)
+        values: dict = {"status": body.status}
+        if body.notes:
+            values["notes"] = body.notes
+        if body.status == "closed":
+            values["closed_at"] = func.now()
+            values["closed_by"] = user["username"]
+        await session.execute(update(_po_returns_t)
+                              .where(_po_returns_t.c["id"] == rid).values(**values))
+        await write_audit(session, user["username"], "RETURN_DISPOSITION", "po_returns",
+                          f"id={rid} → {body.status}")
+        if body.status == "return_to_vendor":
+            await notify(session, event_key="vendor_return_raised", recipient_role="logistics",
+                         severity="warning", title="Return routed back to vendor",
+                         body=f"{row.PO_Number}: return #{rid} dispositioned return_to_vendor",
+                         related_table="po_returns", related_ref=str(rid))
+    return {"updated": True, "id": rid, "status": body.status}
+
+
+# --- History & throughput ------------------------------------------------------
+@router.get("/history", summary="Completed DNs + fulfilled assignments + throughput")
+async def history(warehouse_id: Optional[str] = None,
+                  user: dict = Depends(_ROLE),
+                  session: AsyncSession = Depends(get_session)):
+    warehouse_id = resolve_warehouse_param(user, warehouse_id)
+    if warehouse_id == "":
+        return {"dns": [], "assignments": [], "throughput": {"dn_by_status": [], "dn_by_family": []}}
+    dn_where, params = "1=1", {}
+    if warehouse_id:
+        dn_where += ' AND "Warehouse_ID" = :wh'
+        params["wh"] = warehouse_id
+    dns = (await session.execute(text(f'''
+        SELECT "DN_Number", "PO_Number", "Warehouse_ID", "Site_ID", rl_bl_family,
+               "DN_Date", status, created_by
+        FROM delivery_notes WHERE {dn_where} AND status NOT IN ('prepared', 'in_transit')
+        ORDER BY "DN_Number" DESC LIMIT 200'''), params)).mappings().all()
+
+    a = _po_assignments_t
+    astmt = select(a).where(a.c["status"] == "received")
+    if warehouse_id:
+        astmt = astmt.where(a.c["Warehouse_ID"] == warehouse_id)
+    assignments = (await session.execute(
+        astmt.order_by(a.c["id"].desc()).limit(200))).mappings().all()
+
+    by_status = (await session.execute(text(f'''
+        SELECT status, COUNT(*) AS n FROM delivery_notes WHERE {dn_where}
+        GROUP BY status ORDER BY status'''), params)).mappings().all()
+    by_family = (await session.execute(text(f'''
+        SELECT COALESCE(rl_bl_family, '—') AS family, COUNT(*) AS n
+        FROM delivery_notes WHERE {dn_where}
+        GROUP BY COALESCE(rl_bl_family, '—') ORDER BY family'''), params)).mappings().all()
+
+    return {"dns": [dict(r) for r in dns],
+            "assignments": [dict(r) for r in assignments],
+            "throughput": {"dn_by_status": [dict(r) for r in by_status],
+                           "dn_by_family": [dict(r) for r in by_family]}}
 
 
 @router.post("/dns/{dn_number}/ship", summary="Mark a DN outbound (in_transit)")
