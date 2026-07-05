@@ -1,0 +1,42 @@
+# ============================================================================
+# backend/requirements.txt — NEW-STACK (FastAPI + PostgreSQL) dependencies
+# ----------------------------------------------------------------------------
+# The logical dependency boundary for the new stack (see REPO_MAP.md).
+#
+#   • Local dev / CI: the root requirements.txt includes this file via
+#     `-r backend/requirements.txt`, so the single shared .venv keeps working
+#     exactly as before. Nothing moved; this is bookkeeping, not a new env.
+#   • Post-cutover: this file becomes the standalone install for the new stack
+#     (`pip install -r backend/requirements.txt`) once the legacy app retires.
+#   • deploy/Dockerfile.api installs the root file (which pulls this one in).
+#
+# NOTE: the SQLite→PG bridge tools (backend/dual_ci.py, backend/api/
+# parity_check.py) intentionally import the LEGACY data layer (root
+# database.py) and its transitive deps (e.g. pandas via streamlit), so they
+# need the full root environment — they are migration/CI tooling, not part of
+# the API runtime, and they retire at cutover.
+# ============================================================================
+
+# --- API runtime ---
+fastapi
+uvicorn[standard]
+
+# --- Database (async runtime + sync tooling) ---
+SQLAlchemy>=2.0
+asyncpg>=0.29            # async PG driver (runtime)
+greenlet>=3.0            # SQLAlchemy's sync<->async bridge
+psycopg2-binary>=2.9     # sync driver: alembic / dual_ci / parity tooling
+alembic>=1.13            # schema migrations (backend/alembic/)
+
+# --- Auth ---
+PyJWT>=2.8               # login JWT sign/verify (backend/api/auth.py)
+bcrypt                   # password hashing
+pyotp>=2.9               # TOTP 2FA verify + enrollment
+qrcode[pil]>=7.4         # 2FA enrollment QR image
+
+# --- Reports (/reports xlsx | pdf | csv) ---
+openpyxl
+fpdf2
+
+# --- Tests (backend/api/service_tests.py; CI-gated) ---
+httpx

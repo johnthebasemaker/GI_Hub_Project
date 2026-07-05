@@ -20,12 +20,14 @@ uvicorn[standard]
 httpx  # for pytest TestClient
 
 # FastAPI REST backend (backend/api/) — the decoupled foundation for the React
-# frontend. Async SQLAlchemy over PostgreSQL, so it needs the async PG driver
-# (asyncpg) and greenlet (SQLAlchemy's sync<->async bridge). This is a SEPARATE
-# process from Streamlit, which stays on SQLite (psycopg2-binary below is still
-# the driver for the sync migration/dual-CI tooling). Run with ./run_api.sh.
-asyncpg>=0.29
-greenlet>=3.0
+# frontend. Its dependencies live in backend/requirements.txt (the logical
+# new-stack boundary — see REPO_MAP.md); the -r include keeps this single
+# file/venv authoritative for local dev + CI, behavior unchanged. Entries that
+# BOTH stacks use (fastapi/uvicorn/httpx for the PWA + RAG sidecar, SQLAlchemy/
+# psycopg2 for the legacy engine seam, bcrypt/pyotp/qrcode for legacy 2FA,
+# openpyxl/fpdf2 for legacy reports) intentionally stay listed in this file
+# too — pip merges identical requirement lines without complaint.
+-r backend/requirements.txt
 
 # Phase 6B — Employee QR badges (encode) + decode for camera scanning (6D)
 # pyzbar wraps the native `libzbar` library — on macOS run `brew install zbar`,
@@ -82,11 +84,6 @@ psycopg2-binary>=2.9
 pyotp>=2.9
 qrcode>=7.4
 
-# FastAPI backend auth (backend/api/auth.py) — signs/verifies the login JWT.
-# bcrypt (above) hashes passwords; pyotp (above) does the TOTP 2FA.
-PyJWT>=2.8
-
-# Alembic — schema migrations for the new-stack Postgres (system of record
-# post-cutover). Manages backend/models.py tables; SME/derived views stay with
-# dual_ci. See backend/alembic/README.
-alembic>=1.13
+# PyJWT (new-stack login JWT), asyncpg/greenlet (async PG driver), and alembic
+# (new-stack schema migrations) moved to backend/requirements.txt — pulled in
+# via the -r include above.

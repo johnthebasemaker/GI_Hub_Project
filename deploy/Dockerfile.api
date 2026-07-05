@@ -16,7 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
     && rm -rf /var/lib/apt/lists/*
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+# Root requirements.txt includes backend/requirements.txt via `-r` (the
+# logical new-stack dependency boundary — see REPO_MAP.md), so both files
+# must be in the build context before the install.
 COPY requirements.txt .
+COPY backend/requirements.txt backend/requirements.txt
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
 # ---- Stage 2: runtime ------------------------------------------------------
