@@ -1,5 +1,6 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { App } from 'antd'
 import { api, setAuthToken, TOKEN_KEY } from '../api/client'
 
 export interface User {
@@ -20,10 +21,16 @@ interface AuthState {
 const Ctx = createContext<AuthState | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const { message } = App.useApp()
   const [user, setUser] = useState<User | null>(null)
   const [ready, setReady] = useState(false)
+  const userRef = useRef<User | null>(null)
+  userRef.current = user
 
   useEffect(() => {
+    // Boot: a stale access token is fine — /auth/me 401s, the client silently
+    // refreshes via the httpOnly cookie and replays, so the session survives
+    // reloads (and 15-minute token expiry) without re-login.
     const t = localStorage.getItem(TOKEN_KEY)
     if (t) {
       api
@@ -34,10 +41,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } else {
       setReady(true)
     }
-    const onUnauth = () => setUser(null)
-    window.addEventListener('gi-unauthorized', onUnauth)
-    return () => window.removeEventListener('gi-unauthorized', onUnauth)
-  }, [])
+    // Fired by the API client only when a silent refresh FAILED — the session
+    // is really over. Show why, instead of a mystery kick to the login screen.
+    const onExpired = () => {
+      if (userRef.current) {
+        message.warning('Your session has expired — please sign in again.', 6)
+      }
+      setUser(null)
+    }
+    window.addEventListener('gi-session-expired', onExpired)
+    return () => window.removeEventListener('gi-session-expired', onExpired)
+  }, [message])
 
   const login = async (username: string, password: string) => {
     const { data } = await api.post('/auth/login', { username, password })
@@ -54,6 +68,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const logout = () => {
+    // Revoke the server-side refresh session too (fire-and-forget).
+    api.post('/auth/logout').catch(() => {})
     setAuthToken(null)
     setUser(null)
   }

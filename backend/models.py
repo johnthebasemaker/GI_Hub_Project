@@ -557,6 +557,22 @@ class Users(Base):
     totp_secret = Column(Text)
     totp_enabled = Column(Integer, server_default=text('0'))
 
+class AuthSessions(Base):
+    """Refresh-token sessions for the FastAPI backend (NEW-STACK ONLY — no
+    SQLite counterpart; dual_ci leaves it empty on reset, which just means a
+    local re-login). Rows are revocable server-side: rotation marks the old
+    row revoked and links its successor; reuse of a revoked token nukes every
+    active session for that user (token-theft containment)."""
+    __tablename__ = "auth_sessions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(Text, nullable=False, index=True)
+    refresh_hash = Column(Text, nullable=False, unique=True)  # sha256 hex, never the raw token
+    created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime)
+    revoke_reason = Column(Text)  # rotated | logout | reuse-detected | admin-reset | user-deleted
+    replaced_by = Column(Integer)  # successor session id (rotation chain)
+
 class WbsMaster(Base):
     __tablename__ = "wbs_master"
     id = Column(Integer, primary_key=True, autoincrement=True)

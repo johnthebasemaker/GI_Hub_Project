@@ -21,7 +21,7 @@ from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import ROLE_META, require_level
+from .auth import ROLE_META, require_level, revoke_all_sessions
 from .db import get_session
 from .services.ledger import _MD, write_audit  # reflected metadata + audit writer
 
@@ -224,6 +224,8 @@ async def reset_password(username: str, body: PasswordIn,
             raise HTTPException(404, f"user {username!r} not found")
         await session.execute(update(users_t).where(users_t.c["username"] == username)
                               .values(password_hash=_hash(body.password)))
+        # A password reset must end any live sessions for the old credential.
+        await revoke_all_sessions(session, username, "admin-reset")
         await write_audit(session, actor["username"], "RESET_PASSWORD", "users",
                           f"username={username}")
     return {"reset": True, "username": username}
@@ -256,6 +258,7 @@ async def delete_user(username: str,
         if row.role == "admin" and (await _admin_count(session)) <= 1:
             raise HTTPException(409, "cannot delete the last admin")
         await session.execute(delete(users_t).where(users_t.c["username"] == username))
+        await revoke_all_sessions(session, username, "user-deleted")
         await write_audit(session, actor["username"], "DELETE_USER", "users",
                           f"username={username} role={row.role}")
     return {"deleted": True, "username": username}

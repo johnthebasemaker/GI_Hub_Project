@@ -270,6 +270,53 @@ async def test_auth_guards():
         check("attempts under the cap are 401, not 429", codes[0] == 401, f"first={codes[0]}")
 
 
+async def test_token_refresh():
+    """Access/refresh split: cookie issuance, rotation, reuse detection
+    (family revocation), and logout revocation."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        r = await ac.post("/auth/login", json={"username": "worker", "password": "floor2026"})
+        old_refresh = r.cookies.get("gi_refresh")
+        check("login sets the httpOnly refresh cookie", bool(old_refresh),
+              f"status={r.status_code}")
+
+        r2 = await ac.post("/auth/refresh")
+        check("refresh → 200 + a new access token",
+              r2.status_code == 200 and bool(r2.json().get("access_token")),
+              f"got {r2.status_code}")
+        new_refresh = r2.cookies.get("gi_refresh")
+        check("refresh rotates the cookie", bool(new_refresh) and new_refresh != old_refresh)
+
+        # NB: manual cookie sets use a different jar key (domain) than
+        # response-set cookies — clear the jar first or requests carry BOTH
+        # gi_refresh cookies and the server reads the stale one.
+        def use_cookie(tok):
+            ac.cookies.clear()
+            ac.cookies.set("gi_refresh", tok, domain="svc")
+
+        # Replaying the OLD (rotated) token must trip reuse detection…
+        use_cookie(old_refresh)
+        r3 = await ac.post("/auth/refresh")
+        check("replaying a rotated token → 401 (reuse detection)",
+              r3.status_code == 401, f"got {r3.status_code}")
+        # …which revokes the whole family, including the successor.
+        use_cookie(new_refresh)
+        r4 = await ac.post("/auth/refresh")
+        check("reuse detection also revoked the successor token",
+              r4.status_code == 401, f"got {r4.status_code}")
+
+        # Fresh session → logout revokes it server-side.
+        ac.cookies.clear()
+        r5 = await ac.post("/auth/login", json={"username": "worker", "password": "floor2026"})
+        tok5 = r5.cookies.get("gi_refresh")
+        r6 = await ac.post("/auth/logout")
+        check("logout → 200", r6.status_code == 200, f"got {r6.status_code}")
+        use_cookie(tok5)
+        r7 = await ac.post("/auth/refresh")
+        check("refresh after logout → 401 (session revoked)",
+              r7.status_code == 401, f"got {r7.status_code}")
+
+
 async def test_site_scoping():
     """Multi-site isolation: below logistics (level 3), every read is pinned to
     the caller's own Site_ID; admin/logistics stay global."""
@@ -396,6 +443,8 @@ async def main() -> int:
     await test_auth_guards()
     print("\n C. site scoping (multi-site isolation)")
     await test_site_scoping()
+    print("\n D. token refresh (rotation + revocation)")
+    await test_token_refresh()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

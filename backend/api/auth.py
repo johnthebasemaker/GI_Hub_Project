@@ -16,12 +16,14 @@ real secret in any shared/deployed environment).
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import os
+import secrets
 import sys
 
 import bcrypt
 import jwt
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy import func, insert, select, update
@@ -40,11 +42,18 @@ _MD = models.Base.metadata
 users_t = _MD.tables["users"]
 audit_t = _MD.tables["system_audit_log"]
 pending_users_t = _MD.tables["pending_users"]
+sessions_t = _MD.tables["auth_sessions"]
 
 # Resolved once at import — in production a weak/absent key raises here (fail-fast).
 JWT_SECRET = jwt_secret()
 JWT_ALG = "HS256"
-ACCESS_TTL = _dt.timedelta(hours=8)
+# Short-lived access + long-lived rotating refresh (httpOnly cookie). The SPA
+# silently refreshes on 401, so a 15-minute access token never interrupts a
+# shift; revoking the refresh session (logout / admin reset / reuse detection)
+# ends the session server-side within one access-token lifetime.
+ACCESS_TTL = _dt.timedelta(minutes=15)
+REFRESH_TTL = _dt.timedelta(days=7)
+REFRESH_COOKIE = "gi_refresh"
 MFA_TTL = _dt.timedelta(minutes=5)
 
 # Role label + hierarchy level (from config.py ROLES / ROLE_HIERARCHY).
@@ -103,6 +112,51 @@ def _public(username: str, role: str, site_id: str) -> dict:
     meta = ROLE_META.get(role, {"label": role, "level": 0})
     return {"username": username, "role": role, "site_id": site_id or "",
             "label": meta["label"], "level": meta["level"]}
+
+
+# --- refresh-token sessions ---------------------------------------------------
+def _now() -> _dt.datetime:
+    """Naive UTC — consistent with how expires_at/revoked_at are written."""
+    return _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+
+
+def _hash_refresh(raw: str) -> str:
+    # Only the hash is stored; a DB leak never yields usable refresh tokens.
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _set_refresh_cookie(response: Response, raw: str) -> None:
+    response.set_cookie(
+        REFRESH_COOKIE, raw,
+        max_age=int(REFRESH_TTL.total_seconds()),
+        httponly=True, samesite="lax",
+        secure=os.environ.get("GI_ENV", "").lower() == "production",
+        path="/")
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(REFRESH_COOKIE, path="/")
+
+
+async def _open_session(session: AsyncSession, username: str) -> str:
+    """Insert a session row; returns the RAW refresh token (only ever sent in
+    the httpOnly cookie — never in a JSON body, never stored raw)."""
+    raw = secrets.token_urlsafe(48)
+    await session.execute(insert(sessions_t).values(
+        username=username, refresh_hash=_hash_refresh(raw),
+        expires_at=_now() + REFRESH_TTL))
+    return raw
+
+
+async def revoke_all_sessions(session: AsyncSession, username: str, reason: str) -> int:
+    """Revoke every active session for a user (password reset, user delete,
+    refresh-token reuse). Does NOT commit — the caller owns the transaction."""
+    res = await session.execute(
+        update(sessions_t)
+        .where(sessions_t.c["username"] == username,
+               sessions_t.c["revoked_at"].is_(None))
+        .values(revoked_at=_now(), revoke_reason=reason))
+    return res.rowcount or 0
 
 
 async def get_current_user(
@@ -203,7 +257,8 @@ async def _audit(session: AsyncSession, username: str, action: str, details: str
 
 @router.post("/login", summary="Username + password → JWT (or a 2FA challenge)",
              dependencies=[rate_limit(10, 60)])
-async def login(body: LoginIn, session: AsyncSession = Depends(get_session)):
+async def login(body: LoginIn, response: Response,
+                session: AsyncSession = Depends(get_session)):
     row = await _fetch_user(session, body.username)
     if row is None:
         _verify_password(body.password, _DUMMY_HASH)  # constant-time-ish
@@ -218,14 +273,17 @@ async def login(body: LoginIn, session: AsyncSession = Depends(get_session)):
         return {"mfa_required": True, "mfa_token": mfa}
 
     token = _make_token(row.username, row.role, row.Site_ID, ACCESS_TTL)
-    await _audit(session, row.username, "LOGIN", "password")
+    raw_refresh = await _open_session(session, row.username)
+    await _audit(session, row.username, "LOGIN", "password")  # commits
+    _set_refresh_cookie(response, raw_refresh)
     return {"access_token": token, "token_type": "bearer",
             "user": _public(row.username, row.role, row.Site_ID)}
 
 
 @router.post("/login/2fa", summary="Complete login with a TOTP code",
              dependencies=[rate_limit(10, 60)])
-async def login_2fa(body: TwoFAIn, session: AsyncSession = Depends(get_session)):
+async def login_2fa(body: TwoFAIn, response: Response,
+                    session: AsyncSession = Depends(get_session)):
     p = _decode(body.mfa_token, "mfa")
     row = await _fetch_user(session, p["sub"])
     if row is None:
@@ -234,9 +292,71 @@ async def login_2fa(body: TwoFAIn, session: AsyncSession = Depends(get_session))
         await _audit(session, row.username, "2FA_FAILED", "invalid code")
         raise HTTPException(401, "invalid 2FA code")
     token = _make_token(row.username, row.role, row.Site_ID, ACCESS_TTL)
-    await _audit(session, row.username, "LOGIN", "password+2fa")
+    raw_refresh = await _open_session(session, row.username)
+    await _audit(session, row.username, "LOGIN", "password+2fa")  # commits
+    _set_refresh_cookie(response, raw_refresh)
     return {"access_token": token, "token_type": "bearer",
             "user": _public(row.username, row.role, row.Site_ID)}
+
+
+@router.post("/refresh", summary="Rotate the refresh cookie → a fresh access token",
+             dependencies=[rate_limit(30, 60)])
+async def refresh(response: Response,
+                  gi_refresh: str | None = Cookie(default=None, alias=REFRESH_COOKIE),
+                  session: AsyncSession = Depends(get_session)):
+    if not gi_refresh:
+        raise HTTPException(401, "no refresh token")
+    row = (await session.execute(select(sessions_t).where(
+        sessions_t.c["refresh_hash"] == _hash_refresh(gi_refresh)))).first()
+    if row is None:
+        _clear_refresh_cookie(response)
+        raise HTTPException(401, "invalid refresh token")
+    if row.revoked_at is not None:
+        # A rotated/revoked token came back — assume theft and kill every
+        # active session for this user (rotation reuse detection).
+        await revoke_all_sessions(session, row.username, "reuse-detected")
+        await _audit(session, row.username, "SESSION_REUSE",
+                     "revoked all sessions (refresh-token replay)")  # commits
+        _clear_refresh_cookie(response)
+        raise HTTPException(401, "refresh token reuse detected — sessions revoked")
+    if row.expires_at is not None and row.expires_at <= _now():
+        _clear_refresh_cookie(response)
+        raise HTTPException(401, "refresh token expired")
+    user_row = await _fetch_user(session, row.username)
+    if user_row is None:
+        await revoke_all_sessions(session, row.username, "user-deleted")
+        await session.commit()
+        _clear_refresh_cookie(response)
+        raise HTTPException(401, "user no longer exists")
+
+    # Rotate: open the successor first, then revoke the old row pointing at it.
+    raw_new = secrets.token_urlsafe(48)
+    new_id = (await session.execute(insert(sessions_t).values(
+        username=row.username, refresh_hash=_hash_refresh(raw_new),
+        expires_at=_now() + REFRESH_TTL).returning(sessions_t.c["id"]))).scalar_one()
+    await session.execute(update(sessions_t).where(sessions_t.c["id"] == row.id)
+                          .values(revoked_at=_now(), revoke_reason="rotated",
+                                  replaced_by=new_id))
+    await session.commit()
+    _set_refresh_cookie(response, raw_new)
+    token = _make_token(user_row.username, user_row.role, user_row.Site_ID, ACCESS_TTL)
+    return {"access_token": token, "token_type": "bearer",
+            "user": _public(user_row.username, user_row.role, user_row.Site_ID)}
+
+
+@router.post("/logout", summary="Revoke the current refresh session")
+async def logout(response: Response,
+                 gi_refresh: str | None = Cookie(default=None, alias=REFRESH_COOKIE),
+                 session: AsyncSession = Depends(get_session)):
+    if gi_refresh:
+        await session.execute(
+            update(sessions_t)
+            .where(sessions_t.c["refresh_hash"] == _hash_refresh(gi_refresh),
+                   sessions_t.c["revoked_at"].is_(None))
+            .values(revoked_at=_now(), revoke_reason="logout"))
+        await session.commit()
+    _clear_refresh_cookie(response)
+    return {"logged_out": True}
 
 
 @router.get("/me", summary="Current authenticated user")

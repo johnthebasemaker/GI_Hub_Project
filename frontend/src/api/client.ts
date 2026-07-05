@@ -18,13 +18,50 @@ api.interceptors.request.use((cfg) => {
   return cfg
 })
 
-// On 401 anywhere, drop the token and let the app fall back to the login screen.
+// --- silent session refresh ---------------------------------------------------
+// Access tokens are short-lived (15 min); the long-lived rotating refresh token
+// lives in an httpOnly cookie the JS never sees. On any 401 we try ONE silent
+// refresh (single-flight across concurrent 401s) and replay the request — a
+// worker mid-shift never notices. Only when the refresh itself fails is the
+// session truly over.
+const NO_RETRY = ['/auth/login', '/auth/login/2fa', '/auth/refresh', '/auth/register']
+
+let _refreshing: Promise<string | null> | null = null
+
+async function refreshAccessToken(): Promise<string | null> {
+  try {
+    // Raw axios, not `api` — the interceptor below must not recurse.
+    const { data } = await axios.post('/api/auth/refresh')
+    const t = (data?.access_token as string) ?? null
+    if (t) setAuthToken(t)
+    return t
+  } catch {
+    return null
+  }
+}
+
 api.interceptors.response.use(
   (r) => r,
-  (err) => {
-    if (err?.response?.status === 401 && _token) {
-      setAuthToken(null)
-      window.dispatchEvent(new Event('gi-unauthorized'))
+  async (err) => {
+    const cfg = err?.config
+    const url: string = cfg?.url ?? ''
+    if (
+      err?.response?.status === 401 &&
+      cfg &&
+      !cfg._retried &&
+      !NO_RETRY.some((p) => url.startsWith(p))
+    ) {
+      cfg._retried = true
+      _refreshing ??= refreshAccessToken().finally(() => {
+        _refreshing = null
+      })
+      const t = await _refreshing
+      // The request interceptor re-stamps Authorization from the new token.
+      if (t) return api(cfg)
+      if (_token) {
+        setAuthToken(null)
+        window.dispatchEvent(new Event('gi-session-expired'))
+      }
     }
     return Promise.reject(err)
   },
