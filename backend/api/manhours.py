@@ -27,7 +27,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,6 +48,20 @@ router = APIRouter(prefix="/mh", tags=["man-hours"],
 
 MH_NORMAL_THRESHOLD_HOURS = 8.0
 MH_DEFAULT_BREAK_MINS = 60
+
+# Blank-ish markers normalized to NULL on every write path. 'nan' is the
+# legacy pandas str(NaN) artifact that polluted the bootstrap import (fixed by
+# a one-time UPDATE in both DBs on 2026-07-05); this guard keeps it out for good.
+_BLANKISH = {"", "nan", "none", "null"}
+
+# Legend from the attendance workbook's ADD EMPLOYEE sheet: OWN→GI, Supply→DMC.
+_COMPANY_DEFAULTS = {"OWN": "GI", "Supply": "DMC"}
+
+
+def _clean(v) -> Optional[str]:
+    """Trimmed string, or None when empty/blank-ish ('nan', 'none', 'null')."""
+    s = str(v or "").strip()
+    return None if s.lower() in _BLANKISH else s
 
 
 def _rows(res):
@@ -160,10 +174,12 @@ async def upsert_employee(body: EmployeeIn = Body(...),
         raise HTTPException(422, "employee_code and name are required")
     if body.worker_type not in ("OWN", "Supply"):
         raise HTTPException(422, "worker_type must be 'OWN' or 'Supply'")
+    # Legend default (ADD EMPLOYEE sheet): OWN→GI, Supply→DMC when blank.
+    company = _clean(body.company) or _COMPANY_DEFAULTS[body.worker_type]
     stmt = pg_insert(employees_t).values(
         Site_ID=sid, Employee_Code=code, Name=name,
-        Designation=(body.designation or "").strip(),
-        Worker_Type=body.worker_type, Company=(body.company or "").strip(),
+        Designation=_clean(body.designation) or "",
+        Worker_Type=body.worker_type, Company=company,
         status="active", created_by=user["username"])
     stmt = stmt.on_conflict_do_update(
         index_elements=["Site_ID", "Employee_Code"],
@@ -224,9 +240,9 @@ async def _upsert_timesheet(session: AsyncSession, sid: str, code: str, wdate: s
     total, normal, ot = compute_mh_hours(in_time, out_time, break_mins)
     stmt = pg_insert(timesheets_t).values(
         Site_ID=sid, Employee_Code=code, Work_Date=str(wdate)[:10],
-        Location=(location or "").strip() or None,
-        Equipment_Tag=(equipment_tag or "").strip() or None,
-        System_Code=(system_code or "").strip() or None,
+        Location=_clean(location),
+        Equipment_Tag=_clean(equipment_tag),
+        System_Code=_clean(system_code),
         In_Time="" if in_time is None else str(in_time),
         Out_Time="" if out_time is None else str(out_time),
         Break_Mins=int(break_mins or 0), Total_Hours=total, Normal_Hours=normal,
@@ -248,11 +264,20 @@ async def _upsert_timesheet(session: AsyncSession, sid: str, code: str, wdate: s
     return total
 
 
+def _unassigned_cond():
+    """Rows with no equipment linkage. Belt & braces: NULL is the canonical
+    form, but ''/'nan' are matched too in case legacy tooling reintroduces
+    them into SQLite → PG via dual_ci (the frozen legacy uploader can)."""
+    tag = timesheets_t.c["Equipment_Tag"]
+    return tag.is_(None) | func.lower(func.trim(tag)).in_(list(_BLANKISH - {""}) + [""])
+
+
 @router.get("/timesheets", summary="Timesheet rows (flexible filters)")
 async def list_timesheets(site_id: Optional[str] = None, work_date: Optional[str] = None,
                           employee_code: Optional[str] = None,
                           equipment_tag: Optional[str] = None,
                           date_from: Optional[str] = None, date_to: Optional[str] = None,
+                          unassigned: bool = False,
                           user: dict = Depends(require_roles("hod")),
                           session: AsyncSession = Depends(get_session)):
     sid = resolve_site_param(user, site_id)
@@ -272,8 +297,12 @@ async def list_timesheets(site_id: Optional[str] = None, work_date: Optional[str
         stmt = stmt.where(t.c["Work_Date"] >= date_from)
     if date_to:
         stmt = stmt.where(t.c["Work_Date"] <= date_to)
+    if unassigned:
+        stmt = stmt.where(_unassigned_cond())
     stmt = stmt.order_by(t.c["Work_Date"].desc(), t.c["Employee_Code"]).limit(1000)
-    return {"items": _rows(await session.execute(stmt))}
+    items = _rows(await session.execute(stmt))
+    return {"items": items,
+            "total_hours": round(sum(float(r["Total_Hours"] or 0) for r in items), 1)}
 
 
 @router.post("/timesheets", summary="Save a per-day batch of timesheet rows")
@@ -318,6 +347,77 @@ async def delete_timesheet(ts_id: int, user: dict = Depends(require_roles("hod")
                       f"id={ts_id}")
     await session.commit()
     return {"deleted": ts_id}
+
+
+# --- Bulk-assign: tie unassigned hours to an SME scope -----------------------------
+class AssignIn(BaseModel):
+    ids: list[int]
+    equipment_tag: str
+    system_code: str
+    location: Optional[str] = None  # blank → auto-filled from sme_equipment
+    site_id: Optional[str] = None
+
+
+@router.patch("/timesheets/assign",
+              summary="Assign timesheet rows to an Equipment/System scope (bulk)")
+async def assign_timesheets(body: AssignIn = Body(...),
+                            user: dict = Depends(require_roles("hod")),
+                            session: AsyncSession = Depends(get_session)):
+    """The attendance workbook ships with Equipment Tag # blank, so imported
+    hours land unassigned. This is the workflow that ties them to a scope so
+    they count in Estimate-vs-Actual (and, later, the SME scorecard).
+
+    Rows whose (site, employee, date) already have a row on the TARGET scope
+    would collide with the unique key — those are skipped and reported, never
+    merged silently."""
+    sid = _write_site(user, body.site_id)
+    tag, sc = _clean(body.equipment_tag), _clean(body.system_code)
+    if not tag or not sc:
+        raise HTTPException(422, "equipment_tag and system_code are required")
+    if not body.ids:
+        raise HTTPException(422, "no timesheet ids given")
+    if len(body.ids) > 500:
+        raise HTTPException(422, "at most 500 rows per assign call")
+
+    location = _clean(body.location)
+    if location is None:
+        e = sme_equipment_t
+        location = (await session.execute(
+            select(e.c["Location"]).where(e.c["Equipment_Tag_No"] == tag)
+            .order_by(e.c["id"]).limit(1))).scalar()
+
+    t = timesheets_t
+    rows = _rows(await session.execute(
+        select(t.c["id"], t.c["Employee_Code"], t.c["Work_Date"],
+               t.c["Equipment_Tag"], t.c["System_Code"])
+        .where(t.c["id"].in_(body.ids), t.c["Site_ID"] == sid)))
+    found = {r["id"] for r in rows}
+    missing = [i for i in body.ids if i not in found]
+
+    assigned, conflicts = [], []
+    for r in rows:
+        if r["Equipment_Tag"] == tag and r["System_Code"] == sc:
+            continue  # already on the target scope — nothing to do
+        dup = (await session.execute(select(func.count()).select_from(t).where(
+            t.c["Site_ID"] == sid, t.c["Employee_Code"] == r["Employee_Code"],
+            t.c["Work_Date"] == r["Work_Date"], t.c["Equipment_Tag"] == tag,
+            t.c["System_Code"] == sc, t.c["id"] != r["id"]))).scalar_one()
+        if dup:
+            conflicts.append({"id": r["id"], "employee_code": r["Employee_Code"],
+                              "work_date": r["Work_Date"],
+                              "reason": "a row for this worker/date already exists on the target scope"})
+            continue
+        await session.execute(update(t).where(t.c["id"] == r["id"]).values(
+            Equipment_Tag=tag, System_Code=sc, Location=location))
+        assigned.append(r["id"])
+
+    await write_audit(session, user["username"], "MH_TIMESHEET_ASSIGN", "mh_timesheets",
+                      f"{sid} → {tag}/{sc} assigned={len(assigned)} "
+                      f"conflicts={len(conflicts)} missing={len(missing)}")
+    await session.commit()
+    return {"assigned": len(assigned), "ids": assigned, "conflicts": conflicts,
+            "missing": missing, "equipment_tag": tag, "system_code": sc,
+            "location": location}
 
 
 # --- Team SQM production + distribution -------------------------------------------
@@ -610,35 +710,42 @@ def parse_attendance_workbook(data: bytes) -> dict:
             name = str(r.get("name") or "").strip()
             if not code or not name:
                 continue
-            wt = str(r.get("type") or "").strip()
+            wt = "Supply" if str(r.get("type") or "").strip().lower().startswith("supply") else "OWN"
             emp_rows.append({
                 "code": code, "name": name,
-                "designation": str(r.get("designation") or "").strip(),
-                "worker_type": "Supply" if wt.lower().startswith("supply") else "OWN",
-                "company": str(r.get("company") or "").strip()})
+                "designation": _clean(r.get("designation")) or "",
+                "worker_type": wt,
+                # Legend default: OWN→GI, Supply→DMC when the cell is blank.
+                "company": _clean(r.get("company")) or _COMPANY_DEFAULTS[wt]})
 
-    timesheets: list[dict] = []
+    # In-file dedupe on the upsert key (code, date, tag): the last occurrence
+    # wins, mirroring what the row-by-row upsert would have produced anyway —
+    # but this also protects NULL-tag rows, which never conflict in PG.
+    by_key: dict[tuple, dict] = {}
     if "SAR" in wb.sheetnames:
         for r in _sheet_rows(wb["SAR"]):
             code = _str_code(r.get("code"))
             wdate = _iso_date(r.get("work date"))
             if not code or not wdate:
                 continue
-            timesheets.append({
+            row = {
                 "code": code, "name": str(r.get("name") or "").strip(),
                 "work_date": wdate,
-                "location": str(r.get("location") or "").strip(),
-                "equipment_tag": str(r.get("equipment tag #")
-                                     or r.get("equipment tag") or "").strip(),
+                "location": _clean(r.get("location")) or "",
+                "equipment_tag": _clean(r.get("equipment tag #")
+                                        or r.get("equipment tag")) or "",
                 "in_time": r.get("in time"), "out_time": r.get("out time"),
                 "status": str(r.get("status") or "").strip() or "PR",
-                "remarks": str(r.get("remarks") or "").strip()})
+                "remarks": _clean(r.get("remarks")) or ""}
+            by_key[(code, wdate, row["equipment_tag"])] = row
+    timesheets = list(by_key.values())
 
     by_code = {e["code"]: e for e in emp_rows}
     for t in timesheets:
         by_code.setdefault(t["code"], {
             "code": t["code"], "name": t["name"] or t["code"],
-            "designation": "", "worker_type": "OWN", "company": ""})
+            "designation": "", "worker_type": "OWN",
+            "company": _COMPANY_DEFAULTS["OWN"]})
     dates = sorted({t["work_date"] for t in timesheets})
     return {"employees": list(by_code.values()), "timesheets": timesheets,
             "dates": dates}
@@ -657,10 +764,22 @@ async def import_attendance(file: UploadFile = File(...), replace: bool = True,
         raise HTTPException(422, f"could not parse the workbook: {e}")
     if not parsed["employees"] and not parsed["timesheets"]:
         raise HTTPException(422, "no ADD EMPLOYEE / SAR rows found in the workbook")
+
+    # Dates in the file that already hold rows for this site. Replace mode
+    # deletes them first (predictable re-import); append mode would DUPLICATE
+    # unassigned rows (NULL tags never conflict on the unique key), so the
+    # overlap is surfaced here and the UI warns before importing.
+    overlap: list[str] = []
+    if parsed["dates"]:
+        overlap = sorted({r[0] for r in (await session.execute(
+            select(timesheets_t.c["Work_Date"]).distinct().where(
+                timesheets_t.c["Site_ID"] == sid,
+                timesheets_t.c["Work_Date"].in_(parsed["dates"]))))})
+
     if dry_run:
         return {"dry_run": True, "employees": len(parsed["employees"]),
                 "timesheets": len(parsed["timesheets"]), "dates": parsed["dates"],
-                "sample": parsed["timesheets"][:8]}
+                "overlap_dates": overlap, "sample": parsed["timesheets"][:8]}
 
     if replace and parsed["dates"]:
         await session.execute(delete(timesheets_t).where(
@@ -690,10 +809,12 @@ async def import_attendance(file: UploadFile = File(...), replace: bool = True,
         ts_n += 1
     await write_audit(session, user["username"], "MH_IMPORT", "mh_timesheets",
                       f"{sid} employees={emp_n} timesheets={ts_n} "
-                      f"replace={replace} dates={len(parsed['dates'])}")
+                      f"replace={replace} dates={len(parsed['dates'])} "
+                      f"overlap={len(overlap)}")
     await session.commit()
     return {"imported": True, "employees": emp_n, "timesheets": ts_n,
-            "dates": parsed["dates"], "replace": replace}
+            "dates": parsed["dates"], "replace": replace,
+            "overlap_dates": [] if replace else overlap}
 
 
 # --- Exports (reuse the shared /reports renderers — DRY) -----------------------------
@@ -716,8 +837,9 @@ async def mh_export(key: str, format: str = "xlsx", site_id: Optional[str] = Non
         items = (await list_employees(site_id, None, user, session))["items"]
     elif key == "timesheets":
         title = "MH Timesheets"
-        items = (await list_timesheets(site_id, None, employee_code, None,
-                                       date_from, date_to, user, session))["items"]
+        items = (await list_timesheets(site_id=site_id, employee_code=employee_code,
+                                       date_from=date_from, date_to=date_to,
+                                       user=user, session=session))["items"]
     elif key == "variance":
         title = "MH Estimate vs Actual"
         items = await _variance_rows(session, sid)

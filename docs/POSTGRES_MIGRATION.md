@@ -221,6 +221,32 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-05 · actor=interactive · branch=`main` · 🔗 Phase 11A — attendance-import fit + bulk-assign workflow
+Drove by the user's REAL `to john_Attendance.xlsx` (22 employees · 209 rows · 27 dates —
+the Phase-10 parser handles it verbatim, verified). What the real file exposed:
+- **'nan' hygiene**: the legacy pandas bootstrap wrote literal `'nan'` strings into
+  mh_timesheets.Equipment_Tag/Location (209 rows in BOTH DBs). One-time normalization run
+  against PG **and** SQLite (both → NULL; SQLite fixed too so dual_ci reloads stay clean;
+  bug_check 599/0 after). Permanent guard: `_clean()` treats ''/nan/none/null as NULL on
+  every mh write path, and the unassigned-filter matches them defensively (the FROZEN
+  legacy uploader in database.py can still produce 'nan' — code untouched per golden rule).
+- **Legend defaults** (ADD EMPLOYEE sheet): OWN→GI, Supply→DMC applied when Company is
+  blank, on import and on POST /mh/employees.
+- **In-file dedupe** on (code, date, tag) — last occurrence wins — protecting NULL-tag rows
+  the unique key can't (PG treats NULLs as distinct).
+- **Append-overlap warning**: /mh/import (incl. dry_run) returns `overlap_dates` = file
+  dates that already hold rows; the SPA dry-runs first and Modal-confirms before an append
+  that would duplicate ("Append anyway" / switch to Replace).
+- **Bulk-assign workflow** (the critical gap — the file ships Equipment Tag # 100% blank):
+  `PATCH /mh/timesheets/assign` (ids ≤ 500 + target Tag/System; Location auto-fills from
+  sme_equipment READ-ONLY; unique-key twins are skipped + reported, never merged silently)
+  + `?unassigned=` filter with a total_hours rollup + the "🔗 Assign hours to a scope" card
+  on the Daily Timesheet tab (range filter, row-select, live unassigned badge).
+- **Verified:** service_tests **198 → 211/211** (legend defaults, 'nan' guard via a junk
+  workbook, dedupe, overlap dry-run/append, assign + location autofill + conflict skip +
+  422s); bug_check 599/0; build green; live: the real 209 rows / 1,672 h surface in the
+  assign card as unassigned, clean console. SME Canon intact (reads only).
+
 ### 2026-07-05 · actor=interactive · branch=`main` · 🕒 Parity build Phase 10 — Man-Hours & Labor Tracking portal
 New `backend/api/manhours.py` (/mh, ZERO new tables — the mh_* tables already exist in both
 stacks; alembic baseline carries them). **Exact-locked {hod, admin}** via `require_roles("hod")`,

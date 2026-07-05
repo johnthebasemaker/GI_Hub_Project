@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import type { Key } from 'react'
 import {
   App, Button, Card, Checkbox, Col, DatePicker, Form, Input, InputNumber, Modal,
   Popconfirm, Radio, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography,
@@ -106,11 +107,94 @@ function EmployeesTab({ site }: TabProps) {
   )
 }
 
+// --- 🔗 Assign unassigned hours to an SME scope --------------------------------
+// The attendance file ships with Equipment Tag # blank, so imported hours land
+// unassigned; this card is how they get tied to a Tag/System (and start
+// counting in Estimate-vs-Actual).
+function AssignCard({ site }: TabProps) {
+  const { message } = App.useApp()
+  const qc = useQueryClient()
+  const [range, setRange] = useState<[Dayjs, Dayjs] | null>(null)
+  const [tag, setTag] = useState<string>()
+  const [system, setSystem] = useState<string>()
+  const [selected, setSelected] = useState<Key[]>([])
+
+  const { data: meta } = useMh<{ equipment_tags: string[]; tag_locations: Record<string, string>; system_codes: string[] }>('/mh/meta', sp(site))
+  const params = useMemo(() => ({
+    ...sp(site), unassigned: true,
+    ...(range ? { date_from: range[0].format('YYYY-MM-DD'), date_to: range[1].format('YYYY-MM-DD') } : {}),
+  }), [site, range])
+  const { data, isFetching } = useMh<{ items: ApiRow[]; total_hours: number }>('/mh/timesheets', params)
+
+  const assign = useMutation({
+    mutationFn: () => api.patch('/mh/timesheets/assign', {
+      ...sp(site), ids: selected.map(Number), equipment_tag: tag, system_code: system,
+    }).then((r) => r.data),
+    onSuccess: (r) => {
+      const parts = [`${r.assigned} row(s) assigned to ${r.equipment_tag}/${r.system_code}`]
+      if (r.location) parts.push(`location ${r.location}`)
+      message.success(parts.join(' · '))
+      if (r.conflicts?.length) {
+        message.warning(`${r.conflicts.length} row(s) skipped — the worker/date already has a row on that scope`)
+      }
+      setSelected([])
+      qc.invalidateQueries({ queryKey: ['/mh/timesheets'] })
+      qc.invalidateQueries({ queryKey: ['/mh/variance'] })
+      qc.invalidateQueries({ queryKey: ['/mh/employee-timeline'] })
+    },
+    onError: (e) => message.error(errMsg(e)),
+  })
+
+  const items = data?.items ?? []
+  const selectedHours = items
+    .filter((r) => selected.includes(String(r.id)))
+    .reduce((s, r) => s + Number(r.Total_Hours || 0), 0)
+
+  const columns: ColumnsType<ApiRow> = [
+    { title: 'Date', dataIndex: 'Work_Date', width: 110 },
+    { title: 'Code', dataIndex: 'Employee_Code', width: 90 },
+    { title: 'In', dataIndex: 'In_Time', width: 90 },
+    { title: 'Out', dataIndex: 'Out_Time', width: 90 },
+    { title: 'Total h', dataIndex: 'Total_Hours', align: 'right', width: 80 },
+    { title: 'OT h', dataIndex: 'OT_Hours', align: 'right', width: 70 },
+  ]
+
+  return (
+    <Card size="small" style={{ marginBottom: 16 }}
+      title={<>🔗 Assign hours to a scope
+        {data && <Tag color={items.length ? 'gold' : 'green'} style={{ marginLeft: 8 }}>
+          {items.length ? `${items.length} unassigned rows · ${data.total_hours} h` : 'all assigned'}
+        </Tag>}</>}>
+      <Space wrap style={{ marginBottom: 12 }}>
+        <DatePicker.RangePicker value={range} allowClear
+          onChange={(v) => setRange(v && v[0] && v[1] ? [v[0], v[1]] : null)} />
+        <Select showSearch placeholder="Equipment tag" style={{ width: 220 }} value={tag}
+          onChange={setTag} options={(meta?.equipment_tags ?? []).map((t) => ({ value: t, label: t }))} />
+        <Select showSearch placeholder="System code" style={{ width: 140 }} value={system}
+          onChange={setSystem} options={(meta?.system_codes ?? []).map((c) => ({ value: c, label: c }))} />
+        <Button type="primary" disabled={!tag || !system || selected.length === 0}
+          loading={assign.isPending} onClick={() => assign.mutate()}>
+          Assign {selected.length ? `${selected.length} row(s) · ${selectedHours.toFixed(1)} h` : ''}
+        </Button>
+      </Space>
+      {tag && meta?.tag_locations?.[tag] && (
+        <Typography.Paragraph type="secondary" style={{ marginTop: -4 }}>
+          📍 Location auto-fills from SME equipment: <strong>{meta.tag_locations[tag]}</strong>
+        </Typography.Paragraph>
+      )}
+      <Table size="small" loading={isFetching} columns={columns} dataSource={items}
+        rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
+        rowSelection={{ selectedRowKeys: selected, onChange: setSelected }}
+        pagination={{ pageSize: 10, showTotal: (t) => `${t} unassigned rows` }} />
+    </Card>
+  )
+}
+
 // --- 🕒 Daily Timesheet ------------------------------------------------------
 interface GridRow { worked: boolean; in_time: string; out_time: string }
 
 function TimesheetTab({ site }: TabProps) {
-  const { message } = App.useApp()
+  const { message, modal } = App.useApp()
   const qc = useQueryClient()
   const [date, setDate] = useState<Dayjs>(dayjs())
   const [tag, setTag] = useState<string>()
@@ -233,6 +317,19 @@ function TimesheetTab({ site }: TabProps) {
               const fd = new FormData()
               fd.append('file', file as Blob)
               try {
+                // Preview first: in append mode, dates that already hold rows
+                // would DUPLICATE silently — confirm before importing.
+                const dry = (await api.post('/mh/import', fd,
+                  { params: { ...sp(site), dry_run: true } })).data
+                if (!replace && dry.overlap_dates?.length) {
+                  const ok = await modal.confirm({
+                    title: 'Some dates already have timesheet rows',
+                    content: `Appending will DUPLICATE rows on: ${dry.overlap_dates.join(', ')}. `
+                      + 'Switch to Replace mode for a predictable re-import, or continue anyway.',
+                    okText: 'Append anyway', okButtonProps: { danger: true },
+                  })
+                  if (!ok) { onSuccess?.(dry); return }
+                }
                 const r = await api.post('/mh/import', fd,
                   { params: { ...sp(site), replace } })
                 message.success(`Imported ${r.data.employees} employees, `
@@ -251,6 +348,8 @@ function TimesheetTab({ site }: TabProps) {
           </Upload.Dragger>
         </Space>
       </Card>
+
+      <AssignCard site={site} />
 
       <Card size="small" title="🕒 Manual entry · per-day batch" style={{ marginBottom: 16 }}>
         <Space wrap style={{ marginBottom: 12 }}>

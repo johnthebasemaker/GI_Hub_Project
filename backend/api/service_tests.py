@@ -979,6 +979,106 @@ async def test_manhours():
                               files={"file": ("junk.xlsx", b"not an xlsx", "application/octet-stream")})
             check("unparseable workbook → 422", r.status_code == 422, f"got {r.status_code}")
 
+            # ---- Phase-11A: import fit + bulk-assign -----------------------
+            # Legend defaults: a SAR-only worker gets OWN→GI.
+            emp2 = next((e for e in (await ac.get("/mh/employees", headers=H(hod_t)))
+                         .json()["items"] if e["Employee_Code"] == "SVC-IMP-2"), None)
+            check("legend default: SAR-only worker → OWN/GI",
+                  emp2 is not None and emp2["Worker_Type"] == "OWN"
+                  and emp2["Company"] == "GI", str(emp2))
+
+            # Workbook 2: literal 'nan' junk cells, a duplicated (code,date)
+            # row, and a Supply employee with a blank Company cell.
+            wb2 = Workbook()
+            ws2 = wb2.active
+            ws2.title = "ADD EMPLOYEE"
+            ws2.append(["Code", "Name", "Designation", "Type", "Company"])
+            ws2.append(["SVC-IMP-3", "Svc Import Three", "nan", "Supply", None])
+            sar2 = wb2.create_sheet("SAR")
+            sar2.append(["Location", "Equipment Tag #", "Code", "Name", "Work Date",
+                         "In Time", "Out Time", "Status", "Remarks"])
+            sar2.append(["nan", "nan", "SVC-IMP-1", "Svc Import One", "2031-02-02",
+                         "07:30", "16:30", "PR", "nan"])
+            sar2.append(["nan", "nan", "SVC-IMP-1", "Svc Import One", "2031-02-02",
+                         "08:00", "17:00", "PR", ""])   # dup (code,date,tag) — last wins
+            sar2.append([None, None, "SVC-IMP-3", "Svc Import Three", "2031-02-02",
+                         "07:30", "16:30", "PR", ""])
+            buf2 = _io.BytesIO()
+            wb2.save(buf2)
+            xlsx2 = ("att2.xlsx", buf2.getvalue(),
+                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            r = await ac.post("/mh/import", headers=H(hod_t), files={"file": xlsx2},
+                              params={"replace": "true"})
+            check("in-file dedupe: 3 SAR rows → 2 imported (last dup wins)",
+                  r.status_code == 200 and r.json().get("timesheets") == 2, r.text[:160])
+            d2 = (await ac.get("/mh/timesheets", headers=H(hod_t),
+                               params={"work_date": "2031-02-02"})).json()["items"]
+            one = next((x for x in d2 if x["Employee_Code"] == "SVC-IMP-1"), None)
+            check("'nan' cells → NULL (import guard) + dup row's later times won",
+                  one is not None and one["Equipment_Tag"] is None
+                  and one["Location"] is None and one["In_Time"] == "08:00",
+                  str(one))
+            emp3 = next((e for e in (await ac.get("/mh/employees", headers=H(hod_t)))
+                         .json()["items"] if e["Employee_Code"] == "SVC-IMP-3"), None)
+            check("legend default: Supply + blank company → DMC ('nan' designation cleaned)",
+                  emp3 is not None and emp3["Company"] == "DMC"
+                  and emp3["Designation"] == "", str(emp3))
+
+            # Unassigned filter: only wb2's NULL-tag rows qualify (the Phase-10
+            # workbook filled Equipment Tag # = SVC-TAG, so its rows are assigned).
+            r = await ac.get("/mh/timesheets", headers=H(hod_t), params={
+                "unassigned": "true", "date_from": "2031-02-01", "date_to": "2031-02-02"})
+            un = r.json()
+            check("unassigned filter: wb2's 2 NULL-tag rows with a total_hours rollup",
+                  len(un["items"]) == 2 and un["total_hours"] == 16.0,
+                  f"{len(un.get('items', []))} rows, {un.get('total_hours')}")
+
+            # Bulk-assign: unassigned rows → a real SME scope; Location auto-fills.
+            meta_j = (await ac.get("/mh/meta", headers=H(hod_t))).json()
+            atag = meta_j["equipment_tags"][0]
+            aloc = meta_j["tag_locations"].get(atag)
+            ids1 = [x["id"] for x in un["items"]]
+            r = await ac.patch("/mh/timesheets/assign", headers=H(hod_t), json={
+                "ids": ids1, "equipment_tag": atag, "system_code": "99"})
+            check("bulk-assign → all rows assigned, SME location auto-filled",
+                  r.status_code == 200 and r.json().get("assigned") == len(ids1)
+                  and r.json().get("location") == aloc, r.text[:200])
+            left = (await ac.get("/mh/timesheets", headers=H(hod_t), params={
+                "unassigned": "true", "work_date": "2031-02-02"})).json()["items"]
+            check("assigned rows leave the unassigned queue", len(left) == 0,
+                  f"got {len(left)}")
+
+            # Append-overlap warning: dry-run flags dates that already have rows.
+            r = await ac.post("/mh/import", headers=H(hod_t), files={"file": xlsx2},
+                              params={"dry_run": "true"})
+            check("dry-run reports overlap_dates for append preview",
+                  r.json().get("overlap_dates") == ["2031-02-02"], r.text[:160])
+            r = await ac.post("/mh/import", headers=H(hod_t), files={"file": xlsx2},
+                              params={"replace": "false"})
+            check("append into an existing date → overlap_dates in the response",
+                  r.status_code == 200 and r.json().get("overlap_dates") == ["2031-02-02"],
+                  r.text[:160])
+            d2b = (await ac.get("/mh/timesheets", headers=H(hod_t),
+                                params={"work_date": "2031-02-02"})).json()["items"]
+            check("append duplicates NULL-tag rows (the documented reason for the warning)",
+                  len(d2b) == 4, f"got {len(d2b)}")
+
+            # Conflict skip: the appended twins target a scope where each
+            # worker/date already has an assigned row — all skipped, none merged.
+            ids2 = [x["id"] for x in d2b if x["Equipment_Tag"] is None]
+            r = await ac.patch("/mh/timesheets/assign", headers=H(hod_t), json={
+                "ids": ids2, "equipment_tag": atag, "system_code": "99"})
+            check("assign skips unique-key twins and reports them (0 assigned + 2 conflicts)",
+                  r.status_code == 200 and r.json().get("assigned") == 0
+                  and len(r.json().get("conflicts", [])) == 2, r.text[:200])
+            r = await ac.patch("/mh/timesheets/assign", headers=H(hod_t), json={
+                "ids": [], "equipment_tag": atag, "system_code": "99"})
+            check("assign with no ids → 422", r.status_code == 422, f"got {r.status_code}")
+            r = await ac.patch("/mh/timesheets/assign", headers=H(hod_t), json={
+                "ids": ids2, "equipment_tag": "nan", "system_code": "99"})
+            check("assign with a blank-ish tag → 422", r.status_code == 422,
+                  f"got {r.status_code}")
+
             # Exports reuse the shared report renderers.
             r = await ac.get("/mh/export/variance", headers=H(hod_t),
                              params={"format": "xlsx"})
