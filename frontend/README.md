@@ -38,15 +38,44 @@ Build for production: `npm run build` (outputs to `dist/`).
 - **Master Data** — full CRUD (add/edit/delete) for vendors / warehouses /
   employees (the API's writable entities).
 
+## Theming & motion
+
+The app wears the legacy GI **"Navy vault, gold key"** brand identity, with a
+**dark/light toggle** (dark is the flagship default) in the header.
+
+- **`src/theme/tokens.ts`** — the single source of truth for the palette, mirroring
+  the Streamlit theme in root `config.py` (navy `#003366`, gold `#D4AF37`, dark
+  surfaces, status colors). Change a color here, not inline in a component.
+- **`src/theme/themes.ts`** — three Ant Design `ThemeConfig`s applied via
+  `ConfigProvider`: `darkTheme` (flagship), `lightTheme` (uses amber `#B45309` for
+  text-level accents so gold passes contrast on white), and `siderTheme` (the
+  sidebar rail is navy in **both** modes). Theming at the token level restyles every
+  screen at once — components don't hardcode colors.
+- **`src/theme/ThemeContext.tsx`** — holds the mode, persists it to `localStorage`,
+  and sets `data-theme` on `<html>` (which drives the CSS-side gradients/scrollbars).
+- **`src/index.css`** — what tokens can't do: background gradients, the navy sider
+  rail, the glassmorphic login, and all keyframes.
+- **Animations** are deliberately **subtle-premium** — 120–200 ms, ease-out, no
+  bounce — and every one is wrapped in a `prefers-reduced-motion: reduce` guard.
+  Route fade-in, skeleton first-loads, KPI count-ups (`src/lib/useCountUp.ts`),
+  hover lifts, and a one-shot notification-bell ring.
+
+**Do not** move colors, endpoints, or data-fetching into components — the visual
+layer sits cleanly on top of the existing TanStack Query hooks.
+
 ## Layout
 
 ```
 src/
-  api/       client.ts (axios + types), hooks.ts (TanStack Query hooks)
-  config/    entities.ts (entity + form-field metadata driving the screens)
-  components/ AppLayout.tsx (sider nav), BrowseTable.tsx (generic read grid)
-  lib/       columns.tsx (auto columns from row keys)
-  pages/     Dashboard, StockPage, RecordsPage, MasterDataPage
+  api/        client.ts (axios + types), hooks.ts (TanStack Query hooks)
+  auth/       AuthContext.tsx (login/JWT/2FA session)
+  config/     entities.ts (entity + form-field metadata driving the screens)
+  theme/      tokens.ts (palette), themes.ts (AntD configs), ThemeContext.tsx (toggle)
+  components/ AppLayout.tsx (sider nav + header), BrowseTable.tsx (generic read grid),
+              KpiCard.tsx, NotificationBell.tsx, ErrorBoundary.tsx
+  lib/        columns.tsx (auto columns from row keys), useCountUp.ts
+  pages/      Dashboard, Stock, Records, MasterData, entry/HOD/Logistics/Warehouse/
+              Supervisor/SK/SME/Admin/Reports/Security screens (24 total)
 ```
 
 The screens are **config-driven** (`src/config/entities.ts`): adding a new read

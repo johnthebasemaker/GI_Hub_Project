@@ -4,16 +4,21 @@ Single entry point for continuing the **new React + FastAPI + PostgreSQL** build
 GI Hub. The **live Streamlit app is unchanged and stays on SQLite** — the new stack
 is a *separate* set of processes. Per-slice history is in
 [`docs/POSTGRES_MIGRATION.md` §8](POSTGRES_MIGRATION.md). SME rules live in
-[`handoff.md`](../handoff.md) (SME Canon). Last updated 2026-07-04.
+[`handoff.md`](../handoff.md) (SME Canon). Last updated 2026-07-05.
 
 ---
 
-## 🎯 CURRENT STATUS (2026-07-04) — read this first
+## 🎯 CURRENT STATUS (2026-07-05) — read this first
 The new stack is **feature-complete, hardened, and ship-ready.** Ten build slices
 landed (see §3 and `POSTGRES_MIGRATION.md` §8), all on `main`, all green:
 **bug_check 599/0 · crawler 21/21 · dual_ci 64/64 · derived-view parity · service+guard 52/52.**
 A **turnkey deploy kit** now exists (`deploy/` + [`docs/DEPLOY.md`](DEPLOY.md)) but has
 **NOT been run against any server.**
+
+The React SPA also got a **UI/UX overhaul** (2026-07-05, presentation-only): the
+legacy "Navy vault, gold key" brand theme (`frontend/src/theme/`), a **dark/light
+toggle** (dark-first), a glassmorphic login, and a subtle-premium animation layer.
+**No API / data-layer / backend change** — see `POSTGRES_MIGRATION.md` §8.
 
 **The ONLY thing left is the actual cutover, and it's the user's call:**
 provision the (parked) Hetzner box → run the kit → do the one-time SQLite→PostgreSQL
@@ -101,7 +106,9 @@ burn-rate + PR submit) · `logistics.py` · `warehouse.py` · `receiving.py`
 AppLayout` (role-gated nav via `buildMenu(level, role)`) · `api/hooks.ts` (all
 TanStack Query hooks) · `config/entities.ts` · `pages/` (Dashboard, Stock, Records,
 MasterData, Receive/Issue/Return/Adjust, IncomingDeliveries, Approvals, BurnRate,
-HodPrs, Logistics, Warehouse, Supervisor, SkRequests, Sme).
+HodPrs, Logistics, Warehouse, Supervisor, SkRequests, Sme) · `theme/` (`tokens.ts`
+= brand palette source of truth, `themes.ts` = dark/light/sider AntD configs,
+`ThemeContext` = dark-first toggle) + `index.css` (gradients, sider rail, keyframes).
 
 **CI:** `.github/workflows/postgres-dual-ci.yml` — bug_check (SQLite) + dual_ci +
 parity_check against a `postgres:16` service.
@@ -267,7 +274,9 @@ not urgent.
 **Tier 3 — nice-to-have / later:**
 - Frontend E2E smoke tests (Playwright) — no UI tests exist; service_tests cover the API only.
 - Friendlier session-expiry UX (the 401 interceptor hard-logs-out; add a "session expired" toast).
-- Structured logging + request IDs for prod observability. · Dark mode / a11y polish.
+- Structured logging + request IDs for prod observability. · ~~Dark mode / a11y polish~~
+  ✅ **DONE 2026-07-05** — navy/gold theme + dark/light toggle + `prefers-reduced-motion`
+  guards (UI overhaul, `POSTGRES_MIGRATION.md` §8). Deeper a11y (full WCAG audit) still open.
 - DB foreign keys for referential integrity (stricter; risky on migrated data).
 - Feature parity leftovers: peripheral Logistics/Warehouse tabs (reschedules, force-close,
   vendor-returns, history, manual PO); report scheduler/archive; DN-reschedule/cross-site
