@@ -777,6 +777,233 @@ async def test_site_scoping():
               f"got {r.status_code}")
 
 
+async def test_manhours():
+    """Phase-10 Man-Hours portal: exact {hod, admin} lock, roster upserts, the
+    ported hour math (8h normal + OT, overnight wrap), SQM distribution,
+    estimate-vs-actual variance, attendance-xlsx import, exports. Uses a unique
+    future work-date + SVC- codes, and cleans every mh_* row up afterwards."""
+    transport = ASGITransport(app=app)
+    ip = {"X-Real-IP": "203.0.113.10"}  # own rate-limit bucket
+    D = "2031-01-15"                    # far-future date: never collides with real data
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        async def token(u, p):
+            r = await ac.post("/auth/login", json={"username": u, "password": p}, headers=ip)
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        admin_t = await token("admin", "admin2026")
+        hod_t = await token("hod", "hod2026")        # hod @ CNCEC
+        worker_t = await token("worker", "floor2026")
+
+        try:
+            # Exact role lock: {hod, admin} only.
+            r = await ac.get("/mh/employees", headers=H(worker_t))
+            check("worker (lvl 0) → 403 on the MH portal", r.status_code == 403,
+                  f"got {r.status_code}")
+            r = await ac.get("/mh/meta", headers=H(hod_t))
+            check("hod → 200 on /mh/meta with SME dropdowns",
+                  r.status_code == 200 and len(r.json().get("equipment_tags", [])) > 0
+                  and len(r.json().get("system_codes", [])) > 0, f"got {r.status_code}")
+
+            # Roster: upsert + re-upsert updates in place (no duplicate).
+            r = await ac.post("/mh/employees", headers=H(hod_t), json={
+                "employee_code": "SVC-EMP-1", "name": "Svc One", "worker_type": "nope"})
+            check("bad worker_type → 422", r.status_code == 422, f"got {r.status_code}")
+            for code, name in (("SVC-EMP-1", "Svc One"), ("SVC-EMP-2", "Svc Two"),
+                               ("SVC-EMP-3", "Svc Three")):
+                await ac.post("/mh/employees", headers=H(hod_t), json={
+                    "employee_code": code, "name": name, "worker_type": "OWN"})
+            r = await ac.post("/mh/employees", headers=H(hod_t), json={
+                "employee_code": "SVC-EMP-1", "name": "Svc One Renamed",
+                "worker_type": "Supply", "company": "ACME"})
+            check("roster upsert → 200", r.status_code == 200, f"got {r.status_code}")
+            emps = (await ac.get("/mh/employees", headers=H(hod_t))).json()["items"]
+            mine = [e for e in emps if e["Employee_Code"] == "SVC-EMP-1"]
+            check("re-upsert updates in place (1 row, new name/type)",
+                  len(mine) == 1 and mine[0]["Name"] == "Svc One Renamed"
+                  and mine[0]["Worker_Type"] == "Supply", str(mine))
+            r = await ac.patch(f"/mh/employees/{mine[0]['id']}/status",
+                               headers=H(hod_t), params={"status": "inactive"})
+            check("status flip → inactive", r.status_code == 200, f"got {r.status_code}")
+            r = await ac.patch(f"/mh/employees/{mine[0]['id']}/status",
+                               headers=H(hod_t), params={"status": "active"})
+            check("status flip back → active", r.status_code == 200, f"got {r.status_code}")
+
+            # Site scoping: the hod (CNCEC) may not read/write another site.
+            r = await ac.get("/mh/employees", headers=H(hod_t), params={"site_id": "HQ"})
+            check("hod requesting another site → 403", r.status_code == 403,
+                  f"got {r.status_code}")
+            r = await ac.post("/mh/employees", headers=H(admin_t), json={
+                "employee_code": "SVC-X", "name": "x"})
+            check("admin write without site_id → 422", r.status_code == 422,
+                  f"got {r.status_code}")
+
+            # Timesheet batch: ported hour math (8h normal + unpaid break + OT,
+            # overnight wraps +24h). 07:30–16:30→8.0 · 07:00–18:30→10.5 (2.5 OT)
+            # · 22:00–06:00→7.0.
+            r = await ac.post("/mh/timesheets", headers=H(hod_t), json={
+                "work_date": D, "equipment_tag": "SVC-TAG", "system_code": "99",
+                "location": "SVC-LOC", "break_mins": 60, "rows": [
+                    {"employee_code": "SVC-EMP-1", "in_time": "07:30", "out_time": "16:30"},
+                    {"employee_code": "SVC-EMP-2", "in_time": "07:00", "out_time": "18:30"},
+                    {"employee_code": "SVC-EMP-3", "in_time": "22:00", "out_time": "06:00"},
+                ]})
+            check("timesheet batch → 3 saved", r.status_code == 200
+                  and r.json().get("saved") == 3, f"got {r.status_code} {r.text[:120]}")
+            ts = (await ac.get("/mh/timesheets", headers=H(hod_t),
+                               params={"work_date": D})).json()["items"]
+            hours = {t["Employee_Code"]: (t["Total_Hours"], t["Normal_Hours"], t["OT_Hours"])
+                     for t in ts}
+            check("hour math: 07:30–16:30 − 60min → 8.0 / 8.0 / 0",
+                  hours.get("SVC-EMP-1") == (8.0, 8.0, 0.0), str(hours.get("SVC-EMP-1")))
+            check("hour math: 07:00–18:30 → 10.5 total with 2.5 OT",
+                  hours.get("SVC-EMP-2") == (10.5, 8.0, 2.5), str(hours.get("SVC-EMP-2")))
+            check("hour math: overnight 22:00–06:00 wraps → 7.0",
+                  hours.get("SVC-EMP-3") == (7.0, 7.0, 0.0), str(hours.get("SVC-EMP-3")))
+            # Re-posting the same day/tag/system upserts (no duplicate rows).
+            await ac.post("/mh/timesheets", headers=H(hod_t), json={
+                "work_date": D, "equipment_tag": "SVC-TAG", "system_code": "99",
+                "break_mins": 60, "rows": [
+                    {"employee_code": "SVC-EMP-1", "in_time": "07:30", "out_time": "16:30"}]})
+            ts2 = (await ac.get("/mh/timesheets", headers=H(hod_t),
+                                params={"work_date": D})).json()["items"]
+            check("batch re-post upserts in place (still 3 rows)", len(ts2) == 3,
+                  f"got {len(ts2)}")
+
+            # Team SQM distribution: even, then pro-rata by hours.
+            r = await ac.post("/mh/production", headers=H(hod_t), json={
+                "work_date": D, "equipment_tag": "SVC-TAG", "system_code": "99",
+                "sqm_done": 30, "distribution_method": "even"})
+            check("production even-distribute hits 3 rows", r.status_code == 200
+                  and r.json().get("distributed_rows") == 3, r.text[:120])
+            ts3 = (await ac.get("/mh/timesheets", headers=H(hod_t),
+                                params={"work_date": D})).json()["items"]
+            check("even split → 10 SQM each",
+                  all(abs(float(t["Allocated_SQM"]) - 10.0) < 1e-6 for t in ts3),
+                  str([t["Allocated_SQM"] for t in ts3]))
+            await ac.post("/mh/production", headers=H(hod_t), json={
+                "work_date": D, "equipment_tag": "SVC-TAG", "system_code": "99",
+                "sqm_done": 30, "distribution_method": "by_hours"})
+            ts4 = (await ac.get("/mh/timesheets", headers=H(hod_t),
+                                params={"work_date": D})).json()["items"]
+            sqm_by = {t["Employee_Code"]: float(t["Allocated_SQM"]) for t in ts4}
+            # total hours 25.5 → EMP-2's pro-rata share = 30 × 10.5 / 25.5
+            check("by-hours split is pro-rata on Total_Hours",
+                  abs(sqm_by.get("SVC-EMP-2", 0) - round(30 * 10.5 / 25.5, 3)) < 1e-6,
+                  str(sqm_by))
+
+            # Estimator + variance (the inlined v_mh_estimate_vs_actual port):
+            # estimate 20 vs actual 25.5 → +5.5 / +27.5%.
+            r = await ac.post("/mh/estimates", headers=H(hod_t), json={
+                "equipment_tag": "SVC-TAG", "system_code": "99",
+                "estimated_manhours": 20, "estimated_sqm": 60, "basis": "svc test"})
+            check("estimate upsert → 200", r.status_code == 200, f"got {r.status_code}")
+            v = (await ac.get("/mh/variance", headers=H(hod_t))).json()
+            row = next((x for x in v["items"] if x["Equipment_Tag"] == "SVC-TAG"), None)
+            check("variance row: actual 25.5 vs estimated 20 → +5.5",
+                  row is not None and abs(float(row["Actual_Manhours"]) - 25.5) < 1e-6
+                  and abs(float(row["Variance_Manhours"]) - 5.5) < 1e-6, str(row))
+            check("variance pct 27.5 + SQM rollup 30",
+                  row is not None and abs(float(row["Variance_Pct"]) - 27.5) < 1e-6
+                  and abs(float(row["SQM_Done"]) - 30.0) < 1e-6, str(row))
+            check("variance KPIs count the over-consumer",
+                  v["kpis"]["scopes"] >= 1 and v["kpis"]["over_consuming"] >= 1,
+                  str(v["kpis"]))
+            r = await ac.post("/mh/variance/reason", headers=H(hod_t), json={
+                "equipment_tag": "SVC-TAG", "system_code": "99",
+                "reason": "svc: rework after hydrotest"})
+            check("variance reason saved", r.status_code == 200, f"got {r.status_code}")
+            v2 = (await ac.get("/mh/variance", headers=H(hod_t))).json()["items"]
+            row2 = next((x for x in v2 if x["Equipment_Tag"] == "SVC-TAG"), None)
+            check("reason lands on the variance row",
+                  row2 is not None and row2["Variance_Reason"] == "svc: rework after hydrotest",
+                  str(row2 and row2["Variance_Reason"]))
+
+            # Employee-wise timeline (roster-name join + windowing).
+            tl = (await ac.get("/mh/employee-timeline", headers=H(hod_t), params={
+                "employee_code": "SVC-EMP-2", "date_from": D, "date_to": D})).json()
+            check("employee timeline: 1 row, joined name, 10.5h total",
+                  len(tl["items"]) == 1 and tl["items"][0]["Name"] == "Svc Two"
+                  and abs(tl["total_hours"] - 10.5) < 1e-6, str(tl)[:160])
+
+            # Attendance-xlsx import: dry-run preview, replace import, idempotent
+            # re-import (replace deletes the file's dates first).
+            import io as _io
+
+            from openpyxl import Workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "ADD EMPLOYEE"
+            ws.append(["Code", "Name", "Designation", "Type", "Company"])
+            ws.append(["SVC-IMP-1", "Svc Import One", "Blaster", "Supply", "ACME"])
+            sar = wb.create_sheet("SAR")
+            sar.append(["Location", "Equipment Tag #", "Code", "Name", "Work Date",
+                        "In Time", "Out Time", "Status", "Remarks"])
+            sar.append(["YARD", "SVC-TAG", "SVC-IMP-1", "Svc Import One", "2031-02-01",
+                        "07:30", "16:30", "PR", ""])
+            sar.append(["YARD", "SVC-TAG", "SVC-IMP-2", "Svc Import Two", "2031-02-01",
+                        "07:00", "18:30", "PR", ""])
+            buf = _io.BytesIO()
+            wb.save(buf)
+            xlsx = ("att.xlsx", buf.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            r = await ac.post("/mh/import", headers=H(hod_t), files={"file": xlsx},
+                              params={"dry_run": "true"})
+            check("import dry-run parses 2 employees / 2 rows / 1 date",
+                  r.status_code == 200 and r.json().get("employees") == 2
+                  and r.json().get("timesheets") == 2 and len(r.json().get("dates", [])) == 1,
+                  r.text[:160])
+            r = await ac.post("/mh/import", headers=H(hod_t), files={"file": xlsx},
+                              params={"replace": "true"})
+            check("import (replace) → 2 employees + 2 timesheets", r.status_code == 200
+                  and r.json().get("timesheets") == 2, r.text[:160])
+            imp = (await ac.get("/mh/timesheets", headers=H(hod_t),
+                                params={"work_date": "2031-02-01"})).json()["items"]
+            check("imported rows carry recomputed hours (SAR worker merged to roster)",
+                  len(imp) == 2 and {float(t["Total_Hours"]) for t in imp} == {8.0, 10.5},
+                  str([(t['Employee_Code'], t['Total_Hours']) for t in imp]))
+            r = await ac.post("/mh/import", headers=H(hod_t), files={"file": xlsx},
+                              params={"replace": "true"})
+            imp2 = (await ac.get("/mh/timesheets", headers=H(hod_t),
+                                 params={"work_date": "2031-02-01"})).json()["items"]
+            check("replace re-import is idempotent (still 2 rows)", len(imp2) == 2,
+                  f"got {len(imp2)}")
+            emp_row = next((e for e in (await ac.get("/mh/employees", headers=H(hod_t)))
+                            .json()["items"] if e["Employee_Code"] == "SVC-IMP-1"), None)
+            check("ADD EMPLOYEE attributes land on the roster",
+                  emp_row is not None and emp_row["Worker_Type"] == "Supply"
+                  and emp_row["Company"] == "ACME", str(emp_row))
+            r = await ac.post("/mh/import", headers=H(hod_t),
+                              files={"file": ("junk.xlsx", b"not an xlsx", "application/octet-stream")})
+            check("unparseable workbook → 422", r.status_code == 422, f"got {r.status_code}")
+
+            # Exports reuse the shared report renderers.
+            r = await ac.get("/mh/export/variance", headers=H(hod_t),
+                             params={"format": "xlsx"})
+            check("MH export → 200 + spreadsheet", r.status_code == 200
+                  and "spreadsheet" in r.headers.get("content-type", ""),
+                  f"got {r.status_code}")
+            r = await ac.get("/mh/export/nope", headers=H(hod_t))
+            check("unknown MH export → 404", r.status_code == 404, f"got {r.status_code}")
+        finally:
+            # Cleanup: remove every SVC- artifact this suite created.
+            from sqlalchemy import text as _text
+            async with SessionLocal() as s:
+                await s.execute(_text(
+                    "DELETE FROM mh_timesheets WHERE \"Employee_Code\" LIKE 'SVC-%'"))
+                await s.execute(_text(
+                    "DELETE FROM mh_employees WHERE \"Employee_Code\" LIKE 'SVC-%'"))
+                await s.execute(_text(
+                    "DELETE FROM mh_production WHERE \"Equipment_Tag\" = 'SVC-TAG'"))
+                await s.execute(_text(
+                    "DELETE FROM mh_manhour_estimates WHERE \"Equipment_Tag\" = 'SVC-TAG'"))
+                await s.execute(_text(
+                    "DELETE FROM mh_variance_notes WHERE \"Equipment_Tag\" = 'SVC-TAG'"))
+                await s.commit()
+
+
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""
     import os
@@ -825,6 +1052,8 @@ async def main() -> int:
     await test_site_scoping()
     print("\n D. token refresh (rotation + revocation)")
     await test_token_refresh()
+    print("\n E. man-hours portal (Phase 10)")
+    await test_manhours()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

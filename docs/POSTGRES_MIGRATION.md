@@ -221,6 +221,34 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-05 · actor=interactive · branch=`main` · 🕒 Parity build Phase 10 — Man-Hours & Labor Tracking portal
+New `backend/api/manhours.py` (/mh, ZERO new tables — the mh_* tables already exist in both
+stacks; alembic baseline carries them). **Exact-locked {hod, admin}** via `require_roles("hod")`,
+mirroring the legacy page + SME estimator lock (a level check would wrongly admit logistics).
+HOD pinned to own Site_ID; admin passes ?site_id= (required on writes → 422 without).
+- **Employees**: roster CRUD over `mh_employees` (upsert on Site+Code, OWN/Supply,
+  active/inactive flips) — logically separate from the system `users` table.
+- **Daily timesheets**: per-day batch grid + **attendance-xlsx import** (openpyxl port of
+  `parse_attendance_workbook` — ADD EMPLOYEE + SAR sheets, replace-by-date or append, dry-run
+  preview; SAR workers auto-merge into the roster). Hour math ported verbatim:
+  Total=(Out−In)−break w/ overnight +24h wrap, Normal=min(8), OT=rest — the file's own hour
+  columns are ignored. NB: FastAPI UploadFile ⇒ `python-multipart` added to backend/requirements.
+- **Team SQM production**: upsert + auto-distribute into Allocated_SQM (even | by_hours pro-rata).
+- **Estimator**: required MH per Tag/System (+optional SQM → MH/SQM norm) over
+  `mh_manhour_estimates`.
+- **Estimate-vs-Actual**: the legacy `v_mh_estimate_vs_actual` view inlined as plain PG SQL
+  (no view/migration needed) + KPIs + over-consumption reason capture (`mh_variance_notes`).
+- **Employee-wise report**: roster-joined timeline w/ date window + total hours.
+- **Exports** reuse the shared /reports renderers (employees | timesheets | variance |
+  employee-timeline · xlsx/csv/pdf).
+- **FE:** ManHoursPage (5 tabs: Employees · Daily Timesheet · Estimator · Estimate vs Actual ·
+  Employee-wise) at /manhours; nav group gated to exact `['hod','admin']`; admin site picker.
+- **Verified:** service_tests **166 → 198/198** (new suite E: exact lock, hour math incl.
+  overnight, upsert-in-place, even+by-hours distribution, variance 20 est vs 25.5 act → +27.5%,
+  reason capture, timeline join, xlsx import dry-run/replace/idempotent re-import/bad-file-422,
+  exports; full SVC- cleanup in a finally); parity 5/5; build green; live: 22 CNCEC workers in
+  the roster grid, variance dashboard renders the real estimate row, clean console.
+
 ### 2026-07-05 · actor=interactive · branch=`main` · 🛡️ Parity build Phase 9 — admin console completion
 New `backend/api/console.py` (NO new tables — sites live in `system_settings` category='Site';
 requests/bug_reports/app_settings are legacy tables):

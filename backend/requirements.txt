@@ -38,5 +38,8 @@ qrcode[pil]>=7.4         # 2FA enrollment QR image
 openpyxl
 fpdf2
 
+# --- File uploads (FastAPI UploadFile — /mh/import attendance xlsx) ---
+python-multipart
+
 # --- Tests (backend/api/service_tests.py; CI-gated) ---
 httpx

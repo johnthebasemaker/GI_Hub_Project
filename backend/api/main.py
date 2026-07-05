@@ -40,6 +40,7 @@ from .db import engine, get_session  # noqa: E402
 from .entry import router as entry_router  # noqa: E402
 from .hod import router as hod_router  # noqa: E402
 from .logistics import router as logistics_router  # noqa: E402
+from .manhours import router as manhours_router  # noqa: E402
 from .notifications import router as notifications_router  # noqa: E402
 from .console import admin as console_admin_router  # noqa: E402
 from .console import oversight as console_oversight_router  # noqa: E402
@@ -177,6 +178,9 @@ app.include_router(console_admin_router)
 app.include_router(console_oversight_router)
 app.include_router(xsite_router, dependencies=_auth)
 app.include_router(console_public_router, dependencies=_auth)
+
+# Man-Hours & Labor Tracking — mh_* tables, exact-locked {hod, admin} (self-guarded).
+app.include_router(manhours_router)
 
 
 @app.get("/", include_in_schema=False)

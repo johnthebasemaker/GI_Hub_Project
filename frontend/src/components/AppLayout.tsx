@@ -2,7 +2,7 @@ import { Suspense } from 'react'
 import type { ReactNode } from 'react'
 import { Alert, Badge, Button, ConfigProvider, Layout, Menu, Skeleton, Space, Tooltip, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AuditOutlined, BarChartOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FallOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, MoonOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, SunOutlined, TeamOutlined, ToolOutlined, FileProtectOutlined, ControlOutlined, MessageOutlined, UserAddOutlined } from '@ant-design/icons'
+import { AuditOutlined, BarChartOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FallOutlined, FieldTimeOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, MoonOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, SunOutlined, TeamOutlined, ToolOutlined, FileProtectOutlined, ControlOutlined, MessageOutlined, UserAddOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth, useWorkQueues } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -81,6 +81,16 @@ function buildMenu(level: number, role: string, q: Record<string, number>): Menu
       type: 'group',
       children: [{ key: '/sme', icon: <ExperimentOutlined />, label: 'Estimator' }],
     })
+    // Man-Hours portal — exact-locked {hod, admin} like the legacy page (a level
+    // check would wrongly admit logistics; the API 403s other roles anyway).
+    if (['hod', 'admin'].includes(role)) {
+      items.push({
+        key: 'mh',
+        label: 'Man-Hours',
+        type: 'group',
+        children: [{ key: '/manhours', icon: <FieldTimeOutlined />, label: 'Labor Tracking' }],
+      })
+    }
     items.push({
       key: 'reports-grp',
       label: 'Reports',
