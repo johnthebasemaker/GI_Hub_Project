@@ -41,6 +41,8 @@ from .entry import router as entry_router  # noqa: E402
 from .hod import router as hod_router  # noqa: E402
 from .logistics import router as logistics_router  # noqa: E402
 from .notifications import router as notifications_router  # noqa: E402
+from .report_center import router as report_center_router  # noqa: E402
+from .report_center import scheduler_loop  # noqa: E402
 from .reports import router as reports_router  # noqa: E402
 from .receiving import router as receiving_router  # noqa: E402
 from .requests import router as requests_router  # noqa: E402
@@ -75,7 +77,16 @@ ENTITIES = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Report scheduler daemon — one asyncio task per worker; duplicate runs are
+    # prevented by the atomic last_run claim in run_due_schedules(). Disable
+    # with GI_SCHEDULER=0 (tests/CI import the app without running lifespan).
+    task = None
+    if os.environ.get("GI_SCHEDULER", "1") != "0":
+        import asyncio
+        task = asyncio.create_task(scheduler_loop())
     yield
+    if task:
+        task.cancel()
     await engine.dispose()
 
 
@@ -147,7 +158,9 @@ app.include_router(admin_router)
 # In-app notifications — the sidebar bell feed (self-scoped to the current user).
 app.include_router(notifications_router, dependencies=_auth)
 
-# Reports — downloadable Excel/PDF/CSV exports (self-guarded, ≥hod).
+# Reports — archive + schedules FIRST (literal /reports/archive|schedules paths
+# must register before the /reports/{key} catch-all), then the downloads.
+app.include_router(report_center_router)
 app.include_router(reports_router)
 
 

@@ -221,6 +221,30 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-05 · actor=interactive · branch=`main` · 📊 Parity build Phase 5 — reports parity + archive + scheduler
+- **11 new reports** in the `/reports/{key}` framework (6 → **17**): daily-consumption,
+  monthly-summary (opening/received/issued/returned/closing per SAP), wbs, low-stock,
+  burn-rate, valuation, fefo, audit (**global_only** — hidden from + 403 for scoped users),
+  warehouse-throughput, force-closures (over `po_force_closures`), intent-vs-actual
+  (SMR items ⋈ consumption via `Source_Ref`). `download_report` refactored into a shared
+  `render_report()` (+ `date_from/date_to/month` params). asyncpg gotcha ×2: params cast
+  to timestamp/date must be Python datetime/date objects, not ISO strings; and SMR headers
+  use `requested_at` (no created_at).
+- **Archive** (`backend/api/report_center.py`): disk files under `GI_REPORTS_ARCHIVE_DIR`
+  (default `reports_archive/`, shared with legacy, gitignored) indexed in the legacy
+  `report_archive` table — generate/list/re-download/delete (admin-or-generator), site-scoped,
+  audited. Router registered BEFORE `/reports/{key}` so literal paths win.
+- **Scheduler**: dependency-free asyncio daemon in the FastAPI lifespan (`GI_SCHEDULER=0`
+  disables; NOT APScheduler — no new dep, and multi-worker duplicate runs are solved by an
+  **atomic last_run claim** UPDATE that only one worker wins). Frequencies over the legacy
+  `report_schedules` table: `daily HH:MM` · `weekly mon..sun HH:MM` · `monthly DD HH:MM`
+  (server time). On run: render → archive → `report_ready` notification to recipients (or
+  the creator). Full CRUD + toggle + run-now endpoints; ReportsPage → Generate | Archive |
+  Schedules tabs.
+- **Verified:** service_tests **108 → 120/120** (all 11 keys render; global-only gate;
+  archive lifecycle incl. re-download + cleanup; bad frequency 422; run-now; **daemon tick
+  runs once and the second tick proves the claim**); build green; 17 cards live, hod sees 16.
+
 ### 2026-07-05 · actor=interactive · branch=`main` · 🗝️ Parity build Phase 4 — store-keeper toolbox
 - **Stock count workflow:** `GET/POST /entry/count-sheet` — site stock list (derived
   site-stock SQL) → SK enters counted qtys → variances stage adjustments via

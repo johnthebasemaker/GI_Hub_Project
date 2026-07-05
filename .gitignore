@@ -29,3 +29,4 @@ yolov8*.pt
 
 # Runtime error logs (developer-facing; not source)
 logs/
+reports_archive/

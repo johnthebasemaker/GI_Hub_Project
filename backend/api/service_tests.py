@@ -524,6 +524,70 @@ async def test_site_scoping():
         check("work-queues: store keeper gets the returnables_overdue count",
               isinstance(j.get("returnables_overdue"), int), str(j))
 
+        # Phase-5 reports: every new key renders (csv), scoped gates hold.
+        new_keys = ("daily-consumption", "monthly-summary", "wbs", "low-stock",
+                    "burn-rate", "valuation", "fefo", "audit",
+                    "warehouse-throughput", "force-closures", "intent-vs-actual")
+        bad = []
+        for k in new_keys:
+            rr = await ac.get(f"/reports/{k}", params={"format": "csv"}, headers=H(admin_t))
+            if rr.status_code != 200:
+                bad.append(f"{k}={rr.status_code}")
+        check("all 11 Phase-5 reports render as CSV for admin", not bad, ", ".join(bad))
+        r = await ac.get("/reports/audit", params={"format": "csv"}, headers=H(hod_t))
+        check("scoped hod → 403 on the global-only audit report",
+              r.status_code == 403, f"got {r.status_code}")
+
+        # Archive lifecycle (created → listed → downloaded → deleted).
+        r = await ac.post("/reports/archive", headers=H(admin_t),
+                          json={"key": "stock", "format": "csv"})
+        aid = r.json().get("id") if r.status_code == 201 else None
+        check("archive a report → 201 + id", bool(aid), f"got {r.status_code}")
+        r = await ac.get("/reports/archive", headers=H(admin_t))
+        check("archive list contains the new entry",
+              any(x["id"] == aid for x in r.json().get("items", [])))
+        r = await ac.get(f"/reports/archive/{aid}/download", headers=H(admin_t))
+        check("archived file re-downloads", r.status_code == 200, f"got {r.status_code}")
+        r = await ac.request("DELETE", f"/reports/archive/{aid}", headers=H(admin_t))
+        check("archive delete → 200 (cleanup)", r.status_code == 200, f"got {r.status_code}")
+
+        # Scheduler: validation + run-now + the daemon's atomic claim.
+        r = await ac.post("/reports/schedules", headers=H(admin_t),
+                          json={"label": "svc bad", "report_type": "stock",
+                                "frequency": "whenever"})
+        check("bad schedule frequency → 422", r.status_code == 422, f"got {r.status_code}")
+        r = await ac.post("/reports/schedules", headers=H(admin_t),
+                          json={"label": "svc daily", "report_type": "stock",
+                                "frequency": "daily 00:00", "format": "csv"})
+        sid = r.json().get("id")
+        check("create schedule → 201 + id", bool(sid), f"got {r.status_code}")
+        r = await ac.post(f"/reports/schedules/{sid}/run", headers=H(admin_t))
+        ran_aid = (r.json().get("archive") or {}).get("id")
+        check("run-now → archives + returns the archive id",
+              r.status_code == 200 and bool(ran_aid), f"got {r.status_code}")
+
+        from .report_center import run_due_schedules
+        from .db import SessionLocal as _SL
+        from sqlalchemy import update as _upd
+        from .services.ledger import _MD as _md
+        async with _SL() as s2:
+            await s2.execute(_upd(_md.tables["report_schedules"])
+                             .where(_md.tables["report_schedules"].c["id"] == sid)
+                             .values(last_run=None))
+            await s2.commit()
+        n1 = await run_due_schedules()
+        check("daemon tick runs the due schedule", n1 >= 1, f"ran {n1}")
+        n2 = await run_due_schedules()
+        check("second tick does NOT rerun (atomic claim holds)", n2 == 0, f"ran {n2}")
+
+        # Cleanup: schedule + every archive row this test created.
+        r = await ac.request("DELETE", f"/reports/schedules/{sid}", headers=H(admin_t))
+        check("schedule delete → 200 (cleanup)", r.status_code == 200, f"got {r.status_code}")
+        arch = (await ac.get("/reports/archive", headers=H(admin_t))).json().get("items", [])
+        for x in arch:
+            if x["id"] == ran_aid or str(x.get("generated_by", "")).startswith("scheduler:"):
+                await ac.request("DELETE", f"/reports/archive/{x['id']}", headers=H(admin_t))
+
 
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""

@@ -750,6 +750,78 @@ export async function downloadPrPdf(prNumber: string, siteId?: string) {
   URL.revokeObjectURL(url)
 }
 
+// --- Report archive + schedules -------------------------------------------------
+export function useReportArchive(reportType?: string) {
+  return useQuery({
+    queryKey: ['/reports/archive', reportType],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/reports/archive',
+        { params: reportType ? { report_type: reportType } : {} })).data.items,
+  })
+}
+
+export function useArchiveReport() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api.post('/reports/archive', body).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/reports/archive'] }),
+  })
+}
+
+export function useDeleteArchived() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api.delete(`/reports/archive/${id}`).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/reports/archive'] }),
+  })
+}
+
+export async function downloadArchived(id: number, name: string) {
+  const res = await api.get(`/reports/archive/${id}/download`, { responseType: 'blob' })
+  const url = URL.createObjectURL(res.data as Blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+export function useSchedules() {
+  return useQuery({
+    queryKey: ['/reports/schedules'],
+    queryFn: async () => (await api.get<{ items: Row[] }>('/reports/schedules')).data.items,
+  })
+}
+
+export function useScheduleMutation() {
+  const qc = useQueryClient()
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['/reports/schedules'] })
+    qc.invalidateQueries({ queryKey: ['/reports/archive'] })
+  }
+  const create = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api.post('/reports/schedules', body).then((r) => r.data),
+    onSuccess: invalidate,
+  })
+  const toggle = useMutation({
+    mutationFn: (id: number) => api.post(`/reports/schedules/${id}/toggle`).then((r) => r.data),
+    onSuccess: invalidate,
+  })
+  const remove = useMutation({
+    mutationFn: (id: number) => api.delete(`/reports/schedules/${id}`).then((r) => r.data),
+    onSuccess: invalidate,
+  })
+  const run = useMutation({
+    mutationFn: (id: number) => api.post(`/reports/schedules/${id}/run`).then((r) => r.data),
+    onSuccess: invalidate,
+  })
+  return { create, toggle, remove, run }
+}
+
 // Authenticated file download: the axios `api` instance carries the bearer
 // token, so we fetch the file as a blob and trigger a browser save.
 export async function downloadReport(key: string, format: string, params: Record<string, unknown>) {

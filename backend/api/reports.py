@@ -128,6 +128,223 @@ async def rep_inventory(session, *, site_id=None, **_):
     return "Inventory Master", cols, rows
 
 
+# --- Phase-5 parity reports ---------------------------------------------------
+async def rep_daily_consumption(session, *, site_id=None, date_from=None, date_to=None, **_):
+    f = date_from or _dt.date.today().isoformat()
+    t = date_to or f
+    where = '"Date" >= :f AND "Date" <= :t'
+    params: dict = {"f": f, "t": t}
+    if site_id:
+        where += ' AND COALESCE("Site_ID", \'HQ\') = :site'
+        params["site"] = site_id
+    sql = f'''
+        SELECT "Date", TRIM("SAP_Code") AS "SAP_Code", "Quantity", "Work_Type",
+               "Issued_By", "Issued_To", "Tank_No", COALESCE("Site_ID",'HQ') AS "Site_ID",
+               "Lot_Number", "Remarks"
+        FROM consumption WHERE {where}
+        ORDER BY "Date", "SAP_Code" LIMIT 5000'''
+    cols, rows = await _run(session, sql, params)
+    return f"Daily Consumption ({f} → {t})", cols, rows
+
+
+async def rep_monthly_summary(session, *, site_id=None, month=None, **_):
+    m = month or _dt.date.today().strftime("%Y-%m")
+    try:
+        start = _dt.date.fromisoformat(f"{m}-01")
+    except ValueError:
+        start = _dt.date.today().replace(day=1)
+        m = start.strftime("%Y-%m")
+    nxt = (start + _dt.timedelta(days=32)).replace(day=1)
+    site_w = ' AND COALESCE("Site_ID", \'HQ\') = :site' if site_id else ""
+    params: dict = {"start": start.isoformat(), "nxt": nxt.isoformat()}
+    if site_id:
+        params["site"] = site_id
+    sql = f'''
+        WITH r AS (SELECT TRIM("SAP_Code") sap,
+                          SUM(CASE WHEN "Date" < :start THEN "Quantity" ELSE 0 END) pre,
+                          SUM(CASE WHEN "Date" >= :start AND "Date" < :nxt THEN "Quantity" ELSE 0 END) cur
+                   FROM receipts WHERE 1=1{site_w} GROUP BY TRIM("SAP_Code")),
+             c AS (SELECT TRIM("SAP_Code") sap,
+                          SUM(CASE WHEN "Date" < :start THEN "Quantity" ELSE 0 END) pre,
+                          SUM(CASE WHEN "Date" >= :start AND "Date" < :nxt THEN "Quantity" ELSE 0 END) cur
+                   FROM consumption WHERE 1=1{site_w} GROUP BY TRIM("SAP_Code")),
+             x AS (SELECT TRIM("SAP_Code") sap,
+                          SUM(CASE WHEN "Date" < :start THEN "Quantity" ELSE 0 END) pre,
+                          SUM(CASE WHEN "Date" >= :start AND "Date" < :nxt THEN "Quantity" ELSE 0 END) cur
+                   FROM returns WHERE 1=1{site_w} GROUP BY TRIM("SAP_Code"))
+        SELECT i."SAP_Code", i."Equipment_Description", i."UOM",
+               ROUND(CAST(COALESCE(r.pre,0)-COALESCE(c.pre,0)-COALESCE(x.pre,0) AS NUMERIC),3) AS "Opening",
+               COALESCE(r.cur,0) AS "Received", COALESCE(c.cur,0) AS "Issued",
+               COALESCE(x.cur,0) AS "Returned",
+               ROUND(CAST(COALESCE(r.pre,0)-COALESCE(c.pre,0)-COALESCE(x.pre,0)
+                     + COALESCE(r.cur,0)-COALESCE(c.cur,0)-COALESCE(x.cur,0) AS NUMERIC),3) AS "Closing"
+        FROM inventory i
+        LEFT JOIN r ON r.sap = TRIM(i."SAP_Code")
+        LEFT JOIN c ON c.sap = TRIM(i."SAP_Code")
+        LEFT JOIN x ON x.sap = TRIM(i."SAP_Code")
+        WHERE COALESCE(r.cur,0)+COALESCE(c.cur,0)+COALESCE(x.cur,0)
+              +ABS(COALESCE(r.pre,0)-COALESCE(c.pre,0)-COALESCE(x.pre,0)) > 0
+        ORDER BY i."SAP_Code"'''
+    cols, rows = await _run(session, sql, params)
+    return f"Monthly Summary ({m})", cols, rows
+
+
+async def rep_wbs(session, *, site_id=None, days=90, **_):
+    where = '"Date" >= :cutoff'
+    params: dict = {"cutoff": _cutoff(days)}
+    if site_id:
+        where += ' AND COALESCE("Site_ID", \'HQ\') = :site'
+        params["site"] = site_id
+    sql = f'''
+        SELECT COALESCE(NULLIF(TRIM(wbs), ''), '(no WBS)') AS "WBS",
+               TRIM("SAP_Code") AS "SAP_Code",
+               ROUND(CAST(SUM("Quantity") AS NUMERIC),3) AS "Consumed",
+               COUNT(*) AS "Transactions", MAX("Date") AS "Last_Issue"
+        FROM consumption WHERE {where}
+        GROUP BY COALESCE(NULLIF(TRIM(wbs), ''), '(no WBS)'), TRIM("SAP_Code")
+        ORDER BY "WBS", "Consumed" DESC'''
+    cols, rows = await _run(session, sql, params)
+    return f"WBS Report (last {days} days)", cols, rows
+
+
+async def rep_low_stock(session, *, site_id=None, **_):
+    where = 's."Minimum_Qty" > 0 AND s."Current_Stock" < s."Minimum_Qty"'
+    params: dict = {"cutoff": _cutoff(30)}
+    if site_id:
+        where += ' AND s."Site_ID" = :site'
+        params["site"] = site_id
+    sql = f'''
+        SELECT s."SAP_Code", s."Site_ID", s."Equipment_Description", s."UOM",
+               s."Minimum_Qty", s."Current_Stock",
+               s."Minimum_Qty" - s."Current_Stock" AS "Shortage",
+               ROUND(CAST(COALESCE(b.daily_avg,0) AS NUMERIC),3) AS "Daily_Burn",
+               ROUND(CAST((s."Minimum_Qty" - s."Current_Stock")
+                     + COALESCE(b.daily_avg,0)*30 AS NUMERIC),3) AS "Suggested_Reorder"
+        FROM ({SQL_SITE_STOCK}) s
+        LEFT JOIN (SELECT TRIM("SAP_Code") sap, COALESCE("Site_ID",'HQ') site,
+                          SUM("Quantity")/30.0 daily_avg
+                   FROM consumption WHERE "Date" >= :cutoff
+                   GROUP BY TRIM("SAP_Code"), COALESCE("Site_ID",'HQ')) b
+          ON b.sap = s."SAP_Code" AND b.site = s."Site_ID"
+        WHERE {where} ORDER BY "Shortage" DESC'''
+    cols, rows = await _run(session, sql, params)
+    return "Low Stock Alert", cols, rows
+
+
+async def rep_burn_rate(session, *, site_id=None, days=30, **_):
+    days = max(1, min(int(days or 30), 365))
+    where = '"Date" >= :cutoff'
+    params: dict = {"cutoff": _cutoff(days), "days": days}
+    if site_id:
+        where += ' AND COALESCE("Site_ID", \'HQ\') = :site'
+        params["site"] = site_id
+    sql = f'''
+        SELECT TRIM("SAP_Code") AS "SAP_Code",
+               ROUND(CAST(SUM("Quantity") AS NUMERIC),3) AS "Consumed",
+               ROUND(CAST(SUM("Quantity")/:days AS NUMERIC),3) AS "Daily_Avg"
+        FROM consumption WHERE {where}
+        GROUP BY TRIM("SAP_Code") ORDER BY "Consumed" DESC LIMIT 500'''
+    cols, rows = await _run(session, sql, params)
+    return f"Burn Rate ({days} days)", cols, rows
+
+
+async def rep_valuation(session, *, site_id=None, **_):
+    where, params = "1=1", {}
+    if site_id:
+        where = 's."Site_ID" = :site'
+        params["site"] = site_id
+    sql = f'''
+        SELECT s."SAP_Code", s."Site_ID", s."Equipment_Description", s."UOM",
+               s."Current_Stock", COALESCE(i."Unit_Cost",0) AS "Unit_Cost",
+               ROUND(CAST(s."Current_Stock"*COALESCE(i."Unit_Cost",0) AS NUMERIC),2) AS "Stock_Value_SAR"
+        FROM ({SQL_SITE_STOCK}) s
+        LEFT JOIN inventory i ON TRIM(i."SAP_Code") = s."SAP_Code"
+        WHERE {where} ORDER BY "Stock_Value_SAR" DESC'''
+    cols, rows = await _run(session, sql, params)
+    return "Inventory Valuation (standard cost)", cols, rows
+
+
+async def rep_fefo(session, *, site_id=None, days=90, **_):
+    where = '"Date" >= :cutoff'
+    params: dict = {"cutoff": _cutoff(days)}
+    if site_id:
+        where += ' AND COALESCE("Site_ID", \'HQ\') = :site'
+        params["site"] = site_id
+    sql = f'''
+        SELECT "Date", TRIM("SAP_Code") AS "SAP_Code", "Quantity", "Lot_Number",
+               CASE WHEN COALESCE("FEFO_Override",'') <> '' THEN 'OVERRIDE' ELSE 'FEFO' END AS "Pick",
+               "FEFO_Override" AS "Override_Reason", "Issued_By",
+               COALESCE("Site_ID",'HQ') AS "Site_ID"
+        FROM consumption WHERE {where} AND COALESCE("Lot_Number",'') <> ''
+        ORDER BY CASE WHEN COALESCE("FEFO_Override",'') <> '' THEN 0 ELSE 1 END, "Date" DESC
+        LIMIT 5000'''
+    cols, rows = await _run(session, sql, params)
+    return f"FEFO Compliance (last {days} days)", cols, rows
+
+
+async def rep_audit(session, *, days=30, **_):
+    sql = '''
+        SELECT id, timestamp, username, action_type, target_table, details
+        FROM system_audit_log
+        WHERE timestamp >= CAST(:cutoff AS timestamp)
+        ORDER BY id DESC LIMIT 5000'''
+    # asyncpg types the param as timestamp — it must be a datetime, not a str.
+    cutoff = _dt.datetime.fromisoformat(_cutoff(days))
+    cols, rows = await _run(session, sql, {"cutoff": cutoff})
+    return f"Full Audit Log (last {days} days)", cols, rows
+
+
+async def rep_warehouse_throughput(session, **_):
+    sql = '''
+        SELECT COALESCE("Warehouse_ID",'—') AS "Warehouse", status,
+               COALESCE(rl_bl_family,'—') AS "Family", COUNT(*) AS "DNs"
+        FROM delivery_notes
+        GROUP BY COALESCE("Warehouse_ID",'—'), status, COALESCE(rl_bl_family,'—')
+        ORDER BY "Warehouse", status'''
+    cols, rows = await _run(session, sql, {})
+    return "Warehouse Throughput (DN counts)", cols, rows
+
+
+async def rep_force_closures(session, *, site_id=None, **_):
+    where, params = "1=1", {}
+    if site_id:
+        where = '"Site_ID" = :site'
+        params["site"] = site_id
+    sql = f'''
+        SELECT id, target_type, target_ref, "Site_ID", "PR_Number", "PO_Number",
+               reason, closed_by, closed_at, notes, reverted_at, reverted_by
+        FROM po_force_closures WHERE {where}
+        ORDER BY id DESC LIMIT 5000'''
+    cols, rows = await _run(session, sql, params)
+    return "Force-Closures", cols, rows
+
+
+async def rep_intent_vs_actual(session, *, site_id=None, days=90, **_):
+    where = "h.status = 'approved' AND CAST(h.requested_at AS date) >= CAST(:cutoff AS date)"
+    # asyncpg types the param as date — pass a date object, not a str.
+    params: dict = {"cutoff": _dt.date.fromisoformat(_cutoff(days))}
+    if site_id:
+        where += ' AND h."Site_ID" = :site'
+        params["site"] = site_id
+    sql = f'''
+        SELECT h.request_no AS "Request", h."Site_ID", h."Worker_Name",
+               i."SAP_Code", i."Requested_Qty" AS "Approved_Qty",
+               COALESCE(c.qty, 0) AS "Consumed_Qty",
+               ROUND(CAST(COALESCE(c.qty,0) - i."Requested_Qty" AS NUMERIC),3) AS "Variance",
+               CASE WHEN i."Requested_Qty" > 0
+                    THEN ROUND(CAST(100.0*(COALESCE(c.qty,0)-i."Requested_Qty")/i."Requested_Qty" AS NUMERIC),1)
+               END AS "Variance_Pct"
+        FROM supervisor_material_request_items i
+        JOIN supervisor_material_requests h ON h.id = i.request_id
+        LEFT JOIN (SELECT "Source_Ref", SUM("Quantity") qty FROM consumption
+                   WHERE "Source_Ref" LIKE 'SMR:%' GROUP BY "Source_Ref") c
+          ON c."Source_Ref" = 'SMR:' || h.request_no || ':' || i.id
+        WHERE {where}
+        ORDER BY h.request_no, i."SAP_Code"'''
+    cols, rows = await _run(session, sql, params)
+    return f"Supervisor Intent vs Actual (last {days} days)", cols, rows
+
+
 REPORTS = {
     "stock":           {"fn": rep_stock,           "label": "Current Stock",   "filters": ["site_id"],
                         "desc": "Current stock per item and site (received − consumed − returned)."},
@@ -141,6 +358,28 @@ REPORTS = {
                         "desc": "Purchase orders with status."},
     "inventory":       {"fn": rep_inventory,       "label": "Inventory Master","filters": ["site_id"],
                         "desc": "The full inventory master list."},
+    "daily-consumption": {"fn": rep_daily_consumption, "label": "Daily Consumption", "filters": ["site_id", "date_from", "date_to"],
+                        "desc": "Every issue in a date range, with work type / lot / issuer."},
+    "monthly-summary": {"fn": rep_monthly_summary,  "label": "Monthly Summary",  "filters": ["site_id", "month"],
+                        "desc": "Per-SAP opening / received / issued / returned / closing for a month."},
+    "wbs":             {"fn": rep_wbs,              "label": "WBS Report",       "filters": ["site_id", "days"],
+                        "desc": "Consumption grouped by WBS number."},
+    "low-stock":       {"fn": rep_low_stock,        "label": "Low Stock Alert",  "filters": ["site_id"],
+                        "desc": "Items below minimum, with burn rate + suggested reorder."},
+    "burn-rate":       {"fn": rep_burn_rate,        "label": "Burn Rate",        "filters": ["site_id", "days"],
+                        "desc": "Consumption per material with daily average."},
+    "valuation":       {"fn": rep_valuation,        "label": "Inventory Valuation", "filters": ["site_id"],
+                        "desc": "Current stock × standard unit cost (SAR)."},
+    "fefo":            {"fn": rep_fefo,             "label": "FEFO Compliance",  "filters": ["site_id", "days"],
+                        "desc": "Lot-tagged issues, overrides listed first."},
+    "audit":           {"fn": rep_audit,            "label": "Full Audit Log",   "filters": ["days"],
+                        "desc": "System audit trail (admin/logistics only).", "global_only": True},
+    "warehouse-throughput": {"fn": rep_warehouse_throughput, "label": "Warehouse Throughput", "filters": [],
+                        "desc": "DN counts by warehouse, status and RL/BL family."},
+    "force-closures":  {"fn": rep_force_closures,   "label": "Force-Closures",   "filters": ["site_id"],
+                        "desc": "Audit of force-closed PRs / POs / lines."},
+    "intent-vs-actual": {"fn": rep_intent_vs_actual, "label": "Intent vs Actual", "filters": ["site_id", "days"],
+                        "desc": "Approved supervisor requests vs actual consumption + variance."},
 }
 
 
@@ -232,33 +471,56 @@ _FORMATS = {
 
 
 @router.get("", summary="Available reports + their filters")
-async def list_reports():
+async def list_reports(user: dict = Depends(require_level(2))):
+    scoped = site_scope(user) is not None
     return {"reports": [
         {"key": k, "label": v["label"], "description": v["desc"], "filters": v["filters"]}
         for k, v in REPORTS.items()
+        if not (scoped and v.get("global_only"))
     ]}
+
+
+async def render_report(session, key: str, *, format: str, user: dict,
+                        site_id: Optional[str] = None, days: int = 30,
+                        within_days: int = 30, status: Optional[str] = None,
+                        date_from: Optional[str] = None, date_to: Optional[str] = None,
+                        month: Optional[str] = None) -> tuple[bytes, str, str]:
+    """Shared pipeline for the download endpoint, the archive, and the
+    scheduler: validates, applies site scoping, renders → (bytes, filename,
+    media type)."""
+    if key not in REPORTS:
+        raise HTTPException(404, f"unknown report {key!r}")
+    fmt = (format or "xlsx").lower()
+    if fmt not in _FORMATS:
+        raise HTTPException(400, f"format must be one of {sorted(_FORMATS)}")
+    # Site scoping: every report is forced to the caller's own site below
+    # logistics level; a scoped user with no site gets a clear 403.
+    site_id = resolve_site_param(user, site_id)
+    if site_scope(user) is not None:
+        if site_id == "":
+            raise HTTPException(403, "no site is assigned to your account — reports unavailable")
+        if REPORTS[key].get("global_only"):
+            raise HTTPException(403, "this report is restricted to logistics/admin")
+    title, columns, rows = await REPORTS[key]["fn"](
+        session, site_id=site_id, days=days, within_days=within_days, status=status,
+        date_from=date_from, date_to=date_to, month=month)
+    render, media = _FORMATS[fmt]
+    data = render(title, columns, rows, user["username"])
+    fname = f"{key}-{_dt.date.today().isoformat()}.{fmt}"
+    return data, fname, media
 
 
 @router.get("/{key}", summary="Download a report (xlsx | pdf | csv)")
 async def download_report(key: str, format: str = Query("xlsx"),
                           site_id: Optional[str] = None, days: int = 30,
                           within_days: int = 30, status: Optional[str] = None,
+                          date_from: Optional[str] = None, date_to: Optional[str] = None,
+                          month: Optional[str] = None,
                           user: dict = Depends(require_level(2)),
                           session: AsyncSession = Depends(get_session)):
-    if key not in REPORTS:
-        raise HTTPException(404, f"unknown report {key!r}")
-    if format not in _FORMATS:
-        raise HTTPException(400, f"format must be one of {sorted(_FORMATS)}")
-    # Site scoping: every report is forced to the caller's own site below
-    # logistics level; a scoped user with no site gets a clear 403.
-    site_id = resolve_site_param(user, site_id)
-    if site_scope(user) is not None and site_id == "":
-        raise HTTPException(403, "no site is assigned to your account — reports unavailable")
-    title, columns, rows = await REPORTS[key]["fn"](
-        session, site_id=site_id, days=days, within_days=within_days, status=status)
-    render, media = _FORMATS[format]
-    data = render(title, columns, rows, user["username"])
-    stamp = _dt.date.today().isoformat()
-    fname = f"{key}-{stamp}.{format}"
+    data, fname, media = await render_report(
+        session, key, format=format, user=user, site_id=site_id, days=days,
+        within_days=within_days, status=status, date_from=date_from,
+        date_to=date_to, month=month)
     return StreamingResponse(io.BytesIO(data), media_type=media,
                              headers={"Content-Disposition": f'attachment; filename="{fname}"'})
