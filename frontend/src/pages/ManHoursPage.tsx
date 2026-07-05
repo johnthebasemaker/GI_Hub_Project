@@ -560,6 +560,85 @@ function VarianceTab({ site }: TabProps) {
   )
 }
 
+// --- 🔗 Equipment Scorecard (SME ↔ MH read-only join) --------------------------
+interface ScorecardResp {
+  items: ApiRow[]
+  kpis: { scopes: number; with_labor: number; with_estimate: number; drift: number; total_hours: number }
+  site_norm: { hours: number; sqm: number; mh_per_sqm: number | null; sqm_per_mh: number | null }
+}
+
+const varTag = (v: unknown) => {
+  if (v == null) return <>—</>
+  const n = Number(v)
+  return <Tag color={n > 10 ? 'red' : n <= 0 ? 'green' : 'gold'}>{n > 0 ? '+' : ''}{n}%</Tag>
+}
+
+function ScorecardTab({ site }: TabProps) {
+  const [activeOnly, setActiveOnly] = useState(false)
+  const { data, isFetching } = useMh<ScorecardResp>('/mh/scorecard', sp(site))
+  const items = (data?.items ?? []).filter((r) => !activeOnly || Number(r.Actual_Manhours) > 0)
+  const k = data?.kpis
+  const norm = data?.site_norm
+
+  const columns: ColumnsType<ApiRow> = [
+    { title: 'Tag', dataIndex: 'Equipment_Tag', fixed: 'left',
+      render: (v, r) => r.In_SME ? v : <span>{v} <Tag>MH-only</Tag></span> },
+    { title: 'Sys', dataIndex: 'System_Code', width: 60 },
+    { title: 'Location', dataIndex: 'Location', render: (v) => v ?? '—' },
+    { title: 'Planned SQM', dataIndex: 'Planned_SQM', align: 'right', width: 110,
+      render: (v) => v ?? '—' },
+    { title: 'Done (SME)', dataIndex: 'Done_SQM_SME', align: 'right', width: 100 },
+    { title: 'Done (Labor)', dataIndex: 'Done_SQM_Labor', align: 'right', width: 105 },
+    { title: '%', dataIndex: 'Pct_Complete', align: 'right', width: 70,
+      render: (v) => (v == null ? '—' : `${v}%`) },
+    { title: 'Est MH', dataIndex: 'Estimated_Manhours', align: 'right', width: 80,
+      render: (v) => v ?? '—' },
+    { title: 'Act MH', dataIndex: 'Actual_Manhours', align: 'right', width: 80 },
+    { title: 'Labor Var', dataIndex: 'Labor_Variance_Pct', align: 'right', width: 100, render: varTag },
+    { title: 'MH/SQM', dataIndex: 'MH_per_SQM', align: 'right', width: 90,
+      render: (v) => v ?? '—' },
+    { title: 'Mat Var', dataIndex: 'Material_Variance_Pct', align: 'right', width: 95, render: varTag },
+    { title: 'Recon', dataIndex: 'Reconciliation', width: 80,
+      render: (v: string | null) => v == null ? '—'
+        : <Tag color={v === 'drift' ? 'red' : 'green'}>{v}</Tag> },
+  ]
+
+  return (
+    <div>
+      <Typography.Paragraph type="secondary">
+        One row per Tank/System: SME SQM progress, material variance and labor variance
+        side by side (read-only over the frozen SME tables). “Recon” compares the two
+        independent “SQM done” sources — labor-reported vs SME-reported.
+      </Typography.Paragraph>
+      <Row gutter={16} style={{ marginBottom: 16, maxWidth: 900 }}>
+        <Col span={6}><Card size="small"><Statistic title="Scopes" value={k?.scopes ?? 0} /></Card></Col>
+        <Col span={6}><Card size="small"><Statistic title="With labor booked" value={k?.with_labor ?? 0} /></Card></Col>
+        <Col span={6}><Card size="small"><Statistic title="Site norm MH/SQM" value={norm?.mh_per_sqm ?? '—'} /></Card></Col>
+        <Col span={6}><Card size="small"><Statistic title="Recon drift" value={k?.drift ?? 0}
+          styles={(k?.drift ?? 0) > 0 ? { content: { color: '#dc3545' } } : undefined} /></Card></Col>
+      </Row>
+      <Space style={{ marginBottom: 12 }} wrap>
+        <Checkbox checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)}>
+          Only scopes with labor booked
+        </Checkbox>
+        <Button icon={<DownloadOutlined />} onClick={() =>
+          downloadDocument('/mh/export/scorecard', { format: 'xlsx', ...sp(site) }, 'mh-scorecard.xlsx')}>
+          XLSX
+        </Button>
+        <Button icon={<DownloadOutlined />} onClick={() =>
+          downloadDocument('/mh/export/scorecard', { format: 'pdf', ...sp(site) }, 'mh-scorecard.pdf')}>
+          PDF
+        </Button>
+      </Space>
+      <Table size="small" loading={isFetching} columns={columns} dataSource={items}
+        rowKey={(r) => `${r.Equipment_Tag}·${r.System_Code}`} scroll={{ x: 'max-content' }}
+        onRow={(r) => (r.Reconciliation === 'drift'
+          ? { style: { background: 'rgba(220,53,69,0.12)' } } : {})}
+        pagination={{ pageSize: 15, showTotal: (t) => `${t} scopes` }} />
+    </div>
+  )
+}
+
 // --- 🧑‍🔧 Employee-wise --------------------------------------------------------
 function EmployeeWiseTab({ site }: TabProps) {
   const [emp, setEmp] = useState<string>()
@@ -639,6 +718,7 @@ export default function ManHoursPage() {
           { key: 'timesheet', label: '🕒 Daily Timesheet', children: <TimesheetTab site={effSite} /> },
           { key: 'estimator', label: '📐 Estimator', children: <EstimatorTab site={effSite} /> },
           { key: 'variance', label: '📊 Estimate vs Actual', children: <VarianceTab site={effSite} /> },
+          { key: 'scorecard', label: '🔗 Scorecard', children: <ScorecardTab site={effSite} /> },
           { key: 'employee-wise', label: '🧑‍🔧 Employee-wise', children: <EmployeeWiseTab site={effSite} /> },
         ]}
       />

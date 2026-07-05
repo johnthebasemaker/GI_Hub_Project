@@ -221,6 +221,31 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-06 · actor=interactive · branch=`main` · 🔗 Phase 11B — SME link layer + Equipment Scorecard
+The SME↔MH interconnect (user-approved Architecture A: **read-only join layer**, no link
+tables, sme_* NEVER written — verified by a code audit for insert/update/delete on sme_*).
+Both domains join on the natural key (Site_ID, Equipment_Tag≡Equipment_Tag_No,
+System_Code≡Lining_System_Code); merges happen in Python over grouped SELECTs (sme.py style).
+- **GET /mh/productivity**: per-scope labor norms (MH/SQM · SQM/MH from mh_timesheets ÷
+  mh_production) + the estimate norm (Estimated_MH/Estimated_SQM) + the **site norm**
+  (aggregated over scopes with both hours and SQM) — the calibration constant for 11C.
+- **GET /mh/scorecard**: one row per Tank/System — union of SME scopes and MH-only scopes
+  (flagged `In_SME:false`): Planned SQM (sme_sqm_progress.Original, fallback summed
+  Surface_Area_SQM — area rows repeat per scope, so SUM + first location), Done (SME) vs
+  Done (Labor), % complete, Estimated vs Actual MH + labor variance %, MH/SQM, **material
+  expected/actual/variance % from sme_consumption_log** (rejected excluded), and a
+  **Reconciliation flag**: the two independent "SQM done" sources (labor-reported vs
+  SME-reported) → 'drift' when they disagree by > max(1 SQM, 5%).
+- **Exports**: scorecard + productivity join the /mh/export/{key} family (xlsx/csv/pdf via
+  the shared renderers).
+- **FE**: new 🔗 Scorecard tab (6th) — KPI cards (scopes / with-labor / site norm / drift),
+  variance Tags, drift rows tinted red, "only scopes with labor" filter, XLSX+PDF buttons.
+- **Verified:** service_tests **211 → 221/221** (union incl. MH-only, −20% labor variance on
+  a seeded real-SME scope, MH/SQM 0.2 + SQM/MH 5.0 + est-norm, drift flag 40-vs-0, KPI
+  counts, site norm, worker 403, pdf+xlsx exports; cleanup extended — zero residue); build
+  green; live: 66 scopes render (65 SME + 1 MH-only), Brown Field/TRAIN J planned SQM
+  visible, clean console. SME Canon intact.
+
 ### 2026-07-05 · actor=interactive · branch=`main` · 🔗 Phase 11A — attendance-import fit + bulk-assign workflow
 Drove by the user's REAL `to john_Attendance.xlsx` (22 employees · 209 rows · 27 dates —
 the Phase-10 parser handles it verbatim, verified). What the real file exposed:

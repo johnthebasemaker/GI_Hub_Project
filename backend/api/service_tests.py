@@ -1079,6 +1079,69 @@ async def test_manhours():
             check("assign with a blank-ish tag → 422", r.status_code == 422,
                   f"got {r.status_code}")
 
+            # ---- Phase-11B: SME link layer (read-only joins) ----------------
+            # Pick a real SME scope with planned SQM and no existing estimate,
+            # book SVC labor + production + an estimate on it, and assert every
+            # joined column on the scorecard.
+            sc0 = (await ac.get("/mh/scorecard", headers=H(hod_t))).json()
+            check("scorecard unions SME scopes with MH-only scopes",
+                  any(x["In_SME"] for x in sc0["items"])
+                  and any(not x["In_SME"] and x["Equipment_Tag"] == "SVC-TAG"
+                          for x in sc0["items"]),
+                  f"{sc0['kpis']}")
+            real = next(x for x in sc0["items"]
+                        if x["In_SME"] and (x["Planned_SQM"] or 0) > 0
+                        and x["Estimated_Manhours"] is None
+                        and x["Actual_Manhours"] == 0)
+            rtag, rsys = real["Equipment_Tag"], real["System_Code"]
+            await ac.post("/mh/timesheets", headers=H(hod_t), json={
+                "work_date": "2031-03-01", "equipment_tag": rtag, "system_code": rsys,
+                "break_mins": 60, "rows": [
+                    {"employee_code": "SVC-EMP-1", "in_time": "07:30", "out_time": "16:30"}]})
+            await ac.post("/mh/production", headers=H(hod_t), json={
+                "work_date": "2031-03-01", "equipment_tag": rtag, "system_code": rsys,
+                "sqm_done": 40, "distribution_method": "even"})
+            await ac.post("/mh/estimates", headers=H(hod_t), json={
+                "equipment_tag": rtag, "system_code": rsys,
+                "estimated_manhours": 10, "estimated_sqm": 50, "basis": "svc scorecard"})
+            sc = (await ac.get("/mh/scorecard", headers=H(hod_t))).json()
+            row_sc = next(x for x in sc["items"]
+                          if x["Equipment_Tag"] == rtag and x["System_Code"] == rsys)
+            check("scorecard row: 8h labor + est 10 → labor variance −20%",
+                  row_sc["Actual_Manhours"] == 8.0 and row_sc["Estimated_Manhours"] == 10.0
+                  and row_sc["Labor_Variance_Pct"] == -20.0, str(row_sc))
+            check("scorecard row: labor-reported 40 SQM → MH/SQM 0.2",
+                  row_sc["Done_SQM_Labor"] == 40.0 and row_sc["MH_per_SQM"] == 0.2,
+                  str(row_sc))
+            check("reconciliation flags drift (labor says 40, SME says 0)",
+                  row_sc["Reconciliation"] == "drift" and row_sc["Done_SQM_SME"] == 0.0,
+                  str(row_sc))
+            check("scorecard KPIs count labor + drift",
+                  sc["kpis"]["with_labor"] >= 1 and sc["kpis"]["drift"] >= 1,
+                  str(sc["kpis"]))
+
+            prod = (await ac.get("/mh/productivity", headers=H(hod_t))).json()
+            row_p = next(x for x in prod["items"]
+                         if x["Equipment_Tag"] == rtag and x["System_Code"] == rsys)
+            check("productivity norms: 0.2 MH/SQM · 5 SQM/MH · est-norm 0.2",
+                  row_p["MH_per_SQM"] == 0.2 and row_p["SQM_per_MH"] == 5.0
+                  and row_p["Est_MH_per_SQM"] == 0.2, str(row_p))
+            check("site norm aggregates scopes with both hours and SQM",
+                  (prod["site_norm"]["mh_per_sqm"] or 0) > 0, str(prod["site_norm"]))
+            r = await ac.get("/mh/scorecard", headers=H(worker_t))
+            check("worker (lvl 0) → 403 on the scorecard", r.status_code == 403,
+                  f"got {r.status_code}")
+            r = await ac.get("/mh/export/scorecard", headers=H(hod_t),
+                             params={"format": "pdf"})
+            check("scorecard export → 200 + pdf",
+                  r.status_code == 200 and "pdf" in r.headers.get("content-type", ""),
+                  f"got {r.status_code}")
+            r = await ac.get("/mh/export/productivity", headers=H(hod_t),
+                             params={"format": "xlsx"})
+            check("productivity export → 200 + spreadsheet",
+                  r.status_code == 200 and "spreadsheet" in r.headers.get("content-type", ""),
+                  f"got {r.status_code}")
+
             # Exports reuse the shared report renderers.
             r = await ac.get("/mh/export/variance", headers=H(hod_t),
                              params={"format": "xlsx"})
@@ -1096,9 +1159,11 @@ async def test_manhours():
                 await s.execute(_text(
                     "DELETE FROM mh_employees WHERE \"Employee_Code\" LIKE 'SVC-%'"))
                 await s.execute(_text(
-                    "DELETE FROM mh_production WHERE \"Equipment_Tag\" = 'SVC-TAG'"))
+                    "DELETE FROM mh_production WHERE \"Equipment_Tag\" = 'SVC-TAG' "
+                    "OR \"Work_Date\" LIKE '2031-%'"))
                 await s.execute(_text(
-                    "DELETE FROM mh_manhour_estimates WHERE \"Equipment_Tag\" = 'SVC-TAG'"))
+                    "DELETE FROM mh_manhour_estimates WHERE \"Equipment_Tag\" = 'SVC-TAG' "
+                    "OR \"Basis\" LIKE 'svc%'"))
                 await s.execute(_text(
                     "DELETE FROM mh_variance_notes WHERE \"Equipment_Tag\" = 'SVC-TAG'"))
                 await s.commit()

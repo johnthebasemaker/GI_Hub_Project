@@ -663,6 +663,200 @@ async def employee_timeline(site_id: Optional[str] = None,
             "total_hours": round(sum(float(r["Total_Hours"] or 0) for r in items), 1)}
 
 
+# --- Phase 11B: SME ↔ MH link layer (READ-ONLY joins — SME Canon) -------------------
+# Both domains share the natural key (Site_ID, Equipment_Tag == Equipment_Tag_No,
+# System_Code == Lining_System_Code). Everything below is SELECT-only against
+# sme_* ; the merge happens in Python (≤ ~100 scopes — same style as sme.py).
+
+async def _scope_map(session: AsyncSession, stmt, keys=("tag", "sys")) -> dict:
+    """Execute a (tag, sys, *values) grouped SELECT → {(tag, sys): row-dict}."""
+    out = {}
+    for m in (await session.execute(stmt)).mappings().all():
+        d = dict(m)
+        out[(d.pop(keys[0]), d.pop(keys[1]))] = d
+    return out
+
+
+async def _labor_hours(session: AsyncSession, sid: Optional[str]) -> dict:
+    t = timesheets_t
+    stmt = (select(t.c["Equipment_Tag"].label("tag"), t.c["System_Code"].label("sys"),
+                   func.sum(t.c["Total_Hours"]).label("hours"))
+            .where(t.c["Equipment_Tag"].is_not(None), t.c["System_Code"].is_not(None))
+            .group_by(t.c["Equipment_Tag"], t.c["System_Code"]))
+    if sid is not None:
+        stmt = stmt.where(t.c["Site_ID"] == sid)
+    return await _scope_map(session, stmt)
+
+
+async def _labor_sqm(session: AsyncSession, sid: Optional[str]) -> dict:
+    p = production_t
+    stmt = (select(p.c["Equipment_Tag"].label("tag"), p.c["System_Code"].label("sys"),
+                   func.sum(p.c["SQM_Done"]).label("sqm"))
+            .group_by(p.c["Equipment_Tag"], p.c["System_Code"]))
+    if sid is not None:
+        stmt = stmt.where(p.c["Site_ID"] == sid)
+    return await _scope_map(session, stmt)
+
+
+async def _estimate_map(session: AsyncSession, sid: Optional[str]) -> dict:
+    e = estimates_t
+    stmt = select(e.c["Equipment_Tag"].label("tag"), e.c["System_Code"].label("sys"),
+                  e.c["Estimated_Manhours"].label("est_mh"),
+                  e.c["Estimated_SQM"].label("est_sqm"))
+    if sid is not None:
+        stmt = stmt.where(e.c["Site_ID"] == sid)
+    return await _scope_map(session, stmt)
+
+
+async def _sme_scopes(session: AsyncSession, sid: Optional[str]) -> dict:
+    """(tag, system) → location + planned surface from sme_equipment (READ-ONLY).
+    Area rows can repeat per scope → SUM the surface, keep the first location."""
+    e = sme_equipment_t
+    stmt = (select(e.c["Equipment_Tag_No"].label("tag"),
+                   e.c["Lining_System_Code"].label("sys"),
+                   func.min(e.c["Location"]).label("location"),
+                   func.sum(e.c["Surface_Area_SQM"]).label("surface_sqm"))
+            .where(e.c["Equipment_Tag_No"].is_not(None))
+            .group_by(e.c["Equipment_Tag_No"], e.c["Lining_System_Code"]))
+    if sid is not None:
+        stmt = stmt.where(e.c["Site_ID"] == sid)
+    return await _scope_map(session, stmt)
+
+
+async def _sme_progress(session: AsyncSession, sid: Optional[str]) -> dict:
+    s = _MD.tables["sme_sqm_progress"]
+    stmt = (select(s.c["Equipment_Tag_No"].label("tag"),
+                   s.c["Lining_System_Code"].label("sys"),
+                   func.sum(s.c["Original_SQM"]).label("original_sqm"),
+                   func.sum(s.c["Done_SQM"]).label("done_sqm"))
+            .group_by(s.c["Equipment_Tag_No"], s.c["Lining_System_Code"]))
+    if sid is not None:
+        stmt = stmt.where(s.c["Site_ID"] == sid)
+    return await _scope_map(session, stmt)
+
+
+async def _material_variance(session: AsyncSession, sid: Optional[str]) -> dict:
+    """(tag, system) → expected vs actual material qty from sme_consumption_log
+    (READ-ONLY; rejected entries excluded)."""
+    c = _MD.tables["sme_consumption_log"]
+    stmt = (select(c.c["Equipment_Tag_No"].label("tag"),
+                   c.c["Lining_System_Code"].label("sys"),
+                   func.sum(c.c["Expected_Qty"]).label("mat_expected"),
+                   func.sum(c.c["Actual_Qty"]).label("mat_actual"))
+            .where(c.c["status"] != "rejected")
+            .group_by(c.c["Equipment_Tag_No"], c.c["Lining_System_Code"]))
+    if sid is not None:
+        stmt = stmt.where(c.c["Site_ID"] == sid)
+    return await _scope_map(session, stmt)
+
+
+def _pct(actual: float, base: float) -> Optional[float]:
+    return round((actual - base) * 100.0 / base, 1) if base else None
+
+
+def _recon(done_labor: float, done_sme: float) -> Optional[str]:
+    """Two independent 'SQM done' sources (labor-reported vs SME-reported).
+    None = nothing measured yet; 'drift' when they disagree by > max(1, 5%)."""
+    top = max(done_labor, done_sme)
+    if top <= 0:
+        return None
+    return "drift" if abs(done_labor - done_sme) > max(1.0, 0.05 * top) else "ok"
+
+
+async def _productivity_rows(session: AsyncSession, sid: Optional[str]) -> dict:
+    hours = await _labor_hours(session, sid)
+    sqm = await _labor_sqm(session, sid)
+    est = await _estimate_map(session, sid)
+    items = []
+    for key in sorted(set(hours) | set(sqm), key=lambda k: (str(k[0]), str(k[1]))):
+        h = float(hours.get(key, {}).get("hours") or 0)
+        q = float(sqm.get(key, {}).get("sqm") or 0)
+        e = est.get(key, {})
+        est_norm = None
+        if e.get("est_sqm") and float(e["est_sqm"]) > 0:
+            est_norm = round(float(e["est_mh"]) / float(e["est_sqm"]), 3)
+        items.append({
+            "Equipment_Tag": key[0], "System_Code": key[1],
+            "Actual_Manhours": round(h, 1), "SQM_Done": round(q, 2),
+            "MH_per_SQM": round(h / q, 3) if q > 0 else None,
+            "SQM_per_MH": round(q / h, 3) if h > 0 else None,
+            "Est_MH_per_SQM": est_norm,
+        })
+    th = sum(r["Actual_Manhours"] for r in items if r["SQM_Done"] > 0)
+    tq = sum(r["SQM_Done"] for r in items if r["Actual_Manhours"] > 0)
+    site_norm = {
+        "hours": round(th, 1), "sqm": round(tq, 2),
+        "mh_per_sqm": round(th / tq, 3) if tq > 0 else None,
+        "sqm_per_mh": round(tq / th, 3) if th > 0 else None,
+    }
+    return {"items": items, "site_norm": site_norm}
+
+
+@router.get("/productivity", summary="Labor norms per scope + the site norm (MH/SQM)")
+async def productivity(site_id: Optional[str] = None,
+                       user: dict = Depends(require_roles("hod")),
+                       session: AsyncSession = Depends(get_session)):
+    sid = resolve_site_param(user, site_id)
+    return await _productivity_rows(session, sid)
+
+
+async def _scorecard_rows(session: AsyncSession, sid: Optional[str]) -> dict:
+    sme = await _sme_scopes(session, sid)
+    prog = await _sme_progress(session, sid)
+    mat = await _material_variance(session, sid)
+    hours = await _labor_hours(session, sid)
+    lsqm = await _labor_sqm(session, sid)
+    est = await _estimate_map(session, sid)
+
+    keys = set(sme) | set(hours) | set(lsqm) | set(est)
+    items = []
+    for key in sorted(keys, key=lambda k: (str(k[0]), str(k[1]))):
+        s, p, m = sme.get(key), prog.get(key), mat.get(key)
+        h = float(hours.get(key, {}).get("hours") or 0)
+        dl = float(lsqm.get(key, {}).get("sqm") or 0)
+        e = est.get(key, {})
+        planned = float((p and p["original_sqm"]) or (s and s["surface_sqm"]) or 0)
+        done_sme = float((p and p["done_sqm"]) or 0)
+        est_mh = None if not e else float(e["est_mh"])
+        mat_exp = float((m and m["mat_expected"]) or 0)
+        mat_act = float((m and m["mat_actual"]) or 0)
+        items.append({
+            "Equipment_Tag": key[0], "System_Code": key[1],
+            "Location": s["location"] if s else None,
+            "In_SME": s is not None,
+            "Planned_SQM": round(planned, 2) or None,
+            "Done_SQM_SME": round(done_sme, 2),
+            "Done_SQM_Labor": round(dl, 2),
+            "Pct_Complete": round(100 * done_sme / planned, 1) if planned else None,
+            "Estimated_Manhours": est_mh,
+            "Actual_Manhours": round(h, 1),
+            "Labor_Variance_Pct": _pct(h, est_mh) if est_mh else None,
+            "MH_per_SQM": round(h / dl, 3) if dl > 0 else None,
+            "Material_Expected": round(mat_exp, 2) or None,
+            "Material_Actual": round(mat_act, 2) or None,
+            "Material_Variance_Pct": _pct(mat_act, mat_exp),
+            "Reconciliation": _recon(dl, done_sme),
+        })
+    kpis = {
+        "scopes": len(items),
+        "with_labor": sum(1 for r in items if r["Actual_Manhours"] > 0),
+        "with_estimate": sum(1 for r in items if r["Estimated_Manhours"]),
+        "drift": sum(1 for r in items if r["Reconciliation"] == "drift"),
+        "total_hours": round(sum(r["Actual_Manhours"] for r in items), 1),
+    }
+    return {"items": items, "kpis": kpis,
+            "site_norm": (await _productivity_rows(session, sid))["site_norm"]}
+
+
+@router.get("/scorecard",
+            summary="Unified per-equipment view: SME SQM + material vs labor variance")
+async def scorecard(site_id: Optional[str] = None,
+                    user: dict = Depends(require_roles("hod")),
+                    session: AsyncSession = Depends(get_session)):
+    sid = resolve_site_param(user, site_id)
+    return await _scorecard_rows(session, sid)
+
+
 # --- Attendance workbook import (openpyxl port of parse_attendance_workbook) --------
 def _norm(s) -> str:
     return str(s or "").strip().lower()
@@ -843,6 +1037,12 @@ async def mh_export(key: str, format: str = "xlsx", site_id: Optional[str] = Non
     elif key == "variance":
         title = "MH Estimate vs Actual"
         items = await _variance_rows(session, sid)
+    elif key == "scorecard":
+        title = "Equipment Scorecard (Material vs Labor)"
+        items = (await _scorecard_rows(session, sid))["items"]
+    elif key == "productivity":
+        title = "MH Productivity Norms"
+        items = (await _productivity_rows(session, sid))["items"]
     elif key == "employee-timeline":
         title = "MH Employee-wise Report"
         items = (await employee_timeline(site_id, employee_code, date_from,
