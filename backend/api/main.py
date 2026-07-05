@@ -41,6 +41,10 @@ from .entry import router as entry_router  # noqa: E402
 from .hod import router as hod_router  # noqa: E402
 from .logistics import router as logistics_router  # noqa: E402
 from .notifications import router as notifications_router  # noqa: E402
+from .console import admin as console_admin_router  # noqa: E402
+from .console import oversight as console_oversight_router  # noqa: E402
+from .console import public as console_public_router  # noqa: E402
+from .console import xsite as xsite_router  # noqa: E402
 from .documents import router as documents_router  # noqa: E402
 from .report_center import router as report_center_router  # noqa: E402
 from .report_center import scheduler_loop  # noqa: E402
@@ -167,6 +171,13 @@ app.include_router(reports_router)
 # Documents — QR bin labels + employee badges + SOP/Manual + master-data exports.
 app.include_router(documents_router)
 
+# Admin console completion — sites/settings/backup/sessions (admin), oversight
+# (≥logistics), cross-site requests (≥hod), feedback (any authenticated user).
+app.include_router(console_admin_router)
+app.include_router(console_oversight_router)
+app.include_router(xsite_router, dependencies=_auth)
+app.include_router(console_public_router, dependencies=_auth)
+
 
 @app.get("/", include_in_schema=False)
 async def root():
@@ -176,10 +187,12 @@ async def root():
 @app.get("/health", tags=["meta"], summary="Liveness + DB connectivity")
 async def health(session: AsyncSession = Depends(get_session)):
     await session.execute(text("SELECT 1"))
+    from .auth import maintenance_on
     return {
         "status": "ok",
         "dialect": engine.dialect.name,
         "database": engine.url.database,
+        "maintenance": await maintenance_on(session),
         "entities": [e["name"] for e in ENTITIES],
     }
 

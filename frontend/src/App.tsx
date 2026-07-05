@@ -34,6 +34,9 @@ const InventoryAdminPage = lazy(() => import('./pages/InventoryAdminPage'))
 const SecurityPage = lazy(() => import('./pages/SecurityPage'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const DocumentsPage = lazy(() => import('./pages/DocumentsPage'))
+const AdminConsolePage = lazy(() => import('./pages/AdminConsolePage'))
+const CrossSitePage = lazy(() => import('./pages/CrossSitePage'))
+const FeedbackPage = lazy(() => import('./pages/FeedbackPage'))
 
 export default function App() {
   const { user } = useAuth()
@@ -67,6 +70,9 @@ export default function App() {
         <Route path="admin/audit" element={<AuditLogPage />} />
         <Route path="reports" element={<ReportsPage />} />
         <Route path="documents" element={<DocumentsPage />} />
+        <Route path="admin/console" element={<AdminConsolePage />} />
+        <Route path="hod/requests" element={<CrossSitePage />} />
+        <Route path="feedback" element={<FeedbackPage />} />
         <Route path="security" element={<SecurityPage />} />
       </Route>
     </Routes>

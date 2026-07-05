@@ -647,6 +647,135 @@ async def test_site_scoping():
         r = await ac.get("/sme/demand-matrix", headers=H(worker_t))
         check("worker (lvl 0) → 403 on SME views", r.status_code == 403, f"got {r.status_code}")
 
+        # ---- Phase-9 admin console -------------------------------------------
+        import os as _os
+
+        # Global sites CRUD lifecycle.
+        r = await ac.post("/admin/sites", headers=H(admin_t), json={"name": "SVC-SITE"})
+        new_site = r.json().get("id")
+        check("add site → 201", r.status_code == 201 and bool(new_site), f"got {r.status_code}")
+        r = await ac.post("/admin/sites", headers=H(admin_t), json={"name": "SVC-SITE"})
+        check("duplicate site → 409", r.status_code == 409, f"got {r.status_code}")
+        r = await ac.get("/admin/sites", headers=H(admin_t))
+        check("sites list contains the new site",
+              any(s["name"] == "SVC-SITE" for s in r.json().get("items", [])))
+        r = await ac.request("DELETE", f"/admin/sites/{new_site}", headers=H(admin_t))
+        check("delete site → 200 (cleanup)", r.status_code == 200, f"got {r.status_code}")
+        sites_all = (await ac.get("/admin/sites", headers=H(admin_t))).json()["items"]
+        cncec = next((s for s in sites_all if s["name"] == "CNCEC"), None)
+        if cncec:
+            r = await ac.request("DELETE", f"/admin/sites/{cncec['id']}", headers=H(admin_t))
+            check("deleting a site with bound users → 409", r.status_code == 409,
+                  f"got {r.status_code}")
+        else:
+            check("deleting a site with bound users → 409 (skipped: no CNCEC row)", True)
+
+        # Settings + the maintenance-mode login gate (isolated rate-limit bucket;
+        # ALWAYS restored in the finally so later suites can log in).
+        r = await ac.put("/admin/settings", headers=H(admin_t),
+                         json={"key": "nope", "value": "1"})
+        check("non-whitelisted setting key → 422", r.status_code == 422, f"got {r.status_code}")
+        mip = {"X-Real-IP": "203.0.113.9"}
+        r = await ac.put("/admin/settings", headers=H(admin_t),
+                         json={"key": "maintenance_mode", "value": "1"})
+        check("maintenance mode ON → 200", r.status_code == 200, f"got {r.status_code}")
+        try:
+            r = await ac.post("/auth/login", headers=mip,
+                              json={"username": "supervisor", "password": "super2026"})
+            check("non-admin login during maintenance → 503", r.status_code == 503,
+                  f"got {r.status_code}")
+            r = await ac.post("/auth/login", headers=mip,
+                              json={"username": "admin", "password": "admin2026"})
+            check("admin login during maintenance → 200", r.status_code == 200,
+                  f"got {r.status_code}")
+        finally:
+            rr = await ac.put("/admin/settings", headers=H(admin_t),
+                              json={"key": "maintenance_mode", "value": "0"})
+            check("maintenance mode OFF restored", rr.status_code == 200,
+                  f"got {rr.status_code}")
+
+        # Manual backup trigger (200 where pg_dump exists, else a clear 501).
+        r = await ac.post("/admin/backup", headers=H(admin_t))
+        if r.status_code == 200:
+            p = r.json().get("file", "")
+            ok = _os.path.exists(p) and r.json().get("size_bytes", 0) > 0
+            if ok:
+                _os.remove(p)
+            check("manual backup → dump file written (cleaned up)", ok, p)
+        else:
+            check("manual backup → 501 when pg_dump unavailable",
+                  r.status_code == 501, f"got {r.status_code}")
+
+        # Sessions viewer + admin revocation ends a live session.
+        r = await ac.get("/admin/sessions", headers=H(admin_t), params={"username": "worker"})
+        check("sessions list → 200, no token material",
+              r.status_code == 200 and all("refresh_hash" not in s
+                                           for s in r.json().get("items", [])),
+              f"got {r.status_code}")
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac2:
+            lr = await ac2.post("/auth/login", headers=mip,
+                                json={"username": "worker", "password": "floor2026"})
+            check("victim login for revocation test → 200", lr.status_code == 200)
+            r = await ac.post("/admin/sessions/revoke-user/worker", headers=H(admin_t))
+            check("revoke-user → 200 + revoked ≥ 1",
+                  r.status_code == 200 and r.json().get("revoked", 0) >= 1, str(r.json()))
+            r = await ac2.post("/auth/refresh")
+            check("revoked session's refresh → 401", r.status_code == 401,
+                  f"got {r.status_code}")
+
+        # Oversight KPIs: admin 200 with the expected blocks; hod 403.
+        r = await ac.get("/admin/oversight", headers=H(admin_t))
+        j = r.json() if r.status_code == 200 else {}
+        check("logistics oversight → 200 with KPI blocks",
+              r.status_code == 200 and {"prs_by_state", "pos_by_status", "dns_by_status",
+                                        "warehouse_load"} <= set(j), f"got {r.status_code}")
+        r = await ac.get("/admin/oversight", headers=H(hod_t))
+        check("hod (lvl 2) → 403 on oversight", r.status_code == 403, f"got {r.status_code}")
+
+        # Cross-site requests: hod raises → admin decides → cleanup.
+        r = await ac.post("/xsite", headers=H(worker_t),
+                          json={"target_site": "HQ", "SAP_Code": "1001", "requested_qty": 1})
+        check("worker (lvl 0) → 403 raising a cross-site request",
+              r.status_code == 403, f"got {r.status_code}")
+        r = await ac.post("/xsite", headers=H(hod_t),
+                          json={"target_site": "HQ", "SAP_Code": "1001", "requested_qty": 2})
+        xid = r.json().get("id")
+        check("hod raises a cross-site request → 201 + availability snapshot",
+              r.status_code == 201 and "available_at_target" in r.json(),
+              f"got {r.status_code}")
+        r = await ac.get("/xsite", headers=H(hod_t), params={"mine": "true"})
+        check("hod 'my requests' lists it",
+              any(x["id"] == xid for x in r.json().get("items", [])))
+        r = await ac.post(f"/xsite/{xid}/decide", headers=H(hod_t), json={"action": "approve"})
+        check("hod cannot decide (admin only) → 403", r.status_code == 403,
+              f"got {r.status_code}")
+        r = await ac.post(f"/xsite/{xid}/decide", headers=H(admin_t),
+                          json={"action": "approve", "suggested_qty": 1.5})
+        check("admin decides → approved", r.status_code == 200
+              and r.json().get("status") == "approved", f"got {r.status_code}")
+        r = await ac.post(f"/xsite/{xid}/decide", headers=H(admin_t), json={"action": "reject"})
+        check("double-decide → 409", r.status_code == 409, f"got {r.status_code}")
+        r = await ac.request("DELETE", f"/xsite/{xid}", headers=H(admin_t))
+        check("admin deletes the test request (cleanup)", r.status_code == 200,
+              f"got {r.status_code}")
+
+        # Feedback: worker submits → admin responds → cleanup.
+        r = await ac.post("/feedback", headers=H(worker_t),
+                          json={"type": "nope", "description": "x"})
+        check("bad feedback type → 422", r.status_code == 422, f"got {r.status_code}")
+        r = await ac.post("/feedback", headers=H(worker_t),
+                          json={"type": "bug", "description": "svc test report", "page": "/stock"})
+        fid = r.json().get("id")
+        check("submit feedback → 201", r.status_code == 201 and bool(fid), f"got {r.status_code}")
+        r = await ac.get("/feedback/mine", headers=H(worker_t))
+        check("'my feedback' lists it", any(x["id"] == fid for x in r.json().get("items", [])))
+        r = await ac.patch(f"/admin/feedback/{fid}", headers=H(admin_t),
+                           json={"status": "resolved", "admin_response": "done"})
+        check("admin resolves feedback → 200", r.status_code == 200, f"got {r.status_code}")
+        r = await ac.request("DELETE", f"/admin/feedback/{fid}", headers=H(admin_t))
+        check("admin deletes the test report (cleanup)", r.status_code == 200,
+              f"got {r.status_code}")
+
 
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""

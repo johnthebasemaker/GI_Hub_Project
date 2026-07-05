@@ -1,8 +1,8 @@
 import { Suspense } from 'react'
 import type { ReactNode } from 'react'
-import { Badge, Button, ConfigProvider, Layout, Menu, Skeleton, Space, Tooltip, Typography } from 'antd'
+import { Alert, Badge, Button, ConfigProvider, Layout, Menu, Skeleton, Space, Tooltip, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AuditOutlined, BarChartOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FallOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, MoonOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, SunOutlined, TeamOutlined, ToolOutlined, FileProtectOutlined, UserAddOutlined } from '@ant-design/icons'
+import { AuditOutlined, BarChartOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FallOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, MoonOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, SunOutlined, TeamOutlined, ToolOutlined, FileProtectOutlined, ControlOutlined, MessageOutlined, UserAddOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth, useWorkQueues } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -72,6 +72,7 @@ function buildMenu(level: number, role: string, q: Record<string, number>): Menu
         { key: '/hod/burn-rate', icon: <FireOutlined />, label: 'Burn Rate' },
         { key: '/hod/low-stock', icon: <FallOutlined />, label: 'Low Stock' },
         { key: '/hod/prs', icon: <ProfileOutlined />, label: 'Purchase Requests' },
+        { key: '/hod/requests', icon: <SolutionOutlined />, label: 'Cross-Site Requests' },
       ],
     })
     items.push({
@@ -134,6 +135,7 @@ function buildMenu(level: number, role: string, q: Record<string, number>): Menu
         { key: '/admin/pending', icon: <UserAddOutlined />, label: 'Access Requests' },
         { key: '/admin/inventory', icon: <DatabaseOutlined />, label: 'Inventory' },
         { key: '/admin/audit', icon: <FileSearchOutlined />, label: 'Audit Log' },
+        { key: '/admin/console', icon: <ControlOutlined />, label: 'Console' },
       ],
     })
   }
@@ -146,7 +148,10 @@ function buildMenu(level: number, role: string, q: Record<string, number>): Menu
   // Security (2FA self-enrollment) — every authenticated user.
   items.push({
     key: 'account', label: 'Account', type: 'group',
-    children: [{ key: '/security', icon: <SafetyCertificateOutlined />, label: 'Security' }],
+    children: [
+      { key: '/security', icon: <SafetyCertificateOutlined />, label: 'Security' },
+      { key: '/feedback', icon: <MessageOutlined />, label: 'Feedback' },
+    ],
   })
   return items
 }
@@ -226,6 +231,15 @@ export default function AppLayout() {
           </Space>
         </Header>
         <Content style={{ margin: 24 }}>
+          {Boolean((health as { maintenance?: boolean } | undefined)?.maintenance) && (
+            <Alert
+              type="warning"
+              showIcon
+              banner
+              style={{ marginBottom: 16 }}
+              message="Maintenance mode is ON — non-admin sign-ins are paused until it is switched off."
+            />
+          )}
           {/* Keyed wrapper = fade+rise route transition on every navigation;
               the Skeleton covers lazy page-chunk loads. */}
           <Suspense

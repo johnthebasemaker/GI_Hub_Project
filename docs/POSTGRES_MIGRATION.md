@@ -221,6 +221,31 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-05 · actor=interactive · branch=`main` · 🛡️ Parity build Phase 9 — admin console completion
+New `backend/api/console.py` (NO new tables — sites live in `system_settings` category='Site';
+requests/bug_reports/app_settings are legacy tables):
+- **Global sites CRUD** (admin): add/list/delete; delete blocks when users are bound (409).
+- **Settings + MAINTENANCE MODE**: whitelisted app_settings keys; when `maintenance_mode='1'`,
+  non-admin **login/2fa/refresh → 503** (enforced in auth.py; running access tokens die within
+  their 15-min lifetime — documented tradeoff); flag rides `/health` → gold banner in the SPA.
+- **Manual backup**: `POST /admin/backup` shells pg_dump -Fc into GI_BACKUPS_DIR (GI_PG_DUMP /
+  PATH / Homebrew fallback; 501 with runbook pointer where absent — the slim API container).
+- **Access control**: `/admin/sessions` viewer (never exposes refresh_hash) + per-session and
+  per-user revoke → a revoked user's refresh 401s (proven with a live victim session).
+- **Logistics oversight** (≥logistics): 7 KPI blocks (PRs by state, POs by status, top vendors,
+  DNs, warehouse load, force-closures, vendor returns).
+- **Cross-site requests** (`/xsite` — /requests was taken by SMR): HOD raises (availability
+  snapshot at target captured), admin decides w/ suggested qty, creator cancels while pending;
+  notifications both ways. = legacy HOD "My Requests" + admin "Pending Requests" (one page).
+- **Feedback**: `POST /feedback` (any authed) + `/feedback/mine`; admin list/respond/delete over
+  legacy `bug_reports`; submitter notified on status change.
+- **FE:** AdminConsolePage (Sites·Settings·Sessions·Oversight·Feedback tabs), CrossSitePage
+  (/hod/requests), FeedbackPage (/feedback, Account group), maintenance banner in AppLayout.
+- **Verified:** service_tests **137 → 166/166** (sites lifecycle, maintenance ON→worker-503→OFF
+  in a finally, real pg_dump written+cleaned, victim-session revocation, xsite+feedback
+  lifecycles w/ cleanup); build green; live: 3 legacy sites, 77 active sessions listed,
+  7 KPI blocks, maintenance banner round-trip.
+
 ### 2026-07-05 · actor=interactive · branch=`main` · 🧪 Parity build Phase 8 — SME read-parity (Phase 7 SKIPPED — Meta hold)
 **SME Canon held: 9 routes on /sme, ALL GET, zero insert/update/delete (audited).** New in
 `backend/api/sme.py` (all ≥ hod, site-scoped via resolve_site_param):

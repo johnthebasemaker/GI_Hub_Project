@@ -1,0 +1,264 @@
+import { useState } from 'react'
+import {
+  App, Button, Card, Col, Form, Input, InputNumber, Modal, Popconfirm, Row, Select,
+  Space, Switch, Table, Tabs, Tag, Typography,
+} from 'antd'
+import { CloudDownloadOutlined } from '@ant-design/icons'
+import type { ColumnsType } from 'antd/es/table'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { api } from '../api/client'
+import type { Row as ApiRow } from '../api/client'
+
+function errMsg(e: unknown): string {
+  const x = e as { response?: { data?: { detail?: string } }; message?: string }
+  return x?.response?.data?.detail ?? x?.message ?? 'Action failed'
+}
+
+function useConsole<T = ApiRow[]>(path: string, pick: (d: unknown) => T) {
+  return useQuery({ queryKey: [path], queryFn: async () => pick((await api.get(path)).data) })
+}
+
+function SitesTab() {
+  const { message } = App.useApp()
+  const qc = useQueryClient()
+  const { data: items, isFetching } = useConsole('/admin/sites', (d) => (d as { items: ApiRow[] }).items)
+  const [name, setName] = useState('')
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['/admin/sites'] })
+    qc.invalidateQueries({ queryKey: ['/meta/sites'] })
+  }
+  const add = useMutation({
+    mutationFn: () => api.post('/admin/sites', { name }).then((r) => r.data),
+    onSuccess: () => { message.success('Site added'); setName(''); invalidate() },
+    onError: (e) => message.error(errMsg(e)),
+  })
+  const del = useMutation({
+    mutationFn: (id: number) => api.delete(`/admin/sites/${id}`).then((r) => r.data),
+    onSuccess: () => { message.success('Site removed'); invalidate() },
+    onError: (e) => message.error(errMsg(e)),
+  })
+  return (
+    <div>
+      <Space style={{ marginBottom: 12 }}>
+        <Input placeholder="New site name" value={name} onChange={(e) => setName(e.target.value)}
+          style={{ width: 220 }} onPressEnter={() => name.trim() && add.mutate()} />
+        <Button type="primary" loading={add.isPending} disabled={!name.trim()}
+          onClick={() => add.mutate()}>Add site</Button>
+      </Space>
+      <Table size="small" loading={isFetching} dataSource={items ?? []} rowKey={(r) => String(r.id)}
+        pagination={false}
+        columns={[
+          { title: 'ID', dataIndex: 'id', width: 70 },
+          { title: 'Site', dataIndex: 'name' },
+          {
+            title: 'Action', key: 'a', width: 110,
+            render: (_: unknown, r: ApiRow) => (
+              <Popconfirm title="Remove this site? (blocked if users are bound to it)"
+                onConfirm={() => del.mutate(Number(r.id))}>
+                <Button size="small" danger>Delete</Button>
+              </Popconfirm>
+            ),
+          },
+        ] as ColumnsType<ApiRow>} />
+    </div>
+  )
+}
+
+function SettingsTab() {
+  const { message } = App.useApp()
+  const qc = useQueryClient()
+  const { data } = useConsole('/admin/settings',
+    (d) => d as unknown as { settings: Record<string, string>; editable: string[] })
+  const put = useMutation({
+    mutationFn: (b: { key: string; value: string }) => api.put('/admin/settings', b).then((r) => r.data),
+    onSuccess: (_, b) => { message.success(`${b.key} updated`); qc.invalidateQueries({ queryKey: ['/admin/settings'] }) },
+    onError: (e) => message.error(errMsg(e)),
+  })
+  const [backingUp, setBackingUp] = useState(false)
+  const backup = async () => {
+    setBackingUp(true)
+    try {
+      const r = (await api.post('/admin/backup')).data
+      message.success(`Backup written: ${r.file} (${Math.ceil(r.size_bytes / 1024)} KB)`)
+    } catch (e) { message.error(errMsg(e)) } finally { setBackingUp(false) }
+  }
+  const s = data?.settings ?? {}
+  const numericKeys = ['low_stock_days', 'burn_alert_days', 'expiry_warn_days']
+  return (
+    <Row gutter={[16, 16]}>
+      <Col xs={24} lg={12}>
+        <Card size="small" title="Maintenance mode">
+          <Typography.Paragraph type="secondary">
+            When ON, non-admin sign-ins and session refreshes are refused (503); running
+            sessions expire within their 15-minute token lifetime.
+          </Typography.Paragraph>
+          <Switch checked={s.maintenance_mode === '1'} checkedChildren="ON" unCheckedChildren="OFF"
+            onChange={(v) => put.mutate({ key: 'maintenance_mode', value: v ? '1' : '0' })} />
+        </Card>
+        <Card size="small" title="Backup" style={{ marginTop: 16 }}>
+          <Typography.Paragraph type="secondary">
+            Runs pg_dump (custom format) into the backups directory now.
+          </Typography.Paragraph>
+          <Button icon={<CloudDownloadOutlined />} loading={backingUp} onClick={backup}>
+            Back up database now
+          </Button>
+        </Card>
+      </Col>
+      <Col xs={24} lg={12}>
+        <Card size="small" title="Alert thresholds (days)">
+          {numericKeys.map((k) => (
+            <div key={k} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+              <Typography.Text>{k.replace(/_/g, ' ')}</Typography.Text>
+              <InputNumber min={1} max={365} defaultValue={Number(s[k] ?? 0) || undefined}
+                key={`${k}-${s[k]}`}
+                onBlur={(e) => {
+                  const v = (e.target as HTMLInputElement).value
+                  if (v && v !== s[k]) put.mutate({ key: k, value: v })
+                }} />
+            </div>
+          ))}
+        </Card>
+      </Col>
+    </Row>
+  )
+}
+
+function SessionsTab() {
+  const { message } = App.useApp()
+  const qc = useQueryClient()
+  const { data: items, isFetching } = useConsole('/admin/sessions', (d) => (d as { items: ApiRow[] }).items)
+  const act = useMutation({
+    mutationFn: (path: string) => api.post(path).then((r) => r.data),
+    onSuccess: () => { message.success('Revoked'); qc.invalidateQueries({ queryKey: ['/admin/sessions'] }) },
+    onError: (e) => message.error(errMsg(e)),
+  })
+  return (
+    <Table size="small" loading={isFetching} dataSource={items ?? []} rowKey={(r) => String(r.id)}
+      pagination={{ pageSize: 20, showTotal: (t) => `${t} active sessions` }}
+      columns={[
+        { title: 'ID', dataIndex: 'id', width: 70 },
+        { title: 'User', dataIndex: 'username' },
+        { title: 'Started', dataIndex: 'created_at', render: (v) => String(v ?? '').slice(0, 16).replace('T', ' ') },
+        { title: 'Expires', dataIndex: 'expires_at', render: (v) => String(v ?? '').slice(0, 16).replace('T', ' ') },
+        {
+          title: 'Action', key: 'a', width: 250,
+          render: (_: unknown, r: ApiRow) => (
+            <Space>
+              <Popconfirm title="Revoke this session?"
+                onConfirm={() => act.mutate(`/admin/sessions/${r.id}/revoke`)}>
+                <Button size="small" danger>Revoke</Button>
+              </Popconfirm>
+              <Popconfirm title={`Log ${r.username} out everywhere?`}
+                onConfirm={() => act.mutate(`/admin/sessions/revoke-user/${r.username}`)}>
+                <Button size="small">Revoke all for user</Button>
+              </Popconfirm>
+            </Space>
+          ),
+        },
+      ] as ColumnsType<ApiRow>} />
+  )
+}
+
+function KpiBlock({ title, rows }: { title: string; rows?: ApiRow[] }) {
+  const cols: ColumnsType<ApiRow> = rows?.length
+    ? Object.keys(rows[0]).map((k) => ({ title: k, dataIndex: k, key: k }))
+    : []
+  return (
+    <Card size="small" title={title} style={{ height: '100%' }}>
+      <Table size="small" dataSource={rows ?? []} columns={cols} pagination={false}
+        rowKey={(_, i) => String(i)} />
+    </Card>
+  )
+}
+
+function OversightTab() {
+  const { data } = useConsole('/admin/oversight', (d) => d as unknown as Record<string, ApiRow[]>)
+  return (
+    <Row gutter={[16, 16]}>
+      <Col xs={24} md={8}><KpiBlock title="PRs by state" rows={data?.prs_by_state} /></Col>
+      <Col xs={24} md={8}><KpiBlock title="POs by status" rows={data?.pos_by_status} /></Col>
+      <Col xs={24} md={8}><KpiBlock title="DNs by status" rows={data?.dns_by_status} /></Col>
+      <Col xs={24} md={8}><KpiBlock title="Top vendors (by POs)" rows={data?.top_vendors} /></Col>
+      <Col xs={24} md={8}><KpiBlock title="Warehouse load" rows={data?.warehouse_load} /></Col>
+      <Col xs={24} md={8}><KpiBlock title="Force-closures by reason" rows={data?.force_closures_by_reason} /></Col>
+    </Row>
+  )
+}
+
+const FB_COLOR: Record<string, string> = {
+  open: 'gold', in_progress: 'blue', resolved: 'green', closed: 'default',
+}
+
+function FeedbackTab() {
+  const { message } = App.useApp()
+  const qc = useQueryClient()
+  const { data: items, isFetching } = useConsole('/admin/feedback', (d) => (d as { items: ApiRow[] }).items)
+  const [responding, setResponding] = useState<ApiRow | null>(null)
+  const [form] = Form.useForm()
+  const patch = useMutation({
+    mutationFn: (b: { id: number; status: string; admin_response?: string }) =>
+      api.patch(`/admin/feedback/${b.id}`, b).then((r) => r.data),
+    onSuccess: () => {
+      message.success('Updated — the submitter was notified')
+      setResponding(null)
+      qc.invalidateQueries({ queryKey: ['/admin/feedback'] })
+    },
+    onError: (e) => message.error(errMsg(e)),
+  })
+  return (
+    <div>
+      <Table size="small" loading={isFetching} dataSource={items ?? []} rowKey={(r) => String(r.id)}
+        scroll={{ x: 'max-content' }} pagination={{ pageSize: 20 }}
+        columns={[
+          { title: 'ID', dataIndex: 'id', width: 60 },
+          { title: 'Type', dataIndex: 'type', width: 90, render: (v: string) => <Tag>{v}</Tag> },
+          { title: 'From', dataIndex: 'username', width: 110 },
+          { title: 'Page', dataIndex: 'page', width: 130, render: (v) => v ?? '—' },
+          { title: 'Description', dataIndex: 'description', ellipsis: true },
+          { title: 'Status', dataIndex: 'status', width: 120,
+            render: (v: string) => <Tag color={FB_COLOR[v] ?? 'default'}>{v}</Tag> },
+          {
+            title: 'Action', key: 'a', width: 110,
+            render: (_: unknown, r: ApiRow) => (
+              <Button size="small" onClick={() => { setResponding(r); form.setFieldsValue({ status: r.status, admin_response: r.admin_response }) }}>
+                Respond
+              </Button>
+            ),
+          },
+        ] as ColumnsType<ApiRow>} />
+      <Modal title={`Report #${responding?.id ?? ''}`} open={!!responding}
+        onCancel={() => setResponding(null)} confirmLoading={patch.isPending}
+        onOk={async () => {
+          const v = await form.validateFields()
+          patch.mutate({ id: Number(responding!.id), ...v })
+        }} okText="Save & notify" destroyOnHidden>
+        <Typography.Paragraph type="secondary">{String(responding?.description ?? '')}</Typography.Paragraph>
+        <Form form={form} layout="vertical" preserve={false}>
+          <Form.Item name="status" label="Status" rules={[{ required: true }]}>
+            <Select options={['open', 'in_progress', 'resolved', 'closed'].map((s) => ({ value: s, label: s }))} />
+          </Form.Item>
+          <Form.Item name="admin_response" label="Response to the submitter">
+            <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </div>
+  )
+}
+
+export default function AdminConsolePage() {
+  return (
+    <div>
+      <Typography.Title level={3} style={{ marginTop: 0 }}>Admin Console</Typography.Title>
+      <Tabs
+        items={[
+          { key: 'sites', label: 'Sites', children: <SitesTab /> },
+          { key: 'settings', label: 'Settings', children: <SettingsTab /> },
+          { key: 'sessions', label: 'Sessions', children: <SessionsTab /> },
+          { key: 'oversight', label: 'Oversight', children: <OversightTab /> },
+          { key: 'feedback', label: 'Feedback', children: <FeedbackTab /> },
+        ]}
+      />
+    </div>
+  )
+}

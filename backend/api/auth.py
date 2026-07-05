@@ -43,6 +43,15 @@ users_t = _MD.tables["users"]
 audit_t = _MD.tables["system_audit_log"]
 pending_users_t = _MD.tables["pending_users"]
 sessions_t = _MD.tables["auth_sessions"]
+app_settings_t = _MD.tables["app_settings"]
+
+
+async def maintenance_on(session: AsyncSession) -> bool:
+    """app_settings.maintenance_mode = '1' → non-admin login/refresh refused.
+    Existing access tokens keep working for ≤ their 15-min lifetime."""
+    v = (await session.execute(select(app_settings_t.c["value"])
+         .where(app_settings_t.c["key"] == "maintenance_mode"))).scalar_one_or_none()
+    return v == "1"
 
 # Resolved once at import — in production a weak/absent key raises here (fail-fast).
 JWT_SECRET = jwt_secret()
@@ -292,6 +301,9 @@ async def login(body: LoginIn, response: Response,
         await _audit(session, row.username, "LOGIN_FAILED", "bad password")
         raise HTTPException(401, "invalid username or password")
 
+    if row.role != "admin" and await maintenance_on(session):
+        raise HTTPException(503, "GI Hub is in maintenance mode — please try again later")
+
     if row.totp_enabled:
         mfa = _make_token(row.username, row.role, row.Site_ID, MFA_TTL, scope="mfa")
         return {"mfa_required": True, "mfa_token": mfa}
@@ -316,6 +328,8 @@ async def login_2fa(body: TwoFAIn, response: Response,
     if not _verify_totp(row.totp_secret, body.code):
         await _audit(session, row.username, "2FA_FAILED", "invalid code")
         raise HTTPException(401, "invalid 2FA code")
+    if row.role != "admin" and await maintenance_on(session):
+        raise HTTPException(503, "GI Hub is in maintenance mode — please try again later")
     token = _make_token(row.username, row.role, row.Site_ID, ACCESS_TTL,
                         warehouse_id=row.Warehouse_ID)
     raw_refresh = await _open_session(session, row.username)
@@ -354,6 +368,8 @@ async def refresh(response: Response,
         await session.commit()
         _clear_refresh_cookie(response)
         raise HTTPException(401, "user no longer exists")
+    if user_row.role != "admin" and await maintenance_on(session):
+        raise HTTPException(503, "GI Hub is in maintenance mode — please try again later")
 
     # Rotate: open the successor first, then revoke the old row pointing at it.
     raw_new = secrets.token_urlsafe(48)
