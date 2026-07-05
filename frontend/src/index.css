@@ -341,6 +341,11 @@ body {
   padding-inline: 10px;
 }
 
+/* Overdue tool-loan rows get a red tint */
+.gi-row-overdue > td {
+  background: rgba(239, 68, 68, 0.08) !important;
+}
+
 /* Notification feed rows */
 .gi-notif-row {
   transition: background-color 0.15s ease;

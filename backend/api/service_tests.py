@@ -98,12 +98,18 @@ async def test_smr_create_and_approve():
             notif_t.c["recipient_site"] == "CNCEC")
         check("create_smr notifies store-keeper@site", n_notif == 1, f"got {n_notif}")
 
-        appr = await supervisor.approve_smr(s, sk_username="svc_sk", request_id=rid)
+        item_id = (await supervisor.smr_items(s, rid))[0]["id"]
+        appr = await supervisor.approve_smr(s, sk_username="svc_sk", request_id=rid,
+                                            qty_overrides={item_id: 1.5})
         check("approve_smr succeeds", appr.get("approved") is True, str(appr))
         n_pending = await _count(
             s, pending_issues_t, pending_issues_t.c["Source_Ref"].like(f"SMR:{no}:%"),
             pending_issues_t.c["status"] == "pending_hod")
         check("approve_smr stages pending_issues", n_pending == 1, f"got {n_pending}")
+        staged_qty = (await s.execute(select(pending_issues_t.c["Quantity"]).where(
+            pending_issues_t.c["Source_Ref"].like(f"SMR:{no}:%")))).scalar_one()
+        check("SK qty-override lands on the staged issue (2 → 1.5)",
+              abs(float(staged_qty) - 1.5) < 1e-9, f"got {staged_qty}")
         n_fb = await _count(
             s, notif_t, notif_t.c["event_key"] == "smr_approved",
             notif_t.c["related_ref"] == no, notif_t.c["recipient_user"] == "svc_sup")
@@ -483,6 +489,40 @@ async def test_site_scoping():
         check("warehouse history → 200 with dns/assignments/throughput",
               r.status_code == 200 and {"dns", "assignments", "throughput"} <= set(j),
               f"got {r.status_code}")
+
+        # Store-keeper toolbox (non-persisting guard checks).
+        r = await ac.get("/entry/count-sheet", headers=H(worker_t))
+        check("count sheet → 200 for a store keeper (own site)",
+              r.status_code == 200 and isinstance(r.json().get("items"), list),
+              f"got {r.status_code}")
+        r = await ac.post("/entry/count-sheet", headers=H(worker_t),
+                          json={"site_id": "CNCEC", "rows": []})
+        check("count submit with no rows → 422", r.status_code == 422, f"got {r.status_code}")
+        r = await ac.post("/entry/count-sheet", headers=H(worker_t),
+                          json={"site_id": "CNCEC", "reason_code": "yeet",
+                                "rows": [{"SAP_Code": "1001", "counted_qty": 1}]})
+        check("count submit with a bad reason → 422", r.status_code == 422,
+              f"got {r.status_code}")
+        r = await ac.get("/entry/bins/1001", headers=H(worker_t))
+        check("bin locations → 200 + bins list",
+              r.status_code == 200 and isinstance(r.json().get("bins"), list),
+              f"got {r.status_code}")
+        r = await ac.get("/entry/returnables", headers=H(worker_t))
+        check("returnables list → 200 for a store keeper", r.status_code == 200,
+              f"got {r.status_code}")
+        r = await ac.get("/entry/returnables", headers=H(hod_t))
+        check("hod → 403 on returnables (SK exact lock)", r.status_code == 403,
+              f"got {r.status_code}")
+        r = await ac.post("/entry/returnables", headers=H(worker_t),
+                          json={"material_name": "svc wrench", "borrower_name": "svc",
+                                "expected_return_time": "not-a-date"})
+        check("loan with a bad datetime → 422", r.status_code == 422, f"got {r.status_code}")
+        r = await ac.post("/entry/returnables/999999/return", headers=H(worker_t))
+        check("returning a non-existent loan → 404", r.status_code == 404,
+              f"got {r.status_code}")
+        j = (await ac.get("/meta/work-queues", headers=H(worker_t))).json()
+        check("work-queues: store keeper gets the returnables_overdue count",
+              isinstance(j.get("returnables_overdue"), int), str(j))
 
 
 def test_config_jwt():

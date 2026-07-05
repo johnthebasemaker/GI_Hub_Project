@@ -1,4 +1,5 @@
-import { App, Button, Popconfirm, Table, Tag, Typography } from 'antd'
+import { useState } from 'react'
+import { App, Button, InputNumber, Modal, Popconfirm, Table, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useSmrDecision, useSmrItems, useSmrList } from '../api/hooks'
 import type { Row } from '../api/client'
@@ -20,15 +21,72 @@ function Items({ id }: { id: number }) {
   return <Table size="small" columns={columns} dataSource={items ?? []} rowKey={(r) => String(r.id)} pagination={false} />
 }
 
+// Approve modal: the SK can trim (or zero-out = withdraw) each line before it
+// stages issues for the HOD — legacy qty-adjust-at-approval parity.
+function ApproveModal({ id, onClose }: { id: number | null; onClose: () => void }) {
+  const { message } = App.useApp()
+  const { data: items } = useSmrItems(id ?? 0)
+  const decide = useSmrDecision()
+  const [qty, setQty] = useState<Record<string, number>>({})
+
+  const ok = async () => {
+    // Only send lines the SK actually changed.
+    const adjustments: Record<string, number> = {}
+    for (const it of items ?? []) {
+      const v = qty[String(it.id)]
+      if (v !== undefined && Math.abs(v - Number(it.Requested_Qty)) > 1e-9) {
+        adjustments[String(it.id)] = v
+      }
+    }
+    try {
+      const res = await decide.mutateAsync({
+        id: id!, action: 'approve',
+        adjustments: Object.keys(adjustments).length ? adjustments : undefined,
+      })
+      message.success(`Approved — ${res.staged_issues} issue(s) staged for HOD`)
+      setQty({})
+      onClose()
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
+
+  const columns: ColumnsType<Row> = [
+    { title: 'Material', dataIndex: 'SAP_Code' },
+    { title: 'Description', dataIndex: 'Equipment_Description', ellipsis: true },
+    { title: 'Requested', dataIndex: 'Requested_Qty', align: 'right', width: 90, render: (v) => Number(v) },
+    {
+      title: 'Approve qty (0 withdraws)', key: '__q', width: 180,
+      render: (_: unknown, it: Row) => (
+        <InputNumber
+          size="small" min={0} style={{ width: 150 }}
+          value={qty[String(it.id)] ?? Number(it.Requested_Qty)}
+          onChange={(v) => setQty((m) => ({ ...m, [String(it.id)]: v ?? 0 }))}
+        />
+      ),
+    },
+  ]
+
+  return (
+    <Modal title="Approve request — adjust quantities if needed" open={id != null}
+      onOk={ok} onCancel={onClose} confirmLoading={decide.isPending}
+      okText="Approve & stage" width={640} destroyOnHidden>
+      <Table size="small" columns={columns} dataSource={items ?? []}
+        rowKey={(r) => String(r.id)} pagination={false} />
+    </Modal>
+  )
+}
+
 export default function SkRequestsPage() {
   const { message } = App.useApp()
   const { data: rows, isFetching } = useSmrList({ status: 'pending_sk' })
   const decide = useSmrDecision()
+  const [approving, setApproving] = useState<number | null>(null)
 
-  const act = async (id: number, action: 'approve' | 'reject') => {
+  const rejectIt = async (id: number) => {
     try {
-      const res = await decide.mutateAsync({ id, action, reason: 'rejected by SK' })
-      message.success(action === 'approve' ? `Approved — ${res.staged_issues} issue(s) staged for HOD` : 'Rejected')
+      await decide.mutateAsync({ id, action: 'reject', reason: 'rejected by SK' })
+      message.success('Rejected')
     } catch (e) {
       message.error(errMsg(e))
     }
@@ -44,10 +102,11 @@ export default function SkRequestsPage() {
       title: 'Action', key: '__act', width: 200,
       render: (_: unknown, r: Row) => (
         <>
-          <Popconfirm title="Approve → stage issues for HOD?" onConfirm={() => act(Number(r.id), 'approve')}>
-            <Button size="small" type="primary" style={{ marginRight: 8 }}>Approve</Button>
-          </Popconfirm>
-          <Popconfirm title="Reject this request?" onConfirm={() => act(Number(r.id), 'reject')}>
+          <Button size="small" type="primary" style={{ marginRight: 8 }}
+            onClick={() => setApproving(Number(r.id))}>
+            Review &amp; approve
+          </Button>
+          <Popconfirm title="Reject this request?" onConfirm={() => rejectIt(Number(r.id))}>
             <Button size="small" danger>Reject</Button>
           </Popconfirm>
         </>
@@ -61,7 +120,8 @@ export default function SkRequestsPage() {
         Supervisor Requests
       </Typography.Title>
       <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
-        Approve a supervisor's material request to stage it as an issue for HOD approval.
+        Review a supervisor's material request — adjust or withdraw lines if stock
+        demands it — then approve to stage the issues for HOD approval.
       </Typography.Paragraph>
       <Table
         size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
@@ -69,6 +129,7 @@ export default function SkRequestsPage() {
         expandable={{ expandedRowRender: (r) => <Items id={Number(r.id)} /> }}
         pagination={{ pageSize: 20, showTotal: (t) => `${t} pending` }}
       />
+      <ApproveModal id={approving} onClose={() => setApproving(null)} />
     </div>
   )
 }

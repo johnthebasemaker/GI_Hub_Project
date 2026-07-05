@@ -147,7 +147,11 @@ async def create_smr(session: AsyncSession, *, supervisor: str, site_id: str, wo
     return {"created": True, "request_no": request_no, "request_id": req_id, "lines": len(items)}
 
 
-async def approve_smr(session: AsyncSession, *, sk_username: str, request_id: int) -> dict:
+async def approve_smr(session: AsyncSession, *, sk_username: str, request_id: int,
+                      qty_overrides: dict | None = None) -> dict:
+    """qty_overrides: {item_id: qty} — the SK's per-line adjustment at approval
+    time (legacy parity). qty 0 withdraws the line; missing keys keep the
+    supervisor's requested qty."""
     header = (await session.execute(select(smr_t).where(smr_t.c["id"] == request_id))).mappings().first()
     if header is None:
         return {"error": "request not found"}
@@ -165,13 +169,17 @@ async def approve_smr(session: AsyncSession, *, sk_username: str, request_id: in
     request_no = header["request_no"]
     today = _dt.date.today().isoformat()
 
+    overrides = {str(k): float(v) for k, v in (qty_overrides or {}).items()}
     posted = []
     for it in items:
-        qty = float(it.get("Requested_Qty") or 0)
+        requested = float(it.get("Requested_Qty") or 0)
+        qty = overrides.get(str(it["id"]), requested)
         if qty <= 0:
             continue
+        adjusted = abs(qty - requested) > 1e-9
         remarks = (f"SMR {request_no} · {job_tank} · PPE returned: {ppe_flag}"
-                   + (f" · Reason: {ppe_reason}" if ppe_flag == "N" and ppe_reason else ""))
+                   + (f" · Reason: {ppe_reason}" if ppe_flag == "N" and ppe_reason else "")
+                   + (f" · SK adjusted qty {requested:g}→{qty:g}" if adjusted else ""))
         pid = (await session.execute(insert(pending_issues_t).values(
             Date=today, SAP_Code=it["SAP_Code"], Quantity=qty, Work_Type="SUPERVISOR_REQUEST",
             Remarks=remarks, Issued_By=sk_username, Issued_To=worker_name, Tank_No=job_tank,

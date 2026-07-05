@@ -22,10 +22,11 @@ from sqlalchemy import LargeBinary
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import get_current_user, require_roles
+from .auth import get_current_user, require_roles, resolve_site_param
 from .db import get_session
 from .services import ledger
 from .services.notifications import notify
+from .stock import SQL_SITE_STOCK
 
 router = APIRouter(prefix="/entry", tags=["data entry"])
 
@@ -198,3 +199,208 @@ async def create_adjustment(
 @router.get("/adjustment-reasons", tags=["data entry"], summary="Reason codes for adjustments")
 async def adjustment_reasons(user: dict = Depends(get_current_user)):
     return ledger.ADJUSTMENT_REASONS
+
+
+# --- Store-keeper toolbox (Phase 4) -------------------------------------------
+# Count sheet → variance → staged adjustments · bin locations · returnables.
+import datetime as _dt  # noqa: E402
+
+from sqlalchemy import func, insert, select, text, update  # noqa: E402
+
+_returnables_t = ledger._MD.tables["returnable_items"]
+
+
+@router.get("/count-sheet", summary="Site stock list for a physical count")
+async def count_sheet(site_id: Optional[str] = None,
+                      user: dict = Depends(require_roles("store_keeper")),
+                      session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, site_id)
+    if site_id == "":
+        return {"items": []}
+    where, params = "1=1", {}
+    if site_id:
+        where = 's."Site_ID" = :site'
+        params["site"] = site_id
+    rows = (await session.execute(text(f'''
+        SELECT s."SAP_Code", s."Site_ID", s."Equipment_Description", s."UOM",
+               s."Current_Stock" AS "System_Qty"
+        FROM ({SQL_SITE_STOCK}) s WHERE {where}
+        ORDER BY s."SAP_Code"'''), params)).mappings().all()
+    return {"items": [dict(r) for r in rows]}
+
+
+class CountRowIn(BaseModel):
+    SAP_Code: str
+    counted_qty: float = Field(..., ge=0)
+    reason_code: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class CountSheetIn(BaseModel):
+    site_id: str
+    reason_code: str = "cycle_count"
+    rows: list[CountRowIn]
+
+
+@router.post("/count-sheet", status_code=201,
+             summary="Stage adjustments for every counted variance")
+async def submit_count(body: CountSheetIn = Body(...),
+                       user: dict = Depends(require_roles("store_keeper")),
+                       session: AsyncSession = Depends(get_session)):
+    if not body.rows:
+        raise HTTPException(422, "provide at least one counted row")
+    if body.reason_code not in ledger.ADJUSTMENT_REASONS:
+        raise HTTPException(422, f"unknown reason_code {body.reason_code!r}")
+    site = resolve_site_param(user, body.site_id)
+    if not site:
+        raise HTTPException(422, "site_id is required")
+    # System quantities in one query — the same derived view the count is against.
+    sysmap = {r["SAP_Code"]: float(r["System_Qty"] or 0)
+              for r in (await count_sheet(site_id=site, user=user, session=session))["items"]}
+    staged, skipped = [], 0
+    async with session.begin():
+        for row in body.rows:
+            sap = row.SAP_Code.strip()
+            if sap not in sysmap:
+                raise HTTPException(404, f"SAP_Code {sap!r} has no stock row at {site}")
+            system_qty = sysmap[sap]
+            if abs(row.counted_qty - system_qty) < 1e-9:
+                skipped += 1
+                continue
+            rc = row.reason_code or body.reason_code
+            if rc not in ledger.ADJUSTMENT_REASONS:
+                raise HTTPException(422, f"unknown reason_code {rc!r}")
+            res = await ledger.stage_adjustment(session, username=user["username"], data={
+                "SAP_Code": sap, "Site_ID": site, "system_qty": system_qty,
+                "counted_qty": row.counted_qty, "reason_code": rc,
+                "notes": row.notes or "stock count"})
+            staged.append(res.get("pending_id"))
+        if staged:
+            await notify(session, event_key="entry_staged", recipient_role="hod",
+                         recipient_site=site, severity="warning",
+                         title=f"Stock count staged {len(staged)} adjustment(s)",
+                         body=f"Physical count by {user['username']} at {site}.",
+                         link_page="/hod/approvals", related_table="stock_adjustments",
+                         related_ref=",".join(str(s) for s in staged))
+    return {"staged": len(staged), "unchanged": skipped}
+
+
+@router.get("/bins/{sap_code}", summary="Bin locations an item was put away in (recent first)")
+async def bin_locations(sap_code: str, site_id: Optional[str] = None,
+                        user: dict = Depends(get_current_user),
+                        session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, site_id)
+    if site_id == "":
+        return {"bins": []}
+    where = '''TRIM("SAP_Code") = :sap AND COALESCE(TRIM("Bin_Location"), '') <> ''"'''.rstrip('"')
+    params = {"sap": sap_code.strip()}
+    if site_id:
+        where += ' AND COALESCE("Site_ID", \'HQ\') = :site'
+        params["site"] = site_id
+    rows = (await session.execute(text(
+        f'SELECT "Bin_Location" FROM receipts WHERE {where} ORDER BY id DESC LIMIT 50'
+    ), params)).scalars().all()
+    seen, out = set(), []
+    for b in rows:
+        if b not in seen:
+            seen.add(b)
+            out.append(b)
+        if len(out) >= 5:
+            break
+    return {"bins": out}
+
+
+# --- Returnable items (tool loans) ---------------------------------------------
+class ReturnableIn(BaseModel):
+    material_name: str
+    borrower_name: str
+    expected_return_time: str = Field(..., description="ISO datetime the tool is due back")
+    qty: float = Field(1, gt=0)
+    uom: Optional[str] = None
+    borrower_phone: Optional[str] = None
+    site_id: Optional[str] = None
+
+
+def _parse_dt(raw: str) -> _dt.datetime:
+    try:
+        return _dt.datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        raise HTTPException(422, "expected_return_time must be ISO format")
+
+
+@router.get("/returnables", summary="Tool loans (overdue first-notified once)")
+async def list_returnables(status: Optional[str] = None, site_id: Optional[str] = None,
+                           user: dict = Depends(require_roles("store_keeper")),
+                           session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, site_id)
+    if site_id == "":
+        return {"items": []}
+    t = _returnables_t
+    now = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+
+    # One-time overdue notifications, deduped via whatsapp_alert_sent (legacy flag).
+    od = select(t.c["id"], t.c["material_name"], t.c["borrower_name"], t.c["Site_ID"]).where(
+        t.c["status"] == "borrowed", t.c["expected_return_time"] < now,
+        func.coalesce(t.c["whatsapp_alert_sent"], 0) == 0)
+    if site_id:
+        od = od.where(t.c["Site_ID"] == site_id)
+    overdue_rows = (await session.execute(od)).all()
+    for r in overdue_rows:
+        await notify(session, event_key="returnable_overdue", recipient_role="store_keeper",
+                     recipient_site=r.Site_ID, severity="warning",
+                     title=f"Tool overdue: {r.material_name}",
+                     body=f"Borrowed by {r.borrower_name} — past its expected return time.",
+                     link_page="/entry/returnables", related_table="returnable_items",
+                     related_ref=str(r.id))
+        await session.execute(update(t).where(t.c["id"] == r.id).values(whatsapp_alert_sent=1))
+    if overdue_rows:
+        await session.commit()
+
+    stmt = select(t)
+    if status:
+        stmt = stmt.where(t.c["status"] == status)
+    if site_id:
+        stmt = stmt.where(t.c["Site_ID"] == site_id)
+    rows = (await session.execute(stmt.order_by(t.c["id"].desc()).limit(500))).mappings().all()
+    return {"items": [dict(r) for r in rows], "now": now.isoformat()}
+
+
+@router.post("/returnables", status_code=201, summary="Loan a tool to an employee")
+async def create_returnable(body: ReturnableIn = Body(...),
+                            user: dict = Depends(require_roles("store_keeper")),
+                            session: AsyncSession = Depends(get_session)):
+    site = resolve_site_param(user, body.site_id)
+    if not site:
+        raise HTTPException(422, "site_id is required")
+    due = _parse_dt(body.expected_return_time)
+    async with session.begin():
+        rid = (await session.execute(insert(_returnables_t).values(
+            material_name=body.material_name.strip(), uom=body.uom, qty=body.qty,
+            borrower_name=body.borrower_name.strip(), borrower_phone=body.borrower_phone,
+            expected_return_time=due, status="borrowed", Site_ID=site,
+            whatsapp_alert_sent=0).returning(_returnables_t.c["id"]))).scalar_one()
+        await ledger.write_audit(session, user["username"], "RETURNABLE_LOAN",
+                                 "returnable_items",
+                                 f"id={rid} {body.material_name} → {body.borrower_name} due {due}")
+    return {"created": True, "id": rid}
+
+
+@router.post("/returnables/{rid}/return", summary="Mark a loaned tool as returned")
+async def mark_returned(rid: int,
+                        user: dict = Depends(require_roles("store_keeper")),
+                        session: AsyncSession = Depends(get_session)):
+    t = _returnables_t
+    async with session.begin():
+        row = (await session.execute(select(t.c["Site_ID"], t.c["status"])
+                                     .where(t.c["id"] == rid))).first()
+        if row is None:
+            raise HTTPException(404, f"returnable {rid} not found")
+        scope = resolve_site_param(user, None)
+        if scope and (row.Site_ID or "").strip() != scope:
+            raise HTTPException(403, "this loan belongs to another site")
+        if row.status == "returned":
+            raise HTTPException(409, "already returned")
+        await session.execute(update(t).where(t.c["id"] == rid).values(status="returned"))
+        await ledger.write_audit(session, user["username"], "RETURNABLE_RETURN",
+                                 "returnable_items", f"id={rid}")
+    return {"returned": True, "id": rid}

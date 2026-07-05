@@ -227,6 +227,15 @@ async def work_queues(user: dict = Depends(get_current_user),
         out["warehouse"] = await _cnt(
             "po_assignments", t.c["status"].in_(("assigned", "acknowledged", "partial")))
 
+    # Overdue tool loans (nav: store keeper's Returnable Items).
+    if user["role"] in ("store_keeper", "admin"):
+        import datetime as _dt
+        t = _MD.tables["returnable_items"]
+        now = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+        out["returnables_overdue"] = await _cnt(
+            "returnable_items", t.c["status"] == "borrowed",
+            t.c["expected_return_time"] < now, *_site("returnable_items"))
+
     return out
 
 

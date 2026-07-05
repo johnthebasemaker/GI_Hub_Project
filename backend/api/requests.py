@@ -92,12 +92,22 @@ async def items(request_id: int, user: dict = Depends(get_current_user),
     return {"items": await smr.smr_items(session, request_id)}
 
 
+class ApproveIn(BaseModel):
+    # {item_id: qty} — SK's per-line adjustment; qty 0 withdraws the line.
+    adjustments: Optional[dict[str, float]] = None
+
+
 @router.post("/{request_id}/approve", summary="SK approves → stages issues for HOD")
-async def approve(request_id: int, user: dict = Depends(_SK),
+async def approve(request_id: int, body: ApproveIn = Body(default=ApproveIn()),
+                  user: dict = Depends(_SK),
                   session: AsyncSession = Depends(get_session)):
+    if body.adjustments and any(v < 0 for v in body.adjustments.values()):
+        raise HTTPException(422, "adjusted quantities must be ≥ 0 (0 withdraws the line)")
     try:
         async with session.begin():
-            res = await smr.approve_smr(session, sk_username=user["username"], request_id=request_id)
+            res = await smr.approve_smr(session, sk_username=user["username"],
+                                        request_id=request_id,
+                                        qty_overrides=body.adjustments)
         return _guard(res)
     except HTTPException:
         raise

@@ -322,8 +322,10 @@ export function useCreateSmr() {
 export function useSmrDecision() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, action, reason }: { id: number; action: 'approve' | 'reject'; reason?: string }) =>
-      api.post(`/requests/${id}/${action}`, action === 'reject' ? { reason } : {}).then((r) => r.data),
+    mutationFn: ({ id, action, reason, adjustments }:
+      { id: number; action: 'approve' | 'reject'; reason?: string; adjustments?: Record<string, number> }) =>
+      api.post(`/requests/${id}/${action}`,
+        action === 'reject' ? { reason } : (adjustments ? { adjustments } : {})).then((r) => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['/requests'] })
       qc.invalidateQueries({ queryKey: ['/hod/pending'] })
@@ -580,6 +582,67 @@ export function useReports() {
   return useQuery({
     queryKey: ['/reports'],
     queryFn: async () => (await api.get<{ reports: Row[] }>('/reports')).data.reports,
+  })
+}
+
+// --- Store-keeper toolbox -------------------------------------------------------
+export function useCountSheet(siteId?: string) {
+  return useQuery({
+    queryKey: ['/entry/count-sheet', siteId],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/entry/count-sheet', { params: siteId ? { site_id: siteId } : {} })).data.items,
+  })
+}
+
+export function useSubmitCount() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { site_id: string; reason_code: string; rows: Record<string, unknown>[] }) =>
+      api.post('/entry/count-sheet', body).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['/hod/pending'] })
+      qc.invalidateQueries({ queryKey: ['/meta/work-queues'] })
+    },
+  })
+}
+
+export function useBins(sapCode?: string, siteId?: string) {
+  return useQuery({
+    queryKey: ['/entry/bins', sapCode, siteId],
+    enabled: !!sapCode,
+    queryFn: async () =>
+      (await api.get<{ bins: string[] }>(`/entry/bins/${encodeURIComponent(sapCode!)}`,
+        { params: siteId ? { site_id: siteId } : {} })).data.bins,
+  })
+}
+
+export function useReturnables(status?: string) {
+  return useQuery({
+    queryKey: ['/entry/returnables', status],
+    queryFn: async () =>
+      (await api.get<{ items: Row[]; now: string }>('/entry/returnables',
+        { params: status ? { status } : {} })).data,
+  })
+}
+
+export function useCreateReturnable() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api.post('/entry/returnables', body).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/entry/returnables'] }),
+  })
+}
+
+export function useMarkReturned() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) =>
+      api.post(`/entry/returnables/${id}/return`).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['/entry/returnables'] })
+      qc.invalidateQueries({ queryKey: ['/meta/work-queues'] })
+    },
   })
 }
 

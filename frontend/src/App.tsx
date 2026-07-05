@@ -15,6 +15,8 @@ const ReceivePage = lazy(() => import('./pages/ReceivePage'))
 const IssuePage = lazy(() => import('./pages/IssuePage'))
 const ReturnPage = lazy(() => import('./pages/ReturnPage'))
 const AdjustPage = lazy(() => import('./pages/AdjustPage'))
+const StockCountPage = lazy(() => import('./pages/StockCountPage'))
+const ReturnablesPage = lazy(() => import('./pages/ReturnablesPage'))
 const ApprovalsPage = lazy(() => import('./pages/ApprovalsPage'))
 const BurnRatePage = lazy(() => import('./pages/BurnRatePage'))
 const LowStockPage = lazy(() => import('./pages/LowStockPage'))
@@ -44,6 +46,8 @@ export default function App() {
         <Route path="entry/issue" element={<IssuePage />} />
         <Route path="entry/return" element={<ReturnPage />} />
         <Route path="entry/adjust" element={<AdjustPage />} />
+        <Route path="entry/count" element={<StockCountPage />} />
+        <Route path="entry/returnables" element={<ReturnablesPage />} />
         <Route path="site/incoming" element={<IncomingDeliveriesPage />} />
         <Route path="supervisor" element={<SupervisorPage />} />
         <Route path="sk/requests" element={<SkRequestsPage />} />

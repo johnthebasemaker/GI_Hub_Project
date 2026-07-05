@@ -221,6 +221,26 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-05 · actor=interactive · branch=`main` · 🗝️ Parity build Phase 4 — store-keeper toolbox
+- **Stock count workflow:** `GET/POST /entry/count-sheet` — site stock list (derived
+  site-stock SQL) → SK enters counted qtys → variances stage adjustments via
+  `ledger.stage_adjustment` (reason validated; server recomputes system qty) + one HOD
+  notification. New StockCountPage (variance highlighting, reason picker).
+- **Returnable items (tool loans):** built on the existing `returnable_items` table (no
+  migration). Loan / list / mark-returned endpoints (SK exact-locked, site-scoped);
+  **one-time overdue notifications** deduped via the legacy `whatsapp_alert_sent` flag,
+  fired on list access; `returnables_overdue` count added to /meta/work-queues → gold nav
+  badge. New ReturnablesPage (overdue rows tinted red).
+- **SK qty-adjust at SMR approval:** `approve_smr` gains `qty_overrides` ({item_id: qty};
+  0 withdraws a line; adjustment noted in the staged issue's remarks). SkRequestsPage now
+  opens a review modal with per-line editable quantities.
+- **Bin locations:** `GET /entry/bins/{sap}` (port of legacy `get_item_bin_locations` —
+  distinct recent `receipts.Bin_Location` per site); IssuePage shows "Pull from bin" tags
+  under the material picker.
+- **Verified:** service_tests **98 → 108/108** · build green · live: overdue loan →
+  notification fired once (dedup proven) → badge 1 → returned → badge 0; count sheet
+  renders 50 rows; SK override 2→1.5 asserted in the rolled-back suite.
+
 ### 2026-07-05 · actor=interactive · branch=`main` · 🏭 Parity build Step 3 — warehouse completion (returns-from-site + history)
 - **Returns-from-site (disposition workflow):** built on the existing (previously unused)
   `po_returns` table — NO new table/migration. `GET/POST /warehouse/returns` +

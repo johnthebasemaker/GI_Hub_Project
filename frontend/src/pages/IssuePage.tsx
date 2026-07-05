@@ -1,7 +1,7 @@
-import { App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Row, Select, Typography } from 'antd'
+import { App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Row, Select, Tag, Typography } from 'antd'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
-import { useConsumptionEntry, useList, useSites } from '../api/hooks'
+import { useBins, useConsumptionEntry, useList, useSites } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 
 interface FormValues {
@@ -30,6 +30,10 @@ export default function IssuePage() {
   const { data: sites } = useSites()
   const inventory = useList('/inventory', { limit: 500 })
   const consume = useConsumptionEntry()
+  // Bin locations for the picked material — so the worker knows where to pull from.
+  const watchSap = Form.useWatch('SAP_Code', form)
+  const watchSite = Form.useWatch('Site_ID', form)
+  const { data: bins } = useBins(watchSap, watchSite)
 
   const itemOptions = (inventory.data?.items ?? []).map((r: ApiRow) => ({
     value: String(r.SAP_Code),
@@ -82,6 +86,12 @@ export default function IssuePage() {
               <Form.Item name="SAP_Code" label="Material (SAP Code)" rules={[{ required: true }]}>
                 <Select showSearch placeholder="Search material" loading={inventory.isFetching} optionFilterProp="label" options={itemOptions} />
               </Form.Item>
+              {!!bins?.length && (
+                <div style={{ marginTop: -16, marginBottom: 12 }}>
+                  <Typography.Text type="secondary" style={{ marginRight: 6 }}>Pull from bin:</Typography.Text>
+                  {bins.map((b) => <Tag key={b} color="blue">{b}</Tag>)}
+                </div>
+              )}
             </Col>
           </Row>
           <Row gutter={16}>
