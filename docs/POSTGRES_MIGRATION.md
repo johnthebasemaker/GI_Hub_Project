@@ -221,6 +221,38 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-05 · actor=interactive · branch=`main` · 🔒 Security + UX hardening — site scoping · token refresh · nav badges (+ segregation Phase A)
+Four user-approved slices (commits `b85a00d` · `16b799c` · `a28d9a1` · `9cf48b4`):
+- **Segregation Phase A (repo).** `REPO_MAP.md` = the monorepo boundary contract (legacy /
+  new-stack / shared-bridge / archive ownership per top-level path, both deploy surfaces,
+  golden rules). New-stack Python deps split to `backend/requirements.txt`, included by the
+  root file via `-r` (same venv/CI; `deploy/Dockerfile.api` copies both). **Physical Phase B
+  (moves into `legacy/` etc.) is scheduled for CUTOVER DAY — nothing moved.**
+- **Site-scoped reads (THE Tier-2 multi-tenancy gap — closed).** Below logistics (level 3),
+  every read is pinned to the user's own `Site_ID`: forced filters on CRUD list/get, stock
+  views, meta aggregates, HOD queues/burn-rate/PRs, receiving, all six reports (expiring +
+  POs gained site filters), SME site views. Explicit foreign `?site_id=` → 403; cross-site
+  get-one → 404 (no id-existence leak); site-less scoped users fail CLOSED; `/stock/live`
+  (cross-site aggregate) → 403 below level 3. Cross-site approve/reject/PR-create/submit
+  also guarded. FE hides the site picker + global stock tab for scoped users.
+- **Access/refresh token split + silent session refresh.** 15-min access JWT + rotating
+  7-day refresh token in an httpOnly SameSite=Lax cookie, hashed server-side in the new
+  `auth_sessions` table (alembic `fd225ce87708`; new-stack-only — dual_ci leaves it empty,
+  documented in the model). Rotation reuse-detection revokes the whole session family;
+  logout / admin password-reset / user-delete revoke server-side. Axios client does
+  single-flight silent refresh + replay on 401 → a shift never loses form state; only a
+  failed refresh logs out (with a "session expired" toast).
+- **Sidebar work-queue badges.** `GET /meta/work-queues` (role- + site-aware, one round
+  trip): approvals (≥hod), in-transit DNs, pending SMRs, open warehouse assignments →
+  gold count badges on the nav items, focus-refetch + 60s visible poll.
+- **Verified:** service_tests **52 → 78/78** (new suites: C site-scoping, D token refresh);
+  dual_ci PASS (65-table metadata handled); parity 5/5; `bug_check` **599/0**; crawler
+  **21/21**; FE build green. Live-verified in the browser: worker(CNCEC) isolation,
+  httpOnly cookie invisible to JS, corrupted-token reload silently recovers, hod badge=26.
+- **WhatsApp (no code, by instruction):** user is running Meta Business Verification; the
+  legacy worker already supports `WHATSAPP_PROVIDER=meta`. New-stack port waits for the
+  permanent token.
+
 ### 2026-07-05 · actor=interactive · branch=`main` · 🎨 UI/UX overhaul — "Navy vault, gold key" brand theme + animation layer (FE-only)
 User-approved visual overhaul of the React SPA (5 commits, `4d98b05`…`a659b12`). **Pure presentation layer — no API / hook / backend / endpoint touched;** the functional data layer is unchanged and was verified live.
 - **Theme foundation (`frontend/src/theme/`).** The legacy GI palette (root `config.py`: navy `#003366` / gold `#D4AF37` + dark surfaces + status colors) becomes the single source of truth in `tokens.ts`; `themes.ts` = three AntD `ThemeConfig`s (`darkTheme` flagship · `lightTheme` amber-accent `#B45309` for contrast on white · `siderTheme` always-navy rail) on `theme.darkAlgorithm`/`defaultAlgorithm`; `ThemeContext` = **dark-first** default (ignores OS pref), localStorage-persisted, header sun/moon toggle. Restyles all 24 pages at the `ConfigProvider` token level — almost no per-page edits.

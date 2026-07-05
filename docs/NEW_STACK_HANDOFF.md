@@ -11,7 +11,7 @@ is a *separate* set of processes. Per-slice history is in
 ## 🎯 CURRENT STATUS (2026-07-05) — read this first
 The new stack is **feature-complete, hardened, and ship-ready.** Ten build slices
 landed (see §3 and `POSTGRES_MIGRATION.md` §8), all on `main`, all green:
-**bug_check 599/0 · crawler 21/21 · dual_ci 64/64 · derived-view parity · service+guard 52/52.**
+**bug_check 599/0 · crawler 21/21 · dual_ci 64/64 · derived-view parity · service+guard 78/78.**
 A **turnkey deploy kit** now exists (`deploy/` + [`docs/DEPLOY.md`](DEPLOY.md)) but has
 **NOT been run against any server.**
 
@@ -84,7 +84,7 @@ DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
   .venv/bin/python backend/api/parity_check.py --source gi_database.db  # 5 derived views PASS
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
-  .venv/bin/python -m backend.api.service_tests                 # 52/52 (rolled-back services + auth/role guards + JWT + registration + submitter-resolution)
+  .venv/bin/python -m backend.api.service_tests                 # 78/78 (rolled-back services + auth/role guards + JWT + registration + site scoping + token refresh)
 npm run build --prefix frontend                                 # tsc + vite green
 ```
 
@@ -171,7 +171,10 @@ Full role → workflow loop runs on Postgres. **~89 API endpoints.**
   `/notifications` router + `NotificationBell`; wired to 5 procurement events **+ staging→HOD
   + HOD approve/reject→submitter**. NOT yet wired: DN reschedules, cross-site views.
 - **WhatsApp** — `whatsapp_queue` + `whatsapp_worker.py` + Twilio/Meta sender. Fires on
-  PR/PO/DN/reschedule events. **NOT ported.**
+  PR/PO/DN/reschedule events. **NOT ported.** STATUS 2026-07-05: the legacy worker already
+  speaks the official **Meta Cloud API** (`WHATSAPP_PROVIDER=meta`); the user is running
+  Meta Business Verification now. New-stack port (wa_outbox + webhook) is ON HOLD until the
+  permanent access token exists — do not build it before the user says go.
 - **Email / mailer** — `mailer.py` (SMTP/Outlook), scheduled-report dispatch, delivery
   reminders. **NOT ported.**
 - **Local LLM (Ollama)** — Hub Assistant Q&A, Reports "AI Insights", and the **OCR
@@ -227,8 +230,8 @@ Full role → workflow loop runs on Postgres. **~89 API endpoints.**
 - ~~**Per-endpoint role checks**~~ ✅ **DONE 2026-07-04** — audited every route; the one gap
   (master-data **writes** were auth-only) is fixed → `write_dep=require_level(3)`. Reads
   stay open by design; entry/receiving stay `get_current_user` (store-keeper stages → HOD
-  approves). If you want site-scoped reads (a store keeper only seeing their own site's
-  records), that's a further, larger change — not done.
+  approves). ~~If you want site-scoped reads … not done~~ ✅ **DONE 2026-07-05** —
+  reads below level 3 are pinned to the user's own `Site_ID` (see §5 Tier 2).
 - ~~**Real `JWT_SECRET`**~~ ✅ **DONE 2026-07-04** — `config.jwt_secret()`: production
   (`GI_ENV=production`) **fails fast** on a missing/weak/dev-default key; dev uses a safe
   long placeholder. **Deploy MUST set a strong `JWT_SECRET`** (≥32 chars) + `GI_ENV=production`.
@@ -261,9 +264,15 @@ not urgent.
   (keyed by nginx `X-Real-IP`). Per-process store; a hard cross-worker cap (Redis) is still open.
 
 **Tier 2 — for a real multi-site / at-scale rollout:**
-- **Site-scoped reads (BE/security).** THE known multi-tenancy gap: any authenticated user
-  can read any site's records (reads are open by design; only writes are role-gated). Scope
-  reads to the user's `Site_ID` (admin/logistics see all) if sites shouldn't see each other.
+- ~~**Site-scoped reads (BE/security).**~~ ✅ **DONE 2026-07-05** — reads below logistics
+  (level 3) are pinned to the user's own `Site_ID` (403 asking for another site, 404 on
+  cross-site get-one, fail-closed for site-less users; `/stock/live` restricted to
+  logistics/admin). Policy in `auth.site_scope()`/`resolve_site_param()`; enforced across
+  CRUD reads, stock views, meta, HOD (incl. approve/reject guards), receiving, reports, SME.
+- ✅ **ALSO DONE 2026-07-05 (were Tier-3/UX):** **access/refresh token split** (15-min JWT +
+  rotating httpOnly refresh cookie, `auth_sessions` table, reuse detection, revoke on
+  logout/password-reset/user-delete; SPA silently refreshes → "session expired" toast only
+  when truly over) · **sidebar work-queue badges** (`/meta/work-queues`).
 - **DB indexes on hot columns (DB/perf).** No indexes beyond PKs. Before real volume, add
   indexes on `SAP_Code` / `Site_ID` / `Date` for receipts/consumption/returns/lots (the
   derived-stock queries `TRIM(SAP_Code)`-join + GROUP BY these). Cheap insurance.
@@ -273,7 +282,8 @@ not urgent.
 
 **Tier 3 — nice-to-have / later:**
 - Frontend E2E smoke tests (Playwright) — no UI tests exist; service_tests cover the API only.
-- Friendlier session-expiry UX (the 401 interceptor hard-logs-out; add a "session expired" toast).
+- ~~Friendlier session-expiry UX~~ ✅ **DONE 2026-07-05** — silent refresh + expiry toast
+  (part of the access/refresh token split above).
 - Structured logging + request IDs for prod observability. · ~~Dark mode / a11y polish~~
   ✅ **DONE 2026-07-05** — navy/gold theme + dark/light toggle + `prefers-reduced-motion`
   guards (UI overhaul, `POSTGRES_MIGRATION.md` §8). Deeper a11y (full WCAG audit) still open.
