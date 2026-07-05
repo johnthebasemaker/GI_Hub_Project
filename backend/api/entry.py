@@ -7,8 +7,10 @@ boundary and input validation; the business rules live in the service.
   POST /entry/*  — stage a receipt/issue/return/adjustment (status=pending_hod) for
                  HOD approval; the HOD portal commits them to the ledger.
 
-Actor: the acting username is the authenticated user (JWT via get_current_user),
-recorded on the ledger row and in the audit log. All entry routes require auth.
+Actor: the acting username is the authenticated user, recorded on the ledger
+row and in the audit log. Staging WRITES are exact-locked to store_keeper
+(+ admin) — mirroring the legacy Entry Log page lock; other roles read via
+Records/Stock but do not stage entries.
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ from sqlalchemy import LargeBinary
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import get_current_user
+from .auth import get_current_user, require_roles
 from .db import get_session
 from .services import ledger
 from .services.notifications import notify
@@ -101,7 +103,7 @@ class AdjustmentIn(BaseModel):
 @router.post("/receipts", status_code=201, summary="Submit a goods receipt for HOD approval")
 async def create_receipt(
     body: ReceiptIn = Body(...),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_roles("store_keeper")),
     session: AsyncSession = Depends(get_session),
 ):
     if body.extra:
@@ -128,7 +130,7 @@ async def create_receipt(
 @router.post("/consumption", status_code=201, summary="Submit a material issue for HOD approval")
 async def create_consumption(
     body: ConsumptionIn = Body(...),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_roles("store_keeper")),
     session: AsyncSession = Depends(get_session),
 ):
     try:
@@ -149,7 +151,7 @@ async def create_consumption(
 @router.post("/returns", status_code=201, summary="Submit a return for HOD approval")
 async def create_return(
     body: ReturnIn = Body(...),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_roles("store_keeper")),
     session: AsyncSession = Depends(get_session),
 ):
     try:
@@ -170,7 +172,7 @@ async def create_return(
 @router.post("/adjustments", status_code=201, summary="Submit a stock-count adjustment for HOD approval")
 async def create_adjustment(
     body: AdjustmentIn = Body(...),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_roles("store_keeper")),
     session: AsyncSession = Depends(get_session),
 ):
     if body.reason_code not in ledger.ADJUSTMENT_REASONS:

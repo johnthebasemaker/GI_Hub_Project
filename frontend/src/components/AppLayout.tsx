@@ -35,19 +35,23 @@ function buildMenu(level: number, role: string, q: Record<string, number>): Menu
   const items: MenuProps['items'] = [
     { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
     { key: '/stock', icon: <StockOutlined />, label: 'Stock' },
-    {
-      key: 'entry',
-      label: 'Data Entry',
-      type: 'group',
-      children: [
-        { key: '/entry/receive', icon: <FormOutlined />, label: 'Receive Stock' },
-        { key: '/entry/issue', icon: <FormOutlined />, label: 'Issue Stock' },
-        { key: '/entry/return', icon: <FormOutlined />, label: 'Return Stock' },
-        { key: '/entry/adjust', icon: <FormOutlined />, label: 'Stock Adjustment' },
-        { key: '/site/incoming', icon: <InboxOutlined />, label: withCount('Incoming Deliveries', q.incoming_dns) },
-        { key: '/sk/requests', icon: <SolutionOutlined />, label: withCount('Supervisor Requests', q.sk_requests) },
-      ],
-    },
+    // Data entry is the store keeper's job — exact-locked like the legacy
+    // Entry Log page (the API 403s staging writes for other roles anyway).
+    ...(['store_keeper', 'admin'].includes(role)
+      ? [{
+          key: 'entry',
+          label: 'Data Entry',
+          type: 'group' as const,
+          children: [
+            { key: '/entry/receive', icon: <FormOutlined />, label: 'Receive Stock' },
+            { key: '/entry/issue', icon: <FormOutlined />, label: 'Issue Stock' },
+            { key: '/entry/return', icon: <FormOutlined />, label: 'Return Stock' },
+            { key: '/entry/adjust', icon: <FormOutlined />, label: 'Stock Adjustment' },
+            { key: '/site/incoming', icon: <InboxOutlined />, label: withCount('Incoming Deliveries', q.incoming_dns) },
+            { key: '/sk/requests', icon: <SolutionOutlined />, label: withCount('Supervisor Requests', q.sk_requests) },
+          ],
+        }]
+      : []),
     {
       key: 'records',
       label: 'Records',

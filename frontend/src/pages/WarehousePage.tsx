@@ -8,6 +8,7 @@ import {
   useWhAssignments, useWhDns, useWhReceive,
 } from '../api/hooks'
 import type { Row } from '../api/client'
+import { useAuth } from '../auth/AuthContext'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -221,13 +222,16 @@ function DeliveryNotes({ warehouseId }: { warehouseId?: string }) {
 }
 
 export default function WarehousePage() {
+  const { user } = useAuth()
+  // Warehouse users are server-pinned to their bound Warehouse_ID — no picker.
+  const bound = user?.role === 'warehouse_user' ? (user.warehouse_id || undefined) : undefined
   const warehouses = useList('/warehouses', { limit: 200 })
   const options = useMemo(
     () => (warehouses.data?.items ?? []).map((w: Row) => ({ value: String(w.Warehouse_ID), label: `${w.Warehouse_ID} — ${w.Name ?? ''}` })),
     [warehouses.data],
   )
   const [wh, setWh] = useState<string | undefined>(undefined)
-  const active = wh ?? (options[0]?.value as string | undefined)
+  const active = bound ?? wh ?? (options[0]?.value as string | undefined)
 
   return (
     <div>
@@ -236,8 +240,12 @@ export default function WarehousePage() {
       </Typography.Title>
       <Space style={{ marginBottom: 12 }}>
         <span>Warehouse:</span>
+        {bound ? (
+          <Tag color="gold">{bound}</Tag>
+        ) : (
         <Select style={{ width: 240 }} placeholder="Select warehouse" value={active}
           onChange={setWh} options={options} loading={warehouses.isFetching} />
+        )}
       </Space>
       <Tabs
         defaultActiveKey="assignments"

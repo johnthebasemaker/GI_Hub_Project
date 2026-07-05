@@ -7,6 +7,7 @@ export interface User {
   username: string
   role: string
   site_id: string
+  warehouse_id: string
   label: string
   level: number
 }

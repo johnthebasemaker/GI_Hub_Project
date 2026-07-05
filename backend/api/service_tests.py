@@ -407,6 +407,30 @@ async def test_site_scoping():
         check("work-queues: admin gets the warehouse workload too",
               isinstance(j.get("warehouse"), int), str(j))
 
+        # R2 lock: entry staging is exact-locked to store_keeper (+admin).
+        r = await ac.post("/entry/receipts", headers=H(hod_t), json={})
+        check("hod → 403 staging an entry (R2 exact lock)",
+              r.status_code == 403, f"got {r.status_code}")
+        r = await ac.post("/entry/receipts", headers=H(worker_t), json={})
+        check("store keeper passes the entry gate (422 on empty body, not 403)",
+              r.status_code == 422, f"got {r.status_code}")
+
+        # Warehouse binding: policy unit-checks on the resolver.
+        from .auth import resolve_warehouse_param, warehouse_scope
+        wu = {"role": "warehouse_user", "warehouse_id": "WH-01"}
+        check("warehouse_user pinned to own warehouse",
+              resolve_warehouse_param(wu, None) == "WH-01")
+        try:
+            resolve_warehouse_param(wu, "WH-02")
+            blocked = False
+        except Exception:  # noqa: BLE001 — HTTPException(403)
+            blocked = True
+        check("warehouse_user asking for another warehouse → 403", blocked)
+        check("logistics passes warehouse params through",
+              resolve_warehouse_param({"role": "logistics", "warehouse_id": ""}, "WH-02") == "WH-02")
+        check("unbound warehouse_user fails closed (scope='')",
+              warehouse_scope({"role": "warehouse_user", "warehouse_id": ""}) == "")
+
 
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""
