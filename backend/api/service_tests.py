@@ -588,6 +588,35 @@ async def test_site_scoping():
             if x["id"] == ran_aid or str(x.get("generated_by", "")).startswith("scheduler:"):
                 await ac.request("DELETE", f"/reports/archive/{x['id']}", headers=H(admin_t))
 
+        # Phase-6 documents: label/badge PDFs, reference docs, master exports.
+        r = await ac.get("/documents/qr-labels", headers=H(admin_t))
+        check("QR bin labels → 200 + PDF",
+              r.status_code == 200 and "application/pdf" in r.headers.get("content-type", ""),
+              f"got {r.status_code}/{r.headers.get('content-type')}")
+        r = await ac.get("/documents/employee-badges", headers=H(admin_t))
+        check("employee badges → 200 + PDF",
+              r.status_code == 200 and "application/pdf" in r.headers.get("content-type", "")
+              and len(r.content) > 800, f"got {r.status_code} len={len(r.content)}")
+        r = await ac.get("/documents/qr-labels", headers=H(worker_t))
+        check("store keeper (lvl 0) → 403 on QR labels", r.status_code == 403, f"got {r.status_code}")
+        r = await ac.get("/documents/reference/manual", headers=H(worker_t))
+        check("any authed user can download the manual → 200 PDF",
+              r.status_code == 200 and "application/pdf" in r.headers.get("content-type", ""),
+              f"got {r.status_code}")
+        r = await ac.get("/documents/reference/nope", headers=H(worker_t))
+        check("unknown reference doc → 404", r.status_code == 404, f"got {r.status_code}")
+        r = await ac.get("/documents/master/vendors", params={"format": "xlsx"}, headers=H(admin_t))
+        check("vendor master export → 200 + spreadsheet",
+              r.status_code == 200 and "spreadsheet" in r.headers.get("content-type", ""),
+              f"got {r.status_code}")
+        r = await ac.get("/documents/master/nope", params={"format": "xlsx"}, headers=H(admin_t))
+        check("unknown master entity → 404", r.status_code == 404, f"got {r.status_code}")
+        r = await ac.get("/documents/master/vendors", params={"format": "docx"}, headers=H(admin_t))
+        check("bad export format → 400", r.status_code == 400, f"got {r.status_code}")
+        r = await ac.get("/documents/master/employees", params={"format": "csv"}, headers=H(hod_t))
+        check("scoped hod employee export → 200 (forced to own site)",
+              r.status_code == 200, f"got {r.status_code}")
+
 
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""

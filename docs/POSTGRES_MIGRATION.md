@@ -221,6 +221,23 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-05 · actor=interactive · branch=`main` · 📄 Parity build Phase 6 — documents & PDF/label generators
+- **New `backend/api/documents.py`** (DRY — reuses `reports.py` renderers + one FPDF grid backbone):
+  - **QR bin labels** `GET /documents/qr-labels` (inventory SAP QR grid, 3×4, site-scoped) and
+    **employee badges** `GET /documents/employee-badges` (ID_Number QR + name + dept, active only,
+    site-scoped) share `_grid_pdf(cells, draw_cell)` — each supplies only a per-cell callback;
+    ports the legacy `generate_qr_labels_pdf` / `generate_employee_qr_badges_pdf` layouts. `qrcode`
+    (already a 2FA dep) renders each QR PNG.
+  - **SOP / Manual** `GET /documents/reference/{sop|manual}` streams the pre-built root PDFs
+    (`GI_Hub_SOP.pdf`, `GI_Hub_User_Manual.pdf`) — reference material, any authenticated user.
+  - **Master exports** `GET /documents/master/{vendors|warehouses|employees|inventory}?format=` reuse
+    `reports.py` `to_xlsx/to_csv/to_pdf` (blob/sensitive columns dropped); employees/inventory
+    site-scoped. Management outputs (labels/badges/exports) gated `require_level(2)`.
+- **FE:** new DocumentsPage (`/documents`, nav for all; Reference card for everyone, Label-sheets +
+  Master-export cards ≥ hod) + an Export button on MasterDataPage. Generic `downloadDocument()` blob helper.
+- **Verified:** service_tests **120 → 129/129**; build green; live: QR PDF 251 KB w/ `%PDF-` magic,
+  vendor xlsx w/ `PK` magic, worker sees only the Reference card (UI + backend 403 both hold).
+
 ### 2026-07-05 · actor=interactive · branch=`main` · 📊 Parity build Phase 5 — reports parity + archive + scheduler
 - **11 new reports** in the `/reports/{key}` framework (6 → **17**): daily-consumption,
   monthly-summary (opening/received/issued/returned/closing per SAP), wbs, low-stock,

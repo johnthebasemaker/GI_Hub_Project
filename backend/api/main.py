@@ -41,6 +41,7 @@ from .entry import router as entry_router  # noqa: E402
 from .hod import router as hod_router  # noqa: E402
 from .logistics import router as logistics_router  # noqa: E402
 from .notifications import router as notifications_router  # noqa: E402
+from .documents import router as documents_router  # noqa: E402
 from .report_center import router as report_center_router  # noqa: E402
 from .report_center import scheduler_loop  # noqa: E402
 from .reports import router as reports_router  # noqa: E402
@@ -162,6 +163,9 @@ app.include_router(notifications_router, dependencies=_auth)
 # must register before the /reports/{key} catch-all), then the downloads.
 app.include_router(report_center_router)
 app.include_router(reports_router)
+
+# Documents — QR bin labels + employee badges + SOP/Manual + master-data exports.
+app.include_router(documents_router)
 
 
 @app.get("/", include_in_schema=False)

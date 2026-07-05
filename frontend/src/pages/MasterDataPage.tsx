@@ -14,8 +14,8 @@ import {
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { PlusOutlined } from '@ant-design/icons'
-import { useCreate, useDelete, useList, useUpdate } from '../api/hooks'
+import { FileExcelOutlined, PlusOutlined } from '@ant-design/icons'
+import { downloadDocument, useCreate, useDelete, useList, useUpdate } from '../api/hooks'
 import type { Row } from '../api/client'
 import { WRITE_ENTITIES } from '../config/entities'
 import type { WriteEntity } from '../config/entities'
@@ -77,6 +77,22 @@ function Crud({ entity }: { entity: WriteEntity }) {
     }
   }
 
+  // Master exports live at /documents/master/{entity}; entity name = the path
+  // segment (e.g. '/vendors' → 'vendors').
+  const exportName = entity.path.replace(/^\//, '')
+  const [exporting, setExporting] = useState(false)
+  const doExport = async () => {
+    setExporting(true)
+    try {
+      await downloadDocument(`/documents/master/${exportName}`, { format: 'xlsx' },
+        `${exportName}-master.xlsx`)
+    } catch (e) {
+      message.error(errMsg(e))
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const columns: ColumnsType<Row> = [
     { title: 'ID', dataIndex: entity.idKey, key: entity.idKey, width: 70 },
     ...entity.fields.map((f) => ({
@@ -118,9 +134,14 @@ function Crud({ entity }: { entity: WriteEntity }) {
         <Typography.Title level={3} style={{ margin: 0 }}>
           {entity.label}
         </Typography.Title>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>
-          Add
-        </Button>
+        <Space>
+          <Button icon={<FileExcelOutlined />} loading={exporting} onClick={doExport}>
+            Export
+          </Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>
+            Add
+          </Button>
+        </Space>
       </div>
 
       <Table

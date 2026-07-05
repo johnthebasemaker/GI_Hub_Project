@@ -33,6 +33,7 @@ const AuditLogPage = lazy(() => import('./pages/AuditLogPage'))
 const InventoryAdminPage = lazy(() => import('./pages/InventoryAdminPage'))
 const SecurityPage = lazy(() => import('./pages/SecurityPage'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
+const DocumentsPage = lazy(() => import('./pages/DocumentsPage'))
 
 export default function App() {
   const { user } = useAuth()
@@ -65,6 +66,7 @@ export default function App() {
         <Route path="admin/inventory" element={<InventoryAdminPage />} />
         <Route path="admin/audit" element={<AuditLogPage />} />
         <Route path="reports" element={<ReportsPage />} />
+        <Route path="documents" element={<DocumentsPage />} />
         <Route path="security" element={<SecurityPage />} />
       </Route>
     </Routes>

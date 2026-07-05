@@ -2,7 +2,7 @@ import { Suspense } from 'react'
 import type { ReactNode } from 'react'
 import { Badge, Button, ConfigProvider, Layout, Menu, Skeleton, Space, Tooltip, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AuditOutlined, BarChartOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FallOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, MoonOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, SunOutlined, TeamOutlined, ToolOutlined, UserAddOutlined } from '@ant-design/icons'
+import { AuditOutlined, BarChartOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FallOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, MoonOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, SunOutlined, TeamOutlined, ToolOutlined, FileProtectOutlined, UserAddOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth, useWorkQueues } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -137,6 +137,12 @@ function buildMenu(level: number, role: string, q: Record<string, number>): Menu
       ],
     })
   }
+  // Documents (SOP / Manual for everyone; label sheets + master exports gated
+  // inside the page for ≥ hod) — every authenticated user.
+  items.push({
+    key: 'documents', label: 'Documents', type: 'group',
+    children: [{ key: '/documents', icon: <FileProtectOutlined />, label: 'Documents' }],
+  })
   // Security (2FA self-enrollment) — every authenticated user.
   items.push({
     key: 'account', label: 'Account', type: 'group',
