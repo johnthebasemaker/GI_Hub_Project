@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, fetchList } from './client'
 import type { Health, InventorySummary, ListResponse, Row } from './client'
+import type { SmeSnapshot } from '../sme/engine'
 
 export function useHealth() {
   return useQuery({
@@ -775,6 +776,16 @@ export function useSmeDemandMatrix(siteId?: string) {
     queryFn: async () =>
       (await api.get<{ lines: Row[]; totals: Row[]; allocation_order: string }>(
         '/sme/demand-matrix', { params: siteId ? { site_id: siteId } : {} })).data,
+  })
+}
+
+// --- SME rebuild (Phase S2): unified model snapshot for the client engine ------
+export function useSmeSnapshot(siteId?: string) {
+  return useQuery({
+    queryKey: ['/sme/model-snapshot', siteId],
+    queryFn: async () =>
+      (await api.get<SmeSnapshot>('/sme/model-snapshot',
+        { params: siteId ? { site_id: siteId } : {} })).data,
   })
 }
 

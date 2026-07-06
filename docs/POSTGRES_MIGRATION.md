@@ -221,6 +221,44 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-06 · actor=interactive · branch=`main` · 📊 Phase S2 — SME Dashboard rebuild (client-side cross-filters · KPI drill-downs · SVG gauge/hbars · Recharts)
+- User-authorized cleanups executed first: `DELETE FROM consumption WHERE id=2`
+  on the PG mirror (the gibberish preview-form test row) → **parity_check back
+  to 5/5**; stray empty backend/gi_database.db removed.
+- **frontend/src/sme/insights.ts** (NEW): faithful port of the legacy Tab 0
+  "Project Overview" math (portal lines ~3633–4046) — demand = For_1_SQM ×
+  remaining SQM per filtered (tag, code); scope coverage = Σ min(demand_m,
+  avail_m) / Σ demand_m (per-material cap, NO cascade — dashboard semantics);
+  coverable SQM = scope SQM × min(1, cov); material balance with On-Order-aware
+  Net_Shortfall; stock-only = recipe-member ∧ no current demand (R20.1 rule).
+  Deliberately OUTSIDE the parity-locked engine (engine.ts/sme_engine.py
+  untouched numerically; engine only gained an exported `unitKey` alias).
+- **frontend/src/sme/SmeDashboard.tsx** (NEW, replaces the basic Dashboard tab):
+  4-way cascading cross-filters (Location→Type→System Code→Substrate; each
+  option list scoped by the other three, empty = all) · 7-KPI strip
+  (Equipment, Total SQM, Available Coverage SQM, SQM Deficit, Overall
+  Coverage + delta, Shortfall SQM, Critical <50%) where **every KPI is a
+  single click → real AntD drill-down modal** (legacy: double-click hack) ·
+  Recharts stacked bars (demand-vs-available mini; per-location Can-Do in
+  legacy location colors + red Deficit, with location stat cards
+  dot/%/SQM-ratio/equipment) · Full Material Balance grid with the legacy
+  4-tier row tinting (≥100 green · ≥90 orange · ≥80 yellow · <80 red) +
+  client-side CSV export · stock-only collapse.
+- **frontend/src/sme/CoverageGauge.tsx + CoverageHBar.tsx** (NEW): the legacy
+  custom SVGs (render_design_gauge:3169 / render_design_hbar:3215) ported 1:1
+  as native React components — same geometry, tier band arcs, JetBrains Mono
+  readouts; zero chart-library dependency.
+- Everything computes CLIENT-SIDE from one GET /sme/model-snapshot:
+  live-verified that the whole filter + drill session issued **zero further
+  /sme requests** (network log), with instant recompute — Brown Field filter:
+  Equipment 26→10, coverage 44.6%→78.9%, code options narrowed to Codes 2/7.
+  Balance math spot-verified in-browser (BC 3004: avail 0, on-order 7,281,
+  demand 9,324 → shortfall 9,324, net 2,043, 0.0% red ✓).
+- Zero backend changes. Gates: service_tests 341/341 · frontend build ✅ ·
+  parity:sme 509 ✅ · parity_check 5/5 ✅ · bug_check 599/0 ✅. Clean console
+  after a preview-server restart (one transient stale-HMR signature error
+  during dev, gone on restart — known preview behavior).
+
 ### 2026-07-06 · actor=interactive · branch=`main` · 🧮 Phase S1 — SME rebuild foundation (model snapshot + client TS engine + parity oracle)
 - Kickoff of the SME React rebuild program (S1…S6, approved plan): lift the
   read-only-basic SME UI to full legacy-portal richness. **Backend stays

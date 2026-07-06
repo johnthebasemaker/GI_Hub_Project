@@ -1,14 +1,14 @@
 import { useState } from 'react'
-import { App, Button, Card, Col, Row, Select, Space, Statistic, Table, Tabs, Typography } from 'antd'
+import { App, Button, Select, Space, Table, Tabs, Typography } from 'antd'
 import { FileExcelOutlined } from '@ant-design/icons'
-import type { ColumnsType } from 'antd/es/table'
 import {
   downloadDocument, useSites, useSmeComparison, useSmeDemandMatrix, useSmeEquipment,
-  useSmeEquipmentReport, useSmeMaterials, useSmeRecipes, useSmeSqm, useSmeSummary,
+  useSmeEquipmentReport, useSmeMaterials, useSmeRecipes, useSmeSqm,
 } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 import { buildColumns } from '../lib/columns'
 import { ScenarioProvider } from '../sme/ScenarioContext'
+import SmeDashboard from '../sme/SmeDashboard'
 
 // One-click XLSX export of an SME view (read-only server render).
 function ExportButton({ exportKey, siteId }: { exportKey: string; siteId?: string }) {
@@ -38,10 +38,6 @@ function ExportButton({ exportKey, siteId }: { exportKey: string; siteId?: strin
   )
 }
 
-function num(v: unknown) {
-  return v == null ? 0 : Number(v)
-}
-
 function SmeTable({ rows, loading }: { rows?: ApiRow[]; loading?: boolean }) {
   return (
     <Table
@@ -56,39 +52,9 @@ function SmeTable({ rows, loading }: { rows?: ApiRow[]; loading?: boolean }) {
   )
 }
 
-function Dashboard({ siteId }: { siteId?: string }) {
-  const { data: s } = useSmeSummary(siteId)
-  const pct = s && s.original_sqm ? Math.round((s.done_sqm / s.original_sqm) * 1000) / 10 : 0
-  const lsColumns: ColumnsType<ApiRow> = [
-    { title: 'Lining System', dataIndex: 'Lining_System_Code', key: 'l', render: (v) => v ?? '—' },
-    { title: 'Equipment', dataIndex: 'count', key: 'c', align: 'right' },
-  ]
-  return (
-    <div>
-      <Row gutter={[16, 16]}>
-        <Col xs={12} md={6}><Card><Statistic title="Equipment" value={num(s?.equipment)} /></Card></Col>
-        <Col xs={12} md={6}><Card><Statistic title="Total SQM" value={num(s?.total_sqm)} precision={1} /></Card></Col>
-        <Col xs={12} md={6}><Card><Statistic title="Recipes (BOM lines)" value={num(s?.recipes)} /></Card></Col>
-        <Col xs={12} md={6}><Card><Statistic title="Materials" value={num(s?.materials)} /></Card></Col>
-      </Row>
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col xs={24} md={10}>
-          <Card size="small" title="SQM progress">
-            <Statistic title="Planned SQM" value={num(s?.original_sqm)} precision={1} />
-            <Statistic title="Done SQM" value={num(s?.done_sqm)} precision={1} style={{ marginTop: 8 }} />
-            <Statistic title="Completion" value={pct} suffix="%" style={{ marginTop: 8 }} />
-          </Card>
-        </Col>
-        <Col xs={24} md={14}>
-          <Card size="small" title="Equipment by lining system">
-            <Table size="small" columns={lsColumns} dataSource={s?.by_lining_system ?? []}
-              rowKey={(r: ApiRow) => String(r.Lining_System_Code)} pagination={false} />
-          </Card>
-        </Col>
-      </Row>
-    </div>
-  )
-}
+// Phase S2: the Dashboard tab is now the full client-side rebuild
+// (frontend/src/sme/SmeDashboard.tsx) — cross-filters, KPI drill-downs,
+// gauge/hbars, Recharts, material balance. All computed in the browser.
 
 function DemandMatrix({ siteId }: { siteId?: string }) {
   const { data, isFetching } = useSmeDemandMatrix(siteId)
@@ -149,7 +115,7 @@ function SmePageBody({ siteId, setSiteId, sites }: {
       <Tabs
         defaultActiveKey="dash"
         items={[
-          { key: 'dash', label: 'Dashboard', children: <Dashboard siteId={siteId} /> },
+          { key: 'dash', label: 'Dashboard', children: <SmeDashboard siteId={siteId} /> },
           { key: 'equip', label: 'Equipment', children: <SmeTable rows={equipment.data} loading={equipment.isFetching} /> },
           { key: 'recipes', label: 'Recipes / BOM', children: <SmeTable rows={recipes.data} loading={recipes.isFetching} /> },
           { key: 'sqm', label: 'SQM Progress', children: <SmeTable rows={sqm.data} loading={sqm.isFetching} /> },

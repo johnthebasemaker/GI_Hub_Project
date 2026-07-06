@@ -151,6 +151,9 @@ const s = (v: unknown): string => (v === null || v === undefined ? '' : String(v
 
 const ukey = (tag: string, code: string) => `${tag}\u0000${code}`
 
+/** Public unit-map key for consumers like insights.ts (no numeric behavior). */
+export const unitKey = ukey
+
 /** Numeric-first ordering for lining-system codes (mirrors syscode_sort_key). */
 export function syscodeCompare(a: string, b: string): number {
   const ad = /^\d+$/.test(a)
