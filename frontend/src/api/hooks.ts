@@ -779,6 +779,19 @@ export function useSmeDemandMatrix(siteId?: string) {
   })
 }
 
+// --- SME rebuild (Phase S3): POST-body download (session plan exports) ---------
+export async function postDownloadDocument(path: string, body: unknown, filename: string) {
+  const res = await api.post(path, body, { responseType: 'blob' })
+  const url = URL.createObjectURL(res.data as Blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
 // --- SME rebuild (Phase S2): unified model snapshot for the client engine ------
 export function useSmeSnapshot(siteId?: string) {
   return useQuery({

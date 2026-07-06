@@ -5,7 +5,7 @@
  * SME Canon) and persists to localStorage per site key, so a planning session
  * survives refresh/logout — something the Streamlit portal never could.
  */
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
 const STORAGE_KEY = 'gi.sme.scenario.v1'
@@ -30,6 +30,33 @@ function writeStore(store: Store) {
   }
 }
 
+// --- URL sharing (Phase S3) ---------------------------------------------------
+// The priority order is also encoded into ?scenario= so a planning session can
+// be shared as a link. Equipment tags never contain '~' (SAP-style codes), so
+// '~' delimits encodeURIComponent()-escaped tags. URL wins over localStorage
+// on first load (an opened share-link shows the sender's exact scenario).
+const URL_PARAM = 'scenario'
+
+function readUrlOrder(): string[] | null {
+  const p = new URLSearchParams(window.location.search).get(URL_PARAM)
+  if (!p) return null
+  const tags = p.split('~').map((t) => {
+    try { return decodeURIComponent(t).trim() } catch { return '' }
+  }).filter(Boolean)
+  return tags.length ? [...new Set(tags)] : null
+}
+
+function writeUrlOrder(order: string[]) {
+  try {
+    const url = new URL(window.location.href)
+    if (order.length) url.searchParams.set(URL_PARAM, order.map(encodeURIComponent).join('~'))
+    else url.searchParams.delete(URL_PARAM)
+    window.history.replaceState(null, '', url)
+  } catch {
+    /* non-fatal: sharing degrades, scenario still works */
+  }
+}
+
 export interface ScenarioState {
   /** Site this scenario belongs to ('all' for the admin cross-site view). */
   siteKey: string
@@ -41,42 +68,57 @@ export interface ScenarioState {
   /** Move the tag at `from` to position `to` (dnd-kit reorder handler). */
   moveTag: (from: number, to: number) => void
   clear: () => void
+  /** Current shareable URL (already synced on every change). */
+  shareUrl: () => string
 }
 
 const ScenarioContext = createContext<ScenarioState | null>(null)
 
 export function ScenarioProvider({ siteId, children }: { siteId?: string; children: ReactNode }) {
   const siteKey = siteId ?? 'all'
-  const [order, setOrderState] = useState<string[]>(() => readStore()[siteKey] ?? [])
+  const [order, setOrderState] = useState<string[]>(
+    () => readUrlOrder() ?? readStore()[siteKey] ?? [])
 
-  // Site switch → load that site's persisted scenario.
+  // First mount: a ?scenario= URL wins (and is persisted so refresh keeps it).
+  // Site switch afterwards: load that site's persisted scenario.
+  const firstMount = useRef(true)
   useEffect(() => {
-    setOrderState(readStore()[siteKey] ?? [])
+    const fromUrl = firstMount.current ? readUrlOrder() : null
+    firstMount.current = false
+    const next = fromUrl ?? readStore()[siteKey] ?? []
+    setOrderState(next)
+    if (fromUrl) writeStore({ ...readStore(), [siteKey]: fromUrl })
+    writeUrlOrder(next)
+  }, [siteKey])
+
+  const persist = useCallback((next: string[]) => {
+    writeStore({ ...readStore(), [siteKey]: next })
+    writeUrlOrder(next)
   }, [siteKey])
 
   const setOrder = useCallback((next: string[]) => {
     const clean = [...new Set(next.map((t) => t.trim()).filter(Boolean))]
     setOrderState(clean)
-    writeStore({ ...readStore(), [siteKey]: clean })
-  }, [siteKey])
+    persist(clean)
+  }, [persist])
 
   const addTag = useCallback((tag: string) => {
     setOrderState((prev) => {
       const t = tag.trim()
       if (!t || prev.includes(t)) return prev
       const next = [...prev, t]
-      writeStore({ ...readStore(), [siteKey]: next })
+      persist(next)
       return next
     })
-  }, [siteKey])
+  }, [persist])
 
   const removeTag = useCallback((tag: string) => {
     setOrderState((prev) => {
       const next = prev.filter((t) => t !== tag)
-      writeStore({ ...readStore(), [siteKey]: next })
+      persist(next)
       return next
     })
-  }, [siteKey])
+  }, [persist])
 
   const moveTag = useCallback((from: number, to: number) => {
     setOrderState((prev) => {
@@ -84,16 +126,17 @@ export function ScenarioProvider({ siteId, children }: { siteId?: string; childr
       const next = [...prev]
       const [item] = next.splice(from, 1)
       next.splice(to, 0, item)
-      writeStore({ ...readStore(), [siteKey]: next })
+      persist(next)
       return next
     })
-  }, [siteKey])
+  }, [persist])
 
   const clear = useCallback(() => setOrder([]), [setOrder])
+  const shareUrl = useCallback(() => window.location.href, [])
 
   const value = useMemo(
-    () => ({ siteKey, order, setOrder, addTag, removeTag, moveTag, clear }),
-    [siteKey, order, setOrder, addTag, removeTag, moveTag, clear],
+    () => ({ siteKey, order, setOrder, addTag, removeTag, moveTag, clear, shareUrl }),
+    [siteKey, order, setOrder, addTag, removeTag, moveTag, clear, shareUrl],
   )
   return <ScenarioContext.Provider value={value}>{children}</ScenarioContext.Provider>
 }

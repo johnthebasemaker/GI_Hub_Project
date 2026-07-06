@@ -8,6 +8,8 @@ import {
 import type { Row as ApiRow } from '../api/client'
 import { buildColumns } from '../lib/columns'
 import { ScenarioProvider } from '../sme/ScenarioContext'
+import SessionBuilder from '../sme/SessionBuilder'
+import SessionReport from '../sme/SessionReport'
 import SmeDashboard from '../sme/SmeDashboard'
 
 // One-click XLSX export of an SME view (read-only server render).
@@ -116,6 +118,8 @@ function SmePageBody({ siteId, setSiteId, sites }: {
         defaultActiveKey="dash"
         items={[
           { key: 'dash', label: 'Dashboard', children: <SmeDashboard siteId={siteId} /> },
+          { key: 'builder', label: '🔍 Session Builder', children: <SessionBuilder siteId={siteId} /> },
+          { key: 'session', label: '📦 Session Report', children: <SessionReport siteId={siteId} /> },
           { key: 'equip', label: 'Equipment', children: <SmeTable rows={equipment.data} loading={equipment.isFetching} /> },
           { key: 'recipes', label: 'Recipes / BOM', children: <SmeTable rows={recipes.data} loading={recipes.isFetching} /> },
           { key: 'sqm', label: 'SQM Progress', children: <SmeTable rows={sqm.data} loading={sqm.isFetching} /> },

@@ -2124,6 +2124,35 @@ async def test_sme_plan_layer():
                   r2.status_code == 200 and
                   all(abs(t1[k] - t2.get(k, -1)) < 1e-6 for k in t1), str(t2)[:200])
 
+        # Phase S3: session exports rendered by the server oracle.
+        r = await ac.post("/sme/plan/export", headers=H(admin_t),
+                          json={"priority_order": order, "key": "session-full",
+                                "format": "xlsx"})
+        check("plan export (session-full xlsx) → 200 + spreadsheet",
+              r.status_code == 200 and r.content[:2] == b"PK",
+              f"got {r.status_code}")
+        r = await ac.post("/sme/plan/export", headers=H(admin_t),
+                          json={"priority_order": order, "key": "order-list",
+                                "format": "csv"})
+        proc = body.get("procurement", [])
+        check("plan export (order-list csv) carries the oracle's shortages",
+              r.status_code == 200 and
+              (not proc or proc[0]["Material_Code"] in r.text),
+              f"got {r.status_code}")
+        r = await ac.post("/sme/plan/export", headers=H(worker_t),
+                          json={"priority_order": [], "key": "session-full"})
+        check("worker (lvl 0) → 403 on plan export", r.status_code == 403,
+              f"got {r.status_code}")
+        r = await ac.post("/sme/plan/export", headers=H(admin_t),
+                          json={"priority_order": [], "key": "nope"})
+        check("unknown plan-export key → 404", r.status_code == 404,
+              f"got {r.status_code}")
+        r = await ac.post("/sme/plan/export", headers=H(admin_t),
+                          json={"priority_order": [], "key": "session-full",
+                                "format": "yeet"})
+        check("bad plan-export format → 400", r.status_code == 400,
+              f"got {r.status_code}")
+
 
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")

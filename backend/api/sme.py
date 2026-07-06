@@ -425,6 +425,54 @@ async def plan_cascade(body: CascadeBody,
     return {"site_id": site_id, **result}
 
 
+# --- Phase S3: session exports rendered by the server oracle -------------------
+# The React session builder holds the priority order client-side; official
+# documents are rendered here so the Python engine (not the browser) is the
+# authority on exported numbers. Still a pure read + compute.
+_PLAN_EXPORT_KEYS = {
+    "session-full": ("SME Session Report (priority order)", "lines"),
+    "order-list": ("SME Session Order List (to procure)", "procurement"),
+    "feasibility": ("SME Session Feasibility", "feasibility"),
+}
+
+
+class PlanExportBody(CascadeBody):
+    key: str = "session-full"
+    format: str = "xlsx"
+
+
+@router.post("/plan/export",
+             summary="Export the client's session plan (xlsx | csv | pdf), "
+                     "computed server-side by the parity oracle")
+async def plan_export(body: PlanExportBody,
+                      user: dict = Depends(require_level(2)),
+                      session: AsyncSession = Depends(get_session)):
+    import io
+
+    from fastapi.responses import StreamingResponse
+
+    from .reports import _FORMATS
+    fmt = body.format.lower()
+    if fmt not in _FORMATS:
+        raise HTTPException(400, f"format must be one of {sorted(_FORMATS)}")
+    if body.key not in _PLAN_EXPORT_KEYS:
+        raise HTTPException(404, f"unknown plan export {body.key!r}")
+    site_id = resolve_site_param(user, body.site_id)
+    snap = await _snapshot_rows(session, site_id)
+    model = sme_engine.build_model(snap["equipment"], snap["recipes"],
+                                   snap["materials"], snap["progress"])
+    plan = sme_engine.run_plan(model, body.priority_order)
+    title, part = _PLAN_EXPORT_KEYS[body.key]
+    items = plan[part]
+    columns = list(items[0].keys()) if items else []
+    rows = [[r.get(c) for c in columns] for r in items]
+    render, media = _FORMATS[fmt]
+    data = render(title, columns, rows, user["username"])
+    return StreamingResponse(io.BytesIO(data), media_type=media,
+                             headers={"Content-Disposition":
+                                      f'attachment; filename="sme-{body.key}.{fmt}"'})
+
+
 # --- exports (reuse the reports renderers; still pure reads) -------------------
 @router.get("/export/{key}", summary="Export an SME view (xlsx | csv | pdf)")
 async def sme_export(key: str, format: str = "xlsx", site_id: Optional[str] = None,

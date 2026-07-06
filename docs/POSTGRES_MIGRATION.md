@@ -221,6 +221,45 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-06 · actor=interactive · branch=`main` · 🧲 Phase S3 — Session Builder & Suggestion Engine (dnd-kit drag priority · live client cascade · scenario sharing · oracle exports)
+- **Two new SME tabs** (frontend/src/sme/): 🔍 Session Builder
+  (SessionBuilder.tsx — cascading find-equipment filters, add-to-session
+  picker, and the **dnd-kit sortable priority list**: every drag/arrow-move
+  re-runs the parity-locked TS cascade in the browser; right panel shows the
+  selected equipment's live per-code detail, with an *added-last what-if
+  preview* for tags not yet in the session) and 📦 Session Report
+  (SessionReport.tsx — 4 KPI drill-downs, the same shared priority list,
+  per-equipment expanders, shortage-only Recharts stacked bar, **SQM-weighted
+  combined procurement** (legacy per-cell fulfillment × SQM port), amber
+  grand-total, suggestion panel).
+- **Suggestion engine client-side** (SuggestionPanel.tsx): the pause-one
+  simulation loop (engine.ts runSuggestionEngine) runs in the browser on
+  every order change; recommended scenario narrated + all-candidates table +
+  reversible one-click "Apply" (removes the tag). Live-verified numerically:
+  panel said pausing J022 gains +5.3% — the oracle's completion delta is
+  exactly 72.77 − 67.46 = +5.31.
+- **Scenario persistence & sharing** (ScenarioContext): priority order in
+  localStorage per site key AND mirrored to `?scenario=` (URL wins on first
+  load → share-links open the sender's exact scenario); Share button copies
+  the link. Proven: scenario survived a full preview-server restart.
+- **Parity exports**: `POST /sme/plan/export` (the ONLY backend change —
+  read-only compute; keys session-full/order-list/feasibility × xlsx/csv/pdf
+  via the reports renderers) — official documents are rendered by the PYTHON
+  oracle from the client's posted priority order, never by the browser.
+  4 export buttons wired in the report tab (postDownloadDocument helper).
+- **Live proof of instant re-cascade ≡ oracle**: staged the real contention
+  pair J021/J022 (COROFLAKE EP PRIMER + CARBON FILLER); browser pills
+  [72.8/70.9] → flip → [70.9/67.5], matching POST /sme/plan/cascade to the
+  displayed digit ([72.77/70.87] → [70.93/67.46]).
+- Supporting: session.ts (tag/code stats — tag_fulfillment/syscode_
+  fulfillment/sqm_can_do ports), PriorityList.tsx (dots/pills/code badges/SQM
+  ratios + keyboard-accessible arrow moves), TagDetail.tsx (shared per-code
+  breakdown), @dnd-kit/utilities dep.
+- Gates: service_tests **346/346** (5 new export checks: xlsx magic, csv
+  carries oracle shortages, worker 403, bad key 404, bad format 400) ·
+  frontend build ✅ · parity:sme 509 ✅ · parity_check 5/5 ✅ · bug_check
+  599/0 ✅ · clean console on a fresh preview server.
+
 ### 2026-07-06 · actor=interactive · branch=`main` · 📊 Phase S2 — SME Dashboard rebuild (client-side cross-filters · KPI drill-downs · SVG gauge/hbars · Recharts)
 - User-authorized cleanups executed first: `DELETE FROM consumption WHERE id=2`
   on the PG mirror (the gibberish preview-form test row) → **parity_check back
