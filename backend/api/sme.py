@@ -16,9 +16,11 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from . import sme_engine
 from .auth import require_level, resolve_site_param
 from .db import get_session
 from .services.ledger import _MD
@@ -339,6 +341,88 @@ async def demand_matrix(site_id: Optional[str] = None,
                         session: AsyncSession = Depends(get_session)):
     site_id = resolve_site_param(user, site_id)
     return await _demand_matrix(session, site_id)
+
+
+# --- Phase S1: model snapshot + cascade oracle (still pure reads) --------------
+# The snapshot feeds the client-side TypeScript engine (frontend/src/sme/
+# engine.ts); the cascade endpoint runs the SAME algorithm server-side via
+# backend/api/sme_engine.py — it is the parity oracle for the TS port and the
+# compute backend for session-scoped exports (Phase S3). POST here is compute,
+# not mutation: nothing is written (SME Canon holds — no write endpoints exist).
+
+class CascadeBody(BaseModel):
+    priority_order: list[str] = Field(default_factory=list, max_length=2000)
+    site_id: Optional[str] = None
+    include_suggestions: bool = False
+
+
+async def _snapshot_rows(session: AsyncSession, site_id: str | None) -> dict:
+    """The four raw inputs of the legacy load_all(), snapshot-shaped."""
+    e = sme_equipment_t
+    stmt = select(e.c["Equipment_Tag_No"], e.c["Name"], e.c["Location"],
+                  e.c["Sub_Location"], e.c["Type"], e.c["Substrate"],
+                  e.c["Lining_System_Code"], e.c["Surface_Area_SQM"])
+    if site_id is not None:
+        stmt = stmt.where(e.c["Site_ID"] == site_id)
+    equipment = _rows(await session.execute(stmt.order_by(e.c["Equipment_Tag_No"], e.c["id"])))
+
+    r = sme_recipe_t
+    recipes = _rows(await session.execute(
+        select(r.c["Lining_System_Code"], r.c["Lining_System_Name"],
+               r.c["Material_Code"], r.c["Material_Name"], r.c["UOM"],
+               r.c["For_1_SQM"]).order_by(r.c["id"])))
+
+    materials = [{k: m[k] for k in ("material_code", "material_name", "nature",
+                                    "uom", "available_qty", "ordered_qty")}
+                 for m in _rows(await session.execute(
+                     text(SQL_SME_MATERIALS + ' ORDER BY s."Material_Code"')))]
+
+    s = sme_sqm_t
+    # Legacy load_all() folds Done_SQM_staged into done; keep both raw here and
+    # let the engine fold (guard: the mirror schema may predate the R18 column).
+    staged = s.c["Done_SQM_staged"] if "Done_SQM_staged" in s.c else None
+    cols = [s.c["Equipment_Tag_No"], s.c["Lining_System_Code"],
+            s.c["Original_SQM"], s.c["Done_SQM"]]
+    if staged is not None:
+        cols.append(staged)
+    pstmt = select(*cols)
+    if site_id is not None:
+        pstmt = pstmt.where(s.c["Site_ID"] == site_id)
+    progress = _rows(await session.execute(
+        pstmt.order_by(s.c["Site_ID"], s.c["Equipment_Tag_No"], s.c["Lining_System_Code"])))
+    if staged is None:
+        progress = [{**p, "Done_SQM_staged": 0} for p in progress]
+
+    return {"equipment": equipment, "recipes": recipes,
+            "materials": materials, "progress": progress}
+
+
+@router.get("/model-snapshot",
+            summary="Unified SME model payload for the client-side engine")
+async def model_snapshot(site_id: Optional[str] = None,
+                         user: dict = Depends(require_level(2)),
+                         session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, site_id)
+    snap = await _snapshot_rows(session, site_id)
+    tags = sorted({str(e["Equipment_Tag_No"]).strip()
+                   for e in snap["equipment"] if e["Equipment_Tag_No"]})
+    return {"site_id": site_id, **snap, "default_order": tags}
+
+
+@router.post("/plan/cascade",
+             summary="Server-side cascade allocation for a given priority order "
+                     "(read-only compute; parity oracle for the TS engine)")
+async def plan_cascade(body: CascadeBody,
+                       user: dict = Depends(require_level(2)),
+                       session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, body.site_id)
+    snap = await _snapshot_rows(session, site_id)
+    model = sme_engine.build_model(snap["equipment"], snap["recipes"],
+                                   snap["materials"], snap["progress"])
+    result = sme_engine.run_plan(model, body.priority_order)
+    if body.include_suggestions:
+        result.update(sme_engine.run_suggestion_engine(model, body.priority_order))
+    return {"site_id": site_id, **result}
 
 
 # --- exports (reuse the reports renderers; still pure reads) -------------------

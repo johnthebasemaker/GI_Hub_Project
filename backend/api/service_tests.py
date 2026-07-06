@@ -1979,6 +1979,152 @@ def test_config_jwt():
                 os.environ[k] = v
 
 
+# --- Suite G: SME plan layer (Phase S1 — engine port + parity oracle) --------
+def _sme_deep_diff(a, b, path="", tol=1e-9) -> str:
+    """First mismatch between two JSON-ish structures ('' if equal).
+    Mirrors the comparator in frontend/scripts/sme_parity.mjs."""
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)) \
+            and not isinstance(a, bool) and not isinstance(b, bool):
+        return "" if abs(a - b) <= tol else f"{path}: {a} != {b}"
+    if isinstance(a, list) and isinstance(b, list):
+        if len(a) != len(b):
+            return f"{path}: length {len(a)} != {len(b)}"
+        for i, (x, y) in enumerate(zip(a, b)):
+            d = _sme_deep_diff(x, y, f"{path}[{i}]", tol)
+            if d:
+                return d
+        return ""
+    if isinstance(a, dict) and isinstance(b, dict):
+        if sorted(a) != sorted(b):
+            return f"{path}: keys {sorted(a)} != {sorted(b)}"
+        for k in a:
+            d = _sme_deep_diff(a[k], b[k], f"{path}.{k}", tol)
+            if d:
+                return d
+        return ""
+    return "" if a == b else f"{path}: {a!r} != {b!r}"
+
+
+async def test_sme_plan_layer():
+    """Phase S1: the Python cascade engine against the shared golden fixture,
+    then the snapshot/cascade endpoints (role locks, site pinning, and
+    endpoint ≡ pure-engine self-consistency). The SAME golden is asserted
+    against the TypeScript engine by frontend/scripts/sme_parity.mjs —
+    golden equality on both sides proves the TS engine ≡ this oracle."""
+    import json
+    from pathlib import Path
+
+    from . import sme_engine as E
+
+    here = Path(__file__).parent
+    fx = json.loads((here / "sme_parity_fixture.json").read_text())
+    golden = json.loads((here / "sme_parity_golden.json").read_text())
+    m = fx["model"]
+    model = E.build_model(m["equipment"], m["recipes"], m["materials"], m["progress"])
+
+    check("engine: default order matches golden",
+          model["default_order"] == golden["_default_order"],
+          str(model["default_order"]))
+    for case in fx["cases"]:
+        got = {**E.run_plan(model, case["order"]),
+               **E.run_suggestion_engine(model, case["order"])}
+        d = _sme_deep_diff(got, golden[case["name"]])
+        check(f"engine matches golden: {case['name']}", d == "", d)
+
+    # Semantic pins the golden encodes (guard against regenerating it wrong).
+    feas = {f["Equipment_Tag_No"]: f for f in golden["priority-order"]["feasibility"]}
+    check("engine: staged SQM folds into done (TK-A remaining 15 → demand 30)",
+          any(ln["Equipment_Tag_No"] == "TK-A" and ln["Material_Code"] == "M1"
+              and abs(ln["Demand_Qty"] - 30.0) < 1e-9
+              for ln in golden["priority-order"]["lines"]))
+    check("engine: statuses span FULL/PARTIAL/BLOCKED + zero-demand tag is FULL",
+          feas["TK-A"]["Status"] == E.STATUS_FULL
+          and feas["TK-B"]["Status"].startswith("🟡")
+          and feas["TK-C"]["Status"] == E.STATUS_BLOCKED
+          and feas["TK-D"]["Status"] == E.STATUS_FULL, str(feas))
+    check("engine: priority inversion flips TK-A FULL → BLOCKED",
+          golden["reordered-subset"]["feasibility"][1]["Equipment_Tag_No"] == "TK-A"
+          and golden["reordered-subset"]["feasibility"][1]["Status"] == E.STATUS_BLOCKED)
+    check("engine: suggestion sim finds pausing TK-B completes TK-A (+33.33%)",
+          golden["reordered-subset"]["suggestions"][0]["Pause_Tag"] == "TK-B"
+          and golden["reordered-subset"]["suggestions"][0]["Newly_Completable_Count"] == 1
+          and golden["reordered-subset"]["suggestions"][0]["Recommended"] is True)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        async def token(u, p):
+            r = await ac.post("/auth/login", json={"username": u, "password": p})
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        worker_t = await token("worker", "floor2026")   # store_keeper (level 0)
+        hod_t = await token("hod", "hod2026")           # hod @ CNCEC (level 2)
+        admin_t = await token("admin", "admin2026")     # level 4 → global
+
+        r = await ac.get("/sme/model-snapshot", headers=H(worker_t))
+        check("worker (lvl 0) → 403 on model snapshot", r.status_code == 403,
+              f"got {r.status_code}")
+        r = await ac.post("/sme/plan/cascade", headers=H(worker_t),
+                          json={"priority_order": []})
+        check("worker (lvl 0) → 403 on plan cascade", r.status_code == 403,
+              f"got {r.status_code}")
+
+        r = await ac.get("/sme/model-snapshot", params={"site_id": "HQ"},
+                         headers=H(hod_t))
+        check("hod requesting a foreign-site snapshot → 403", r.status_code == 403,
+              f"got {r.status_code}")
+        r = await ac.get("/sme/model-snapshot", headers=H(hod_t))
+        check("hod snapshot (no param) is pinned to own site",
+              r.status_code == 200 and r.json().get("site_id") == "CNCEC",
+              f"got {r.status_code} site={r.json().get('site_id') if r.status_code == 200 else '—'}")
+
+        r = await ac.get("/sme/model-snapshot", headers=H(admin_t))
+        snap = r.json() if r.status_code == 200 else {}
+        check("admin snapshot → 200 with all model sections",
+              r.status_code == 200 and
+              {"equipment", "recipes", "materials", "progress", "default_order"} <= set(snap),
+              f"got {r.status_code}")
+        check("snapshot default_order is sorted + deduped",
+              snap.get("default_order") == sorted(set(snap.get("default_order", []))))
+
+        # Endpoint ≡ pure engine on the SAME snapshot (self-consistency): the
+        # server built its model from DB rows, we rebuild from the JSON round-
+        # trip — results must agree within float tolerance.
+        live_model = E.build_model(snap["equipment"], snap["recipes"],
+                                   snap["materials"], snap["progress"])
+        order = snap["default_order"]
+        expected = E.run_plan(live_model, order)
+        r = await ac.post("/sme/plan/cascade", headers=H(admin_t),
+                          json={"priority_order": order})
+        body = r.json() if r.status_code == 200 else {}
+        d = _sme_deep_diff({k: body.get(k) for k in
+                            ("order_used", "lines", "feasibility", "totals", "procurement")},
+                           expected)
+        check("cascade endpoint ≡ pure engine on the live snapshot",
+              r.status_code == 200 and d == "", d or f"got {r.status_code}")
+
+        r = await ac.post("/sme/plan/cascade", headers=H(admin_t),
+                          json={"priority_order": [], "include_suggestions": True})
+        j = r.json() if r.status_code == 200 else {}
+        check("cascade with empty order → 200, empty plan, suggestions key",
+              r.status_code == 200 and j.get("lines") == []
+              and j.get("feasibility") == [] and isinstance(j.get("suggestions"), list),
+              f"got {r.status_code}")
+
+        # Reorder sensitivity on live data: reversing the priority order must
+        # never change total demand (pool math only shifts who gets it).
+        if len(order) >= 2:
+            r2 = await ac.post("/sme/plan/cascade", headers=H(admin_t),
+                               json={"priority_order": list(reversed(order))})
+            t1 = {t["Material_Code"]: t["Demand_Qty"] for t in body.get("totals", [])}
+            t2 = {t["Material_Code"]: t["Demand_Qty"] for t in r2.json().get("totals", [])}
+            check("reversed priority keeps per-material demand invariant",
+                  r2.status_code == 200 and
+                  all(abs(t1[k] - t2.get(k, -1)) < 1e-6 for k in t1), str(t2)[:200])
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -1998,6 +2144,8 @@ async def main() -> int:
     await test_manhours()
     print("\n F. intelligence layer (AI-0/AI-1, Ollama mocked)")
     await test_ai_layer()
+    print("\n G. SME plan layer (Phase S1 — engine port + parity oracle)")
+    await test_sme_plan_layer()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

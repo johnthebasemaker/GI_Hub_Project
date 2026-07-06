@@ -1,0 +1,40 @@
+{
+  "_comment": "Shared SME engine parity fixture (Phase S1). Consumed by BOTH backend/api/service_tests.py (Python engine) and frontend/scripts/sme_parity.mjs (TypeScript engine); each side must reproduce sme_parity_golden.json exactly. Edge cases pinned: duplicate (tag,code) rows summed; Done_SQM_staged folded into done; remaining clipped at 0 (TK-A/102); progress fallback to Surface_Area_SQM (TK-C); zero-demand tag (TK-D); material missing from inventory (M5 -> pool 0); stock-only material ignored (M4); negative pool passthrough (M6, legacy min() behavior); non-numeric system code sorted after numeric ones (X9); suggestion-engine tie stability.",
+  "model": {
+    "equipment": [
+      {"Equipment_Tag_No": "TK-A", "Name": "Tank A", "Location": "TRAIN J", "Type": "Tank", "Substrate": "CS", "Lining_System_Code": "101", "Surface_Area_SQM": 20},
+      {"Equipment_Tag_No": "TK-A", "Name": "Tank A", "Location": "TRAIN J", "Type": "Tank", "Substrate": "CS", "Lining_System_Code": "101", "Surface_Area_SQM": 5},
+      {"Equipment_Tag_No": "TK-A", "Name": "Tank A", "Location": "TRAIN J", "Type": "Tank", "Substrate": "CS", "Lining_System_Code": "102", "Surface_Area_SQM": 10},
+      {"Equipment_Tag_No": "TK-B", "Name": "Tank B", "Location": "Brown Field", "Type": "Tank", "Substrate": "CS", "Lining_System_Code": "101", "Surface_Area_SQM": 30},
+      {"Equipment_Tag_No": "TK-C", "Name": "Tank C", "Location": "TRAIN K", "Type": "Vessel", "Substrate": "Concrete", "Lining_System_Code": "7", "Surface_Area_SQM": 5},
+      {"Equipment_Tag_No": "TK-C", "Name": "Tank C", "Location": "TRAIN K", "Type": "Vessel", "Substrate": "Concrete", "Lining_System_Code": "X9", "Surface_Area_SQM": 8},
+      {"Equipment_Tag_No": "TK-D", "Name": "Tank D", "Location": "TRAIN J", "Type": "Tank", "Substrate": "CS", "Lining_System_Code": "101", "Surface_Area_SQM": 0}
+    ],
+    "recipes": [
+      {"Lining_System_Code": "101", "Lining_System_Name": "Epoxy Std", "Material_Code": "M1", "Material_Name": "Epoxy Resin", "UOM": "KG", "For_1_SQM": 2.0},
+      {"Lining_System_Code": "101", "Lining_System_Name": "Epoxy Std", "Material_Code": "M2", "Material_Name": "Hardener", "UOM": "KG", "For_1_SQM": 1.0},
+      {"Lining_System_Code": "102", "Lining_System_Name": "Epoxy HD", "Material_Code": "M1", "Material_Name": "Epoxy Resin", "UOM": "KG", "For_1_SQM": 1.5},
+      {"Lining_System_Code": "102", "Lining_System_Name": "Epoxy HD", "Material_Code": "M3", "Material_Name": "Primer", "UOM": "L", "For_1_SQM": 0.5},
+      {"Lining_System_Code": "7", "Lining_System_Name": "Rubber", "Material_Code": "M5", "Material_Name": "Rubber Sheet", "UOM": "SQM", "For_1_SQM": 1.0},
+      {"Lining_System_Code": "X9", "Lining_System_Name": "Special", "Material_Code": "M2", "Material_Name": "Hardener", "UOM": "KG", "For_1_SQM": 0.5},
+      {"Lining_System_Code": "X9", "Lining_System_Name": "Special", "Material_Code": "M6", "Material_Name": "Additive", "UOM": "KG", "For_1_SQM": 0.25}
+    ],
+    "materials": [
+      {"material_code": "M1", "material_name": "Epoxy Resin", "uom": "KG", "available_qty": 100},
+      {"material_code": "M2", "material_name": "Hardener", "uom": "KG", "available_qty": 20},
+      {"material_code": "M3", "material_name": "Primer", "uom": "L", "available_qty": 0},
+      {"material_code": "M4", "material_name": "Stock Only Grease", "uom": "KG", "available_qty": 50},
+      {"material_code": "M6", "material_name": "Additive", "uom": "KG", "available_qty": -5}
+    ],
+    "progress": [
+      {"Equipment_Tag_No": "TK-A", "Lining_System_Code": "101", "Original_SQM": 25, "Done_SQM": 5, "Done_SQM_staged": 5},
+      {"Equipment_Tag_No": "TK-A", "Lining_System_Code": "102", "Original_SQM": 10, "Done_SQM": 12, "Done_SQM_staged": 0},
+      {"Equipment_Tag_No": "TK-B", "Lining_System_Code": "101", "Original_SQM": 30, "Done_SQM": 0, "Done_SQM_staged": 0}
+    ]
+  },
+  "cases": [
+    {"name": "priority-order", "order": ["TK-A", "TK-B", "TK-C", "TK-D"]},
+    {"name": "reordered-subset", "order": ["TK-B", "TK-A"]},
+    {"name": "empty-order", "order": []}
+  ]
+}

@@ -1,0 +1,572 @@
+{
+ "priority-order": {
+  "order_used": [
+   "TK-A",
+   "TK-B",
+   "TK-C",
+   "TK-D"
+  ],
+  "lines": [
+   {
+    "Equipment_Tag_No": "TK-A",
+    "Lining_System_Code": "101",
+    "Lining_System_Short_Name": "Epoxy Std",
+    "Total_SQM": 15.0,
+    "Material_Code": "M1",
+    "Material_Name": "Epoxy Resin",
+    "UOM": "KG",
+    "Demand_Qty": 30.0,
+    "Allocated_Qty": 30.0,
+    "Shortfall_Qty": 0.0,
+    "Pool_Before": 100.0,
+    "Pool_After": 70.0,
+    "Fulfillment_Pct": 100.0
+   },
+   {
+    "Equipment_Tag_No": "TK-A",
+    "Lining_System_Code": "101",
+    "Lining_System_Short_Name": "Epoxy Std",
+    "Total_SQM": 15.0,
+    "Material_Code": "M2",
+    "Material_Name": "Hardener",
+    "UOM": "KG",
+    "Demand_Qty": 15.0,
+    "Allocated_Qty": 15.0,
+    "Shortfall_Qty": 0.0,
+    "Pool_Before": 20.0,
+    "Pool_After": 5.0,
+    "Fulfillment_Pct": 100.0
+   },
+   {
+    "Equipment_Tag_No": "TK-A",
+    "Lining_System_Code": "102",
+    "Lining_System_Short_Name": "Epoxy HD",
+    "Total_SQM": 0.0,
+    "Material_Code": "M1",
+    "Material_Name": "Epoxy Resin",
+    "UOM": "KG",
+    "Demand_Qty": 0.0,
+    "Allocated_Qty": 0.0,
+    "Shortfall_Qty": 0.0,
+    "Pool_Before": 70.0,
+    "Pool_After": 70.0,
+    "Fulfillment_Pct": 100.0
+   },
+   {
+    "Equipment_Tag_No": "TK-A",
+    "Lining_System_Code": "102",
+    "Lining_System_Short_Name": "Epoxy HD",
+    "Total_SQM": 0.0,
+    "Material_Code": "M3",
+    "Material_Name": "Primer",
+    "UOM": "L",
+    "Demand_Qty": 0.0,
+    "Allocated_Qty": 0.0,
+    "Shortfall_Qty": 0.0,
+    "Pool_Before": 0.0,
+    "Pool_After": 0.0,
+    "Fulfillment_Pct": 100.0
+   },
+   {
+    "Equipment_Tag_No": "TK-B",
+    "Lining_System_Code": "101",
+    "Lining_System_Short_Name": "Epoxy Std",
+    "Total_SQM": 30.0,
+    "Material_Code": "M1",
+    "Material_Name": "Epoxy Resin",
+    "UOM": "KG",
+    "Demand_Qty": 60.0,
+    "Allocated_Qty": 60.0,
+    "Shortfall_Qty": 0.0,
+    "Pool_Before": 70.0,
+    "Pool_After": 10.0,
+    "Fulfillment_Pct": 100.0
+   },
+   {
+    "Equipment_Tag_No": "TK-B",
+    "Lining_System_Code": "101",
+    "Lining_System_Short_Name": "Epoxy Std",
+    "Total_SQM": 30.0,
+    "Material_Code": "M2",
+    "Material_Name": "Hardener",
+    "UOM": "KG",
+    "Demand_Qty": 30.0,
+    "Allocated_Qty": 5.0,
+    "Shortfall_Qty": 25.0,
+    "Pool_Before": 5.0,
+    "Pool_After": 0.0,
+    "Fulfillment_Pct": 16.67
+   },
+   {
+    "Equipment_Tag_No": "TK-C",
+    "Lining_System_Code": "7",
+    "Lining_System_Short_Name": "Rubber",
+    "Total_SQM": 5.0,
+    "Material_Code": "M5",
+    "Material_Name": "Rubber Sheet",
+    "UOM": "SQM",
+    "Demand_Qty": 5.0,
+    "Allocated_Qty": 0.0,
+    "Shortfall_Qty": 5.0,
+    "Pool_Before": 0.0,
+    "Pool_After": 0.0,
+    "Fulfillment_Pct": 0.0
+   },
+   {
+    "Equipment_Tag_No": "TK-C",
+    "Lining_System_Code": "X9",
+    "Lining_System_Short_Name": "Special",
+    "Total_SQM": 8.0,
+    "Material_Code": "M2",
+    "Material_Name": "Hardener",
+    "UOM": "KG",
+    "Demand_Qty": 4.0,
+    "Allocated_Qty": 0.0,
+    "Shortfall_Qty": 4.0,
+    "Pool_Before": 0.0,
+    "Pool_After": 0.0,
+    "Fulfillment_Pct": 0.0
+   },
+   {
+    "Equipment_Tag_No": "TK-C",
+    "Lining_System_Code": "X9",
+    "Lining_System_Short_Name": "Special",
+    "Total_SQM": 8.0,
+    "Material_Code": "M6",
+    "Material_Name": "Additive",
+    "UOM": "KG",
+    "Demand_Qty": 2.0,
+    "Allocated_Qty": -5.0,
+    "Shortfall_Qty": 7.0,
+    "Pool_Before": -5.0,
+    "Pool_After": 0.0,
+    "Fulfillment_Pct": 0.0
+   },
+   {
+    "Equipment_Tag_No": "TK-D",
+    "Lining_System_Code": "101",
+    "Lining_System_Short_Name": "Epoxy Std",
+    "Total_SQM": 0.0,
+    "Material_Code": "M1",
+    "Material_Name": "Epoxy Resin",
+    "UOM": "KG",
+    "Demand_Qty": 0.0,
+    "Allocated_Qty": 0.0,
+    "Shortfall_Qty": 0.0,
+    "Pool_Before": 10.0,
+    "Pool_After": 10.0,
+    "Fulfillment_Pct": 100.0
+   },
+   {
+    "Equipment_Tag_No": "TK-D",
+    "Lining_System_Code": "101",
+    "Lining_System_Short_Name": "Epoxy Std",
+    "Total_SQM": 0.0,
+    "Material_Code": "M2",
+    "Material_Name": "Hardener",
+    "UOM": "KG",
+    "Demand_Qty": 0.0,
+    "Allocated_Qty": 0.0,
+    "Shortfall_Qty": 0.0,
+    "Pool_Before": 0.0,
+    "Pool_After": 0.0,
+    "Fulfillment_Pct": 100.0
+   }
+  ],
+  "feasibility": [
+   {
+    "Priority_Rank": 1,
+    "Equipment_Tag_No": "TK-A",
+    "Name": "Tank A",
+    "Total_Demand_Qty": 45.0,
+    "Total_Allocated_Qty": 45.0,
+    "Total_Shortfall_Qty": 0.0,
+    "Completion_Pct": 100.0,
+    "Status": "✅ 100% Fully Ready to Build",
+    "Bottleneck_Material_Code": "—",
+    "Bottleneck_Material_Name": "—",
+    "Bottleneck_Shortfall": 0.0
+   },
+   {
+    "Priority_Rank": 2,
+    "Equipment_Tag_No": "TK-B",
+    "Name": "Tank B",
+    "Total_Demand_Qty": 90.0,
+    "Total_Allocated_Qty": 65.0,
+    "Total_Shortfall_Qty": 25.0,
+    "Completion_Pct": 72.22,
+    "Status": "🟡 Partially Ready (72.2%)",
+    "Bottleneck_Material_Code": "M2",
+    "Bottleneck_Material_Name": "Hardener",
+    "Bottleneck_Shortfall": 25.0
+   },
+   {
+    "Priority_Rank": 3,
+    "Equipment_Tag_No": "TK-C",
+    "Name": "Tank C",
+    "Total_Demand_Qty": 11.0,
+    "Total_Allocated_Qty": -5.0,
+    "Total_Shortfall_Qty": 16.0,
+    "Completion_Pct": 0.0,
+    "Status": "🔴 Blocked by Shortages",
+    "Bottleneck_Material_Code": "M5",
+    "Bottleneck_Material_Name": "Rubber Sheet",
+    "Bottleneck_Shortfall": 5.0
+   },
+   {
+    "Priority_Rank": 4,
+    "Equipment_Tag_No": "TK-D",
+    "Name": "Tank D",
+    "Total_Demand_Qty": 0.0,
+    "Total_Allocated_Qty": 0.0,
+    "Total_Shortfall_Qty": 0.0,
+    "Completion_Pct": 100.0,
+    "Status": "✅ 100% Fully Ready to Build",
+    "Bottleneck_Material_Code": "—",
+    "Bottleneck_Material_Name": "—",
+    "Bottleneck_Shortfall": 0.0
+   }
+  ],
+  "totals": [
+   {
+    "Material_Code": "M1",
+    "Material_Name": "Epoxy Resin",
+    "UOM": "KG",
+    "Demand_Qty": 90.0,
+    "Allocated_Qty": 90.0,
+    "Shortfall_Qty": 0.0
+   },
+   {
+    "Material_Code": "M2",
+    "Material_Name": "Hardener",
+    "UOM": "KG",
+    "Demand_Qty": 49.0,
+    "Allocated_Qty": 20.0,
+    "Shortfall_Qty": 29.0
+   },
+   {
+    "Material_Code": "M3",
+    "Material_Name": "Primer",
+    "UOM": "L",
+    "Demand_Qty": 0.0,
+    "Allocated_Qty": 0.0,
+    "Shortfall_Qty": 0.0
+   },
+   {
+    "Material_Code": "M5",
+    "Material_Name": "Rubber Sheet",
+    "UOM": "SQM",
+    "Demand_Qty": 5.0,
+    "Allocated_Qty": 0.0,
+    "Shortfall_Qty": 5.0
+   },
+   {
+    "Material_Code": "M6",
+    "Material_Name": "Additive",
+    "UOM": "KG",
+    "Demand_Qty": 2.0,
+    "Allocated_Qty": -5.0,
+    "Shortfall_Qty": 7.0
+   }
+  ],
+  "procurement": [
+   {
+    "Material_Code": "M2",
+    "Material_Name": "Hardener",
+    "UOM": "KG",
+    "Available_Qty": 20.0,
+    "Shortage_Qty_To_Buy": 29.0
+   },
+   {
+    "Material_Code": "M6",
+    "Material_Name": "Additive",
+    "UOM": "KG",
+    "Available_Qty": -5.0,
+    "Shortage_Qty_To_Buy": 7.0
+   },
+   {
+    "Material_Code": "M5",
+    "Material_Name": "",
+    "UOM": "",
+    "Available_Qty": 0.0,
+    "Shortage_Qty_To_Buy": 5.0
+   }
+  ],
+  "suggestions": [
+   {
+    "Pause_Tag": "TK-B",
+    "Pause_Name": "Tank B",
+    "Newly_Completable_Count": 0,
+    "Newly_Completable_Tags": "—",
+    "Avg_Completion_Gain_Pct": 0.0,
+    "Net_Gain_Score": -1,
+    "Recommended": true
+   },
+   {
+    "Pause_Tag": "TK-C",
+    "Pause_Name": "Tank C",
+    "Newly_Completable_Count": 0,
+    "Newly_Completable_Tags": "—",
+    "Avg_Completion_Gain_Pct": 0.0,
+    "Net_Gain_Score": -1,
+    "Recommended": false
+   }
+  ],
+  "best_detail": [
+   {
+    "Priority_Rank": 1,
+    "Equipment_Tag_No": "TK-A",
+    "Name": "Tank A",
+    "Total_Demand_Qty": 45.0,
+    "Total_Allocated_Qty": 45.0,
+    "Total_Shortfall_Qty": 0.0,
+    "Completion_Pct": 100.0,
+    "Status": "✅ 100% Fully Ready to Build",
+    "Bottleneck_Material_Code": "—",
+    "Bottleneck_Material_Name": "—",
+    "Bottleneck_Shortfall": 0.0,
+    "Scenario": "If 'TK-B' is paused"
+   },
+   {
+    "Priority_Rank": 2,
+    "Equipment_Tag_No": "TK-C",
+    "Name": "Tank C",
+    "Total_Demand_Qty": 11.0,
+    "Total_Allocated_Qty": -1.0,
+    "Total_Shortfall_Qty": 12.0,
+    "Completion_Pct": 0.0,
+    "Status": "🔴 Blocked by Shortages",
+    "Bottleneck_Material_Code": "M5",
+    "Bottleneck_Material_Name": "Rubber Sheet",
+    "Bottleneck_Shortfall": 5.0,
+    "Scenario": "If 'TK-B' is paused"
+   },
+   {
+    "Priority_Rank": 3,
+    "Equipment_Tag_No": "TK-D",
+    "Name": "Tank D",
+    "Total_Demand_Qty": 0.0,
+    "Total_Allocated_Qty": 0.0,
+    "Total_Shortfall_Qty": 0.0,
+    "Completion_Pct": 100.0,
+    "Status": "✅ 100% Fully Ready to Build",
+    "Bottleneck_Material_Code": "—",
+    "Bottleneck_Material_Name": "—",
+    "Bottleneck_Shortfall": 0.0,
+    "Scenario": "If 'TK-B' is paused"
+   }
+  ]
+ },
+ "reordered-subset": {
+  "order_used": [
+   "TK-B",
+   "TK-A"
+  ],
+  "lines": [
+   {
+    "Equipment_Tag_No": "TK-B",
+    "Lining_System_Code": "101",
+    "Lining_System_Short_Name": "Epoxy Std",
+    "Total_SQM": 30.0,
+    "Material_Code": "M1",
+    "Material_Name": "Epoxy Resin",
+    "UOM": "KG",
+    "Demand_Qty": 60.0,
+    "Allocated_Qty": 60.0,
+    "Shortfall_Qty": 0.0,
+    "Pool_Before": 100.0,
+    "Pool_After": 40.0,
+    "Fulfillment_Pct": 100.0
+   },
+   {
+    "Equipment_Tag_No": "TK-B",
+    "Lining_System_Code": "101",
+    "Lining_System_Short_Name": "Epoxy Std",
+    "Total_SQM": 30.0,
+    "Material_Code": "M2",
+    "Material_Name": "Hardener",
+    "UOM": "KG",
+    "Demand_Qty": 30.0,
+    "Allocated_Qty": 20.0,
+    "Shortfall_Qty": 10.0,
+    "Pool_Before": 20.0,
+    "Pool_After": 0.0,
+    "Fulfillment_Pct": 66.67
+   },
+   {
+    "Equipment_Tag_No": "TK-A",
+    "Lining_System_Code": "101",
+    "Lining_System_Short_Name": "Epoxy Std",
+    "Total_SQM": 15.0,
+    "Material_Code": "M1",
+    "Material_Name": "Epoxy Resin",
+    "UOM": "KG",
+    "Demand_Qty": 30.0,
+    "Allocated_Qty": 30.0,
+    "Shortfall_Qty": 0.0,
+    "Pool_Before": 40.0,
+    "Pool_After": 10.0,
+    "Fulfillment_Pct": 100.0
+   },
+   {
+    "Equipment_Tag_No": "TK-A",
+    "Lining_System_Code": "101",
+    "Lining_System_Short_Name": "Epoxy Std",
+    "Total_SQM": 15.0,
+    "Material_Code": "M2",
+    "Material_Name": "Hardener",
+    "UOM": "KG",
+    "Demand_Qty": 15.0,
+    "Allocated_Qty": 0.0,
+    "Shortfall_Qty": 15.0,
+    "Pool_Before": 0.0,
+    "Pool_After": 0.0,
+    "Fulfillment_Pct": 0.0
+   },
+   {
+    "Equipment_Tag_No": "TK-A",
+    "Lining_System_Code": "102",
+    "Lining_System_Short_Name": "Epoxy HD",
+    "Total_SQM": 0.0,
+    "Material_Code": "M1",
+    "Material_Name": "Epoxy Resin",
+    "UOM": "KG",
+    "Demand_Qty": 0.0,
+    "Allocated_Qty": 0.0,
+    "Shortfall_Qty": 0.0,
+    "Pool_Before": 10.0,
+    "Pool_After": 10.0,
+    "Fulfillment_Pct": 100.0
+   },
+   {
+    "Equipment_Tag_No": "TK-A",
+    "Lining_System_Code": "102",
+    "Lining_System_Short_Name": "Epoxy HD",
+    "Total_SQM": 0.0,
+    "Material_Code": "M3",
+    "Material_Name": "Primer",
+    "UOM": "L",
+    "Demand_Qty": 0.0,
+    "Allocated_Qty": 0.0,
+    "Shortfall_Qty": 0.0,
+    "Pool_Before": 0.0,
+    "Pool_After": 0.0,
+    "Fulfillment_Pct": 100.0
+   }
+  ],
+  "feasibility": [
+   {
+    "Priority_Rank": 1,
+    "Equipment_Tag_No": "TK-B",
+    "Name": "Tank B",
+    "Total_Demand_Qty": 90.0,
+    "Total_Allocated_Qty": 80.0,
+    "Total_Shortfall_Qty": 10.0,
+    "Completion_Pct": 88.89,
+    "Status": "🟡 Partially Ready (88.9%)",
+    "Bottleneck_Material_Code": "M2",
+    "Bottleneck_Material_Name": "Hardener",
+    "Bottleneck_Shortfall": 10.0
+   },
+   {
+    "Priority_Rank": 2,
+    "Equipment_Tag_No": "TK-A",
+    "Name": "Tank A",
+    "Total_Demand_Qty": 45.0,
+    "Total_Allocated_Qty": 30.0,
+    "Total_Shortfall_Qty": 15.0,
+    "Completion_Pct": 66.67,
+    "Status": "🔴 Blocked by Shortages",
+    "Bottleneck_Material_Code": "M2",
+    "Bottleneck_Material_Name": "Hardener",
+    "Bottleneck_Shortfall": 15.0
+   }
+  ],
+  "totals": [
+   {
+    "Material_Code": "M1",
+    "Material_Name": "Epoxy Resin",
+    "UOM": "KG",
+    "Demand_Qty": 90.0,
+    "Allocated_Qty": 90.0,
+    "Shortfall_Qty": 0.0
+   },
+   {
+    "Material_Code": "M2",
+    "Material_Name": "Hardener",
+    "UOM": "KG",
+    "Demand_Qty": 45.0,
+    "Allocated_Qty": 20.0,
+    "Shortfall_Qty": 25.0
+   },
+   {
+    "Material_Code": "M3",
+    "Material_Name": "Primer",
+    "UOM": "L",
+    "Demand_Qty": 0.0,
+    "Allocated_Qty": 0.0,
+    "Shortfall_Qty": 0.0
+   }
+  ],
+  "procurement": [
+   {
+    "Material_Code": "M2",
+    "Material_Name": "Hardener",
+    "UOM": "KG",
+    "Available_Qty": 20.0,
+    "Shortage_Qty_To_Buy": 25.0
+   }
+  ],
+  "suggestions": [
+   {
+    "Pause_Tag": "TK-B",
+    "Pause_Name": "Tank B",
+    "Newly_Completable_Count": 1,
+    "Newly_Completable_Tags": "TK-A",
+    "Avg_Completion_Gain_Pct": 33.33,
+    "Net_Gain_Score": 0,
+    "Recommended": true
+   },
+   {
+    "Pause_Tag": "TK-A",
+    "Pause_Name": "Tank A",
+    "Newly_Completable_Count": 0,
+    "Newly_Completable_Tags": "—",
+    "Avg_Completion_Gain_Pct": 0.0,
+    "Net_Gain_Score": -1,
+    "Recommended": false
+   }
+  ],
+  "best_detail": [
+   {
+    "Priority_Rank": 1,
+    "Equipment_Tag_No": "TK-A",
+    "Name": "Tank A",
+    "Total_Demand_Qty": 45.0,
+    "Total_Allocated_Qty": 45.0,
+    "Total_Shortfall_Qty": 0.0,
+    "Completion_Pct": 100.0,
+    "Status": "✅ 100% Fully Ready to Build",
+    "Bottleneck_Material_Code": "—",
+    "Bottleneck_Material_Name": "—",
+    "Bottleneck_Shortfall": 0.0,
+    "Scenario": "If 'TK-B' is paused"
+   }
+  ]
+ },
+ "empty-order": {
+  "order_used": [],
+  "lines": [],
+  "feasibility": [],
+  "totals": [],
+  "procurement": [],
+  "suggestions": [],
+  "best_detail": []
+ },
+ "_default_order": [
+  "TK-A",
+  "TK-B",
+  "TK-C",
+  "TK-D"
+ ]
+}

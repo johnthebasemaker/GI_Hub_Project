@@ -8,6 +8,7 @@ import {
 } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 import { buildColumns } from '../lib/columns'
+import { ScenarioProvider } from '../sme/ScenarioContext'
 
 // One-click XLSX export of an SME view (read-only server render).
 function ExportButton({ exportKey, siteId }: { exportKey: string; siteId?: string }) {
@@ -111,6 +112,20 @@ function DemandMatrix({ siteId }: { siteId?: string }) {
 export default function SmePage() {
   const { data: sites } = useSites()
   const [siteId, setSiteId] = useState<string | undefined>(undefined)
+  // Phase S1: persistent planning-scenario store (client-side priority order
+  // for the TS cascade engine). The S2/S3 rebuild renders inside this provider.
+  return (
+    <ScenarioProvider siteId={siteId}>
+      <SmePageBody siteId={siteId} setSiteId={setSiteId} sites={sites} />
+    </ScenarioProvider>
+  )
+}
+
+function SmePageBody({ siteId, setSiteId, sites }: {
+  siteId?: string
+  setSiteId: (v: string | undefined) => void
+  sites?: string[]
+}) {
   const equipment = useSmeEquipment(siteId)
   const recipes = useSmeRecipes()
   const sqm = useSmeSqm(siteId)
