@@ -2153,6 +2153,20 @@ async def test_sme_plan_layer():
         check("bad plan-export format → 400", r.status_code == 400,
               f"got {r.status_code}")
 
+        # Phase S4: title override + system-code matrix export.
+        r = await ac.post("/sme/plan/export", headers=H(hod_t),
+                          json={"priority_order": [], "key": "order-list",
+                                "format": "xlsx",
+                                "title": "SME Location Report — TRAIN J"})
+        check("hod plan export with title override → 200 + spreadsheet",
+              r.status_code == 200 and r.content[:2] == b"PK",
+              f"got {r.status_code}")
+        r = await ac.get("/sme/export/system-code-report",
+                         params={"format": "csv"}, headers=H(hod_t))
+        check("system-code-report export → 200 with summary columns",
+              r.status_code == 200 and "System_Code" in r.text
+              and "Equipment_Count" in r.text, f"got {r.status_code}")
+
 
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")

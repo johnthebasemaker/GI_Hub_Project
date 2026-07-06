@@ -30,6 +30,8 @@ export interface UnitRef {
   code: string
   shortName: string
   remaining: number
+  /** Original (planned) SQM before progress deduction — matrix reports use this. */
+  original: number
   name: string
   location: string
   type: string
@@ -62,6 +64,7 @@ export function allUnits(model: SmeModel): UnitRef[] {
       if (!u) continue
       out.push({
         tag, code, shortName: u.short_name, remaining: u.remaining,
+        original: u.total_original,
         name: meta?.Name ?? '', location: meta?.Location ?? '',
         type: meta?.Type ?? '', substrate: meta?.Substrate ?? '',
       })

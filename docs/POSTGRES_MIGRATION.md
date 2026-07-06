@@ -221,6 +221,43 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-06 · actor=interactive · branch=`main` · 🗺 Phase S4 — Location & matrix reports + Dashboard procurement sub-view
+- **Dashboard completed** (SmeDashboard + NEW ProcurementView.tsx): Segmented
+  toggle restores the legacy dash_view radio; 🛒 Material Requirement &
+  Procurement = 4-KPI strip + per-location sections (dot · location-colored
+  badge · equipment count · SQM · coverage pill) → per-system-code expanders
+  (5 metric chips + the (location, code)-scoped material balance with 4-tier
+  tinting) → grand-total strip incl. On-Order-aware net shortfall. Same
+  no-cascade dashboard semantics (insights.materialBalance on unit subsets).
+- **📍 Location Report** (NEW LocationReport.tsx), dual mode as legacy Tab 3:
+  · Location Based — INDEPENDENT drag order per location (localStorage
+    gi.sme.locorder.v1 per site key) with the legacy stale-tag reconciliation
+    (drop gone, append new, preserve user order); per-location color badges,
+    Excel/PDF exports, per-location suggestion panels, per-equipment
+    expanders with Add-to-Session;
+  · All Equipment — one global order (gi.sme.alleqorder.v1) with a 5-KPI
+    strip and the same cascade detail. NOTE: this mode is cascade-based
+    (shared pool ⇒ Available SQM 7,020.6) vs the Dashboard's no-cascade
+    per-scope coverage (13,046) — both faithful to their legacy tabs.
+  Live-proven: Brown Field reorder persisted across a full server restart
+  while TRAIN J and the session scenario stores stayed untouched (three
+  isolated stores, no crosstalk).
+- **📋 Equipment Report rebuilt + 🔢 System Code Report** (NEW
+  MatrixReports.tsx): KPI strip + Location→Equipment→code expander hierarchy
+  (original SQM); inverse view = summary grid + per-code equipment tables —
+  client matrix verified ≡ the server export row-for-row (Code 2/CBL63/12/
+  747.3 …). The old flat Equipment Report tab is superseded.
+- **Oracle export authority extended**: PlanExportBody gained an optional
+  `title` (per-scope document titles, e.g. "SME Location Report — TRAIN J");
+  GET /sme/export gained `system-code-report`. All new exports render
+  server-side; legacy multi-sheet workbooks are intentionally flattened to
+  single-sheet documents (scope in the title / a Location column) — the
+  renderer stack is single-sheet by design.
+- Gates: service_tests **348/348** (+2: title override, system-code-report
+  columns) · frontend build ✅ · parity:sme 509 ✅ · parity_check 5/5 ✅ ·
+  bug_check 599/0 ✅ · clean console on a fresh preview server (mid-edit HMR
+  windows produced transient ReferenceErrors during dev — gone on restart).
+
 ### 2026-07-06 · actor=interactive · branch=`main` · 🧲 Phase S3 — Session Builder & Suggestion Engine (dnd-kit drag priority · live client cascade · scenario sharing · oracle exports)
 - **Two new SME tabs** (frontend/src/sme/): 🔍 Session Builder
   (SessionBuilder.tsx — cascading find-equipment filters, add-to-session

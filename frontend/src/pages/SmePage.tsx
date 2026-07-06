@@ -3,10 +3,12 @@ import { App, Button, Select, Space, Table, Tabs, Typography } from 'antd'
 import { FileExcelOutlined } from '@ant-design/icons'
 import {
   downloadDocument, useSites, useSmeComparison, useSmeDemandMatrix, useSmeEquipment,
-  useSmeEquipmentReport, useSmeMaterials, useSmeRecipes, useSmeSqm,
+  useSmeMaterials, useSmeRecipes, useSmeSqm,
 } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 import { buildColumns } from '../lib/columns'
+import LocationReport from '../sme/LocationReport'
+import { EquipmentMatrixReport, SystemCodeReport } from '../sme/MatrixReports'
 import { ScenarioProvider } from '../sme/ScenarioContext'
 import SessionBuilder from '../sme/SessionBuilder'
 import SessionReport from '../sme/SessionReport'
@@ -98,7 +100,6 @@ function SmePageBody({ siteId, setSiteId, sites }: {
   const recipes = useSmeRecipes()
   const sqm = useSmeSqm(siteId)
   const materials = useSmeMaterials()
-  const eqReport = useSmeEquipmentReport(siteId)
   const comparison = useSmeComparison(siteId)
 
   return (
@@ -120,6 +121,25 @@ function SmePageBody({ siteId, setSiteId, sites }: {
           { key: 'dash', label: 'Dashboard', children: <SmeDashboard siteId={siteId} /> },
           { key: 'builder', label: '🔍 Session Builder', children: <SessionBuilder siteId={siteId} /> },
           { key: 'session', label: '📦 Session Report', children: <SessionReport siteId={siteId} /> },
+          { key: 'locations', label: '📍 Location Report', children: <LocationReport siteId={siteId} /> },
+          {
+            key: 'eq-matrix', label: '📋 Equipment Report',
+            children: (
+              <div>
+                <ExportButton exportKey="equipment-report" siteId={siteId} />
+                <EquipmentMatrixReport siteId={siteId} />
+              </div>
+            ),
+          },
+          {
+            key: 'code-report', label: '🔢 System Code Report',
+            children: (
+              <div>
+                <ExportButton exportKey="system-code-report" siteId={siteId} />
+                <SystemCodeReport siteId={siteId} />
+              </div>
+            ),
+          },
           { key: 'equip', label: 'Equipment', children: <SmeTable rows={equipment.data} loading={equipment.isFetching} /> },
           { key: 'recipes', label: 'Recipes / BOM', children: <SmeTable rows={recipes.data} loading={recipes.isFetching} /> },
           { key: 'sqm', label: 'SQM Progress', children: <SmeTable rows={sqm.data} loading={sqm.isFetching} /> },
@@ -129,15 +149,6 @@ function SmePageBody({ siteId, setSiteId, sites }: {
               <div>
                 <ExportButton exportKey="materials" siteId={siteId} />
                 <SmeTable rows={materials.data} loading={materials.isFetching} />
-              </div>
-            ),
-          },
-          {
-            key: 'eq-report', label: 'Equipment Report',
-            children: (
-              <div>
-                <ExportButton exportKey="equipment-report" siteId={siteId} />
-                <SmeTable rows={eqReport.data} loading={eqReport.isFetching} />
               </div>
             ),
           },

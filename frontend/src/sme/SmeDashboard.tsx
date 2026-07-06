@@ -11,7 +11,7 @@
  *   · Material Balance grid with the legacy 4-tier row tinting
  */
 import { useMemo, useState } from 'react'
-import { Alert, Button, Card, Col, Collapse, Row, Select, Skeleton, Table } from 'antd'
+import { Alert, Button, Card, Col, Collapse, Row, Segmented, Select, Skeleton, Table } from 'antd'
 import { DownloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import {
@@ -28,6 +28,7 @@ import {
   locationRows, materialBalance, pairCoverage, stockOnlyRows, systemCodeRows,
 } from './insights'
 import type { BalanceRow, DashFilters } from './insights'
+import ProcurementView from './ProcurementView'
 
 const nf = (v: number, d = 1) =>
   v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })
@@ -54,6 +55,7 @@ const secHdr: React.CSSProperties = {
 export default function SmeDashboard({ siteId }: { siteId?: string }) {
   const { data: snap, isLoading, isError } = useSmeSnapshot(siteId)
   const [filters, setFilters] = useState<DashFilters>(EMPTY_FILTERS)
+  const [view, setView] = useState<string>('📈 Project Overview')
 
   const model = useMemo(
     () => (snap ? buildModel(snap.equipment, snap.recipes, snap.materials, snap.progress) : null),
@@ -170,6 +172,32 @@ export default function SmeDashboard({ siteId }: { siteId?: string }) {
         </Row>
       </Card>
 
+      {/* ── Sub-view toggle (legacy dash_view radio) ──────────────────────── */}
+      <Segmented options={['📈 Project Overview', '🛒 Material Requirement & Procurement']}
+        value={view} onChange={(v) => setView(String(v))} style={{ marginBottom: 16 }} />
+
+      {view !== '📈 Project Overview' ? (
+        <>
+          {/* 4-KPI strip (legacy procurement view) + per-location/per-code drill */}
+          <Row gutter={[12, 12]}>
+            <Col flex="1 1 160px"><KpiDrill title="Equipment" value={String(tags.length)}
+              drillTitle="Equipment List" rows={dEquip}
+              help="Equipment tags matching current filter selection." /></Col>
+            <Col flex="1 1 160px"><KpiDrill title="Total SQM" value={nf(projSqm)}
+              drillTitle="SQM by Equipment & System Code" rows={dSqm}
+              help="Remaining surface area (m²) after deducting daily consumption entries." /></Col>
+            <Col flex="1 1 160px"><KpiDrill title="Available Coverage SQM" value={nf(canSqm, 2)}
+              drillTitle="Coverable SQM by Equipment & System Code" rows={dCovSqm}
+              help="Area (m²) coverable with currently available stock." /></Col>
+            <Col flex="1 1 160px"><KpiDrill title="SQM Deficit" value={nf(shortSqm, 2)}
+              accent={shortSqm > 0 ? '#EF4444' : undefined}
+              drillTitle="SQM Deficit by Equipment & System Code" rows={dDefSqm}
+              help="Area (m²) that cannot be completed with current stock." /></Col>
+          </Row>
+          <ProcurementView model={model} units={computed.units} materials={snap.materials} />
+        </>
+      ) : (
+        <>
       {/* ── 7-KPI strip with click drill-downs ────────────────────────────── */}
       <Row gutter={[12, 12]}>
         <Col flex="1 1 145px"><KpiDrill title="Equipment" value={String(tags.length)}
@@ -313,6 +341,8 @@ export default function SmeDashboard({ siteId }: { siteId?: string }) {
               dataSource={stockOnly} />
           ),
         }]} />
+      )}
+        </>
       )}
     </div>
   )

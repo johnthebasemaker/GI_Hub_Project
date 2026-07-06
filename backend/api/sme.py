@@ -439,6 +439,9 @@ _PLAN_EXPORT_KEYS = {
 class PlanExportBody(CascadeBody):
     key: str = "session-full"
     format: str = "xlsx"
+    # Optional document title override (e.g. "SME Location Report — TRAIN J")
+    # so per-location/per-scope exports are self-describing.
+    title: Optional[str] = Field(default=None, max_length=80)
 
 
 @router.post("/plan/export",
@@ -463,6 +466,8 @@ async def plan_export(body: PlanExportBody,
                                    snap["materials"], snap["progress"])
     plan = sme_engine.run_plan(model, body.priority_order)
     title, part = _PLAN_EXPORT_KEYS[body.key]
+    if body.title and body.title.strip():
+        title = body.title.strip()
     items = plan[part]
     columns = list(items[0].keys()) if items else []
     rows = [[r.get(c) for c in columns] for r in items]
@@ -471,6 +476,40 @@ async def plan_export(body: PlanExportBody,
     return StreamingResponse(io.BytesIO(data), media_type=media,
                              headers={"Content-Disposition":
                                       f'attachment; filename="sme-{body.key}.{fmt}"'})
+
+
+# --- Phase S4: system-code matrix rollup (inverse of the equipment report) -----
+async def _system_code_report_rows(session: AsyncSession, site_id: str | None) -> list[dict]:
+    """One row per lining-system code: short name, equipment count, total
+    (original) SQM — the legacy System Code Report summary."""
+    e = sme_equipment_t
+    stmt = select(e.c["Equipment_Tag_No"], e.c["Lining_System_Code"], e.c["Surface_Area_SQM"])
+    if site_id is not None:
+        stmt = stmt.where(e.c["Site_ID"] == site_id)
+    eq_rows = _rows(await session.execute(stmt.order_by(e.c["Equipment_Tag_No"], e.c["id"])))
+
+    r = sme_recipe_t
+    names: dict[str, str] = {}
+    for rr in _rows(await session.execute(
+            select(r.c["Lining_System_Code"], r.c["Lining_System_Name"]).order_by(r.c["id"]))):
+        names.setdefault(str(rr["Lining_System_Code"]).strip(),
+                         str(rr["Lining_System_Name"] or "").strip())
+
+    acc: dict[str, dict] = {}
+    for row in eq_rows:
+        code = str(row["Lining_System_Code"] or "").strip()
+        a = acc.setdefault(code, {"System_Code": code,
+                                  "Short_Name": names.get(code, ""),
+                                  "_tags": set(), "Total_SQM": 0.0})
+        a["_tags"].add(str(row["Equipment_Tag_No"]).strip())
+        a["Total_SQM"] += float(row["Surface_Area_SQM"] or 0)
+    out = []
+    for code in sorted(acc, key=_syskey):
+        a = acc[code]
+        out.append({"System_Code": code, "Short_Name": a["Short_Name"],
+                    "Equipment_Count": len(a["_tags"]),
+                    "Total_SQM": round(a["Total_SQM"], 2)})
+    return out
 
 
 # --- exports (reuse the reports renderers; still pure reads) -------------------
@@ -499,6 +538,8 @@ async def sme_export(key: str, format: str = "xlsx", site_id: Optional[str] = No
     elif key == "materials":
         title = "SME Materials (Available Qty)"
         items = _rows(await session.execute(text(SQL_SME_MATERIALS + ' ORDER BY s."Material_Code"')))
+    elif key == "system-code-report":
+        title, items = "SME System Code Report", await _system_code_report_rows(session, site_id)
     else:
         raise HTTPException(404, f"unknown SME export {key!r}")
 
