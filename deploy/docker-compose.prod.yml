@@ -11,6 +11,7 @@
 #   api     FastAPI        internal :8000   async → Postgres
 #   web     nginx          :80 + :443       SPA + /api proxy + TLS
 #   certbot certbot        no ports          cert issuance + auto-renew
+#   ollama  ollama         internal :11434  local LLM (Intelligence layer)
 #
 # Secrets come from deploy/.env (copy .env.example → .env and fill it in).
 # ============================================================================
@@ -25,6 +26,7 @@ volumes:
   pg-data-prod:     # PostgreSQL data — the system of record. BACK THIS UP.
   certbot-etc:      # /etc/letsencrypt (certs + account)
   certbot-www:      # ACME HTTP-01 webroot
+  ollama-models:    # pulled model weights (llama3.1:8b ≈ 5 GB, qwen2.5vl:7b ≈ 5 GB)
 
 services:
   db:
@@ -58,6 +60,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       # Single-origin behind nginx → CORS unused; set only if you split origins.
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Intelligence layer (Phase AI-*): local Ollama service. Leave as-is;
+      # the AI endpoints degrade to a friendly notice when it's unreachable.
+      OLLAMA_HOST: http://ollama:11434
+      GI_AI_CONCURRENCY: ${GI_AI_CONCURRENCY:-2}
     networks: [gi-new]
     # No host ports — reached only via nginx (`web`) at /api/.
     healthcheck:
@@ -81,6 +87,28 @@ services:
     volumes:
       - certbot-etc:/etc/letsencrypt:ro
       - certbot-www:/var/www/certbot:ro
+    networks: [gi-new]
+
+  # Local LLM host for the Intelligence layer (Hub Assistant now; OCR/NL-SQL in
+  # later AI phases). CPU inference; NO host ports — internal-only like db/api.
+  # RULING 2026-07-06: same box as the stack, ONE warm model at a time —
+  # Ollama load-on-demand swaps models (~30-60s penalty) and keep_alive holds
+  # the last-used one. Pull models ONCE after first up (they persist in the
+  # ollama-models volume):
+  #   docker compose -f docker-compose.prod.yml exec ollama ollama pull llama3.1:8b
+  #   docker compose -f docker-compose.prod.yml exec ollama ollama pull qwen2.5vl:7b   # Phase AI-3 OCR
+  # RAM note (CPX42 16 GB): a 7-8B model uses ~6-8 GB while loaded;
+  # OLLAMA_MAX_LOADED_MODELS=1 keeps the budget safe alongside Postgres + the
+  # API. If AI latency ever hurts, move this service to a dedicated host and
+  # point the api's OLLAMA_HOST env at it.
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    environment:
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_KEEP_ALIVE: 30m
+    volumes:
+      - ollama-models:/root/.ollama
     networks: [gi-new]
 
   # Cert issuance is bootstrapped by deploy/init-letsencrypt.sh; this service

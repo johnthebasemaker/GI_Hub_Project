@@ -13,6 +13,11 @@ export function setAuthToken(token: string | null) {
   else localStorage.removeItem(TOKEN_KEY)
 }
 
+// For fetch-based callers (SSE streams) that can't use the axios interceptor.
+export function getAuthToken(): string | null {
+  return _token
+}
+
 api.interceptors.request.use((cfg) => {
   if (_token) cfg.headers.Authorization = `Bearer ${_token}`
   return cfg

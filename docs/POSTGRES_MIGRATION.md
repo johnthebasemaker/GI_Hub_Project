@@ -221,6 +221,38 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-06 · actor=interactive · branch=`main` · 🧠 Phases AI-0 + AI-1 — Intelligence-layer foundation + Hub Assistant
+First slice of the AI program (from the 2026-07-06 legacy AI audit; user rulings: LocateAnything
+sidecar RETIRED in favor of qwen2.5vl vision fallback later; Ollama on the SAME BOX, one warm
+model, load-on-demand swap). New `backend/api/ai/` package:
+- **client.py** — async Ollama client (httpx), env-config (OLLAMA_HOST, GI_AI_*_MODEL,
+  GI_AI_CONCURRENCY), health/list/generate/stream, keep_alive=30m, and a **generation
+  semaphore** (default 2) so concurrent users queue instead of thrashing the model host.
+  Late-bound module calls = the monkeypatch seam for Ollama-free tests.
+- **safety.py** — PG-hardened port of the legacy safe-SQL gate (comment/string-literal
+  sanitizing scanner; + COPY/DO/CALL/EXECUTE/… keywords, `auth_sessions` + pg_catalog/
+  information_schema blocked). Guards the future AI-5 NL→SQL feature; tests ported.
+- **fuzzy.py** — pandas-free port of the hybrid matcher (SequenceMatcher × token-Dice,
+  auto ≥0.85 / pick ≥0.45 / unknown) for the AI-3 OCR review grid; tests ported.
+- **manual_qa.py** — role-gated section retrieval over USER_MANUAL.md ported intact
+  (allowlists, admin-full/800-char-head truncation, greeting fast-path, role-aware refusal);
+  allowlists UPDATED for the v3.0 manual's new §18 SME + §19 Man-Hours (hod/admin).
+- **router.py** — GET /ai/health (flags + Ollama + model + manual) and **POST /ai/assistant:
+  SSE token stream** (data: {token} / {status:queued} / {done}); flags `ai_enabled` +
+  `ai_assistant_enabled` in app_settings (added to the console whitelist, default ON).
+- **FE** — floating HubAssistant panel (all roles, gold FAB bottom-right): fetch+
+  ReadableStream SSE reader (axios buffers; EventSource can't send the bearer header),
+  AbortController cancel, health preflight → graceful "Local AI is offline" alert with
+  input disabled, queued-state hint. `getAuthToken()` exported from api/client.
+- **Deploy kit** — `ollama` service added to docker-compose.prod.yml (internal-only,
+  OLLAMA_MAX_LOADED_MODELS=1, model volume, pull instructions, CPX42 RAM notes);
+  api gets OLLAMA_HOST=http://ollama:11434.
+- **Verified:** service_tests **233 → 262/262** (suite F, Ollama MOCKED: 12 safety checks,
+  fuzzy states, role-context isolation — the store keeper's PROMPT physically lacks §7,
+  greeting fast-path, SSE order, flag-off → error event w/ restore); build green; live:
+  offline alert with Ollama down, then real llama3.1:8b streaming — cold-start Q&A in
+  21.9s ("stage a return" → Entry Log steps), warm FEFO answer in-panel; clean console.
+
 ### 2026-07-06 · actor=interactive · branch=`main` · 🤖 Phase 11C — planning automation (auto-draft estimates + manpower forecast)
 Closes the Man-Hours integration. Zero schema changes; sme_* still read-only (writes land
 exclusively in mh_manhour_estimates); exact {hod, admin} lock inherited from the router.

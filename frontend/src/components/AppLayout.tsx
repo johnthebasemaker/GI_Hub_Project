@@ -9,6 +9,7 @@ import { useAuth } from '../auth/AuthContext'
 import { READ_ENTITIES, WRITE_ENTITIES } from '../config/entities'
 import { useThemeMode } from '../theme/ThemeContext'
 import { siderTheme } from '../theme/themes'
+import HubAssistant from './HubAssistant'
 import NotificationBell from './NotificationBell'
 
 const { Header, Sider, Content } = Layout
@@ -263,6 +264,7 @@ export default function AppLayout() {
               <Outlet />
             </div>
           </Suspense>
+          <HubAssistant />
         </Content>
       </Layout>
     </Layout>

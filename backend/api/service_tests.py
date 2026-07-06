@@ -1234,6 +1234,143 @@ async def test_manhours():
                 await s.commit()
 
 
+async def test_ai_layer():
+    """Phase AI-0/AI-1: safety-gate + fuzzy ports (pure functions), role-gated
+    manual retrieval, and the SSE assistant endpoint with a MOCKED Ollama
+    client (tests never require a live model server)."""
+    import backend.api.ai.client as aic
+    from backend.api.ai import fuzzy, manual_qa
+    from backend.api.ai.safety import is_safe_select, scrub_sql
+
+    # --- safety gate (PG-hardened port) ----------------------------------
+    ok, _ = is_safe_select("SELECT * FROM receipts -- Replace with real Site_ID")
+    check("safety: forbidden keyword in a comment does NOT trip", ok)
+    ok, _ = is_safe_select("SELECT * FROM receipts WHERE note = 'please DELETE later'")
+    check("safety: forbidden keyword in a string literal does NOT trip", ok)
+    check("safety: multi-statement blocked",
+          not is_safe_select("SELECT 1; DROP TABLE receipts")[0])
+    check("safety: UPDATE blocked", not is_safe_select("UPDATE receipts SET x=1")[0])
+    check("safety: users table blocked",
+          not is_safe_select("SELECT * FROM users")[0])
+    check("safety: auth_sessions blocked (new-stack addition)",
+          not is_safe_select("SELECT * FROM auth_sessions")[0])
+    check("safety: pg_catalog blocked (PG addition)",
+          not is_safe_select("SELECT * FROM pg_catalog.pg_tables")[0])
+    check("safety: COPY blocked (PG addition)",
+          not is_safe_select("SELECT 1 UNION COPY x TO '/tmp/f'")[0])
+    check("safety: WITH...SELECT CTE allowed",
+          is_safe_select("WITH t AS (SELECT 1 AS n) SELECT n FROM t")[0])
+    check("safety: LIMIT injected on a new line",
+          scrub_sql("SELECT * FROM receipts").endswith("\nLIMIT 500"))
+    check("safety: existing LIMIT kept",
+          scrub_sql("SELECT 1 LIMIT 7") == "SELECT 1 LIMIT 7")
+    check("safety: 'limit' inside a comment still gets a real LIMIT",
+          "LIMIT 500" in scrub_sql("SELECT 1 -- no limit here"))
+
+    # --- fuzzy matcher (pandas-free port) ---------------------------------
+    inv = [{"SAP_Code": "1001", "Equipment_Description": "Pipe 6m DN50", "UOM": "PCS"},
+           {"SAP_Code": "1002", "Equipment_Description": "Double Clamp 2in", "UOM": "PCS"},
+           {"SAP_Code": "1003", "Equipment_Description": "Axial Fan 500mm", "UOM": "EA"}]
+    check("fuzzy: normalise drops punctuation + UOM noise",
+          fuzzy.normalise("Pipe, 6m (PCS)") == "pipe 6m")
+    bm = fuzzy.best_match("pipe 6m dn50", inv)
+    check("fuzzy: exact-ish query auto-fills", bm is not None and bm["SAP_Code"] == "1001",
+          str(bm))
+    rows = fuzzy.resolve_rows([{"material_text": "6m pipe"},
+                               {"material_text": "totally unknown thing"}], inv)
+    check("fuzzy: reordered tokens → auto/pick (never unknown), junk → unknown",
+          rows[0]["match_state"] in ("auto", "pick") and rows[1]["match_state"] == "unknown",
+          str([(r['match_state'], r['score']) for r in rows]))
+
+    # --- role-gated manual retrieval --------------------------------------
+    sections = manual_qa._load_sections()
+    check("manual: sections parsed (v3.0 has 19)", len(sections) >= 17, f"got {len(sections)}")
+    sk_ctx = manual_qa._context_for_role("store_keeper")
+    adm_ctx = manual_qa._context_for_role("admin")
+    hod_ctx = manual_qa._context_for_role("hod")
+    check("manual: store keeper sees §4, physically NOT §7 (admin chapter)",
+          "=== Section 4:" in sk_ctx and "=== Section 7:" not in sk_ctx)
+    check("manual: admin sees §7 untruncated (longer context than SK)",
+          "=== Section 7:" in adm_ctx and len(adm_ctx) > len(sk_ctx))
+    check("manual: hod allowlist grew §18 SME + §19 Man-Hours",
+          "=== Section 18:" in hod_ctx and "=== Section 19:" in hod_ctx)
+    check("manual: greeting fast-path (no LLM)",
+          manual_qa.greeting_reply("hi") is not None
+          and manual_qa.greeting_reply("how do I stage a return?") is None)
+
+    # --- /ai endpoints over the live ASGI app (mocked Ollama) --------------
+    transport = ASGITransport(app=app)
+    ip = {"X-Real-IP": "203.0.113.15"}
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        async def token(u, p):
+            r = await ac.post("/auth/login", json={"username": u, "password": p}, headers=ip)
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        admin_t = await token("admin", "admin2026")
+        worker_t = await token("worker", "floor2026")
+
+        r = await ac.get("/ai/health")
+        check("ai health without a token → 401", r.status_code == 401, f"got {r.status_code}")
+        r = await ac.get("/ai/health", headers=H(worker_t))
+        check("ai health → 200 with ok/enabled/message",
+              r.status_code == 200 and {"ok", "enabled", "message"} <= set(r.json()),
+              r.text[:120])
+
+        # Greeting streams without any model (works even with Ollama down).
+        r = await ac.post("/ai/assistant", headers=H(worker_t), json={"question": "hi"})
+        check("assistant greeting → SSE tokens + done (no LLM involved)",
+              r.status_code == 200 and '"token"' in r.text and '"done": true' in r.text,
+              r.text[:160])
+
+        # Mock the Ollama client and prove the stream + the role gate.
+        saved = (aic.health, aic.list_models, aic.stream)
+        captured: dict = {}
+
+        async def fake_health():
+            return True
+
+        async def fake_models():
+            return [aic.MODEL_CHAT]
+
+        async def fake_stream(model, prompt, *, system=None, **kw):
+            captured["system"] = system or ""
+            for t in ("Go to ", "Entry Log."):
+                yield t
+        try:
+            aic.health, aic.list_models, aic.stream = fake_health, fake_models, fake_stream
+            r = await ac.post("/ai/assistant", headers=H(worker_t),
+                              json={"question": "how do I stage a return?"})
+            check("assistant streams model chunks as SSE events in order",
+                  r.text.index('"Go to "') < r.text.index('"Entry Log."')
+                  and '"done": true' in r.text, r.text[:200])
+            check("role gate: the store keeper's PROMPT physically lacks the admin chapter",
+                  "=== Section 4:" in captured["system"]
+                  and "=== Section 7:" not in captured["system"], "")
+
+            # Feature flag: switch the assistant off → error event; restore.
+            r = await ac.put("/admin/settings", headers=H(admin_t),
+                             json={"key": "ai_assistant_enabled", "value": "0"})
+            check("ai flag accepted by the settings whitelist", r.status_code == 200,
+                  f"got {r.status_code}")
+            try:
+                r = await ac.post("/ai/assistant", headers=H(worker_t),
+                                  json={"question": "how do I stage a return?"})
+                check("assistant while flagged off → SSE error event",
+                      '"error"' in r.text and '"done": true' in r.text, r.text[:160])
+                r = await ac.get("/ai/health", headers=H(worker_t))
+                check("health reports enabled:false while flagged off",
+                      r.json().get("enabled") is False, r.text[:120])
+            finally:
+                rr = await ac.put("/admin/settings", headers=H(admin_t),
+                                  json={"key": "ai_assistant_enabled", "value": "1"})
+                check("ai flag restored", rr.status_code == 200, f"got {rr.status_code}")
+        finally:
+            aic.health, aic.list_models, aic.stream = saved
+
+
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""
     import os
@@ -1284,6 +1421,8 @@ async def main() -> int:
     await test_token_refresh()
     print("\n E. man-hours portal (Phase 10)")
     await test_manhours()
+    print("\n F. intelligence layer (AI-0/AI-1, Ollama mocked)")
+    await test_ai_layer()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "
