@@ -1,14 +1,16 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
-  App, Button, Card, Col, Form, Input, InputNumber, Modal, Popconfirm,
-  Row as AntRow, Select, Space, Switch, Table, Tabs, Tag, Typography,
+  App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Popconfirm,
+  Row as AntRow, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography,
 } from 'antd'
-import { DownloadOutlined, FileExcelOutlined, FilePdfOutlined, FileTextOutlined, InboxOutlined, PlayCircleOutlined } from '@ant-design/icons'
+import { DownloadOutlined, FileExcelOutlined, FilePdfOutlined, FileTextOutlined, InboxOutlined, PlayCircleOutlined, RobotOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import dayjs, { Dayjs } from 'dayjs'
 import {
   downloadArchived, downloadReport, useArchiveReport, useDeleteArchived,
   useReportArchive, useReports, useScheduleMutation, useSchedules, useSites,
 } from '../api/hooks'
+import { streamSse } from '../api/sse'
 import type { Row } from '../api/client'
 
 function errMsg(e: unknown): string {
@@ -234,6 +236,160 @@ function SchedulesTab() {
   )
 }
 
+// --- 🤖 AI tab (Phase AI-5): streaming EOD summary + progressive insights -------
+function EodSummaryCard() {
+  const { message } = App.useApp()
+  const [date, setDate] = useState<Dayjs>(dayjs())
+  const [running, setRunning] = useState(false)
+  const [textOut, setTextOut] = useState('')
+  const abortRef = useRef<AbortController | null>(null)
+
+  const generate = async () => {
+    abortRef.current?.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+    setRunning(true)
+    setTextOut('')
+    try {
+      await streamSse('/ai/eod-summary', { date: date.format('YYYY-MM-DD') }, (ev) => {
+        if (ev.token) setTextOut((t) => t + ev.token)
+        if (ev.error) message.warning(String(ev.error))
+      }, ctrl.signal)
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') message.error(String(e))
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <Card size="small" title="✨ AI Executive Summary" style={{ marginBottom: 16 }}>
+      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+        A 3–6 sentence narration of the day's ledger activity — totals, site
+        differences, and the most critical low-stock items. Streams live from
+        the local AI; numbers come straight from the database.
+      </Typography.Paragraph>
+      <Space style={{ marginBottom: 12 }}>
+        <DatePicker value={date} onChange={(d) => d && setDate(d)} allowClear={false} />
+        <Button type="primary" icon={<ThunderboltOutlined />} loading={running}
+          onClick={generate}>
+          Generate
+        </Button>
+      </Space>
+      {(textOut || running) && (
+        <Typography.Paragraph style={{
+          background: 'rgba(255,255,255,0.04)', padding: 12, borderRadius: 8,
+        }}>
+          {textOut}{running && <Spin size="small" style={{ marginLeft: 8 }} />}
+        </Typography.Paragraph>
+      )}
+    </Card>
+  )
+}
+
+interface Insight {
+  id: string
+  icon: string
+  metric: string
+  metric_label: string
+  severity: 'crit' | 'low' | 'ok'
+  confidence: number
+  title?: string
+  body?: string
+  recs?: string[]
+}
+
+const SEV_COLOR = { crit: 'red', low: 'gold', ok: 'green' } as const
+
+function InsightsCard() {
+  const { message } = App.useApp()
+  const [running, setRunning] = useState(false)
+  const [insights, setInsights] = useState<Insight[]>([])
+
+  const generate = async () => {
+    setRunning(true)
+    setInsights([])
+    try {
+      // Probe events land first (instant, deterministic SQL); commentary
+      // events upgrade each card as the model narrates.
+      await streamSse('/ai/insights', {}, (ev) => {
+        const probe = ev.probe as Insight | undefined
+        const comm = ev.commentary as (Partial<Insight> & { id: string }) | undefined
+        if (probe) setInsights((xs) => [...xs, probe])
+        if (comm) setInsights((xs) => xs.map((x) => (x.id === comm.id ? { ...x, ...comm } : x)))
+        if (ev.error) message.warning(String(ev.error))
+      })
+    } catch (e) {
+      message.error(String(e))
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <Card size="small" title="🤖 AI Insights">
+      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+        Five deterministic SQL probes — consumption spikes, projected stockouts,
+        expired lots, supplier consolidation, inventory health — with AI-written
+        narration. SQL owns the numbers; the model only explains them.
+      </Typography.Paragraph>
+      <Button type="primary" icon={<RobotOutlined />} loading={running}
+        onClick={generate} style={{ marginBottom: 12 }}>
+        Run insights
+      </Button>
+      <AntRow gutter={[12, 12]}>
+        {insights.map((ins) => (
+          <Col key={ins.id} xs={24} md={12} lg={8}>
+            <Card size="small">
+              <Space style={{ justifyContent: 'space-between', width: '100%' }}>
+                <Typography.Text strong>
+                  {ins.icon} {ins.title ?? ins.id.replace(/_/g, ' ')}
+                </Typography.Text>
+                <Tag color={SEV_COLOR[ins.severity]}>{ins.severity}</Tag>
+              </Space>
+              <div style={{ margin: '8px 0' }}>
+                <Typography.Title level={4} style={{ margin: 0 }}>{ins.metric}</Typography.Title>
+                <Typography.Text type="secondary">{ins.metric_label}</Typography.Text>
+              </div>
+              {ins.body ? (
+                <>
+                  <Typography.Paragraph style={{ fontSize: 13 }}>{ins.body}</Typography.Paragraph>
+                  <ul style={{ paddingLeft: 18, margin: 0, fontSize: 13 }}>
+                    {(ins.recs ?? []).map((r, i) => <li key={i}>{r}</li>)}
+                  </ul>
+                </>
+              ) : (
+                <Space><Spin size="small" /><Typography.Text type="secondary">writing commentary…</Typography.Text></Space>
+              )}
+              <div style={{ marginTop: 8 }}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  confidence {ins.confidence}%
+                </Typography.Text>
+              </div>
+            </Card>
+          </Col>
+        ))}
+        {!running && insights.length === 0 && (
+          <Col span={24}>
+            <Typography.Text type="secondary">
+              Run to scan the database for anything worth your attention.
+            </Typography.Text>
+          </Col>
+        )}
+      </AntRow>
+    </Card>
+  )
+}
+
+function AiTab() {
+  return (
+    <div>
+      <EodSummaryCard />
+      <InsightsCard />
+    </div>
+  )
+}
+
 export default function ReportsPage() {
   const { data: reports, isFetching } = useReports()
   return (
@@ -262,6 +418,7 @@ export default function ReportsPage() {
           },
           { key: 'archive', label: 'Archive', children: <ArchiveTab /> },
           { key: 'schedules', label: 'Schedules', children: <SchedulesTab /> },
+          { key: 'ai', label: '🤖 AI', children: <AiTab /> },
         ]}
       />
     </div>

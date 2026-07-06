@@ -1796,6 +1796,155 @@ async def test_ai_layer():
                 await s.execute(_text2("DELETE FROM ai_jobs"))
                 await s.commit()
 
+        # ---- Phase AI-5: analytics AI ------------------------------------------
+        import json
+
+        from backend.api.ai import analytics
+
+        # NL→SQL is gated to UNSCOPED roles only (V1 site-scoping ruling).
+        r = await ac.post("/ai/nl-search", headers=H(worker_t), json={"question": "x"})
+        check("nl-search: store keeper (lvl 0) → 403", r.status_code == 403,
+              f"got {r.status_code}")
+        r = await ac.post("/ai/nl-search", headers=H(hod_t2), json={"question": "x"})
+        check("nl-search: hod (SCOPED role) → 403 by design", r.status_code == 403,
+              f"got {r.status_code}")
+
+        saved5 = (aic.health, aic.list_models, aic.generate, aic.stream)
+
+        async def coder_ok(model, prompt, **kw):
+            check("nl-search uses the CODER model", model == aic.MODEL_CODER, model)
+            return ('```sql\nSELECT "Supplier", COUNT(*) AS orders FROM receipts '
+                    'WHERE "Supplier" IS NOT NULL GROUP BY "Supplier" '
+                    'ORDER BY orders DESC\n```')
+
+        try:
+            aic.health, aic.list_models, aic.generate = ok_health, ok_models, coder_ok
+            r = await ac.post("/ai/nl-search", headers=H(admin_t),
+                              json={"question": "top suppliers by orders"})
+            j = r.json()
+            check("nl-search: fenced SQL extracted, executed on the RO engine, "
+                  "LIMIT injected",
+                  r.status_code == 200 and j["ok"] is True and len(j["rows"]) > 0
+                  and j["columns"] == ["Supplier", "orders"]
+                  and "LIMIT 500" in j["sql"], r.text[:200])
+
+            async def coder_evil(model, prompt, **kw):
+                return "UPDATE receipts SET \"Quantity\" = 0"
+            aic.generate = coder_evil
+            r = await ac.post("/ai/nl-search", headers=H(admin_t),
+                              json={"question": "zero everything"})
+            check("nl-search: model-emitted UPDATE rejected by the safety gate",
+                  r.json()["ok"] is False and "safety gate" in r.json()["message"],
+                  r.text[:160])
+
+            async def coder_snoop(model, prompt, **kw):
+                return "SELECT * FROM users"
+            aic.generate = coder_snoop
+            r = await ac.post("/ai/nl-search", headers=H(admin_t),
+                              json={"question": "show users"})
+            check("nl-search: users table blocked by the gate",
+                  r.json()["ok"] is False, r.text[:160])
+
+            # Wall #2 — the TRUE read-only role. Bypass the text gate entirely
+            # and hit the RO engine directly: writes and users are physically
+            # impossible even if the gate ever failed.
+            from sqlalchemy import text as _t5
+            ro_write_blocked = ro_users_blocked = False
+            try:
+                async with analytics.ro_engine().connect() as conn:
+                    await conn.execute(_t5(
+                        'INSERT INTO vendors ("Vendor_Name") VALUES (\'svc-ro-test\')'))
+            except Exception as e:
+                ro_write_blocked = "read-only" in str(e).lower()
+            try:
+                async with analytics.ro_engine().connect() as conn:
+                    await conn.execute(_t5("SELECT COUNT(*) FROM users"))
+            except Exception as e:
+                ro_users_blocked = "permission denied" in str(e).lower()
+            check("RO role: INSERT physically impossible (default_transaction_read_only)",
+                  ro_write_blocked, "")
+            check("RO role: users unreadable even bypassing the gate (REVOKE)",
+                  ro_users_blocked, "")
+
+            # Insights SSE: probe events first (deterministic), then commentary.
+            async def commentary_ok(model, prompt, **kw):
+                import json as _json
+                return _json.dumps({"title": "Svc headline", "body": "Svc body.",
+                                    "recs": ["r1", "r2", "r3"]})
+            aic.generate = commentary_ok
+            r = await ac.post("/ai/insights", headers=H(hod_t2))
+            evs = [json.loads(x[6:]) for x in r.text.splitlines()
+                   if x.startswith("data: ")]
+            probe_ids = [e["probe"]["id"] for e in evs if "probe" in e]
+            comm_ids = [e["commentary"]["id"] for e in evs if "commentary" in e]
+            check("insights: health-score probe always fires w/ real numbers",
+                  "inventory_health_score" in probe_ids
+                  and any("probe" in e and e["probe"]["id"] == "inventory_health_score"
+                          and e["probe"]["data"]["n_total"] > 0 for e in evs),
+                  str(probe_ids))
+            check("insights: every fired probe gets commentary + done event",
+                  set(probe_ids) == set(comm_ids)
+                  and any(e.get("done") for e in evs)
+                  and all(e["commentary"]["title"] == "Svc headline"
+                          for e in evs if "commentary" in e),
+                  f"probes={probe_ids} comms={comm_ids}")
+            probe_idx = next(i for i, e in enumerate(evs) if "probe" in e)
+            comm_idx = next(i for i, e in enumerate(evs) if "commentary" in e)
+            check("insights: probes stream BEFORE commentary (numbers never wait)",
+                  probe_idx < comm_idx, f"{probe_idx} vs {comm_idx}")
+
+            # Ollama down → deterministic fallback commentary, stream survives.
+            async def down_health5():
+                return False
+            aic.health = down_health5
+            r = await ac.post("/ai/insights", headers=H(hod_t2))
+            evs = [json.loads(x[6:]) for x in r.text.splitlines()
+                   if x.startswith("data: ")]
+            check("insights: Ollama down → deterministic fallback commentary",
+                  any("commentary" in e and "unavailable" in e["commentary"]["body"]
+                      for e in evs) and any(e.get("done") for e in evs),
+                  r.text[:200])
+
+            # EOD summary: streams tokens; hod is site-pinned (403 on foreign site).
+            aic.health = ok_health
+
+            async def eod_stream(model, prompt, **kw):
+                check("eod: context carries real DB numbers",
+                      "Consumption rows today" in prompt, prompt[:80])
+                for t in ("Calm ", "day."):
+                    yield t
+            aic.stream = eod_stream
+            r = await ac.post("/ai/eod-summary", headers=H(hod_t2),
+                              json={"date": "2026-06-15"})
+            check("eod-summary: SSE tokens + done",
+                  '"Calm "' in r.text and '"done": true' in r.text, r.text[:160])
+            r = await ac.post("/ai/eod-summary", headers=H(hod_t2),
+                              json={"date": "2026-06-15", "site_id": "HQ"})
+            check("eod-summary: hod requesting a foreign site → 403 (scoping held)",
+                  r.status_code == 403, f"got {r.status_code}")
+            r = await ac.post("/ai/insights", headers=H(worker_t))
+            check("insights: store keeper (lvl 0) → 403", r.status_code == 403,
+                  f"got {r.status_code}")
+
+            # Flag off → nl-search 503 (restored in the finally).
+            r = await ac.put("/admin/settings", headers=H(admin_t),
+                             json={"key": "ai_nl_search_enabled", "value": "0"})
+            check("nl-search flag accepted by the settings whitelist",
+                  r.status_code == 200, f"got {r.status_code}")
+            try:
+                r = await ac.post("/ai/nl-search", headers=H(admin_t),
+                                  json={"question": "x"})
+                check("nl-search while flagged off → 503", r.status_code == 503,
+                      f"got {r.status_code}")
+            finally:
+                rr = await ac.put("/admin/settings", headers=H(admin_t),
+                                  json={"key": "ai_nl_search_enabled", "value": "1"})
+                check("nl-search flag restored", rr.status_code == 200,
+                      f"got {rr.status_code}")
+        finally:
+            aic.health, aic.list_models, aic.generate, aic.stream = saved5
+            await analytics.ro_engine().dispose()
+
 
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""

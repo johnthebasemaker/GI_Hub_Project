@@ -221,6 +221,47 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-06 · actor=interactive · branch=`main` · 📈 Phase AI-5 — analytics AI (NL→SQL · insights · EOD summary) — INTELLIGENCE LAYER COMPLETE
+- **NL→SQL** (backend/api/ai/analytics.py + POST /ai/nl-search): plain English →
+  qwen2.5-coder → PG-spelling schema hint (quoted identifiers, ISO-text date
+  patterns, live-stock worked example; users/auth tables absent) → the
+  PG-hardened safety gate → execution on **`gi_ai_ro`, a TRUE read-only PG
+  login** (backend/scripts/create_ai_readonly_role.sql — idempotent:
+  default_transaction_read_only, ROLE-level statement_timeout=5s, REVOKEd
+  SELECT on users/pending_users/auth_sessions/ai_jobs). Two independent walls,
+  both test-proven: the gate rejects model-emitted UPDATE/users-reads, AND the
+  role physically blocks INSERT + users even when the gate is bypassed
+  on purpose. **Gated to UNSCOPED roles (level ≥ 3) for V1** — generated SQL
+  can't be site-pinned, so scoped roles are excluded by design. Flag
+  ai_nl_search_enabled. UI: "Ask in plain English" card on the Dashboard
+  (level ≥ 3 only) with a result grid + Show-SQL transparency collapse.
+- **AI Insights** (POST /ai/insights, SSE): the 5 legacy probes ported to PG
+  (SQLite date fns → CURRENT_DATE − INTERVAL casts over ISO-text dates;
+  HAVING-on-alias rewritten) — consumption spike, projected stockouts,
+  expired lots, supplier consolidation, health score. **Probe events stream
+  FIRST (deterministic numbers, instant), commentary events follow** as
+  llama3.1 narrates each (strict-JSON title/body/3-recs, deterministic
+  fallback when Ollama is down — the stream never dies). hod+, site-scoped
+  via resolve_site_param. Flag ai_insights_enabled.
+- **EOD summary** (POST /ai/eod-summary, SSE): legacy context builder ported
+  (day totals + per-site consumption + top-10 low stock, ≤1.5 KB) with a
+  site-filter addition for scoped hods; streams llama3.1 prose. Foreign-site
+  request by a hod → 403 (scoping held on the AI surface too).
+- **FE:** shared src/api/sse.ts (the HubAssistant fetch+ReadableStream pattern
+  extracted) · Reports "🤖 AI" tab (EOD card w/ date picker + streaming
+  paragraph; Insights card w/ progressive severity-tagged cards that upgrade
+  in place when commentary lands) · Dashboard NL-search card.
+- **Verified:** service_tests **305 → 324/324** (role gates incl. hod-403-by-
+  design, fenced-SQL extraction + LIMIT injection, gate rejections, BOTH RO-
+  role walls, probe-before-commentary ordering, fallback commentary, EOD
+  context assertion + tokens + foreign-site 403, flag 503). Build green.
+  **Live with REAL models** (all three installed locally): qwen2.5-coder
+  answered "top 5 suppliers" in ~2 s → real rows + SQL; llama3.1 streamed a
+  genuine EOD summary naming actual 0-stock items; both insight cards
+  rendered real narration (health 96/100, 13 low-stock). Clean console.
+- **Deploy note:** run create_ai_readonly_role.sql once per DB; set a password
+  + GI_AI_RO_URL in production.
+
 ### 2026-07-06 · actor=interactive · branch=`main` · 📸 Phase AI-4 — Smart Scan (client-side QR + tool vision)
 The warehouse-floor CV port, per the locked rulings (LocateAnything retired;
 qwen2.5vl covers identification; legacy YOLO tier optional-later).

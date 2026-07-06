@@ -42,7 +42,8 @@ inventory_t = _MD.tables["inventory"]
 router = APIRouter(prefix="/ai", tags=["ai"])
 
 _FLAG_DEFAULTS = {"ai_enabled": "1", "ai_assistant_enabled": "1",
-                  "ai_doc_intel_enabled": "1", "ai_ocr_enabled": "1"}
+                  "ai_doc_intel_enabled": "1", "ai_ocr_enabled": "1",
+                  "ai_nl_search_enabled": "1", "ai_insights_enabled": "1"}
 
 
 async def _flags(session: AsyncSession) -> dict[str, bool]:
@@ -305,3 +306,125 @@ async def verify_badge(id_number: str,
             "department": row.Department or "",
             "message": None if active else
             f"{row.Name} is INACTIVE — loans need an active employee."}
+
+
+# --- Phase AI-5: analytics AI ------------------------------------------------------
+# NL→SQL: gated to UNSCOPED roles (logistics/admin, level ≥ 3) for V1 — the
+# generated SQL can't be site-scoped reliably, so scoped roles are excluded
+# by design. Execution runs on the gi_ai_ro read-only PG login (role-level
+# statement_timeout + default_transaction_read_only + REVOKEd users tables)
+# AFTER passing the PG-hardened safety gate — two independent walls.
+from . import analytics
+
+
+class NlSearchIn(BaseModel):
+    question: str
+
+
+@router.post("/nl-search", summary="Plain-English database query (logistics/admin)")
+async def nl_search(body: NlSearchIn = Body(...),
+                    user: dict = Depends(require_level(3)),
+                    session: AsyncSession = Depends(get_session)):
+    flags = await _flags(session)
+    if not (flags["ai_enabled"] and flags["ai_nl_search_enabled"]):
+        raise HTTPException(503, "NL search is switched off in Settings.")
+    if not body.question.strip():
+        raise HTTPException(422, "ask a question")
+    return await analytics.run_nl_query(body.question.strip())
+
+
+@router.post("/insights", summary="AI insights — 5 SQL probes + streamed commentary")
+async def insights(site_id: Optional[str] = None,
+                   user: dict = Depends(require_level(2)),
+                   session: AsyncSession = Depends(get_session)):
+    """SSE: one `probe` event per firing probe (deterministic numbers,
+    immediate), then a `commentary` event per probe as the LLM narrates —
+    progressive rendering, and the numbers never wait on the model."""
+    from ..auth import resolve_site_param
+    sid = resolve_site_param(user, site_id)
+
+    async def gen():
+        async with SessionLocal() as s:
+            flags = await _flags(s)
+            if not (flags["ai_enabled"] and flags["ai_insights_enabled"]):
+                yield _sse({"error": "AI insights are switched off in Settings.",
+                            "done": True})
+                return
+            fired = []
+            for kind, icon, probe_fn, confidence in analytics.PROBES:
+                try:
+                    data = await probe_fn(s, sid)
+                except Exception:
+                    data = None
+                if not data:
+                    continue
+                fired.append((kind, data))
+                yield _sse({"probe": {"id": kind, "icon": icon,
+                                      "metric": data.get("metric", "—"),
+                                      "metric_label": data.get("metric_label", ""),
+                                      "severity": data.get("severity", "ok"),
+                                      "confidence": confidence,
+                                      "data": data}})
+        for kind, data in fired:
+            commentary = await analytics.llm_commentary(kind, data)
+            yield _sse({"commentary": {"id": kind, **commentary}})
+        yield _sse({"done": True})
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
+class EodIn(BaseModel):
+    date: Optional[str] = None  # YYYY-MM-DD, default today
+    site_id: Optional[str] = None
+
+
+@router.post("/eod-summary", summary="Streaming end-of-day executive summary")
+async def eod_summary(body: EodIn = Body(...),
+                      user: dict = Depends(require_level(2))):
+    import datetime as _dt
+
+    from ..auth import resolve_site_param
+    sid = resolve_site_param(user, body.site_id)
+    day = (body.date or _dt.date.today().isoformat())[:10]
+
+    async def gen():
+        async with SessionLocal() as s:
+            flags = await _flags(s)
+            if not (flags["ai_enabled"] and flags["ai_insights_enabled"]):
+                yield _sse({"error": "AI summaries are switched off in Settings.",
+                            "done": True})
+                return
+            if not await aic.health():
+                yield _sse({"error": "Local AI is offline — ask your admin to "
+                                     "start Ollama.", "done": True})
+                return
+            try:
+                context = await analytics.build_eod_context(s, day, sid)
+            except Exception as e:
+                yield _sse({"error": f"Could not build the day context: "
+                                     f"{type(e).__name__}", "done": True})
+                return
+        try:
+            await asyncio.wait_for(aic.GEN_SEMAPHORE.acquire(), timeout=0.05)
+        except (asyncio.TimeoutError, TimeoutError):
+            yield _sse({"status": "queued"})
+            await aic.GEN_SEMAPHORE.acquire()
+        try:
+            async for chunk in aic.stream(
+                    aic.MODEL_CHAT,
+                    f"Daily warehouse snapshot:\n\n{context}\n\n"
+                    f"Write the executive summary now.",
+                    system=analytics.EOD_SYSTEM_PROMPT,
+                    temperature=0.3, num_predict=320):
+                yield _sse({"token": chunk})
+            yield _sse({"done": True})
+        except RuntimeError as e:
+            yield _sse({"error": str(e), "done": True})
+        finally:
+            aic.GEN_SEMAPHORE.release()
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
