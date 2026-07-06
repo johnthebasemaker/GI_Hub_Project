@@ -38,6 +38,9 @@ qrcode[pil]>=7.4         # 2FA enrollment QR image
 openpyxl
 fpdf2
 
+# --- Document intelligence (/ai/extract/* — PR/PO PDF parsing) ---
+pdfplumber
+
 # --- File uploads (FastAPI UploadFile — /mh/import attendance xlsx) ---
 python-multipart
 

@@ -1,12 +1,15 @@
 import { useState } from 'react'
 import {
-  App, Button, DatePicker, Form, Input, Modal, Select, Space, Table, Tabs, Tag, Typography,
+  App, Button, Card, DatePicker, Descriptions, Form, Input, Modal, Select, Space,
+  Table, Tabs, Tag, Typography, Upload,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { Dayjs } from 'dayjs'
+import { InboxOutlined } from '@ant-design/icons'
 import {
   useAssignPo, useCreatePo, useList, useLogisticsPos, useLogisticsPrs, usePoItems, useSites,
 } from '../api/hooks'
+import { api } from '../api/client'
 import type { Row } from '../api/client'
 
 function errMsg(e: unknown): string {
@@ -92,6 +95,148 @@ function IncomingPRs() {
         </Form>
       </Modal>
     </div>
+  )
+}
+
+// ---- 📄 Import PO PDF (Phase AI-2 preview-confirm) ---------------------------
+interface PoPreview {
+  ok: boolean
+  message: string
+  header: Record<string, string | number | undefined>
+  items: Row[]
+  shipment_schedule: { shipment_no: string; material_group: string; target_date: string }[]
+}
+
+function ImportPoPdf() {
+  const { message } = App.useApp()
+  const { data: sites } = useSites()
+  const [preview, setPreview] = useState<PoPreview | null>(null)
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [form] = Form.useForm<{ pr_number: string; site_id: string; po_number: string; vendor_code?: string; vendor_name?: string }>()
+  const createPo = useCreatePo()
+
+  const openConfirm = () => {
+    const h = preview?.header ?? {}
+    form.setFieldsValue({
+      pr_number: String(h.PR_Number ?? ''),
+      po_number: String(h.PO_Number ?? ''),
+      vendor_code: h.Vendor_Code ? String(h.Vendor_Code) : undefined,
+      vendor_name: h.Vendor_Name ? String(h.Vendor_Name) : undefined,
+    })
+    setConfirmOpen(true)
+  }
+
+  const submit = async () => {
+    const v = await form.validateFields()
+    try {
+      const res = await createPo.mutateAsync({
+        pr_number: v.pr_number, site_id: v.site_id, po_number: v.po_number,
+        vendor_code: v.vendor_code || null, vendor_name: v.vendor_name || null,
+      })
+      message.success(`PO ${res.po_number} created (${res.lines} lines from the submitted PR)`)
+      setConfirmOpen(false)
+      setPreview(null)
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
+
+  const h = preview?.header ?? {}
+  return (
+    <Card style={{ maxWidth: 980 }}>
+      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+        Upload a vendor PO PDF — header, line items and delivery schedule are extracted
+        for review. On confirm, the PO is created from its <b>submitted PR</b> through the
+        normal audited path (PO lines derive from the PR — simplified chain); the PDF's
+        items below are for reconciliation against the PR.
+      </Typography.Paragraph>
+      <Upload.Dragger accept=".pdf" maxCount={1} showUploadList={false}
+        customRequest={async ({ file, onSuccess, onError }) => {
+          const fd = new FormData()
+          fd.append('file', file as Blob)
+          try {
+            const r = await api.post<PoPreview>('/ai/extract/po', fd)
+            setPreview(r.data)
+            if (r.data.ok) message.success(r.data.message)
+            else message.warning(r.data.message)
+            onSuccess?.(r.data)
+          } catch (e) {
+            message.error(errMsg(e))
+            onError?.(e as Error)
+          }
+        }}>
+        <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+        <p className="ant-upload-text">Drop the PO PDF here</p>
+        <p className="ant-upload-hint">All three GI layouts supported (7-col, inline, split-line)</p>
+      </Upload.Dragger>
+
+      {preview && (
+        <div style={{ marginTop: 16 }}>
+          <Descriptions size="small" bordered column={3}
+            items={[
+              { key: '1', label: 'PO Number', children: h.PO_Number ?? '—' },
+              { key: '2', label: 'PO Date', children: h.PO_Date ?? '—' },
+              { key: '3', label: 'PR Number', children: h.PR_Number ?? '—' },
+              { key: '4', label: 'Vendor', children: `${h.Vendor_Code ?? '—'} · ${h.Vendor_Name ?? '—'}` },
+              { key: '5', label: 'Payment terms', children: h.Payment_Terms ?? '—' },
+              { key: '6', label: 'Total', children: h.Total_Amount ?? '—' },
+            ]} />
+          <Typography.Title level={5} style={{ marginTop: 16 }}>
+            Extracted items ({preview.items.length}) — reconcile against the PR
+          </Typography.Title>
+          <Table size="small" dataSource={preview.items} rowKey={(r) => String(r.line_no)}
+            pagination={false} scroll={{ x: 'max-content' }}
+            columns={[
+              { title: '#', dataIndex: 'line_no', width: 50 },
+              { title: 'Code', dataIndex: 'Material_Code', width: 120 },
+              { title: 'Description', dataIndex: 'Description', ellipsis: true },
+              { title: 'Qty', dataIndex: 'Qty', align: 'right', width: 90 },
+              { title: 'UOM', dataIndex: 'UOM', width: 70 },
+              { title: 'Unit', dataIndex: 'Unit_Price', align: 'right', width: 90 },
+              { title: 'Total', dataIndex: 'Total_Price', align: 'right', width: 110 },
+              { title: 'Family', dataIndex: 'rl_bl_family', width: 80,
+                render: (v: string | null) => (v ? <Tag>{v}</Tag> : '—') },
+            ] as ColumnsType<Row>} />
+          {preview.shipment_schedule.length > 0 && (
+            <>
+              <Typography.Title level={5} style={{ marginTop: 16 }}>Delivery schedule</Typography.Title>
+              <Table size="small" dataSource={preview.shipment_schedule}
+                rowKey={(r) => r.shipment_no} pagination={false}
+                columns={[
+                  { title: 'Shipment', dataIndex: 'shipment_no' },
+                  { title: 'Material group', dataIndex: 'material_group' },
+                  { title: 'Target date', dataIndex: 'target_date' },
+                ]} />
+            </>
+          )}
+          <Space style={{ marginTop: 16 }}>
+            <Button type="primary" onClick={openConfirm} disabled={!preview.ok}>
+              Create PO with these details
+            </Button>
+            <Button onClick={() => setPreview(null)}>Discard</Button>
+          </Space>
+        </div>
+      )}
+
+      <Modal open={confirmOpen} title="Create PO (from its submitted PR)"
+        onCancel={() => setConfirmOpen(false)} onOk={submit}
+        confirmLoading={createPo.isPending}>
+        <Form form={form} layout="vertical">
+          <Form.Item name="pr_number" label="PR Number" rules={[{ required: true }]}
+            extra="The PR must already be submitted to Logistics — PO lines come from it.">
+            <Input />
+          </Form.Item>
+          <Form.Item name="site_id" label="Site" rules={[{ required: true }]}>
+            <Select options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
+          </Form.Item>
+          <Form.Item name="po_number" label="PO Number" rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="vendor_code" label="Vendor code"><Input /></Form.Item>
+          <Form.Item name="vendor_name" label="Vendor name"><Input /></Form.Item>
+        </Form>
+      </Modal>
+    </Card>
   )
 }
 
@@ -207,6 +352,7 @@ export default function LogisticsPage() {
         defaultActiveKey="prs"
         items={[
           { key: 'prs', label: 'Incoming PRs', children: <IncomingPRs /> },
+          { key: 'import', label: '📄 Import PO PDF', children: <ImportPoPdf /> },
           { key: 'pos', label: 'Purchase Orders', children: <PurchaseOrders /> },
         ]}
       />

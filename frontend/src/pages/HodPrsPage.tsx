@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import {
-  App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Popconfirm,
-  Row, Select, Space, Table, Tabs, Tag, Typography,
+  Alert, App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Popconfirm,
+  Row, Select, Space, Table, Tabs, Tag, Typography, Upload,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { Dayjs } from 'dayjs'
-import { DownloadOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
+import { DownloadOutlined, InboxOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useAuth } from '../auth/AuthContext'
+import { api } from '../api/client'
 import { downloadPrPdf, useCreatePr, useHodPrs, useList, useSites, useSubmitPr } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 
@@ -130,6 +131,122 @@ function NewPr() {
   )
 }
 
+// ---- 📄 Import from PDF (Phase AI-2 preview-confirm) -------------------------
+interface PrPreview {
+  pr_number: string
+  matched: { SAP_Code: string; Material_Code: string; Material_Name: string; UOM: string; Requested_Qty: number }[]
+  unmatched: { material_code: string; qty: number; context: string }[]
+}
+
+function ImportPrPdf() {
+  const { message } = App.useApp()
+  const { user } = useAuth()
+  const { data: sites } = useSites()
+  const [preview, setPreview] = useState<PrPreview | null>(null)
+  const [site, setSite] = useState<string | undefined>(user?.site_id || undefined)
+  const create = useCreatePr()
+
+  const patchQty = (i: number, v: number | null) =>
+    setPreview((p) => p && ({
+      ...p,
+      matched: p.matched.map((m, idx) => (idx === i ? { ...m, Requested_Qty: v ?? 0 } : m)),
+    }))
+
+  const confirm = async () => {
+    if (!preview || !site) return
+    try {
+      const res = await create.mutateAsync({
+        site_id: site,
+        notes: `Imported from PR PDF ${preview.pr_number}`,
+        lines: preview.matched
+          .filter((m) => m.Requested_Qty > 0)
+          .map((m) => ({
+            SAP_Code: m.SAP_Code, Requested_Qty: m.Requested_Qty,
+            Material_Code: m.Material_Code, Material_Name: m.Material_Name,
+          })),
+      })
+      message.success(`PR ${res.pr_number} created from PDF ${preview.pr_number} (${res.lines} lines)`)
+      setPreview(null)
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
+
+  return (
+    <Card style={{ maxWidth: 900 }}>
+      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+        Upload a SAP Purchase Request PDF — items are extracted and matched against
+        the inventory master. Nothing is saved until you review and confirm; the PR
+        is then created through the normal audited path.
+      </Typography.Paragraph>
+      <Upload.Dragger accept=".pdf" maxCount={1} showUploadList={false}
+        customRequest={async ({ file, onSuccess, onError }) => {
+          const fd = new FormData()
+          fd.append('file', file as Blob)
+          try {
+            const r = await api.post<PrPreview>('/ai/extract/pr', fd)
+            setPreview(r.data)
+            message.success(`Parsed PR ${r.data.pr_number}: ${r.data.matched.length} matched, `
+              + `${r.data.unmatched.length} unmatched`)
+            onSuccess?.(r.data)
+          } catch (e) {
+            message.error(errMsg(e))
+            onError?.(e as Error)
+          }
+        }}>
+        <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+        <p className="ant-upload-text">Drop the PR PDF here</p>
+        <p className="ant-upload-hint">Word-stream extraction · strict Material-Code matching</p>
+      </Upload.Dragger>
+
+      {preview && (
+        <div style={{ marginTop: 16 }}>
+          <Typography.Title level={5}>
+            PDF PR {preview.pr_number} — {preview.matched.length} matched line(s)
+          </Typography.Title>
+          <Table size="small" dataSource={preview.matched} rowKey={(r) => r.SAP_Code}
+            pagination={false}
+            columns={[
+              { title: 'Material Code', dataIndex: 'Material_Code', width: 130 },
+              { title: 'SAP', dataIndex: 'SAP_Code', width: 80 },
+              { title: 'Description', dataIndex: 'Material_Name', ellipsis: true },
+              { title: 'UOM', dataIndex: 'UOM', width: 70 },
+              {
+                title: 'Qty (editable)', key: 'q', width: 130,
+                render: (_: unknown, r, i) => (
+                  <InputNumber size="small" min={0} value={r.Requested_Qty}
+                    onChange={(v) => patchQty(i, v)} style={{ width: 100 }} />
+                ),
+              },
+            ] as ColumnsType<PrPreview['matched'][number]>} />
+          {preview.unmatched.length > 0 && (
+            <Alert type="warning" showIcon style={{ marginTop: 12 }}
+              title={`${preview.unmatched.length} item(s) not in the Master Inventory — add them via Admin → Inventory first`}
+              description={
+                <ul style={{ margin: 0, paddingLeft: 18 }}>
+                  {preview.unmatched.map((u) => (
+                    <li key={u.material_code}>
+                      <code>{u.material_code}</code> × {u.qty} — <em>{u.context}</em>
+                    </li>
+                  ))}
+                </ul>
+              } />
+          )}
+          <Space style={{ marginTop: 16 }}>
+            <Select placeholder="Site" style={{ width: 160 }} value={site} onChange={setSite}
+              options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
+            <Button type="primary" disabled={!site || preview.matched.length === 0}
+              loading={create.isPending} onClick={confirm}>
+              Create PR from {preview.matched.filter((m) => m.Requested_Qty > 0).length} line(s)
+            </Button>
+            <Button onClick={() => setPreview(null)}>Discard</Button>
+          </Space>
+        </div>
+      )}
+    </Card>
+  )
+}
+
 function PrQueue() {
   const { message } = App.useApp()
   const { data: sites } = useSites()
@@ -223,6 +340,7 @@ export default function HodPrsPage() {
         onChange={setTab}
         items={[
           { key: 'create', label: 'Create PR', children: <NewPr /> },
+          { key: 'import', label: '📄 Import from PDF', children: <ImportPrPdf /> },
           { key: 'submit', label: 'Submit to Logistics', children: <PrQueue /> },
         ]}
       />

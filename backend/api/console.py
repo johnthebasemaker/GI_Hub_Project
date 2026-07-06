@@ -105,7 +105,8 @@ async def delete_site(sid: int, user: dict = Depends(require_level(4)),
 
 # --- Settings (incl. maintenance mode) ------------------------------------------
 _EDITABLE_SETTINGS = {"maintenance_mode", "low_stock_days", "burn_alert_days",
-                      "expiry_warn_days", "ai_enabled", "ai_assistant_enabled"}
+                      "expiry_warn_days", "ai_enabled", "ai_assistant_enabled",
+                      "ai_doc_intel_enabled"}
 
 
 class SettingIn(BaseModel):

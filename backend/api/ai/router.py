@@ -19,23 +19,28 @@ import asyncio
 import json
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import (APIRouter, Body, Depends, File, HTTPException,
+                     UploadFile)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import get_current_user
+from ..auth import get_current_user, require_level
 from ..db import SessionLocal, get_session
 from ..services.ledger import _MD
+from ..services.procurement import classify_rl_bl_family
 from . import client as aic
 from . import manual_qa
+from . import pdf_extract
 
 settings_t = _MD.tables["app_settings"]
+inventory_t = _MD.tables["inventory"]
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
-_FLAG_DEFAULTS = {"ai_enabled": "1", "ai_assistant_enabled": "1"}
+_FLAG_DEFAULTS = {"ai_enabled": "1", "ai_assistant_enabled": "1",
+                  "ai_doc_intel_enabled": "1"}
 
 
 async def _flags(session: AsyncSession) -> dict[str, bool]:
@@ -106,3 +111,87 @@ async def assistant(body: AskIn = Body(...),
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
+
+
+# --- Phase AI-2: document intelligence (PR/PO PDF extraction) -------------------
+# Preview-confirm workflow: these endpoints ONLY parse and return a preview —
+# nothing is written. The React side lets the user review/edit, then confirms
+# through the EXISTING audited services (POST /hod/prs → procurement.create_pr,
+# POST /logistics/pos → create_po_from_pr), which fixes the legacy
+# silent-insert flaw (PR/PO PDF uploads never wrote an audit row).
+
+async def _require_doc_intel(session: AsyncSession) -> None:
+    flags = await _flags(session)
+    if not (flags["ai_enabled"] and flags["ai_doc_intel_enabled"]):
+        raise HTTPException(503, "Document intelligence is switched off in Settings.")
+
+
+async def _read_pdf_upload(file: UploadFile) -> bytes:
+    data = await file.read()
+    if len(data) > 15 * 1024 * 1024:
+        raise HTTPException(422, "PDF too large (15 MB max)")
+    return data
+
+
+@router.post("/extract/pr", summary="Extract a Purchase Request PDF (preview only)")
+async def extract_pr(file: UploadFile = File(...),
+                     user: dict = Depends(require_level(2)),
+                     session: AsyncSession = Depends(get_session)):
+    """pdfplumber runs in a worker thread (CPU-bound); the event loop stays
+    free. Items are matched to the inventory master exactly like legacy
+    (strict Material_Code match, case-insensitive) but returned as a preview —
+    matched rows are pre-shaped as create-PR lines, unmatched ones carry the
+    legacy context window so the admin can add them to the master DB."""
+    import asyncio as _aio
+    await _require_doc_intel(session)
+    data = await _read_pdf_upload(file)
+    try:
+        parsed = await _aio.to_thread(pdf_extract.parse_pr_pdf, data)
+    except pdf_extract.PdfExtractError as e:
+        raise HTTPException(422, str(e))
+
+    codes = [it["material_code"] for it in parsed["items"]]
+    inv = {}
+    if codes:
+        rows = (await session.execute(select(
+            inventory_t.c["Material_Code"], inventory_t.c["SAP_Code"],
+            inventory_t.c["Equipment_Description"], inventory_t.c["UOM"])
+            .where(func.upper(func.trim(inventory_t.c["Material_Code"]))
+                   .in_(codes)))).all()
+        inv = {str(r[0]).strip().upper(): r for r in rows}
+
+    matched, unmatched = [], []
+    for it in parsed["items"]:
+        hit = inv.get(it["material_code"])
+        if hit is not None:
+            matched.append({"SAP_Code": str(hit[1]),
+                            "Material_Code": it["material_code"],
+                            "Material_Name": hit[2] or "",
+                            "UOM": hit[3] or "",
+                            "Requested_Qty": it["qty"]})
+        else:
+            unmatched.append(it)
+    return {"pr_number": parsed["pr_number"], "matched": matched,
+            "unmatched": unmatched,
+            "hint": ("confirm via POST /hod/prs with the matched lines — "
+                     "unmatched codes must be added to the Master DB first")}
+
+
+@router.post("/extract/po", summary="Extract a Purchase Order PDF (preview only)")
+async def extract_po(file: UploadFile = File(...),
+                     user: dict = Depends(require_level(3)),
+                     session: AsyncSession = Depends(get_session)):
+    """Header + line items + shipment schedule, all three legacy layouts.
+    The header prefills the Create-PO form (PR number, PO number, vendor);
+    PO LINES still derive from the submitted PR on confirm — the locked
+    'simplified DN/PO chain' ruling — so extracted items are shown for
+    review/reconciliation against the PR, not inserted directly."""
+    import asyncio as _aio
+    await _require_doc_intel(session)
+    data = await _read_pdf_upload(file)
+    try:
+        parsed = await _aio.to_thread(pdf_extract.parse_po_pdf, data,
+                                      classify_rl_bl_family)
+    except pdf_extract.PdfExtractError as e:
+        raise HTTPException(422, str(e))
+    return parsed

@@ -221,6 +221,32 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-06 · actor=interactive · branch=`main` · 📄 Phase AI-2 — document intelligence (PR/PO PDF extraction)
+`backend/api/ai/pdf_extract.py`: framework-free, byte-compatible ports of BOTH legacy
+pdfplumber parsers — the PR word-stream extractor (GI-\d{7} + 6-word qty look-ahead,
+dedupe, strict Material_Code matching) and the PO Round-15 scanner (header regexes,
+ALL THREE line-item layouts: code-line+7-col-w/-VAT, inline 6-col, split-line pair;
+RL/BL family tagging via the ported classifier; SHIPMENT annexure → ISO dates).
+- **Endpoints:** POST /ai/extract/pr (≥hod) + /ai/extract/po (≥logistics) — UploadFile →
+  **asyncio.to_thread** (pdfplumber is sync/CPU-bound; the event loop stays free), 15 MB
+  cap, 422 on unparseable, flag `ai_doc_intel_enabled` (console-editable) → 503 when off.
+- **Preview-confirm workflow (fixes the legacy silent-insert flaw):** extraction writes
+  NOTHING — proven by a row-count invariant in the tests. Confirm goes through the
+  EXISTING audited services: PR → POST /hod/prs (test asserts the CREATE_PR audit row
+  that legacy never wrote); PO → POST /logistics/pos (create_po_from_pr — PO lines
+  derive from the submitted PR per the locked simplified-chain ruling; extracted items
+  render for reconciliation only).
+- **FE:** HodPrsPage "📄 Import from PDF" tab (dragger → matched table w/ editable qtys +
+  unmatched-codes alert w/ legacy context windows → site picker → Create PR) and
+  LogisticsPage "📄 Import PO PDF" tab (header Descriptions + items + delivery schedule +
+  prefilled Create-PO modal). `pdfplumber` added to backend/requirements.txt.
+- **Verified:** service_tests **262 → 277/277** (synthetic fpdf2 PDFs: PR strict-match
+  2-matched/1-unmatched, preview-only invariant, audited confirm, all 3 PO layouts w/
+  exact prices + VAT-column skip + ISO schedule, role gates 403, junk 422, flag 503 w/
+  finally-restore); build green; live UI: real file dispatched through the Upload
+  component → preview rendered (PDF PR 3001234567, editable qtys, unmatched alert), PO
+  header/items/schedule rendered; clean console (one antd v6 Alert prop fixed en route).
+
 ### 2026-07-06 · actor=interactive · branch=`main` · 🧠 Phases AI-0 + AI-1 — Intelligence-layer foundation + Hub Assistant
 First slice of the AI program (from the 2026-07-06 legacy AI audit; user rulings: LocateAnything
 sidecar RETIRED in favor of qwen2.5vl vision fallback later; Ollama on the SAME BOX, one warm

@@ -1370,6 +1370,143 @@ async def test_ai_layer():
         finally:
             aic.health, aic.list_models, aic.stream = saved
 
+        # ---- Phase AI-2: document intelligence (PR/PO PDF extraction) -------
+        # Synthetic PDFs built with fpdf2 (already a dep) — one PR + the three
+        # legacy PO layouts. Extraction is preview-only: nothing may persist.
+        from fpdf import FPDF
+
+        def make_pdf(lines):
+            p = FPDF()
+            p.add_page()
+            p.set_font("Helvetica", size=10)
+            for ln in lines:
+                p.cell(0, 6, ln, new_x="LMARGIN", new_y="NEXT")
+            return bytes(p.output())
+
+        mt = "application/pdf"
+        hod_t2 = await token("hod", "hod2026")
+        pr_pdf = make_pdf([
+            "GENERAL INDUSTRIES - PURCHASE REQUEST",
+            "Purch. Req. No. : 3001234567",
+            "001 GI-7003055 SOME MATERIAL DESC 25.00 KG",
+            "002 GI-7002999 OTHER MATERIAL 10 PCS",
+            "003 GI-9999999 UNKNOWN THING 5 EA",
+        ])
+        r = await ac.post("/ai/extract/pr", headers=H(worker_t),
+                          files={"file": ("pr.pdf", pr_pdf, mt)})
+        check("extract/pr: worker (lvl 0) → 403", r.status_code == 403,
+              f"got {r.status_code}")
+        n_pr_before = None
+        async with SessionLocal() as s:
+            n_pr_before = await _count(s, pr_master_t)
+        r = await ac.post("/ai/extract/pr", headers=H(hod_t2),
+                          files={"file": ("pr.pdf", pr_pdf, mt)})
+        j = r.json()
+        check("extract/pr: PR number + strict matching (2 matched / 1 unmatched)",
+              r.status_code == 200 and j.get("pr_number") == "3001234567"
+              and len(j.get("matched", [])) == 2 and len(j.get("unmatched", [])) == 1,
+              r.text[:200])
+        check("extract/pr: matched rows are pre-shaped create-PR lines w/ SAP + qty",
+              j["matched"][0]["SAP_Code"] and j["matched"][0]["Requested_Qty"] == 25.0
+              and j["unmatched"][0]["material_code"] == "GI-9999999", str(j["matched"][0]))
+        async with SessionLocal() as s:
+            n_pr_after = await _count(s, pr_master_t)
+        check("extract/pr is preview-only (silent-insert flaw fixed — no rows written)",
+              n_pr_after == n_pr_before, f"{n_pr_before} → {n_pr_after}")
+
+        # Confirm path = the EXISTING audited service (create_pr).
+        r = await ac.post("/hod/prs", headers=H(hod_t2), json={
+            "site_id": "CNCEC", "notes": "Imported from PR PDF 3001234567",
+            "lines": [{"SAP_Code": m["SAP_Code"], "Requested_Qty": m["Requested_Qty"]}
+                      for m in j["matched"]]})
+        conf = r.json()
+        check("confirm → PR created through the audited service", r.status_code == 201
+              and conf.get("created") is True and conf.get("lines") == 2, r.text[:160])
+        async with SessionLocal() as s:
+            n_audit = await _count(s, audit_t, audit_t.c["action_type"] == "CREATE_PR",
+                                   audit_t.c["details"].like(f"%{conf['pr_number']}%"))
+            check("confirm wrote the CREATE_PR audit row (legacy never did)",
+                  n_audit == 1, f"got {n_audit}")
+            await s.execute(pr_master_t.delete().where(
+                pr_master_t.c["PR_Number"] == conf["pr_number"]))
+            await s.commit()
+
+        po_a = make_pdf([
+            "Purch. Order. No. : 4710003114",
+            "Purch. Order. Date : 15.06.2026",
+            "Vendor : 0000123456",
+            "ACME TRADING EST",
+            "Payment Terms : NET 30",
+            "GI-7002522",
+            "001 SS 316L FILLER WIRE DIA 2.4 MM 20.00 KG 85.00 255.00 1,955.00",
+            "SHIPMENT 01 BRICK MATERIALS 05.02.2026",
+            "Total Amount 1,955.00",
+        ])
+        po_b = make_pdf([
+            "Purch. Order No. : 4710003115",
+            "Vendor : 0000654321",
+            "GULF SUPPLIES CO",
+            "001 GI-8003100 CUMIFURAN SYRUP GRADE A 5,025.00 KG 10.00 50,250.00",
+        ])
+        po_c = make_pdf([
+            "Purch. Order No. : 4710003116",
+            "Vendor : 0000111222",
+            "DESERT MATERIALS LLC",
+            "001 GI-7002522",
+            "CUMIFURAN SYRUP SPECIAL 5,025.00 KG 10.00 50,250.00",
+        ])
+        r = await ac.post("/ai/extract/po", headers=H(hod_t2),
+                          files={"file": ("po.pdf", po_a, mt)})
+        check("extract/po: hod (lvl 2) → 403 (logistics gate)", r.status_code == 403,
+              f"got {r.status_code}")
+        r = await ac.post("/ai/extract/po", headers=H(admin_t),
+                          files={"file": ("po.pdf", po_a, mt)})
+        ja = r.json()
+        it = ja["items"][0] if ja.get("items") else {}
+        check("PO layout A (code-line + 7-col w/ VAT): header + item + prices",
+              r.status_code == 200 and ja["header"].get("PO_Number") == "4710003114"
+              and ja["header"].get("Vendor_Code") == "123456"
+              and ja["header"].get("Vendor_Name") == "ACME TRADING EST"
+              and it.get("Qty") == 20.0 and it.get("Unit_Price") == 85.0
+              and it.get("Total_Price") == 1955.0, r.text[:240])
+        check("PO layout A: annexure schedule parsed to ISO date",
+              ja.get("shipment_schedule")
+              and ja["shipment_schedule"][0]["target_date"] == "2026-02-05",
+              str(ja.get("shipment_schedule")))
+        r = await ac.post("/ai/extract/po", headers=H(admin_t),
+                          files={"file": ("po.pdf", po_b, mt)})
+        jb = r.json()
+        check("PO layout B (inline 6-col): comma-qty + prices",
+              jb["items"] and jb["items"][0]["Material_Code"] == "GI-8003100"
+              and jb["items"][0]["Qty"] == 5025.0
+              and jb["items"][0]["Total_Price"] == 50250.0, r.text[:200])
+        r = await ac.post("/ai/extract/po", headers=H(admin_t),
+                          files={"file": ("po.pdf", po_c, mt)})
+        jc = r.json()
+        check("PO layout C (split-line pair): desc + numbers recovered",
+              jc["items"] and jc["items"][0]["Material_Code"] == "GI-7002522"
+              and jc["items"][0]["Qty"] == 5025.0
+              and "CUMIFURAN" in jc["items"][0]["Description"], r.text[:200])
+        r = await ac.post("/ai/extract/po", headers=H(admin_t),
+                          files={"file": ("junk.pdf", b"not a pdf", mt)})
+        check("unparseable PDF → 422", r.status_code == 422, f"got {r.status_code}")
+
+        # Feature flag: doc-intel off → 503; restored in a finally.
+        r = await ac.put("/admin/settings", headers=H(admin_t),
+                         json={"key": "ai_doc_intel_enabled", "value": "0"})
+        check("doc-intel flag accepted by the settings whitelist",
+              r.status_code == 200, f"got {r.status_code}")
+        try:
+            r = await ac.post("/ai/extract/pr", headers=H(hod_t2),
+                              files={"file": ("pr.pdf", pr_pdf, mt)})
+            check("extract while flagged off → 503", r.status_code == 503,
+                  f"got {r.status_code}")
+        finally:
+            rr = await ac.put("/admin/settings", headers=H(admin_t),
+                              json={"key": "ai_doc_intel_enabled", "value": "1"})
+            check("doc-intel flag restored", rr.status_code == 200,
+                  f"got {rr.status_code}")
+
 
 def test_config_jwt():
     """JWT_SECRET hardening: dev is lenient, production fails fast on a weak key."""
