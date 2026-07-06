@@ -1699,6 +1699,96 @@ async def test_ai_layer():
                 rr = await ac.put("/admin/settings", headers=H(admin_t),
                                   json={"key": "ai_ocr_enabled", "value": "1"})
                 check("ocr flag restored", rr.status_code == 200, f"got {rr.status_code}")
+            # ---- Phase AI-4: Smart Scan (badge verify + tool identify) -------
+            # Tier 1: QR decode is client-side; the server only verifies the
+            # decoded ID string against employees (active check).
+            emp_row = None
+            async with SessionLocal() as s:
+                emp_t = _MD.tables["employees"]
+                from sqlalchemy import select as _sel
+                emp_row = (await s.execute(_sel(
+                    emp_t.c["ID_Number"], emp_t.c["Name"])
+                    .where(emp_t.c["status"] == "active").limit(1))).first()
+            r = await ac.get(f"/ai/badge/{emp_row.ID_Number}", headers=H(worker_t))
+            check("badge verify: active employee found + prefill fields",
+                  r.status_code == 200 and r.json()["found"] is True
+                  and r.json()["active"] is True
+                  and r.json()["name"] == emp_row.Name, r.text[:160])
+            r = await ac.get("/ai/badge/no-such-badge-999", headers=H(worker_t))
+            check("badge verify: unknown id → found:false + friendly message",
+                  r.json().get("found") is False and "No employee" in r.json()["message"],
+                  r.text[:120])
+            r = await ac.get(f"/ai/badge/{emp_row.ID_Number}", headers=H(hod_t2))
+            check("badge verify: hod → 403 (exact store_keeper lock)",
+                  r.status_code == 403, f"got {r.status_code}")
+
+            # Tier 2: tool_identify vision job — catalogue-constrained when
+            # tool_catalogue has rows (seed two, clean up after).
+            async with SessionLocal() as s:
+                from sqlalchemy import insert as _ins2
+                cat_t = _MD.tables["tool_catalogue"]
+                await s.execute(_ins2(cat_t).values(
+                    class_name="svc_angle_grinder", display_name="Angle Grinder 9in"))
+                await s.execute(_ins2(cat_t).values(
+                    class_name="svc_torque_wrench", display_name="Torque Wrench 1/2in"))
+                await s.commit()
+            saved3 = (aic.health, aic.list_models, aic.generate)
+            seen_tool: dict = {}
+
+            async def tool_vision(model, prompt, **kw):
+                seen_tool["system"] = kw.get("system") or ""
+                import json as _json
+                return _json.dumps({"name": "svc_angle_grinder",
+                                    "alternatives": ["svc_torque_wrench", "Crowbar"],
+                                    "description": "A 9-inch angle grinder."})
+            try:
+                aic.health, aic.list_models, aic.generate = ok_health, ok_models, tool_vision
+                r = await ac.post("/ai/jobs", headers=H(worker_t),
+                                  params={"kind": "tool_identify"},
+                                  files={"file": ("t.jpg", tiny_jpeg(), "image/jpeg")})
+                check("tool_identify accepted as a job kind", r.status_code == 202,
+                      f"got {r.status_code}")
+                j = await poll_until_final(r.json()["job_id"], worker_t)
+                tool = (j.get("result") or {}).get("tool") or {}
+                check("tool job: catalogue classes in the PROMPT",
+                      "svc_angle_grinder" in seen_tool.get("system", "")
+                      and "Angle Grinder 9in" in seen_tool.get("system", ""), "")
+                check("tool job: class names map to display names",
+                      j["status"] == "done" and tool.get("name") == "Angle Grinder 9in"
+                      and tool.get("class_name") == "svc_angle_grinder", str(tool))
+                check("tool job: catalogue alt mapped + freeform alt passes through",
+                      tool.get("alternatives", [{}])[0].get("name") == "Torque Wrench 1/2in"
+                      and tool.get("alternatives", [{}, {}])[1].get("name") == "Crowbar"
+                      and tool["alternatives"][1]["class_name"] is None,
+                      str(tool.get("alternatives")))
+
+                # Empty-catalogue path: freeform naming still works.
+                async with SessionLocal() as s:
+                    from sqlalchemy import delete as _del2
+                    await s.execute(_del2(cat_t).where(
+                        cat_t.c["class_name"].like("svc_%")))
+                    await s.commit()
+
+                async def tool_vision_free(model, prompt, **kw):
+                    import json as _json
+                    return _json.dumps({"name": "Pipe Wrench 24in",
+                                        "alternatives": [], "description": "x"})
+                aic.generate = tool_vision_free
+                r = await ac.post("/ai/jobs", headers=H(worker_t),
+                                  params={"kind": "tool_identify"},
+                                  files={"file": ("t.jpg", tiny_jpeg(), "image/jpeg")})
+                j = await poll_until_final(r.json()["job_id"], worker_t)
+                check("tool job: empty catalogue → freeform name (class_name null)",
+                      j["status"] == "done"
+                      and j["result"]["tool"]["name"] == "Pipe Wrench 24in"
+                      and j["result"]["tool"]["class_name"] is None, str(j)[:160])
+            finally:
+                aic.health, aic.list_models, aic.generate = saved3
+                async with SessionLocal() as s:
+                    from sqlalchemy import delete as _del3
+                    await s.execute(_del3(_MD.tables["tool_catalogue"]).where(
+                        _MD.tables["tool_catalogue"].c["class_name"].like("svc_%")))
+                    await s.commit()
         finally:
             # Cleanup: OCR jobs are test artifacts — remove every row we made.
             from sqlalchemy import text as _text2

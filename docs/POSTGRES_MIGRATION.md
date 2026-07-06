@@ -221,6 +221,33 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-06 · actor=interactive · branch=`main` · 📸 Phase AI-4 — Smart Scan (client-side QR + tool vision)
+The warehouse-floor CV port, per the locked rulings (LocateAnything retired;
+qwen2.5vl covers identification; legacy YOLO tier optional-later).
+- **Tier 1 — badge QR, decoded ENTIRELY client-side** (components/QrScanner.tsx):
+  getUserMedia → native BarcodeDetector when available, jsQR fallback (≤480px
+  canvas frames) — the video stream NEVER leaves the browser; only the decoded
+  ID string hits **GET /ai/badge/{id}** (exact {store_keeper,admin} lock), which
+  verifies the ACTIVE employee and returns name/phone/department (legacy Tier-1
+  semantics). Camera-denied/absent → graceful manual-ID fallback in the same
+  modal (also covers damaged badges + desktops). `jsqr` added to frontend deps.
+- **Tier 2 — tool identification**: new `tool_identify` job kind on the AI-3
+  queue (photo → prepped → qwen2.5vl). **Catalogue-optional**: when
+  tool_catalogue has rows the prompt constrains to those classes and replies
+  map class→display name; when empty (the current PG state — legacy never
+  promoted a model here) the model names the tool freeform. Alternatives
+  surface as a picker.
+- **Integration — Phase-4 Returnables**: the "Loan a tool" modal gains Scan
+  badge (→ borrower + phone prefilled + verified Tag, inactive employees
+  warned) and Identify tool (→ material_name prefilled, alternatives Select).
+  Staging still flows through the existing exact-locked /entry/returnables.
+- **Verified:** service_tests **297 → 305/305** (badge found/unknown/role-gate,
+  tool job with seeded catalogue: classes in the PROMPT, class→display mapping,
+  mixed catalogue/freeform alternatives, empty-catalogue freeform path; seeds
+  cleaned). Build green. Live: scan modal → camera-denied fallback → typed
+  badge 30816 → borrower "Johnson Andrew" + phone prefilled + green verified
+  tag; clean console.
+
 ### 2026-07-06 · actor=interactive · branch=`main` · 📷 Phase AI-3 — handwriting OCR + async job queue
 The heaviest AI port: photographed paper logs → reviewed rows → the normal
 staging chain. **One user-authorized schema addition:** `ai_jobs` (alembic

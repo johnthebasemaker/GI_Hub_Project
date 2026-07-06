@@ -278,3 +278,30 @@ async def parse_paste(kind: str, body: PasteIn = Body(...),
     except ValueError as e:
         raise HTTPException(422, str(e))
     return await ai_jobs._resolve(kind, parsed, session)
+
+
+# --- Phase AI-4: Smart Scan --------------------------------------------------------
+# QR badge decoding happens ENTIRELY client-side (jsQR over the live camera
+# feed — video never leaves the browser). This endpoint is the fast server
+# verification for the decoded ID string: employee lookup + active check,
+# exactly the legacy Tier-1 semantics. Plain DB read — no AI flag needed.
+
+@router.get("/badge/{id_number}", summary="Verify a scanned employee badge (Tier 1)")
+async def verify_badge(id_number: str,
+                       user: dict = Depends(require_roles("store_keeper")),
+                       session: AsyncSession = Depends(get_session)):
+    emp_t = _MD.tables["employees"]
+    row = (await session.execute(select(
+        emp_t.c["ID_Number"], emp_t.c["Name"], emp_t.c["Phone_Number"],
+        emp_t.c["Department"], emp_t.c["status"])
+        .where(func.trim(emp_t.c["ID_Number"]) == id_number.strip()).limit(1))
+    ).first()
+    if row is None:
+        return {"found": False,
+                "message": f"No employee with badge ID {id_number!r}."}
+    active = (row.status or "").lower() == "active"
+    return {"found": True, "active": active, "id_number": row.ID_Number,
+            "name": row.Name, "phone": row.Phone_Number or "",
+            "department": row.Department or "",
+            "message": None if active else
+            f"{row.Name} is INACTIVE — loans need an active employee."}

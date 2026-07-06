@@ -290,3 +290,68 @@ def parse_delivery_note_paste(text: str) -> dict:
     if not items:
         raise ValueError("No item rows found.")
     return {"header": clean_dn_header(header), "items": items}
+
+
+# --- Phase AI-4: tool identification (Smart Scan tier-2, vision-LLM based) -------
+# The legacy tier-2 was a YOLO model behind an admin train→promote lifecycle
+# that was never populated on this stack (tool_catalogue is empty). Ruling
+# 2026-07-06: qwen2.5vl covers identification instead — catalogue-OPTIONAL:
+# when tool_catalogue rows exist the prompt constrains to those classes; when
+# empty the model names the tool freeform.
+
+TOOL_PROMPT_BASE = """\
+You are identifying a warehouse tool or equipment item from a photo taken by
+a store keeper recording a tool loan.
+
+Output STRICT JSON with this exact shape and no extra commentary:
+{
+  "name":         "the most likely tool name",
+  "alternatives": ["second guess", "third guess"],
+  "description":  "one short sentence describing what you see"
+}
+
+Rules:
+- Output JSON only. No markdown fences, no prose.
+- Keep names short and practical (e.g. "Angle Grinder 9in", "Torque Wrench").
+- Use [] for alternatives if you are confident.
+"""
+
+TOOL_PROMPT_CATALOGUE_SUFFIX = """\
+
+This warehouse tracks these known tool classes — when the photo matches one,
+use its EXACT class name for "name" (and for alternatives that also match):
+{catalogue}
+"""
+
+
+def tool_prompt(catalogue: list[dict]) -> str:
+    """catalogue rows: {class_name, display_name}. Empty list → freeform."""
+    if not catalogue:
+        return TOOL_PROMPT_BASE
+    listing = "\n".join(f"- {c['class_name']} ({c['display_name']})"
+                        for c in catalogue)
+    return TOOL_PROMPT_BASE + TOOL_PROMPT_CATALOGUE_SUFFIX.format(catalogue=listing)
+
+
+def parse_tool_reply(raw: str, catalogue: list[dict]) -> dict:
+    """Model reply → {"tool": {name, class_name, alternatives, description}}.
+    Names matching a catalogue class_name are mapped to the display name and
+    keep the class reference; unmatched names pass through freeform."""
+    obj = extract_json_object(raw)
+    if not obj or not str(obj.get("name") or "").strip():
+        raise ValueError("Vision model could not identify the tool — "
+                         "type the name manually.")
+    by_class = {str(c["class_name"]).strip().lower(): c for c in catalogue}
+
+    def _entry(name: str) -> dict:
+        hit = by_class.get(str(name).strip().lower())
+        if hit:
+            return {"name": hit["display_name"] or hit["class_name"],
+                    "class_name": hit["class_name"]}
+        return {"name": str(name).strip(), "class_name": None}
+
+    best = _entry(obj["name"])
+    alts = [_entry(a) for a in (obj.get("alternatives") or [])
+            if str(a or "").strip()][:3]
+    return {"tool": {**best, "alternatives": alts,
+                     "description": str(obj.get("description") or "").strip()}}

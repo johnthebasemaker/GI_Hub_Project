@@ -39,7 +39,7 @@ logger = logging.getLogger("gi.ai.jobs")
 ai_jobs_t = _MD.tables["ai_jobs"]
 inventory_t = _MD.tables["inventory"]
 
-JOB_KINDS = ("ocr_consumption", "ocr_delivery_note")
+JOB_KINDS = ("ocr_consumption", "ocr_delivery_note", "tool_identify")
 
 
 def _now() -> _dt.datetime:
@@ -104,14 +104,31 @@ async def run_job(job_id: int) -> None:
         if err:
             raise RuntimeError(err)
         image_b64 = json.loads(row.payload_json or "{}").get("image_b64", "")
-        async with aic.GEN_SEMAPHORE:
-            raw = await aic.generate(
-                aic.MODEL_VISION, ocr.USER_PROMPTS[kind],
-                system=ocr.SYSTEM_PROMPTS[kind], images=[image_b64],
-                temperature=0.1, num_predict=1024)
-        parsed = ocr.parse_vision_reply(kind, raw)
+
+        if kind == "tool_identify":
+            # Smart Scan tier-2 (AI-4): catalogue-constrained when the
+            # tool_catalogue has rows, freeform naming when it's empty.
+            async with SessionLocal() as s:
+                cat_t = _MD.tables["tool_catalogue"]
+                catalogue = [dict(m) for m in (await s.execute(select(
+                    cat_t.c["class_name"], cat_t.c["display_name"]))).mappings()]
+            async with aic.GEN_SEMAPHORE:
+                raw = await aic.generate(
+                    aic.MODEL_VISION, "Identify the tool.",
+                    system=ocr.tool_prompt(catalogue), images=[image_b64],
+                    temperature=0.1, num_predict=256)
+            result = ocr.parse_tool_reply(raw, catalogue)
+        else:
+            async with aic.GEN_SEMAPHORE:
+                raw = await aic.generate(
+                    aic.MODEL_VISION, ocr.USER_PROMPTS[kind],
+                    system=ocr.SYSTEM_PROMPTS[kind], images=[image_b64],
+                    temperature=0.1, num_predict=1024)
+            parsed = ocr.parse_vision_reply(kind, raw)
+
         async with SessionLocal() as s:
-            result = await _resolve(kind, parsed, s)
+            if kind != "tool_identify":
+                result = await _resolve(kind, parsed, s)
             await s.execute(update(ai_jobs_t).where(ai_jobs_t.c["id"] == job_id)
                             .values(status="done", finished_at=_now(),
                                     result_json=json.dumps(result, ensure_ascii=False)))

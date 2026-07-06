@@ -1,10 +1,14 @@
 import { useState } from 'react'
-import { App, Button, DatePicker, Form, Input, InputNumber, Modal, Popconfirm, Space, Table, Tag, Typography } from 'antd'
+import { App, Button, DatePicker, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Spin, Table, Tag, Typography, Upload } from 'antd'
+import { CameraOutlined, QrcodeOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import { useQuery } from '@tanstack/react-query'
 import dayjs from 'dayjs'
 import { useCreateReturnable, useMarkReturned, useReturnables } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
+import { api } from '../api/client'
 import type { Row } from '../api/client'
+import QrScanner from '../components/QrScanner'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -25,6 +29,56 @@ export default function ReturnablesPage() {
   const now = data?.now ? dayjs(data.now) : dayjs()
   const isOverdue = (r: Row) =>
     r.status === 'borrowed' && !!r.expected_return_time && dayjs(String(r.expected_return_time)).isBefore(now)
+
+  // --- Smart Scan (Phase AI-4) -------------------------------------------------
+  // Tier 1: badge QR decoded CLIENT-SIDE (QrScanner) → GET /ai/badge/{id}
+  // verifies the active employee and prefills the borrower. Tier 2: a tool
+  // photo → tool_identify vision job → prefills the item name.
+  const [scanOpen, setScanOpen] = useState(false)
+  const [badge, setBadge] = useState<{ name: string; active: boolean } | null>(null)
+  const [toolJobId, setToolJobId] = useState<number | null>(null)
+  const [toolAlts, setToolAlts] = useState<string[]>([])
+
+  const onBadgeDecoded = async (id: string) => {
+    setScanOpen(false)
+    try {
+      const r = (await api.get(`/ai/badge/${encodeURIComponent(id)}`)).data
+      if (!r.found) {
+        setBadge(null)
+        message.warning(r.message)
+        return
+      }
+      setBadge({ name: r.name, active: r.active })
+      form.setFieldsValue({ borrower_name: r.name, borrower_phone: r.phone || undefined })
+      if (r.active) message.success(`Badge verified: ${r.name} (${r.department})`)
+      else message.warning(r.message)
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
+
+  useQuery({
+    queryKey: ['/ai/jobs', toolJobId],
+    enabled: toolJobId != null,
+    refetchInterval: (q) => {
+      const s = (q.state.data as { status?: string } | undefined)?.status
+      return s === 'queued' || s === 'running' ? 2000 : false
+    },
+    queryFn: async () => {
+      const r = (await api.get(`/ai/jobs/${toolJobId}`)).data
+      if (r.status === 'done' && r.result?.tool) {
+        setToolJobId(null)
+        const t = r.result.tool
+        form.setFieldsValue({ material_name: t.name })
+        setToolAlts([t.name, ...t.alternatives.map((a: { name: string }) => a.name)])
+        message.success(`Identified: ${t.name}${t.description ? ` — ${t.description}` : ''}`)
+      } else if (r.status === 'error') {
+        setToolJobId(null)
+        message.warning(r.error ?? 'Could not identify the tool — type it manually.')
+      }
+      return r
+    },
+  })
 
   const submit = async () => {
     const v = await form.validateFields()
@@ -98,7 +152,9 @@ export default function ReturnablesPage() {
       </Typography.Paragraph>
 
       <Space style={{ marginBottom: 12 }}>
-        <Button type="primary" onClick={() => setOpen(true)}>Loan a tool</Button>
+        <Button type="primary" onClick={() => {
+          setBadge(null); setToolAlts([]); setToolJobId(null); setOpen(true)
+        }}>Loan a tool</Button>
       </Space>
 
       <Table
@@ -116,11 +172,45 @@ export default function ReturnablesPage() {
         onCancel={() => setOpen(false)} confirmLoading={create.isPending} okText="Record loan"
         destroyOnHidden>
         <Form form={form} layout="vertical" preserve={false} initialValues={{ qty: 1 }}>
+          <Space style={{ marginBottom: 12 }} wrap>
+            <Button icon={<QrcodeOutlined />} onClick={() => setScanOpen(true)}>
+              Scan badge
+            </Button>
+            <Upload accept="image/*" maxCount={1} showUploadList={false}
+              customRequest={async ({ file, onSuccess, onError }) => {
+                const fd = new FormData()
+                fd.append('file', file as Blob)
+                try {
+                  const r = await api.post('/ai/jobs', fd, { params: { kind: 'tool_identify' } })
+                  setToolJobId(r.data.job_id)
+                  onSuccess?.(r.data)
+                } catch (e) {
+                  message.error(errMsg(e))
+                  onError?.(e as Error)
+                }
+              }}>
+              <Button icon={<CameraOutlined />} loading={toolJobId != null}>
+                {toolJobId != null ? 'Identifying…' : 'Identify tool (photo)'}
+              </Button>
+            </Upload>
+            {toolJobId != null && <Spin size="small" />}
+            {badge && (
+              <Tag color={badge.active ? 'green' : 'red'}>
+                badge: {badge.name}{badge.active ? '' : ' (inactive)'}
+              </Tag>
+            )}
+          </Space>
           <Form.Item name="material_name" label="Tool / item" rules={[{ required: true }]}>
-            <Input placeholder="e.g. Torque wrench" />
+            {toolAlts.length > 1 ? (
+              <Select options={toolAlts.map((a) => ({ value: a, label: a }))}
+                popupMatchSelectWidth={false} showSearch
+                onChange={(v) => form.setFieldsValue({ material_name: v })} />
+            ) : (
+              <Input placeholder="e.g. Torque wrench — or use Identify tool ↑" />
+            )}
           </Form.Item>
           <Form.Item name="borrower_name" label="Borrower" rules={[{ required: true }]}>
-            <Input placeholder="Employee name" />
+            <Input placeholder="Employee name — or Scan badge ↑" />
           </Form.Item>
           <Form.Item name="borrower_phone" label="Phone (optional)"><Input /></Form.Item>
           <Space size="middle">
@@ -132,6 +222,9 @@ export default function ReturnablesPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <QrScanner open={scanOpen} title="Scan employee badge"
+        onClose={() => setScanOpen(false)} onDecode={onBadgeDecoded} />
     </div>
   )
 }
