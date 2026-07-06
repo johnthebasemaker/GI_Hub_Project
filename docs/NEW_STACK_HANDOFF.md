@@ -4,28 +4,39 @@ Single entry point for continuing the **new React + FastAPI + PostgreSQL** build
 GI Hub. The **live Streamlit app is unchanged and stays on SQLite** — the new stack
 is a *separate* set of processes. Per-slice history is in
 [`docs/POSTGRES_MIGRATION.md` §8](POSTGRES_MIGRATION.md). SME rules live in
-[`handoff.md`](../handoff.md) (SME Canon). Last updated 2026-07-05.
+[`handoff.md`](../handoff.md) (SME Canon). Last updated 2026-07-06.
 
 ---
 
-## 🎯 CURRENT STATUS (2026-07-05) — read this first
-The new stack is **feature-complete, hardened, and ship-ready.** Ten build slices
-landed (see §3 and `POSTGRES_MIGRATION.md` §8), all on `main`, all green:
-**bug_check 599/0 · crawler 21/21 · dual_ci 64/64 · derived-view parity · service+guard 78/78.**
-A **turnkey deploy kit** now exists (`deploy/` + [`docs/DEPLOY.md`](DEPLOY.md)) but has
-**NOT been run against any server.**
+## 🎯 CURRENT STATUS (2026-07-06) — read this, then [`PROJECT_STATUS.md`](PROJECT_STATUS.md)
 
-The React SPA also got a **UI/UX overhaul** (2026-07-05, presentation-only): the
-legacy "Navy vault, gold key" brand theme (`frontend/src/theme/`), a **dark/light
-toggle** (dark-first), a glassmorphic login, and a subtle-premium animation layer.
-**No API / data-layer / backend change** — see `POSTGRES_MIGRATION.md` §8.
+**🧊 CODE FREEZE.** The new stack is **feature-complete far beyond the original
+ten slices** — since 2026-07-05 four more full programs landed on `main`:
 
-**The ONLY thing left is the actual cutover, and it's the user's call:**
-provision the (parked) Hetzner box → run the kit → do the one-time SQLite→PostgreSQL
-data migration (`dual_ci`) → point users at React. **No feature work is in progress.**
-Optional, non-blocking improvement ideas are catalogued in §5 (nothing there is
-started — pick from it only if the user asks). Do NOT deploy or migrate data without
-the user's explicit go-ahead + target details.
+- **Man-Hours & Labor Tracking** (Phases 10 + 11A/B/C): roster, timesheets +
+  xlsx import, MH estimator, variance, SME link layer (Equipment Scorecard),
+  auto-draft estimates + manpower forecast — exact `{hod, admin}` lock.
+- **Intelligence Layer** (AI-0…AI-5): SSE Hub Assistant, PR/PO PDF extraction,
+  handwriting-OCR job queue (`ai_jobs` table), client-side QR Smart Scan +
+  tool vision, NL→SQL on the true read-only `gi_ai_ro` PG login, AI insights
+  + streaming EOD summary. All local Ollama; per-feature admin-console flags.
+- **SME React rebuild** (S1…S5): the full read-facing estimator — dual
+  TS/Python cascade engine with golden-fixture parity (509 comparisons,
+  both sides in CI), Dashboard (both sub-views), drag-priority Session
+  Builder + client-side suggestion simulations + `?scenario=` sharing,
+  Location/matrix reports, Execution Plan (3 sub-views), virtualized Total
+  Overview. **S6 (Master Data CRUD) deferred to cutover by locked ruling.**
+
+Gates at freeze: **service_tests 352/352 · bug_check 599/0 · parity_check 5/5 ·
+parity:sme 509 · frontend build ✅ · alembic clean.** The deploy kit
+(`deploy/` + [`docs/DEPLOY.md`](DEPLOY.md)) still has **NOT been run against
+any server.**
+
+**What's left (user's call, in his order):** Phase 7 WhatsApp/email outbox
+(waiting on the user's Meta permanent token) · deployment cutover + Phase B
+restructure · SME S6 after cutover. **No feature work is in progress — do NOT
+write code until the user brings Meta keys or the cutover go-ahead.** Full
+resume snapshot: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
 
 ---
 

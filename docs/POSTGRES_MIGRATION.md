@@ -1,9 +1,20 @@
-# PostgreSQL Migration — Phase 0 (Plan Only, No Code)
+# PostgreSQL Migration & New-Stack Build Log
 
-**Status:** PLANNING. Nothing in this document is implemented. The app runs on
-SQLite today and stays on SQLite until we deliberately execute the phases below.
+**Status (2026-07-06): BUILD COMPLETE — 🧊 CODE FREEZE, awaiting cutover.**
+The plan below (written at Phase 0) has been executed far beyond its original
+scope: the new **React + FastAPI + PostgreSQL** stack is feature-complete
+(parity build, Man-Hours portal, Intelligence Layer AI-0…AI-5, SME React
+rebuild S1…S5), all gates green (`service_tests` 352/352 · `bug_check` 599/0 ·
+`parity_check` 5/5 · `parity:sme` 509). The **live production app still runs
+Streamlit + SQLite, unchanged** — PostgreSQL is its verified mirror until
+cutover day. Only Phase 7 (WhatsApp/email — Meta-token hold) and SME S6
+(Master Data CRUD — deferred to cutover) remain.
 
-**Goal:** Make GI Hub run on **PostgreSQL** (localhost now, server later) for real
+➡ **For "where we left off", read [`PROJECT_STATUS.md`](PROJECT_STATUS.md).**
+The authoritative per-slice history is **§8 Run Log** below (newest first).
+Sections 1–7 are the original planning document, kept for rationale/history.
+
+**Goal (original):** Make GI Hub run on **PostgreSQL** (localhost now, server later) for real
 multi-user concurrency, **without breaking a single feature** and with an
 **instant rollback** at every step.
 

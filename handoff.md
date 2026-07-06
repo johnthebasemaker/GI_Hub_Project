@@ -1,5 +1,12 @@
 # GI Hub ERP — Handoff
 
+> **ℹ️ 2026-07-06:** This file governs the **LEGACY Streamlit app + SME Canon**
+> (still production, still frozen — everything below remains in force).
+> The **new React + FastAPI + PostgreSQL stack** is feature-complete and under
+> 🧊 code freeze; a React rebuild of the SME portal (read-only, Canon-compliant)
+> now lives in `frontend/src/sme/`. For current overall status and where work
+> resumes, read [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) first.
+
 ---
 
 > # 🛑 READ THIS FIRST — SME ↔ ERP INTEGRATION CANON (locked 2026-06, round 20.5.1)

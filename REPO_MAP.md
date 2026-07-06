@@ -14,6 +14,14 @@ scheduled for cutover day and happens in a single commit; until then **nothing
 moves**. Read [`docs/NEW_STACK_HANDOFF.md`](docs/NEW_STACK_HANDOFF.md) before
 touching the new stack, and `handoff.md` (SME Canon) before touching legacy.
 
+> **STATUS 2026-07-06 — 🧊 CODE FREEZE.** Both apps green; the new stack is
+> feature-complete (parity build + Man-Hours + Intelligence Layer AI-0…AI-5 +
+> SME React rebuild S1…S5). Remaining: Phase 7 (Meta-token hold), cutover,
+> SME S6 (post-cutover). Resume snapshot:
+> [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) — including the
+> **bulletproof separation invariants** (12 guarantees) that keep feature work
+> on one stack from ever affecting the other.
+
 ## Ownership
 
 | Path | Owner | Notes |
@@ -45,11 +53,22 @@ touching the new stack, and `handoff.md` (SME Canon) before touching legacy.
 1. New-stack work touches **only** `backend/`, `frontend/`, `deploy/`, `docs/`.
 2. Never edit `database.py` or the Streamlit app for new-stack work; legacy
    gates (599/0 · 21/21) must stay green after every change.
-3. SME (`sme_*` tables) is frozen — read-only, explicit-PK ordering.
+3. SME (`sme_*` tables) is frozen — read-only, explicit-PK ordering. The new
+   stack has ZERO sme_* write endpoints (test-proven); Master Data CRUD is
+   deferred to cutover (Phase S6) to prevent dual-write drift.
 4. Keep local PG == SQLite (reset with `backend/dual_ci.py`); verify with the
-   5-check list in `docs/NEW_STACK_HANDOFF.md` §1b.
+   5-check list in `docs/NEW_STACK_HANDOFF.md` §1b and
+   `backend/api/parity_check.py` (5/5).
 5. Two deployment surfaces exist until cutover — legacy = root compose,
    new stack = `deploy/`. Don't mix them.
+6. **SME engine parity contract:** `frontend/src/sme/engine.ts` and
+   `backend/api/sme_engine.py` are byte-equivalent ports proven against
+   `backend/api/sme_parity_fixture.json`/`sme_parity_golden.json` (509
+   comparisons; `service_tests` suite G + `npm run parity:sme`). Any numeric
+   change = change BOTH engines + regenerate the golden in ONE commit.
+7. Audit rows are never deleted (`system_audit_log`); tests use delta counts.
+8. 🧊 While the CODE FREEZE stands: no new code, refactors, or sweeps —
+   activation is the user's Meta keys (Phase 7) or the cutover go-ahead.
 
 ## Phase B (cutover day, pre-approved plan)
 
