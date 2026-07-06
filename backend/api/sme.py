@@ -433,7 +433,43 @@ _PLAN_EXPORT_KEYS = {
     "session-full": ("SME Session Report (priority order)", "lines"),
     "order-list": ("SME Session Order List (to procure)", "procurement"),
     "feasibility": ("SME Session Feasibility", "feasibility"),
+    "overview": ("SME Total Overview (per equipment × system code)", "_overview"),
 }
+
+
+def _overview_rows(model: dict, plan: dict) -> list[dict]:
+    """Per-(tag, code) rollup of oracle cascade lines for the Total Overview
+    grid — presentation aggregation, deliberately outside the parity-locked
+    engine (mirrors frontend/src/sme/session.ts codeStats + progress meta)."""
+    acc: dict[tuple[str, str], dict] = {}
+    for ln in plan["lines"]:
+        k = (ln["Equipment_Tag_No"], ln["Lining_System_Code"])
+        a = acc.setdefault(k, {"demand": 0.0, "alloc": 0.0, "short": 0.0})
+        a["demand"] += ln["Demand_Qty"]
+        a["alloc"] += ln["Allocated_Qty"]
+        a["short"] += ln["Shortfall_Qty"]
+    out, sno = [], 0
+    for tag in plan["order_used"]:
+        meta = model["tag_meta"].get(tag, {})
+        for code in model["codes_by_tag"].get(tag, []):
+            u = model["units"][(tag, code)]
+            a = acc.get((tag, code), {"demand": 0.0, "alloc": 0.0, "short": 0.0})
+            pct = min(100.0, a["alloc"] / a["demand"] * 100) if a["demand"] > 0 else 100.0
+            sno += 1
+            out.append({
+                "S_No": sno, "Equipment_Tag_No": tag, "Name": meta.get("Name", ""),
+                "Substrate": meta.get("Substrate", ""), "Type": meta.get("Type", ""),
+                "Location": meta.get("Location", ""), "Lining_System_Code": code,
+                "System_Name": u["short_name"],
+                "Total_SQM": round(u["total_original"], 2),
+                "Done_SQM": round(u["done"], 2),
+                "Remaining_SQM": round(u["remaining"], 2),
+                "Total_Demand": round(a["demand"], 3),
+                "Allocated": round(a["alloc"], 3),
+                "Shortfall_Qty": round(a["short"], 3),
+                "Fulfillment_Pct": round(pct, 1),
+            })
+    return out
 
 
 class PlanExportBody(CascadeBody):
@@ -468,7 +504,7 @@ async def plan_export(body: PlanExportBody,
     title, part = _PLAN_EXPORT_KEYS[body.key]
     if body.title and body.title.strip():
         title = body.title.strip()
-    items = plan[part]
+    items = _overview_rows(model, plan) if part == "_overview" else plan[part]
     columns = list(items[0].keys()) if items else []
     rows = [[r.get(c) for c in columns] for r in items]
     render, media = _FORMATS[fmt]
@@ -476,6 +512,71 @@ async def plan_export(body: PlanExportBody,
     return StreamingResponse(io.BytesIO(data), media_type=media,
                              headers={"Content-Disposition":
                                       f'attachment; filename="sme-{body.key}.{fmt}"'})
+
+
+# --- Phase S5: production log + progress list (Execution Plan reads) -----------
+# Pure reads over sme_consumption_log / sme_sqm_progress per the SME Canon.
+# The legacy `consumption_log` VIEW exposes committed rows only — same here.
+sme_log_t = _MD.tables["sme_consumption_log"]
+
+
+async def _production_log_rows(session: AsyncSession, site_id: str | None,
+                               equipment_tag: str | None = None,
+                               lining_system_code: str | None = None) -> list[dict]:
+    l = sme_log_t
+    stmt = select(l.c["entry_date"], l.c["Equipment_Tag_No"], l.c["Lining_System_Code"],
+                  l.c["Material_Code"], l.c["SQM_Completed"], l.c["Expected_Qty"],
+                  l.c["Actual_Qty"]).where(l.c["status"] == "committed")
+    if site_id is not None:
+        stmt = stmt.where(l.c["Site_ID"] == site_id)
+    if equipment_tag:
+        stmt = stmt.where(l.c["Equipment_Tag_No"] == equipment_tag)
+    if lining_system_code:
+        stmt = stmt.where(l.c["Lining_System_Code"] == lining_system_code)
+    stmt = stmt.order_by(l.c["entry_date"], l.c["Equipment_Tag_No"],
+                         l.c["Lining_System_Code"], l.c["Material_Code"], l.c["id"])
+    return _rows(await session.execute(stmt))
+
+
+@router.get("/production-log",
+            summary="Committed SME consumption entries (date-wise production detail)")
+async def production_log(site_id: Optional[str] = None,
+                         equipment_tag: Optional[str] = None,
+                         lining_system_code: Optional[str] = None,
+                         user: dict = Depends(require_level(2)),
+                         session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, site_id)
+    return {"items": await _production_log_rows(session, site_id,
+                                                equipment_tag, lining_system_code)}
+
+
+async def _progress_list_rows(session: AsyncSession, site_id: str | None) -> list[dict]:
+    """Legacy Progress List: per (tag, code) plan vs completion with status.
+    Done includes the staged column (matches load_all's in-flight view)."""
+    snap = await _snapshot_rows(session, site_id)
+    model = sme_engine.build_model(snap["equipment"], snap["recipes"],
+                                   snap["materials"], snap["progress"])
+    out = []
+    for tag in model["default_order"]:
+        meta = model["tag_meta"].get(tag, {})
+        for code in model["codes_by_tag"].get(tag, []):
+            u = model["units"][(tag, code)]
+            total = u["total_original"]
+            done = u["done"]
+            pct = round(100 * done / total, 1) if total > 0 else 0.0
+            status = ("✅ Complete" if pct >= 100 else
+                      "🔄 In Progress" if done > 0 else "⏳ Not Started")
+            out.append({"Location": meta.get("Location", ""),
+                        "Equipment_Tag_No": tag,
+                        "Name": meta.get("Name", ""),
+                        "Lining_System_Code": code,
+                        "System_Name": u["short_name"],
+                        "Total_SQM": round(total, 2),
+                        "Completed_SQM": round(done, 2),
+                        "Remaining_SQM": round(max(total - done, 0), 2),
+                        "Completion_Pct": pct,
+                        "Status": status})
+    return out
 
 
 # --- Phase S4: system-code matrix rollup (inverse of the equipment report) -----
@@ -540,6 +641,10 @@ async def sme_export(key: str, format: str = "xlsx", site_id: Optional[str] = No
         items = _rows(await session.execute(text(SQL_SME_MATERIALS + ' ORDER BY s."Material_Code"')))
     elif key == "system-code-report":
         title, items = "SME System Code Report", await _system_code_report_rows(session, site_id)
+    elif key == "progress-list":
+        title, items = "SME Progress List", await _progress_list_rows(session, site_id)
+    elif key == "production-log":
+        title, items = "SME Production Log (committed)", await _production_log_rows(session, site_id)
     else:
         raise HTTPException(404, f"unknown SME export {key!r}")
 

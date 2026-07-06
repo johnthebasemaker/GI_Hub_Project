@@ -7,8 +7,10 @@ import {
 } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 import { buildColumns } from '../lib/columns'
+import ExecutionPlan from '../sme/ExecutionPlan'
 import LocationReport from '../sme/LocationReport'
 import { EquipmentMatrixReport, SystemCodeReport } from '../sme/MatrixReports'
+import TotalOverview from '../sme/TotalOverview'
 import { ScenarioProvider } from '../sme/ScenarioContext'
 import SessionBuilder from '../sme/SessionBuilder'
 import SessionReport from '../sme/SessionReport'
@@ -122,6 +124,8 @@ function SmePageBody({ siteId, setSiteId, sites }: {
           { key: 'builder', label: '🔍 Session Builder', children: <SessionBuilder siteId={siteId} /> },
           { key: 'session', label: '📦 Session Report', children: <SessionReport siteId={siteId} /> },
           { key: 'locations', label: '📍 Location Report', children: <LocationReport siteId={siteId} /> },
+          { key: 'exec', label: '⚙️ Execution Plan', children: <ExecutionPlan siteId={siteId} /> },
+          { key: 'overview', label: '📈 Total Overview', children: <TotalOverview siteId={siteId} /> },
           {
             key: 'eq-matrix', label: '📋 Equipment Report',
             children: (

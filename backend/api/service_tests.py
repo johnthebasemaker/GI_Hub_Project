@@ -2167,6 +2167,30 @@ async def test_sme_plan_layer():
               r.status_code == 200 and "System_Code" in r.text
               and "Equipment_Count" in r.text, f"got {r.status_code}")
 
+        # Phase S5: Execution Plan reads + Total Overview oracle export.
+        r = await ac.get("/sme/production-log", headers=H(hod_t))
+        check("production-log → 200 with items list (committed only)",
+              r.status_code == 200 and isinstance(r.json().get("items"), list),
+              f"got {r.status_code}")
+        r = await ac.get("/sme/production-log", headers=H(worker_t))
+        check("worker (lvl 0) → 403 on production-log", r.status_code == 403,
+              f"got {r.status_code}")
+        r = await ac.get("/sme/export/progress-list",
+                         params={"format": "csv"}, headers=H(admin_t))
+        check("progress-list export → 200 with plan-vs-done columns",
+              r.status_code == 200 and "Completion_Pct" in r.text
+              and "Remaining_SQM" in r.text, f"got {r.status_code}")
+        r = await ac.post("/sme/plan/export", headers=H(admin_t),
+                          json={"priority_order": order, "key": "overview",
+                                "format": "csv"})
+        n_rows = max(len(r.text.strip().splitlines()) - 1, 0) if r.status_code == 200 else -1
+        n_lines_pairs = len({(x["Equipment_Tag_No"], x["Lining_System_Code"])
+                             for x in body.get("lines", [])})
+        check("overview export → one row per (tag, code) pair of the cascade",
+              r.status_code == 200 and "Fulfillment_Pct" in r.text
+              and n_rows >= n_lines_pairs,
+              f"got {r.status_code}, rows {n_rows} vs pairs {n_lines_pairs}")
+
 
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")

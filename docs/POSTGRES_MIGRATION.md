@@ -221,6 +221,46 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-06 · actor=interactive · branch=`main` · 🏗 Phase S5 — Execution Plan (3 sub-views) + Total Overview master grid — LEGACY TAB PARITY COMPLETE (8/8 read tabs)
+- **⚙️ Execution Plan** (NEW ExecutionPlan.tsx), 3 sub-views as legacy Tab 4:
+  · main plan — session-scoped critical-code analysis (equipment + code
+    selectors; the critical code DEFAULTS to the equipment's worst-fulfillment
+    code — a smart-default upgrade over legacy), RED 1️⃣ critical shortage
+    section then AMBER 2️⃣–N️⃣ per-code sections with coverage pills, and a
+    numeric procurement narrative (live-verified on the shared J022/J021
+    session: "order the 4 critical-code materials (Code 7) first — 6,388.2
+    units — then 6 shortage lines across 3 other codes");
+  · 📋 Progress List — plan-vs-done per (tag, code) from the snapshot
+    (65 scopes, status ✅/🔄/⏳, completion coloring, Location + Status
+    filters) + date-wise production detail blocks from the new log endpoint
+    (first-class empty state — the mirror has zero committed entries);
+  · 📊 Consumption Comparison — client aggregation with the legacy SQM
+    dedup per (date, tag, code), expected-vs-actual variance, cascading
+    Location→Equipment→Code filters, 4 KPI drill-downs, and the legacy ±1%
+    tinting (over amber · under blue · on-target green).
+- **📈 Total Overview** (NEW TotalOverview.tsx): the master (Equipment ×
+  System Code) grid — 65 pairs cascaded in default order — with cascading
+  Location/Type/Code filters + readiness-status filter (All / Fully Ready /
+  Partial 50–99 / Blocked <50; live-verified 65→41 under Blocked), 6 KPI
+  drill-downs (incl. fulfillment-weighted Shortfall SQM 22,263.8), **antd
+  `virtual` scrolling** (15 windowed row elements over the full set), 4-tier
+  row tinting, per-code material expanders (cascade-based coverage +
+  availability), and oracle-rendered Excel/PDF.
+- **Backend (authorized read-only additions, Canon-safe)**:
+  GET /sme/production-log (committed sme_consumption_log rows, site-scoped,
+  optional tag/code filters — matches the legacy committed-only view);
+  export keys progress-list + production-log on GET /sme/export; plan-export
+  key `overview` (per-(tag, code) rollup of oracle cascade lines — a
+  presentation aggregation in sme.py, deliberately OUTSIDE the parity-locked
+  engine).
+- Gates: service_tests **352/352** (+4: production-log shape + worker 403,
+  progress-list columns, overview rows ≥ cascade pairs) · frontend build ✅ ·
+  parity:sme 509 ✅ · parity_check 5/5 ✅ · bug_check 599/0 ✅ · alembic
+  clean (zero schema changes) · clean console.
+- **Milestone: all 8 read-facing legacy SME tabs are now rebuilt and exceeded
+  in React.** Remaining: S6 = Master Data CRUD (deferred to cutover by
+  ruling) + polish.
+
 ### 2026-07-06 · actor=interactive · branch=`main` · 🗺 Phase S4 — Location & matrix reports + Dashboard procurement sub-view
 - **Dashboard completed** (SmeDashboard + NEW ProcurementView.tsx): Segmented
   toggle restores the legacy dash_view radio; 🛒 Material Requirement &

@@ -32,6 +32,8 @@ export interface UnitRef {
   remaining: number
   /** Original (planned) SQM before progress deduction — matrix reports use this. */
   original: number
+  /** Completed SQM (committed + staged) — progress views use this. */
+  done: number
   name: string
   location: string
   type: string
@@ -64,7 +66,7 @@ export function allUnits(model: SmeModel): UnitRef[] {
       if (!u) continue
       out.push({
         tag, code, shortName: u.short_name, remaining: u.remaining,
-        original: u.total_original,
+        original: u.total_original, done: u.done,
         name: meta?.Name ?? '', location: meta?.Location ?? '',
         type: meta?.Type ?? '', substrate: meta?.Substrate ?? '',
       })

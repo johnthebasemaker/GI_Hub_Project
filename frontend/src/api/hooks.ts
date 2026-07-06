@@ -792,6 +792,25 @@ export async function postDownloadDocument(path: string, body: unknown, filename
   URL.revokeObjectURL(url)
 }
 
+// --- SME rebuild (Phase S5): committed production log (Execution Plan reads) ---
+export interface SmeLogRow {
+  entry_date: string
+  Equipment_Tag_No: string
+  Lining_System_Code: string
+  Material_Code: string
+  SQM_Completed: number | null
+  Expected_Qty: number | null
+  Actual_Qty: number | null
+}
+export function useSmeProductionLog(siteId?: string) {
+  return useQuery({
+    queryKey: ['/sme/production-log', siteId],
+    queryFn: async () =>
+      (await api.get<{ items: SmeLogRow[] }>('/sme/production-log',
+        { params: siteId ? { site_id: siteId } : {} })).data.items,
+  })
+}
+
 // --- SME rebuild (Phase S2): unified model snapshot for the client engine ------
 export function useSmeSnapshot(siteId?: string) {
   return useQuery({
