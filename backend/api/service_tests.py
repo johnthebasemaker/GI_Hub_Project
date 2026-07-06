@@ -60,6 +60,9 @@ async def _count(session, table, *where) -> int:
 # --- Suite A: service invariants (rolled back) -------------------------------
 async def test_create_and_submit_pr():
     async with SessionLocal() as s:
+        # Delta-counted: PR numbers restart per day, so a leftover audit row
+        # from a cleaned-up test PR with the same number must not fail this.
+        audit_before = await _count(s, audit_t, audit_t.c["action_type"] == "CREATE_PR")
         res = await procurement.create_pr(
             s, username="svc_hod", site_id="CNCEC",
             lines=[{"SAP_Code": "1001", "Requested_Qty": 3},
@@ -68,9 +71,9 @@ async def test_create_and_submit_pr():
         check("create_pr returns created", res.get("created") is True, str(res))
         n_lines = await _count(s, pr_master_t, pr_master_t.c["PR_Number"] == pr)
         check("create_pr writes one row per line", n_lines == 2, f"got {n_lines}")
-        n_audit = await _count(s, audit_t, audit_t.c["action_type"] == "CREATE_PR",
-                               audit_t.c["details"].like(f"%{pr}%"))
-        check("create_pr writes a CREATE_PR audit", n_audit == 1, f"got {n_audit}")
+        audit_after = await _count(s, audit_t, audit_t.c["action_type"] == "CREATE_PR")
+        check("create_pr writes a CREATE_PR audit", audit_after == audit_before + 1,
+              f"{audit_before} → {audit_after}")
 
         sub = await procurement.submit_pr(s, username="svc_hod", pr_number=pr, site_id="CNCEC")
         check("submit_pr succeeds", sub.get("submitted") is True, str(sub))
@@ -1414,7 +1417,12 @@ async def test_ai_layer():
         check("extract/pr is preview-only (silent-insert flaw fixed — no rows written)",
               n_pr_after == n_pr_before, f"{n_pr_before} → {n_pr_after}")
 
-        # Confirm path = the EXISTING audited service (create_pr).
+        # Confirm path = the EXISTING audited service (create_pr). Audit proof
+        # is DELTA-counted: PR numbers restart per day, so audit rows from
+        # earlier (cleaned-up) test PRs can share the number.
+        async with SessionLocal() as s:
+            audit_before = await _count(s, audit_t,
+                                        audit_t.c["action_type"] == "CREATE_PR")
         r = await ac.post("/hod/prs", headers=H(hod_t2), json={
             "site_id": "CNCEC", "notes": "Imported from PR PDF 3001234567",
             "lines": [{"SAP_Code": m["SAP_Code"], "Requested_Qty": m["Requested_Qty"]}
@@ -1423,10 +1431,12 @@ async def test_ai_layer():
         check("confirm → PR created through the audited service", r.status_code == 201
               and conf.get("created") is True and conf.get("lines") == 2, r.text[:160])
         async with SessionLocal() as s:
-            n_audit = await _count(s, audit_t, audit_t.c["action_type"] == "CREATE_PR",
-                                   audit_t.c["details"].like(f"%{conf['pr_number']}%"))
+            audit_after = await _count(s, audit_t,
+                                       audit_t.c["action_type"] == "CREATE_PR")
             check("confirm wrote the CREATE_PR audit row (legacy never did)",
-                  n_audit == 1, f"got {n_audit}")
+                  audit_after == audit_before + 1, f"{audit_before} → {audit_after}")
+            # Cleanup the PR rows (the audit row stays — it's a true record of
+            # a write that really happened; delta counting makes that safe).
             await s.execute(pr_master_t.delete().where(
                 pr_master_t.c["PR_Number"] == conf["pr_number"]))
             await s.commit()
@@ -1506,6 +1516,195 @@ async def test_ai_layer():
                               json={"key": "ai_doc_intel_enabled", "value": "1"})
             check("doc-intel flag restored", rr.status_code == 200,
                   f"got {rr.status_code}")
+
+        # ---- Phase AI-3: handwriting OCR (async jobs, mocked vision) ---------
+        import io as _io2
+
+        from PIL import Image as _Image
+
+        import backend.api.ai.jobs as ai_jobs_mod
+        ai_jobs_t = _MD.tables["ai_jobs"]
+
+        def tiny_jpeg() -> bytes:
+            buf = _io2.BytesIO()
+            _Image.new("RGB", (40, 40), (200, 180, 40)).save(buf, format="JPEG")
+            return buf.getvalue()
+
+        async def poll_until_final(jid: int, tok: str) -> dict:
+            for _ in range(80):
+                await asyncio.sleep(0.05)
+                r = await ac.get(f"/ai/jobs/{jid}", headers=H(tok))
+                if r.json().get("status") in ("done", "error"):
+                    return r.json()
+            return r.json()
+
+        try:
+            # Exact lock: {store_keeper, admin} — the legacy Daily Issue Log gate.
+            r = await ac.post("/ai/jobs", headers=H(hod_t2),
+                              params={"kind": "ocr_consumption"},
+                              files={"file": ("l.jpg", tiny_jpeg(), "image/jpeg")})
+            check("ocr job: hod → 403 (exact store_keeper lock)", r.status_code == 403,
+                  f"got {r.status_code}")
+            r = await ac.post("/ai/jobs", headers=H(worker_t),
+                              params={"kind": "nope"},
+                              files={"file": ("l.jpg", tiny_jpeg(), "image/jpeg")})
+            check("ocr job: bad kind → 422", r.status_code == 422, f"got {r.status_code}")
+            r = await ac.post("/ai/jobs", headers=H(worker_t),
+                              params={"kind": "ocr_consumption"},
+                              files={"file": ("l.jpg", b"not an image", "image/jpeg")})
+            check("ocr job: corrupt image fails FAST at upload (422, no dead job)",
+                  r.status_code == 422, f"got {r.status_code}")
+
+            # Full lifecycle with a mocked vision model.
+            saved2 = (aic.health, aic.list_models, aic.generate)
+            seen: dict = {}
+
+            async def ok_health():
+                return True
+
+            async def ok_models():
+                return [aic.MODEL_VISION, aic.MODEL_CHAT]
+
+            async def fake_vision(model, prompt, **kw):
+                seen["model"] = model
+                seen["images"] = bool(kw.get("images"))
+                seen["system"] = kw.get("system") or ""
+                import json as _json
+                return _json.dumps({"rows": [
+                    {"issued_to": "Imran", "material_text": "water storage tank 10000",
+                     "uom": "Each", "quantity": 2, "work_type": "site"},
+                    {"issued_to": "Ali", "material_text": "zzz nonexistent widget",
+                     "uom": "PCS", "quantity": 5, "work_type": ""}]})
+
+            aic.health, aic.list_models, aic.generate = ok_health, ok_models, fake_vision
+            try:
+                r = await ac.post("/ai/jobs", headers=H(worker_t),
+                                  params={"kind": "ocr_consumption"},
+                                  files={"file": ("l.jpg", tiny_jpeg(), "image/jpeg")})
+                check("ocr job accepted → 202 + id", r.status_code == 202
+                      and r.json().get("job_id"), r.text[:120])
+                jid = r.json()["job_id"]
+                j = await poll_until_final(jid, worker_t)
+                check("job lifecycle: queued → done via the atomic-claim worker",
+                      j["status"] == "done", str(j)[:200])
+                check("vision call: right model + image attached + strict JSON prompt",
+                      seen.get("model") == aic.MODEL_VISION and seen.get("images")
+                      and "STRICT JSON" in seen.get("system", ""), str(seen)[:120])
+                rr_ = {x["material_text"]: x for x in j["result"]["rows"]}
+                check("fuzzy resolution: legible text → auto w/ SAP, junk → unknown",
+                      rr_["water storage tank 10000"]["match_state"] == "auto"
+                      and rr_["water storage tank 10000"]["SAP_Code"] == "1001"
+                      and rr_["zzz nonexistent widget"]["match_state"] == "unknown",
+                      str(j["result"]["rows"])[:200])
+                r = await ac.get(f"/ai/jobs/{jid}", headers=H(admin_t))
+                check("admin may inspect any job", r.status_code == 200,
+                      f"got {r.status_code}")
+
+                # DN kind: header + items shape survives the round trip.
+                async def fake_vision_dn(model, prompt, **kw):
+                    import json as _json
+                    return _json.dumps({
+                        "header": {"DN_No": "15668", "Date": "2026-06-02",
+                                   "Mob_From": "GI - ABU HADRIYAH", "Driver_Name": "Imran",
+                                   "Vehicle_No": "3909", "Prepared_by": "H", "Mob_To": "CNCEC"},
+                        "items": [{"material_text": "air compressor 750",
+                                   "uom": "Each", "quantity": 1}]})
+                aic.generate = fake_vision_dn
+                r = await ac.post("/ai/jobs", headers=H(worker_t),
+                                  params={"kind": "ocr_delivery_note"},
+                                  files={"file": ("dn.jpg", tiny_jpeg(), "image/jpeg")})
+                j = await poll_until_final(r.json()["job_id"], worker_t)
+                check("DN job: header preserved + items fuzzy-resolved",
+                      j["status"] == "done" and j["result"]["header"]["DN_No"] == "15668"
+                      and j["result"]["items"][0]["match_state"] == "auto"
+                      and j["result"]["items"][0]["SAP_Code"] == "1003", str(j)[:240])
+
+                # Unparseable model reply → clean job error, not a crash.
+                async def garbage_vision(model, prompt, **kw):
+                    return "I cannot read this image, sorry!"
+                aic.generate = garbage_vision
+                r = await ac.post("/ai/jobs", headers=H(worker_t),
+                                  params={"kind": "ocr_consumption"},
+                                  files={"file": ("l.jpg", tiny_jpeg(), "image/jpeg")})
+                j = await poll_until_final(r.json()["job_id"], worker_t)
+                check("unparseable model reply → job error w/ paste-tab hint",
+                      j["status"] == "error" and "Paste" in (j.get("error") or ""),
+                      str(j)[:160])
+
+                # Ollama offline → job error with the friendly preflight message.
+                async def down_health():
+                    return False
+                aic.health = down_health
+                r = await ac.post("/ai/jobs", headers=H(worker_t),
+                                  params={"kind": "ocr_consumption"},
+                                  files={"file": ("l.jpg", tiny_jpeg(), "image/jpeg")})
+                j = await poll_until_final(r.json()["job_id"], worker_t)
+                check("Ollama offline → job error names the Paste fallback",
+                      j["status"] == "error" and "offline" in (j.get("error") or "").lower(),
+                      str(j)[:160])
+            finally:
+                aic.health, aic.list_models, aic.generate = saved2
+
+            # Paste lane: pure-Python, works with NO mock (Ollama-independent).
+            r = await ac.post("/ai/paste/ocr_consumption", headers=H(worker_t),
+                              json={"text": "Imran\tair compressor 750\tEach\t3\n"
+                                            "Ali, water storage tank 10000, Each, 1"})
+            j = r.json()
+            check("paste lane (offline): both delimiter styles resolve to SAP codes",
+                  r.status_code == 200 and len(j["rows"]) == 2
+                  and {x["SAP_Code"] for x in j["rows"]} == {"1003", "1001"},
+                  r.text[:200])
+            r = await ac.post("/ai/paste/ocr_delivery_note", headers=H(worker_t),
+                              json={"text": "Customer: GI - HQ\nDriver: Imran\n"
+                                            "air compressor 750, Each, 2"})
+            j = r.json()
+            check("DN paste: header synonyms map (Customer→Mob_From) + items resolve",
+                  j["header"]["Mob_From"] == "GI - HQ"
+                  and j["items"][0]["match_state"] == "auto", r.text[:200])
+            r = await ac.post("/ai/paste/ocr_consumption", headers=H(worker_t),
+                              json={"text": "   "})
+            check("empty paste → 422", r.status_code == 422, f"got {r.status_code}")
+
+            # Orphan sweep: a queued row from a 'dead process' gets failed.
+            async with SessionLocal() as s:
+                from sqlalchemy import insert as _ins
+                orphan_id = (await s.execute(_ins(ai_jobs_t).values(
+                    kind="ocr_consumption", status="running", actor="worker",
+                    payload_json="{}").returning(ai_jobs_t.c["id"]))).scalar_one()
+                await s.commit()
+            n = await ai_jobs_mod.fail_orphans()
+            check("startup orphan sweep fails stranded jobs with a clear message",
+                  n >= 1, f"swept {n}")
+            r = await ac.get(f"/ai/jobs/{orphan_id}", headers=H(worker_t))
+            check("orphaned job reads back as error → 'resubmit the photo'",
+                  r.json()["status"] == "error"
+                  and "resubmit" in (r.json().get("error") or ""), r.text[:160])
+
+            # Flag off → both lanes 503; restored in the finally below.
+            r = await ac.put("/admin/settings", headers=H(admin_t),
+                             json={"key": "ai_ocr_enabled", "value": "0"})
+            check("ocr flag accepted by the settings whitelist", r.status_code == 200,
+                  f"got {r.status_code}")
+            try:
+                r = await ac.post("/ai/jobs", headers=H(worker_t),
+                                  params={"kind": "ocr_consumption"},
+                                  files={"file": ("l.jpg", tiny_jpeg(), "image/jpeg")})
+                check("ocr job while flagged off → 503", r.status_code == 503,
+                      f"got {r.status_code}")
+                r = await ac.post("/ai/paste/ocr_consumption", headers=H(worker_t),
+                                  json={"text": "a\tb\tc\t1"})
+                check("paste while flagged off → 503", r.status_code == 503,
+                      f"got {r.status_code}")
+            finally:
+                rr = await ac.put("/admin/settings", headers=H(admin_t),
+                                  json={"key": "ai_ocr_enabled", "value": "1"})
+                check("ocr flag restored", rr.status_code == 200, f"got {rr.status_code}")
+        finally:
+            # Cleanup: OCR jobs are test artifacts — remove every row we made.
+            from sqlalchemy import text as _text2
+            async with SessionLocal() as s:
+                await s.execute(_text2("DELETE FROM ai_jobs"))
+                await s.commit()
 
 
 def test_config_jwt():

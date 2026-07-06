@@ -573,6 +573,26 @@ class AuthSessions(Base):
     revoke_reason = Column(Text)  # rotated | logout | reuse-detected | admin-reset | user-deleted
     replaced_by = Column(Integer)  # successor session id (rotation chain)
 
+class AiJob(Base):
+    """Async AI job queue (NEW-STACK ONLY — no SQLite counterpart; dual_ci
+    leaves it empty on reset, same contract as auth_sessions). Backs the
+    long-running vision-OCR flow: POST /ai/jobs inserts a row + spawns an
+    in-process worker; React polls GET /ai/jobs/{id}. The queued→running
+    transition is an atomic claim UPDATE (multi-worker safe, same discipline
+    as the report scheduler); orphaned 'running' rows are failed on startup."""
+    __tablename__ = "ai_jobs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kind = Column(Text, nullable=False)          # ocr_consumption | ocr_delivery_note
+    status = Column(Text, nullable=False, server_default=text("'queued'"))
+    actor = Column(Text, nullable=False, index=True)  # username (owner-only polling)
+    Site_ID = Column(Text)
+    payload_json = Column(Text)                  # prepped-image b64 + input metadata
+    result_json = Column(Text)                   # parsed + fuzzy-resolved rows
+    error = Column(Text)
+    created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+
 class WbsMaster(Base):
     __tablename__ = "wbs_master"
     id = Column(Integer, primary_key=True, autoincrement=True)

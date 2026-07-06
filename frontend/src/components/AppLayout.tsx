@@ -2,7 +2,7 @@ import { Suspense } from 'react'
 import type { ReactNode } from 'react'
 import { Alert, Badge, Button, ConfigProvider, Layout, Menu, Skeleton, Space, Tooltip, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AuditOutlined, BarChartOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FallOutlined, FieldTimeOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, MoonOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, SunOutlined, TeamOutlined, ToolOutlined, FileProtectOutlined, ControlOutlined, MessageOutlined, UserAddOutlined } from '@ant-design/icons'
+import { AuditOutlined, BarChartOutlined, CameraOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FallOutlined, FieldTimeOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, MoonOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, SunOutlined, TeamOutlined, ToolOutlined, FileProtectOutlined, ControlOutlined, MessageOutlined, UserAddOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth, useWorkQueues } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -50,6 +50,7 @@ function buildMenu(level: number, role: string, q: Record<string, number>): Menu
             { key: '/entry/adjust', icon: <FormOutlined />, label: 'Stock Adjustment' },
             { key: '/entry/count', icon: <FormOutlined />, label: 'Stock Count' },
             { key: '/entry/returnables', icon: <ToolOutlined />, label: withCount('Returnable Items', q.returnables_overdue) },
+            { key: '/entry/ocr', icon: <CameraOutlined />, label: 'OCR Import' },
             { key: '/site/incoming', icon: <InboxOutlined />, label: withCount('Incoming Deliveries', q.incoming_dns) },
             { key: '/sk/requests', icon: <SolutionOutlined />, label: withCount('Supervisor Requests', q.sk_requests) },
           ],

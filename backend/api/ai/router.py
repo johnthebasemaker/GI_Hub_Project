@@ -26,12 +26,14 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import get_current_user, require_level
+from ..auth import get_current_user, require_level, require_roles
 from ..db import SessionLocal, get_session
 from ..services.ledger import _MD
 from ..services.procurement import classify_rl_bl_family
 from . import client as aic
+from . import jobs as ai_jobs
 from . import manual_qa
+from . import ocr
 from . import pdf_extract
 
 settings_t = _MD.tables["app_settings"]
@@ -40,7 +42,7 @@ inventory_t = _MD.tables["inventory"]
 router = APIRouter(prefix="/ai", tags=["ai"])
 
 _FLAG_DEFAULTS = {"ai_enabled": "1", "ai_assistant_enabled": "1",
-                  "ai_doc_intel_enabled": "1"}
+                  "ai_doc_intel_enabled": "1", "ai_ocr_enabled": "1"}
 
 
 async def _flags(session: AsyncSession) -> dict[str, bool]:
@@ -195,3 +197,84 @@ async def extract_po(file: UploadFile = File(...),
     except pdf_extract.PdfExtractError as e:
         raise HTTPException(422, str(e))
     return parsed
+
+
+# --- Phase AI-3: handwriting OCR (async jobs + offline paste lane) ----------------
+# Exact-locked to {store_keeper, admin} — the legacy Daily Issue Log lock.
+# Image lane: POST /ai/jobs returns an id immediately; an in-process worker
+# (jobs.run_job — atomic queued→running claim) does prep-checked-at-upload
+# image → qwen2.5vl → JSON parse → fuzzy resolve; React polls /ai/jobs/{id}.
+# Paste lane: pure-Python, synchronous, works with Ollama down.
+
+async def _require_ocr(session: AsyncSession) -> None:
+    flags = await _flags(session)
+    if not (flags["ai_enabled"] and flags["ai_ocr_enabled"]):
+        raise HTTPException(503, "OCR import is switched off in Settings.")
+
+
+@router.post("/jobs", status_code=202, summary="Queue a vision-OCR job (photo upload)")
+async def create_ocr_job(file: UploadFile = File(...), kind: str = "ocr_consumption",
+                         user: dict = Depends(require_roles("store_keeper")),
+                         session: AsyncSession = Depends(get_session)):
+    import asyncio as _aio
+    await _require_ocr(session)
+    if kind not in ai_jobs.JOB_KINDS:
+        raise HTTPException(422, f"kind must be one of {list(ai_jobs.JOB_KINDS)}")
+    data = await file.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(422, "image too large (20 MB max)")
+    try:
+        # Prep NOW (worker thread — Pillow is CPU-bound) so a corrupt/HEIC-
+        # without-codec photo fails fast with a friendly 422, not a dead job.
+        prepped = await _aio.to_thread(ocr.prep_image_for_vision, data)
+    except ocr.ImagePrepError as e:
+        raise HTTPException(422, str(e))
+    job_id = await ai_jobs.create_job(
+        session, kind=kind, actor=user["username"],
+        site_id=(user.get("site_id") or None), image_b64=ai_jobs.to_b64(prepped))
+    await session.commit()
+    ai_jobs.spawn(job_id)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@router.get("/jobs/{job_id}", summary="Poll a vision-OCR job")
+async def get_ocr_job(job_id: int,
+                      user: dict = Depends(require_roles("store_keeper")),
+                      session: AsyncSession = Depends(get_session)):
+    t = _MD.tables["ai_jobs"]
+    row = (await session.execute(select(t).where(t.c["id"] == job_id))
+           ).mappings().first()
+    if row is None:
+        raise HTTPException(404, f"job {job_id} not found")
+    # Owner-only polling (admin may inspect any job).
+    if user["role"] != "admin" and row["actor"] != user["username"]:
+        raise HTTPException(403, "not your job")
+    out = {"id": row["id"], "kind": row["kind"], "status": row["status"],
+           "error": row["error"], "created_at": row["created_at"],
+           "finished_at": row["finished_at"]}
+    if row["status"] == "done" and row["result_json"]:
+        out["result"] = json.loads(row["result_json"])
+    return out
+
+
+class PasteIn(BaseModel):
+    text: str
+
+
+@router.post("/paste/{kind}", summary="Offline paste lane (same result shape)")
+async def parse_paste(kind: str, body: PasteIn = Body(...),
+                      user: dict = Depends(require_roles("store_keeper")),
+                      session: AsyncSession = Depends(get_session)):
+    """Pure-Python twin of the OCR lane — parses pasted text instantly and
+    runs the same fuzzy resolution, so the review grid is lane-agnostic.
+    Works with Ollama completely offline."""
+    await _require_ocr(session)
+    if kind not in ai_jobs.JOB_KINDS:
+        raise HTTPException(422, f"kind must be one of {list(ai_jobs.JOB_KINDS)}")
+    try:
+        parsed = (ocr.parse_consumption_paste(body.text)
+                  if kind == "ocr_consumption"
+                  else ocr.parse_delivery_note_paste(body.text))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return await ai_jobs._resolve(kind, parsed, session)

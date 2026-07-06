@@ -37,6 +37,7 @@ const DocumentsPage = lazy(() => import('./pages/DocumentsPage'))
 const AdminConsolePage = lazy(() => import('./pages/AdminConsolePage'))
 const CrossSitePage = lazy(() => import('./pages/CrossSitePage'))
 const ManHoursPage = lazy(() => import('./pages/ManHoursPage'))
+const OcrImportPage = lazy(() => import('./pages/OcrImportPage'))
 const FeedbackPage = lazy(() => import('./pages/FeedbackPage'))
 
 export default function App() {
@@ -53,6 +54,7 @@ export default function App() {
         <Route path="entry/adjust" element={<AdjustPage />} />
         <Route path="entry/count" element={<StockCountPage />} />
         <Route path="entry/returnables" element={<ReturnablesPage />} />
+        <Route path="entry/ocr" element={<OcrImportPage />} />
         <Route path="site/incoming" element={<IncomingDeliveriesPage />} />
         <Route path="supervisor" element={<SupervisorPage />} />
         <Route path="sk/requests" element={<SkRequestsPage />} />

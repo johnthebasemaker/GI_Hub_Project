@@ -41,6 +41,10 @@ fpdf2
 # --- Document intelligence (/ai/extract/* — PR/PO PDF parsing) ---
 pdfplumber
 
+# --- Vision OCR (/ai/jobs — image prep for qwen2.5vl) ---
+# Pillow itself arrives via qrcode[pil]; pillow-heif decodes iPhone HEIC.
+pillow-heif>=0.16
+
 # --- File uploads (FastAPI UploadFile — /mh/import attendance xlsx) ---
 python-multipart
 

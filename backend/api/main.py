@@ -91,6 +91,15 @@ async def lifespan(app: FastAPI):
     if os.environ.get("GI_SCHEDULER", "1") != "0":
         import asyncio
         task = asyncio.create_task(scheduler_loop())
+    # AI-job orphan sweep: queued/running rows from a dead process can never
+    # finish (their asyncio task died with it) — fail them with a clear message.
+    try:
+        from .ai import jobs as _ai_jobs
+        n = await _ai_jobs.fail_orphans()
+        if n:
+            print(f"[ai] failed {n} orphaned OCR job(s) from a previous run")
+    except Exception as e:  # never block startup on the sweep
+        print(f"[ai] orphan sweep skipped: {type(e).__name__}: {e}")
     yield
     if task:
         task.cancel()

@@ -221,6 +221,43 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-06 · actor=interactive · branch=`main` · 📷 Phase AI-3 — handwriting OCR + async job queue
+The heaviest AI port: photographed paper logs → reviewed rows → the normal
+staging chain. **One user-authorized schema addition:** `ai_jobs` (alembic
+`b3e91d40aa17`, models.AiJob) — NEW-STACK-ONLY like auth_sessions (dual_ci
+leaves it empty); `alembic check` clean.
+- **Job pattern** (vision OCR runs 5–120 s — past proxy timeouts and mobile
+  patience): POST /ai/jobs (multipart, prep-validated at upload → corrupt
+  images 422 immediately, never a dead job) inserts a row + spawns an
+  in-process asyncio task; React polls GET /ai/jobs/{id} every 2 s. The
+  queued→running transition is an **atomic claim UPDATE** (report-scheduler
+  discipline); a **startup orphan sweep** fails stranded jobs with "resubmit
+  the photo". Owner-only polling (admin may inspect any). Exact-locked
+  {store_keeper, admin} — the legacy Daily Issue Log gate.
+- **Pipeline** (backend/api/ai/ocr.py + jobs.py): image prep port (HEIC via
+  pillow-heif → EXIF auto-orient → RGB → 1600px cap → JPEG q85), byte-identical
+  qwen2.5vl JSON-schema prompts (consumption + delivery-note), fence-tolerant
+  JSON parse, row cleaning, **fuzzy resolve** to auto/pick/unknown with SAP
+  candidates — all under the generation semaphore. Ollama-offline and
+  unparseable-reply paths land as clean job errors naming the Paste fallback.
+- **Paste lane** POST /ai/paste/{kind}: pure-Python twin (delimiter-sniffing,
+  DN header synonyms) + the same fuzzy resolution — works with Ollama down.
+- **FE:** OcrImportPage (/entry/ocr, Data Entry nav): kind toggle, photo
+  dragger (HEIC hint, warm-up notice, offline alert) + offline paste card, DN
+  header Descriptions, review grid (match Tag, candidate-first SAP select w/
+  ★-scores, editable qty/issued-to, per-row delete) → **stages through the
+  EXISTING exact-locked services** POST /entry/consumption / /entry/receipts
+  (drafts → HOD approval; DN header feeds Supplier + Remarks).
+- **Verified:** service_tests **277 → 297/297, run twice** (full mocked-vision
+  lifecycle incl. atomic claim, model/image/prompt assertions, auto+unknown
+  resolution, DN header round-trip, garbage-reply + offline error paths, paste
+  lanes, orphan sweep, exact-lock 403s, flag 503s; ai_jobs cleaned). Fixed en
+  route: the AI-2 confirm test leaked CREATE_PR audit rows that collided with
+  per-day PR-number reuse — both audit assertions are now **delta-counted**
+  (suite is rerun-stable). pillow-heif added to backend/requirements. Live:
+  paste lane round-trips to auto-matched SAP rows in the review grid, clean
+  console. NB deploy: `ollama pull qwen2.5vl:7b` (~5 GB) enables the photo lane.
+
 ### 2026-07-06 · actor=interactive · branch=`main` · 📄 Phase AI-2 — document intelligence (PR/PO PDF extraction)
 `backend/api/ai/pdf_extract.py`: framework-free, byte-compatible ports of BOTH legacy
 pdfplumber parsers — the PR word-stream extractor (GI-\d{7} + 6-word qty look-ahead,
