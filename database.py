@@ -1743,6 +1743,15 @@ def init_db(conn: sqlite3.Connection = None) -> None:
     if not column_exists("users", "totp_enabled", conn=conn):
         c.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0")
 
+    # ── users/pending_users.Location — added POST-rebuild (T4, 2026-07-07) ────
+    # Free-text place-of-work for the UNSCOPED roles (warehouse_user/logistics),
+    # which register with Site_ID='' by design. Same POST-rebuild placement rule
+    # as totp_* (the role-CHECK rebuilds recreate users from a fixed column list).
+    if not column_exists("users", "Location", conn=conn):
+        c.execute("ALTER TABLE users ADD COLUMN Location TEXT")
+    if not column_exists("pending_users", "Location", conn=conn):
+        c.execute("ALTER TABLE pending_users ADD COLUMN Location TEXT")
+
     # ── Read-only Stock Views (Phase 3 — AI NL search backbone) ───────────────
     # These views encapsulate the EXACT Identity formula used by
     # load_live_inventory() so that any consumer (AI search, ad-hoc queries)

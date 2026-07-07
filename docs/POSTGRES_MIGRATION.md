@@ -232,6 +232,37 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-07 (T4) · actor=interactive · branch=`main` · 🔓 FREEZE-LIFT FEATURE: role-based site validation on Request Access (user-approved plan, T4→T3→T2→T1)
+- **Files touched:** `backend/alembic/versions/…_c7a2e91f3b55_user_location_columns.py`
+  (new) · `backend/models.py` · `database.py` (self-heal only) ·
+  `backend/api/{auth,admin,service_tests}.py` ·
+  `frontend/src/{api/hooks.ts, pages/LoginPage.tsx, pages/PendingUsersPage.tsx}` · this doc.
+- **What:** `/auth/register` now enforces role-conditional site rules —
+  scoped roles (`store_keeper`/`supervisor`/`hod`) MUST pick an
+  **admin-created** site (`system_settings category='Site'`, same source as
+  the console CRUD); unscoped/global roles (`warehouse_user`/`logistics`)
+  must NOT carry a site and may give a free-text **Location** instead.
+  New public (rate-limited 30/min) `GET /auth/register/sites` feeds the
+  pre-login form; the React form swaps Site-select ↔ Location-input on role
+  change; the admin Access Requests screen shows the new Location column and
+  approval carries it onto the user row.
+- **Schema (user-authorized):** `users.Location` + `pending_users.Location`
+  (nullable TEXT) — Alembic `c7a2e91f3b55` on PG, POST-rebuild `column_exists`
+  self-heal in `database.py` (same placement rule as `totp_*`: the users
+  role-CHECK rebuilds recreate from a fixed column list). ⚠️ The rebuilt
+  mirror had **no `alembic_version`** (dual_ci creates tables from models) —
+  stamped `b3e91d40aa17` then upgraded; `alembic check` clean.
+- **Ordering fix found by the suite:** the new site rules initially ran
+  before the duplicate-username check, turning the historical
+  "existing username → 409" into a 422 — reordered so 409 wins.
+- **Gates:** `service_tests` **368/0** (8 new T4 checks: public sites list,
+  3 fail-closed 422 paths, 2 happy-path 201s + surfaced `Site_ID`/`Location`,
+  register→reject cleanup, X-Real-IP isolation from the 5/min cap) ·
+  frontend build ✅ · `alembic check` ✅ · live curl matrix on :8000 verified
+  all four responses + row content (probe rows cleaned).
+- **Next action:** T3 (SME sticky header + legacy export layout from
+  `material_estimator_portal.py:2040-2420`) on the user's go signal.
+
 ### 2026-07-07 (later) · actor=interactive · branch=`main` · 🚑 FREEZE-LIFT HOTFIX 2: SME 26→29 fixed at the ROOT (ingestion) + legacy export-parity pack (per-code/per-tag downloads, multi-sheet formats)
 - **Files touched:** `scripts/sme_bootstrap.py` · `backend/api/sme.py` ·
   `backend/api/reports.py` · `backend/api/service_tests.py` ·

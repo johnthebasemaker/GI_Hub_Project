@@ -44,6 +44,7 @@ audit_t = _MD.tables["system_audit_log"]
 pending_users_t = _MD.tables["pending_users"]
 sessions_t = _MD.tables["auth_sessions"]
 app_settings_t = _MD.tables["app_settings"]
+sysset_t = _MD.tables["system_settings"]  # admin-created sites (category='Site')
 
 
 async def maintenance_on(session: AsyncSession) -> bool:
@@ -78,6 +79,13 @@ ROLE_META = {
 # Self-service registrants may request any role EXCEPT admin (no self-elevation);
 # the approving admin can still override the role at approval time.
 _REGISTERABLE_ROLES = set(ROLE_META) - {"admin"}
+
+# T4 — role-conditional site rules for /auth/register:
+#   scoped roles work AT a site → Site_ID mandatory + must be an admin-created
+#   site; unscoped (global) roles must NOT carry a site — they may give a
+#   free-text Location instead.
+_SCOPED_REG_ROLES = {"store_keeper", "supervisor", "hod"}
+_UNSCOPED_REG_ROLES = {"warehouse_user", "logistics"}
 
 _bearer = HTTPBearer(auto_error=False)
 _DUMMY_HASH = "$2b$12$0000000000000000000000000000000000000000000000000000"
@@ -272,6 +280,7 @@ class RegisterIn(BaseModel):
     site_id: str | None = None
     phone_number: str | None = None
     warehouse_id: str | None = None
+    location: str | None = None  # unscoped roles only (free-text place of work)
 
 
 async def _fetch_user(session: AsyncSession, username: str):
@@ -407,6 +416,23 @@ async def me(user: dict = Depends(get_current_user)):
     return user
 
 
+async def _admin_site_names(session: AsyncSession) -> list[str]:
+    """Admin-created sites (system_settings category='Site') — the ONLY values
+    a scoped registrant may pick (same source as the admin console CRUD)."""
+    rows = (await session.execute(
+        select(sysset_t.c["value"]).where(sysset_t.c["category"] == "Site")
+        .order_by(sysset_t.c["id"]))).all()
+    return [r[0] for r in rows]
+
+
+@router.get("/register/sites",
+            summary="Public site list for the Request Access form "
+                    "(IDs only; scoped roles must pick from these)",
+            dependencies=[rate_limit(30, 60)])
+async def register_sites(session: AsyncSession = Depends(get_session)):
+    return {"sites": await _admin_site_names(session)}
+
+
 @router.post("/register", status_code=201,
              summary="Request access → a pending_users row for an admin to approve",
              dependencies=[rate_limit(5, 60)])
@@ -424,10 +450,28 @@ async def register(body: RegisterIn, session: AsyncSession = Depends(get_session
     if taken:
         raise HTTPException(409, "username already exists")
 
+    # T4 — role-conditional site rules (mirrored in the React form; enforced
+    # here so the API fails closed regardless of client). AFTER the username
+    # check so a taken name keeps its historical 409 contract.
+    site = (body.site_id or "").strip()
+    location = (body.location or "").strip()
+    if body.role in _SCOPED_REG_ROLES:
+        if not site:
+            raise HTTPException(422, f"{body.role} requires a site")
+        if site not in await _admin_site_names(session):
+            raise HTTPException(422, f"unknown site {site!r} — pick an admin-created site")
+        location = ""  # scoped users are identified by their site, not free text
+    elif body.role in _UNSCOPED_REG_ROLES:
+        if site:
+            raise HTTPException(422,
+                                f"{body.role} is a global role — no site; "
+                                "use the location field instead")
+
     pw_hash = bcrypt.hashpw(body.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     values = dict(username=uname, password_hash=pw_hash, role=body.role,
-                  Site_ID=(body.site_id or ""), Phone_Number=(body.phone_number or None),
-                  Warehouse_ID=(body.warehouse_id or None), status="pending")
+                  Site_ID=site, Phone_Number=(body.phone_number or None),
+                  Warehouse_ID=(body.warehouse_id or None), status="pending",
+                  Location=(location or None))
     # username is UNIQUE in pending_users — if a prior (rejected) request exists,
     # revive it rather than colliding.
     prior = (await session.execute(select(pending_users_t.c["id"], pending_users_t.c["status"])
@@ -440,7 +484,8 @@ async def register(body: RegisterIn, session: AsyncSession = Depends(get_session
     else:
         await session.execute(insert(pending_users_t).values(**values))
     await session.commit()
-    await _audit(session, uname, "REQUEST_ACCESS", f"role={body.role} site={body.site_id or '-'}")
+    await _audit(session, uname, "REQUEST_ACCESS",
+                 f"role={body.role} site={site or '-'} location={location or '-'}")
     return {"requested": True, "username": uname}
 
 

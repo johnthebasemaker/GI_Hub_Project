@@ -391,8 +391,8 @@ async def delete_inventory(sap_code: str,
 _PENDING_COLS = (
     pending_users_t.c["id"], pending_users_t.c["username"], pending_users_t.c["role"],
     pending_users_t.c["Site_ID"], pending_users_t.c["Warehouse_ID"],
-    pending_users_t.c["Phone_Number"], pending_users_t.c["status"],
-    pending_users_t.c["created_at"],
+    pending_users_t.c["Phone_Number"], pending_users_t.c["Location"],
+    pending_users_t.c["status"], pending_users_t.c["created_at"],
 )
 
 
@@ -426,7 +426,8 @@ async def approve_pending_user(pid: int, body: ApprovePendingIn = Body(default=A
             wh = body.warehouse_id if body.warehouse_id is not None else row["Warehouse_ID"]
             await session.execute(insert(users_t).values(
                 username=row["username"], password_hash=row["password_hash"], role=role,
-                Site_ID=row["Site_ID"], Phone_Number=row["Phone_Number"], Warehouse_ID=wh))
+                Site_ID=row["Site_ID"], Phone_Number=row["Phone_Number"], Warehouse_ID=wh,
+                Location=row["Location"]))
             await session.execute(update(pending_users_t)
                                   .where(pending_users_t.c["id"] == pid).values(status="approved"))
             await write_audit(session, actor["username"], "APPROVE_USER", "users",

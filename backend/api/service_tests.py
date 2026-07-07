@@ -270,6 +270,61 @@ async def test_auth_guards():
         r = await ac.post("/admin/pending-users/999999/approve", headers=H(admin_t), json={})
         check("approve a non-existent request → 404", r.status_code == 404, f"got {r.status_code}")
 
+        # T4 — role-conditional site rules. Public site list first (no auth).
+        r = await ac.get("/auth/register/sites")
+        check("public /auth/register/sites → 200 with a list",
+              r.status_code == 200 and isinstance(r.json().get("sites"), list),
+              f"got {r.status_code}")
+        _sites = r.json().get("sites", [])
+        _made_site = False
+        if not _sites:  # fresh env: create a throwaway admin site to test against
+            r = await ac.post("/admin/sites", headers=H(admin_t), json={"name": "SVC-SITE"})
+            _made_site = r.status_code == 201
+            _sites = ["SVC-SITE"]
+        _site = _sites[0]
+
+        # Distinct X-Real-IPs isolate these from the 5/min register cap (same
+        # pattern as the login rate-limit test below).
+        _t4a, _t4b = {"X-Real-IP": "203.0.113.41"}, {"X-Real-IP": "203.0.113.42"}
+        r = await ac.post("/auth/register", headers=_t4a, json={"username": "svc_t4_hod",
+                          "password": "secret123", "role": "hod"})
+        check("scoped role without a site → 422", r.status_code == 422, f"got {r.status_code}")
+        r = await ac.post("/auth/register", headers=_t4a, json={"username": "svc_t4_hod",
+                          "password": "secret123", "role": "hod", "site_id": "NOT-A-SITE"})
+        check("scoped role with an unknown site → 422", r.status_code == 422, f"got {r.status_code}")
+        r = await ac.post("/auth/register", headers=_t4a, json={"username": "svc_t4_log",
+                          "password": "secret123", "role": "logistics", "site_id": _site})
+        check("unscoped role WITH a site → 422 (global roles carry no site)",
+              r.status_code == 422, f"got {r.status_code}")
+
+        # Happy paths — register, verify surfaced fields, then reject (cleanup;
+        # re-runs revive the rejected row instead of colliding).
+        r = await ac.post("/auth/register", headers=_t4b, json={"username": "svc_t4_hod",
+                          "password": "secret123", "role": "hod", "site_id": _site})
+        check("scoped role with an admin-created site → 201",
+              r.status_code == 201, f"got {r.status_code}")
+        r = await ac.post("/auth/register", headers=_t4b, json={"username": "svc_t4_log",
+                          "password": "secret123", "role": "logistics",
+                          "location": "Central Warehouse, Dammam"})
+        check("unscoped role with a free-text location → 201",
+              r.status_code == 201, f"got {r.status_code}")
+        rows = (await ac.get("/admin/pending-users", headers=H(admin_t))).json()["items"]
+        _hod_row = next((x for x in rows if x["username"] == "svc_t4_hod"), None)
+        _log_row = next((x for x in rows if x["username"] == "svc_t4_log"), None)
+        check("pending hod row carries the picked Site_ID",
+              _hod_row is not None and _hod_row["Site_ID"] == _site, f"row={_hod_row}")
+        check("pending logistics row carries Location + empty Site_ID",
+              _log_row is not None and _log_row["Site_ID"] == ""
+              and _log_row.get("Location") == "Central Warehouse, Dammam", f"row={_log_row}")
+        for _row in (_hod_row, _log_row):  # cleanup → rejected (revivable)
+            if _row is not None:
+                await ac.post(f"/admin/pending-users/{_row['id']}/reject", headers=H(admin_t))
+        if _made_site:  # drop the throwaway site so re-runs stay clean
+            sid = next((s["id"] for s in (await ac.get("/admin/sites", headers=H(admin_t))
+                        ).json()["items"] if s["name"] == "SVC-SITE"), None)
+            if sid is not None:
+                await ac.delete(f"/admin/sites/{sid}", headers=H(admin_t))
+
         # Rate limiting on public auth (isolated by a unique X-Real-IP so it does
         # not affect the other logins in this suite; login cap is 10/min).
         rl = {"X-Real-IP": "203.0.113.7"}

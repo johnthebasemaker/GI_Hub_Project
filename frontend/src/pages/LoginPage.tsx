@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { App, Button, ConfigProvider, Form, Input, Select } from 'antd'
-import { LockOutlined, SafetyOutlined, UserOutlined } from '@ant-design/icons'
+import { EnvironmentOutlined, LockOutlined, SafetyOutlined, UserOutlined } from '@ant-design/icons'
 import { useAuth } from '../auth/AuthContext'
-import { useRegister } from '../api/hooks'
+import { useRegister, useRegisterSites } from '../api/hooks'
 import { darkTheme } from '../theme/themes'
 
 function errMsg(e: unknown): string {
@@ -19,6 +19,10 @@ const REGISTER_ROLES = [
   { value: 'logistics', label: 'Logistics' },
 ]
 
+// T4 — scoped roles MUST pick an admin-created site; unscoped (global) roles
+// carry no site and may give a free-text location instead. Mirrors auth.py.
+const SCOPED_ROLES = new Set(['store_keeper', 'supervisor', 'hod'])
+
 export default function LoginPage() {
   const { message } = App.useApp()
   const { login, loginMfa } = useAuth()
@@ -26,6 +30,10 @@ export default function LoginPage() {
   const [mfaToken, setMfaToken] = useState<string | null>(null)
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const register = useRegister()
+  const [regForm] = Form.useForm()
+  const regRole: string = Form.useWatch('role', regForm) ?? 'store_keeper'
+  const isScoped = SCOPED_ROLES.has(regRole)
+  const { data: regSites, isLoading: sitesLoading } = useRegisterSites(mode === 'register')
 
   const onLogin = async (v: { username: string; password: string }) => {
     setLoading(true)
@@ -77,7 +85,8 @@ export default function LoginPage() {
           </div>
 
           {mode === 'register' ? (
-            <Form key="register" layout="vertical" onFinish={onRegister} initialValues={{ role: 'store_keeper' }}>
+            <Form key="register" form={regForm} layout="vertical" onFinish={onRegister}
+              initialValues={{ role: 'store_keeper' }}>
               <Form.Item name="username" rules={[{ required: true, message: 'Username' }]}>
                 <Input prefix={<UserOutlined />} placeholder="Username" autoFocus />
               </Form.Item>
@@ -85,11 +94,27 @@ export default function LoginPage() {
                 <Input.Password prefix={<LockOutlined />} placeholder="Password (min 6)" />
               </Form.Item>
               <Form.Item name="role" label="Requested role" rules={[{ required: true }]}>
-                <Select options={REGISTER_ROLES} />
+                <Select options={REGISTER_ROLES}
+                  onChange={() => regForm.setFieldsValue({ site_id: undefined, location: undefined })} />
               </Form.Item>
-              <Form.Item name="site_id" label="Site (optional)">
-                <Input placeholder="e.g. CNCEC" />
-              </Form.Item>
+              {isScoped ? (
+                // Scoped roles work AT a site — mandatory, admin-created list only.
+                <Form.Item name="site_id" label="Site"
+                  rules={[{ required: true, message: 'Site is required for this role' }]}>
+                  <Select
+                    placeholder={sitesLoading ? 'Loading sites…' : 'Select your site'}
+                    loading={sitesLoading}
+                    options={(regSites ?? []).map((s) => ({ value: s, label: s }))}
+                    notFoundContent="No sites yet — ask an admin to create one"
+                  />
+                </Form.Item>
+              ) : (
+                // Global roles (warehouse / logistics) carry no site — optional
+                // free-text location instead.
+                <Form.Item name="location" label="Location (optional)">
+                  <Input prefix={<EnvironmentOutlined />} placeholder="e.g. Central Warehouse, Dammam" />
+                </Form.Item>
+              )}
               <Form.Item name="phone_number" label="Phone (optional)">
                 <Input placeholder="Phone number" />
               </Form.Item>

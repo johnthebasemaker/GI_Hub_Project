@@ -306,6 +306,7 @@ class PendingUsers(Base):
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     Phone_Number = Column(Text)
     Warehouse_ID = Column(Text)
+    Location = Column(Text)  # free-text for unscoped roles (T4)
 
 class PoRescheduleRequests(Base):
     __tablename__ = "po_reschedule_requests"
@@ -556,6 +557,7 @@ class Users(Base):
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     totp_secret = Column(Text)
     totp_enabled = Column(Integer, server_default=text('0'))
+    Location = Column(Text)  # free-text for unscoped roles (T4)
 
 class AuthSessions(Base):
     """Refresh-token sessions for the FastAPI backend (NEW-STACK ONLY — no

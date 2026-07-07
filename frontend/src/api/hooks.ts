@@ -554,6 +554,16 @@ export function useRegister() {
   })
 }
 
+// Public (pre-login) admin-created site list for the Request Access form —
+// scoped roles must pick from these (T4).
+export function useRegisterSites(enabled: boolean) {
+  return useQuery({
+    queryKey: ['/auth/register/sites'],
+    enabled,
+    queryFn: async () => (await api.get<{ sites: string[] }>('/auth/register/sites')).data.sites,
+  })
+}
+
 export function usePendingUsers() {
   return useQuery({
     queryKey: ['/admin/pending-users'],

@@ -56,6 +56,11 @@ export default function PendingUsersPage() {
     { title: 'Username', dataIndex: 'username', key: 'username' },
     { title: 'Requested role', dataIndex: 'role', key: 'role', render: (v) => <Tag>{String(v)}</Tag> },
     { title: 'Site', dataIndex: 'Site_ID', key: 'Site_ID', render: (v) => v || <Typography.Text type="secondary">global</Typography.Text> },
+    {
+      // T4: unscoped (global) registrants give a free-text location instead of a site.
+      title: 'Location', dataIndex: 'Location', key: 'Location',
+      render: (v) => v || '—',
+    },
     { title: 'Phone', dataIndex: 'Phone_Number', key: 'Phone_Number', render: (v) => v || '—' },
     { title: 'Requested', dataIndex: 'created_at', key: 'created_at', render: (v) => String(v ?? '') },
     {
