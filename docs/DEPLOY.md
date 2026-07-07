@@ -29,7 +29,7 @@ Everything lives in [`deploy/`](../deploy/):
 
 ## 1. Get the code + configure secrets
 ```bash
-git clone https://github.com/johnthebasemaker/CNCEC-System.git gihub && cd gihub/deploy
+git clone https://github.com/johnthebasemaker/GI_Hub_Project.git gihub && cd gihub/deploy
 cp .env.example .env
 # Fill in .env:
 #   DOMAIN, LETSENCRYPT_EMAIL
