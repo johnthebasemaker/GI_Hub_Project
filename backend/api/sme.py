@@ -551,31 +551,42 @@ async def production_log(site_id: Optional[str] = None,
 
 
 async def _progress_list_rows(session: AsyncSession, site_id: str | None) -> list[dict]:
-    """Legacy Progress List: per (tag, code) plan vs completion with status.
-    Done includes the staged column (matches load_all's in-flight view)."""
+    """Legacy Progress List: PROGRESS-driven (one row per sqm-progress entry,
+    equipment meta LEFT-joined) — the legacy portal reads `FROM sqm_progress
+    LEFT JOIN equipment`, so scopes entered directly in the SQM editor (e.g.
+    work areas with no equipment-master row) must still appear here. Done
+    includes the staged column (matches load_all's in-flight view)."""
     snap = await _snapshot_rows(session, site_id)
     model = sme_engine.build_model(snap["equipment"], snap["recipes"],
                                    snap["materials"], snap["progress"])
+    short_names: dict[str, str] = {}
+    for r in snap["recipes"]:
+        code = str(r.get("Lining_System_Code") or "").strip()
+        if code and code not in short_names:
+            short_names[code] = str(r.get("Lining_System_Name") or "").strip()
     out = []
-    for tag in model["default_order"]:
+    for p in snap["progress"]:
+        tag = str(p.get("Equipment_Tag_No") or "").strip()
+        code = str(p.get("Lining_System_Code") or "").strip()
         meta = model["tag_meta"].get(tag, {})
-        for code in model["codes_by_tag"].get(tag, []):
-            u = model["units"][(tag, code)]
-            total = u["total_original"]
-            done = u["done"]
-            pct = round(100 * done / total, 1) if total > 0 else 0.0
-            status = ("✅ Complete" if pct >= 100 else
-                      "🔄 In Progress" if done > 0 else "⏳ Not Started")
-            out.append({"Location": meta.get("Location", ""),
-                        "Equipment_Tag_No": tag,
-                        "Name": meta.get("Name", ""),
-                        "Lining_System_Code": code,
-                        "System_Name": u["short_name"],
-                        "Total_SQM": round(total, 2),
-                        "Completed_SQM": round(done, 2),
-                        "Remaining_SQM": round(max(total - done, 0), 2),
-                        "Completion_Pct": pct,
-                        "Status": status})
+        total = float(p.get("Original_SQM") or 0)
+        done = (float(p.get("Done_SQM") or 0)
+                + float(p.get("Done_SQM_staged") or 0))
+        pct = round(100 * done / total, 1) if total > 0 else 0.0
+        status = ("✅ Complete" if pct >= 100 else
+                  "🔄 In Progress" if done > 0 else "⏳ Not Started")
+        out.append({"Location": meta.get("Location", ""),
+                    "Equipment_Tag_No": tag,
+                    "Name": meta.get("Name", ""),
+                    "Lining_System_Code": code,
+                    "System_Name": short_names.get(code, ""),
+                    "Total_SQM": round(total, 2),
+                    "Completed_SQM": round(done, 2),
+                    "Remaining_SQM": round(max(total - done, 0), 2),
+                    "Completion_Pct": pct,
+                    "Status": status})
+    out.sort(key=lambda r: (r["Location"], r["Equipment_Tag_No"],
+                            _syskey(r["Lining_System_Code"])))
     return out
 
 

@@ -232,6 +232,42 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-07 · actor=interactive · branch=`main` · 🚑 FREEZE-LIFT HOTFIX: login 500 (PG cluster loss) + SME Progress List legacy parity (26→29 equipments, SQM totals)
+- **Bug 1 — login 500 "worked last night, broke this morning": NOT a code bug.**
+  The local PG mirror lived in a throwaway cluster under a Claude session
+  scratchpad (`/private/tmp/...`); macOS temp cleanup wiped it overnight →
+  asyncpg `ConnectionRefusedError` on every request (traceback in
+  `logs/uvicorn_dev.log`). **Recovery (data-loss-free — SQLite is truth):**
+  Homebrew `postgresql@16` now hosts the mirror durably — `port = 5433` set
+  in `/opt/homebrew/var/postgresql@16/postgresql.conf`, started via
+  `brew services` (survives reboots), `postgres` superuser role created,
+  `gihub` reloaded by `dual_ci` (64/64 + aggregates ✅), `gi_ai_ro` role
+  re-applied from `backend/scripts/create_ai_readonly_role.sql`.
+  Login + cookie refresh verified 200/200.
+- **Bug 2 — SME shows 26 equipments (user knows 29) + SQM totals differ from
+  legacy: a read-pipeline gap, zero data loss.** Legacy Progress List reads
+  `FROM sqm_progress LEFT JOIN equipment` (progress-driven), so 7 scopes that
+  exist ONLY in the SQM progress table (entered via the legacy SQM editor,
+  no equipment-master row) still rendered: the 3 real work areas
+  **Existing MGA Pump Area · Fan Duct Support J · Fan Duct Support k**
+  (26+3 = the user's 29) plus 4 suspected typo tags (`0050`, `0091`, `7112`,
+  `7113`). The S5 Progress List iterated engine units (equipment-driven) →
+  dropped all 7 → Total SQM 29,280.29 vs legacy 41,642.64 (Δ12,362.35 =
+  exactly the orphan rows). **Fix (Canon-safe, read-only):**
+  `_progress_list_rows` (backend/api/sme.py) + `ProgressList`
+  (frontend/src/sme/ExecutionPlan.tsx) are now PROGRESS-driven with
+  equipment meta LEFT-joined and legacy ordering (location · tag · numeric
+  code). The parity-locked engine (`build_model`/cascade) is deliberately
+  UNTOUCHED — legacy `load_all()` also excludes orphan scopes from the
+  cascade, so allocation numbers stay identical. Live-verified: export =
+  95 rows · 33 tags · 41,642.64 total — byte-matches the legacy query.
+- **Data-quality flag for the user (no action taken):** `0050`/`0091`/`7112`/
+  `7113` look like manual-entry typos in `sqm_progress` (e.g. vs `J050`/
+  `J091`, values differ) — they render in BOTH stacks; cleaning them is a
+  master-data decision (S6/cutover), not a hotfix.
+- Gates: service_tests **352/352** · parity_check **5/5** · parity:sme
+  **509** ✅ · bug_check **599/0** · frontend build ✅. Freeze re-armed.
+
 ### 2026-07-06 · actor=interactive · branch=`main` · 🏗 Phase S5 — Execution Plan (3 sub-views) + Total Overview master grid — LEGACY TAB PARITY COMPLETE (8/8 read tabs)
 - **⚙️ Execution Plan** (NEW ExecutionPlan.tsx), 3 sub-views as legacy Tab 4:
   · main plan — session-scoped critical-code analysis (equipment + code

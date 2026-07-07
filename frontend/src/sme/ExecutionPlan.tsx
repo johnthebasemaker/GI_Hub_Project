@@ -16,8 +16,8 @@ import type { ColumnsType } from 'antd/es/table'
 import { useSmeProductionLog, useSmeSnapshot } from '../api/hooks'
 import type { SmeLogRow } from '../api/hooks'
 import { buildModel, runPlan, syscodeCompare, unitKey } from './engine'
-import type { AllocationLine, SmeModel } from './engine'
-import { allUnits, fc } from './insights'
+import type { AllocationLine, SmeModel, SmeSnapshot } from './engine'
+import { fc } from './insights'
 import KpiDrill from './KpiDrill'
 import { FulfilPill } from './PriorityList'
 import { useScenario } from './ScenarioContext'
@@ -169,24 +169,41 @@ function ExecMain({ model }: { model: SmeModel }) {
 }
 
 // ─── 📋 Sub-view 2: progress list + production details ───────────────────────
-function ProgressList({ model, siteId }: { model: SmeModel; siteId?: string }) {
+// PROGRESS-driven like the legacy portal (`FROM sqm_progress LEFT JOIN
+// equipment`): scopes entered directly in the SQM editor with no
+// equipment-master row (e.g. work areas) must still appear here.
+function ProgressList({ model, snap, siteId }: { model: SmeModel; snap: SmeSnapshot; siteId?: string }) {
   const { data: log } = useSmeProductionLog(siteId)
   const [loc, setLoc] = useState<string | undefined>()
   const [status, setStatus] = useState('All')
 
-  const rows = useMemo(() => allUnits(model).map((u) => {
-    const pct = u.original > 0 ? Math.round((u.done / u.original) * 1000) / 10 : 0
-    return {
-      key: unitKey(u.tag, u.code),
-      Location: u.location || '—', Tag: u.tag, Name: u.name,
-      Code: u.code, System: u.shortName,
-      Total_SQM: Math.round(u.original * 100) / 100,
-      Completed_SQM: Math.round(u.done * 100) / 100,
-      Remaining_SQM: Math.round(Math.max(u.original - u.done, 0) * 100) / 100,
-      Completion_Pct: pct,
-      Status: pct >= 100 ? '✅ Complete' : u.done > 0 ? '🔄 In Progress' : '⏳ Not Started',
+  const rows = useMemo(() => {
+    const shortNames = new Map<string, string>()
+    for (const r of snap.recipes) {
+      const code = String(r.Lining_System_Code ?? '').trim()
+      if (code && !shortNames.has(code)) shortNames.set(code, String(r.Lining_System_Name ?? '').trim())
     }
-  }), [model])
+    return snap.progress.map((p, i) => {
+      const tag = String(p.Equipment_Tag_No ?? '').trim()
+      const code = String(p.Lining_System_Code ?? '').trim()
+      const meta = model.tagMeta.get(tag)
+      const total = Number(p.Original_SQM ?? 0) || 0
+      const done = (Number(p.Done_SQM ?? 0) || 0) + (Number(p.Done_SQM_staged ?? 0) || 0)
+      const pct = total > 0 ? Math.round((done / total) * 1000) / 10 : 0
+      return {
+        key: `${unitKey(tag, code)}#${i}`,
+        Location: meta?.Location || '—', Tag: tag, Name: meta?.Name ?? '',
+        Code: code, System: shortNames.get(code) ?? '',
+        Total_SQM: Math.round(total * 100) / 100,
+        Completed_SQM: Math.round(done * 100) / 100,
+        Remaining_SQM: Math.round(Math.max(total - done, 0) * 100) / 100,
+        Completion_Pct: pct,
+        Status: pct >= 100 ? '✅ Complete' : done > 0 ? '🔄 In Progress' : '⏳ Not Started',
+      }
+    }).sort((a, b) =>
+      (a.Location === b.Location ? 0 : a.Location === '—' ? -1 : b.Location === '—' ? 1 : a.Location.localeCompare(b.Location))
+      || a.Tag.localeCompare(b.Tag) || syscodeCompare(a.Code, b.Code))
+  }, [model, snap])
 
   const locations = [...new Set(rows.map((r) => r.Location))].sort()
   const filtered = rows.filter((r) =>
@@ -421,7 +438,7 @@ export default function ExecutionPlan({ siteId }: { siteId?: string }) {
           { label: '📋 Progress List', value: 'progress' },
           { label: '📊 Consumption Comparison', value: 'comparison' }]} />
       {sub === 'plan' && <ExecMain model={model} />}
-      {sub === 'progress' && <ProgressList model={model} siteId={siteId} />}
+      {sub === 'progress' && <ProgressList model={model} snap={snap} siteId={siteId} />}
       {sub === 'comparison' && <ConsumptionComparison model={model} siteId={siteId} />}
     </div>
   )
