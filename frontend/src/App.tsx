@@ -35,6 +35,7 @@ const SecurityPage = lazy(() => import('./pages/SecurityPage'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const DocumentsPage = lazy(() => import('./pages/DocumentsPage'))
 const AdminConsolePage = lazy(() => import('./pages/AdminConsolePage'))
+const OverdueActionsPage = lazy(() => import('./pages/OverdueActionsPage'))
 const CrossSitePage = lazy(() => import('./pages/CrossSitePage'))
 const ManHoursPage = lazy(() => import('./pages/ManHoursPage'))
 const OcrImportPage = lazy(() => import('./pages/OcrImportPage'))
@@ -69,6 +70,7 @@ export default function App() {
         <Route path="master/:key" element={<MasterDataPage />} />
         <Route path="admin/users" element={<UsersPage />} />
         <Route path="admin/pending" element={<PendingUsersPage />} />
+        <Route path="admin/overdue" element={<OverdueActionsPage />} />
         <Route path="admin/inventory" element={<InventoryAdminPage />} />
         <Route path="admin/audit" element={<AuditLogPage />} />
         <Route path="reports" element={<ReportsPage />} />

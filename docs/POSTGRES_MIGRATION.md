@@ -232,6 +232,51 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-07 (T2) · actor=interactive · branch=`main` · 🔓 FREEZE-LIFT FEATURE: Admin SLA oversight & nudge system (user-approved plan, step 3 of T4→T3→T2→T1)
+- **Files touched:** `backend/api/sla.py` (new) ·
+  `backend/alembic/versions/…_d4f1a27c8e90_sla_dismissals_table.py` (new) ·
+  `backend/models.py` · `backend/api/main.py` · `backend/api/service_tests.py` ·
+  `frontend/src/{api/hooks.ts, components/AppLayout.tsx, App.tsx,
+  pages/OverdueActionsPage.tsx (new), pages/SmePage.tsx}` · this doc.
+- **Schema (user-authorized):** `sla_dismissals` (kind, ref_id, cleared_by,
+  cleared_at; UNIQUE(kind, ref_id)) — NEW-STACK-ONLY like auth_sessions/
+  ai_jobs; Alembic `d4f1a27c8e90`; `alembic check` clean.
+- **Aggregation:** `GET /admin/overdue-actions` (admin-only) UNIONs all 8
+  pending queues — the same definitions /meta/work-queues counts: 4× HOD
+  staging (`pending_receipts/issues/returns` + `stock_adjustments`
+  status=pending_hod), SK requests (`supervisor_material_requests`
+  pending_sk), warehouse PO assignments (assigned/acknowledged/partial),
+  logistics reschedules (pending) and PR submissions
+  (`logistics_status='submitted'`, grouped per PR_Number). Items older than
+  the window (default 24h) and not in `sla_dismissals` return with resolved
+  responsible users (role × Site_ID / Warehouse_ID, WH falls back to the
+  whole role), age-sorted desc.
+- **Actions:** `POST …/{kind}/{ref_id}/clear` → dismissal row (409 on
+  double-clear) + `SLA_CLEAR` audit. `POST …/{kind}/{ref_id}/notify` →
+  re-resolves the item live (404 if no longer pending), one **critical**
+  in-app notification per responsible user via the shared service with the
+  EXACT template "URGENT — Dear {User Name}, From: Admin. Subject: Action
+  required on pending submission {ID/Details}." + `SLA_NOTIFY` audit.
+  Gotcha fixed: `session.begin()` after the collector reads →
+  "transaction already begun"; switched to execute+commit.
+- **UI:** new `/admin/overdue` "Overdue Actions" page (age-sorted table,
+  escalating age colors, Notify/Clear per row, responsible-user tags,
+  unassigned-scope warning) + **red badge** on the Admin nav (60s poll,
+  admin-only fetch).
+- **Tabs-boundary fix (user report):** both themes set
+  `colorBgLayout: 'transparent'` (body gradient) — the T3 sticky band was
+  see-through. Switched sticky header + tab bar to solid
+  `token.colorBgContainer` + hairline border.
+- **Gates:** `service_tests` **380/0** (12 new suite-H checks: role guard,
+  422/404s, 30h synthetic item surfacing + responsible resolution + sort,
+  notify recipients + EXACT template + severity, clear/double-clear/hidden;
+  synthetic row fully cleaned up; suite-H logins isolated on their own
+  X-Real-IP — the shared IP exhausts the 10/min login cap by suite H) ·
+  `bug_check` **599/0** · frontend build ✅ · `alembic check` ✅ · :8000
+  restarted onto this code.
+- **Next action:** T1 (Submission Intelligence / AI summaries) on the user's
+  go signal.
+
 ### 2026-07-07 (T3) · actor=interactive · branch=`main` · 🔓 FREEZE-LIFT FEATURE: SME sticky header + legacy Excel export layouts (user-approved plan, step 2 of T4→T3→T2→T1)
 - **Files touched:** `backend/api/sme_export_layouts.py` (new) ·
   `backend/api/sme.py` · `frontend/src/pages/SmePage.tsx` ·

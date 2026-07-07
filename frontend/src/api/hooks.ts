@@ -564,6 +564,45 @@ export function useRegisterSites(enabled: boolean) {
   })
 }
 
+// --- T2: admin SLA tracker (Overdue Actions >24h + clear / notify nudges) ------
+export interface OverdueItem {
+  kind: string
+  label: string
+  ref_id: string
+  summary: string
+  site: string | null
+  warehouse: string | null
+  role: string
+  pending_since: string
+  age_hours: number
+  responsible: string[]
+}
+export function useOverdueActions(enabled: boolean) {
+  return useQuery({
+    queryKey: ['/admin/overdue-actions'],
+    enabled,
+    refetchInterval: 60_000, // keep the red badge honest without a reload
+    queryFn: async () =>
+      (await api.get<{ hours: number; count: number; items: OverdueItem[] }>(
+        '/admin/overdue-actions')).data,
+  })
+}
+export const useClearOverdue = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ kind, refId }: { kind: string; refId: string }) =>
+      api.post(`/admin/overdue-actions/${kind}/${encodeURIComponent(refId)}/clear`)
+        .then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/admin/overdue-actions'] }),
+  })
+}
+export const useNotifyOverdue = () =>
+  useMutation({
+    mutationFn: ({ kind, refId }: { kind: string; refId: string }) =>
+      api.post(`/admin/overdue-actions/${kind}/${encodeURIComponent(refId)}/notify`)
+        .then((r) => r.data as { notified: boolean; recipients: string[] }),
+  })
+
 export function usePendingUsers() {
   return useQuery({
     queryKey: ['/admin/pending-users'],

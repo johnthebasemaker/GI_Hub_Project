@@ -2300,6 +2300,113 @@ async def test_sme_plan_layer():
               r.status_code == 403, f"got {r.status_code}")
 
 
+async def test_sla_tracker():
+    """T2 — admin SLA tracker: >24h aggregation, clear, and the URGENT nudge
+    (exact template + audit). Uses one committed synthetic staged issue at
+    CNCEC (30h old), fully cleaned up in `finally`."""
+    import datetime as _dt
+
+    from sqlalchemy import delete, insert
+
+    pi = ledger._MD.tables["pending_issues"]
+    dis = ledger._MD.tables["sla_dismissals"]
+    notif = ledger._MD.tables["app_notifications"]
+
+    async with SessionLocal() as s:
+        rid = (await s.execute(insert(pi).values(
+            Date="2026-07-06", SAP_Code="1001", Quantity=1.0,
+            status="pending_hod", Site_ID="CNCEC", Remarks="svc-sla-test",
+            Timestamp=_dt.datetime.now() - _dt.timedelta(hours=30),
+        ).returning(pi.c["id"]))).scalar_one()
+        await s.commit()
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            # Own X-Real-IP: by suite H the shared client IP has burned through
+            # the 10/min login cap (same isolation trick as the other suites).
+            _ip = {"X-Real-IP": "203.0.113.52"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip,
+                                  json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            worker_t = await token("worker", "floor2026")
+            admin_t = await token("admin", "admin2026")
+
+            r = await ac.get("/admin/overdue-actions", headers=H(worker_t))
+            check("worker (lvl 0) → 403 on overdue-actions", r.status_code == 403,
+                  f"got {r.status_code}")
+            r = await ac.get("/admin/overdue-actions", params={"hours": 0},
+                             headers=H(admin_t))
+            check("overdue-actions hours=0 → 422", r.status_code == 422,
+                  f"got {r.status_code}")
+            r = await ac.post("/admin/overdue-actions/not-a-kind/1/clear",
+                              headers=H(admin_t))
+            check("clear with an unknown kind → 404", r.status_code == 404,
+                  f"got {r.status_code}")
+            r = await ac.post("/admin/overdue-actions/hod-issue/99999999/notify",
+                              headers=H(admin_t))
+            check("notify on a non-pending ref → 404", r.status_code == 404,
+                  f"got {r.status_code}")
+
+            r = await ac.get("/admin/overdue-actions", headers=H(admin_t))
+            j = r.json()
+            item = next((x for x in j.get("items", [])
+                         if x["kind"] == "hod-issue" and x["ref_id"] == str(rid)), None)
+            check("30h-old staged issue surfaces in overdue-actions",
+                  r.status_code == 200 and item is not None
+                  and item["age_hours"] >= 29 and item["label"],
+                  f"got {r.status_code} item={item}")
+            check("responsible resolves the site's HOD",
+                  item is not None and "hod" in item["responsible"],
+                  f"resp={item and item['responsible']}")
+            _items = j.get("items", [])
+            check("items are age-sorted (oldest first)",
+                  _items == sorted(_items, key=lambda x: -x["age_hours"]))
+
+            r = await ac.post(f"/admin/overdue-actions/hod-issue/{rid}/notify",
+                              headers=H(admin_t))
+            check("notify → 200 + recipients include the HOD",
+                  r.status_code == 200 and "hod" in r.json().get("recipients", []),
+                  f"got {r.status_code} {r.text[:120]}")
+            async with SessionLocal() as s:
+                row = (await s.execute(select(
+                    notif.c["body"], notif.c["severity"], notif.c["recipient_user"])
+                    .where(notif.c["event_key"] == "sla_nudge",
+                           notif.c["related_ref"] == str(rid),
+                           notif.c["recipient_user"] == "hod"))).first()
+            check("nudge uses the EXACT URGENT template + critical severity",
+                  row is not None and row.severity == "critical"
+                  and row.body.startswith(
+                      f"URGENT — Dear hod, From: Admin. Subject: Action required "
+                      f"on pending submission {rid}"),
+                  f"row={row}")
+
+            r = await ac.post(f"/admin/overdue-actions/hod-issue/{rid}/clear",
+                              headers=H(admin_t))
+            check("clear → 200", r.status_code == 200, f"got {r.status_code}")
+            r = await ac.post(f"/admin/overdue-actions/hod-issue/{rid}/clear",
+                              headers=H(admin_t))
+            check("double clear → 409", r.status_code == 409, f"got {r.status_code}")
+            r = await ac.get("/admin/overdue-actions", headers=H(admin_t))
+            check("cleared item no longer surfaces",
+                  all(not (x["kind"] == "hod-issue" and x["ref_id"] == str(rid))
+                      for x in r.json().get("items", [])), r.text[:160])
+    finally:
+        async with SessionLocal() as s:  # full cleanup (audit rows stay, by design)
+            await s.execute(delete(notif).where(
+                notif.c["event_key"] == "sla_nudge",
+                notif.c["related_ref"] == str(rid)))
+            await s.execute(delete(dis).where(
+                dis.c["kind"] == "hod-issue", dis.c["ref_id"] == str(rid)))
+            await s.execute(delete(pi).where(pi.c["id"] == rid))
+            await s.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -2321,6 +2428,8 @@ async def main() -> int:
     await test_ai_layer()
     print("\n G. SME plan layer (Phase S1 — engine port + parity oracle)")
     await test_sme_plan_layer()
+    print("\n H. admin SLA tracker (T2 — overdue actions + nudges)")
+    await test_sla_tracker()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

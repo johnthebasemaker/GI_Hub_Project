@@ -123,9 +123,14 @@ function SmePageBody({ siteId, setSiteId, sites }: {
 
   return (
     <div>
+      {/* colorBgLayout is 'transparent' in both themes (body gradient shows
+          through) — the sticky band MUST use the solid surface token or
+          scrolled rows bleed through the boundary. */}
       <div ref={headRef} style={{
         position: 'sticky', top: 0, zIndex: 30,
-        background: token.colorBgLayout, paddingTop: 4,
+        background: token.colorBgContainer, paddingTop: 4,
+        margin: '0 -8px', padding: '4px 8px 0',
+        borderBottom: `1px solid ${token.colorBorderSecondary}`,
       }}>
         <Typography.Title level={3} style={{ marginTop: 0 }}>
           SME Material Estimator
@@ -144,7 +149,9 @@ function SmePageBody({ siteId, setSiteId, sites }: {
         renderTabBar={(props, DefaultTabBar) => (
           <DefaultTabBar {...props} style={{
             position: 'sticky', top: headH, zIndex: 29,
-            background: token.colorBgLayout,
+            background: token.colorBgContainer,  // solid — no bleed-through
+            margin: '0 -8px 16px', padding: '0 8px',
+            boxShadow: `0 2px 8px ${token.colorBgContainer}`,
           }} />
         )}
         items={[

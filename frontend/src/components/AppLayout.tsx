@@ -2,9 +2,9 @@ import { Suspense } from 'react'
 import type { ReactNode } from 'react'
 import { Alert, Badge, Button, ConfigProvider, Layout, Menu, Skeleton, Space, Tooltip, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AuditOutlined, BarChartOutlined, CameraOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FallOutlined, FieldTimeOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, MoonOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, SunOutlined, TeamOutlined, ToolOutlined, FileProtectOutlined, ControlOutlined, MessageOutlined, UserAddOutlined } from '@ant-design/icons'
+import { AlertOutlined, AuditOutlined, BarChartOutlined, CameraOutlined, CarOutlined, DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FallOutlined, FieldTimeOutlined, FireOutlined, FileSearchOutlined, FormOutlined, InboxOutlined, LogoutOutlined, MoonOutlined, ProfileOutlined, SafetyCertificateOutlined, SolutionOutlined, StockOutlined, SunOutlined, TeamOutlined, ToolOutlined, FileProtectOutlined, ControlOutlined, MessageOutlined, UserAddOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { useHealth, useWorkQueues } from '../api/hooks'
+import { useHealth, useOverdueActions, useWorkQueues } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
 import { READ_ENTITIES, WRITE_ENTITIES } from '../config/entities'
 import { useThemeMode } from '../theme/ThemeContext'
@@ -30,9 +30,22 @@ function withCount(label: string, count?: number): ReactNode {
   )
 }
 
+// T2: red badge — SLA-breached items surfaced to the admin (urgency, not work).
+function withRedCount(label: string, count?: number): ReactNode {
+  if (!count) return label
+  return (
+    <span className="gi-nav-flex">
+      {label}
+      <Badge count={count} size="small" overflowCount={99}
+        style={{ backgroundColor: '#EF4444', color: '#fff', fontWeight: 600 }} />
+    </span>
+  )
+}
+
 // Nav is role-gated by the signed-in user's hierarchy level (admin 4 … store_keeper 0)
 // plus exact-role gates for the parallel-ladder portals (warehouse).
-function buildMenu(level: number, role: string, q: Record<string, number>): MenuProps['items'] {
+function buildMenu(level: number, role: string, q: Record<string, number>,
+                   overdue?: number): MenuProps['items'] {
   const items: MenuProps['items'] = [
     { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
     { key: '/stock', icon: <StockOutlined />, label: 'Stock' },
@@ -145,6 +158,8 @@ function buildMenu(level: number, role: string, q: Record<string, number>): Menu
       children: [
         { key: '/admin/users', icon: <TeamOutlined />, label: 'Users' },
         { key: '/admin/pending', icon: <UserAddOutlined />, label: 'Access Requests' },
+        // T2 — >24h SLA tracker (red badge = breached submissions needing a nudge).
+        { key: '/admin/overdue', icon: <AlertOutlined />, label: withRedCount('Overdue Actions', overdue) },
         { key: '/admin/inventory', icon: <DatabaseOutlined />, label: 'Inventory' },
         { key: '/admin/audit', icon: <FileSearchOutlined />, label: 'Audit Log' },
         { key: '/admin/console', icon: <ControlOutlined />, label: 'Console' },
@@ -176,6 +191,8 @@ export default function AppLayout() {
   const { user, logout } = useAuth()
   const { mode, toggle } = useThemeMode()
   const level = user?.level ?? 0
+  // T2: red SLA badge — polled only for admins (endpoint is level-4).
+  const { data: overdue } = useOverdueActions(level >= 4)
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -199,7 +216,7 @@ export default function AppLayout() {
             <Menu
               mode="inline"
               selectedKeys={[location.pathname]}
-              items={buildMenu(level, user?.role ?? '', queues ?? {})}
+              items={buildMenu(level, user?.role ?? '', queues ?? {}, overdue?.count)}
               onClick={({ key }) => navigate(key)}
             />
           </div>

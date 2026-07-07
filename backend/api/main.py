@@ -44,6 +44,7 @@ from .manhours import router as manhours_router  # noqa: E402
 from .ai.router import router as ai_router  # noqa: E402
 from .notifications import router as notifications_router  # noqa: E402
 from .console import admin as console_admin_router  # noqa: E402
+from .sla import router as sla_router  # noqa: E402
 from .console import oversight as console_oversight_router  # noqa: E402
 from .console import public as console_public_router  # noqa: E402
 from .console import xsite as xsite_router  # noqa: E402
@@ -186,6 +187,8 @@ app.include_router(documents_router)
 # (≥logistics), cross-site requests (≥hod), feedback (any authenticated user).
 app.include_router(console_admin_router)
 app.include_router(console_oversight_router)
+# T2 — admin SLA tracker: >24h Overdue Actions + clear/notify nudges (admin-only).
+app.include_router(sla_router)
 app.include_router(xsite_router, dependencies=_auth)
 app.include_router(console_public_router, dependencies=_auth)
 

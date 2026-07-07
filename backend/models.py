@@ -575,6 +575,20 @@ class AuthSessions(Base):
     revoke_reason = Column(Text)  # rotated | logout | reuse-detected | admin-reset | user-deleted
     replaced_by = Column(Integer)  # successor session id (rotation chain)
 
+class SlaDismissals(Base):
+    """Admin 'Clear' actions on the Overdue Actions view (NEW-STACK ONLY — no
+    SQLite counterpart; dual_ci leaves it empty on reset, same contract as
+    auth_sessions/ai_jobs). One row hides one (kind, ref_id) pending item from
+    the >24h SLA tracker; UNIQUE so a double-clear is a clean 409."""
+    __tablename__ = "sla_dismissals"
+    __table_args__ = (UniqueConstraint("kind", "ref_id", name="uq_sla_dismissals_kind_ref"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kind = Column(Text, nullable=False)      # queue key (hod-issue, sk-request, …)
+    ref_id = Column(Text, nullable=False)    # queue row id / PR_Number
+    cleared_by = Column(Text, nullable=False)
+    cleared_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+
+
 class AiJob(Base):
     """Async AI job queue (NEW-STACK ONLY — no SQLite counterpart; dual_ci
     leaves it empty on reset, same contract as auth_sessions). Backs the
