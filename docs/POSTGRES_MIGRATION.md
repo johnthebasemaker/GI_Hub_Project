@@ -232,6 +232,45 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-07 (T3) · actor=interactive · branch=`main` · 🔓 FREEZE-LIFT FEATURE: SME sticky header + legacy Excel export layouts (user-approved plan, step 2 of T4→T3→T2→T1)
+- **Files touched:** `backend/api/sme_export_layouts.py` (new) ·
+  `backend/api/sme.py` · `frontend/src/pages/SmePage.tsx` ·
+  `frontend/src/sme/LocationReport.tsx` · `frontend/src/api/hooks.ts` · this doc.
+- **Sticky header:** SME page title + site picker pin at viewport top
+  (`position: sticky`, z-30) and the Tabs nav pins right below at a
+  live-measured offset (ResizeObserver → `top`), theme-aware background via
+  `theme.useToken().colorBgLayout` — tabs stay visible over the virtualized
+  grids in light AND dark mode.
+- **Legacy export layouts:** new `sme_export_layouts.py` is a 1:1 port of the
+  legacy writers (`material_estimator_portal.py` ~2040-2640) — deliberately
+  **xlsxwriter** (already a dependency; the blueprint's format dicts +
+  merge/insert_image geometry translate verbatim, zero re-implementation
+  drift; the plan said openpyxl — deviation flagged and justified).
+  Every sheet: rows 0-3 logo+meta band, row 4 merged title bar, then:
+  - **Equipment Report** — "1. Summary by Equipment" (+-joined system names)
+    · "2. Summary by System Code" · "3. Detailed Table" (autofilter), each
+    with GRAND TOTAL in the scheme's gold/tinted colors; multi-sheet
+    per-location (legacy `_LOC_COLOR_MAP` schemes) + "All Equipment" +
+    "All System Codes"; `?tag=` / `?location=` single-sheet variants.
+  - **Location Report** — NEW plan-export key `location-report`
+    (body.location; oracle-cascaded lines): main alloc table + GRAND TOTAL,
+    then the 3 legacy summary blocks (System Code · Equipment · Material).
+    `LocationReport.tsx` per-location + All-Equipment buttons now use it.
+  - **System Code Report** — Summary sheet + one styled sheet per code
+    (overview scheme).
+- **Filenames:** every SME export now uses the legacy
+  `{stem}_{username}_{date}.{ext}` convention (`legacy_filename()`);
+  `postDownloadDocument` now honors Content-Disposition so the browser
+  receives the server's name.
+- **Verified:** structural verifier (scratchpad `verify_t3.py`) — **27/27**
+  against live mirror data: sheet lists, 5-row header, merged title, section
+  order/rows (29 equipment · 77 detail rows · ΣSQM 33,323.29), 4 GRAND
+  TOTALs in the location sheet, scheme fills (#2D4A6A / #1E5799), autofilter.
+  Gates: `service_tests` **368/0** · `parity:sme` **509** · frontend build ✅.
+  :8000 restarted onto this code. (Attached old/new files unreadable —
+  macOS TCC blocks ~/Downloads; blueprint taken from the legacy generator.)
+- **Next action:** T2 (Admin SLA oversight + nudge) on the user's go signal.
+
 ### 2026-07-07 (T4) · actor=interactive · branch=`main` · 🔓 FREEZE-LIFT FEATURE: role-based site validation on Request Access (user-approved plan, T4→T3→T2→T1)
 - **Files touched:** `backend/alembic/versions/…_c7a2e91f3b55_user_location_columns.py`
   (new) · `backend/models.py` · `database.py` (self-heal only) ·

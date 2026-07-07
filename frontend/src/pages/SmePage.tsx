@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { App, Button, Select, Space, Table, Tabs, Typography } from 'antd'
+import { useLayoutEffect, useRef, useState } from 'react'
+import { App, Button, Select, Space, Table, Tabs, Typography, theme } from 'antd'
 import { FileExcelOutlined } from '@ant-design/icons'
 import {
   downloadDocument, useSites, useSmeComparison, useSmeDemandMatrix, useSmeEquipment,
@@ -104,21 +104,49 @@ function SmePageBody({ siteId, setSiteId, sites }: {
   const materials = useSmeMaterials()
   const comparison = useSmeComparison(siteId)
 
+  // T3 sticky header: the title + site-picker block pins at the viewport top
+  // and the Tabs nav pins right below it (offset measured live so wrapping /
+  // zoom keep them flush). Theme-aware background so rows scrolling under
+  // the frozen band are fully hidden in both light and dark mode.
+  const { token } = theme.useToken()
+  const headRef = useRef<HTMLDivElement>(null)
+  const [headH, setHeadH] = useState(0)
+  useLayoutEffect(() => {
+    const el = headRef.current
+    if (!el) return
+    const update = () => setHeadH(el.offsetHeight)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
   return (
     <div>
-      <Typography.Title level={3} style={{ marginTop: 0 }}>
-        SME Material Estimator
-      </Typography.Title>
-      <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
-        Read-only view of the estimator data (equipment, recipes/BOM, SQM progress,
-        materials with derived available quantity).
-      </Typography.Paragraph>
-      <Space style={{ marginBottom: 12 }}>
-        <Select allowClear placeholder="All sites" style={{ width: 180 }} value={siteId}
-          onChange={setSiteId} options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
-      </Space>
+      <div ref={headRef} style={{
+        position: 'sticky', top: 0, zIndex: 30,
+        background: token.colorBgLayout, paddingTop: 4,
+      }}>
+        <Typography.Title level={3} style={{ marginTop: 0 }}>
+          SME Material Estimator
+        </Typography.Title>
+        <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
+          Read-only view of the estimator data (equipment, recipes/BOM, SQM progress,
+          materials with derived available quantity).
+        </Typography.Paragraph>
+        <Space style={{ marginBottom: 12 }}>
+          <Select allowClear placeholder="All sites" style={{ width: 180 }} value={siteId}
+            onChange={setSiteId} options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
+        </Space>
+      </div>
       <Tabs
         defaultActiveKey="dash"
+        renderTabBar={(props, DefaultTabBar) => (
+          <DefaultTabBar {...props} style={{
+            position: 'sticky', top: headH, zIndex: 29,
+            background: token.colorBgLayout,
+          }} />
+        )}
         items={[
           { key: 'dash', label: 'Dashboard', children: <SmeDashboard siteId={siteId} /> },
           { key: 'builder', label: '🔍 Session Builder', children: <SessionBuilder siteId={siteId} /> },

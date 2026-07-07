@@ -790,12 +790,16 @@ export function useSmeDemandMatrix(siteId?: string) {
 }
 
 // --- SME rebuild (Phase S3): POST-body download (session plan exports) ---------
+// T3: honors the server's Content-Disposition (legacy {stem}_{user}_{date}
+// naming), falling back to the caller-supplied name.
 export async function postDownloadDocument(path: string, body: unknown, filename: string) {
   const res = await api.post(path, body, { responseType: 'blob' })
+  const cd = (res.headers['content-disposition'] as string | undefined) ?? ''
+  const name = cd.match(/filename="?([^"]+)"?/)?.[1] ?? filename
   const url = URL.createObjectURL(res.data as Blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = filename
+  a.download = name
   document.body.appendChild(a)
   a.click()
   a.remove()

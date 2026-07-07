@@ -437,6 +437,9 @@ _PLAN_EXPORT_KEYS = {
     # Legacy Tab 6 "Execution Order List": shortfall lines for ONE equipment
     # across all its codes (body.equipment_tag selects the tag).
     "execution-plan": ("SME Execution Plan (order list)", "_execution"),
+    # Legacy Tab 3 "Location Report": alloc lines (optionally one location) in
+    # the legacy workbook layout — main table + 3 summary blocks (T3).
+    "location-report": ("SME Location Report", "_location"),
 }
 
 
@@ -483,6 +486,8 @@ class PlanExportBody(CascadeBody):
     title: Optional[str] = Field(default=None, max_length=80)
     # execution-plan key: which equipment's shortfall lines to export.
     equipment_tag: Optional[str] = Field(default=None, max_length=120)
+    # location-report key: restrict to one location ("" / None → all equipment).
+    location: Optional[str] = Field(default=None, max_length=120)
 
 
 def _fname_part(s: str) -> str:
@@ -511,8 +516,13 @@ async def plan_export(body: PlanExportBody,
     model = sme_engine.build_model(snap["equipment"], snap["recipes"],
                                    snap["materials"], snap["progress"])
     plan = sme_engine.run_plan(model, body.priority_order)
+    from .sme_export_layouts import legacy_filename, loc_scheme, location_report_xlsx
+    uname = user["username"]
     title, part = _PLAN_EXPORT_KEYS[body.key]
-    fname = f"sme-{body.key}.{fmt}"
+    # Legacy filename stems per report (convention: {stem}_{user}_{date}.{ext}).
+    _STEMS = {"session-full": "session_full_report", "order-list": "order_list",
+              "feasibility": "session_feasibility", "overview": "total_overview"}
+    fname = legacy_filename(_STEMS.get(body.key, body.key), uname, fmt)
     if part == "_overview":
         items = _overview_rows(model, plan)
     elif part == "_execution":
@@ -522,7 +532,32 @@ async def plan_export(body: PlanExportBody,
         items = [ln for ln in plan["lines"]
                  if ln["Equipment_Tag_No"] == tag and ln["Shortfall_Qty"] > 0]
         title = f"SME Execution Plan — {tag} (order list)"
-        fname = f"execution_plan_{_fname_part(tag)}.{fmt}"  # legacy stem
+        fname = legacy_filename(f"execution_plan_{_fname_part(tag)}", uname, fmt)
+    elif part == "_location":
+        loc = (body.location or "").strip()
+        if loc:
+            loc_tags = {t for t, m in model["tag_meta"].items()
+                        if (m.get("Location") or "") == loc}
+            items = [ln for ln in plan["lines"] if ln["Equipment_Tag_No"] in loc_tags]
+        else:
+            items = plan["lines"]
+        scope = loc or "All Equipment"
+        title = f"SME Location Report — {scope}"
+        fname = legacy_filename(
+            f"location_report_{_fname_part(scope.lower().replace(' ', '_'))}", uname, fmt)
+        if fmt == "xlsx":  # legacy workbook: main alloc table + 3 summary blocks
+            cols = ["Equipment_Tag_No", "Lining_System_Code",
+                    "Lining_System_Short_Name", "Total_SQM", "Material_Code",
+                    "Material_Name", "UOM", "Demand_Qty", "Allocated_Qty",
+                    "Shortfall_Qty", "Fulfillment_Pct"]
+            data = location_report_xlsx(
+                [{"name": scope, "title": body.title or title,
+                  "color_scheme": loc_scheme(loc or None),
+                  "columns": cols, "rows": items}], username=uname)
+            return StreamingResponse(io.BytesIO(data),
+                                     media_type=_FORMATS["xlsx"][1],
+                                     headers={"Content-Disposition":
+                                              f'attachment; filename="{fname}"'})
     else:
         items = plan[part]
     if body.title and body.title.strip():
@@ -702,6 +737,45 @@ def _tabular(items: list[dict]) -> tuple[list, list]:
     return columns, [[r.get(c) for c in columns] for r in items]
 
 
+async def _equipment_matrix_rows(session: AsyncSession, site_id: str | None,
+                                 tag: str | None = None,
+                                 location: str | None = None) -> list[dict]:
+    """One row per (tag × code) with the LEGACY display column names — the
+    detail rows the legacy Equipment Report workbook is built from."""
+    e = sme_equipment_t
+    stmt = select(e.c["Site_ID"], e.c["Location"], e.c["Type"],
+                  e.c["Equipment_Tag_No"], e.c["Name"], e.c["Lining_System_Code"],
+                  e.c["Lining_System_Short_Name"], e.c["Surface_Area_SQM"])
+    if site_id is not None:
+        stmt = stmt.where(e.c["Site_ID"] == site_id)
+    if tag:
+        stmt = stmt.where(e.c["Equipment_Tag_No"] == tag)
+    if location:
+        stmt = stmt.where(e.c["Location"] == location)
+    eq_rows = _rows(await session.execute(stmt.order_by(e.c["Equipment_Tag_No"], e.c["id"])))
+
+    s = sme_sqm_t
+    pstmt = select(s.c["Site_ID"], s.c["Equipment_Tag_No"], s.c["Lining_System_Code"],
+                   s.c["Original_SQM"])
+    if site_id is not None:
+        pstmt = pstmt.where(s.c["Site_ID"] == site_id)
+    prog = {(p["Site_ID"], p["Equipment_Tag_No"], p["Lining_System_Code"]): p
+            for p in _rows(await session.execute(pstmt))}
+
+    out = []
+    for r in sorted(eq_rows, key=lambda x: (str(x["Equipment_Tag_No"]),
+                                            _syskey(x["Lining_System_Code"]))):
+        p = prog.get((r["Site_ID"], r["Equipment_Tag_No"], r["Lining_System_Code"]))
+        planned = float((p and p["Original_SQM"]) or r["Surface_Area_SQM"] or 0)
+        out.append({"Location": r["Location"] or "", "Type": r["Type"] or "",
+                    "Equipment Tag No.": r["Equipment_Tag_No"],
+                    "Equipment Name": r["Name"] or "",
+                    "System Code": r["Lining_System_Code"],
+                    "System Name": r["Lining_System_Short_Name"] or "",
+                    "Total SQM": round(planned, 2)})
+    return out
+
+
 # --- exports (reuse the reports renderers; still pure reads) -------------------
 @router.get("/export/{key}", summary="Export an SME view (xlsx | csv | pdf); "
             "optional tag / location / code narrow the scope (legacy per-"
@@ -717,48 +791,106 @@ async def sme_export(key: str, format: str = "xlsx", site_id: Optional[str] = No
     from fastapi.responses import StreamingResponse
 
     from .reports import _FORMATS, to_pdf_sheets, to_xlsx_sheets
+    from .sme_export_layouts import (equipment_report_xlsx, legacy_filename,
+                                     loc_scheme, single_table_xlsx)
     fmt = format.lower()
     if fmt not in _FORMATS:
         raise HTTPException(400, f"format must be one of {sorted(_FORMATS)}")
     site_id = resolve_site_param(user, site_id)
-    today = _date.today().isoformat()
+    uname = user["username"]
+
+    def _resp(data: bytes, media: str, filename: str):
+        return StreamingResponse(io.BytesIO(data), media_type=media,
+                                 headers={"Content-Disposition":
+                                          f'attachment; filename="{filename}"'})
 
     # sheets: multi-sheet xlsx / sectioned pdf when set (legacy file layout).
     sheets: list[tuple] | None = None
     fname: str | None = None
 
     if key == "equipment-report":
-        if tag:  # one equipment, per-code breakdown (legacy per-tag button)
-            title = f"SME Equipment Report — {tag}"
+        # xlsx → the LEGACY workbook layout (T3 blueprint: 5-row header +
+        # Summary by Equipment · Summary by System Code · Detailed Table).
+        if tag:  # one equipment (legacy per-tag button)
+            title = f"Equipment Report — {tag}"
+            matrix = await _equipment_matrix_rows(session, site_id, tag=tag)
+            fname = legacy_filename(f"equipment_{_fname_part(tag)}", uname, fmt)
+            if fmt == "xlsx":
+                scheme = loc_scheme(matrix[0]["Location"] if matrix else None)
+                data = equipment_report_xlsx([{"name": str(tag), "title": title,
+                                               "color_scheme": scheme, "rows": matrix}],
+                                             username=uname)
+                return _resp(data, _FORMATS["xlsx"][1], fname)
             items = await _equipment_detail_rows(session, site_id, tag)
-            fname = f"equipment_{_fname_part(tag)}_{today}.{fmt}"
         elif location:  # one location (legacy per-location button)
-            title = f"SME Equipment Report — {location}"
+            title = f"Equipment Report — {location}"
+            fname = legacy_filename(f"equipment_report_{_fname_part(location)}", uname, fmt)
+            if fmt == "xlsx":
+                matrix = await _equipment_matrix_rows(session, site_id, location=location)
+                data = equipment_report_xlsx([{"name": location, "title": title,
+                                               "color_scheme": loc_scheme(location),
+                                               "rows": matrix}], username=uname)
+                return _resp(data, _FORMATS["xlsx"][1], fname)
             items = [r for r in await _equipment_report_rows(session, site_id)
                      if (r["Location"] or "") == location]
-            fname = f"equipment_report_{_fname_part(location)}_{today}.{fmt}"
         else:  # all — legacy multi-sheet: per-location + All Equipment + codes
-            title = "SME Equipment Report — All Equipment"
-            items = await _equipment_report_rows(session, site_id)
-            fname = f"equipment_report_all_{today}.{fmt}"
-            if fmt in ("xlsx", "pdf"):
+            title = "Equipment Report — All Equipment"
+            fname = legacy_filename("equipment_report_all", uname, fmt)
+            if fmt == "xlsx":
+                matrix = await _equipment_matrix_rows(session, site_id)
                 locs: dict[str, list[dict]] = {}
-                for r in items:
+                for r in matrix:
                     locs.setdefault(r["Location"] or "—", []).append(r)
-                sheets = [(loc, *_tabular(rs)) for loc, rs in sorted(locs.items())]
+                loc_sheets = [{"name": loc, "title": f"Equipment Report — {loc}",
+                               "color_scheme": loc_scheme(loc), "rows": rs}
+                              for loc, rs in sorted(locs.items())]
+                data = equipment_report_xlsx(
+                    loc_sheets,
+                    all_eq_sheet={"name": "All Equipment",
+                                  "title": "Equipment Report — All Equipment",
+                                  "color_scheme": "dashboard", "rows": matrix},
+                    include_all_codes_sheet=True, username=uname)
+                return _resp(data, _FORMATS["xlsx"][1], fname)
+            items = await _equipment_report_rows(session, site_id)
+            if fmt == "pdf":
+                locs2: dict[str, list[dict]] = {}
+                for r in items:
+                    locs2.setdefault(r["Location"] or "—", []).append(r)
+                sheets = [(loc, *_tabular(rs)) for loc, rs in sorted(locs2.items())]
                 sheets.append(("All Equipment", *_tabular(items)))
                 sheets.append(("All System Codes",
                                *_tabular(await _system_code_report_rows(session, site_id))))
     elif key == "system-code-report":
         if code:  # one code (legacy per-code button)
-            title = f"SME System Code Report — Code {code}"
+            title = f"System Code Report — Code {code}"
             items = await _code_equipment_rows(session, site_id, code)
-            fname = f"system_code_{_fname_part(code)}_{today}.{fmt}"
+            fname = legacy_filename(f"system_code_{_fname_part(code)}", uname, fmt)
+            if fmt == "xlsx":
+                cols, _ = _tabular(items)
+                data = single_table_xlsx([{"name": f"Code {code}", "title": title,
+                                           "color_scheme": "overview",
+                                           "columns": cols, "rows": items}],
+                                         username=uname)
+                return _resp(data, _FORMATS["xlsx"][1], fname)
         else:  # all — legacy multi-sheet: summary + one sheet per code
-            title = "SME System Code Report"
+            title = "System Code Report"
             items = await _system_code_report_rows(session, site_id)
-            fname = f"system_code_report_{today}.{fmt}"
-            if fmt in ("xlsx", "pdf"):
+            fname = legacy_filename("system_code_report", uname, fmt)
+            if fmt == "xlsx":
+                specs = [{"name": "Summary", "title": "System Code Report — Summary",
+                          "color_scheme": "overview",
+                          "columns": _tabular(items)[0], "rows": items}]
+                for srow in items:
+                    c = srow["System_Code"]
+                    crows = await _code_equipment_rows(session, site_id, c)
+                    specs.append({"name": f"Code {c}",
+                                  "title": f"System Code Report — Code {c} "
+                                           f"({srow['Short_Name'] or '—'})",
+                                  "color_scheme": "overview",
+                                  "columns": _tabular(crows)[0], "rows": crows})
+                data = single_table_xlsx(specs, username=uname)
+                return _resp(data, _FORMATS["xlsx"][1], fname)
+            if fmt == "pdf":
                 sheets = [("Summary", *_tabular(items))]
                 for srow in items:
                     c = srow["System_Code"]
@@ -768,7 +900,7 @@ async def sme_export(key: str, format: str = "xlsx", site_id: Optional[str] = No
         # Legacy multi-sheet: Progress List + per-(tag, code) production detail.
         title = "SME Progress List"
         items = await _progress_list_rows(session, site_id)
-        fname = f"progress_list_{today}.{fmt}"
+        fname = legacy_filename("progress_list", uname, fmt)
         if fmt in ("xlsx", "pdf"):
             sheets = [("Progress List", *_tabular(items))]
             log = await _production_log_rows(session, site_id)
@@ -781,11 +913,11 @@ async def sme_export(key: str, format: str = "xlsx", site_id: Optional[str] = No
     elif key == "consumption-comparison":
         title = "SME Consumption Comparison"
         items = await _comparison_rows(session, site_id)
-        fname = f"consumption_comparison_{today}.{fmt}"
+        fname = legacy_filename("consumption_comparison", uname, fmt)
     elif key == "production-log":
         title = "SME Production Log (committed)"
         items = await _production_log_rows(session, site_id)
-        fname = f"consumption_log_full_{today}.{fmt}"
+        fname = legacy_filename("consumption_log_full", uname, fmt)
     elif key == "demand-matrix":
         title, items = "SME Demand Matrix", (await _demand_matrix(session, site_id))["lines"]
     elif key == "demand-totals":

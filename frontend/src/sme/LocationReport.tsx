@@ -64,21 +64,26 @@ function usePersistedOrders(storageKey: string, siteKey: string) {
   return { orders, save }
 }
 
-function ScopeExports({ order, siteId, scopeTitle, slug }: {
+function ScopeExports({ order, siteId, scopeTitle, slug, location }: {
   order: string[]
   siteId?: string
   scopeTitle: string
   slug: string
+  location?: string
 }) {
   const { message } = App.useApp()
   const [busy, setBusy] = useState<string | null>(null)
   const dl = async (format: string) => {
     setBusy(format)
     try {
+      // T3: 'location-report' renders the LEGACY workbook layout server-side
+      // (main alloc table + 3 summary blocks); the legacy
+      // {stem}_{user}_{date} filename arrives via Content-Disposition.
       await postDownloadDocument('/sme/plan/export',
         {
-          priority_order: order, key: 'session-full', format,
-          title: scopeTitle, ...(siteId ? { site_id: siteId } : {}),
+          priority_order: order, key: 'location-report', format,
+          title: scopeTitle, ...(location ? { location } : {}),
+          ...(siteId ? { site_id: siteId } : {}),
         }, `sme-location-${slug}.${format}`)
     } catch { message.error('Export failed') } finally { setBusy(null) }
   }
@@ -93,7 +98,7 @@ function ScopeExports({ order, siteId, scopeTitle, slug }: {
 }
 
 /** One cascaded scope: priority list + per-equipment expanders + suggestions. */
-function ScopeSection({ model, order, onOrder, siteId, scopeTitle, slug, showSuggestions }: {
+function ScopeSection({ model, order, onOrder, siteId, scopeTitle, slug, showSuggestions, location }: {
   model: SmeModel
   order: string[]
   onOrder: (next: string[]) => void
@@ -101,6 +106,7 @@ function ScopeSection({ model, order, onOrder, siteId, scopeTitle, slug, showSug
   scopeTitle: string
   slug: string
   showSuggestions: boolean
+  location?: string
 }) {
   const { message } = App.useApp()
   const scenario = useScenario()
@@ -116,7 +122,8 @@ function ScopeSection({ model, order, onOrder, siteId, scopeTitle, slug, showSug
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
-        <ScopeExports order={order} siteId={siteId} scopeTitle={scopeTitle} slug={slug} />
+        <ScopeExports order={order} siteId={siteId} scopeTitle={scopeTitle} slug={slug}
+          location={location} />
       </div>
       <PriorityList order={order} stats={stats}
         onReorder={onOrder} onMove={move}
@@ -214,7 +221,7 @@ export default function LocationReport({ siteId }: { siteId?: string }) {
                 <ScopeSection model={model} order={order}
                   onOrder={(next) => saveLoc(loc, next)} siteId={siteId}
                   scopeTitle={`SME Location Report — ${loc}`} slug={slug}
-                  showSuggestions />
+                  showSuggestions location={loc} />
               </Card>
             )
           })}
