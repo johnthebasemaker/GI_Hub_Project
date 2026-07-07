@@ -2191,6 +2191,59 @@ async def test_sme_plan_layer():
               and n_rows >= n_lines_pairs,
               f"got {r.status_code}, rows {n_rows} vs pairs {n_lines_pairs}")
 
+        # 2026-07-07: legacy-parity scoped downloads + client-rows renderer.
+        some_tag = order[0] if order else None
+        if some_tag:
+            r = await ac.get("/sme/export/equipment-report",
+                             params={"format": "xlsx", "tag": some_tag},
+                             headers=H(admin_t))
+            check("scoped equipment export (?tag=) → 200 + legacy filename stem",
+                  r.status_code == 200 and r.content[:2] == b"PK"
+                  and "equipment_" in r.headers.get("content-disposition", ""),
+                  f"got {r.status_code}")
+        r = await ac.get("/sme/export/equipment-report",
+                         params={"format": "xlsx"}, headers=H(admin_t))
+        check("equipment-report xlsx (all) → 200 multi-sheet workbook",
+              r.status_code == 200 and r.content[:2] == b"PK"
+              and "equipment_report_all_" in r.headers.get("content-disposition", ""),
+              f"got {r.status_code}")
+        r = await ac.get("/sme/export/system-code-report",
+                         params={"format": "xlsx", "code": "5"}, headers=H(hod_t))
+        check("scoped system-code export (?code=) → 200 + legacy filename stem",
+              r.status_code == 200 and r.content[:2] == b"PK"
+              and "system_code_5_" in r.headers.get("content-disposition", ""),
+              f"got {r.status_code}")
+        r = await ac.post("/sme/plan/export", headers=H(admin_t),
+                          json={"priority_order": order, "key": "execution-plan",
+                                "format": "xlsx",
+                                "equipment_tag": some_tag or "x"})
+        check("execution-plan export (per-tag order list) → 200 spreadsheet",
+              r.status_code == 200 and r.content[:2] == b"PK",
+              f"got {r.status_code}")
+        r = await ac.post("/sme/plan/export", headers=H(admin_t),
+                          json={"priority_order": [], "key": "execution-plan"})
+        check("execution-plan export without equipment_tag → 400",
+              r.status_code == 400, f"got {r.status_code}")
+        r = await ac.post("/sme/export/rows", headers=H(admin_t),
+                          json={"title": "Material Balance Report",
+                                "columns": ["Code", "Qty"],
+                                "rows": [["M-1", 2.5], ["M-2", 0]],
+                                "format": "xlsx",
+                                "filename": "dashboard_material_balance"})
+        check("client-rows renderer → 200 + requested filename",
+              r.status_code == 200 and r.content[:2] == b"PK"
+              and "dashboard_material_balance.xlsx" in r.headers.get("content-disposition", ""),
+              f"got {r.status_code}")
+        r = await ac.post("/sme/export/rows", headers=H(admin_t),
+                          json={"title": "t", "columns": ["a", "b"],
+                                "rows": [["only-one"]], "format": "csv"})
+        check("client-rows renderer rejects ragged rows → 400",
+              r.status_code == 400, f"got {r.status_code}")
+        r = await ac.post("/sme/export/rows", headers=H(worker_t),
+                          json={"title": "t", "columns": ["a"], "rows": []})
+        check("worker (lvl 0) → 403 on client-rows renderer",
+              r.status_code == 403, f"got {r.status_code}")
+
 
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")

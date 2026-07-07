@@ -434,6 +434,9 @@ _PLAN_EXPORT_KEYS = {
     "order-list": ("SME Session Order List (to procure)", "procurement"),
     "feasibility": ("SME Session Feasibility", "feasibility"),
     "overview": ("SME Total Overview (per equipment × system code)", "_overview"),
+    # Legacy Tab 6 "Execution Order List": shortfall lines for ONE equipment
+    # across all its codes (body.equipment_tag selects the tag).
+    "execution-plan": ("SME Execution Plan (order list)", "_execution"),
 }
 
 
@@ -478,6 +481,13 @@ class PlanExportBody(CascadeBody):
     # Optional document title override (e.g. "SME Location Report — TRAIN J")
     # so per-location/per-scope exports are self-describing.
     title: Optional[str] = Field(default=None, max_length=80)
+    # execution-plan key: which equipment's shortfall lines to export.
+    equipment_tag: Optional[str] = Field(default=None, max_length=120)
+
+
+def _fname_part(s: str) -> str:
+    """Filename-safe fragment (legacy replaced '/' in tags)."""
+    return "".join(c if c.isalnum() or c in "._-" else "-" for c in str(s)).strip("-") or "x"
 
 
 @router.post("/plan/export",
@@ -502,16 +512,28 @@ async def plan_export(body: PlanExportBody,
                                    snap["materials"], snap["progress"])
     plan = sme_engine.run_plan(model, body.priority_order)
     title, part = _PLAN_EXPORT_KEYS[body.key]
+    fname = f"sme-{body.key}.{fmt}"
+    if part == "_overview":
+        items = _overview_rows(model, plan)
+    elif part == "_execution":
+        tag = (body.equipment_tag or "").strip()
+        if not tag:
+            raise HTTPException(400, "execution-plan export needs equipment_tag")
+        items = [ln for ln in plan["lines"]
+                 if ln["Equipment_Tag_No"] == tag and ln["Shortfall_Qty"] > 0]
+        title = f"SME Execution Plan — {tag} (order list)"
+        fname = f"execution_plan_{_fname_part(tag)}.{fmt}"  # legacy stem
+    else:
+        items = plan[part]
     if body.title and body.title.strip():
         title = body.title.strip()
-    items = _overview_rows(model, plan) if part == "_overview" else plan[part]
     columns = list(items[0].keys()) if items else []
     rows = [[r.get(c) for c in columns] for r in items]
     render, media = _FORMATS[fmt]
     data = render(title, columns, rows, user["username"])
     return StreamingResponse(io.BytesIO(data), media_type=media,
                              headers={"Content-Disposition":
-                                      f'attachment; filename="sme-{body.key}.{fmt}"'})
+                                      f'attachment; filename="{fname}"'})
 
 
 # --- Phase S5: production log + progress list (Execution Plan reads) -----------
@@ -624,25 +646,146 @@ async def _system_code_report_rows(session: AsyncSession, site_id: str | None) -
     return out
 
 
+# --- scoped export row builders (legacy per-tag / per-code files) --------------
+async def _equipment_detail_rows(session: AsyncSession, site_id: str | None,
+                                 tag: str) -> list[dict]:
+    """Per-code breakdown for ONE equipment — the legacy `equipment_{tag}` file."""
+    e = sme_equipment_t
+    stmt = select(e.c["Site_ID"], e.c["Lining_System_Code"],
+                  e.c["Lining_System_Short_Name"], e.c["Lining_Area_Location"],
+                  e.c["Surface_Area_SQM"]).where(e.c["Equipment_Tag_No"] == tag)
+    if site_id is not None:
+        stmt = stmt.where(e.c["Site_ID"] == site_id)
+    eq_rows = _rows(await session.execute(stmt.order_by(e.c["Lining_System_Code"], e.c["id"])))
+
+    s = sme_sqm_t
+    pstmt = select(s.c["Site_ID"], s.c["Lining_System_Code"], s.c["Original_SQM"],
+                   s.c["Done_SQM"]).where(s.c["Equipment_Tag_No"] == tag)
+    if site_id is not None:
+        pstmt = pstmt.where(s.c["Site_ID"] == site_id)
+    prog = {(p["Site_ID"], p["Lining_System_Code"]): p
+            for p in _rows(await session.execute(pstmt))}
+
+    out = []
+    for r in sorted(eq_rows, key=lambda x: _syskey(x["Lining_System_Code"])):
+        code = r["Lining_System_Code"]
+        p = prog.get((r["Site_ID"], code))
+        planned = float((p and p["Original_SQM"]) or r["Surface_Area_SQM"] or 0)
+        done = float((p and p["Done_SQM"]) or 0)
+        out.append({"Lining_System_Code": code,
+                    "System": r["Lining_System_Short_Name"] or "",
+                    "Areas": r["Lining_Area_Location"] or "",
+                    "Total_SQM": round(planned, 2), "Done_SQM": round(done, 2),
+                    "Remaining_SQM": round(max(planned - done, 0), 2),
+                    "Pct_Complete": round(100 * done / planned, 1) if planned else None})
+    return out
+
+
+async def _code_equipment_rows(session: AsyncSession, site_id: str | None,
+                               code: str) -> list[dict]:
+    """Equipment carrying ONE lining-system code — legacy `system_code_{code}`."""
+    e = sme_equipment_t
+    stmt = select(e.c["Location"], e.c["Type"], e.c["Equipment_Tag_No"],
+                  e.c["Name"], e.c["Substrate"], e.c["Surface_Area_SQM"]) \
+        .where(e.c["Lining_System_Code"] == code)
+    if site_id is not None:
+        stmt = stmt.where(e.c["Site_ID"] == site_id)
+    rows = _rows(await session.execute(stmt.order_by(e.c["Equipment_Tag_No"], e.c["id"])))
+    return [{"Location": r["Location"] or "", "Type": r["Type"] or "",
+             "Equipment_Tag_No": r["Equipment_Tag_No"], "Name": r["Name"] or "",
+             "Substrate": r["Substrate"] or "",
+             "Total_SQM": round(float(r["Surface_Area_SQM"] or 0), 2)} for r in rows]
+
+
+def _tabular(items: list[dict]) -> tuple[list, list]:
+    columns = list(items[0].keys()) if items else []
+    return columns, [[r.get(c) for c in columns] for r in items]
+
+
 # --- exports (reuse the reports renderers; still pure reads) -------------------
-@router.get("/export/{key}", summary="Export an SME view (xlsx | csv | pdf)")
+@router.get("/export/{key}", summary="Export an SME view (xlsx | csv | pdf); "
+            "optional tag / location / code narrow the scope (legacy per-"
+            "section downloads)")
 async def sme_export(key: str, format: str = "xlsx", site_id: Optional[str] = None,
+                     tag: Optional[str] = None, location: Optional[str] = None,
+                     code: Optional[str] = None,
                      user: dict = Depends(require_level(2)),
                      session: AsyncSession = Depends(get_session)):
     import io
+    from datetime import date as _date
 
     from fastapi.responses import StreamingResponse
 
-    from .reports import _FORMATS
+    from .reports import _FORMATS, to_pdf_sheets, to_xlsx_sheets
     fmt = format.lower()
     if fmt not in _FORMATS:
         raise HTTPException(400, f"format must be one of {sorted(_FORMATS)}")
     site_id = resolve_site_param(user, site_id)
+    today = _date.today().isoformat()
+
+    # sheets: multi-sheet xlsx / sectioned pdf when set (legacy file layout).
+    sheets: list[tuple] | None = None
+    fname: str | None = None
 
     if key == "equipment-report":
-        title, items = "SME Equipment Report", await _equipment_report_rows(session, site_id)
+        if tag:  # one equipment, per-code breakdown (legacy per-tag button)
+            title = f"SME Equipment Report — {tag}"
+            items = await _equipment_detail_rows(session, site_id, tag)
+            fname = f"equipment_{_fname_part(tag)}_{today}.{fmt}"
+        elif location:  # one location (legacy per-location button)
+            title = f"SME Equipment Report — {location}"
+            items = [r for r in await _equipment_report_rows(session, site_id)
+                     if (r["Location"] or "") == location]
+            fname = f"equipment_report_{_fname_part(location)}_{today}.{fmt}"
+        else:  # all — legacy multi-sheet: per-location + All Equipment + codes
+            title = "SME Equipment Report — All Equipment"
+            items = await _equipment_report_rows(session, site_id)
+            fname = f"equipment_report_all_{today}.{fmt}"
+            if fmt in ("xlsx", "pdf"):
+                locs: dict[str, list[dict]] = {}
+                for r in items:
+                    locs.setdefault(r["Location"] or "—", []).append(r)
+                sheets = [(loc, *_tabular(rs)) for loc, rs in sorted(locs.items())]
+                sheets.append(("All Equipment", *_tabular(items)))
+                sheets.append(("All System Codes",
+                               *_tabular(await _system_code_report_rows(session, site_id))))
+    elif key == "system-code-report":
+        if code:  # one code (legacy per-code button)
+            title = f"SME System Code Report — Code {code}"
+            items = await _code_equipment_rows(session, site_id, code)
+            fname = f"system_code_{_fname_part(code)}_{today}.{fmt}"
+        else:  # all — legacy multi-sheet: summary + one sheet per code
+            title = "SME System Code Report"
+            items = await _system_code_report_rows(session, site_id)
+            fname = f"system_code_report_{today}.{fmt}"
+            if fmt in ("xlsx", "pdf"):
+                sheets = [("Summary", *_tabular(items))]
+                for srow in items:
+                    c = srow["System_Code"]
+                    sheets.append((f"Code {c}",
+                                   *_tabular(await _code_equipment_rows(session, site_id, c))))
+    elif key == "progress-list":
+        # Legacy multi-sheet: Progress List + per-(tag, code) production detail.
+        title = "SME Progress List"
+        items = await _progress_list_rows(session, site_id)
+        fname = f"progress_list_{today}.{fmt}"
+        if fmt in ("xlsx", "pdf"):
+            sheets = [("Progress List", *_tabular(items))]
+            log = await _production_log_rows(session, site_id)
+            by_unit: dict[tuple[str, str], list[dict]] = {}
+            for ln in log:
+                by_unit.setdefault((ln["Equipment_Tag_No"], ln["Lining_System_Code"]),
+                                   []).append(ln)
+            for i, ((t, c), lns) in enumerate(sorted(by_unit.items()), 1):
+                sheets.append((f"{i}. {str(t)[:8]}-{c}", *_tabular(lns)))
     elif key == "consumption-comparison":
-        title, items = "SME Consumption Comparison", await _comparison_rows(session, site_id)
+        title = "SME Consumption Comparison"
+        items = await _comparison_rows(session, site_id)
+        fname = f"consumption_comparison_{today}.{fmt}"
+    elif key == "production-log":
+        title = "SME Production Log (committed)"
+        items = await _production_log_rows(session, site_id)
+        fname = f"consumption_log_full_{today}.{fmt}"
     elif key == "demand-matrix":
         title, items = "SME Demand Matrix", (await _demand_matrix(session, site_id))["lines"]
     elif key == "demand-totals":
@@ -650,19 +793,53 @@ async def sme_export(key: str, format: str = "xlsx", site_id: Optional[str] = No
     elif key == "materials":
         title = "SME Materials (Available Qty)"
         items = _rows(await session.execute(text(SQL_SME_MATERIALS + ' ORDER BY s."Material_Code"')))
-    elif key == "system-code-report":
-        title, items = "SME System Code Report", await _system_code_report_rows(session, site_id)
-    elif key == "progress-list":
-        title, items = "SME Progress List", await _progress_list_rows(session, site_id)
-    elif key == "production-log":
-        title, items = "SME Production Log (committed)", await _production_log_rows(session, site_id)
     else:
         raise HTTPException(404, f"unknown SME export {key!r}")
 
-    columns = list(items[0].keys()) if items else []
-    rows = [[r.get(c) for c in columns] for r in items]
     render, media = _FORMATS[fmt]
-    data = render(title, columns, rows, user["username"])
+    if sheets is not None and fmt == "xlsx":
+        data = to_xlsx_sheets(sheets, user["username"])
+    elif sheets is not None and fmt == "pdf":
+        data = to_pdf_sheets(title, sheets, user["username"])
+    else:
+        columns, rows = _tabular(items)
+        data = render(title, columns, rows, user["username"])
     return StreamingResponse(io.BytesIO(data), media_type=media,
                              headers={"Content-Disposition":
-                                      f'attachment; filename="sme-{key}.{fmt}"'})
+                                      f'attachment; filename="{fname or f"sme-{key}.{fmt}"}"'})
+
+
+# --- generic client-view renderer (Dashboard / filtered-view parity) ------------
+class RowsExportBody(BaseModel):
+    """Render rows the CLIENT computed (dashboard filters, variance views) into
+    a document — the legacy portal exported the displayed frame verbatim.
+    Pure formatting: no DB access, no writes; capped to keep it a document
+    renderer rather than a bulk channel."""
+    title: str = Field(max_length=120)
+    columns: list[str] = Field(max_length=60)
+    rows: list[list[Optional[str | int | float | bool]]] = Field(max_length=20000)
+    format: str = "xlsx"
+    filename: Optional[str] = Field(default=None, max_length=120)
+
+
+@router.post("/export/rows", summary="Render client-computed rows as a document "
+             "(xlsx | csv | pdf) — legacy filtered-view export parity")
+async def sme_export_rows(body: RowsExportBody,
+                          user: dict = Depends(require_level(2))):
+    import io
+
+    from fastapi.responses import StreamingResponse
+
+    from .reports import _FORMATS
+    fmt = body.format.lower()
+    if fmt not in _FORMATS:
+        raise HTTPException(400, f"format must be one of {sorted(_FORMATS)}")
+    for r in body.rows:
+        if len(r) != len(body.columns):
+            raise HTTPException(400, "every row must match the columns length")
+    render, media = _FORMATS[fmt]
+    data = render(body.title, body.columns, body.rows, user["username"])
+    stem = _fname_part(body.filename or body.title.lower().replace(" ", "_"))
+    return StreamingResponse(io.BytesIO(data), media_type=media,
+                             headers={"Content-Disposition":
+                                      f'attachment; filename="{stem}.{fmt}"'})

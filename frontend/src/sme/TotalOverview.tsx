@@ -14,6 +14,7 @@ import { postDownloadDocument, useSmeSnapshot } from '../api/hooks'
 import { buildModel, runPlan, syscodeCompare, unitKey } from './engine'
 import { allUnits, fc, fcBg } from './insights'
 import KpiDrill from './KpiDrill'
+import { ScopedExport } from './MatrixReports'
 import { FulfilPill } from './PriorityList'
 
 const mono: React.CSSProperties = { fontFamily: 'JetBrains Mono, monospace' }
@@ -215,6 +216,9 @@ export default function TotalOverview({ siteId }: { siteId?: string }) {
               onClick={() => exportPlan('xlsx')}>Excel</Button>
             <Button size="small" icon={<FilePdfOutlined />} loading={busy === 'pdf'}
               onClick={() => exportPlan('pdf')}>PDF</Button>
+            {/* legacy consumption_log_full download (committed entries) */}
+            <span style={{ fontSize: '0.7rem', opacity: 0.7, marginLeft: 8 }}>Consumption Log:</span>
+            <ScopedExport exportKey="production-log" siteId={siteId} />
           </Space>
         )}>
         <Table<OverviewRow> virtual size="small" rowKey="key" columns={cols}

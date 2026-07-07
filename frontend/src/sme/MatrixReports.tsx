@@ -9,10 +9,11 @@
  * Exports use the existing GET /sme/export renderers (equipment-report /
  * system-code-report) — server-side document authority.
  */
-import { useMemo } from 'react'
-import { Alert, Card, Col, Collapse, Row, Skeleton, Table } from 'antd'
+import { useMemo, useState } from 'react'
+import { Alert, App, Button, Card, Col, Collapse, Row, Skeleton, Space, Table } from 'antd'
+import { FileExcelOutlined, FilePdfOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { useSmeSnapshot } from '../api/hooks'
+import { downloadDocument, useSmeSnapshot } from '../api/hooks'
 import { buildModel, syscodeCompare } from './engine'
 import { allUnits, locColor } from './insights'
 import type { UnitRef } from './insights'
@@ -28,6 +29,40 @@ const CodePill = ({ code }: { code: string }) => (
     borderRadius: 6, padding: '0 6px', fontSize: '0.68rem', fontWeight: 700, marginRight: 6,
   }}>Code {code}</span>
 )
+
+// Scoped legacy-parity downloads (per-tag / per-location / per-code files
+// rendered by GET /sme/export with narrow params; server names the file).
+export function ScopedExport({ exportKey, siteId, params, pdf = true }: {
+  exportKey: string
+  siteId?: string
+  params?: Record<string, string>
+  pdf?: boolean
+}) {
+  const { message } = App.useApp()
+  const [busy, setBusy] = useState<string | null>(null)
+  const dl = async (format: 'xlsx' | 'pdf') => {
+    setBusy(format)
+    try {
+      await downloadDocument(`/sme/export/${exportKey}`,
+        { format, ...(siteId ? { site_id: siteId } : {}), ...(params ?? {}) },
+        `sme-${exportKey}.${format}`)
+    } catch {
+      message.error('Export failed')
+    } finally {
+      setBusy(null)
+    }
+  }
+  return (
+    <Space size={4} onClick={(e) => e.stopPropagation()}>
+      <Button size="small" icon={<FileExcelOutlined />} loading={busy === 'xlsx'}
+        onClick={() => dl('xlsx')}>Excel</Button>
+      {pdf && (
+        <Button size="small" icon={<FilePdfOutlined />} loading={busy === 'pdf'}
+          onClick={() => dl('pdf')}>PDF</Button>
+      )}
+    </Space>
+  )
+}
 
 function useUnits(siteId?: string) {
   const { data: snap, isLoading } = useSmeSnapshot(siteId)
@@ -83,9 +118,13 @@ export function EquipmentMatrixReport({ siteId }: { siteId?: string }) {
                 ...mono, background: locColor(loc), color: '#fff', borderRadius: 6,
                 padding: '1px 10px', fontSize: '0.72rem', fontWeight: 700,
               }}>{loc}</span>
-              <span style={{ fontSize: '0.72rem', opacity: 0.75 }}>
+              <span style={{ fontSize: '0.72rem', opacity: 0.75, flex: 1 }}>
                 {locTags.length} equipment · {nf(locSqm)} SQM
               </span>
+              {loc !== '—' && (
+                <ScopedExport exportKey="equipment-report" siteId={siteId}
+                  params={{ location: loc }} />
+              )}
             </span>
           ),
           children: (
@@ -96,11 +135,13 @@ export function EquipmentMatrixReport({ siteId }: { siteId?: string }) {
               return {
                 key: tag,
                 label: (
-                  <span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <b style={{ ...mono, fontSize: '0.78rem' }}>{tag}</b>
-                    <span style={{ fontSize: '0.72rem', opacity: 0.7, marginLeft: 8 }}>
+                    <span style={{ fontSize: '0.72rem', opacity: 0.7, flex: 1 }}>
                       {first.name.slice(0, 34)} · {first.type || '—'} · {first.substrate || '—'}
                     </span>
+                    <ScopedExport exportKey="equipment-report" siteId={siteId}
+                      params={{ tag }} />
                   </span>
                 ),
                 children: (
@@ -169,9 +210,12 @@ export function SystemCodeReport({ siteId }: { siteId?: string }) {
           <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <CodePill code={s.code} />
             <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>{s.shortName || '—'}</span>
-            <span style={{ ...mono, fontSize: '0.7rem', opacity: 0.65 }}>
+            <span style={{ ...mono, fontSize: '0.7rem', opacity: 0.65, flex: 1 }}>
               {s.equipment} equipment · {nf(s.sqm)} SQM
             </span>
+            {/* legacy parity: one xlsx per system code */}
+            <ScopedExport exportKey="system-code-report" siteId={siteId}
+              params={{ code: s.code }} pdf={false} />
           </span>
         ),
         children: (

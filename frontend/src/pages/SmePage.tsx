@@ -9,7 +9,7 @@ import type { Row as ApiRow } from '../api/client'
 import { buildColumns } from '../lib/columns'
 import ExecutionPlan from '../sme/ExecutionPlan'
 import LocationReport from '../sme/LocationReport'
-import { EquipmentMatrixReport, SystemCodeReport } from '../sme/MatrixReports'
+import { EquipmentMatrixReport, ScopedExport, SystemCodeReport } from '../sme/MatrixReports'
 import TotalOverview from '../sme/TotalOverview'
 import { ScenarioProvider } from '../sme/ScenarioContext'
 import SessionBuilder from '../sme/SessionBuilder'
@@ -130,7 +130,11 @@ function SmePageBody({ siteId, setSiteId, sites }: {
             key: 'eq-matrix', label: '📋 Equipment Report',
             children: (
               <div>
-                <ExportButton exportKey="equipment-report" siteId={siteId} />
+                {/* legacy `equipment_report_all` multi-sheet (per-location +
+                    All Equipment + All System Codes) in xlsx or pdf */}
+                <div style={{ marginBottom: 12 }}>
+                  <ScopedExport exportKey="equipment-report" siteId={siteId} />
+                </div>
                 <EquipmentMatrixReport siteId={siteId} />
               </div>
             ),
@@ -139,7 +143,11 @@ function SmePageBody({ siteId, setSiteId, sites }: {
             key: 'code-report', label: '🔢 System Code Report',
             children: (
               <div>
-                <ExportButton exportKey="system-code-report" siteId={siteId} />
+                {/* legacy `system_code_report` multi-sheet (summary + one
+                    sheet per code); xlsx-only like the old build */}
+                <div style={{ marginBottom: 12 }}>
+                  <ScopedExport exportKey="system-code-report" siteId={siteId} pdf={false} />
+                </div>
                 <SystemCodeReport siteId={siteId} />
               </div>
             ),

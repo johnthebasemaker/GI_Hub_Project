@@ -11,10 +11,12 @@
  * All aggregation is client-side; the log endpoint is a pure Canon-safe read.
  */
 import { useMemo, useState } from 'react'
-import { Alert, Card, Col, Collapse, Empty, Radio, Row, Select, Skeleton, Space, Table } from 'antd'
+import { Alert, App, Button, Card, Col, Collapse, Empty, Radio, Row, Select, Skeleton, Space, Table } from 'antd'
+import { FileExcelOutlined, FilePdfOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { useSmeProductionLog, useSmeSnapshot } from '../api/hooks'
+import { postDownloadDocument, useSmeProductionLog, useSmeSnapshot } from '../api/hooks'
 import type { SmeLogRow } from '../api/hooks'
+import { ScopedExport } from './MatrixReports'
 import { buildModel, runPlan, syscodeCompare, unitKey } from './engine'
 import type { AllocationLine, SmeModel, SmeSnapshot } from './engine'
 import { fc } from './insights'
@@ -50,8 +52,38 @@ const shortageCols: ColumnsType<AllocationLine> = [
   },
 ]
 
+// Legacy "Execution Order List" download — the selected equipment's shortfall
+// lines rendered by the server oracle (POST /sme/plan/export, execution-plan).
+function ExecOrderExports({ order, tag, siteId }: {
+  order: string[]; tag: string; siteId?: string
+}) {
+  const { message } = App.useApp()
+  const [busy, setBusy] = useState<string | null>(null)
+  const dl = async (format: 'xlsx' | 'pdf') => {
+    setBusy(format)
+    try {
+      await postDownloadDocument('/sme/plan/export', {
+        priority_order: order, key: 'execution-plan', format,
+        equipment_tag: tag, ...(siteId ? { site_id: siteId } : {}),
+      }, `execution_plan_${tag.replace(/\//g, '-')}.${format}`)
+    } catch {
+      message.error('Export failed')
+    } finally {
+      setBusy(null)
+    }
+  }
+  return (
+    <Space size={4}>
+      <Button size="small" icon={<FileExcelOutlined />} loading={busy === 'xlsx'}
+        onClick={() => dl('xlsx')}>Excel — Order List</Button>
+      <Button size="small" icon={<FilePdfOutlined />} loading={busy === 'pdf'}
+        onClick={() => dl('pdf')}>PDF — Order List</Button>
+    </Space>
+  )
+}
+
 // ─── ⚙️ Sub-view 1: critical-code execution plan ─────────────────────────────
-function ExecMain({ model }: { model: SmeModel }) {
+function ExecMain({ model, siteId }: { model: SmeModel; siteId?: string }) {
   const scenario = useScenario()
   const plan = useMemo(() => runPlan(model, scenario.order), [model, scenario.order])
   const perCode = useMemo(() => codeStats(plan.lines), [plan])
@@ -143,6 +175,13 @@ function ExecMain({ model }: { model: SmeModel }) {
           </Card>
         )
       })}
+
+      {/* legacy conditional: order-list download when shortages exist */}
+      {allShort.length > 0 && selTag && (
+        <div style={{ marginBottom: 12 }}>
+          <ExecOrderExports order={scenario.order} tag={selTag} siteId={siteId} />
+        </div>
+      )}
 
       {/* Narrative summary */}
       <div style={{
@@ -249,6 +288,9 @@ function ProgressList({ model, snap, siteId }: { model: SmeModel; snap: SmeSnaps
         <Select style={{ width: 170 }} value={status} onChange={setStatus}
           options={['All', 'Complete', 'In Progress', 'Not Started']
             .map((s) => ({ value: s, label: s }))} />
+        {/* legacy `progress_list_{date}` multi-sheet (list + per-scope
+            production detail sheets), server-rendered */}
+        <ScopedExport exportKey="progress-list" siteId={siteId} />
       </Space>
       <Table size="small" rowKey="key" columns={cols} dataSource={filtered}
         pagination={{ pageSize: 15, showTotal: (t) => `${t} scopes` }}
@@ -288,6 +330,7 @@ function ProgressList({ model, snap, siteId }: { model: SmeModel; snap: SmeSnaps
 
 // ─── 📊 Sub-view 3: consumption comparison (expected vs actual) ──────────────
 function ConsumptionComparison({ model, siteId }: { model: SmeModel; siteId?: string }) {
+  const { message } = App.useApp()
   const { data: log, isLoading } = useSmeProductionLog(siteId)
   const [locs, setLocs] = useState<string[]>([])
   const [tags, setTags] = useState<string[]>([])
@@ -358,6 +401,24 @@ function ConsumptionComparison({ model, siteId }: { model: SmeModel; siteId?: st
   const totE = filtered.reduce((s, r) => s + r.Expected, 0)
   const totA = filtered.reduce((s, r) => s + r.Actual, 0)
 
+  // Legacy exports the FILTERED comparison frame verbatim → render the
+  // client-computed rows server-side (POST /sme/export/rows).
+  const compCols = ['Location', 'Tag', 'Code', 'SQM_Done', 'Material', 'Name',
+    'UOM', 'Expected', 'Actual', 'Variance', 'Variance_Pct'] as const
+  const exportComparison = async (format: 'xlsx' | 'pdf') => {
+    try {
+      await postDownloadDocument('/sme/export/rows', {
+        title: 'SME Consumption Comparison',
+        columns: [...compCols],
+        rows: filtered.map((r) => compCols.map((c) => r[c] ?? null)),
+        format,
+        filename: `consumption_comparison_${new Date().toISOString().slice(0, 10)}`,
+      }, `consumption_comparison.${format}`)
+    } catch {
+      message.error('Export failed')
+    }
+  }
+
   // Legacy ±1% tinting: over amber · under blue · on-target green.
   const varBg = (p: number | null) =>
     p === null ? undefined
@@ -395,6 +456,10 @@ function ConsumptionComparison({ model, siteId }: { model: SmeModel; siteId?: st
         <Select mode="multiple" allowClear placeholder="All codes" style={{ minWidth: 140 }}
           value={codes} onChange={setCodes} maxTagCount="responsive"
           options={codePool.map((c) => ({ value: c, label: `Code ${c}` }))} />
+        <Button size="small" icon={<FileExcelOutlined />}
+          onClick={() => exportComparison('xlsx')}>Excel</Button>
+        <Button size="small" icon={<FilePdfOutlined />}
+          onClick={() => exportComparison('pdf')}>PDF</Button>
       </Space>
       <Row gutter={[12, 12]} style={{ marginBottom: 10 }}>
         <Col flex="1 1 140px"><KpiDrill title="Rows" value={String(filtered.length)}
@@ -437,7 +502,7 @@ export default function ExecutionPlan({ siteId }: { siteId?: string }) {
         options={[{ label: '⚙️ Execution Plan', value: 'plan' },
           { label: '📋 Progress List', value: 'progress' },
           { label: '📊 Consumption Comparison', value: 'comparison' }]} />
-      {sub === 'plan' && <ExecMain model={model} />}
+      {sub === 'plan' && <ExecMain model={model} siteId={siteId} />}
       {sub === 'progress' && <ProgressList model={model} snap={snap} siteId={siteId} />}
       {sub === 'comparison' && <ConsumptionComparison model={model} siteId={siteId} />}
     </div>

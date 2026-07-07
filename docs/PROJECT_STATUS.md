@@ -89,8 +89,9 @@ Streamlit portal — all EIGHT legacy tabs:
   `progress-list`/`production-log`, plan-export key `overview`.
 
 ### E. Gates at freeze (all green)
-`service_tests` **352/352** · `bug_check` **599/0** · `parity_check` **5/5** ·
-`parity:sme` **509** · frontend build ✅ · `alembic check` clean ·
+`service_tests` **360/360** (352 at freeze + 8 export-parity checks added by
+the 2026-07-07 freeze-lift hotfix) · `bug_check` **599/0** · `parity_check`
+**5/5** · `parity:sme` **509** · frontend build ✅ · `alembic check` clean ·
 dual_ci mirror consistent. Schema additions since day one: `auth_sessions`,
 `ai_jobs` (both user-authorized, new-stack-only).
 

@@ -6,13 +6,21 @@
  * material balance table — and the grand-total strip. Same dashboard
  * semantics as insights.ts (per-material cap, no cascade), all client-side.
  */
-import { Card, Collapse, Table } from 'antd'
+import { Card, Collapse, Space, Table } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { SmeModel, SnapshotMaterial } from './engine'
 import { syscodeCompare } from './engine'
 import { fc, fcBg, fcDot, locColor, materialBalance, scopeCoverage, systemCodeRows } from './insights'
 import type { BalanceRow, UnitRef } from './insights'
 import { FulfilPill } from './PriorityList'
+import { RowsExportButtons } from './rowsExport'
+
+const procCols = ['Material', 'Name', 'UOM', 'Demand', 'Available', 'On Order',
+  'Shortfall', 'Net Shortfall', 'Coverage %']
+const procRow = (r: BalanceRow) => [
+  r.Material_Code, r.Material_Name, r.UOM, r.Demand_Qty, r.Available_Qty,
+  r.Ordered_Qty, r.Shortfall, r.Net_Shortfall, r.Coverage_Pct,
+]
 
 const mono: React.CSSProperties = { fontFamily: 'JetBrains Mono, monospace' }
 const nf = (v: number, d = 3) =>
@@ -130,6 +138,28 @@ export default function ProcurementView({ model, units, materials }: {
           Coverage: <FulfilPill pct={Math.min(overall.totals.coveragePct, 100)} />
         </span>
       </div>
+
+      {/* legacy Tab-0 procurement downloads: grand total + net order list */}
+      <Space wrap style={{ marginTop: 10 }}>
+        <span style={{ fontSize: '0.72rem', opacity: 0.7 }}>Grand Procurement:</span>
+        <RowsExportButtons doc={() => ({
+          title: 'Procurement — Grand Total',
+          filenameStem: 'procurement_grand_total',
+          columns: procCols,
+          rows: overall.rows.map(procRow),
+        })} />
+        {overall.rows.some((r) => r.Net_Shortfall > 0) && (
+          <>
+            <span style={{ fontSize: '0.72rem', opacity: 0.7, marginLeft: 12 }}>Net Order List:</span>
+            <RowsExportButtons doc={() => ({
+              title: 'Net Order List (shortages after on-order)',
+              filenameStem: 'net_order_list',
+              columns: procCols,
+              rows: overall.rows.filter((r) => r.Net_Shortfall > 0).map(procRow),
+            })} />
+          </>
+        )}
+      </Space>
     </div>
   )
 }

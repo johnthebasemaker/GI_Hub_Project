@@ -95,13 +95,25 @@ def _clean_recipe(df_b: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _clean_equipment(df_c: pd.DataFrame) -> pd.DataFrame:
+def _blank(v) -> bool:
+    """True when an Excel cell is effectively empty."""
+    return pd.isna(v) or str(v).strip() in ("", "nan", "None")
+
+
+def _clean_equipment(df_c: pd.DataFrame,
+                     short_name_code_map: dict | None = None) -> pd.DataFrame:
     """Normalize Equipment.xlsx into the sme_equipment contract.
 
     R20.5 — keeps every Excel column the SME UI cares about and renames
     oddball Excel headers (Sl. #, WBS #, IO#, Drawing #, Dia / L, Ht. /W,
     Equipment Total SQM, Material Spec., Lining_Area/location) to the
     snake_case table column names.
+
+    2026-07-07 — civil-work areas (e.g. "PPA Storage Tank Area") have no
+    Equipment_Tag_No. in the sheet; their Name IS their identity (the
+    original SME DB stored the name as the tag). Backfill the tag from Name,
+    and backfill a missing Lining_System_Code from Lining_System_Short_Name
+    via the recipe map, instead of silently dropping those rows.
     """
     df = df_c.copy()
     df = df.rename(columns={
@@ -124,6 +136,31 @@ def _clean_equipment(df_c: pd.DataFrame) -> pd.DataFrame:
         "Surface_Area_SQM",
     ]
     df = df[[c for c in keep if c in df.columns]].copy()
+
+    # Tag backfill: name-identified civil areas keep their Name as the tag.
+    _no_tag = df["Equipment_Tag_No."].apply(_blank)
+    _has_name = ~df["Name"].apply(_blank)
+    _fill_tag = _no_tag & _has_name
+    if int(_fill_tag.sum()):
+        df.loc[_fill_tag, "Equipment_Tag_No."] = (
+            df.loc[_fill_tag, "Name"].astype(str).str.strip()
+        )
+        print(f"  Backfilled Equipment_Tag_No. from Name for "
+              f"{int(_fill_tag.sum())} row(s) "
+              f"({df.loc[_fill_tag, 'Equipment_Tag_No.'].nunique()} area(s)).")
+
+    # Code backfill: some rows carry only the short name (e.g. CBL30).
+    if short_name_code_map:
+        _no_code = df["Lining_System_Code"].apply(_blank)
+        _short = df["Lining_System_Short_Name"].astype(str).str.strip()
+        _mapped = _short.map(short_name_code_map)
+        _fill_code = _no_code & _mapped.notna()
+        if int(_fill_code.sum()):
+            df["Lining_System_Code"] = df["Lining_System_Code"].astype(object)
+            df.loc[_fill_code, "Lining_System_Code"] = _mapped[_fill_code]
+            print(f"  Backfilled Lining_System_Code from short name for "
+                  f"{int(_fill_code.sum())} row(s).")
+
     df = df.dropna(subset=["Equipment_Tag_No.", "Lining_System_Code"])
 
     for col in ("Sl_No", "Project", "WBS_No", "IO_No", "Sub_Location",
@@ -511,7 +548,13 @@ def main() -> int:
     print("\n[2/4] Cleaning equipment master from Equipment.xlsx …")
     eq_raw = pd.read_excel(_FILE_EQ, sheet_name="Data Input")
     eq_raw.columns = eq_raw.columns.str.strip()
-    equip = _clean_equipment(eq_raw)
+    _code_map = (
+        recipe.dropna(subset=["Lining_System_Short_Name"])
+              .drop_duplicates("Lining_System_Short_Name")
+              .set_index("Lining_System_Short_Name")["Lining_System_Code"]
+              .to_dict()
+    )
+    equip = _clean_equipment(eq_raw, short_name_code_map=_code_map)
     print(f"      {len(equip):>4} clean equipment rows "
           f"({equip['Equipment_Tag_No.'].nunique()} unique tags)")
 

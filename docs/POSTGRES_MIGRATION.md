@@ -232,6 +232,60 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-07 (later) · actor=interactive · branch=`main` · 🚑 FREEZE-LIFT HOTFIX 2: SME 26→29 fixed at the ROOT (ingestion) + legacy export-parity pack (per-code/per-tag downloads, multi-sheet formats)
+- **Files touched:** `scripts/sme_bootstrap.py` · `backend/api/sme.py` ·
+  `backend/api/reports.py` · `backend/api/service_tests.py` ·
+  `frontend/src/sme/{MatrixReports,ExecutionPlan,TotalOverview,SmeDashboard,ProcurementView,rowsExport}.tsx` ·
+  `frontend/src/pages/SmePage.tsx` · this doc.
+- **Bug 2 root cause (26 vs 29 equipments + SQM variance):** the morning
+  entry below patched the *Progress List* to show the 3 work-area scopes, but
+  the root was upstream — `sme_bootstrap.py::_clean_equipment` did
+  `dropna(subset=["Equipment_Tag_No.", "Lining_System_Code"])`, silently
+  discarding the 23 Excel rows of the 3 tag-less civil areas (**Existing MGA
+  Pump Area · Train Unloading MGA Vessel PIT · PPA Storage Tank Area** — the
+  original SME DB stored the Name as the tag) and the 5 CBL30 rows carrying
+  only a short name. **Fix:** backfill tag←Name and code←short-name (recipe
+  map) before the dropna. Re-ran bootstrap in ignore-mode (manual edits +
+  `Done_SQM` preserved): `sme_equipment` 65→**77** rows, 26→**29** tags;
+  `sme_sqm_progress` 95→102; **SQM totals now reconcile exactly with
+  Equipment.xlsx: 33,323.293** across Excel = SQLite = live progress rows.
+  Mirror reloaded via `dual_ci` (66/66 ✅) — **all sme_\* tables verified
+  cell-identical SQLite↔PG** — and `create_ai_readonly_role.sql` re-applied
+  (dual_ci table recreation re-grants SELECT on `users` via default
+  privileges; the REVOKE must be re-run after every reload — now re-tested).
+- **Bug 3 (report-download parity):** the rebuild was missing most legacy
+  download affordances. Added, all read-only (SME Canon intact — zero write
+  endpoints):
+  - `reports.py`: `to_xlsx_sheets` + `to_pdf_sheets` (multi-sheet/sectioned
+    renderers matching the legacy workbook layouts).
+  - `GET /sme/export/{key}` now takes `tag` / `location` / `code` scopes and
+    emits **legacy filename stems** (`equipment_{tag}_{date}`,
+    `equipment_report_{loc}_{date}`, `equipment_report_all_{date}` multi-sheet
+    incl. "All System Codes", `system_code_{code}_{date}`,
+    `system_code_report_{date}` multi-sheet per code, `progress_list_{date}`
+    multi-sheet w/ per-scope production-detail sheets,
+    `consumption_comparison_{date}`, `consumption_log_full_{date}`).
+  - `POST /sme/plan/export` key `execution-plan` (+`equipment_tag`) — the
+    legacy per-tag Execution Order List, oracle-rendered.
+  - `POST /sme/export/rows` — renders the CLIENT-filtered frame (legacy
+    exported the displayed dataframe verbatim); capped, no DB access.
+  - Frontend buttons wired for every legacy download site: Equipment Report
+    (all/per-location/per-equipment, xlsx+pdf) · System Code Report
+    (all multi-sheet + per-code, xlsx like legacy) · Execution Plan (order
+    list per tag, progress list, consumption comparison) · Dashboard
+    (material balance xlsx/pdf + procurement grand total + net order list) ·
+    Total Overview (full consumption log). NOT ported: the legacy
+    `.protected.zip` AES wrapper — new stack serves authenticated downloads;
+    flag if password-wrapping is still wanted.
+- **Test results:** `service_tests` **360/360** (352 + 8 new export checks) ·
+  `parity_check` **5/5** · `parity:sme` **509 ✅** · `bug_check` **599/0** ·
+  frontend build ✅. Login/refresh re-verified healthy (200s in
+  `logs/uvicorn_dev.log`; bad-credential probe → clean 401).
+- **Guardrails:** `sme_*` writes only via the sanctioned legacy-side
+  bootstrap (ignore-mode); engines untouched (no golden regen needed);
+  `gi_database.db` not staged.
+- **Next:** back to 🧊 freeze — Phase 7 (Meta token) or cutover.
+
 ### 2026-07-07 · actor=interactive · branch=`main` · 🚑 FREEZE-LIFT HOTFIX: login 500 (PG cluster loss) + SME Progress List legacy parity (26→29 equipments, SQM totals)
 - **Bug 1 — login 500 "worked last night, broke this morning": NOT a code bug.**
   The local PG mirror lived in a throwaway cluster under a Claude session

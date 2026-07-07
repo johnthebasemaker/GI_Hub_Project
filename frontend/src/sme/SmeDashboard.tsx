@@ -11,7 +11,7 @@
  *   · Material Balance grid with the legacy 4-tier row tinting
  */
 import { useMemo, useState } from 'react'
-import { Alert, Button, Card, Col, Collapse, Row, Segmented, Select, Skeleton, Table } from 'antd'
+import { Alert, Button, Card, Col, Collapse, Row, Segmented, Select, Skeleton, Space, Table } from 'antd'
 import { DownloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import {
@@ -29,6 +29,15 @@ import {
 } from './insights'
 import type { BalanceRow, DashFilters } from './insights'
 import ProcurementView from './ProcurementView'
+import { RowsExportButtons } from './rowsExport'
+
+// Legacy dashboard_material_balance export columns (same frame as the CSV).
+const balanceExportCols = ['Code', 'Material Name', 'UOM', 'Available', 'On Order',
+  'Total Demand', 'Shortfall', 'Net Shortfall', 'Coverage %']
+const balanceExportRow = (r: BalanceRow) => [
+  r.Material_Code, r.Material_Name, r.UOM, r.Available_Qty, r.Ordered_Qty,
+  r.Demand_Qty, r.Shortfall, r.Net_Shortfall, r.Coverage_Pct,
+]
 
 const nf = (v: number, d = 1) =>
   v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })
@@ -309,14 +318,25 @@ export default function SmeDashboard({ siteId }: { siteId?: string }) {
       {/* ── 📋 Full material balance (4-tier tinting) ─────────────────────── */}
       <Card size="small" style={{ marginTop: 16 }}
         title={<span style={secHdr}>📋 Full Material Balance</span>}
-        extra={<Button size="small" icon={<DownloadOutlined />}
-          onClick={() => downloadCsv('sme-material-balance.csv',
-            balanceSorted.map((r) => ({
-              Code: r.Material_Code, 'Material Name': r.Material_Name, UOM: r.UOM,
-              Available: r.Available_Qty, 'On Order': r.Ordered_Qty,
-              'Total Demand': r.Demand_Qty, Shortfall: r.Shortfall,
-              'Net Shortfall': r.Net_Shortfall, 'Coverage %': r.Coverage_Pct,
-            })))}>Export CSV</Button>}>
+        extra={(
+          <Space size={4}>
+            <Button size="small" icon={<DownloadOutlined />}
+              onClick={() => downloadCsv('sme-material-balance.csv',
+                balanceSorted.map((r) => ({
+                  Code: r.Material_Code, 'Material Name': r.Material_Name, UOM: r.UOM,
+                  Available: r.Available_Qty, 'On Order': r.Ordered_Qty,
+                  'Total Demand': r.Demand_Qty, Shortfall: r.Shortfall,
+                  'Net Shortfall': r.Net_Shortfall, 'Coverage %': r.Coverage_Pct,
+                })))}>CSV</Button>
+            {/* legacy dashboard_material_balance xlsx / pdf */}
+            <RowsExportButtons doc={() => ({
+              title: 'Material Balance Report',
+              filenameStem: 'dashboard_material_balance',
+              columns: balanceExportCols,
+              rows: balanceSorted.map(balanceExportRow),
+            })} />
+          </Space>
+        )}>
         <Table<BalanceRow> size="small" columns={balanceCols} dataSource={balanceSorted}
           rowKey="Material_Code" pagination={{ pageSize: 20, showTotal: (t) => `${t} materials` }}
           scroll={{ x: 'max-content' }}
