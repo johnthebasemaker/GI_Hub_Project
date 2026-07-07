@@ -150,6 +150,39 @@ export function demandByMaterial(model: SmeModel, units: UnitRef[]) {
   return { demand, names }
 }
 
+/** 2026-07-07 STRICT BOTTLENECK ruling — per-unit coverage vs the static
+ *  availability: the unit's rate is its LEAST-available recipe material
+ *  (min over materials of avail/demand, capped at 1), and a scope's
+ *  "Coverage Area" is the area-weighted Σ(remaining × bottleneck rate) /
+ *  Σremaining. Never a material-qty average — the worst component sets the
+ *  ceiling for its whole system. */
+function unitBottleneckRate(
+  model: SmeModel, u: UnitRef, avail: Map<string, number>,
+): number {
+  let minRate = 1
+  for (const r of model.recipesByCode.get(u.code) ?? []) {
+    const rowDemand = r.For_1_SQM * u.remaining
+    if (rowDemand <= 0) continue
+    const rate = Math.min(1, (avail.get(r.Material_Code) ?? 0) / rowDemand)
+    if (rate < minRate) minRate = rate
+  }
+  return minRate
+}
+
+function bottleneckScope(
+  model: SmeModel, units: UnitRef[], avail: Map<string, number>,
+): { coveragePct: number; coverableSqm: number; totalSqm: number } {
+  let total = 0, coverable = 0
+  for (const u of units) {
+    total += u.remaining
+    coverable += u.remaining * unitBottleneckRate(model, u, avail)
+  }
+  return {
+    coveragePct: total > 0 ? (coverable / total) * 100 : 100,
+    coverableSqm: coverable, totalSqm: total,
+  }
+}
+
 export function materialBalance(
   model: SmeModel, units: UnitRef[], materials: SnapshotMaterial[],
 ): { rows: BalanceRow[]; totals: ScopeTotals } {
@@ -179,16 +212,19 @@ export function materialBalance(
       Coverage_Pct: d > 0 ? roundN(Math.min((Math.min(a, d) / d) * 100, 100), 1) : 100,
     })
   }
+  // Scope coverage = strict bottleneck area ratio (NOT the qty-weighted
+  // tAvail/tDemand average — that could report above the worst component).
+  const bs = bottleneckScope(model, units, avail)
   return {
     rows,
     totals: {
       demand: tDemand, availCapped: tAvail, shortfall: tShort, netShortfall: tNet,
-      coveragePct: tDemand > 0 ? (tAvail / tDemand) * 100 : 100,
+      coveragePct: bs.coveragePct,
     },
   }
 }
 
-/** Coverage of an arbitrary unit scope (per-material cap; legacy §7.2). */
+/** Coverage of an arbitrary unit scope (strict bottleneck area ratio). */
 export function scopeCoverage(
   model: SmeModel, units: UnitRef[], materials: SnapshotMaterial[],
 ): ScopeTotals {
@@ -211,13 +247,8 @@ export function pairCoverage(
 ): PairCoverage[] {
   const { avail } = materialMaps(materials)
   return units.map((u) => {
-    let d = 0, a = 0
-    for (const r of model.recipesByCode.get(u.code) ?? []) {
-      const rowDemand = r.For_1_SQM * u.remaining
-      d += rowDemand
-      a += Math.min(rowDemand, avail.get(r.Material_Code) ?? 0)
-    }
-    const cov = d > 0 ? Math.min((a / d) * 100, 100) : 100
+    // Strict bottleneck: the pair's coverage is its least-available material.
+    const cov = unitBottleneckRate(model, u, avail) * 100
     const coverable = roundN(u.remaining * (Math.min(cov, 100) / 100), 2)
     return {
       tag: u.tag, code: u.code, shortName: u.shortName,

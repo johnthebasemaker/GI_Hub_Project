@@ -43,7 +43,8 @@ router = APIRouter(prefix="/ai", tags=["ai"])
 
 _FLAG_DEFAULTS = {"ai_enabled": "1", "ai_assistant_enabled": "1",
                   "ai_doc_intel_enabled": "1", "ai_ocr_enabled": "1",
-                  "ai_nl_search_enabled": "1", "ai_insights_enabled": "1"}
+                  "ai_nl_search_enabled": "1", "ai_insights_enabled": "1",
+                  "ai_submission_intel_enabled": "1"}  # T1 reviewer summaries
 
 
 async def _flags(session: AsyncSession) -> dict[str, bool]:
@@ -428,3 +429,138 @@ async def eod_summary(body: EodIn = Body(...),
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
+
+
+# ─── T1: Submission Intelligence — reviewer summaries ────────────────────────
+# Deterministic stats (submission_stats.py) are the ONLY source of numbers;
+# the LLM (llama3.1:8b, one-warm-model) merely rephrases them and every
+# failure path falls back to the rock-solid deterministic template. Cached in
+# ai_jobs (kind='submission_summary') so review screens never recompute.
+import datetime as _sdt  # noqa: E402
+
+from . import submission_stats as substats  # noqa: E402
+
+_SUMMARY_TTL_MIN = 15
+_SUMMARY_SYSTEM = (
+    "You are an inventory reviewer's assistant. Rephrase the FACTS json into "
+    "1-2 short plain sentences for the reviewer. NEVER invent, change or "
+    "compute numbers — only use the numbers given. No preamble, no headings.")
+
+
+def _deterministic_summary(f: dict) -> tuple[str, str]:
+    """(summary, tone) from extracted features — the guaranteed fallback."""
+    if f["kind"] == "staged-issue":
+        s30 = f["stats_30d"]
+        if f["first_time_material"]:
+            return (f"First issue of {f['sap_code']} at {f['site']} in 60 days — "
+                    f"no usage history to compare against.", "warning")
+        parts, tone = [], "success"
+        dev = f["deviation_pct"]
+        if dev is not None and abs(dev) > 20:
+            parts.append(f"This material is being issued {abs(dev):.0f}% "
+                         f"{'more' if dev > 0 else 'less'} than its 30-day "
+                         f"average ({s30['mean_issue_qty']} per issue).")
+            tone = "warning"
+        if f["off_pattern_day"]:
+            parts.append("The issue date falls outside this material's usual "
+                         "consumption days.")
+            tone = "warning"
+        if not parts:
+            parts.append(f"Usual consumption. Qty {f['qty']} is in line with the "
+                         f"30-day average of {s30['mean_issue_qty']} per issue "
+                         f"({s30['issues']} issues in 30 days).")
+        return " ".join(parts), tone
+    if f["kind"] == "xsite":
+        rate = f["target_stats_30d"]["mean_daily_qty"]
+        if f["days_cover_now"] is None:
+            return (f"{f['target_site']} holds {f['target_stock']} of "
+                    f"{f['sap_code']} and shows no consumption in 30 days — "
+                    f"granting {f['requested_qty']} carries no forecast risk.",
+                    "success")
+        after = f["days_cover_after"]
+        base = (f"If you give {f['requested_qty']} of {f['sap_code']} to "
+                f"{f['requesting_site']}, {f['target_site']} drops from "
+                f"{f['days_cover_now']} to {after if after is not None and after > 0 else 0} "
+                f"days of cover (30-day avg use {rate}/day).")
+        if after is not None and after <= 0:
+            return base + " This would run the site OUT of stock.", "error"
+        if after is not None and after < 14:
+            return base + " The site will be short within two weeks.", "warning"
+        return base, "success"
+    return "No summary available for this submission kind.", "info"
+
+
+async def _cached_summary(session: AsyncSession, kind: str, ref_id: int) -> dict | None:
+    ai_jobs_t = _MD.tables["ai_jobs"]
+    cutoff = _sdt.datetime.now() - _sdt.timedelta(minutes=_SUMMARY_TTL_MIN)
+    row = (await session.execute(
+        select(ai_jobs_t.c["result_json"])
+        .where(ai_jobs_t.c["kind"] == "submission_summary",
+               ai_jobs_t.c["status"] == "done",
+               ai_jobs_t.c["payload_json"] == json.dumps({"kind": kind, "ref": ref_id}),
+               ai_jobs_t.c["created_at"] >= cutoff)
+        .order_by(ai_jobs_t.c["id"].desc()).limit(1))).first()
+    if row and row[0]:
+        try:
+            return json.loads(row[0])
+        except ValueError:
+            return None
+    return None
+
+
+@router.get("/submission-summary",
+            summary="Reviewer intelligence for one pending submission "
+                    "(deterministic stats, optional local-LLM phrasing)")
+async def submission_summary(kind: str, ref_id: int,
+                             user: dict = Depends(get_current_user),
+                             session: AsyncSession = Depends(get_session)):
+    if kind == "staged-issue":
+        if user["level"] < 2:  # HOD reviews staged issues
+            raise HTTPException(403, "reviewer access required")
+        feats = await substats.staged_issue_features(session, ref_id)
+    elif kind == "xsite":
+        if user["level"] < 2:  # target-site HOD reviews cross-site requests
+            raise HTTPException(403, "reviewer access required")
+        feats = await substats.xsite_features(session, ref_id)
+    else:
+        raise HTTPException(404, f"unknown submission kind {kind!r}")
+    if feats is None:
+        raise HTTPException(404, f"{kind} {ref_id} not found")
+
+    flags = await _flags(session)
+    if not (flags["ai_enabled"] and flags["ai_submission_intel_enabled"]):
+        summary, tone = _deterministic_summary(feats)
+        return {"kind": kind, "ref_id": ref_id, "summary": summary,
+                "tone": tone, "source": "deterministic", "facts": feats}
+
+    cached = await _cached_summary(session, kind, ref_id)
+    if cached is not None:
+        return {"kind": kind, "ref_id": ref_id, **cached, "cached": True,
+                "facts": feats}
+
+    summary, tone = _deterministic_summary(feats)
+    source = "deterministic"
+    try:  # optional phrasing — every failure path keeps the deterministic text
+        if await aic.health():
+            phrased = await aic.generate(
+                aic.MODEL_CHAT,
+                f"FACTS:\n{json.dumps(feats, ensure_ascii=False)}\n\n"
+                f"Deterministic draft (keep every number exactly): {summary}",
+                system=_SUMMARY_SYSTEM, temperature=0.2, num_predict=120)
+            phrased = (phrased or "").strip()
+            if phrased:
+                summary, source = phrased, "ai"
+    except Exception:
+        pass  # deterministic text stands
+
+    ai_jobs_t = _MD.tables["ai_jobs"]
+    from sqlalchemy import insert as _insert
+    await session.execute(_insert(ai_jobs_t).values(
+        kind="submission_summary", status="done", actor=user["username"],
+        Site_ID=feats.get("site") or feats.get("target_site"),
+        payload_json=json.dumps({"kind": kind, "ref": ref_id}),
+        result_json=json.dumps({"summary": summary, "tone": tone, "source": source},
+                               ensure_ascii=False)))
+    await session.commit()
+    return {"kind": kind, "ref_id": ref_id, "summary": summary, "tone": tone,
+            "source": source, "facts": feats}

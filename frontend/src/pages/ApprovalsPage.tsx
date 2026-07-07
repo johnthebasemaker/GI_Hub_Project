@@ -11,6 +11,7 @@ import {
 } from '../api/hooks'
 import type { Row } from '../api/client'
 import { buildColumns } from '../lib/columns'
+import SubmissionInsight from '../components/SubmissionInsight'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -160,6 +161,13 @@ function PendingKind({ kind, siteId }: { kind: string; siteId?: string }) {
           selectedRowKeys: selected.map(String),
           onChange: (keys) => setSelected(keys.map(Number)),
         }}
+        // T1 pilot — Submission Intelligence on staged issues: expand a row
+        // to see the anomaly/usual-consumption summary before approving.
+        expandable={kind === 'issues' ? {
+          expandedRowRender: (r: Row) => (
+            <SubmissionInsight kind="staged-issue" refId={Number(r.id)} />
+          ),
+        } : undefined}
         scroll={{ x: 'max-content' }}
         pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `${t} pending` }}
       />

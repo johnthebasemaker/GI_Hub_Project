@@ -40,9 +40,13 @@ export interface TagStat {
   canSqm: number
 }
 
-/** Per-(tag, code) rollup of cascade lines (legacy syscode_fulfillment + sqm_can_do). */
+/** Per-(tag, code) rollup of cascade lines (legacy syscode_fulfillment + sqm_can_do).
+ *  2026-07-07 STRICT BOTTLENECK ruling: the unit's coverage is the LEAST
+ *  available material's rate — 3 materials at 100% + one at 25% ⇒ 25%.
+ *  Never the Σalloc/Σdemand average, never higher than the worst component. */
 export function codeStats(lines: AllocationLine[]): Map<string, CodeStat> {
   const out = new Map<string, CodeStat>()
+  const minRate = new Map<string, number>()
   for (const ln of lines) {
     const k = unitKey(ln.Equipment_Tag_No, ln.Lining_System_Code)
     let s = out.get(k)
@@ -53,13 +57,16 @@ export function codeStats(lines: AllocationLine[]): Map<string, CodeStat> {
         canSqm: 0, shortSqm: 0, demand: 0, alloc: 0, shortfall: 0, fulfillPct: 100,
       }
       out.set(k, s)
+      minRate.set(k, 1)
     }
     s.demand += ln.Demand_Qty
     s.alloc += ln.Allocated_Qty
     s.shortfall += ln.Shortfall_Qty
+    const rate = ln.Demand_Qty > 0 ? Math.min(1, ln.Allocated_Qty / ln.Demand_Qty) : 1
+    if (rate < minRate.get(k)!) minRate.set(k, rate)
   }
-  for (const s of out.values()) {
-    const rate = s.demand > 0 ? Math.min(1, s.alloc / s.demand) : 1
+  for (const [k, s] of out.entries()) {
+    const rate = minRate.get(k) ?? 1  // bottleneck, not the average
     s.fulfillPct = roundN(rate * 100, 1)
     s.canSqm = roundN(s.sqm * rate, 2)
     s.shortSqm = roundN(s.sqm - s.canSqm, 2)
@@ -89,9 +96,16 @@ export function tagStats(model: SmeModel, lines: AllocationLine[]): Map<string, 
     t.sqm += s.sqm
     t.canSqm += s.canSqm
   }
+  // Strict bottleneck at the tag level too: the equipment's coverage is its
+  // WORST unit's coverage (canSqm stays the physical Σ of unit coverable SQM).
+  const tagMin = new Map<string, number>()
+  for (const s of perCode.values()) {
+    const cur = tagMin.get(s.tag)
+    if (cur === undefined || s.fulfillPct < cur) tagMin.set(s.tag, s.fulfillPct)
+  }
   for (const t of out.values()) {
     t.codes.sort(syscodeCompare)
-    t.fulfillPct = roundN(t.demand > 0 ? Math.min(100, (t.alloc / t.demand) * 100) : 100, 1)
+    t.fulfillPct = roundN(tagMin.get(t.tag) ?? 100, 1)
     t.sqm = roundN(t.sqm, 2)
     t.canSqm = roundN(t.canSqm, 2)
   }

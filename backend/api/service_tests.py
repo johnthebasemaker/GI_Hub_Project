@@ -2407,6 +2407,92 @@ async def test_sla_tracker():
             await s.commit()
 
 
+async def test_submission_intel():
+    """T1 — Submission Intelligence: role guards, 404s, and the deterministic
+    summary contract on synthetic staged-issue + cross-site rows (cleaned up).
+    Ollama may be up or down here — `source` just has to be a valid value and
+    the summary text non-empty (fallback is deterministic by construction)."""
+    from sqlalchemy import delete, insert
+
+    pi = ledger._MD.tables["pending_issues"]
+    req = ledger._MD.tables["requests"]
+    jobs = ledger._MD.tables["ai_jobs"]
+
+    async with SessionLocal() as s:
+        iid = (await s.execute(insert(pi).values(
+            Date="2026-07-07", SAP_Code="1001", Quantity=2.0,
+            status="pending_hod", Site_ID="CNCEC", Remarks="svc-t1-test",
+        ).returning(pi.c["id"]))).scalar_one()
+        rid = (await s.execute(insert(req).values(
+            requesting_site="CNCEC", target_site="HQ", SAP_Code="1001",
+            requested_qty=1.0, status="pending", requested_by="svc-t1",
+        ).returning(req.c["id"]))).scalar_one()
+        await s.commit()
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.61"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip,
+                                  json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            worker_t = await token("worker", "floor2026")
+            hod_t = await token("hod", "hod2026")
+
+            r = await ac.get("/ai/submission-summary",
+                             params={"kind": "staged-issue", "ref_id": iid},
+                             headers=H(worker_t))
+            check("worker (lvl 0) → 403 on staged-issue summary",
+                  r.status_code == 403, f"got {r.status_code}")
+            r = await ac.get("/ai/submission-summary",
+                             params={"kind": "nope", "ref_id": 1}, headers=H(hod_t))
+            check("unknown submission kind → 404", r.status_code == 404,
+                  f"got {r.status_code}")
+            r = await ac.get("/ai/submission-summary",
+                             params={"kind": "staged-issue", "ref_id": 99999999},
+                             headers=H(hod_t))
+            check("unknown staged-issue ref → 404", r.status_code == 404,
+                  f"got {r.status_code}")
+
+            r = await ac.get("/ai/submission-summary",
+                             params={"kind": "staged-issue", "ref_id": iid},
+                             headers=H(hod_t))
+            j = r.json() if r.status_code == 200 else {}
+            check("staged-issue summary → 200 with summary/tone/source/facts",
+                  r.status_code == 200 and j.get("summary")
+                  and j.get("tone") in ("success", "info", "warning", "error")
+                  and j.get("source") in ("ai", "deterministic")
+                  and j.get("facts", {}).get("kind") == "staged-issue",
+                  f"got {r.status_code} {str(j)[:140]}")
+            check("staged-issue facts carry the 30d stats block",
+                  isinstance(j.get("facts", {}).get("stats_30d", {}).get("mean_issue_qty"),
+                             (int, float)), str(j.get("facts", {}))[:140])
+
+            r = await ac.get("/ai/submission-summary",
+                             params={"kind": "xsite", "ref_id": rid}, headers=H(hod_t))
+            j = r.json() if r.status_code == 200 else {}
+            check("xsite summary → 200 with depletion facts",
+                  r.status_code == 200 and j.get("summary")
+                  and j.get("facts", {}).get("target_site") == "HQ"
+                  and "days_cover_after" in j.get("facts", {}),
+                  f"got {r.status_code} {str(j)[:140]}")
+    finally:
+        async with SessionLocal() as s:  # cleanup (incl. cached summaries)
+            await s.execute(delete(jobs).where(
+                jobs.c["kind"] == "submission_summary",
+                jobs.c["payload_json"].in_([
+                    f'{{"kind": "staged-issue", "ref": {iid}}}',
+                    f'{{"kind": "xsite", "ref": {rid}}}'])))
+            await s.execute(delete(pi).where(pi.c["id"] == iid))
+            await s.execute(delete(req).where(req.c["id"] == rid))
+            await s.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -2430,6 +2516,8 @@ async def main() -> int:
     await test_sme_plan_layer()
     print("\n H. admin SLA tracker (T2 — overdue actions + nudges)")
     await test_sla_tracker()
+    print("\n I. submission intelligence (T1 — reviewer summaries)")
+    await test_submission_intel()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

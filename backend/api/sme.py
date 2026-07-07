@@ -450,17 +450,25 @@ def _overview_rows(model: dict, plan: dict) -> list[dict]:
     acc: dict[tuple[str, str], dict] = {}
     for ln in plan["lines"]:
         k = (ln["Equipment_Tag_No"], ln["Lining_System_Code"])
-        a = acc.setdefault(k, {"demand": 0.0, "alloc": 0.0, "short": 0.0})
+        a = acc.setdefault(k, {"demand": 0.0, "alloc": 0.0, "short": 0.0,
+                               "min_rate": 1.0})
         a["demand"] += ln["Demand_Qty"]
         a["alloc"] += ln["Allocated_Qty"]
         a["short"] += ln["Shortfall_Qty"]
+        # 2026-07-07 STRICT BOTTLENECK ruling: the unit's coverage is its
+        # least-available material, never the alloc/demand average.
+        rate = (min(1.0, ln["Allocated_Qty"] / ln["Demand_Qty"])
+                if ln["Demand_Qty"] > 0 else 1.0)
+        if rate < a["min_rate"]:
+            a["min_rate"] = rate
     out, sno = [], 0
     for tag in plan["order_used"]:
         meta = model["tag_meta"].get(tag, {})
         for code in model["codes_by_tag"].get(tag, []):
             u = model["units"][(tag, code)]
-            a = acc.get((tag, code), {"demand": 0.0, "alloc": 0.0, "short": 0.0})
-            pct = min(100.0, a["alloc"] / a["demand"] * 100) if a["demand"] > 0 else 100.0
+            a = acc.get((tag, code), {"demand": 0.0, "alloc": 0.0, "short": 0.0,
+                                      "min_rate": 1.0})
+            pct = a["min_rate"] * 100.0 if a["demand"] > 0 else 100.0
             sno += 1
             out.append({
                 "S_No": sno, "Equipment_Tag_No": tag, "Name": meta.get("Name", ""),

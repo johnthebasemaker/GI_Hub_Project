@@ -302,13 +302,15 @@ export function computeFeasibility(
     if (!rows || rows.length === 0) continue
     let demand = 0, alloc = 0, short = 0
     for (const r of rows) { demand += r.Demand_Qty; alloc += r.Allocated_Qty; short += r.Shortfall_Qty }
-    const completion = demand > 0 ? roundN(clip((alloc / demand) * 100, 0, 100), 2) : 100
     let minRate = 2
     let bottleneck: AllocationLine | null = null
     for (const r of rows) {
       const rate = r.Demand_Qty > 0 ? clip(r.Allocated_Qty / r.Demand_Qty, 0, 1) : 1
       if (rate < minRate) { minRate = rate; bottleneck = r } // strict: first min wins ties
     }
+    // 2026-07-07 STRICT BOTTLENECK ruling (mirrors sme_engine.py): coverage =
+    // the LEAST-available material's rate, never the Σalloc/Σdemand average.
+    const completion = demand > 0 ? roundN(clip(minRate * 100, 0, 100), 2) : 100
     const status = short <= 0 ? STATUS_FULL
       : minRate === 0 ? STATUS_BLOCKED
         : `${STATUS_PARTIAL} (${completion.toFixed(1)}%)`

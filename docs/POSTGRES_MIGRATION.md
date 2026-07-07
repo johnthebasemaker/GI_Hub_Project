@@ -232,6 +232,45 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-07 (T1 + bottleneck) · actor=interactive · branch=`main` · 🔓 FREEZE-LIFT FEATURE: strict bottleneck coverage (engine ruling) + Submission Intelligence (final step of the user-approved T4→T3→T2→T1 plan)
+- **Files touched:** `backend/api/{sme_engine.py, sme.py}` ·
+  `frontend/src/sme/{engine.ts, session.ts, insights.ts}` ·
+  `backend/api/sme_parity_golden.json` (REGENERATED) ·
+  `backend/api/ai/{submission_stats.py (new), router.py}` ·
+  `frontend/src/components/SubmissionInsight.tsx` (new) ·
+  `frontend/src/pages/{ApprovalsPage,CrossSitePage}.tsx` ·
+  `backend/api/service_tests.py` · this doc.
+- **⚖️ STRICT BOTTLENECK ruling (both engines, ONE commit, golden
+  regenerated per Canon row 9):** coverage for a (tag, code) — and every
+  rollup built from it — is the LEAST-available material's rate, never the
+  Σalloc/Σdemand average (3×100% + 45% + 25% ⇒ **25%**, proven by a synthetic
+  oracle test). Changed: `compute_feasibility` Completion_Pct (py + ts),
+  `_overview_rows` pct, session.ts codeStats/tagStats (tag = worst unit;
+  canSqm = Σ unit SQM × bottleneck rate), insights.ts
+  pairCoverage/scopeCoverage/materialBalance totals (scope Coverage Area =
+  Σ(remaining × bottleneck rate)/Σremaining — area-weighted, never above any
+  unit's worst component). Status ✅/🟡/🔴 mechanics unchanged; suite G's
+  hardcoded fixture assertions all survive; golden regenerated →
+  `parity:sme` **509 ✅** both sides.
+- **T1 Submission Intelligence:** `ai/submission_stats.py` computes ALL
+  numbers from the ledger (30/60-day per-issue mean/σ, mean daily rate,
+  deviation %, z-score, first-time flag, off-pattern weekday; xsite:
+  target-site Current_Stock via SQL_SITE_STOCK + days-of-cover now/after).
+  `GET /ai/submission-summary?kind=&ref_id=` (staged-issue · xsite, level ≥2)
+  phrases the facts with llama3.1:8b (temp 0.2, numbers-locked system
+  prompt) when `ai_enabled`+`ai_submission_intel_enabled` and Ollama is
+  healthy — EVERY failure path returns the deterministic template ("Usual
+  consumption." / "issued N% more than its 30-day average" / "drops from X
+  to Y days of cover — short within two weeks"). 15-min cache in `ai_jobs`
+  (kind=submission_summary, no schema change). UI: expandable insight rows
+  on HOD Approvals→Issues (pilot) and Cross-Site Requests (granting side).
+- **Gates:** `service_tests` **386/0** (suite I: guards, 404s, contract,
+  stats block, xsite depletion facts — synthetic rows cleaned up) ·
+  `parity:sme` 509 · `parity_check` 5/5 · `bug_check` 599/0 · frontend
+  build ✅ · `alembic check` ✅ · :8000 restarted.
+- **Next:** T1 rollout to the remaining reviewer surfaces (SK request
+  review, Logistics PR/PO) after user feedback on the pilot.
+
 ### 2026-07-07 (T2) · actor=interactive · branch=`main` · 🔓 FREEZE-LIFT FEATURE: Admin SLA oversight & nudge system (user-approved plan, step 3 of T4→T3→T2→T1)
 - **Files touched:** `backend/api/sla.py` (new) ·
   `backend/alembic/versions/…_d4f1a27c8e90_sla_dismissals_table.py` (new) ·

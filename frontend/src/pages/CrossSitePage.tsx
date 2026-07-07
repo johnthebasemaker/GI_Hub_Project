@@ -7,6 +7,7 @@ import { api } from '../api/client'
 import type { Row as ApiRow } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { useList, useSites } from '../api/hooks'
+import SubmissionInsight from '../components/SubmissionInsight'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -131,6 +132,15 @@ export default function CrossSitePage() {
 
       <Table size="small" loading={isFetching} columns={columns} dataSource={data ?? []}
         rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
+        // T1 — Submission Intelligence for the granting side: expand a pending
+        // request to see the depletion forecast ("if you give this, the site
+        // is short in N days") computed from the target site's 30-day usage.
+        expandable={{
+          rowExpandable: (r: ApiRow) => r.status === 'pending',
+          expandedRowRender: (r: ApiRow) => (
+            <SubmissionInsight kind="xsite" refId={Number(r.id)} />
+          ),
+        }}
         pagination={{ pageSize: 20, showTotal: (t) => `${t} requests` }} />
     </div>
   )

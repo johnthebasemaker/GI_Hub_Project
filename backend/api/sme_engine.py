@@ -206,14 +206,17 @@ def compute_feasibility(model: dict, lines: list[dict], order: list[str]) -> lis
         demand = sum(r["Demand_Qty"] for r in rows)
         alloc = sum(r["Allocated_Qty"] for r in rows)
         short = sum(r["Shortfall_Qty"] for r in rows)
-        completion = round_n(_clip(alloc / demand * 100.0, 0.0, 100.0), 2) \
-            if demand > 0 else 100.0
         min_rate, bottleneck = 2.0, None
         for r in rows:
             rate = _clip(r["Allocated_Qty"] / r["Demand_Qty"], 0.0, 1.0) \
                 if r["Demand_Qty"] > 0 else 1.0
             if rate < min_rate:  # strict: first line at the minimum wins ties
                 min_rate, bottleneck = rate, r
+        # 2026-07-07 STRICT BOTTLENECK ruling: coverage = the LEAST-available
+        # material's rate, never the Σalloc/Σdemand average — the worst
+        # component sets the ceiling for the whole system. (Was: alloc/demand.)
+        completion = round_n(_clip(min_rate * 100.0, 0.0, 100.0), 2) \
+            if demand > 0 else 100.0
         if short <= 0:
             status = STATUS_FULL
         elif min_rate == 0.0:
