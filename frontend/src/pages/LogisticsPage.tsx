@@ -1,15 +1,15 @@
 import { useState } from 'react'
 import {
-  App, Button, Card, DatePicker, Descriptions, Form, Input, Modal, Popconfirm, Select, Space,
-  Table, Tabs, Tag, Typography, Upload,
+  App, Button, Card, Col, DatePicker, Descriptions, Form, Input, InputNumber, Modal,
+  Popconfirm, Row as ARow, Select, Space, Table, Tabs, Tag, Typography, Upload,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { Dayjs } from 'dayjs'
-import { InboxOutlined } from '@ant-design/icons'
+import { InboxOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import {
-  useAssignPo, useCreatePo, useDecideReschedule, useForceClose, useForceClosures,
-  useList, useLogisticsPos, useLogisticsPrs, usePoItems, useReschedules,
-  useSites, useUndoForceClose,
+  useAssignPo, useCreate, useCreateManualPo, useCreatePo, useDecideReschedule,
+  useForceClose, useForceClosures, useList, useLogisticsPos, useLogisticsPrs,
+  usePoItems, useReschedules, useSites, useUndoForceClose,
 } from '../api/hooks'
 import { api } from '../api/client'
 import type { Row } from '../api/client'
@@ -493,6 +493,155 @@ function Reschedules() {
   )
 }
 
+// ---- Vendor picker with inline-add + default terms -------------------------
+function VendorPicker({ value, onPick }: {
+  value?: string
+  onPick: (v: { code: string; name: string; inco?: string; pay?: string }) => void
+}) {
+  const { message } = App.useApp()
+  const vendors = useList('/vendors', { limit: 500 })
+  const createVendor = useCreate('/vendors')
+  const [addOpen, setAddOpen] = useState(false)
+  const [form] = Form.useForm<{ Vendor_Code: string; Vendor_Name: string; Default_Inco_Terms?: string; Default_Payment_Terms?: string }>()
+
+  const raws = (vendors.data?.items ?? []) as Row[]
+  const options = raws.map((v) => ({ value: String(v.Vendor_Code), label: `${v.Vendor_Code} — ${v.Vendor_Name ?? ''}` }))
+  const pick = (code: string) => {
+    const v = raws.find((x) => String(x.Vendor_Code) === code)
+    if (v) onPick({
+      code: String(v.Vendor_Code), name: String(v.Vendor_Name ?? ''),
+      inco: v.Default_Inco_Terms ? String(v.Default_Inco_Terms) : undefined,
+      pay: v.Default_Payment_Terms ? String(v.Default_Payment_Terms) : undefined,
+    })
+  }
+  const addVendor = async () => {
+    const v = await form.validateFields()
+    try {
+      await createVendor.mutateAsync({ ...v, status: 'active' } as Row)
+      message.success('Vendor added')
+      await vendors.refetch()
+      setAddOpen(false)
+      form.resetFields()
+      onPick({ code: v.Vendor_Code, name: v.Vendor_Name, inco: v.Default_Inco_Terms, pay: v.Default_Payment_Terms })
+    } catch (e) { message.error(errMsg(e)) }
+  }
+
+  return (
+    <>
+      <Space.Compact style={{ width: '100%' }}>
+        <Select showSearch style={{ width: '100%' }} placeholder="Select vendor"
+          optionFilterProp="label" value={value} options={options}
+          onChange={pick} loading={vendors.isFetching} />
+        <Button onClick={() => setAddOpen(true)}>+ Add</Button>
+      </Space.Compact>
+      <Modal open={addOpen} title="Add vendor" onOk={addVendor}
+        onCancel={() => setAddOpen(false)} confirmLoading={createVendor.isPending} destroyOnHidden>
+        <Form form={form} layout="vertical">
+          <Form.Item name="Vendor_Code" label="Vendor Code" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="Vendor_Name" label="Vendor Name" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="Default_Inco_Terms" label="Default Inco Terms"><Input placeholder="e.g. FOB" /></Form.Item>
+          <Form.Item name="Default_Payment_Terms" label="Default Payment Terms"><Input placeholder="e.g. Net 30" /></Form.Item>
+        </Form>
+      </Modal>
+    </>
+  )
+}
+
+// ---- Manual PO creation (free-text lines/prices, unlisted PR) ---------------
+interface ManualLine {
+  Material_Code?: string; Description?: string; Qty: number; UOM?: string
+  Unit_Price?: number; WBS_Number?: string; Network?: string; Plant?: string; PR_Number?: string
+}
+interface ManualPoForm {
+  po_number: string; site_id?: string; pr_number?: string; vendor_code?: string
+  vendor_name?: string; inco_terms?: string; payment_terms?: string
+  expected_delivery?: Dayjs; lines: ManualLine[]
+}
+
+function CreatePoManual() {
+  const { message } = App.useApp()
+  const { data: sites } = useSites()
+  const [form] = Form.useForm<ManualPoForm>()
+  const create = useCreateManualPo()
+
+  const onFinish = async (v: ManualPoForm) => {
+    try {
+      const res = await create.mutateAsync({
+        po_number: v.po_number,
+        site_id: v.site_id || null,
+        pr_number: v.pr_number || null,
+        vendor_code: v.vendor_code || null,
+        vendor_name: v.vendor_name || null,
+        inco_terms: v.inco_terms || null,
+        payment_terms: v.payment_terms || null,
+        expected_delivery: v.expected_delivery ? v.expected_delivery.format('YYYY-MM-DD') : null,
+        lines: (v.lines ?? []).map((l) => ({
+          Material_Code: l.Material_Code || null, Description: l.Description || null,
+          Qty: l.Qty, UOM: l.UOM || null, Unit_Price: l.Unit_Price || 0,
+          WBS_Number: l.WBS_Number || null, Network: l.Network || null,
+          Plant: l.Plant || null, PR_Number: l.PR_Number || null,
+        })),
+      } as unknown as Row)
+      message.success(`PO ${res.po_number} created — ${res.lines} line(s), total ${res.total}`)
+      form.resetFields()
+    } catch (e) { message.error(errMsg(e)) }
+  }
+
+  return (
+    <Card style={{ maxWidth: 1000 }}>
+      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+        Create a PO by hand — free-text lines, custom prices, and an optional (even
+        unlisted) PR reference. Pick a vendor to auto-fill its default Inco/Payment terms.
+      </Typography.Paragraph>
+      <Form<ManualPoForm> form={form} layout="vertical" initialValues={{ lines: [{} as ManualLine] }} onFinish={onFinish}>
+        <ARow gutter={16}>
+          <Col xs={24} md={6}><Form.Item name="po_number" label="PO Number" rules={[{ required: true }]}><Input placeholder="PO-2026-0001" /></Form.Item></Col>
+          <Col xs={24} md={6}><Form.Item name="site_id" label="Site"><Select allowClear placeholder="Site" options={(sites ?? []).map((s) => ({ value: s, label: s }))} /></Form.Item></Col>
+          <Col xs={24} md={6}><Form.Item name="pr_number" label="PR Number (optional / unlisted)"><Input placeholder="free text" /></Form.Item></Col>
+          <Col xs={24} md={6}><Form.Item name="expected_delivery" label="Expected delivery"><DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" /></Form.Item></Col>
+        </ARow>
+        <ARow gutter={16}>
+          <Col xs={24} md={10}>
+            <Form.Item name="vendor_code" label="Vendor">
+              <VendorPicker onPick={(v) => form.setFieldsValue({
+                vendor_code: v.code, vendor_name: v.name,
+                inco_terms: form.getFieldValue('inco_terms') || v.inco,
+                payment_terms: form.getFieldValue('payment_terms') || v.pay,
+              })} />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={7}><Form.Item name="inco_terms" label="Inco Terms"><Input placeholder="e.g. FOB" /></Form.Item></Col>
+          <Col xs={24} md={7}><Form.Item name="payment_terms" label="Payment Terms"><Input placeholder="e.g. Net 30" /></Form.Item></Col>
+        </ARow>
+        <Form.Item name="vendor_name" hidden><Input /></Form.Item>
+
+        <Typography.Text strong>Lines</Typography.Text>
+        <Form.List name="lines">
+          {(fields, { add, remove }) => (
+            <>
+              {fields.map((field) => (
+                <Space key={field.key} align="baseline" wrap style={{ display: 'flex', marginTop: 8 }}>
+                  <Form.Item name={[field.name, 'Material_Code']}><Input placeholder="Material code" style={{ width: 150 }} /></Form.Item>
+                  <Form.Item name={[field.name, 'Description']}><Input placeholder="Description" style={{ width: 220 }} /></Form.Item>
+                  <Form.Item name={[field.name, 'Qty']} rules={[{ required: true, message: 'Qty' }]}><InputNumber min={0.0001} placeholder="Qty" style={{ width: 90 }} /></Form.Item>
+                  <Form.Item name={[field.name, 'UOM']}><Input placeholder="UOM" style={{ width: 80 }} /></Form.Item>
+                  <Form.Item name={[field.name, 'Unit_Price']}><InputNumber min={0} placeholder="Unit SAR" style={{ width: 110 }} /></Form.Item>
+                  <Form.Item name={[field.name, 'WBS_Number']}><Input placeholder="WBS" style={{ width: 110 }} /></Form.Item>
+                  {fields.length > 1 && <MinusCircleOutlined onClick={() => remove(field.name)} />}
+                </Space>
+              ))}
+              <Form.Item>
+                <Button type="dashed" onClick={() => add()} icon={<PlusOutlined />} style={{ marginTop: 8 }}>Add line</Button>
+              </Form.Item>
+            </>
+          )}
+        </Form.List>
+        <Button type="primary" htmlType="submit" loading={create.isPending}>Create PO</Button>
+      </Form>
+    </Card>
+  )
+}
+
 export default function LogisticsPage() {
   return (
     <div>
@@ -503,6 +652,7 @@ export default function LogisticsPage() {
         defaultActiveKey="prs"
         items={[
           { key: 'prs', label: 'Incoming PRs', children: <IncomingPRs /> },
+          { key: 'create', label: 'Create PO', children: <CreatePoManual /> },
           { key: 'import', label: '📄 Import PO PDF', children: <ImportPoPdf /> },
           { key: 'pos', label: 'Purchase Orders', children: <PurchaseOrders /> },
           { key: 'reschedules', label: 'Reschedules', children: <Reschedules /> },

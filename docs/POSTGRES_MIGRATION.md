@@ -232,6 +232,22 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-08 (Phase 4 · chunk 3) · actor=interactive · branch=`main` · 🔓 Manual PO creation + vendor picker (MED gaps)
+- **Files:** `backend/api/services/procurement.py` (create_po_manual) ·
+  `backend/api/logistics.py` (POST /pos/manual + ManualPO models) ·
+  `backend/api/service_tests.py` (suite M, 7 checks) · `frontend/src/api/hooks.ts`
+  (useCreateManualPo) · `frontend/src/pages/LogisticsPage.tsx` (Create PO tab +
+  VendorPicker) · this doc.
+- **Manual PO:** `POST /logistics/pos/manual` — unique PO number, ≥1 free-text
+  line (material code OR description), custom Unit_Price (Total_Amount computed),
+  optional/**unlisted** PR reference (links pr_master only if it exists +
+  submitted), Inco/Payment terms + WBS/Network/Plant per line. Existing tables.
+- **Vendors:** reused the generic `/vendors` CRUD (writable lvl≥3). Frontend
+  VendorPicker = searchable Select + inline "＋ Add" modal; selecting a vendor
+  auto-fills its Default_Inco_Terms / Default_Payment_Terms.
+- **Gates:** service_tests **418/0** (+7) · frontend build ✅.
+- **Phase 4 complete** (H7 reschedule · H8 force-close · manual PO + vendors).
+
 ### 2026-07-08 (Phase 4 · chunk 2) · actor=interactive · branch=`main` · 🔓 H8 force-close (PR/PO/line) + 24h undo
 - **Files:** `backend/api/services/procurement.py` (force_close/undo_force_close/
   list_force_closures) · `backend/api/logistics.py` (3 endpoints) ·

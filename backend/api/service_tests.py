@@ -2714,6 +2714,83 @@ async def test_force_close():
             await s.commit()
 
 
+async def test_manual_po():
+    """Phase 4 — manual PO creation (free-text lines, prices, unlisted PR) +
+    vendor master round-trip. Role-gated; unique PO; total computed. Cleaned up."""
+    from sqlalchemy import delete, select as _sel
+
+    po = ledger._MD.tables["purchase_orders"]
+    poi = ledger._MD.tables["po_items"]
+    ven = ledger._MD.tables["vendors"]
+    PO = "PO-SVC-MANUAL"
+    VC = "V-SVC-TEST"
+    async with SessionLocal() as s:
+        await s.execute(delete(poi).where(poi.c["PO_Number"] == PO))
+        await s.execute(delete(po).where(po.c["PO_Number"] == PO))
+        await s.execute(delete(ven).where(ven.c["Vendor_Code"] == VC))
+        await s.commit()
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.83"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            worker_t = await token("worker", "floor2026")
+            admin_t = await token("admin", "admin2026")
+
+            body = {"po_number": PO, "site_id": "CNCEC", "pr_number": "PR-UNLISTED-X",
+                    "vendor_code": VC, "vendor_name": "Svc Vendor",
+                    "inco_terms": "FOB", "payment_terms": "Net 30",
+                    "lines": [
+                        {"Material_Code": "FREE-1", "Description": "free line 1", "Qty": 3, "Unit_Price": 10},
+                        {"Description": "unlisted line 2", "Qty": 2, "Unit_Price": 25},
+                    ]}
+
+            r = await ac.post("/logistics/pos/manual", headers=H(worker_t), json=body)
+            check("manual-po: worker (lvl0) → 403", r.status_code == 403, f"got {r.status_code}")
+
+            r = await ac.post("/logistics/pos/manual", headers=H(admin_t),
+                              json={**body, "lines": []})
+            check("manual-po: empty lines → 422", r.status_code == 422, f"got {r.status_code}")
+
+            r = await ac.post("/logistics/pos/manual", headers=H(admin_t), json=body)
+            j = r.json() if r.status_code == 201 else {}
+            check("manual-po: create → 201 total=80 lines=2",
+                  r.status_code == 201 and j.get("lines") == 2 and j.get("total") == 80.0,
+                  f"got {r.status_code} {str(j)[:120]}")
+
+            r = await ac.post("/logistics/pos/manual", headers=H(admin_t), json=body)
+            check("manual-po: duplicate PO → 409", r.status_code == 409, f"got {r.status_code}")
+
+            async with SessionLocal() as s:
+                n = (await s.execute(_sel(func.count()).select_from(poi).where(poi.c["PO_Number"] == PO))).scalar_one()
+                tot = (await s.execute(_sel(po.c["Total_Amount"]).where(po.c["PO_Number"] == PO))).scalar_one()
+            check("manual-po: 2 po_items persisted + header total 80", n == 2 and float(tot) == 80.0, f"n={n} tot={tot}")
+
+            # vendor master round-trip (the picker's inline-add uses this path).
+            r = await ac.post("/vendors", headers=H(admin_t), json={
+                "Vendor_Code": VC, "Vendor_Name": "Svc Vendor",
+                "Default_Inco_Terms": "FOB", "Default_Payment_Terms": "Net 30", "status": "active"})
+            check("vendor: admin create → 2xx", r.status_code < 300, f"got {r.status_code} {r.text[:120]}")
+            r = await ac.get("/vendors", params={"limit": 500}, headers=H(admin_t))
+            items = r.json().get("items", []) if r.status_code == 200 else []
+            v = next((it for it in items if it.get("Vendor_Code") == VC), None)
+            check("vendor: appears in list with defaults",
+                  v is not None and v.get("Default_Inco_Terms") == "FOB", str(v)[:120])
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(poi).where(poi.c["PO_Number"] == PO))
+            await s.execute(delete(po).where(po.c["PO_Number"] == PO))
+            await s.execute(delete(ven).where(ven.c["Vendor_Code"] == VC))
+            await s.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -2745,6 +2822,8 @@ async def main() -> int:
     await test_reschedule()
     print("\n L. force-close + 24h undo (Phase 4 H8)")
     await test_force_close()
+    print("\n M. manual PO + vendor master (Phase 4)")
+    await test_manual_po()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

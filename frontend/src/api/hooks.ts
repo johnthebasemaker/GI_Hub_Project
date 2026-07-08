@@ -213,6 +213,15 @@ export function useLogisticsPos(status?: string) {
   })
 }
 
+// Phase 4 — manual PO creation (free-text lines/prices, unlisted PR).
+export function useCreateManualPo() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (b: Row) => api.post('/logistics/pos/manual', b).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/logistics/pos'] }),
+  })
+}
+
 // Phase 4 H7 — reschedule workflow.
 export function useReschedules(status?: string) {
   return useQuery({

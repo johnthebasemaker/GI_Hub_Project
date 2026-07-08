@@ -267,6 +267,70 @@ async def create_po_from_pr(session: AsyncSession, *, username: str, pr_number: 
     return {"created": True, "po_number": po_number, "lines": len(lines)}
 
 
+# --- manual PO creation (free-text lines, prices, unlisted PR) ---------------
+async def create_po_manual(session: AsyncSession, *, username: str, header: dict,
+                           lines: list[dict]) -> dict:
+    po_number = str(header.get("po_number") or "").strip()
+    if not po_number:
+        return {"error": "PO number is required"}
+    if not lines:
+        return {"error": "add at least one line"}
+    exists = (await session.execute(select(func.count()).select_from(purchase_orders_t)
+              .where(purchase_orders_t.c["PO_Number"] == po_number))).scalar_one()
+    if exists:
+        return {"error": f"PO {po_number} already exists"}
+
+    prepared: list[dict] = []
+    for i, ln in enumerate(lines, start=1):
+        try:
+            qty = float(ln.get("Qty") or 0)
+        except (TypeError, ValueError):
+            return {"error": f"line {i}: qty is not a number"}
+        if qty <= 0:
+            return {"error": f"line {i}: qty must be > 0"}
+        try:
+            unit = float(ln.get("Unit_Price") or 0)
+        except (TypeError, ValueError):
+            unit = 0.0
+        mat = str(ln.get("Material_Code") or "").strip()
+        desc = str(ln.get("Description") or "").strip()
+        if not (mat or desc):
+            return {"error": f"line {i}: a material code or description is required"}
+        prepared.append({"mat": mat, "desc": desc, "qty": qty, "unit": unit,
+                         "uom": ln.get("UOM"), "pr": (str(ln.get("PR_Number") or "").strip() or None),
+                         "wbs": ln.get("WBS_Number"), "net": ln.get("Network"), "plant": ln.get("Plant")})
+
+    pr_number = str(header.get("pr_number") or "").strip() or None
+    today = _dt.date.today().isoformat()
+    total = round(sum(p["qty"] * p["unit"] for p in prepared), 2)
+    await session.execute(insert(purchase_orders_t).values(
+        PO_Number=po_number, PR_Number=pr_number,
+        Site_ID=(header.get("site_id") or None),
+        Vendor_Code=(header.get("vendor_code") or None),
+        Vendor_Name=(header.get("vendor_name") or None),
+        Inco_Terms=(header.get("inco_terms") or None),
+        Payment_Terms=(header.get("payment_terms") or None),
+        PO_Date=(header.get("po_date") or today),
+        Expected_Delivery=(header.get("expected_delivery") or None),
+        Total_Amount=total, source="manual", created_by=username, status="open"))
+    for idx, p in enumerate(prepared, start=1):
+        await session.execute(insert(po_items_t).values(
+            PO_Number=po_number, line_no=idx, Material_Code=p["mat"], Description=p["desc"],
+            Qty=p["qty"], UOM=p["uom"], Unit_Price=p["unit"],
+            Total_Price=round(p["qty"] * p["unit"], 2), PR_Number=(p["pr"] or pr_number),
+            WBS_Number=p["wbs"], Network=p["net"], Plant=p["plant"],
+            rl_bl_family=classify_rl_bl_family(p["mat"], p["desc"]), line_status="open"))
+    # If the referenced PR exists and is submitted, link it (harmless if unlisted).
+    if pr_number:
+        await session.execute(update(pr_master_t).where(
+            (pr_master_t.c["PR_Number"] == pr_number)
+            & (func.coalesce(pr_master_t.c["logistics_status"], "site_draft") == "submitted")
+        ).values(logistics_status="in_po"))
+    await write_audit(session, username, "CREATE_PO_MANUAL", "purchase_orders",
+                      f"PO={po_number} lines={len(prepared)} total={total}")
+    return {"created": True, "po_number": po_number, "lines": len(prepared), "total": total}
+
+
 # --- reschedule workflow (H7) ------------------------------------------------
 # WH/HOD raise a reschedule request → Logistics decides → approved date is
 # pushed onto the PO (and its warehouse assignments). In-app notify only

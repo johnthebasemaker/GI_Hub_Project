@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +36,31 @@ class AssignIn(BaseModel):
     notes: Optional[str] = None
 
 
+class ManualPOLineIn(BaseModel):
+    Material_Code: Optional[str] = None
+    Description: Optional[str] = None
+    Qty: float
+    UOM: Optional[str] = None
+    Unit_Price: Optional[float] = 0
+    PR_Number: Optional[str] = None
+    WBS_Number: Optional[str] = None
+    Network: Optional[str] = None
+    Plant: Optional[str] = None
+
+
+class ManualPOIn(BaseModel):
+    po_number: str
+    site_id: Optional[str] = None
+    pr_number: Optional[str] = None          # free-text; may be an "unlisted" PR
+    vendor_code: Optional[str] = None
+    vendor_name: Optional[str] = None
+    inco_terms: Optional[str] = None
+    payment_terms: Optional[str] = None
+    po_date: Optional[str] = None
+    expected_delivery: Optional[str] = None
+    lines: list[ManualPOLineIn] = Field(..., min_length=1)
+
+
 @router.get("/prs", summary="Incoming PR queue (submitted)")
 async def pr_queue(site_id: Optional[str] = None,
                    session: AsyncSession = Depends(get_session)):
@@ -59,6 +84,25 @@ async def create_po(body: CreatePOIn = Body(...),
                 site_id=body.site_id, po_number=body.po_number,
                 vendor_code=body.vendor_code, vendor_name=body.vendor_name,
                 expected_delivery=body.expected_delivery)
+        if res.get("error"):
+            raise HTTPException(409, res["error"])
+        return res
+    except HTTPException:
+        raise
+    except (IntegrityError, DataError) as e:
+        raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
+
+
+@router.post("/pos/manual", status_code=201, summary="Create a PO manually (free-text lines/prices, unlisted PR allowed)")
+async def create_po_manual(body: ManualPOIn = Body(...),
+                           user: dict = Depends(require_level(3)),
+                           session: AsyncSession = Depends(get_session)):
+    try:
+        async with session.begin():
+            res = await procurement.create_po_manual(
+                session, username=user["username"],
+                header=body.model_dump(exclude={"lines"}),
+                lines=[ln.model_dump() for ln in body.lines])
         if res.get("error"):
             raise HTTPException(409, res["error"])
         return res
