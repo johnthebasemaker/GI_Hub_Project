@@ -232,6 +232,24 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-08 (Phase 3) · actor=interactive · branch=`main` · 🔓 P3: sidebar UX — ⌘K palette + collapsible role-primary groups (Req 3 UX)
+- **Files:** `frontend/src/config/nav.tsx` (PRIMARY_GROUP, groupOfPath,
+  accessibleNodes) · `frontend/src/components/CommandPalette.tsx` (new) ·
+  `frontend/src/components/AppLayout.tsx` (collapsible SubMenus + openKeys +
+  header launcher) · this doc.
+- **⌘K command palette:** fuzzy jump-to-page over the manifest, access-aware
+  (admin shadow included, ignores the curated-default filter so admin can reach
+  anything in two keystrokes). Opens via ⌘K/Ctrl-K or the header search button;
+  ↑/↓/Enter/Esc keyboard nav. This is what lets the sidebar stay lean.
+- **Collapsible groups:** sidebar groups are now collapsible SubMenus (were
+  static section headers). The role's PRIMARY_GROUP opens by default
+  (progressive disclosure); choice persists (localStorage) and the active
+  group is always kept open. Combined with the Phase-0 lean-admin default +
+  "All areas" toggle, this completes the Req-3 UX proposal.
+- **Verification:** typecheck + build ✅ (live browser smoke deferred — the
+  user's own Vite dev server holds :5173; per standing practice we verify via
+  build here). service_tests **394/0** (backend untouched this phase).
+
 ### 2026-07-08 (Phase 2) · actor=interactive · branch=`main` · 🔓 P2: HOD approval correctness — reject-reason (H5) + auto-draft PR button (H9)
 - **Files (frontend only — backends pre-existed):**
   `frontend/src/pages/ApprovalsPage.tsx` (reject-reason modal) ·

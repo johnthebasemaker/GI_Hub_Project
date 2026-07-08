@@ -197,6 +197,17 @@ export const ADMIN_DEFAULT_GROUPS = new Set([
   'overview', 'records', 'reports', 'master', 'admin', 'documents', 'account',
 ])
 
+// The group each role works in most — opened by default in the sidebar
+// (progressive disclosure: your workspace first, everything else collapsed).
+export const PRIMARY_GROUP: Record<string, string> = {
+  store_keeper: 'entry',
+  warehouse_user: 'warehouse',
+  supervisor: 'supervisor',
+  hod: 'hod',
+  logistics: 'logistics',
+  admin: 'admin',
+}
+
 // Where each role lands when it hits a page it cannot see (and the "/" index).
 export const ROLE_HOME: Record<string, string> = {
   store_keeper: '/entry/issue',
@@ -218,6 +229,31 @@ export function canAccess(user: User | null, rule: AccessRule): boolean {
   if (user.role === 'admin') return true
   if ('anyRole' in rule) return rule.anyRole.includes(user.role)
   return (user.level ?? 0) >= rule.minLevel
+}
+
+// Which sidebar group a path belongs to (for keeping the active group open).
+export function groupOfPath(pathname: string): string | undefined {
+  const path = pathname.replace(/\/+$/, '') || '/'
+  if (path.startsWith('/records/')) return 'records'
+  if (path.startsWith('/master/')) return 'master'
+  for (const g of NAV) {
+    if (g.children.some((n) => n.key === path)) return g.id
+  }
+  return undefined
+}
+
+// Flat list of every page this user can OPEN (admin shadow included, ignoring
+// the curated-default filter) — powers the ⌘K command palette.
+export interface FlatNav { key: string; label: string; group: string }
+export function accessibleNodes(user: User | null): FlatNav[] {
+  const out: FlatNav[] = []
+  for (const g of NAV) {
+    if (g.access && !canAccess(user, g.access)) continue
+    for (const n of g.children) {
+      if (canAccess(user, n.access)) out.push({ key: n.key, label: n.label, group: g.label ?? '' })
+    }
+  }
+  return out
 }
 
 // Resolve the access rule for an arbitrary pathname (handles dynamic

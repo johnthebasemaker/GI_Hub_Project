@@ -1,16 +1,17 @@
-import { Suspense, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Alert, Badge, Button, ConfigProvider, Layout, Menu, Skeleton, Space, Switch, Tooltip, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AppstoreOutlined, LogoutOutlined, MoonOutlined, SunOutlined } from '@ant-design/icons'
+import { AppstoreOutlined, LogoutOutlined, MoonOutlined, SearchOutlined, SunOutlined } from '@ant-design/icons'
 import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth, useOverdueActions, useWorkQueues } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
 import type { User } from '../auth/AuthContext'
-import { NAV, ADMIN_DEFAULT_GROUPS, canAccess, canAccessPath, roleHome } from '../config/nav'
+import { NAV, ADMIN_DEFAULT_GROUPS, PRIMARY_GROUP, canAccess, canAccessPath, groupOfPath, roleHome } from '../config/nav'
 import type { NavGroup, NavNode } from '../config/nav'
 import { useThemeMode } from '../theme/ThemeContext'
 import { siderTheme } from '../theme/themes'
+import CommandPalette from './CommandPalette'
 import HubAssistant from './HubAssistant'
 import NotificationBell from './NotificationBell'
 
@@ -69,12 +70,24 @@ function buildMenu(
       .map((n) => ({ key: n.key, icon: n.icon, label: nodeLabel(n, q, overdue) }))
     if (!children.length) continue
     if (g.label) {
-      items.push({ key: g.id, label: g.label, type: 'group', children })
+      // Collapsible SubMenu (progressive disclosure) — see openKeys below.
+      items.push({ key: g.id, label: g.label, children })
     } else {
       items.push(...children)   // ungrouped top items (Dashboard, Stock)
     }
   }
   return items
+}
+
+// The group ids visible to this user (to bound the persisted openKeys).
+function visibleGroupIds(user: User | null, allAreas: boolean): string[] {
+  const isAdmin = user?.role === 'admin'
+  return NAV.filter((g) => {
+    if (!g.label) return false
+    if (g.access && !canAccess(user, g.access)) return false
+    if (isAdmin && !allAreas && !ADMIN_DEFAULT_GROUPS.has(g.id)) return false
+    return g.children.some((n) => canAccess(user, n.access))
+  }).map((g) => g.id)
 }
 
 export default function AppLayout() {
@@ -96,6 +109,24 @@ export default function AppLayout() {
   }
   // Red SLA badge — polled only for admins (endpoint is level-4).
   const { data: overdue } = useOverdueActions(level >= 4)
+
+  // Collapsible sidebar groups — the role's primary group opens by default
+  // (progressive disclosure); the choice persists, and the active group is
+  // always kept open so the current page's highlight is visible.
+  const [openKeys, setOpenKeys] = useState<string[]>(() => {
+    const saved = localStorage.getItem('gi-nav-open')
+    if (saved) { try { return JSON.parse(saved) } catch { /* ignore */ } }
+    const primary = user ? PRIMARY_GROUP[user.role] : undefined
+    return primary ? [primary] : []
+  })
+  const onOpenChange = (keys: string[]) => {
+    setOpenKeys(keys)
+    localStorage.setItem('gi-nav-open', JSON.stringify(keys))
+  }
+  useEffect(() => {
+    const g = groupOfPath(location.pathname)
+    if (g) setOpenKeys((prev) => (prev.includes(g) ? prev : [...prev, g]))
+  }, [location.pathname])
 
   // Route guard: if the current path isn't allowed for this role, bounce to the
   // role's home. Keeps the UI honest with the API's per-endpoint role gates.
@@ -121,6 +152,8 @@ export default function AppLayout() {
             <Menu
               mode="inline"
               selectedKeys={[location.pathname]}
+              openKeys={openKeys.filter((k) => visibleGroupIds(user, allAreas).includes(k))}
+              onOpenChange={(keys) => onOpenChange(keys as string[])}
               items={buildMenu(user, queues ?? {}, overdue?.count, allAreas)}
               onClick={({ key }) => navigate(key)}
             />
@@ -142,6 +175,10 @@ export default function AppLayout() {
         >
           <Typography.Text strong className="gi-header-title">Warehouse &amp; Inventory</Typography.Text>
           <Space size="middle">
+            <Tooltip title="Jump to any page (⌘K / Ctrl-K)">
+              <Button type="text" aria-label="Open command palette" icon={<SearchOutlined />}
+                onClick={() => window.dispatchEvent(new Event('gi-open-command-palette'))} />
+            </Tooltip>
             <span className="gi-health">
               <span className={`gi-health-dot ${health ? 'ok' : 'err'}`} />
               <Typography.Text type="secondary" className="gi-health-label" style={{ fontSize: 12 }}>
@@ -180,6 +217,7 @@ export default function AppLayout() {
           <HubAssistant />
         </Content>
       </Layout>
+      <CommandPalette />
     </Layout>
   )
 }
