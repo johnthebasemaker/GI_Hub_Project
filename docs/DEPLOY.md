@@ -128,9 +128,15 @@ are completely untouched — if anything's wrong, send users back to Streamlit.
   docker compose -f docker-compose.prod.yml exec -T db \
     pg_restore -U gihub -d gihub -c < gihub-<stamp>.dump
   ```
-  ⚠️ **Off-box before go-live:** the `pg-backups` volume is on the same VPS disk —
-  bind it to a Hetzner Storage Box (the compose `volumes:` block has the CIFS stub)
-  so a total-VPS-loss is survivable, not just corruption/bad-migration.
+  ⚠️ **Off-box before go-live:** the `pg-backups` volume is on the same VPS disk.
+  Two options to survive a total-VPS-loss:
+    - **S3 (recommended):** set `AWS_S3_BUCKET` + IAM creds in `deploy/.env` —
+      `backup-pg.sh` then pushes each dump to S3 (SSE-encrypted). Retention is a
+      bucket **lifecycle policy** (e.g. 30d → Glacier, 90d → expire). Use a
+      dedicated IAM user scoped to put/list on that bucket. Restore: `aws s3 cp`
+      the dump back, then `pg_restore` as above.
+    - **Hetzner Storage Box:** bind the `pg-backups` volume to it (the compose
+      `volumes:` block has the CIFS stub).
 
 ## 8. What this does NOT include (confirm before go-live)
 Not ported to the new stack (Streamlit-only): WhatsApp, email/mailer. The local-LLM

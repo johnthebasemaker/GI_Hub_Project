@@ -156,6 +156,13 @@ services:
       PGHOST: db
       GI_BACKUP_DIR: /backups
       TZ: Asia/Riyadh
+      # Off-box S3 (optional — leave AWS_S3_BUCKET blank for local-only backups).
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-}
+      AWS_S3_PREFIX: ${AWS_S3_PREFIX:-gihub}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SSE: ${AWS_SSE:-AES256}
     volumes:
       - pg-backups:/backups
       - ./backup/backup-pg.sh:/usr/local/bin/backup-pg.sh:ro
@@ -163,7 +170,8 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        apk add --no-cache tzdata >/dev/null
+        # aws-cli is only needed for the off-box S3 push; harmless if S3 unused.
+        apk add --no-cache tzdata aws-cli >/dev/null 2>&1 || apk add --no-cache tzdata >/dev/null
         # Invoke via `sh` so we don't rely on the mounted file's +x bit.
         echo '0 2 * * * /bin/sh /usr/local/bin/backup-pg.sh >> /backups/backup.log 2>&1' > /etc/crontabs/root
         echo "[pg-backup] cron installed — nightly 02:00 Asia/Riyadh. Running an initial pass…"

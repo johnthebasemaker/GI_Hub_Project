@@ -232,6 +232,22 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-08 (Phase I-A) · actor=interactive · branch=`main` · ☁️ S3 off-box PostgreSQL backups (Req 5 — infra layer)
+- **Files:** `deploy/backup/backup-pg.sh` (S3 push) ·
+  `deploy/docker-compose.prod.yml` (aws-cli + S3 env on `backup`) ·
+  `deploy/.env.example` (AWS_* vars) · `docs/DEPLOY.md` · this doc.
+- **Decision (Req 5):** infrastructure layer, not app layer — DR must survive
+  the app being down and keeps AWS creds out of the API process (extends the
+  existing backup service rather than the report_center daemon).
+- **How:** after a successful `pg_dump -Fc`, `push_to_s3()` runs `aws s3 cp`
+  (SSE-encrypted) when `AWS_S3_BUCKET` is set; local-only otherwise (clean
+  skip). Never fails the backup — records `.last_s3_success`/`.last_s3_failure`.
+  14-day LOCAL retention kept; S3 retention = bucket lifecycle policy (documented,
+  not scripted). aws-cli installed in the `backup` container (falls back to
+  tzdata-only if the package is unavailable).
+- **Validation:** `sh -n` backup-pg.sh ✅ · compose YAML ✅ (docker not local —
+  CI smoke-build covers image build). No app code touched.
+
 ### 2026-07-08 (Phase 3) · actor=interactive · branch=`main` · 🔓 P3: sidebar UX — ⌘K palette + collapsible role-primary groups (Req 3 UX)
 - **Files:** `frontend/src/config/nav.tsx` (PRIMARY_GROUP, groupOfPath,
   accessibleNodes) · `frontend/src/components/CommandPalette.tsx` (new) ·
