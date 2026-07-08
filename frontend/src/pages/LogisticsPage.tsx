@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import {
-  App, Button, Card, DatePicker, Descriptions, Form, Input, Modal, Select, Space,
+  App, Button, Card, DatePicker, Descriptions, Form, Input, Modal, Popconfirm, Select, Space,
   Table, Tabs, Tag, Typography, Upload,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { Dayjs } from 'dayjs'
 import { InboxOutlined } from '@ant-design/icons'
 import {
-  useAssignPo, useCreatePo, useList, useLogisticsPos, useLogisticsPrs, usePoItems, useSites,
+  useAssignPo, useCreatePo, useDecideReschedule, useList, useLogisticsPos, useLogisticsPrs,
+  usePoItems, useReschedules, useSites,
 } from '../api/hooks'
 import { api } from '../api/client'
 import type { Row } from '../api/client'
@@ -342,6 +343,67 @@ function PurchaseOrders() {
   )
 }
 
+// ---- Reschedules tab (H7): review + decide ---------------------------------
+function Reschedules() {
+  const { message } = App.useApp()
+  const { data: rows, isFetching } = useReschedules()
+  const decide = useDecideReschedule()
+  const [rejectId, setRejectId] = useState<number | null>(null)
+  const [notes, setNotes] = useState('')
+
+  const approve = async (id: number) => {
+    try {
+      const r = await decide.mutateAsync({ id, action: 'approve' })
+      message.success(`Approved — PO ${r.po_number} now due ${r.new_date}`)
+    } catch (e) { message.error(errMsg(e)) }
+  }
+  const doReject = async () => {
+    if (rejectId == null) return
+    try {
+      await decide.mutateAsync({ id: rejectId, action: 'reject', decision_notes: notes.trim() || undefined })
+      message.success('Rejected — requester notified')
+      setRejectId(null); setNotes('')
+    } catch (e) { message.error(errMsg(e)) }
+  }
+
+  const columns: ColumnsType<Row> = [
+    { title: 'PO', dataIndex: 'PO_Number' },
+    { title: 'Current', dataIndex: 'current_date', render: (v) => v ?? '—' },
+    { title: 'Requested', dataIndex: 'requested_date' },
+    { title: 'By', key: 'by', render: (_: unknown, r: Row) => `${r.requested_by_role} · ${r.requested_by}` },
+    { title: 'Reason', dataIndex: 'reason', ellipsis: true },
+    { title: 'Status', dataIndex: 'status', render: (v: string) =>
+      <Tag color={v === 'pending' ? 'gold' : v === 'approved' ? 'green' : 'red'}>{v}</Tag> },
+    {
+      title: 'Action', key: '__act', width: 190,
+      render: (_: unknown, r: Row) => (r.status !== 'pending'
+        ? <Typography.Text type="secondary">{r.decided_by ? String(r.decided_by) : '—'}</Typography.Text>
+        : (
+          <Space>
+            <Popconfirm title={`Approve → set PO ${r.PO_Number} to ${r.requested_date}?`}
+              onConfirm={() => approve(Number(r.id))}>
+              <Button size="small" type="primary">Approve</Button>
+            </Popconfirm>
+            <Button size="small" danger onClick={() => { setRejectId(Number(r.id)); setNotes('') }}>Reject</Button>
+          </Space>
+        )),
+    },
+  ]
+
+  return (
+    <>
+      <Table size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
+        rowKey={(r) => String(r.id)} pagination={{ pageSize: 20, showTotal: (t) => `${t} requests` }} />
+      <Modal open={rejectId != null} title="Reject reschedule request" onOk={doReject}
+        onCancel={() => { setRejectId(null); setNotes('') }} okText="Reject"
+        okButtonProps={{ danger: true }} confirmLoading={decide.isPending} destroyOnHidden>
+        <Input.TextArea rows={3} placeholder="Reason (optional — sent to the requester)"
+          value={notes} onChange={(e) => setNotes(e.target.value)} />
+      </Modal>
+    </>
+  )
+}
+
 export default function LogisticsPage() {
   return (
     <div>
@@ -354,6 +416,7 @@ export default function LogisticsPage() {
           { key: 'prs', label: 'Incoming PRs', children: <IncomingPRs /> },
           { key: 'import', label: '📄 Import PO PDF', children: <ImportPoPdf /> },
           { key: 'pos', label: 'Purchase Orders', children: <PurchaseOrders /> },
+          { key: 'reschedules', label: 'Reschedules', children: <Reschedules /> },
         ]}
       />
     </div>

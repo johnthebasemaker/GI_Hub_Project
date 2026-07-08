@@ -232,6 +232,21 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-08 (Phase 4 · chunk 1) · actor=interactive · branch=`main` · 🔓 H7 reschedule workflow (WH/HOD raise → Logistics decide → push date)
+- **Files:** `backend/api/services/procurement.py` (raise/list/decide_reschedule) ·
+  `backend/api/logistics.py` (GET/POST decide) · `backend/api/warehouse.py` +
+  `backend/api/hod.py` (raise endpoints) · `backend/api/service_tests.py` (suite
+  K, 8 checks) · `frontend/src/api/hooks.ts` · `frontend/src/pages/{WarehousePage,LogisticsPage}.tsx` · this doc.
+- **Flow:** WH raises via `POST /warehouse/reschedule`, HOD via `POST /hod/reschedule`
+  (both → `procurement.raise_reschedule`, one pending per PO). Logistics reviews
+  at `GET /logistics/reschedules` and decides at `POST /logistics/reschedules/{id}/decide`
+  — approve pushes `requested_date` onto `purchase_orders.Expected_Delivery` + the
+  PO's assignments. In-app notify only (WhatsApp/email parked). Tables already
+  existed (`po_reschedule_requests`) — no migration.
+- **UI:** WarehousePage assignment "Reschedule" button + modal; LogisticsPage new
+  "Reschedules" tab (approve/reject w/ notes).
+- **Gates:** service_tests **402/0** (+8) · frontend build ✅.
+
 ### 2026-07-08 (Phase I-A) · actor=interactive · branch=`main` · ☁️ S3 off-box PostgreSQL backups (Req 5 — infra layer)
 - **Files:** `deploy/backup/backup-pg.sh` (S3 push) ·
   `deploy/docker-compose.prod.yml` (aws-cli + S3 env on `backup`) ·

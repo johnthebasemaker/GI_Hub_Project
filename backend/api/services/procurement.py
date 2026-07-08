@@ -26,6 +26,9 @@ po_items_t = _MD.tables["po_items"]
 po_assignments_t = _MD.tables["po_assignments"]
 warehouses_t = _MD.tables["warehouses"]
 inventory_t = _MD.tables["inventory"]
+po_reschedule_t = _MD.tables["po_reschedule_requests"]
+po_force_closures_t = _MD.tables["po_force_closures"]
+vendors_t = _MD.tables["vendors"]
 
 # RL/BL family tokens — verbatim from config.py (RL_BL_FAMILY_TOKENS).
 _RL_BL_TOKENS = {
@@ -262,6 +265,86 @@ async def create_po_from_pr(session: AsyncSession, *, username: str, pr_number: 
     await write_audit(session, username, "CREATE_PO", "purchase_orders",
                       f"PO={po_number} PR={pr_number} site={site_id} lines={len(lines)}")
     return {"created": True, "po_number": po_number, "lines": len(lines)}
+
+
+# --- reschedule workflow (H7) ------------------------------------------------
+# WH/HOD raise a reschedule request → Logistics decides → approved date is
+# pushed onto the PO (and its warehouse assignments). In-app notify only
+# (WhatsApp/email stay parked).
+async def raise_reschedule(session: AsyncSession, *, username: str, role: str,
+                           po_number: str, requested_date: str, reason: str,
+                           dn_number: str | None = None) -> dict:
+    if not (requested_date or "").strip():
+        return {"error": "a requested delivery date is required"}
+    if not (reason or "").strip():
+        return {"error": "a reason is required"}
+    po = (await session.execute(select(
+        purchase_orders_t.c["Expected_Delivery"], purchase_orders_t.c["status"]
+    ).where(purchase_orders_t.c["PO_Number"] == po_number))).first()
+    if po is None:
+        return {"error": f"PO {po_number} not found"}
+    if po[1] in ("closed", "force_closed", "cancelled"):
+        return {"error": f"PO {po_number} is {po[1]} — cannot reschedule"}
+    # One open request at a time per PO.
+    dup = (await session.execute(select(func.count()).select_from(po_reschedule_t).where(
+        (po_reschedule_t.c["PO_Number"] == po_number)
+        & (po_reschedule_t.c["status"] == "pending")))).scalar_one()
+    if dup:
+        return {"error": f"PO {po_number} already has a pending reschedule request"}
+    rid = (await session.execute(insert(po_reschedule_t).values(
+        PO_Number=po_number, DN_Number=dn_number, current_date=po[0],
+        requested_date=requested_date, reason=reason, requested_by_role=role,
+        requested_by=username, status="pending"
+    ).returning(po_reschedule_t.c["id"]))).scalar_one()
+    await write_audit(session, username, "RAISE_RESCHEDULE", "po_reschedule_requests",
+                      f"id={rid} PO={po_number} → {requested_date}")
+    await notify(session, event_key="reschedule_raised", recipient_role="logistics",
+                 title=f"Reschedule requested — PO {po_number}",
+                 body=f"{role} {username} requests {requested_date}. Reason: {reason}",
+                 link_page="/logistics", related_table="po_reschedule_requests",
+                 related_ref=str(rid))
+    return {"raised": True, "id": rid, "po_number": po_number}
+
+
+async def list_reschedules(session: AsyncSession, status: str | None):
+    stmt = select(po_reschedule_t).order_by(po_reschedule_t.c["id"].desc()).limit(500)
+    if status:
+        stmt = stmt.where(po_reschedule_t.c["status"] == status)
+    return _rows(await session.execute(stmt))
+
+
+async def decide_reschedule(session: AsyncSession, *, username: str, req_id: int,
+                            action: str, decision_notes: str = "") -> dict:
+    if action not in ("approve", "reject"):
+        return {"error": "action must be approve or reject"}
+    row = (await session.execute(select(po_reschedule_t).where(
+        po_reschedule_t.c["id"] == req_id))).mappings().first()
+    if row is None:
+        return {"error": f"reschedule request {req_id} not found"}
+    if row["status"] != "pending":
+        return {"error": f"request {req_id} already {row['status']}"}
+    new_status = "approved" if action == "approve" else "rejected"
+    await session.execute(update(po_reschedule_t).where(po_reschedule_t.c["id"] == req_id).values(
+        status=new_status, decided_by=username, decided_at=func.now(),
+        decision_notes=decision_notes or None))
+    if action == "approve":
+        await session.execute(update(purchase_orders_t).where(
+            purchase_orders_t.c["PO_Number"] == row["PO_Number"]).values(
+            Expected_Delivery=row["requested_date"]))
+        await session.execute(update(po_assignments_t).where(
+            po_assignments_t.c["PO_Number"] == row["PO_Number"]).values(
+            Expected_Delivery=row["requested_date"]))
+    await write_audit(session, username, f"RESCHEDULE_{new_status.upper()}",
+                      "po_reschedule_requests", f"id={req_id} PO={row['PO_Number']}")
+    await notify(session, event_key="reschedule_decided", recipient_user=row["requested_by"],
+                 severity=("success" if action == "approve" else "warning"),
+                 title=f"Reschedule {new_status} — PO {row['PO_Number']}",
+                 body=(f"New delivery date: {row['requested_date']}" if action == "approve"
+                       else f"Rejected: {decision_notes or 'no reason given'}"),
+                 link_page="/warehouse", related_table="po_reschedule_requests",
+                 related_ref=str(req_id))
+    return {"decided": new_status, "id": req_id, "po_number": row["PO_Number"],
+            "new_date": row["requested_date"] if action == "approve" else None}
 
 
 async def assign_po(session: AsyncSession, *, username: str, po_number: str, warehouse_id: str,

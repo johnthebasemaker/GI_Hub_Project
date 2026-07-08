@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import {
-  App, Button, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Typography,
+  App, Button, DatePicker, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import type { Dayjs } from 'dayjs'
 import {
-  useCreateDn, useDnItems, useList, useShipDn, useWhAck, useWhAssignmentItems,
+  useCreateDn, useDnItems, useList, useRaiseReschedule, useShipDn, useWhAck, useWhAssignmentItems,
   useWhAssignments, useWhCreateReturn, useWhDisposition, useWhDns, useWhHistory,
   useWhReceive, useWhReturns,
 } from '../api/hooks'
@@ -122,6 +123,45 @@ function PrepareDNModal({ assignment, onClose }: { assignment: Row | null; onClo
   )
 }
 
+// ---- Reschedule request modal (H7) -----------------------------------------
+function RescheduleModal({ po, onClose }: { po: Row | null; onClose: () => void }) {
+  const { message } = App.useApp()
+  const raise = useRaiseReschedule()
+  const [form] = Form.useForm<{ requested_date: Dayjs; reason: string }>()
+  const submit = async () => {
+    const v = await form.validateFields()
+    try {
+      await raise.mutateAsync({
+        po_number: String(po!.PO_Number),
+        requested_date: v.requested_date.format('YYYY-MM-DD'),
+        reason: v.reason,
+      })
+      message.success('Reschedule requested — Logistics will review it')
+      onClose()
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
+  return (
+    <Modal open={!!po} title={`Request reschedule — PO ${po?.PO_Number ?? ''}`}
+      onOk={submit} onCancel={onClose} okText="Send to Logistics"
+      confirmLoading={raise.isPending} destroyOnHidden>
+      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+        Current expected delivery: <b>{po?.Expected_Delivery ? String(po.Expected_Delivery) : '—'}</b>. Logistics
+        approves the new date and it's pushed onto the PO.
+      </Typography.Paragraph>
+      <Form form={form} layout="vertical">
+        <Form.Item name="requested_date" label="New delivery date" rules={[{ required: true }]}>
+          <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
+        </Form.Item>
+        <Form.Item name="reason" label="Reason" rules={[{ required: true, message: 'a reason is required' }]}>
+          <Input.TextArea rows={2} placeholder="e.g. vendor pushed the ship date" />
+        </Form.Item>
+      </Form>
+    </Modal>
+  )
+}
+
 // ---- Assignments tab --------------------------------------------------------
 function Assignments({ warehouseId }: { warehouseId?: string }) {
   const { message } = App.useApp()
@@ -129,6 +169,7 @@ function Assignments({ warehouseId }: { warehouseId?: string }) {
   const ack = useWhAck()
   const [receiveFor, setReceiveFor] = useState<Row | null>(null)
   const [dnFor, setDnFor] = useState<Row | null>(null)
+  const [rescheduleFor, setRescheduleFor] = useState<Row | null>(null)
 
   const doAck = async (r: Row) => {
     try {
@@ -155,6 +196,7 @@ function Assignments({ warehouseId }: { warehouseId?: string }) {
           )}
           <Button size="small" onClick={() => setReceiveFor({ ...r, Warehouse_ID: warehouseId })}>Receive</Button>
           <Button size="small" type="primary" onClick={() => setDnFor({ ...r, Warehouse_ID: warehouseId })}>Prepare DN</Button>
+          <Button size="small" onClick={() => setRescheduleFor(r)}>Reschedule</Button>
         </Space>
       ),
     },
@@ -167,6 +209,7 @@ function Assignments({ warehouseId }: { warehouseId?: string }) {
         pagination={{ pageSize: 20, showTotal: (t) => `${t} assignments` }} />
       <ReceiveModal assignment={receiveFor} onClose={() => setReceiveFor(null)} />
       <PrepareDNModal assignment={dnFor} onClose={() => setDnFor(null)} />
+      <RescheduleModal po={rescheduleFor} onClose={() => setRescheduleFor(null)} />
     </>
   )
 }

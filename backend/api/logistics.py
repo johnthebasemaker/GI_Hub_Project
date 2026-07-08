@@ -96,3 +96,33 @@ async def assign(po_number: str, body: AssignIn = Body(...),
         raise
     except (IntegrityError, DataError) as e:
         raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
+
+
+# --- reschedule workflow (H7): Logistics reviews + decides -------------------
+class RescheduleDecideIn(BaseModel):
+    action: str  # approve | reject
+    decision_notes: Optional[str] = None
+
+
+@router.get("/reschedules", summary="Reschedule requests (WH/HOD → Logistics)")
+async def reschedules(status: Optional[str] = None,
+                      session: AsyncSession = Depends(get_session)):
+    return {"items": await procurement.list_reschedules(session, status)}
+
+
+@router.post("/reschedules/{req_id}/decide", summary="Approve/reject a reschedule (approve pushes the new date)")
+async def decide_reschedule(req_id: int, body: RescheduleDecideIn = Body(...),
+                            user: dict = Depends(require_level(3)),
+                            session: AsyncSession = Depends(get_session)):
+    try:
+        async with session.begin():
+            res = await procurement.decide_reschedule(
+                session, username=user["username"], req_id=req_id,
+                action=body.action, decision_notes=body.decision_notes or "")
+        if res.get("error"):
+            raise HTTPException(409, res["error"])
+        return res
+    except HTTPException:
+        raise
+    except (IntegrityError, DataError) as e:
+        raise HTTPException(400, f"{type(e).__name__}: {e.orig}")

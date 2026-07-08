@@ -17,6 +17,7 @@ from sqlalchemy import func, insert, select, text, update
 
 from .auth import require_roles, resolve_warehouse_param, warehouse_scope
 from .db import get_session
+from .services import procurement
 from .services import warehouse as wh
 from .services.ledger import _MD, write_audit
 from .services.notifications import notify
@@ -312,3 +313,30 @@ async def ship(dn_number: str, user: dict = Depends(_ROLE),
         await _guard_row_warehouse(session, _delivery_notes_t, "DN_Number", dn_number, user)
         res = await wh.ship_dn(session, username=user["username"], dn_number=dn_number)
     return _guard(res)
+
+
+# --- reschedule workflow (H7): warehouse raises a delivery-date change --------
+class RescheduleRaiseIn(BaseModel):
+    po_number: str
+    requested_date: str
+    reason: str
+    dn_number: Optional[str] = None
+
+
+@router.post("/reschedule", summary="Request a delivery-date reschedule (→ Logistics)")
+async def raise_reschedule(body: RescheduleRaiseIn = Body(...),
+                           user: dict = Depends(_ROLE),
+                           session: AsyncSession = Depends(get_session)):
+    try:
+        async with session.begin():
+            res = await procurement.raise_reschedule(
+                session, username=user["username"], role=user["role"],
+                po_number=body.po_number, requested_date=body.requested_date,
+                reason=body.reason, dn_number=body.dn_number)
+        if res.get("error"):
+            raise HTTPException(409, res["error"])
+        return res
+    except HTTPException:
+        raise
+    except (IntegrityError, DataError) as e:
+        raise HTTPException(400, f"{type(e).__name__}: {e.orig}")

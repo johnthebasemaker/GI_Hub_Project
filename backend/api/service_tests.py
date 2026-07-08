@@ -2566,6 +2566,80 @@ async def test_bulk_entry():
             await s.commit()
 
 
+async def test_reschedule():
+    """Phase 4 H7 — reschedule workflow: HOD raises → Logistics decides → the
+    approved date is pushed onto the PO. Role-gated; dup-guarded; idempotent
+    decide. Synthetic PO + request cleaned up in finally."""
+    from sqlalchemy import delete, insert, select as _sel
+
+    po = ledger._MD.tables["purchase_orders"]
+    rr = ledger._MD.tables["po_reschedule_requests"]
+    PO = "PO-SVC-RESCHED"
+    async with SessionLocal() as s:
+        await s.execute(delete(rr).where(rr.c["PO_Number"] == PO))
+        await s.execute(delete(po).where(po.c["PO_Number"] == PO))
+        await s.execute(insert(po).values(PO_Number=PO, Site_ID="CNCEC", status="open",
+                                          Expected_Delivery="2026-08-01", created_by="svc"))
+        await s.commit()
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.81"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            worker_t = await token("worker", "floor2026")
+            hod_t = await token("hod", "hod2026")
+            admin_t = await token("admin", "admin2026")
+
+            r = await ac.post("/hod/reschedule", headers=H(worker_t),
+                              json={"po_number": PO, "requested_date": "2026-09-15", "reason": "x"})
+            check("reschedule: worker (lvl0) → 403 on raise", r.status_code == 403, f"got {r.status_code}")
+
+            r = await ac.post("/hod/reschedule", headers=H(hod_t),
+                              json={"po_number": PO, "requested_date": "2026-09-15", "reason": "vendor delay"})
+            j = r.json() if r.status_code == 200 else {}
+            rid = j.get("id")
+            check("reschedule: HOD raises → 200 with id", r.status_code == 200 and rid, f"got {r.status_code} {str(j)[:120]}")
+
+            r = await ac.post("/hod/reschedule", headers=H(hod_t),
+                              json={"po_number": PO, "requested_date": "2026-10-01", "reason": "again"})
+            check("reschedule: duplicate pending → 409", r.status_code == 409, f"got {r.status_code}")
+
+            r = await ac.get("/logistics/reschedules", params={"status": "pending"}, headers=H(admin_t))
+            items = r.json().get("items", []) if r.status_code == 200 else []
+            check("reschedule: logistics lists the pending request",
+                  any(it.get("id") == rid for it in items), f"got {r.status_code} {len(items)} items")
+
+            r = await ac.get("/logistics/reschedules", headers=H(worker_t))
+            check("reschedule: worker → 403 on logistics list", r.status_code == 403, f"got {r.status_code}")
+
+            r = await ac.post(f"/logistics/reschedules/{rid}/decide", headers=H(admin_t),
+                              json={"action": "approve"})
+            j = r.json() if r.status_code == 200 else {}
+            check("reschedule: approve → 200 decided=approved new_date set",
+                  r.status_code == 200 and j.get("decided") == "approved" and j.get("new_date") == "2026-09-15",
+                  f"got {r.status_code} {str(j)[:120]}")
+
+            async with SessionLocal() as s:
+                nd = (await s.execute(_sel(po.c["Expected_Delivery"]).where(po.c["PO_Number"] == PO))).scalar_one()
+            check("reschedule: PO Expected_Delivery pushed to the new date", nd == "2026-09-15", f"got {nd}")
+
+            r = await ac.post(f"/logistics/reschedules/{rid}/decide", headers=H(admin_t),
+                              json={"action": "approve"})
+            check("reschedule: re-decide → 409 (already approved)", r.status_code == 409, f"got {r.status_code}")
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(rr).where(rr.c["PO_Number"] == PO))
+            await s.execute(delete(po).where(po.c["PO_Number"] == PO))
+            await s.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -2593,6 +2667,8 @@ async def main() -> int:
     await test_submission_intel()
     print("\n J. bulk entry + item snapshot (Phase 1)")
     await test_bulk_entry()
+    print("\n K. reschedule workflow (Phase 4 H7)")
+    await test_reschedule()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

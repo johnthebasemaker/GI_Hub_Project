@@ -213,6 +213,37 @@ export function useLogisticsPos(status?: string) {
   })
 }
 
+// Phase 4 H7 — reschedule workflow.
+export function useReschedules(status?: string) {
+  return useQuery({
+    queryKey: ['/logistics/reschedules', status],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/logistics/reschedules', { params: status ? { status } : {} })).data.items,
+  })
+}
+
+export function useDecideReschedule() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, action, decision_notes }: { id: number; action: 'approve' | 'reject'; decision_notes?: string }) =>
+      api.post(`/logistics/reschedules/${id}/decide`, { action, decision_notes }).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['/logistics/reschedules'] })
+      qc.invalidateQueries({ queryKey: ['/logistics/pos'] })
+    },
+  })
+}
+
+// Warehouse (or HOD) raises a reschedule request against a PO.
+export function useRaiseReschedule() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (b: { po_number: string; requested_date: string; reason: string; dn_number?: string }) =>
+      api.post('/warehouse/reschedule', b).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/logistics/reschedules'] }),
+  })
+}
+
 export function usePoItems(po: string | null) {
   return useQuery({
     queryKey: ['/logistics/pos', po, 'items'],

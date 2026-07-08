@@ -490,3 +490,25 @@ async def hod_pr_submit(pr_number: str, site_id: str,
     if res.get("error"):
         raise HTTPException(409, res["error"])
     return res
+
+
+# --- reschedule workflow (H7): HOD raises a delivery-date change --------------
+class RescheduleRaiseIn(BaseModel):
+    po_number: str
+    requested_date: str
+    reason: str
+    dn_number: Optional[str] = None
+
+
+@router.post("/reschedule", summary="Request a delivery-date reschedule (→ Logistics)")
+async def hod_raise_reschedule(body: RescheduleRaiseIn = Body(...),
+                               user: dict = Depends(require_level(2)),
+                               session: AsyncSession = Depends(get_session)):
+    async with session.begin():
+        res = await procurement.raise_reschedule(
+            session, username=user["username"], role=user["role"],
+            po_number=body.po_number, requested_date=body.requested_date,
+            reason=body.reason, dn_number=body.dn_number)
+    if res.get("error"):
+        raise HTTPException(409, res["error"])
+    return res
