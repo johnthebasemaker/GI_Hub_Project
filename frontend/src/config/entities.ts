@@ -2,11 +2,16 @@
 // (backend/api/main.py ENTITIES). Read entities are browse-only; write entities
 // are the master-data tables the API exposes POST/PUT/DELETE for.
 
+// Access rule per read entity — mirrors the legacy visibility of each log.
+// Shape matches AccessRule in nav.tsx (kept structural to avoid a circular import).
+export type EntityAccess = { anyRole: string[] } | { minLevel: number }
+
 export interface ReadEntity {
   key: string
   label: string
   path: string
   hasSite: boolean
+  access: EntityAccess
 }
 
 export interface Field {
@@ -26,13 +31,16 @@ export interface WriteEntity {
 }
 
 export const READ_ENTITIES: ReadEntity[] = [
-  { key: 'inventory', label: 'Inventory', path: '/inventory', hasSite: true },
-  { key: 'receipts', label: 'Receipts', path: '/receipts', hasSite: true },
-  { key: 'consumption', label: 'Consumption', path: '/consumption', hasSite: true },
-  { key: 'returns', label: 'Returns', path: '/returns', hasSite: true },
-  { key: 'lots', label: 'Lots', path: '/lots', hasSite: true },
-  { key: 'purchase-orders', label: 'Purchase Orders', path: '/purchase-orders', hasSite: true },
-  { key: 'equipment', label: 'Equipment (SME)', path: '/equipment', hasSite: true },
+  // inventory (stock list) is a benign, site-scoped read → all roles.
+  { key: 'inventory', label: 'Inventory', path: '/inventory', hasSite: true, access: { minLevel: 0 } },
+  // ledger logs are an oversight surface → hod+ (SK reviews its own entries in
+  // the Data Entry staging grid, not here).
+  { key: 'receipts', label: 'Receipts', path: '/receipts', hasSite: true, access: { minLevel: 2 } },
+  { key: 'consumption', label: 'Consumption', path: '/consumption', hasSite: true, access: { minLevel: 2 } },
+  { key: 'returns', label: 'Returns', path: '/returns', hasSite: true, access: { minLevel: 2 } },
+  { key: 'lots', label: 'Lots', path: '/lots', hasSite: true, access: { minLevel: 2 } },
+  { key: 'purchase-orders', label: 'Purchase Orders', path: '/purchase-orders', hasSite: true, access: { minLevel: 3 } },
+  { key: 'equipment', label: 'Equipment (SME)', path: '/equipment', hasSite: true, access: { anyRole: ['hod'] } },
 ]
 
 const STATUS: Field = {

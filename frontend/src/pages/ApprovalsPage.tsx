@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Alert, App, Badge, Button, Form, Input, InputNumber, Modal, Popconfirm, Select,
   Space, Table, Tabs, Typography,
@@ -84,6 +84,15 @@ function PendingKind({ kind, siteId }: { kind: string; siteId?: string }) {
   const bulk = useHodBulkApprove()
   const [selected, setSelected] = useState<number[]>([])
   const [editing, setEditing] = useState<Row | null>(null)
+  // T1 — Submission Intelligence is shown OPEN by default on the Issues tab so
+  // the HOD sees the consumption analysis before approving (no click needed).
+  // Controlled so the HOD can still collapse a row; re-opens as new rows load.
+  const [expandedKeys, setExpandedKeys] = useState<string[]>([])
+  const issueIds = useMemo(
+    () => (kind === 'issues' ? (rows ?? []).map((r) => String(r.id)) : []),
+    [kind, rows],
+  )
+  useEffect(() => { setExpandedKeys(issueIds) }, [issueIds])
 
   const act = async (id: number, action: 'approve' | 'reject') => {
     try {
@@ -151,6 +160,11 @@ function PendingKind({ kind, siteId }: { kind: string; siteId?: string }) {
           <Button onClick={() => setSelected([])}>Clear selection</Button>
         </Space>
       )}
+      {kind === 'issues' && (rows?.length ?? 0) > 0 && (
+        <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
+          🤖 AI consumption analysis is shown under each issue below — review it before approving.
+        </Typography.Text>
+      )}
       <Table
         size="small"
         loading={isFetching}
@@ -161,9 +175,12 @@ function PendingKind({ kind, siteId }: { kind: string; siteId?: string }) {
           selectedRowKeys: selected.map(String),
           onChange: (keys) => setSelected(keys.map(Number)),
         }}
-        // T1 pilot — Submission Intelligence on staged issues: expand a row
-        // to see the anomaly/usual-consumption summary before approving.
+        // T1 — Submission Intelligence on staged issues, shown OPEN by default
+        // (controlled expandedRowKeys) so the HOD reads the consumption analysis
+        // before approving. Still collapsible per row.
         expandable={kind === 'issues' ? {
+          expandedRowKeys: expandedKeys,
+          onExpandedRowsChange: (keys) => setExpandedKeys(keys as string[]),
           expandedRowRender: (r: Row) => (
             <SubmissionInsight kind="staged-issue" refId={Number(r.id)} />
           ),

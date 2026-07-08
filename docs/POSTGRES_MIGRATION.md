@@ -232,6 +232,28 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-08 (Phase 0) · actor=interactive · branch=`main` · 🔓 FEATURE-GAP PROGRAM P0: role-access foundation (Req 3 logic) + AI visibility (Req 2)
+- **Files:** `frontend/src/config/nav.tsx` (NEW — single source of truth) ·
+  `frontend/src/config/entities.ts` (per-entity access) ·
+  `frontend/src/components/AppLayout.tsx` (manifest-driven sidebar + route guard
+  + admin "All areas" toggle) · `frontend/src/pages/ApprovalsPage.tsx` (AI
+  insight open-by-default on Issues) · this doc.
+- **Req 3 (logic):** ported legacy `_can_access` (config.py PAGE_ACCESS +
+  main.py _EXACT_ROLE_PAGES/_PAGE_BLOCKED_ROLES) into `nav.tsx` — one manifest
+  drives the sidebar AND client route guards. Fixes the leaks: admin no longer
+  sees Data Entry by default (curated console + "All areas" reveal = legacy
+  admin-shadow); logistics no longer inherits HOD/SME; Records ledger logs gated
+  hod+ (inventory all, POs logistics+, equipment {hod,admin}); warehouse back to
+  exact {warehouse_user, admin}. Route guard redirects denied paths → role-home.
+  API gates already enforced server-side (require_roles admin-inclusive) — this
+  makes the UI agree. UX layer (⌘K, role-home ordering) is Phase 3.
+- **Req 2:** `SubmissionInsight` moved from click-to-expand to controlled
+  `expandedRowKeys` = all issue rows (open by default) + a "review before
+  approving" hint. HOD can still collapse.
+- **Gates:** frontend build ✅ · service_tests **386/0** ✅ · parity 5/5 ✅
+  (backend untouched this phase). Honors locked rulings: SME/Man-Hours nav
+  gated but pages untouched; no app-logic behavior change server-side.
+
 ### 2026-07-08 (CI/CD) · actor=interactive · branch=`main` · 🚀 DEPLOY INFRA: v2 manual-deploy pipeline + Postgres backup service (NO app code touched)
 - **Files touched (deploy/docs/CI only — zero application logic):**
   `deploy/docker-compose.prod.yml` · `deploy/backup/backup-pg.sh` (new) ·
