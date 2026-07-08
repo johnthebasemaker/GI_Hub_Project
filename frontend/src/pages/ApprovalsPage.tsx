@@ -94,15 +94,28 @@ function PendingKind({ kind, siteId }: { kind: string; siteId?: string }) {
   )
   useEffect(() => { setExpandedKeys(issueIds) }, [issueIds])
 
-  const act = async (id: number, action: 'approve' | 'reject') => {
+  // Reject prompts for a mandatory reason (H5) — it's recorded on the audit row
+  // and shown to the submitter in their rejection notification.
+  const [rejectId, setRejectId] = useState<number | null>(null)
+  const [rejectReason, setRejectReason] = useState('')
+
+  const approve = async (id: number) => {
     try {
-      const res = await decision.mutateAsync({ kind, id, action, reason: 'rejected by HOD' })
-      if (action === 'approve') {
-        const bits = [res.posted, res.pr_status, res.warning].filter(Boolean).join(' · ')
-        message.success(`Approved${bits ? ` — ${bits}` : ''}`)
-      } else {
-        message.success('Rejected')
-      }
+      const res = await decision.mutateAsync({ kind, id, action: 'approve' })
+      const bits = [res.posted, res.pr_status, res.warning].filter(Boolean).join(' · ')
+      message.success(`Approved${bits ? ` — ${bits}` : ''}`)
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
+
+  const doReject = async () => {
+    if (rejectId == null || !rejectReason.trim()) return
+    try {
+      await decision.mutateAsync({ kind, id: rejectId, action: 'reject', reason: rejectReason.trim() })
+      message.success('Rejected — the submitter has been notified with your reason')
+      setRejectId(null)
+      setRejectReason('')
     } catch (e) {
       message.error(errMsg(e))
     }
@@ -139,12 +152,12 @@ function PendingKind({ kind, siteId }: { kind: string; siteId?: string }) {
       render: (_: unknown, r: Row) => (
         <Space>
           <Button size="small" icon={<EditOutlined />} onClick={() => setEditing(r)} />
-          <Popconfirm title="Approve → commit to ledger?" onConfirm={() => act(Number(r.id), 'approve')}>
+          <Popconfirm title="Approve → commit to ledger?" onConfirm={() => approve(Number(r.id))}>
             <Button size="small" type="primary">Approve</Button>
           </Popconfirm>
-          <Popconfirm title="Reject this item?" onConfirm={() => act(Number(r.id), 'reject')}>
-            <Button size="small" danger>Reject</Button>
-          </Popconfirm>
+          <Button size="small" danger onClick={() => { setRejectId(Number(r.id)); setRejectReason('') }}>
+            Reject
+          </Button>
         </Space>
       ),
     },
@@ -189,6 +202,27 @@ function PendingKind({ kind, siteId }: { kind: string; siteId?: string }) {
         pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `${t} pending` }}
       />
       <EditModal kind={kind} row={editing} onClose={() => setEditing(null)} />
+      <Modal
+        title={`Reject staged ${kind.slice(0, -1)} #${rejectId ?? ''}`}
+        open={rejectId != null}
+        onOk={doReject}
+        onCancel={() => { setRejectId(null); setRejectReason('') }}
+        okText="Reject"
+        okButtonProps={{ danger: true, disabled: !rejectReason.trim() }}
+        confirmLoading={decision.isPending}
+        destroyOnHidden
+      >
+        <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+          A reason is required — it's recorded on the audit trail and sent to the submitter.
+        </Typography.Paragraph>
+        <Input.TextArea
+          rows={3}
+          autoFocus
+          placeholder="e.g. quantity exceeds the work order; wrong lot; duplicate entry"
+          value={rejectReason}
+          onChange={(e) => setRejectReason(e.target.value)}
+        />
+      </Modal>
     </div>
   )
 }

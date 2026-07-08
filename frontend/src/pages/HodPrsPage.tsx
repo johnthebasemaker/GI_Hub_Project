@@ -8,7 +8,7 @@ import type { Dayjs } from 'dayjs'
 import { DownloadOutlined, InboxOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useAuth } from '../auth/AuthContext'
 import { api } from '../api/client'
-import { downloadPrPdf, useCreatePr, useHodPrs, useList, useSites, useSubmitPr } from '../api/hooks'
+import { downloadPrPdf, useAutoDraftPr, useCreatePr, useHodPrs, useList, useSites, useSubmitPr } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 
 function errMsg(e: unknown): string {
@@ -37,10 +37,26 @@ function NewPr() {
   const { data: sites } = useSites()
   const inventory = useList('/inventory', { limit: 500 })
   const create = useCreatePr()
+  const autoDraft = useAutoDraftPr()
+  const siteWatch = Form.useWatch('site_id', form)
 
   const itemOptions = (inventory.data?.items ?? []).map((r: ApiRow) => ({
     value: String(r.SAP_Code), label: `${r.SAP_Code} — ${r.Equipment_Description ?? ''}`,
   }))
+
+  const doAutoDraft = async () => {
+    if (!siteWatch) { message.warning('Pick a site first'); return }
+    try {
+      const res = await autoDraft.mutateAsync({ siteId: siteWatch })
+      if (res.created === false) {
+        message.info(res.reason ?? 'No items below minimum at this site')
+      } else {
+        message.success(`Auto-drafted PR ${res.pr_number} from ${res.lines} below-minimum item(s) — review it under "Submit to Logistics"`)
+      }
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
 
   const onFinish = async (v: PrFormValues) => {
     try {
@@ -123,9 +139,20 @@ function NewPr() {
           )}
         </Form.List>
 
-        <Button type="primary" htmlType="submit" loading={create.isPending}>
-          Create PR
-        </Button>
+        <Space>
+          <Button type="primary" htmlType="submit" loading={create.isPending}>
+            Create PR
+          </Button>
+          <Popconfirm
+            title="Auto-draft a PR from below-minimum stock?"
+            description="Creates one draft PR with a line for every item under its minimum at the selected site."
+            onConfirm={doAutoDraft}
+          >
+            <Button loading={autoDraft.isPending} disabled={!siteWatch}>
+              Auto-draft from low stock
+            </Button>
+          </Popconfirm>
+        </Space>
       </Form>
     </Card>
   )

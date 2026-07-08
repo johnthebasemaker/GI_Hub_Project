@@ -232,6 +232,22 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-08 (Phase 2) · actor=interactive · branch=`main` · 🔓 P2: HOD approval correctness — reject-reason (H5) + auto-draft PR button (H9)
+- **Files (frontend only — backends pre-existed):**
+  `frontend/src/pages/ApprovalsPage.tsx` (reject-reason modal) ·
+  `frontend/src/pages/HodPrsPage.tsx` (auto-draft button) · this doc.
+- **H5:** Reject now opens a modal requiring a reason (was hard-coded
+  `'rejected by HOD'`). The reason flows through the existing
+  `POST /hod/pending/{kind}/{pid}/reject` body → audit row + the submitter's
+  rejection notification. Approve unchanged (approve==commit kept per ruling).
+- **H9:** `/hod/prs/auto-draft` (backend already existed) now has a button on
+  the PR create page too (LowStockPage already had one) — drafts a PR from every
+  below-minimum item at the selected site. Reused the existing `useAutoDraftPr`.
+- **Not done (per your answers):** two-phase EOD NOT restored (approve==commit
+  kept); negative-stock/FEFO stay allow-and-log (no hard block).
+- **Gates:** frontend build ✅ · service_tests **394/0** · parity 5/5
+  (backend untouched this phase).
+
 ### 2026-07-08 (Phase 1) · actor=interactive · branch=`main` · 🔓 P1: SK bulk issue/receipt + item snapshot (Req 1)
 - **Files:** `backend/api/entry.py` (POST /entry/bulk, GET /entry/snapshot/{sap}) ·
   `backend/api/service_tests.py` (suite J, 8 checks) ·
