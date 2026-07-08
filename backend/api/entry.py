@@ -14,10 +14,10 @@ Records/Stock but do not stage entries.
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import LargeBinary
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -199,6 +199,115 @@ async def create_adjustment(
 @router.get("/adjustment-reasons", tags=["data entry"], summary="Reason codes for adjustments")
 async def adjustment_reasons(user: dict = Depends(get_current_user)):
     return ledger.ADJUSTMENT_REASONS
+
+
+# --- Bulk entry (Phase 1) -----------------------------------------------------
+# The SK batches a shift's worth of lines in an editable grid, then submits them
+# all at once. Atomic: every row is validated up-front and nothing stages if any
+# row is bad (the SK already reviewed the grid). One HOD notification per site.
+_BULK_MODEL = {"receipt": ReceiptIn, "consumption": ConsumptionIn, "return": ReturnIn}
+_BULK_STAGER = {"receipt": ledger.stage_receipt, "consumption": ledger.stage_consumption,
+                "return": ledger.stage_return}
+_BULK_LABEL = {"receipt": "Receipt", "consumption": "Issue", "return": "Return"}
+
+
+class BulkEntryIn(BaseModel):
+    kind: Literal["receipt", "consumption", "return"]
+    rows: list[dict[str, Any]] = Field(..., min_length=1,
+                                       description="one dict per line, shaped like the single-entry body")
+
+
+@router.post("/bulk", status_code=201,
+             summary="Stage a batch of receipts/issues/returns for HOD approval")
+async def create_bulk(body: BulkEntryIn = Body(...),
+                      user: dict = Depends(require_roles("store_keeper")),
+                      session: AsyncSession = Depends(get_session)):
+    model = _BULK_MODEL[body.kind]
+    stager = _BULK_STAGER[body.kind]
+    label = _BULK_LABEL[body.kind]
+    # Validate all rows first — atomic submit, so a bad row fails the whole batch.
+    parsed, errors = [], []
+    for i, raw in enumerate(body.rows):
+        try:
+            parsed.append(model.model_validate(raw))
+        except ValidationError as e:
+            errors.append({"row": i, "errors": e.errors()})
+    if errors:
+        raise HTTPException(422, {"message": "some rows are invalid — nothing was staged",
+                                  "rows": errors})
+    try:
+        staged: list = []
+        by_site: dict[str, int] = {}
+        async with session.begin():
+            for i, m in enumerate(parsed):
+                if not await ledger.sap_exists(session, m.SAP_Code):
+                    raise HTTPException(404, f"row {i}: SAP_Code {m.SAP_Code!r} not in inventory")
+            for m in parsed:
+                res = await stager(session, username=user["username"], data=m.model_dump())
+                staged.append(res.get("pending_id"))
+                by_site[m.Site_ID] = by_site.get(m.Site_ID, 0) + 1
+            for site_id, cnt in by_site.items():
+                await _notify_hod_staged(
+                    session, kind_label=f"{cnt} {label}(s)", site_id=site_id,
+                    actor=user["username"], ref=",".join(str(s) for s in staged),
+                    detail=f"{cnt} {label.lower()} line(s) batch-submitted")
+        return {"staged": len(staged), "pending_ids": staged, "kind": body.kind}
+    except HTTPException:
+        raise
+    except (IntegrityError, DataError) as e:
+        raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
+
+
+# --- Item snapshot (Phase 1) --------------------------------------------------
+# Powers the entry-form "current stock + 30-day trend" panel (legacy
+# render_item_snapshot / get_item_snapshot). Numbers are ledger-derived.
+@router.get("/snapshot/{sap_code}",
+            summary="Current stock + 30-day consumption trend for a material")
+async def item_snapshot(sap_code: str, site_id: Optional[str] = None,
+                        user: dict = Depends(require_roles("store_keeper")),
+                        session: AsyncSession = Depends(get_session)):
+    from .ai.submission_stats import usage_stats  # local import (no cycle)
+    site_id = resolve_site_param(user, site_id)
+    site_id = site_id or None
+    sap = sap_code.strip()
+
+    where, params = 's."SAP_Code" = :sap', {"sap": sap}
+    if site_id:
+        where += ' AND s."Site_ID" = :site'
+        params["site"] = site_id
+    srow = (await session.execute(text(f'''
+        SELECT MAX(s."Equipment_Description") AS descr, MAX(s."UOM") AS uom,
+               COALESCE(SUM(s."Current_Stock"), 0) AS current_stock
+        FROM ({SQL_SITE_STOCK}) s WHERE {where}'''), params)).mappings().first()
+
+    stats = await usage_stats(session, sap, site_id, 30)
+
+    # 30 zero-filled daily buckets for a clean sparkline.
+    base = _dt.date.today() - _dt.timedelta(days=29)
+    cwhere = '"SAP_Code" = :sap AND "Date" >= :cut'
+    cparams = {"sap": sap, "cut": base.isoformat()}
+    if site_id:
+        cwhere += ' AND "Site_ID" = :site'
+        cparams["site"] = site_id
+    crows = (await session.execute(text(
+        f'SELECT "Date" AS d, COALESCE(SUM("Quantity"), 0) AS q '
+        f'FROM consumption WHERE {cwhere} GROUP BY "Date"'), cparams)).mappings().all()
+    daymap = {str(r["d"])[:10]: float(r["q"] or 0) for r in crows}
+    trend = [{"date": (base + _dt.timedelta(days=i)).isoformat(),
+              "consumed": round(daymap.get((base + _dt.timedelta(days=i)).isoformat(), 0.0), 3)}
+             for i in range(30)]
+
+    current = float((srow or {}).get("current_stock") or 0)
+    mean_daily = stats["mean_daily_qty"]
+    return {
+        "sap_code": sap, "site_id": site_id,
+        "description": (srow or {}).get("descr"), "uom": (srow or {}).get("uom"),
+        "current_stock": current,
+        "mean_daily_qty": mean_daily, "total_30d": stats["total_qty"],
+        "issues_30d": stats["issues"],
+        "days_cover": round(current / mean_daily, 1) if mean_daily > 0 else None,
+        "trend": trend,
+    }
 
 
 # --- Store-keeper toolbox (Phase 4) -------------------------------------------

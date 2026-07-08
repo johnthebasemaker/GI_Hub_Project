@@ -86,6 +86,42 @@ export const useReturnEntry = () => useLedgerPost('/entry/returns', ['/returns']
 export const useAdjustmentEntry = () =>
   useLedgerPost('/entry/adjustments', ['/receipts', '/consumption'])
 
+// Phase 1 — bulk entry: stage a batch of receipts/issues/returns in one call.
+export interface BulkResult { staged: number; pending_ids: number[]; kind: string }
+export function useBulkEntry(kind: 'receipt' | 'consumption' | 'return', extra: string[] = []) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (rows: Row[]) =>
+      api.post<BulkResult>('/entry/bulk', { kind, rows }).then((r) => r.data),
+    onSuccess: () => invalidateLedger(qc, extra),
+  })
+}
+
+// Phase 1 — item snapshot: current stock + 30-day consumption trend, shown on
+// the entry forms (legacy render_item_snapshot). All numbers are ledger-derived.
+export interface ItemSnapshot {
+  sap_code: string
+  site_id: string | null
+  description: string | null
+  uom: string | null
+  current_stock: number
+  mean_daily_qty: number
+  total_30d: number
+  issues_30d: number
+  days_cover: number | null
+  trend: { date: string; consumed: number }[]
+}
+export function useItemSnapshot(sap?: string, site?: string) {
+  return useQuery<ItemSnapshot>({
+    queryKey: ['/entry/snapshot', sap, site],
+    enabled: !!sap,
+    staleTime: 60_000,
+    queryFn: async () =>
+      (await api.get<ItemSnapshot>(`/entry/snapshot/${encodeURIComponent(sap!)}`,
+        { params: site ? { site_id: site } : {} })).data,
+  })
+}
+
 export function useAdjustmentReasons() {
   return useQuery({
     queryKey: ['adjustment-reasons'],

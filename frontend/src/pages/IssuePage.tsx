@@ -1,8 +1,15 @@
-import { App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Row, Select, Tag, Typography } from 'antd'
+import { useMemo, useState } from 'react'
+import {
+  App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Popconfirm, Row,
+  Select, Space, Table, Tag, Typography,
+} from 'antd'
+import type { ColumnsType } from 'antd/es/table'
+import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
-import { useBins, useConsumptionEntry, useList, useSites } from '../api/hooks'
+import { useBins, useBulkEntry, useList, useSites } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
+import ItemSnapshot from '../components/ItemSnapshot'
 
 interface FormValues {
   Site_ID: string
@@ -19,29 +26,44 @@ interface FormValues {
   Remarks?: string
 }
 
+// A batched line: API-shaped payload + a local uid + a display label.
+interface StagedRow extends ApiRow {
+  _uid: string
+  _label: string
+}
+
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
   return x?.response?.data?.detail ?? x?.message ?? 'Request failed'
 }
+
+let _seq = 0
 
 export default function IssuePage() {
   const { message } = App.useApp()
   const [form] = Form.useForm<FormValues>()
   const { data: sites } = useSites()
   const inventory = useList('/inventory', { limit: 500 })
-  const consume = useConsumptionEntry()
-  // Bin locations for the picked material — so the worker knows where to pull from.
+  const bulk = useBulkEntry('consumption', ['/consumption'])
+  const [staged, setStaged] = useState<StagedRow[]>([])
+  const [editingUid, setEditingUid] = useState<string | null>(null)
+
   const watchSap = Form.useWatch('SAP_Code', form)
   const watchSite = Form.useWatch('Site_ID', form)
   const { data: bins } = useBins(watchSap, watchSite)
 
-  const itemOptions = (inventory.data?.items ?? []).map((r: ApiRow) => ({
+  const itemOptions = useMemo(() => (inventory.data?.items ?? []).map((r: ApiRow) => ({
     value: String(r.SAP_Code),
     label: `${r.SAP_Code} — ${r.Equipment_Description ?? ''}`,
-  }))
+  })), [inventory.data])
+  const labelFor = (sap: string) => itemOptions.find((o) => o.value === sap)?.label ?? sap
 
-  const onFinish = async (v: FormValues) => {
-    const payload: ApiRow = {
+  // Add the current form to the batch (or update the line being edited).
+  const addToBatch = async () => {
+    const v = await form.validateFields()
+    const payload: StagedRow = {
+      _uid: editingUid ?? `r${++_seq}`,
+      _label: labelFor(v.SAP_Code),
       Date: v.Date.format('YYYY-MM-DD'),
       SAP_Code: v.SAP_Code,
       Quantity: v.Quantity,
@@ -55,27 +77,74 @@ export default function IssuePage() {
       Lot_Number: v.Lot_Number || null,
       Remarks: v.Remarks || null,
     }
+    setStaged((prev) => editingUid
+      ? prev.map((r) => (r._uid === editingUid ? payload : r))
+      : [...prev, payload])
+    setEditingUid(null)
+    // Keep Site + Date for the next line; clear the item-specific fields.
+    form.resetFields(['SAP_Code', 'Quantity', 'Issued_To', 'PR_Number', 'Tank_No', 'Serial_No', 'Lot_Number', 'Remarks'])
+  }
+
+  const editLine = (r: StagedRow) => {
+    setEditingUid(r._uid)
+    form.setFieldsValue({
+      Site_ID: r.Site_ID as string, SAP_Code: r.SAP_Code as string,
+      Quantity: r.Quantity as number, Date: dayjs(r.Date as string),
+      Work_Type: (r.Work_Type as string) ?? undefined, Issued_To: (r.Issued_To as string) ?? undefined,
+      Issued_By: (r.Issued_By as string) ?? undefined, PR_Number: (r.PR_Number as string) ?? undefined,
+      Tank_No: (r.Tank_No as string) ?? undefined, Serial_No: (r.Serial_No as string) ?? undefined,
+      Lot_Number: (r.Lot_Number as string) ?? undefined, Remarks: (r.Remarks as string) ?? undefined,
+    })
+  }
+
+  const removeLine = (uid: string) => {
+    setStaged((prev) => prev.filter((r) => r._uid !== uid))
+    if (editingUid === uid) setEditingUid(null)
+  }
+
+  const submitBatch = async () => {
+    if (!staged.length) return
+    const rows = staged.map(({ _uid, _label, ...rest }) => { void _uid; void _label; return rest })
     try {
-      const res = await consume.mutateAsync(payload)
-      message.success(res.message ?? 'Submitted for HOD approval')
+      const res = await bulk.mutateAsync(rows)
+      message.success(`${res.staged} issue line(s) submitted for HOD approval`)
+      setStaged([])
       form.resetFields(['SAP_Code', 'Quantity', 'Issued_To', 'PR_Number', 'Tank_No', 'Serial_No', 'Lot_Number', 'Remarks'])
     } catch (e) {
       message.error(errMsg(e))
     }
   }
 
+  const columns: ColumnsType<StagedRow> = [
+    { title: 'Material', dataIndex: '_label', ellipsis: true },
+    { title: 'Qty', dataIndex: 'Quantity', align: 'right', width: 80 },
+    { title: 'Work Type', dataIndex: 'Work_Type', width: 120, render: (v) => v ?? '—' },
+    { title: 'Issued To', dataIndex: 'Issued_To', width: 120, render: (v) => v ?? '—' },
+    { title: 'Lot', dataIndex: 'Lot_Number', width: 110, render: (v) => v ?? 'FEFO' },
+    {
+      title: '', key: '_act', width: 90, align: 'right',
+      render: (_: unknown, r: StagedRow) => (
+        <Space>
+          <Button size="small" icon={<EditOutlined />} onClick={() => editLine(r)} />
+          <Popconfirm title="Remove this line?" onConfirm={() => removeLine(r._uid)}>
+            <Button size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
   return (
     <div>
-      <Typography.Title level={3} style={{ marginTop: 0 }}>
-        Issue Stock (Consumption)
-      </Typography.Title>
+      <Typography.Title level={3} style={{ marginTop: 0 }}>Issue Stock (Consumption)</Typography.Title>
       <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
-        Records a material issue. Leave Lot blank to auto-tag the earliest-expiry open
-        lot (FEFO). Over-issue is allowed and logged (not blocked) — same as the old app.
+        Add each material to the batch, review the list, then submit them all at once for HOD
+        approval. Leave Lot blank to auto-tag the earliest-expiry open lot (FEFO). Over-issue is
+        allowed and logged (not blocked) — same as the old app.
       </Typography.Paragraph>
 
-      <Card style={{ maxWidth: 820 }}>
-        <Form<FormValues> form={form} layout="vertical" initialValues={{ Date: dayjs() }} onFinish={onFinish}>
+      <Card style={{ maxWidth: 860, marginBottom: 16 }}>
+        <Form<FormValues> form={form} layout="vertical" initialValues={{ Date: dayjs() }}>
           <Row gutter={16}>
             <Col xs={24} md={8}>
               <Form.Item name="Site_ID" label="Site" rules={[{ required: true }]}>
@@ -86,14 +155,19 @@ export default function IssuePage() {
               <Form.Item name="SAP_Code" label="Material (SAP Code)" rules={[{ required: true }]}>
                 <Select showSearch placeholder="Search material" loading={inventory.isFetching} optionFilterProp="label" options={itemOptions} />
               </Form.Item>
-              {!!bins?.length && (
-                <div style={{ marginTop: -16, marginBottom: 12 }}>
-                  <Typography.Text type="secondary" style={{ marginRight: 6 }}>Pull from bin:</Typography.Text>
-                  {bins.map((b) => <Tag key={b} color="blue">{b}</Tag>)}
-                </div>
-              )}
             </Col>
           </Row>
+
+          {/* Current stock + 30-day trend for the picked material (advisory). */}
+          <ItemSnapshot sap={watchSap} site={watchSite} />
+
+          {!!bins?.length && (
+            <div style={{ marginTop: -4, marginBottom: 12 }}>
+              <Typography.Text type="secondary" style={{ marginRight: 6 }}>Pull from bin:</Typography.Text>
+              {bins.map((b) => <Tag key={b} color="blue">{b}</Tag>)}
+            </div>
+          )}
+
           <Row gutter={16}>
             <Col xs={24} md={8}>
               <Form.Item name="Quantity" label="Quantity" rules={[{ required: true }]}>
@@ -112,15 +186,9 @@ export default function IssuePage() {
             </Col>
           </Row>
           <Row gutter={16}>
-            <Col xs={24} md={8}>
-              <Form.Item name="Work_Type" label="Work Type"><Input placeholder="e.g. Maintenance" /></Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item name="Issued_To" label="Issued To"><Input placeholder="recipient / crew" /></Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item name="Issued_By" label="Issued By"><Input placeholder="issuer" /></Form.Item>
-            </Col>
+            <Col xs={24} md={8}><Form.Item name="Work_Type" label="Work Type"><Input placeholder="e.g. Maintenance" /></Form.Item></Col>
+            <Col xs={24} md={8}><Form.Item name="Issued_To" label="Issued To"><Input placeholder="recipient / crew" /></Form.Item></Col>
+            <Col xs={24} md={8}><Form.Item name="Issued_By" label="Issued By"><Input placeholder="issuer" /></Form.Item></Col>
           </Row>
           <Row gutter={16}>
             <Col xs={24} md={8}><Form.Item name="PR_Number" label="PR Number"><Input /></Form.Item></Col>
@@ -128,8 +196,26 @@ export default function IssuePage() {
             <Col xs={24} md={8}><Form.Item name="Serial_No" label="Serial No"><Input /></Form.Item></Col>
           </Row>
           <Form.Item name="Remarks" label="Remarks"><Input.TextArea rows={2} /></Form.Item>
-          <Button type="primary" htmlType="submit" loading={consume.isPending}>Post issue</Button>
+          <Space>
+            <Button type={editingUid ? 'primary' : 'default'} icon={<PlusOutlined />} onClick={addToBatch}>
+              {editingUid ? 'Update line' : 'Add to batch'}
+            </Button>
+            {editingUid && <Button onClick={() => { setEditingUid(null); form.resetFields(['SAP_Code', 'Quantity', 'Issued_To', 'PR_Number', 'Tank_No', 'Serial_No', 'Lot_Number', 'Remarks']) }}>Cancel edit</Button>}
+          </Space>
         </Form>
+      </Card>
+
+      <Card
+        title={`Batch (${staged.length} line${staged.length === 1 ? '' : 's'})`}
+        extra={
+          <Button type="primary" disabled={!staged.length} loading={bulk.isPending} onClick={submitBatch}>
+            Submit batch to HOD
+          </Button>
+        }
+      >
+        <Table<StagedRow> size="small" rowKey="_uid" columns={columns} dataSource={staged}
+          pagination={false}
+          locale={{ emptyText: 'No lines yet — add materials above, then submit them all at once.' }} />
       </Card>
     </div>
   )

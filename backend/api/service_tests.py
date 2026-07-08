@@ -2493,6 +2493,79 @@ async def test_submission_intel():
             await s.commit()
 
 
+async def test_bulk_entry():
+    """Phase 1 — bulk issue staging + item snapshot. SK-gated; atomic (a bad or
+    invalid row stages nothing); snapshot returns ledger-derived stock and a
+    30-point trend. Synthetic staged rows cleaned up in finally."""
+    from sqlalchemy import delete
+
+    pi = ledger._MD.tables["pending_issues"]
+    TAG = "svc-bulk-test"
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.71"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip,
+                                  json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            sk_t = await token("worker", "floor2026")
+            hod_t = await token("hod", "hod2026")
+
+            inv = (await ac.get("/inventory", params={"limit": 5}, headers=H(sk_t))).json()
+            items = inv.get("items", [])
+            check("bulk: SK sees inventory to pick from", len(items) > 0, str(inv)[:120])
+            if not items:
+                return
+            sap = str(items[0]["SAP_Code"])
+            site = items[0].get("Site_ID") or "CNCEC"
+
+            r = await ac.post("/entry/bulk", headers=H(hod_t), json={
+                "kind": "consumption",
+                "rows": [{"Date": "2026-07-08", "SAP_Code": sap, "Quantity": 1, "Site_ID": site}]})
+            check("bulk: non-SK (hod) → 403", r.status_code == 403, f"got {r.status_code}")
+
+            r = await ac.post("/entry/bulk", headers=H(sk_t), json={
+                "kind": "consumption",
+                "rows": [{"Date": "2026-07-08", "SAP_Code": sap, "Quantity": 0, "Site_ID": site}]})
+            check("bulk: invalid row (qty 0) → 422, nothing staged",
+                  r.status_code == 422, f"got {r.status_code}")
+
+            r = await ac.post("/entry/bulk", headers=H(sk_t), json={
+                "kind": "consumption",
+                "rows": [{"Date": "2026-07-08", "SAP_Code": "__nope__", "Quantity": 1, "Site_ID": site}]})
+            check("bulk: unknown SAP → 404", r.status_code == 404, f"got {r.status_code}")
+
+            rows = [{"Date": "2026-07-08", "SAP_Code": sap, "Quantity": 1.5, "Site_ID": site, "Remarks": TAG},
+                    {"Date": "2026-07-08", "SAP_Code": sap, "Quantity": 2.5, "Site_ID": site, "Remarks": TAG}]
+            r = await ac.post("/entry/bulk", headers=H(sk_t),
+                              json={"kind": "consumption", "rows": rows})
+            j = r.json() if r.status_code == 201 else {}
+            check("bulk: 2 issue lines → 201 staged=2",
+                  r.status_code == 201 and j.get("staged") == 2
+                  and len(j.get("pending_ids", [])) == 2, f"got {r.status_code} {str(j)[:140]}")
+
+            r = await ac.get(f"/entry/snapshot/{sap}", params={"site_id": site}, headers=H(sk_t))
+            j = r.json() if r.status_code == 200 else {}
+            check("snapshot → 200 with numeric current_stock",
+                  r.status_code == 200 and isinstance(j.get("current_stock"), (int, float)),
+                  f"got {r.status_code} {str(j)[:140]}")
+            check("snapshot → 30-point trend", len(j.get("trend", [])) == 30,
+                  str(len(j.get("trend", []))))
+
+            r = await ac.get(f"/entry/snapshot/{sap}", params={"site_id": site}, headers=H(hod_t))
+            check("snapshot: non-SK (hod) → 403", r.status_code == 403, f"got {r.status_code}")
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(pi).where(pi.c["Remarks"] == TAG))
+            await s.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -2518,6 +2591,8 @@ async def main() -> int:
     await test_sla_tracker()
     print("\n I. submission intelligence (T1 — reviewer summaries)")
     await test_submission_intel()
+    print("\n J. bulk entry + item snapshot (Phase 1)")
+    await test_bulk_entry()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

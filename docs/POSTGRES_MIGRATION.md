@@ -232,6 +232,24 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-08 (Phase 1) · actor=interactive · branch=`main` · 🔓 P1: SK bulk issue/receipt + item snapshot (Req 1)
+- **Files:** `backend/api/entry.py` (POST /entry/bulk, GET /entry/snapshot/{sap}) ·
+  `backend/api/service_tests.py` (suite J, 8 checks) ·
+  `frontend/src/api/hooks.ts` (useBulkEntry, useItemSnapshot) ·
+  `frontend/src/components/{Sparkline,ItemSnapshot}.tsx` (new) ·
+  `frontend/src/pages/{IssuePage,ReceivePage}.tsx` (batch grid) · this doc.
+- **Bulk:** `POST /entry/bulk {kind, rows[]}` stages a whole batch atomically
+  (every row validated up-front; a bad/invalid row stages nothing), one HOD
+  notification per site. SK-locked (require_roles admin-inclusive). Issue &
+  Receive pages now: add-to-batch → editable grid (edit/delete) → submit-all.
+- **Snapshot:** `GET /entry/snapshot/{sap}?site_id=` returns ledger-derived
+  current stock + 30-day burn/daily-rate + days-of-cover + a 30-point trend
+  (reuses ai/submission_stats.usage_stats). Shown as a compact panel with an
+  inline-SVG sparkline (no Recharts → small chunk) on both entry pages.
+  Advisory only — honors the allow-and-log ruling (a <14-day "low cover" tag,
+  never a block).
+- **Gates:** service_tests **394/0** (+8) · parity 5/5 · frontend build ✅.
+
 ### 2026-07-08 (Phase 0) · actor=interactive · branch=`main` · 🔓 FEATURE-GAP PROGRAM P0: role-access foundation (Req 3 logic) + AI visibility (Req 2)
 - **Files:** `frontend/src/config/nav.tsx` (NEW — single source of truth) ·
   `frontend/src/config/entities.ts` (per-entity access) ·
