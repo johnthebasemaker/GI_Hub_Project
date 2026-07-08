@@ -232,6 +232,42 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-08 (CI/CD) · actor=interactive · branch=`main` · 🚀 DEPLOY INFRA: v2 manual-deploy pipeline + Postgres backup service (NO app code touched)
+- **Files touched (deploy/docs/CI only — zero application logic):**
+  `deploy/docker-compose.prod.yml` · `deploy/backup/backup-pg.sh` (new) ·
+  `deploy/{deploy-v2.sh, health-check.sh, rollback.sh}` (new) ·
+  `.github/workflows/deploy-v2.yml` (new) · `docs/DEPLOY.md` · this doc.
+- **Why:** the v2 `deploy/` stack had **no automated Postgres backup** despite
+  `pg-data-prod` being the system of record (the v1 `backup` service only dumps
+  SQLite). Also needed a repeatable, safe cutover/redeploy path.
+- **PG backup service:** new `backup` (postgres:16-alpine) runs
+  `backup-pg.sh` nightly 02:00 Asia/Riyadh — `pg_dump -Fc` → `pg-backups`
+  volume, 14-day retention, `.last_success`/`.last_failure` markers (v1
+  convention → Admin Service Health card). Same volume mounted into `api`
+  (`GI_BACKUPS_DIR=/backups`) so the console's manual `POST /admin/backup`
+  and the nightly dumps unify. Off-box bind stub documented on the volume.
+- **v2 deploy pipeline** `deploy-v2.yml` — **`workflow_dispatch` ONLY** (type
+  `deploy` to confirm), own concurrency group `hetzner-v2` (cannot collide with
+  v1's `hetzner-production`); the existing `deploy.yml` is UNTOUCHED. Gate
+  (dual_ci→parity→service_tests→frontend build; **Black advisory/non-blocking**)
+  → docker smoke-build (api+web) → SSH `deploy-v2.sh`.
+- **`deploy-v2.sh`:** pre-flight → `git reset --hard origin/main` (no rsync;
+  server already mirrors the repo) → SHA-tagged image build → `db` up +
+  `alembic upgrade head` → **PORT-HANDOVER** (stop v1 `nginx`, free :80/:443) →
+  v2 `up -d` → `health-check.sh` (api `/health`<2s · web `/`<400 · alembic at
+  head) → success: record SHA + Slack ✅; fail: `rollback.sh` + Slack 🔁.
+- **`rollback.sh`:** reverts the port-handover (stop v2 `web`, restart v1
+  `nginx` → users back on known-good Streamlit), retags prior-SHA images.
+  **Never downgrades the DB schema** (containers/images only).
+- **Constraints honored:** no v1 app code / `database.py` / legacy Streamlit /
+  `deploy.yml` changes; application-logic freeze intact. Fixed two stale
+  `docs/DEPLOY.md` lines while in-file (site-scoping shipped; service_tests
+  52→386). **Validation:** `sh -n`/`bash -n` all 4 scripts ✅ · yaml.safe_load
+  compose + all 3 workflows ✅ · docker `compose config` deferred to CI
+  smoke-build (docker not installed locally). Gates NOT re-run — no importable
+  code changed (deploy/docs/CI only); the shared dual-CI doesn't trigger on
+  `deploy/**`.
+
 ### 2026-07-07 (T1 + bottleneck) · actor=interactive · branch=`main` · 🔓 FREEZE-LIFT FEATURE: strict bottleneck coverage (engine ruling) + Submission Intelligence (final step of the user-approved T4→T3→T2→T1 plan)
 - **Files touched:** `backend/api/{sme_engine.py, sme.py}` ·
   `frontend/src/sme/{engine.ts, session.ts, insights.ts}` ·

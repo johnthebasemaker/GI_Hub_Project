@@ -23,7 +23,16 @@ networks:
     driver: bridge
 
 volumes:
-  pg-data-prod:     # PostgreSQL data — the system of record. BACK THIS UP.
+  pg-data-prod:     # PostgreSQL data — the system of record. Backed up by `backup`.
+  pg-backups:       # pg_dump output (nightly `backup` + console /admin/backup).
+                    # OFF-BOX before go-live: bind this to a Hetzner Storage Box
+                    # (same pattern the v1 root compose notes for gi-backups),
+                    # e.g.
+                    #   pg-backups:
+                    #     driver_opts:
+                    #       type: cifs
+                    #       o: "username=…,password=…,uid=10001,vers=3.0"
+                    #       device: "//<box>.your-storagebox.de/backup"
   certbot-etc:      # /etc/letsencrypt (certs + account)
   certbot-www:      # ACME HTTP-01 webroot
   ollama-models:    # pulled model weights (llama3.1:8b ≈ 5 GB, qwen2.5vl:7b ≈ 5 GB)
@@ -64,6 +73,11 @@ services:
       # the AI endpoints degrade to a friendly notice when it's unreachable.
       OLLAMA_HOST: http://ollama:11434
       GI_AI_CONCURRENCY: ${GI_AI_CONCURRENCY:-2}
+      # Console /admin/backup (manual pg_dump) writes here; shared with the
+      # `backup` service's pg-backups volume so manual + nightly dumps unify.
+      GI_BACKUPS_DIR: /backups
+    volumes:
+      - pg-backups:/backups
     networks: [gi-new]
     # No host ports — reached only via nginx (`web`) at /api/.
     healthcheck:
@@ -120,3 +134,38 @@ services:
       - certbot-etc:/etc/letsencrypt
       - certbot-www:/var/www/certbot
     entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
+
+  # Nightly pg_dump of pg-data-prod — the ONLY automated backup of the Postgres
+  # system of record (the v1 SQLite `backup` service cannot cover Postgres).
+  # Custom-format dumps + 14-day retention + .last_success/.last_failure markers,
+  # mirroring the v1 backup so the Admin "Service Health" card reads them
+  # unchanged. Uses postgres:16-alpine so pg_dump matches the `db` server version
+  # (and the image is already pulled). NO host ports — internal-only.
+  # Restore:  docker compose -f docker-compose.prod.yml exec -T db \
+  #             pg_restore -U $POSTGRES_USER -d $POSTGRES_DB -c < gihub-<stamp>.dump
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGHOST: db
+      GI_BACKUP_DIR: /backups
+      TZ: Asia/Riyadh
+    volumes:
+      - pg-backups:/backups
+      - ./backup/backup-pg.sh:/usr/local/bin/backup-pg.sh:ro
+    networks: [gi-new]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache tzdata >/dev/null
+        # Invoke via `sh` so we don't rely on the mounted file's +x bit.
+        echo '0 2 * * * /bin/sh /usr/local/bin/backup-pg.sh >> /backups/backup.log 2>&1' > /etc/crontabs/root
+        echo "[pg-backup] cron installed — nightly 02:00 Asia/Riyadh. Running an initial pass…"
+        /bin/sh /usr/local/bin/backup-pg.sh || true
+        exec crond -f -l 8

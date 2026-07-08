@@ -8,12 +8,14 @@ Everything lives in [`deploy/`](../deploy/):
 
 | File | What it is |
 |---|---|
-| `docker-compose.prod.yml` | db (Postgres 16) · api (FastAPI) · web (nginx: SPA + `/api` proxy + TLS) · certbot |
+| `docker-compose.prod.yml` | db (Postgres 16) · api (FastAPI) · web (nginx: SPA + `/api` proxy + TLS) · certbot · **backup** (nightly pg_dump) |
 | `Dockerfile.api` | FastAPI image (uvicorn, 4 workers, `GI_ENV=production`) |
 | `Dockerfile.web` | multi-stage: builds the Vite bundle → nginx serves it |
 | `nginx.conf` | SPA fallback + `/api/`→api proxy (strips prefix) + TLS + ACME |
 | `init-letsencrypt.sh` | one-time TLS bootstrap (dummy cert → real cert) |
 | `.env.example` | secrets template → copy to `deploy/.env` (gitignored) |
+| `backup/backup-pg.sh` | nightly `pg_dump -Fc` + 14-day retention + `.last_success`/`.last_failure` markers |
+| `deploy-v2.sh` · `health-check.sh` · `rollback.sh` | server-side manual-deploy orchestrator + health gate + automatic rollback (see §9) |
 
 > ⚠️ **Nothing here has been run against a server.** It's a kit. Provision the
 > box and run it when you're ready.
@@ -94,7 +96,7 @@ Optional smoke test from inside the api container:
 docker compose -f docker-compose.prod.yml run --rm \
   -e DATABASE_URL=postgresql+psycopg2://gihub:YOUR_PG_PASSWORD@db:5432/gihub \
   -e JWT_SECRET="$(grep ^JWT_SECRET .env | cut -d= -f2)" \
-  api python -m backend.api.service_tests      # 52/52
+  api python -m backend.api.service_tests      # 386/386
 ```
 
 ## 6. Cutover decision (making React primary)
@@ -111,16 +113,57 @@ are completely untouched — if anything's wrong, send users back to Streamlit.
 - **Logs:** `docker compose -f docker-compose.prod.yml logs -f api` (or `web`, `db`).
 - **Restart / update:** `git pull && docker compose -f docker-compose.prod.yml up -d --build`.
 - **TLS renewal:** automatic (the `certbot` service). Force: `docker compose -f docker-compose.prod.yml run --rm certbot renew`.
-- **Backups (do this before go-live):** Postgres is now authoritative, so back up the
-  `pg-data-prod` volume off-box. A nightly dump:
+- **Backups (automated):** the `backup` service runs `deploy/backup/backup-pg.sh`
+  nightly at **02:00 Asia/Riyadh** — `pg_dump -Fc` (custom format) into the
+  `pg-backups` volume, **14-day retention**, writing `.last_success`/`.last_failure`
+  markers (same convention as the v1 SQLite backup, so the Admin **Service Health**
+  card reads them unchanged). The console's manual **Admin → Backup** button
+  (`POST /admin/backup`) writes to the **same** volume, so manual and nightly dumps
+  live together. Run one on demand:
+  ```bash
+  docker compose -f docker-compose.prod.yml exec backup /bin/sh /usr/local/bin/backup-pg.sh
+  ```
+  Restore a dump:
   ```bash
   docker compose -f docker-compose.prod.yml exec -T db \
-    pg_dump -U gihub gihub | gzip > gihub-$(date +%F).sql.gz
+    pg_restore -U gihub -d gihub -c < gihub-<stamp>.dump
   ```
-  Ship it to a Hetzner Storage Box / S3 (the repo-root compose notes the off-box gap).
+  ⚠️ **Off-box before go-live:** the `pg-backups` volume is on the same VPS disk —
+  bind it to a Hetzner Storage Box (the compose `volumes:` block has the CIFS stub)
+  so a total-VPS-loss is survivable, not just corruption/bad-migration.
 
 ## 8. What this does NOT include (confirm before go-live)
-Not ported to the new stack (Streamlit-only): WhatsApp, email/mailer, local-LLM
-(Ollama) Q&A + OCR, computer-vision. Also open: **reads are not site-scoped** (any
-authenticated user can read any site's records — see `NEW_STACK_HANDOFF.md` §4c). If
-any of these matter for day one, address them before cutover.
+Not ported to the new stack (Streamlit-only): WhatsApp, email/mailer. The local-LLM
+(Ollama) Intelligence layer (Q&A, OCR, NL→SQL, CV) **is** in the new stack (the
+`ollama` service). Reads **are** site-scoped as of 2026-07-05 (below level 3, reads
+pin to the user's own `Site_ID`; policy in `backend/api/auth.py: site_scope()` /
+`resolve_site_param()`). Remaining pre-cutover item: the **WhatsApp/email outbox
+(Phase 7)**, on hold for the Meta permanent token. Address it before day one if
+outbound messaging matters at launch.
+
+## 9. Automated deploy + rollback (manual trigger)
+For repeatable cutover/redeploy, `.github/workflows/deploy-v2.yml` drives the whole
+thing — **manual trigger only** (`workflow_dispatch`, type `deploy` to confirm), on
+its own concurrency group so it can never collide with the v1 pipeline (`deploy.yml`,
+untouched). Flow:
+
+1. **Gate** — the v2 test matrix on GitHub runners: `dual_ci` populate → `parity_check`
+   → `service_tests` → frontend build. Black runs **advisory only** (`continue-on-error`)
+   — it never blocks a deploy (no forced repo-wide reformat).
+2. **Smoke-build** — builds the `api` + `web` production images (catches Dockerfile
+   breakage before anything ships).
+3. **Deploy** — SSH to the server (reusing `HETZNER_*` secrets + `SLACK_WEBHOOK_URL`)
+   and run `deploy/deploy-v2.sh`, which:
+   - pre-flight (`.env` present, docker present, ≥2 GB free) → `git reset --hard origin/main`;
+   - builds **SHA-tagged** images (`gi-hub-newstack-{api,web}:<sha>`) for rollback;
+   - `db` up → `alembic upgrade head`;
+   - **PORT-HANDOVER** — stops the v1 root `nginx` (frees `:80`/`:443`), then `up -d` the v2 stack;
+   - runs `deploy/health-check.sh` (api `/health` <2s · web `/` <400 · alembic at head);
+   - on success: records the SHA, prunes layers, Slack ✅. On failure: runs
+     `deploy/rollback.sh` — **reverts the port-handover** (stops v2 `web`, restarts v1
+     `nginx` so users land back on the known-good Streamlit app), retags the previous
+     SHA images, Slack 🔁.
+
+**The v1 and v2 stacks both bind `:80`/`:443`** — only one serves at a time; the
+handover/rollback is how that's arbitrated. **DB schema is never auto-downgraded** —
+rollback reverts containers/images only; a schema rollback stays a deliberate manual op.
