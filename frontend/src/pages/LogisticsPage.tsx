@@ -7,8 +7,9 @@ import type { ColumnsType } from 'antd/es/table'
 import type { Dayjs } from 'dayjs'
 import { InboxOutlined } from '@ant-design/icons'
 import {
-  useAssignPo, useCreatePo, useDecideReschedule, useList, useLogisticsPos, useLogisticsPrs,
-  usePoItems, useReschedules, useSites,
+  useAssignPo, useCreatePo, useDecideReschedule, useForceClose, useForceClosures,
+  useList, useLogisticsPos, useLogisticsPrs, usePoItems, useReschedules,
+  useSites, useUndoForceClose,
 } from '../api/hooks'
 import { api } from '../api/client'
 import type { Row } from '../api/client'
@@ -54,10 +55,14 @@ function IncomingPRs() {
     {
       title: 'Action',
       key: '__act',
+      width: 240,
       render: (_: unknown, r: Row) => (
-        <Button size="small" type="primary" onClick={() => { setPr(r); form.resetFields() }}>
-          Create PO
-        </Button>
+        <Space>
+          <Button size="small" type="primary" onClick={() => { setPr(r); form.resetFields() }}>
+            Create PO
+          </Button>
+          <ForceCloseButton targetType="pr" targetRef={String(r.PR_Number)} />
+        </Space>
       ),
     },
   ]
@@ -241,6 +246,41 @@ function ImportPoPdf() {
   )
 }
 
+// ---- Force-close (H8): reusable reason modal for PR / PO / line ------------
+function ForceCloseButton({ targetType, targetRef, disabled }: {
+  targetType: 'pr' | 'po' | 'line'; targetRef: string; disabled?: boolean
+}) {
+  const { message } = App.useApp()
+  const fc = useForceClose()
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState('')
+  const submit = async () => {
+    if (!reason.trim()) return
+    try {
+      await fc.mutateAsync({ target_type: targetType, target_ref: targetRef, reason: reason.trim() })
+      message.success(`Force-closed ${targetType} ${targetRef} — undo available for 24h`)
+      setOpen(false); setReason('')
+    } catch (e) { message.error(errMsg(e)) }
+  }
+  return (
+    <>
+      <Button size="small" danger disabled={disabled} onClick={() => { setOpen(true); setReason('') }}>
+        Force-close
+      </Button>
+      <Modal open={open} title={`Force-close ${targetType} ${targetRef}`} onOk={submit}
+        onCancel={() => setOpen(false)} okText="Force-close"
+        okButtonProps={{ danger: true, disabled: !reason.trim() }}
+        confirmLoading={fc.isPending} destroyOnHidden>
+        <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+          A reason is required and recorded on the audit trail. You can undo this within 24 hours.
+        </Typography.Paragraph>
+        <Input.TextArea rows={3} placeholder="Reason for force-closing"
+          value={reason} onChange={(e) => setReason(e.target.value)} />
+      </Modal>
+    </>
+  )
+}
+
 // ---- Purchase Orders (+ items, assign) -------------------------------------
 function PoItems({ po }: { po: string }) {
   const { data: items, isFetching } = usePoItems(po)
@@ -252,10 +292,54 @@ function PoItems({ po }: { po: string }) {
     { title: 'UOM', dataIndex: 'UOM', key: 'UOM' },
     { title: 'Family', dataIndex: 'rl_bl_family', key: 'rl_bl_family', render: (v) => v ?? '—' },
     { title: 'Status', dataIndex: 'line_status', key: 'line_status' },
+    {
+      title: '', key: '__fc', width: 120, align: 'right',
+      render: (_: unknown, r: Row) => (
+        <ForceCloseButton targetType="line" targetRef={String(r.id)}
+          disabled={['closed', 'force_closed'].includes(String(r.line_status))} />
+      ),
+    },
   ]
   return (
     <Table size="small" loading={isFetching} columns={columns} dataSource={items ?? []}
       rowKey={(r) => String(r.id)} pagination={false} />
+  )
+}
+
+// ---- Force-closures tab (H8): log + 24h undo -------------------------------
+function ForceClosures() {
+  const { message } = App.useApp()
+  const { data: rows, isFetching } = useForceClosures()
+  const undo = useUndoForceClose()
+  const doUndo = async (id: number) => {
+    try { await undo.mutateAsync(id); message.success('Reverted') }
+    catch (e) { message.error(errMsg(e)) }
+  }
+  const columns: ColumnsType<Row> = [
+    { title: 'Type', dataIndex: 'target_type', width: 70 },
+    { title: 'Ref', dataIndex: 'target_ref' },
+    { title: 'Reason', dataIndex: 'reason', ellipsis: true },
+    { title: 'By', dataIndex: 'closed_by', width: 110 },
+    { title: 'When', dataIndex: 'closed_at', width: 150, render: (v) => (v ? String(v).slice(0, 16) : '—') },
+    { title: 'State', key: 'state', width: 90,
+      render: (_: unknown, r: Row) => (r.reverted_at ? <Tag>reverted</Tag> : <Tag color="red">closed</Tag>) },
+    {
+      title: 'Action', key: '__act', width: 140,
+      render: (_: unknown, r: Row) => {
+        if (r.reverted_at) return <Typography.Text type="secondary">{r.reverted_by ? String(r.reverted_by) : '—'}</Typography.Text>
+        const ageOk = typeof r.age_hours === 'number' && (r.age_hours as number) <= 24
+        return (
+          <Popconfirm title={`Undo force-close of ${r.target_type} ${r.target_ref}?`}
+            onConfirm={() => doUndo(Number(r.id))} disabled={!ageOk}>
+            <Button size="small" disabled={!ageOk}>{ageOk ? 'Undo' : 'Undo expired'}</Button>
+          </Popconfirm>
+        )
+      },
+    },
+  ]
+  return (
+    <Table size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
+      rowKey={(r) => String(r.id)} pagination={{ pageSize: 20, showTotal: (t) => `${t} closures` }} />
   )
 }
 
@@ -296,14 +380,19 @@ function PurchaseOrders() {
     {
       title: 'Action',
       key: '__act',
+      width: 220,
       render: (_: unknown, r: Row) => (
-        <Button
-          size="small"
-          disabled={['closed', 'force_closed', 'cancelled'].includes(String(r.status))}
-          onClick={() => { setPo(r); form.resetFields() }}
-        >
-          Assign
-        </Button>
+        <Space>
+          <Button
+            size="small"
+            disabled={['closed', 'force_closed', 'cancelled'].includes(String(r.status))}
+            onClick={() => { setPo(r); form.resetFields() }}
+          >
+            Assign
+          </Button>
+          <ForceCloseButton targetType="po" targetRef={String(r.PO_Number)}
+            disabled={['closed', 'force_closed', 'cancelled'].includes(String(r.status))} />
+        </Space>
       ),
     },
   ]
@@ -417,6 +506,7 @@ export default function LogisticsPage() {
           { key: 'import', label: '📄 Import PO PDF', children: <ImportPoPdf /> },
           { key: 'pos', label: 'Purchase Orders', children: <PurchaseOrders /> },
           { key: 'reschedules', label: 'Reschedules', children: <Reschedules /> },
+          { key: 'force', label: 'Force-Closures', children: <ForceClosures /> },
         ]}
       />
     </div>

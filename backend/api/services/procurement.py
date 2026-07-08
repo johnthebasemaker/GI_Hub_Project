@@ -347,6 +347,131 @@ async def decide_reschedule(session: AsyncSession, *, username: str, req_id: int
             "new_date": row["requested_date"] if action == "approve" else None}
 
 
+# --- force-close (H8): PR / PO / line, required reason, 24h undo -------------
+import json as _json  # noqa: E402
+
+FORCE_UNDO_WINDOW_H = 24
+
+
+async def force_close(session: AsyncSession, *, username: str, target_type: str,
+                      target_ref: str, reason: str, notes: str = "") -> dict:
+    if target_type not in ("pr", "po", "line"):
+        return {"error": "target_type must be pr, po or line"}
+    if not (reason or "").strip():
+        return {"error": "a reason is required"}
+    prior: dict = {}
+    site = pr = po = None
+
+    if target_type == "po":
+        row = (await session.execute(select(
+            purchase_orders_t.c["status"], purchase_orders_t.c["Site_ID"]
+        ).where(purchase_orders_t.c["PO_Number"] == target_ref))).first()
+        if row is None:
+            return {"error": f"PO {target_ref} not found"}
+        if row[0] in ("force_closed", "closed", "cancelled"):
+            return {"error": f"PO {target_ref} is already {row[0]}"}
+        prior = {"status": row[0]}
+        po, site = target_ref, row[1]
+        await session.execute(update(purchase_orders_t).where(
+            purchase_orders_t.c["PO_Number"] == target_ref).values(
+            status="force_closed", close_reason=reason, closed_by=username, closed_at=func.now()))
+
+    elif target_type == "pr":
+        row = (await session.execute(select(
+            pr_master_t.c["status"], pr_master_t.c["logistics_status"], pr_master_t.c["Site_ID"]
+        ).where(pr_master_t.c["PR_Number"] == target_ref).limit(1))).first()
+        if row is None:
+            return {"error": f"PR {target_ref} not found"}
+        if (row[1] or "") == "force_closed":
+            return {"error": f"PR {target_ref} is already force-closed"}
+        prior = {"status": row[0], "logistics_status": row[1]}
+        pr, site = target_ref, row[2]
+        await session.execute(update(pr_master_t).where(
+            pr_master_t.c["PR_Number"] == target_ref).values(
+            status="force_closed", logistics_status="force_closed"))
+
+    else:  # line
+        try:
+            line_id = int(target_ref)
+        except (TypeError, ValueError):
+            return {"error": "line target_ref must be a po_items id"}
+        row = (await session.execute(select(
+            po_items_t.c["line_status"], po_items_t.c["PO_Number"]
+        ).where(po_items_t.c["id"] == line_id))).first()
+        if row is None:
+            return {"error": f"PO line {line_id} not found"}
+        if row[0] in ("closed", "force_closed"):
+            return {"error": f"line {line_id} is already {row[0]}"}
+        prior = {"line_status": row[0]}
+        po = row[1]
+        await session.execute(update(po_items_t).where(po_items_t.c["id"] == line_id).values(
+            line_status="force_closed", close_reason=reason))
+
+    cid = (await session.execute(insert(po_force_closures_t).values(
+        target_type=target_type, target_ref=str(target_ref), Site_ID=site,
+        PR_Number=pr, PO_Number=po, reason=reason, closed_by=username,
+        notes=(notes or None), prior_state=_json.dumps(prior)
+    ).returning(po_force_closures_t.c["id"]))).scalar_one()
+    await write_audit(session, username, "FORCE_CLOSE", "po_force_closures",
+                      f"id={cid} {target_type}={target_ref}: {reason}")
+    await notify(session, event_key="force_close", recipient_role="logistics",
+                 severity="warning", title=f"Force-closed {target_type} {target_ref}",
+                 body=f"{username}: {reason}. Undo available for {FORCE_UNDO_WINDOW_H}h.",
+                 link_page="/logistics", related_table="po_force_closures", related_ref=str(cid))
+    return {"closed": True, "id": cid, "target_type": target_type, "target_ref": str(target_ref)}
+
+
+async def undo_force_close(session: AsyncSession, *, username: str, closure_id: int) -> dict:
+    row = (await session.execute(select(po_force_closures_t).where(
+        po_force_closures_t.c["id"] == closure_id))).mappings().first()
+    if row is None:
+        return {"error": f"force-closure {closure_id} not found"}
+    if row["reverted_at"] is not None:
+        return {"error": f"closure {closure_id} was already undone"}
+    # 24h window computed in-DB to sidestep naive/aware datetime issues.
+    age_h = (await session.execute(text(
+        "SELECT EXTRACT(EPOCH FROM (now() - closed_at))/3600.0 "
+        "FROM po_force_closures WHERE id = :id"), {"id": closure_id})).scalar_one()
+    if age_h is not None and age_h > FORCE_UNDO_WINDOW_H:
+        return {"error": f"the {FORCE_UNDO_WINDOW_H}h undo window has elapsed ({age_h:.1f}h ago)"}
+    prior = {}
+    try:
+        prior = _json.loads(row["prior_state"] or "{}")
+    except (ValueError, TypeError):
+        prior = {}
+
+    if row["target_type"] == "po":
+        await session.execute(update(purchase_orders_t).where(
+            purchase_orders_t.c["PO_Number"] == row["PO_Number"]).values(
+            status=prior.get("status", "open"), close_reason=None,
+            closed_by=None, closed_at=None))
+    elif row["target_type"] == "pr":
+        await session.execute(update(pr_master_t).where(
+            pr_master_t.c["PR_Number"] == row["PR_Number"]).values(
+            status=prior.get("status", "open"),
+            logistics_status=prior.get("logistics_status", "submitted")))
+    else:  # line
+        await session.execute(update(po_items_t).where(
+            po_items_t.c["id"] == int(row["target_ref"])).values(
+            line_status=prior.get("line_status", "open"), close_reason=None))
+
+    await session.execute(update(po_force_closures_t).where(
+        po_force_closures_t.c["id"] == closure_id).values(
+        reverted_at=func.now(), reverted_by=username))
+    await write_audit(session, username, "FORCE_CLOSE_UNDO", "po_force_closures",
+                      f"id={closure_id} {row['target_type']}={row['target_ref']}")
+    return {"reverted": True, "id": closure_id}
+
+
+async def list_force_closures(session: AsyncSession):
+    sql = text('''
+        SELECT id, target_type, target_ref, "PR_Number", "PO_Number", reason,
+               closed_by, closed_at, reverted_at, reverted_by, notes,
+               EXTRACT(EPOCH FROM (now() - closed_at))/3600.0 AS age_hours
+        FROM po_force_closures ORDER BY id DESC LIMIT 500''')
+    return _rows(await session.execute(sql))
+
+
 async def assign_po(session: AsyncSession, *, username: str, po_number: str, warehouse_id: str,
                     expected_delivery: str | None = None, notes: str = "") -> dict:
     active = (await session.execute(select(func.count()).select_from(warehouses_t).where(

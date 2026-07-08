@@ -244,6 +244,37 @@ export function useRaiseReschedule() {
   })
 }
 
+// Phase 4 H8 — force-close (PR/PO/line) with reason + 24h undo.
+export function useForceClosures() {
+  return useQuery({
+    queryKey: ['/logistics/force-closures'],
+    queryFn: async () => (await api.get<{ items: Row[] }>('/logistics/force-closures')).data.items,
+  })
+}
+
+function invalidateProcurement(qc: ReturnType<typeof useQueryClient>) {
+  for (const k of ['/logistics/pos', '/logistics/prs', '/hod/prs', '/logistics/force-closures']) {
+    qc.invalidateQueries({ queryKey: [k] })
+  }
+}
+
+export function useForceClose() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (b: { target_type: 'pr' | 'po' | 'line'; target_ref: string; reason: string; notes?: string }) =>
+      api.post('/logistics/force-close', b).then((r) => r.data),
+    onSuccess: () => invalidateProcurement(qc),
+  })
+}
+
+export function useUndoForceClose() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api.post(`/logistics/force-close/${id}/undo`).then((r) => r.data),
+    onSuccess: () => invalidateProcurement(qc),
+  })
+}
+
 export function usePoItems(po: string | null) {
   return useQuery({
     queryKey: ['/logistics/pos', po, 'items'],

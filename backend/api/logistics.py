@@ -126,3 +126,51 @@ async def decide_reschedule(req_id: int, body: RescheduleDecideIn = Body(...),
         raise
     except (IntegrityError, DataError) as e:
         raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
+
+
+# --- force-close (H8): PR / PO / line with reason + 24h undo -----------------
+class ForceCloseIn(BaseModel):
+    target_type: str            # pr | po | line
+    target_ref: str             # PR_Number | PO_Number | po_items.id
+    reason: str
+    notes: Optional[str] = None
+
+
+@router.get("/force-closures", summary="Force-closure log (with undo window)")
+async def force_closures(session: AsyncSession = Depends(get_session)):
+    return {"items": await procurement.list_force_closures(session)}
+
+
+@router.post("/force-close", status_code=201, summary="Force-close a PR/PO/line (reason required)")
+async def force_close(body: ForceCloseIn = Body(...),
+                      user: dict = Depends(require_level(3)),
+                      session: AsyncSession = Depends(get_session)):
+    try:
+        async with session.begin():
+            res = await procurement.force_close(
+                session, username=user["username"], target_type=body.target_type,
+                target_ref=body.target_ref, reason=body.reason, notes=body.notes or "")
+        if res.get("error"):
+            raise HTTPException(409, res["error"])
+        return res
+    except HTTPException:
+        raise
+    except (IntegrityError, DataError) as e:
+        raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
+
+
+@router.post("/force-close/{closure_id}/undo", summary="Undo a force-closure (within 24h)")
+async def undo_force_close(closure_id: int,
+                           user: dict = Depends(require_level(3)),
+                           session: AsyncSession = Depends(get_session)):
+    try:
+        async with session.begin():
+            res = await procurement.undo_force_close(
+                session, username=user["username"], closure_id=closure_id)
+        if res.get("error"):
+            raise HTTPException(409, res["error"])
+        return res
+    except HTTPException:
+        raise
+    except (IntegrityError, DataError) as e:
+        raise HTTPException(400, f"{type(e).__name__}: {e.orig}")

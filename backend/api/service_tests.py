@@ -2640,6 +2640,80 @@ async def test_reschedule():
             await s.commit()
 
 
+async def test_force_close():
+    """Phase 4 H8 — force-close a PO (reason required) + 24h undo restores the
+    prior state. Role-gated; idempotent. Synthetic PO + closure cleaned up."""
+    from sqlalchemy import delete, insert, select as _sel
+
+    po = ledger._MD.tables["purchase_orders"]
+    fc = ledger._MD.tables["po_force_closures"]
+    PO = "PO-SVC-FC"
+    async with SessionLocal() as s:
+        await s.execute(delete(fc).where(fc.c["target_ref"] == PO))
+        await s.execute(delete(po).where(po.c["PO_Number"] == PO))
+        await s.execute(insert(po).values(PO_Number=PO, Site_ID="CNCEC", status="open", created_by="svc"))
+        await s.commit()
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.82"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            worker_t = await token("worker", "floor2026")
+            admin_t = await token("admin", "admin2026")
+
+            r = await ac.post("/logistics/force-close", headers=H(worker_t),
+                              json={"target_type": "po", "target_ref": PO, "reason": "x"})
+            check("force-close: worker (lvl0) → 403", r.status_code == 403, f"got {r.status_code}")
+
+            r = await ac.post("/logistics/force-close", headers=H(admin_t),
+                              json={"target_type": "po", "target_ref": PO, "reason": ""})
+            check("force-close: empty reason → 409", r.status_code == 409, f"got {r.status_code}")
+
+            r = await ac.post("/logistics/force-close", headers=H(admin_t),
+                              json={"target_type": "po", "target_ref": PO, "reason": "duplicate order"})
+            j = r.json() if r.status_code == 201 else {}
+            cid = j.get("id")
+            check("force-close: PO → 201 closed", r.status_code == 201 and cid, f"got {r.status_code} {str(j)[:120]}")
+
+            async with SessionLocal() as s:
+                st = (await s.execute(_sel(po.c["status"]).where(po.c["PO_Number"] == PO))).scalar_one()
+            check("force-close: PO status = force_closed", st == "force_closed", f"got {st}")
+
+            r = await ac.post("/logistics/force-close", headers=H(admin_t),
+                              json={"target_type": "po", "target_ref": PO, "reason": "again"})
+            check("force-close: double-close → 409", r.status_code == 409, f"got {r.status_code}")
+
+            r = await ac.get("/logistics/force-closures", headers=H(admin_t))
+            items = r.json().get("items", []) if r.status_code == 200 else []
+            mine = next((it for it in items if it.get("id") == cid), None)
+            check("force-close: log lists it with numeric age_hours + not reverted",
+                  mine is not None and isinstance(mine.get("age_hours"), (int, float))
+                  and mine.get("reverted_at") is None, str(mine)[:140])
+
+            r = await ac.post(f"/logistics/force-close/{cid}/undo", headers=H(admin_t))
+            check("force-close: undo → 200 reverted", r.status_code == 200 and r.json().get("reverted"),
+                  f"got {r.status_code}")
+
+            async with SessionLocal() as s:
+                st = (await s.execute(_sel(po.c["status"]).where(po.c["PO_Number"] == PO))).scalar_one()
+            check("force-close: undo restored PO status = open", st == "open", f"got {st}")
+
+            r = await ac.post(f"/logistics/force-close/{cid}/undo", headers=H(admin_t))
+            check("force-close: re-undo → 409 (already undone)", r.status_code == 409, f"got {r.status_code}")
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(fc).where(fc.c["target_ref"] == PO))
+            await s.execute(delete(po).where(po.c["PO_Number"] == PO))
+            await s.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -2669,6 +2743,8 @@ async def main() -> int:
     await test_bulk_entry()
     print("\n K. reschedule workflow (Phase 4 H7)")
     await test_reschedule()
+    print("\n L. force-close + 24h undo (Phase 4 H8)")
+    await test_force_close()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

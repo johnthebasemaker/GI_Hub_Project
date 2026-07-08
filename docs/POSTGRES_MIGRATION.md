@@ -232,6 +232,23 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-08 (Phase 4 · chunk 2) · actor=interactive · branch=`main` · 🔓 H8 force-close (PR/PO/line) + 24h undo
+- **Files:** `backend/api/services/procurement.py` (force_close/undo_force_close/
+  list_force_closures) · `backend/api/logistics.py` (3 endpoints) ·
+  `backend/api/service_tests.py` (suite L, 9 checks) · `frontend/src/api/hooks.ts` ·
+  `frontend/src/pages/LogisticsPage.tsx` · this doc.
+- **Backend:** `POST /logistics/force-close {target_type: pr|po|line, target_ref,
+  reason, notes}` — reason required; captures `prior_state` JSON on
+  `po_force_closures` and sets the target to force_closed. `POST
+  /logistics/force-close/{id}/undo` restores prior_state if within 24h (window
+  computed in-DB via `EXTRACT(EPOCH …)` to dodge tz issues) and not already
+  reverted. `GET /logistics/force-closures` returns each row + `age_hours`.
+  Tables already existed — no migration. In-app notify only.
+- **UI:** reusable `ForceCloseButton` (reason modal) on PO rows, PO line items,
+  and PR queue rows; new "Force-Closures" tab with an Undo button that disables
+  once the 24h window lapses.
+- **Gates:** service_tests **411/0** (+9) · frontend build ✅.
+
 ### 2026-07-08 (Phase 4 · chunk 1) · actor=interactive · branch=`main` · 🔓 H7 reschedule workflow (WH/HOD raise → Logistics decide → push date)
 - **Files:** `backend/api/services/procurement.py` (raise/list/decide_reschedule) ·
   `backend/api/logistics.py` (GET/POST decide) · `backend/api/warehouse.py` +
