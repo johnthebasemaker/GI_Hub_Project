@@ -3,11 +3,14 @@ import {
   App, Button, Card, Col, Form, Input, InputNumber, Modal, Popconfirm, Row, Select,
   Space, Switch, Table, Tabs, Tag, Typography,
 } from 'antd'
-import { CloudDownloadOutlined } from '@ant-design/icons'
+import { CloudDownloadOutlined, DatabaseOutlined, DollarOutlined, SwapOutlined, TeamOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { Row as ApiRow } from '../api/client'
+import { useSystemOverview } from '../api/hooks'
+import KpiCard from '../components/KpiCard'
+import { brand, status } from '../theme/tokens'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -171,6 +174,47 @@ function KpiBlock({ title, rows }: { title: string; rows?: ApiRow[] }) {
   )
 }
 
+function OverviewTab() {
+  const { data } = useSystemOverview()
+  const txns = data?.transactions
+  return (
+    <>
+      <Row gutter={[16, 16]} className="gi-cascade">
+        <Col xs={12} md={6}><KpiCard title="Database size" value={data?.db_size ?? '—'} icon={<DatabaseOutlined />} tint={status.info} /></Col>
+        <Col xs={12} md={6}><KpiCard title="Total transactions" value={txns ? txns.total.toLocaleString() : '—'} icon={<SwapOutlined />} /></Col>
+        <Col xs={12} md={6}><KpiCard title="Stock value (SAR)" value={data ? Math.round(data.valuation_total).toLocaleString() : '—'} icon={<DollarOutlined />} tint={brand.gold} /></Col>
+        <Col xs={12} md={6}><KpiCard title="Users" value={data?.users ?? 0} icon={<TeamOutlined />} /></Col>
+      </Row>
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col xs={24} md={12}>
+          <Card size="small" title="Transactions by type">
+            <Table<ApiRow> size="small" pagination={false} rowKey="k"
+              dataSource={txns ? [
+                { k: 'Receipts', n: txns.receipts }, { k: 'Consumption', n: txns.consumption },
+                { k: 'Returns', n: txns.returns }, { k: 'Adjustments', n: txns.adjustments },
+                { k: 'Audit log', n: txns.audit_log },
+              ] : []}
+              columns={[
+                { title: 'Type', dataIndex: 'k' },
+                { title: 'Count', dataIndex: 'n', align: 'right', render: (v) => Number(v).toLocaleString() },
+              ]} />
+          </Card>
+        </Col>
+        <Col xs={24} md={12}>
+          <Card size="small" title="Valuation by site (SAR)">
+            <Table<ApiRow> size="small" pagination={false} rowKey={(r) => String(r.Site_ID)}
+              dataSource={data?.valuation_by_site ?? []}
+              columns={[
+                { title: 'Site', dataIndex: 'Site_ID' },
+                { title: 'Value', dataIndex: 'value', align: 'right', render: (v) => Number(v).toLocaleString() },
+              ]} />
+          </Card>
+        </Col>
+      </Row>
+    </>
+  )
+}
+
 function OversightTab() {
   const { data } = useConsole('/admin/oversight', (d) => d as unknown as Record<string, ApiRow[]>)
   return (
@@ -252,6 +296,7 @@ export default function AdminConsolePage() {
       <Typography.Title level={3} style={{ marginTop: 0 }}>Admin Console</Typography.Title>
       <Tabs
         items={[
+          { key: 'overview', label: 'Overview', children: <OverviewTab /> },
           { key: 'sites', label: 'Sites', children: <SitesTab /> },
           { key: 'settings', label: 'Settings', children: <SettingsTab /> },
           { key: 'sessions', label: 'Sessions', children: <SessionsTab /> },

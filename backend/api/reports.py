@@ -115,6 +115,32 @@ async def rep_purchase_orders(session, *, status=None, site_id=None, **_):
     return "Purchase Orders", cols, rows
 
 
+async def rep_pr_status(session, *, status=None, site_id=None, **_):
+    # One row per PR (lines rolled up) with its workflow / logistics status —
+    # the legacy "PR Status" report (distinct from the PO-status report above).
+    conds, params = [], {}
+    if site_id:
+        conds.append('"Site_ID" = :site')
+        params["site"] = site_id
+    if status:
+        conds.append("COALESCE(logistics_status, 'site_draft') = :status")
+        params["status"] = status
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    sql = f'''
+        SELECT "PR_Number", MAX("Site_ID") AS "Site_ID", COUNT(*) AS "Lines",
+               ROUND(CAST(SUM("Requested_Qty") AS numeric), 3) AS "Total_Qty",
+               MAX(COALESCE(logistics_status, 'site_draft')) AS "Logistics_Status",
+               MAX(status) AS "Status",
+               MAX(submitted_to_logistics_at) AS "Submitted_At",
+               MAX(submitted_to_logistics_by) AS "Submitted_By",
+               MIN(created_at) AS "Created_At"
+        FROM pr_master {where}
+        GROUP BY "PR_Number"
+        ORDER BY "PR_Number" DESC LIMIT 5000'''
+    cols, rows = await _run(session, sql, params)
+    return "PR Status", cols, rows
+
+
 async def rep_inventory(session, *, site_id=None, **_):
     where, params = "", {}
     if site_id:
@@ -356,6 +382,8 @@ REPORTS = {
                         "desc": "Goods receipts over a period."},
     "purchase-orders": {"fn": rep_purchase_orders, "label": "Purchase Orders", "filters": ["site_id", "status"],
                         "desc": "Purchase orders with status."},
+    "pr-status":       {"fn": rep_pr_status,       "label": "PR Status",       "filters": ["site_id", "status"],
+                        "desc": "Purchase requests grouped by PR number with workflow / logistics status."},
     "inventory":       {"fn": rep_inventory,       "label": "Inventory Master","filters": ["site_id"],
                         "desc": "The full inventory master list."},
     "daily-consumption": {"fn": rep_daily_consumption, "label": "Daily Consumption", "filters": ["site_id", "date_from", "date_to"],

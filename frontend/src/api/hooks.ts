@@ -213,6 +213,39 @@ export function useLogisticsPos(status?: string) {
   })
 }
 
+// Phase 5 — Dashboard metrics (valuation KPI + chart series).
+export interface DashboardMetrics {
+  valuation_total: number
+  site_id: string | null
+  stock_vs_min: { sap: string; name: string; current: number; minimum: number }[]
+  top_consumed: { sap: string; name: string; consumed: number }[]
+  burn_forecast: { sap: string; daily_avg: number; current: number; days_remaining: number | null }[]
+}
+export function useDashboardMetrics() {
+  return useQuery<DashboardMetrics>({
+    queryKey: ['/dashboard/metrics'],
+    queryFn: async () => (await api.get<DashboardMetrics>('/dashboard/metrics')).data,
+  })
+}
+
+// Phase 5 — Admin system-overview KPIs (admin only).
+export interface SystemOverview {
+  db_size: string
+  db_bytes: number | null
+  transactions: { receipts: number; consumption: number; returns: number; adjustments: number; audit_log: number; total: number }
+  users: number
+  sites: number
+  valuation_total: number
+  valuation_by_site: { Site_ID: string; value: number }[]
+}
+export function useSystemOverview(enabled = true) {
+  return useQuery<SystemOverview>({
+    queryKey: ['/admin/system-overview'],
+    enabled,
+    queryFn: async () => (await api.get<SystemOverview>('/admin/system-overview')).data,
+  })
+}
+
 // Phase 4 — manual PO creation (free-text lines/prices, unlisted PR).
 export function useCreateManualPo() {
   const qc = useQueryClient()

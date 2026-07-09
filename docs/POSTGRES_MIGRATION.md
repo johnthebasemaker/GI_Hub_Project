@@ -232,6 +232,26 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-08 (Phase 5) · actor=interactive · branch=`main` · 🔓 Reporting & Dashboard parity
+- **Files:** `backend/api/reports.py` (rep_pr_status + registry) ·
+  `backend/api/dashboard.py` (new, GET /dashboard/metrics) · `backend/api/console.py`
+  (GET /admin/system-overview) · `backend/api/main.py` (register dashboard router) ·
+  `backend/api/service_tests.py` (suite O, 6 checks) · `frontend/src/api/hooks.ts`
+  (useDashboardMetrics, useSystemOverview) · `frontend/src/pages/{Dashboard,AdminConsolePage}.tsx` · this doc.
+- **PR-Status report:** `rep_pr_status` — one row per PR (lines rolled up) with
+  workflow/logistics status; registered as `pr-status` (distinct from the
+  PO-status report). Appears automatically in ReportsPage (dynamic `useReports`).
+- **Dashboard:** `GET /dashboard/metrics` (≥supervisor, site-scoped) → total
+  valuation + 3 series (stock-vs-min, burn forecast days-of-cover, top-consumed
+  30d). Dashboard.tsx gains a Stock-value KPI + 3 Recharts bar charts.
+- **Admin system-overview:** `GET /admin/system-overview` (admin) → DB size,
+  transaction counts (receipts/consumption/returns/adjustments/audit + total),
+  users/sites, valuation total + by-site. New "Overview" tab in AdminConsolePage.
+- **Gates:** service_tests **427/0** (+6) · parity 5/5 · frontend build ✅
+  (Recharts deduped into a shared BarChart chunk). Intent-vs-Actual report was
+  found ALREADY present (`rep_intent_vs_actual`) — remains a separate backlog item
+  for its supervisor UI. SME/Man-Hours untouched.
+
 ### 2026-07-08 (Phase I-B) · actor=interactive · branch=`main` · ☁️ Cloudflare Tunnel hijack (existing gi-hub) + rate-limiter CF-Connecting-IP fix
 - **Files:** `backend/api/ratelimit.py` (CF-Connecting-IP priority) ·
   `backend/api/service_tests.py` (suite N, 3 checks) · `frontend/vite.config.ts`

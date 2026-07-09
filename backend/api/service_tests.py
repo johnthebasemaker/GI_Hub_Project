@@ -2810,6 +2810,52 @@ async def test_ratelimit_ip():
           _client_ip(_Stub({}, host="3.3.3.3")) == "3.3.3.3")
 
 
+async def test_reporting_dashboard():
+    """Phase 5 — PR-status report + dashboard metrics + admin system-overview.
+    Read-only over the mirror; just shape + role-gate assertions (no fixtures)."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.84"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        worker_t = await token("worker", "floor2026")
+        admin_t = await token("admin", "admin2026")
+
+        # PR-status report registered + downloadable.
+        r = await ac.get("/reports", headers=H(admin_t))
+        keys = [it.get("key") for it in r.json().get("reports", [])] if r.status_code == 200 else []
+        check("reports: pr-status registered", "pr-status" in keys, str(keys)[:160])
+        r = await ac.get("/reports/pr-status", params={"format": "csv"}, headers=H(admin_t))
+        check("reports: pr-status downloads (csv, non-empty)",
+              r.status_code == 200 and len(r.content) > 0, f"got {r.status_code} len={len(r.content)}")
+
+        # Dashboard metrics — supervisor+; worker (lvl0) blocked.
+        r = await ac.get("/dashboard/metrics", headers=H(worker_t))
+        check("dashboard: worker (lvl0) → 403", r.status_code == 403, f"got {r.status_code}")
+        r = await ac.get("/dashboard/metrics", headers=H(admin_t))
+        j = r.json() if r.status_code == 200 else {}
+        check("dashboard: metrics → 200 w/ valuation_total + 3 chart series",
+              r.status_code == 200 and isinstance(j.get("valuation_total"), (int, float))
+              and isinstance(j.get("stock_vs_min"), list) and isinstance(j.get("top_consumed"), list)
+              and isinstance(j.get("burn_forecast"), list), f"got {r.status_code} {str(j)[:120]}")
+
+        # Admin system-overview — admin only.
+        r = await ac.get("/admin/system-overview", headers=H(worker_t))
+        check("system-overview: worker → 403", r.status_code == 403, f"got {r.status_code}")
+        r = await ac.get("/admin/system-overview", headers=H(admin_t))
+        j = r.json() if r.status_code == 200 else {}
+        check("system-overview: → 200 w/ db_size + txn total + valuation_by_site",
+              r.status_code == 200 and j.get("db_size")
+              and isinstance(j.get("transactions", {}).get("total"), int)
+              and isinstance(j.get("valuation_by_site"), list), f"got {r.status_code} {str(j)[:120]}")
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -2845,6 +2891,8 @@ async def main() -> int:
     await test_manual_po()
     print("\n N. rate-limiter client-IP resolution (Phase I-B)")
     await test_ratelimit_ip()
+    print("\n O. reporting + dashboard parity (Phase 5)")
+    await test_reporting_dashboard()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

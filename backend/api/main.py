@@ -57,6 +57,7 @@ from .requests import router as requests_router  # noqa: E402
 from .sme import router as sme_router  # noqa: E402
 from .stock import router as stock_router  # noqa: E402
 from .warehouse import router as warehouse_router  # noqa: E402
+from .dashboard import router as dashboard_router  # noqa: E402
 
 _MD = models.Base.metadata
 
@@ -147,6 +148,9 @@ for e in ENTITIES:
 
 # Derived (computed) stock endpoints — /stock/live, /by-site, /lots, /expiring.
 app.include_router(stock_router, dependencies=_auth)
+
+# Dashboard metrics — valuation KPI + chart series (self-guarded, ≥supervisor).
+app.include_router(dashboard_router)
 
 # Data-entry (staging) endpoints — /entry/receipts, … (self-guarded).
 app.include_router(entry_router)

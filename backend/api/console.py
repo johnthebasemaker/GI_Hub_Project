@@ -38,6 +38,7 @@ from .config import async_database_url
 from .db import get_session
 from .services.ledger import _MD, write_audit
 from .services.notifications import notify
+from .stock import SQL_SITE_STOCK
 
 settings_t = _MD.tables["app_settings"]
 sysset_t = _MD.tables["system_settings"]
@@ -218,6 +219,45 @@ async def revoke_user_sessions(username: str, user: dict = Depends(require_level
                       f"username={username} n={n}")
     await session.commit()
     return {"revoked": n, "username": username}
+
+
+# --- System-overview KPIs (admin) -----------------------------------------------
+@admin.get("/system-overview", summary="System overview: DB size, transaction counts, valuation by site")
+async def system_overview(session: AsyncSession = Depends(get_session)):
+    async def _scalar(sql: str):
+        return (await session.execute(text(sql))).scalar_one()
+
+    try:
+        db_size = await _scalar("SELECT pg_size_pretty(pg_database_size(current_database()))")
+        db_bytes = int(await _scalar("SELECT pg_database_size(current_database())"))
+    except Exception:
+        db_size, db_bytes = "n/a", None
+
+    receipts = int(await _scalar('SELECT COUNT(*) FROM receipts'))
+    consumption = int(await _scalar('SELECT COUNT(*) FROM consumption'))
+    returns = int(await _scalar('SELECT COUNT(*) FROM returns'))
+    adjustments = int(await _scalar('SELECT COUNT(*) FROM stock_adjustments'))
+    audit = int(await _scalar('SELECT COUNT(*) FROM system_audit_log'))
+    users = int(await _scalar('SELECT COUNT(*) FROM users'))
+    sites = int(await _scalar("SELECT COUNT(*) FROM system_settings WHERE category='Site'"))
+
+    by_site = [dict(m) for m in (await session.execute(text(f'''
+        SELECT COALESCE(s."Site_ID",'—') AS "Site_ID",
+               COALESCE(ROUND(CAST(SUM(s."Current_Stock"*COALESCE(i."Unit_Cost",0)) AS NUMERIC),2),0) AS "value"
+        FROM ({SQL_SITE_STOCK}) s
+        LEFT JOIN inventory i ON TRIM(i."SAP_Code") = s."SAP_Code"
+        GROUP BY COALESCE(s."Site_ID",'—') ORDER BY "value" DESC'''))).mappings().all()]
+    valuation_total = round(sum(float(r["value"] or 0) for r in by_site), 2)
+
+    return {
+        "db_size": db_size, "db_bytes": db_bytes,
+        "transactions": {"receipts": receipts, "consumption": consumption,
+                         "returns": returns, "adjustments": adjustments,
+                         "audit_log": audit,
+                         "total": receipts + consumption + returns + adjustments},
+        "users": users, "sites": sites,
+        "valuation_total": valuation_total, "valuation_by_site": by_site,
+    }
 
 
 # --- Logistics oversight KPIs (admin + logistics) --------------------------------
