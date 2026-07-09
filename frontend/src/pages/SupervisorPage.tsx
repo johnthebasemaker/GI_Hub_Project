@@ -1,8 +1,12 @@
-import { App, Button, Card, Col, Form, Input, InputNumber, Row, Select, Space, Switch, Table, Tabs, Tag, Typography } from 'antd'
+import { App, Button, Card, Col, Form, Input, InputNumber, Popconfirm, Row, Select, Space, Switch, Table, Tabs, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import type { FormInstance } from 'antd'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useAuth } from '../auth/AuthContext'
-import { useCreateSmr, useList, useSites, useSmrItems, useSmrList } from '../api/hooks'
+import {
+  useCancelSmr, useCreateSmr, useIntentVsActual, useList, useSites, useSmrItems,
+  useSmrList, useSmrStock,
+} from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 import { useState } from 'react'
 
@@ -18,6 +22,21 @@ interface FormValues {
   old_ppe_returned: boolean
   no_return_reason?: string
   items: { SAP_Code: string; Requested_Qty: number; Notes?: string }[]
+}
+
+// Live-stock feedback for one cart line (Phase 6): shows current site stock and
+// flags a shortage before the supervisor submits.
+function LineStock({ form, name }: { form: FormInstance<FormValues>; name: number }) {
+  const sap = Form.useWatch(['items', name, 'SAP_Code'], form) as string | undefined
+  const qty = Form.useWatch(['items', name, 'Requested_Qty'], form) as number | undefined
+  const { data } = useSmrStock(sap)
+  if (!sap || !data) return null
+  const short = qty != null && qty > data.current_stock
+  return (
+    <Typography.Text type={short ? 'danger' : 'secondary'} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+      stock: {data.current_stock}{short ? ' ⚠ short' : ''}
+    </Typography.Text>
+  )
 }
 
 function NewRequest() {
@@ -107,8 +126,9 @@ function NewRequest() {
                     <InputNumber min={0.0001} placeholder="Qty" style={{ width: 110 }} />
                   </Form.Item>
                   <Form.Item name={[field.name, 'Notes']}>
-                    <Input placeholder="Notes" style={{ width: 200 }} />
+                    <Input placeholder="Notes" style={{ width: 180 }} />
                   </Form.Item>
+                  <LineStock form={form} name={field.name} />
                   {fields.length > 1 && <MinusCircleOutlined onClick={() => remove(field.name)} />}
                 </Space>
               ))}
@@ -141,22 +161,59 @@ function SmrItems({ id }: { id: number }) {
   return <Table size="small" columns={columns} dataSource={items ?? []} rowKey={(r) => String(r.id)} pagination={false} />
 }
 
-const STATUS_COLOR: Record<string, string> = { pending_sk: 'blue', approved: 'green', rejected: 'red' }
+const STATUS_COLOR: Record<string, string> = { pending_sk: 'blue', approved: 'green', rejected: 'red', cancelled: 'default' }
 
 function MyRequests() {
+  const { message } = App.useApp()
   const { data: rows, isFetching } = useSmrList({ mine: true })
+  const cancel = useCancelSmr()
+  const doCancel = async (id: number) => {
+    try {
+      await cancel.mutateAsync(id)
+      message.success('Request cancelled')
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
   const columns: ColumnsType<ApiRow> = [
     { title: 'Request', dataIndex: 'request_no', key: 'request_no' },
     { title: 'Site', dataIndex: 'Site_ID', key: 'Site_ID' },
     { title: 'Worker', dataIndex: 'Worker_Name', key: 'Worker_Name' },
     { title: 'Job/Tank', dataIndex: 'Job_Tank_Place', key: 'Job_Tank_Place', ellipsis: true },
     { title: 'Status', dataIndex: 'status', key: 'status', render: (v: string) => <Tag color={STATUS_COLOR[v] ?? 'default'}>{v}</Tag> },
+    {
+      title: 'Action', key: '__act', width: 110,
+      render: (_: unknown, r: ApiRow) => (String(r.status) === 'pending_sk' ? (
+        <Popconfirm title="Cancel this pending request?" onConfirm={() => doCancel(Number(r.id))}>
+          <Button size="small" danger loading={cancel.isPending}>Cancel</Button>
+        </Popconfirm>
+      ) : null),
+    },
   ]
   return (
     <Table size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
       rowKey={(r) => String(r.id)}
       expandable={{ expandedRowRender: (r) => <SmrItems id={Number(r.id)} /> }}
       pagination={{ pageSize: 20, showTotal: (t) => `${t} requests` }} />
+  )
+}
+
+// Intent vs Actual — approved requests vs what was actually consumed (Phase 6).
+function IntentVsActual() {
+  const { data, isFetching } = useIntentVsActual(90)
+  const columns: ColumnsType<Record<string, unknown>> = (data?.columns ?? []).map((c) => ({
+    title: c.replace(/_/g, ' '), dataIndex: c, key: c,
+    render: (v: unknown) => (v == null ? '—' : String(v)),
+  }))
+  return (
+    <Card size="small">
+      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+        Approved request quantities vs actual consumption over the last 90 days, with variance.
+      </Typography.Paragraph>
+      <Table size="small" loading={isFetching} columns={columns} dataSource={data?.rows ?? []}
+        rowKey={(_, i) => String(i)} scroll={{ x: 'max-content' }}
+        pagination={{ pageSize: 20, showTotal: (t) => `${t} lines` }} />
+    </Card>
   )
 }
 
@@ -173,6 +230,7 @@ export default function SupervisorPage() {
         items={[
           { key: 'new', label: 'New Request', children: <NewRequest /> },
           { key: 'mine', label: 'My Requests', children: <MyRequests /> },
+          { key: 'iva', label: 'Intent vs Actual', children: <IntentVsActual /> },
         ]}
       />
     </div>

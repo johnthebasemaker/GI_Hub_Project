@@ -232,6 +232,20 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-09 (Phase 6 · chunk 2) · actor=interactive · branch=`main` · 🔓 Supervisor parity (Intent-vs-Actual UI · cancel-while-pending · live cart stock)
+- **Files:** `backend/api/services/supervisor.py` (cancel_smr) · `backend/api/requests.py`
+  (intent-vs-actual, stock-check, cancel endpoints) · `backend/api/service_tests.py`
+  (suite Q, 7 checks) · `frontend/src/api/hooks.ts` · `frontend/src/pages/SupervisorPage.tsx` · this doc.
+- **Intent vs Actual:** `GET /requests/intent-vs-actual` (supervisor/admin; site-pinned
+  via site_scope) reuses the existing `rep_intent_vs_actual` and returns JSON rows —
+  reports router is level≥2 so supervisors couldn't reach it there. New "Intent vs
+  Actual" tab on SupervisorPage.
+- **Cancel-while-pending:** `smr.cancel_smr` (owner-only, must be pending_sk) +
+  `POST /requests/{id}/cancel`; Cancel button on pending rows in My Requests.
+- **Live cart stock:** `GET /requests/stock/{sap}` (reuses `_stock_snapshot`, pinned to
+  the supervisor's site); `LineStock` shows current stock + a ⚠ short flag per cart line.
+- **Gates:** service_tests **441/0** (+7) · frontend build ✅.
+
 ### 2026-07-09 (Phase 6 · chunk 1) · actor=interactive · branch=`main` · 🔓 DN two-stage approval (Logistics date → HOD content → ship)
 - **Files:** `backend/api/services/warehouse.py` (submit_dn/decide_dn_logistics/
   decide_dn_hod; ship_dn now gated to hod_approved) · `backend/api/warehouse.py`

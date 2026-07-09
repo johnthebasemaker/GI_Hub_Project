@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import get_current_user, require_roles
+from .auth import get_current_user, require_roles, site_scope
 from .db import get_session
 from .services import supervisor as smr
 
@@ -84,6 +84,35 @@ async def listing(mine: bool = False, site_id: Optional[str] = None, status: Opt
     if user["role"] == "store_keeper" and status is None:
         status = "pending_sk"
     return {"items": await smr.list_smr(session, site_id=scope, status=status)}
+
+
+# --- Phase 6 supervisor parity -----------------------------------------------
+@router.get("/intent-vs-actual", summary="Approved requests vs actual consumption + variance")
+async def intent_vs_actual(days: int = 90, user: dict = Depends(_SUPERVISOR),
+                           session: AsyncSession = Depends(get_session)):
+    from .reports import rep_intent_vs_actual  # deferred (reports imports stock)
+    site = site_scope(user)  # supervisor pinned to own site; admin unrestricted
+    title, columns, rows = await rep_intent_vs_actual(session, site_id=site, days=days)
+    return {"title": title, "columns": columns,
+            "rows": [dict(zip(columns, r)) for r in rows]}
+
+
+@router.get("/stock/{sap_code}", summary="Live stock at the supervisor's site (cart feedback)")
+async def stock_check(sap_code: str, user: dict = Depends(_SUPERVISOR),
+                      session: AsyncSession = Depends(get_session)):
+    site = user["site_id"]
+    if not site:
+        raise HTTPException(422, "no site assigned to your account")
+    qty = await smr._stock_snapshot(session, site, sap_code.strip())
+    return {"sap_code": sap_code.strip(), "site_id": site, "current_stock": qty}
+
+
+@router.post("/{request_id}/cancel", summary="Supervisor cancels own pending request")
+async def cancel(request_id: int, user: dict = Depends(_SUPERVISOR),
+                 session: AsyncSession = Depends(get_session)):
+    async with session.begin():
+        res = await smr.cancel_smr(session, supervisor=user["username"], request_id=request_id)
+    return _guard(res)
 
 
 @router.get("/{request_id}/items", summary="Request line items")

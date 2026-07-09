@@ -58,6 +58,23 @@ async def _stock_snapshot(session: AsyncSession, site_id: str, sap: str) -> floa
     return float(val) if val is not None else 0.0
 
 
+async def cancel_smr(session: AsyncSession, *, supervisor: str, request_id: int) -> dict:
+    """A supervisor cancels their OWN request while it's still pending_sk."""
+    header = (await session.execute(select(
+        smr_t.c["requested_by"], smr_t.c["status"], smr_t.c["request_no"]
+    ).where(smr_t.c["id"] == request_id))).first()
+    if header is None:
+        return {"error": f"request {request_id} not found"}
+    if header[0] != supervisor:
+        return {"error": "you can only cancel your own request"}
+    if header[1] != "pending_sk":
+        return {"error": f"request is {header[1]} — only pending requests can be cancelled"}
+    await session.execute(update(smr_t).where(smr_t.c["id"] == request_id).values(status="cancelled"))
+    await write_audit(session, supervisor, "SMR_CANCEL", "supervisor_material_requests",
+                      f"id={request_id} {header[2]}")
+    return {"cancelled": True, "id": request_id}
+
+
 # --- reads -------------------------------------------------------------------
 async def list_smr(session: AsyncSession, *, site_id: str | None = None,
                    status: str | None = None, requested_by: str | None = None):

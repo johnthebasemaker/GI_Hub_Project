@@ -2922,6 +2922,70 @@ async def test_dn_approval():
             await s.commit()
 
 
+async def test_supervisor_parity():
+    """Phase 6 — supervisor parity: Intent-vs-Actual JSON, live stock-check, and
+    cancel-while-pending (own + not-own guards). Synthetic SMRs cleaned up."""
+    from sqlalchemy import delete, insert, select as _sel
+
+    smr = ledger._MD.tables["supervisor_material_requests"]
+
+    def _mk(request_no, by, status="pending_sk"):
+        return insert(smr).values(request_no=request_no, Site_ID="CNCEC", Worker_ID="W1",
+                                  Worker_Name="Test Worker", Job_Tank_Place="T1",
+                                  Old_PPE_Returned=1, requested_by=by, status=status
+                                  ).returning(smr.c["id"])
+    async with SessionLocal() as s:
+        await s.execute(delete(smr).where(smr.c["request_no"].like("SMR-SVC-%")))
+        mine = (await s.execute(_mk("SMR-SVC-MINE", "supervisor"))).scalar_one()
+        other = (await s.execute(_mk("SMR-SVC-OTHER", "someone_else"))).scalar_one()
+        await s.commit()
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.86"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            sup_t = await token("supervisor", "super2026")
+            worker_t = await token("worker", "floor2026")
+
+            r = await ac.get("/requests/intent-vs-actual", headers=H(sup_t))
+            j = r.json() if r.status_code == 200 else {}
+            check("supervisor: intent-vs-actual → 200 w/ columns + rows",
+                  r.status_code == 200 and isinstance(j.get("columns"), list)
+                  and isinstance(j.get("rows"), list), f"got {r.status_code} {str(j)[:120]}")
+            r = await ac.get("/requests/intent-vs-actual", headers=H(worker_t))
+            check("supervisor: intent-vs-actual → 403 for store_keeper", r.status_code == 403, f"got {r.status_code}")
+
+            r = await ac.get("/requests/stock/1001", headers=H(sup_t))
+            j = r.json() if r.status_code == 200 else {}
+            check("supervisor: stock-check → 200 w/ numeric current_stock",
+                  r.status_code == 200 and isinstance(j.get("current_stock"), (int, float)),
+                  f"got {r.status_code} {str(j)[:120]}")
+
+            r = await ac.post(f"/requests/{other}/cancel", headers=H(sup_t))
+            check("supervisor: cancel someone else's → 409", r.status_code == 409, f"got {r.status_code}")
+
+            r = await ac.post(f"/requests/{mine}/cancel", headers=H(sup_t))
+            check("supervisor: cancel own pending → 200", r.status_code == 200 and r.json().get("cancelled"),
+                  f"got {r.status_code}")
+            async with SessionLocal() as s:
+                st = (await s.execute(_sel(smr.c["status"]).where(smr.c["id"] == mine))).scalar_one()
+            check("supervisor: cancelled status persisted", st == "cancelled", f"got {st}")
+
+            r = await ac.post(f"/requests/{mine}/cancel", headers=H(sup_t))
+            check("supervisor: re-cancel → 409 (already cancelled)", r.status_code == 409, f"got {r.status_code}")
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(smr).where(smr.c["request_no"].like("SMR-SVC-%")))
+            await s.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -2961,6 +3025,8 @@ async def main() -> int:
     await test_reporting_dashboard()
     print("\n P. DN two-stage approval (Phase 6)")
     await test_dn_approval()
+    print("\n Q. supervisor parity (Phase 6)")
+    await test_supervisor_parity()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

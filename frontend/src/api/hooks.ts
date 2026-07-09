@@ -505,6 +505,35 @@ export function useSmrDecision() {
   })
 }
 
+// Phase 6 — supervisor parity.
+export function useCancelSmr() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api.post(`/requests/${id}/cancel`).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/requests'] }),
+  })
+}
+
+export function useSmrStock(sap?: string) {
+  return useQuery({
+    queryKey: ['/requests/stock', sap],
+    enabled: !!sap,
+    staleTime: 60_000,
+    queryFn: async () =>
+      (await api.get<{ sap_code: string; site_id: string; current_stock: number }>(
+        `/requests/stock/${encodeURIComponent(sap!)}`)).data,
+  })
+}
+
+export interface IntentVsActual { title: string; columns: string[]; rows: Record<string, unknown>[] }
+export function useIntentVsActual(days = 90) {
+  return useQuery<IntentVsActual>({
+    queryKey: ['/requests/intent-vs-actual', days],
+    queryFn: async () =>
+      (await api.get<IntentVsActual>('/requests/intent-vs-actual', { params: { days } })).data,
+  })
+}
+
 // --- SME estimator (read-only) ----------------------------------------------
 export function useSmeSummary(siteId?: string) {
   return useQuery({
