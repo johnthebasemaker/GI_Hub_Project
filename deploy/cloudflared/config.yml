@@ -1,0 +1,28 @@
+# ============================================================================
+# deploy/cloudflared/config.yml — Cloudflare Tunnel config for LOCAL multi-user
+# testing of the NEW stack, reusing the pre-existing `gi-hub` tunnel.
+#
+# This HIJACKS the tunnel that previously served the legacy build: the DNS record
+# gi.giinventory.com already CNAMEs to this tunnel ID, so no DNS change is needed
+# — swapping this config just changes what the tunnel serves.
+#
+# Local origin: everything routes to the Vite dev server (:5173), which serves
+# the React SPA AND proxies /api → the FastAPI backend on :8000 (with the /api
+# prefix stripped, exactly like nginx does in production). So a single ingress
+# rule is correct — do NOT split /api here, or FastAPI would receive the /api
+# prefix it doesn't mount.
+#
+# Prereqs before `cloudflared … run` (see README.md):
+#   1. FastAPI on :8000   — DATABASE_URL=… JWT_SECRET=… ./run_api.sh
+#   2. Vite in tunnel mode — VITE_TUNNEL=1 npm run dev --prefix frontend
+# ============================================================================
+
+tunnel: 8e2f8d9d-08f4-432e-9857-dee2ff4ebb63
+credentials-file: /Users/johnsonandrew/.cloudflared/8e2f8d9d-08f4-432e-9857-dee2ff4ebb63.json
+
+ingress:
+  # All app traffic → Vite dev server (SPA + /api proxy to :8000).
+  - hostname: gi.giinventory.com
+    service: http://localhost:5173
+  # Everything else is refused.
+  - service: http_status:404

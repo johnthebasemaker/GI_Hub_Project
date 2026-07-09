@@ -2791,6 +2791,25 @@ async def test_manual_po():
             await s.commit()
 
 
+async def test_ratelimit_ip():
+    """Phase I-B — the rate-limiter resolves the client IP in priority order:
+    CF-Connecting-IP (Cloudflare Tunnel) → X-Real-IP (nginx) → TCP peer. Without
+    the CF header, every tunnelled tester would share one bucket."""
+    from .ratelimit import _client_ip
+
+    class _Stub:
+        def __init__(self, headers, host="9.9.9.9"):
+            self.headers = headers
+            self.client = type("C", (), {"host": host})()
+
+    check("ratelimit: CF-Connecting-IP wins over X-Real-IP",
+          _client_ip(_Stub({"cf-connecting-ip": "1.1.1.1", "x-real-ip": "2.2.2.2"})) == "1.1.1.1")
+    check("ratelimit: X-Real-IP used when no CF header",
+          _client_ip(_Stub({"x-real-ip": "2.2.2.2"})) == "2.2.2.2")
+    check("ratelimit: falls back to the TCP peer",
+          _client_ip(_Stub({}, host="3.3.3.3")) == "3.3.3.3")
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -2824,6 +2843,8 @@ async def main() -> int:
     await test_force_close()
     print("\n M. manual PO + vendor master (Phase 4)")
     await test_manual_po()
+    print("\n N. rate-limiter client-IP resolution (Phase I-B)")
+    await test_ratelimit_ip()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

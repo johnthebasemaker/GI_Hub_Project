@@ -232,6 +232,21 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-08 (Phase I-B) · actor=interactive · branch=`main` · ☁️ Cloudflare Tunnel hijack (existing gi-hub) + rate-limiter CF-Connecting-IP fix
+- **Files:** `backend/api/ratelimit.py` (CF-Connecting-IP priority) ·
+  `backend/api/service_tests.py` (suite N, 3 checks) · `frontend/vite.config.ts`
+  (VITE_TUNNEL mode) · `deploy/cloudflared/config.yml` + `README.md` (new) · this doc.
+- **Rate limiter:** `_client_ip` now resolves CF-Connecting-IP → X-Real-IP →
+  TCP peer, so remote testers through the tunnel key on their real IP instead of
+  the tunnel's single egress IP.
+- **Tunnel:** reuse the pre-existing `gi-hub` tunnel
+  (`8e2f8d9d-08f4-432e-9857-dee2ff4ebb63`) that served the legacy build — DNS
+  already CNAMEs to it, so only the served config changes. Ingress → Vite
+  (:5173), which serves the SPA + proxies `/api`→:8000 (single origin; no path
+  split because FastAPI has no /api prefix). `VITE_TUNNEL=1` allows the host +
+  fixes HMR over TLS. CLI: `cloudflared tunnel --config deploy/cloudflared/config.yml run gi-hub`.
+- **Gates:** service_tests **421/0** (+3) · frontend build ✅.
+
 ### 2026-07-08 (Phase 4 · chunk 3) · actor=interactive · branch=`main` · 🔓 Manual PO creation + vendor picker (MED gaps)
 - **Files:** `backend/api/services/procurement.py` (create_po_manual) ·
   `backend/api/logistics.py` (POST /pos/manual + ManualPO models) ·
