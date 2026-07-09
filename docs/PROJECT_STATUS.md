@@ -21,8 +21,10 @@ force-close + 24h undo, manual PO + vendors) · Phase I-B Cloudflare Tunnel
 (gi-hub hijack) + CF-Connecting-IP rate-limit · Phase 5 PR-status report +
 Dashboard valuation/charts + Admin system-overview · Phase 6 DN two-stage
 approval + supervisor parity (intent-vs-actual UI, cancel-while-pending, live
-cart stock) + receipt entry guards (MTC gate + UoM conversion). Gates green:
-`service_tests` **450/0**, `parity_check` **5/5**, `bug_check` **599/0**,
+cart stock) + receipt entry guards (MTC gate + UoM conversion) · **Deferred-MED
+backlog** (logistics vendor-returns, HOD draft-PR line-edit/rename, admin lot
+lifecycle). Gates green:
+`service_tests` **473/0**, `parity_check` **5/5**, `bug_check` **599/0**,
 `parity:sme` **509**, frontend build ✅. STILL PARKED: **Phase 7 (WhatsApp/email
 outbox)** on the Meta token, and
 **SME Phase S6 (Master Data CRUD)** to Cutover Day (dual-write drift protection).
@@ -100,10 +102,11 @@ Streamlit portal — all EIGHT legacy tabs:
   `progress-list`/`production-log`, plan-export key `overview`.
 
 ### E. Gates (all green, current)
-`service_tests` **450/0** (360 at freeze → +90 across freeze-lift suites
-H–R: SLA tracker, submission intel, bulk entry, reschedule, force-close, manual
+`service_tests` **473/0** (360 at freeze → +113 across freeze-lift suites
+H–U: SLA tracker, submission intel, bulk entry, reschedule, force-close, manual
 PO, rate-limiter IP, reporting/dashboard, DN approval, supervisor parity, entry
-guards) · `bug_check` **599/0** · `parity_check` **5/5** · `parity:sme`
+guards, vendor-returns, PR line-edit/rename, lot lifecycle) · `bug_check`
+**599/0** · `parity_check` **5/5** · `parity:sme`
 **509** · frontend build ✅ · `alembic check` clean · dual_ci mirror consistent.
 Schema additions since day one: `auth_sessions`, `ai_jobs`, `sla_dismissals`,
 `users.Location`/`pending_users.Location` (all user-authorized, new-stack-only;
@@ -149,10 +152,8 @@ Meta token for Phase 7, or the cutover go-ahead).
 
 ## 4. WHAT WE WANT TO DO NEXT
 
-**Feature-gap backlog — the approved scope is DONE.** Only these remain (all
-optional; details in the `feature-gap-program` memory):
-- **Deferred MED** (not in the approved cut): logistics vendor-returns; PR draft
-  line-edit/rename; lot lifecycle UI (quarantine/dispose — server logic exists).
+**Feature-gap backlog — approved scope AND deferred-MED are DONE.** Only optional
+LOW polish remains (details in the `feature-gap-program` memory):
 - **LOW polish:** barcode/QR pick · smart last-entry defaults · recently-used
   pills · form draft-recovery · report category filter / SAR toggle / preview ·
   open-POs filters + KPI hero · FEFO auto-suggest on DN prep.
