@@ -37,7 +37,7 @@ from .auth import require_level, site_scope
 from .db import SessionLocal, get_session
 from .reports import REPORTS, render_report
 from .services.ledger import _MD, write_audit
-from .services.notifications import notify
+from .services.notifications import dispatch, notify
 
 log = logging.getLogger("gi.reports.scheduler")
 
@@ -285,11 +285,12 @@ async def _execute_schedule(session: AsyncSession, sched: dict) -> dict:
     if not recipients and sched["created_by"]:
         recipients = [sched["created_by"]]
     for username in recipients:
-        await notify(session, event_key="report_ready", recipient_user=username,
-                     severity="info", title=f"Scheduled report ready: {sched['label']}",
-                     body=f"{sched['report_type']} ({sched['format']}) is in the report archive.",
-                     link_page="/reports", related_table="report_archive",
-                     related_ref=str(res["id"]))
+        await dispatch(session, event_key="report_ready", recipient_user=username,
+                       severity="info", wa_template="status_update",
+                       title=f"Scheduled report ready: {sched['label']}",
+                       body=f"{sched['report_type']} ({sched['format']}) is in the report archive.",
+                       link_page="/reports", related_table="report_archive",
+                       related_ref=str(res["id"]), created_by=runner)
     return res
 
 

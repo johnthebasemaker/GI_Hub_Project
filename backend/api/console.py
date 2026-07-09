@@ -39,7 +39,7 @@ from .db import get_session
 from .services import emailer
 from .services import whatsapp as wa
 from .services.ledger import _MD, write_audit
-from .services.notifications import notify
+from .services.notifications import dispatch, notify
 from .stock import SQL_SITE_STOCK
 
 # Cross-site requests above this many units escalate to the target-site HOD via
@@ -323,8 +323,9 @@ async def set_lot_status(lot_id: int, body: LotStatusIn = Body(...),
     if body.status not in _LOT_STATUSES:
         raise HTTPException(422, f"status must be one of {sorted(_LOT_STATUSES)}")
     async with session.begin():
-        row = (await session.execute(select(lots_t.c["Status"], lots_t.c["Lot_Number"])
-               .where(lots_t.c["id"] == lot_id))).first()
+        row = (await session.execute(select(
+            lots_t.c["Status"], lots_t.c["Lot_Number"], lots_t.c["Site_ID"], lots_t.c["SAP_Code"]
+        ).where(lots_t.c["id"] == lot_id))).first()
         if row is None:
             raise HTTPException(404, f"lot {lot_id} not found")
         if row[0] == "disposed":
@@ -335,6 +336,17 @@ async def set_lot_status(lot_id: int, body: LotStatusIn = Body(...),
         await write_audit(session, user["username"], f"LOT_{body.status.upper()}", "lots",
                           f"id={lot_id} lot={row[1]} {row[0]}→{body.status}"
                           + (f": {body.reason}" if body.reason else ""))
+        # Alert the site's store keepers when a lot is pulled from / returned to
+        # circulation (quarantine & disposal are stock-affecting; release is FYI).
+        _sev = "critical" if body.status in ("quarantined", "disposed") else "info"
+        await dispatch(session, event_key=f"lot_{body.status}", recipient_role="store_keeper",
+                       recipient_site=row[2], severity=_sev,
+                       wa_template=("critical_alert" if _sev == "critical" else "status_update"),
+                       title=f"Lot {row[1]} {body.status}",
+                       body=(f"{row[3]} lot {row[1]} at {row[2] or 'HQ'} → {body.status}"
+                             + (f": {body.reason}" if body.reason else "")),
+                       link_page="/site/lots", related_table="lots", related_ref=str(lot_id),
+                       created_by=user["username"])
     return {"updated": True, "id": lot_id, "status": body.status, "prior": row[0]}
 
 
@@ -456,10 +468,12 @@ async def create_xsite(body: XSiteIn = Body(...),
         requested_by=user["username"]).returning(requests_t.c["id"]))).scalar_one()
     await write_audit(session, user["username"], "XSITE_REQUEST", "requests",
                       f"id={rid} {body.SAP_Code} {req_site}→{body.target_site} qty={body.requested_qty:g}")
-    await notify(session, event_key="cross_site_requested", recipient_role="admin",
-                 severity="info", title="Cross-site request raised",
-                 body=f"{req_site} asks {body.target_site} for {body.SAP_Code} × {body.requested_qty:g}",
-                 link_page="/admin/console", related_table="requests", related_ref=str(rid))
+    await dispatch(session, event_key="cross_site_requested", recipient_role="admin",
+                   severity="info", wa_template="action_required",
+                   title="Cross-site request raised",
+                   body=f"{req_site} asks {body.target_site} for {body.SAP_Code} × {body.requested_qty:g}",
+                   link_page="/admin/console", related_table="requests", related_ref=str(rid),
+                   created_by=user["username"])
     await session.commit()
 
     # Phase 7 — escalate large cross-site requests to the target-site HOD via
@@ -467,12 +481,14 @@ async def create_xsite(body: XSiteIn = Body(...),
     if body.requested_qty > XSITE_ESCALATION_QTY:
         try:
             nums = await wa.hod_numbers(session, body.target_site.strip())
-            msg = (f"⚠️ Large cross-site request: {req_site} is asking {body.target_site} "
-                   f"for {body.SAP_Code} × {body.requested_qty:g} (available {float(avail or 0):g}). "
-                   f"Raised by {user['username']}. Please review.")
+            detail = (f"{req_site} is asking {body.target_site} for {body.SAP_Code} "
+                      f"× {body.requested_qty:g} (available {float(avail or 0):g}). "
+                      f"Raised by {user['username']}. Please review.")
             for n in nums:
-                await wa.send_text(session, to=n, body=msg, event_key="xsite_escalation",
-                                   related_table="requests", related_ref=rid, created_by=user["username"])
+                await wa.send_template(session, to=n, template_key="critical_alert",
+                                       variables=["Large cross-site request", detail],
+                                       event_key="xsite_escalation", related_table="requests",
+                                       related_ref=rid, created_by=user["username"])
             await session.commit()
         except Exception:  # noqa: BLE001 — notifications are best-effort
             await session.rollback()
@@ -520,13 +536,14 @@ async def decide_xsite(rid: int, body: DecideIn = Body(...),
     await session.execute(update(requests_t).where(requests_t.c["id"] == rid).values(**values))
     await write_audit(session, user["username"], "XSITE_DECIDE", "requests",
                       f"id={rid} → {new_status}")
-    await notify(session, event_key="cross_site_decided",
-                 recipient_user=row["requested_by"],
-                 severity="success" if new_status == "approved" else "warning",
-                 title=f"Cross-site request {new_status}",
-                 body=f"{row['SAP_Code']} {row['requesting_site']}→{row['target_site']}"
-                      + (f" · suggested qty {body.suggested_qty:g}" if body.suggested_qty else ""),
-                 link_page="/hod/requests", related_table="requests", related_ref=str(rid))
+    await dispatch(session, event_key="cross_site_decided",
+                   recipient_user=row["requested_by"], wa_template="status_update",
+                   severity="success" if new_status == "approved" else "warning",
+                   title=f"Cross-site request {new_status}",
+                   body=f"{row['SAP_Code']} {row['requesting_site']}→{row['target_site']}"
+                        + (f" · suggested qty {body.suggested_qty:g}" if body.suggested_qty else ""),
+                   link_page="/hod/requests", related_table="requests", related_ref=str(rid),
+                   created_by=user["username"])
     await session.commit()
     return {"id": rid, "status": new_status}
 
@@ -615,10 +632,12 @@ async def decide_feedback(fid: int, body: FeedbackDecideIn = Body(...),
     if body.admin_response is not None:
         values["admin_response"] = body.admin_response
     await session.execute(update(bugs_t).where(bugs_t.c["id"] == fid).values(**values))
-    await notify(session, event_key="feedback_updated", recipient_user=row.username,
-                 severity="info", title=f"Your report #{fid} is now {body.status}",
-                 body=(body.admin_response or "")[:140] or f"Status changed to {body.status}.",
-                 link_page="/feedback", related_table="bug_reports", related_ref=str(fid))
+    await dispatch(session, event_key="feedback_updated", recipient_user=row.username,
+                   severity="info", wa_template="status_update",
+                   title=f"Your report #{fid} is now {body.status}",
+                   body=(body.admin_response or "")[:140] or f"Status changed to {body.status}.",
+                   link_page="/feedback", related_table="bug_reports", related_ref=str(fid),
+                   created_by=user["username"])
     await write_audit(session, user["username"], "FEEDBACK_UPDATE", "bug_reports",
                       f"id={fid} → {body.status}")
     await session.commit()

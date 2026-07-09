@@ -20,7 +20,7 @@ from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .ledger import _MD, write_audit
-from .notifications import notify
+from .notifications import dispatch, notify
 
 smr_t = _MD.tables["supervisor_material_requests"]
 smr_items_t = _MD.tables["supervisor_material_request_items"]
@@ -155,12 +155,12 @@ async def create_smr(session: AsyncSession, *, supervisor: str, site_id: str, wo
 
     await write_audit(session, supervisor, "SMR_CREATE", "supervisor_material_requests",
                       f"{request_no} site={site_id} worker={worker_id} lines={len(items)}")
-    await notify(session, event_key="smr_created", recipient_role="store_keeper",
-                 recipient_site=site_id,
-                 title=f"Material request {request_no}",
-                 body=f"{worker_name}: {len(items)} item(s) — needs Store Keeper approval.",
-                 link_page="/sk/requests", related_table="supervisor_material_requests",
-                 related_ref=request_no)
+    await dispatch(session, event_key="smr_created", recipient_role="store_keeper",
+                   recipient_site=site_id, wa_template="action_required",
+                   title=f"Material request {request_no}",
+                   body=f"{worker_name}: {len(items)} item(s) — needs Store Keeper approval.",
+                   link_page="/sk/requests", related_table="supervisor_material_requests",
+                   related_ref=request_no, created_by=supervisor)
     return {"created": True, "request_no": request_no, "request_id": req_id, "lines": len(items)}
 
 
@@ -212,12 +212,12 @@ async def approve_smr(session: AsyncSession, *, sk_username: str, request_id: in
         posted_pending_ids=_json.dumps(posted)))
     await write_audit(session, sk_username, "SMR_APPROVE", "supervisor_material_requests",
                       f"{request_no} → {len(posted)} pending_issues")
-    await notify(session, event_key="smr_approved", severity="success",
-                 recipient_user=header.get("requested_by"),
-                 title=f"Request {request_no} approved",
-                 body=f"Approved by {sk_username} → {len(posted)} issue(s) staged for HOD.",
-                 link_page="/supervisor", related_table="supervisor_material_requests",
-                 related_ref=request_no)
+    await dispatch(session, event_key="smr_approved", severity="success",
+                   recipient_user=header.get("requested_by"), wa_template="status_update",
+                   title=f"Request {request_no} approved",
+                   body=f"Approved by {sk_username} → {len(posted)} issue(s) staged for HOD.",
+                   link_page="/supervisor", related_table="supervisor_material_requests",
+                   related_ref=request_no, created_by=sk_username)
     return {"approved": True, "request_no": request_no, "staged_issues": len(posted)}
 
 

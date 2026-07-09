@@ -3290,7 +3290,8 @@ async def test_whatsapp_outbox():
         base_id = (await s.execute(_sel(func.coalesce(func.max(ob.c["id"]), 0)))).scalar_one()
 
     saved = (wamod._post_message, wamod._upload_media)
-    prev_esc = _o.environ.get("WHATSAPP_ESCALATION_TO")
+    _ENVK = ("WHATSAPP_ESCALATION_TO", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_TOKEN")
+    prev_env = {k: _o.environ.get(k) for k in _ENVK}
     sent_payloads: list = []
 
     async def ok_post(payload):
@@ -3302,6 +3303,10 @@ async def test_whatsapp_outbox():
 
     wamod._post_message, wamod._upload_media = ok_post, ok_upload
     _o.environ["WHATSAPP_ESCALATION_TO"] = "15550001111"   # fallback recipient
+    # Enable WhatsApp so dispatch()-based triggers actually send (HTTP is mocked
+    # above, so no live Meta call is made regardless of these dummy creds).
+    _o.environ["WHATSAPP_PHONE_NUMBER_ID"] = "svc-test-pnid"
+    _o.environ["WHATSAPP_TOKEN"] = "svc-test-token"
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://svc") as ac:
@@ -3338,12 +3343,36 @@ async def test_whatsapp_outbox():
             check("whatsapp: xsite escalation enqueued + sent",
                   any(x["status"] == "sent" and x["meta_message_id"] == "wamid.TEST" for x in esc), str(esc)[:160])
             # Alert sends must be TEMPLATE messages (deliverable outside the
-            # 24h customer-service window), carrying the alert as {{1}}.
-            tpl = next((p for p in sent_payloads if p.get("type") == "template"), None)
+            # 24h customer-service window), carrying the alert in body params.
+            def _params_text(p):
+                comps = p.get("template", {}).get("components", [])
+                return " ".join(str(pp.get("text", "")) for c in comps
+                                for pp in c.get("parameters", [])).lower()
+            xtpl = next((p for p in sent_payloads if p.get("type") == "template"
+                         and "cross-site" in _params_text(p)), None)
             check("whatsapp: alert payload is a template w/ body param",
-                  tpl is not None and tpl["template"]["name"]
-                  and "cross-site" in str(tpl["template"]["components"][0]["parameters"][0]["text"]).lower(),
-                  str(tpl)[:200])
+                  xtpl is not None and bool(xtpl["template"]["name"]), str(sent_payloads)[:200])
+            check("whatsapp: escalation uses the gi_critical_alert template",
+                  any(p.get("template", {}).get("name") == "gi_critical_alert"
+                      for p in sent_payloads), str([p.get("template", {}).get("name")
+                                                    for p in sent_payloads])[:200])
+
+            # Dual-write invariant: a dispatch()-driven trigger writes BOTH an
+            # in-app notification AND a WhatsApp outbox row for the same event.
+            appn = ledger._MD.tables["app_notifications"]
+            async with SessionLocal() as s:
+                base_app = (await s.execute(_sel(func.coalesce(func.max(appn.c["id"]), 0)))).scalar_one()
+            r = await ac.post("/xsite", headers=H(admin_t),
+                              json={"requesting_site": "HQ", "target_site": "CNCEC",
+                                    "SAP_Code": "1001", "requested_qty": 3})
+            check("whatsapp: xsite<=5 accepted", r.status_code == 201, f"got {r.status_code}")
+            async with SessionLocal() as s:
+                in_app = (await s.execute(_sel(func.count()).select_from(appn).where(
+                    (appn.c["id"] > base_app) & (appn.c["event_key"] == "cross_site_requested")))).scalar_one()
+            wa_rows = await rows_for("cross_site_requested")
+            check("whatsapp: dispatch writes in-app + outbox for one event",
+                  in_app >= 1 and any(x["status"] == "sent" for x in wa_rows),
+                  f"in_app={in_app} wa={str(wa_rows)[:120]}")
 
             # Trigger 2 — FEFO override on an issue alerts the HOD.
             inv = (await ac.get("/inventory", params={"limit": 3}, headers=H(worker_t))).json().get("items", [])
@@ -3386,10 +3415,11 @@ async def test_whatsapp_outbox():
             check("whatsapp: retry with no recipient → 409", r.status_code == 409, f"got {r.status_code}")
     finally:
         wamod._post_message, wamod._upload_media = saved
-        if prev_esc is None:
-            _o.environ.pop("WHATSAPP_ESCALATION_TO", None)
-        else:
-            _o.environ["WHATSAPP_ESCALATION_TO"] = prev_esc
+        for _k, _v in prev_env.items():
+            if _v is None:
+                _o.environ.pop(_k, None)
+            else:
+                _o.environ[_k] = _v
         async with SessionLocal() as s:
             await s.execute(delete(ob).where(ob.c["id"] > base_id))
             await s.commit()

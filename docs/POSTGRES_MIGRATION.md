@@ -232,6 +232,14 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-09 (Phase 7c · chunk 1) · actor=interactive · branch=`main` · 🔔 Reusable WhatsApp templates + unified dispatch() + comprehensive trigger wiring
+- **Goal:** make notifications ubiquitous — every significant action fires BOTH an in-app row and (best-effort) a WhatsApp message, via a small set of reusable Meta templates instead of ad-hoc text.
+- **Templates (`services/whatsapp.py`):** new `send_template(template_key, variables)` + `_TEMPLATES` map of 4 logical keys → env-overridable Meta names: `action_required`→`gi_action_required`, `status_update`→`gi_status_update`, `critical_alert`→`gi_critical_alert`, `otp_code`→`gi_otp_code` (first three take 2 body vars, otp takes 1). `_template_payload` flattens params (Meta #132000) + caps 1024. `resolve_numbers(recipient_user|role|site|warehouse)` maps the in-app recipient descriptor → phone numbers, de-duped/capped, with an opt-in `WHATSAPP_ESCALATION_TO` catch-all for role/warehouse broadcasts (mirrors `hod_numbers`). Legacy `send_text`/`alert_notification` kept for back-compat but no longer used by triggers.
+- **Dispatcher (`services/notifications.py`):** new `dispatch()` = `notify()` (always) + best-effort WhatsApp to the same recipient(s). Skipped entirely when WhatsApp isn't configured (`enabled()` False) → no failed-row spam; any send failure swallowed so messaging never breaks the business action. `related_ref` coerced to str once (app_notifications + outbox are Text).
+- **Wired (notify→dispatch, +new):** entry_staged, entry_approved/rejected (single+bulk), DN pending-logistics/pending-hod/approved/rejected/shipped, PR submitted, PO assigned, reschedule raised/decided, force-close, vendor-return raised (warehouse + disposition + procurement), SMR created/approved, cross-site requested/decided, feedback-updated, report-ready, SLA nudge, returnable-overdue, FEFO-override; **new triggers:** MTC uploaded (→ logistics) and lot quarantine/dispose/release (→ site store keepers). xsite>5 escalation migrated to the `critical_alert` template.
+- **Tests:** suite V (`test_whatsapp_outbox`) now enables dummy WhatsApp creds (HTTP still mocked) so dispatch()-driven triggers actually send; asserts the dual-write invariant (in-app + outbox for one event), the `gi_critical_alert` template name, and robust body-param matching. **service_tests 498/0 · parity 5/5.**
+- **Env:** `deploy/.env.example` gains `WHATSAPP_TPL_ACTION/STATUS/CRITICAL/OTP` (defaults `gi_*`).
+
 ### 2026-07-09 (Phase 7b · chunk 2) · actor=interactive · branch=`main` · 📧 Native SMTP email outbox + parked email triggers + Email Console
 - **Files:** `backend/models.py` + `backend/alembic/versions/…f7d4a20b88c3…`
   (`email_outbox`, NEW-STACK-ONLY) · `backend/api/services/emailer.py` (new SMTP

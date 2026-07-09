@@ -25,7 +25,7 @@ from .auth import require_level, resolve_site_param, site_scope
 from .db import get_session
 from .services import ledger, procurement
 from .services import warehouse as wh
-from .services.notifications import notify
+from .services.notifications import dispatch, notify
 from .stock import SQL_SITE_STOCK
 
 router = APIRouter(prefix="/hod", tags=["HOD approvals"],
@@ -151,10 +151,12 @@ async def approve(kind: str, pid: int, user: dict = Depends(require_level(2)),
             if res.get("error"):
                 raise HTTPException(409, res["error"])
             if submitter and submitter != user["username"]:
-                await notify(session, recipient_user=submitter, event_key="entry_approved",
-                             severity="success", title=f"Your {_REJECT_KIND[kind]} was approved",
-                             body=f"Approved by {user['username']} and committed to the ledger.",
-                             related_table="pending", related_ref=str(pid))
+                await dispatch(session, recipient_user=submitter, event_key="entry_approved",
+                               severity="success", wa_template="status_update",
+                               title=f"Your {_REJECT_KIND[kind]} was approved",
+                               body=f"Approved by {user['username']} and committed to the ledger.",
+                               related_table="pending", related_ref=str(pid),
+                               created_by=user["username"])
         return res
     except HTTPException:
         raise
@@ -177,11 +179,13 @@ async def reject(kind: str, pid: int, body: RejectIn = Body(default=RejectIn()),
         if res.get("error"):
             raise HTTPException(409, res["error"])
         if submitter and submitter != user["username"]:
-            await notify(session, recipient_user=submitter, event_key="entry_rejected",
-                         severity="warning", title=f"Your {_REJECT_KIND[kind]} was rejected",
-                         body=(f"Rejected by {user['username']}: {body.reason}" if body.reason
-                               else f"Rejected by {user['username']}."),
-                         related_table="pending", related_ref=str(pid))
+            await dispatch(session, recipient_user=submitter, event_key="entry_rejected",
+                           severity="warning", wa_template="status_update",
+                           title=f"Your {_REJECT_KIND[kind]} was rejected",
+                           body=(f"Rejected by {user['username']}: {body.reason}" if body.reason
+                                 else f"Rejected by {user['username']}."),
+                           related_table="pending", related_ref=str(pid),
+                           created_by=user["username"])
     return res
 
 
@@ -300,10 +304,12 @@ async def bulk_approve(kind: str, body: BulkApproveIn = Body(...),
                 if res.get("error"):
                     raise ValueError(res["error"])  # rolls back just this id
                 if submitter and submitter != user["username"]:
-                    await notify(session, recipient_user=submitter, event_key="entry_approved",
-                                 severity="success", title=f"Your {_REJECT_KIND[kind]} was approved",
-                                 body=f"Approved by {user['username']} (bulk commit).",
-                                 related_table="pending", related_ref=str(pid))
+                    await dispatch(session, recipient_user=submitter, event_key="entry_approved",
+                                   severity="success", wa_template="status_update",
+                                   title=f"Your {_REJECT_KIND[kind]} was approved",
+                                   body=f"Approved by {user['username']} (bulk commit).",
+                                   related_table="pending", related_ref=str(pid),
+                                   created_by=user["username"])
             results.append({"id": pid, "ok": True})
         except HTTPException as e:
             results.append({"id": pid, "ok": False, "error": str(e.detail)})

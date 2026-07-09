@@ -20,7 +20,7 @@ from .db import get_session
 from .services import procurement
 from .services import warehouse as wh
 from .services.ledger import _MD, write_audit
-from .services.notifications import notify
+from .services.notifications import dispatch, notify
 
 router = APIRouter(prefix="/warehouse", tags=["warehouse"],
                    dependencies=[Depends(require_roles("warehouse_user", "logistics"))])
@@ -227,10 +227,12 @@ async def create_return_from_site(body: ReturnFromSiteIn = Body(...),
             notes=body.notes).returning(_po_returns_t.c["id"]))).scalar_one()
         await write_audit(session, user["username"], "RETURN_FROM_SITE", "po_returns",
                           f"id={rid} po={body.PO_Number} qty={body.Qty:g} reason={body.Reason}")
-        await notify(session, event_key="vendor_return_raised", recipient_role="logistics",
-                     severity="warning", title="Return from site recorded",
-                     body=f"{body.PO_Number}: qty {body.Qty:g} — {body.Reason}",
-                     related_table="po_returns", related_ref=str(rid))
+        await dispatch(session, event_key="vendor_return_raised", recipient_role="logistics",
+                       severity="warning", wa_template="action_required",
+                       title="Return from site recorded",
+                       body=f"{body.PO_Number}: qty {body.Qty:g} — {body.Reason}",
+                       related_table="po_returns", related_ref=str(rid),
+                       created_by=user["username"])
     return {"created": True, "id": rid}
 
 
@@ -260,10 +262,12 @@ async def set_return_disposition(rid: int, body: DispositionIn = Body(...),
         await write_audit(session, user["username"], "RETURN_DISPOSITION", "po_returns",
                           f"id={rid} → {body.status}")
         if body.status == "return_to_vendor":
-            await notify(session, event_key="vendor_return_raised", recipient_role="logistics",
-                         severity="warning", title="Return routed back to vendor",
-                         body=f"{row.PO_Number}: return #{rid} dispositioned return_to_vendor",
-                         related_table="po_returns", related_ref=str(rid))
+            await dispatch(session, event_key="vendor_return_raised", recipient_role="logistics",
+                           severity="warning", wa_template="action_required",
+                           title="Return routed back to vendor",
+                           body=f"{row.PO_Number}: return #{rid} dispositioned return_to_vendor",
+                           related_table="po_returns", related_ref=str(rid),
+                           created_by=user["username"])
     return {"updated": True, "id": rid, "status": body.status}
 
 

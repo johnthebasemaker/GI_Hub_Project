@@ -27,7 +27,7 @@ from .db import get_session
 from .services import emailer
 from .services import ledger
 from .services import whatsapp as wa
-from .services.notifications import notify
+from .services.notifications import dispatch, notify
 from .stock import SQL_SITE_STOCK
 
 router = APIRouter(prefix="/entry", tags=["data entry"])
@@ -36,10 +36,11 @@ router = APIRouter(prefix="/entry", tags=["data entry"])
 async def _notify_hod_staged(session, *, kind_label: str, site_id: str, actor: str,
                              ref, detail: str) -> None:
     """Tell the site's HOD(s) that a new entry is waiting for approval."""
-    await notify(session, event_key="entry_staged", recipient_role="hod",
-                 recipient_site=site_id, title=f"{kind_label} awaiting approval",
-                 body=f"{detail} — submitted by {actor}", link_page="/hod/approvals",
-                 related_table="pending", related_ref=str(ref))
+    await dispatch(session, event_key="entry_staged", recipient_role="hod",
+                   recipient_site=site_id, wa_template="action_required",
+                   title=f"{kind_label} awaiting approval",
+                   body=f"{detail} — submitted by {actor}", link_page="/hod/approvals",
+                   related_table="pending", related_ref=str(ref), created_by=actor)
 
 # Columns a client may pass under `extra` on a receipt: real receipts columns
 # minus the ones handled explicitly, minus id/blobs.
@@ -221,18 +222,18 @@ async def create_consumption(
     except (IntegrityError, DataError) as e:
         raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
 
-    # Phase 7 — WhatsApp alert to the HOD when the SK bypassed the FEFO warning.
+    # FEFO override → alert the site HOD(s), in-app + WhatsApp (critical).
     # Best-effort + post-commit: a messaging failure never fails the issue.
     if body.FEFO_Override:
         try:
-            nums = await wa.hod_numbers(session, body.Site_ID)
-            msg = (f"⚠️ FEFO override: {user['username']} bypassed FEFO issuing "
-                   f"{body.SAP_Code} × {body.Quantity:g} at {body.Site_ID} "
-                   f"(staged #{result.get('pending_id')}, pending HOD approval).")
-            for n in nums:
-                await wa.send_text(session, to=n, body=msg, event_key="fefo_override",
-                                   related_table="pending_issues", related_ref=result.get("pending_id"),
-                                   created_by=user["username"])
+            await dispatch(session, event_key="fefo_override", recipient_role="hod",
+                           recipient_site=body.Site_ID, severity="critical",
+                           wa_template="critical_alert", title="FEFO override",
+                           body=(f"{user['username']} bypassed FEFO issuing {body.SAP_Code} "
+                                 f"× {body.Quantity:g} at {body.Site_ID} "
+                                 f"(staged #{result.get('pending_id')}, pending HOD approval)."),
+                           link_page="/hod/approvals", related_table="pending_issues",
+                           related_ref=result.get("pending_id"), created_by=user["username"])
             await session.commit()
         except Exception:  # noqa: BLE001 — notifications are best-effort
             await session.rollback()
@@ -313,6 +314,14 @@ async def upload_mtc(file: UploadFile = File(...), sap_code: str = Form(...),
             Lot_Number=lot_number, file_name=file.filename, mime_type=file.content_type,
             file_blob=blob, status="attached", submitted_by=user["username"]
         ).returning(_mtc_t.c["id"]))).scalar_one()
+        # Tell logistics the certificate they were chasing has arrived.
+        await dispatch(session, event_key="mtc_uploaded", recipient_role="logistics",
+                       wa_template="status_update", severity="success",
+                       title=f"MTC uploaded for {sap_code.strip()}",
+                       body=(f"{user['username']} attached MTC {mtc_number or '—'} "
+                             f"(lot {lot_number or '—'}) at {site}."),
+                       link_page="/logistics", related_table="mtc_documents",
+                       related_ref=str(mid), created_by=user["username"])
     return {"id": mid, "file_name": file.filename}
 
 
@@ -506,12 +515,13 @@ async def submit_count(body: CountSheetIn = Body(...),
                 "notes": row.notes or "stock count"})
             staged.append(res.get("pending_id"))
         if staged:
-            await notify(session, event_key="entry_staged", recipient_role="hod",
-                         recipient_site=site, severity="warning",
-                         title=f"Stock count staged {len(staged)} adjustment(s)",
-                         body=f"Physical count by {user['username']} at {site}.",
-                         link_page="/hod/approvals", related_table="stock_adjustments",
-                         related_ref=",".join(str(s) for s in staged))
+            await dispatch(session, event_key="entry_staged", recipient_role="hod",
+                           recipient_site=site, severity="warning", wa_template="action_required",
+                           title=f"Stock count staged {len(staged)} adjustment(s)",
+                           body=f"Physical count by {user['username']} at {site}.",
+                           link_page="/hod/approvals", related_table="stock_adjustments",
+                           related_ref=",".join(str(s) for s in staged),
+                           created_by=user["username"])
     return {"staged": len(staged), "unchanged": skipped}
 
 
@@ -576,12 +586,12 @@ async def list_returnables(status: Optional[str] = None, site_id: Optional[str] 
         od = od.where(t.c["Site_ID"] == site_id)
     overdue_rows = (await session.execute(od)).all()
     for r in overdue_rows:
-        await notify(session, event_key="returnable_overdue", recipient_role="store_keeper",
-                     recipient_site=r.Site_ID, severity="warning",
-                     title=f"Tool overdue: {r.material_name}",
-                     body=f"Borrowed by {r.borrower_name} — past its expected return time.",
-                     link_page="/entry/returnables", related_table="returnable_items",
-                     related_ref=str(r.id))
+        await dispatch(session, event_key="returnable_overdue", recipient_role="store_keeper",
+                       recipient_site=r.Site_ID, severity="warning", wa_template="critical_alert",
+                       title=f"Tool overdue: {r.material_name}",
+                       body=f"Borrowed by {r.borrower_name} — past its expected return time.",
+                       link_page="/entry/returnables", related_table="returnable_items",
+                       related_ref=str(r.id))
         await session.execute(update(t).where(t.c["id"] == r.id).values(whatsapp_alert_sent=1))
     if overdue_rows:
         await session.commit()

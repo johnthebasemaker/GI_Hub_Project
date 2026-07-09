@@ -30,7 +30,7 @@ import json
 import os
 
 import httpx
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import and_, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .ledger import _MD
@@ -130,6 +130,42 @@ def _doc_payload(to: str, media_id: str, filename: str, caption: str | None) -> 
     return {"messaging_product": "whatsapp", "to": to, "type": "document", "document": doc}
 
 
+# ── reusable templates (Phase 7c) ────────────────────────────────────────────
+# A small set of purpose-built, variable-driven templates covers every alert in
+# the app. Each logical key maps to (env override, default Meta template name).
+# The Meta templates must be created + approved in WhatsApp Manager; see the
+# `deploy/.env.example` block and docs/PROJECT_STATUS.md for the exact bodies.
+#   action_required / status_update / critical_alert → TWO body vars ({{1}} {{2}})
+#   otp_code                                          → ONE body var  ({{1}})
+_TEMPLATES: dict[str, tuple[str, str]] = {
+    "action_required": ("WHATSAPP_TPL_ACTION", "gi_action_required"),
+    "status_update": ("WHATSAPP_TPL_STATUS", "gi_status_update"),
+    "critical_alert": ("WHATSAPP_TPL_CRITICAL", "gi_critical_alert"),
+    "otp_code": ("WHATSAPP_TPL_OTP", "gi_otp_code"),
+}
+
+
+def _resolve_template(key: str) -> str:
+    """Logical key → approved Meta template name (env-overridable)."""
+    env, default = _TEMPLATES.get(key, ("", key))
+    return (os.environ.get(env, "") or default).strip()
+
+
+def _tpl_param(value) -> dict:
+    # Template body params may not contain newlines/tabs (Meta #132000) and may
+    # not be empty/whitespace — flatten to spaces, cap at 1024, fall back to '-'.
+    flat = " ".join(str(value if value is not None else "").split())[:1024]
+    return {"type": "text", "text": flat or "-"}
+
+
+def _template_payload(to: str, name: str, variables: list) -> dict:
+    tpl: dict = {"name": name, "language": {"code": _template_lang()}}
+    params = [_tpl_param(v) for v in (variables or [])]
+    if name != "hello_world" and params:
+        tpl["components"] = [{"type": "body", "parameters": params}]
+    return {"messaging_product": "whatsapp", "to": to, "type": "template", "template": tpl}
+
+
 # ── outbox record + send ─────────────────────────────────────────────────────
 async def _apply_result(session: AsyncSession, oid: int, res: dict) -> None:
     if res.get("ok"):
@@ -167,6 +203,20 @@ async def send_text(session: AsyncSession, *, to: str, body: str, event_key: str
                     created_by: str = "system") -> dict:
     return await _record_and_send(session, to=to, payload=_text_payload(to, body),
                                   preview=body, event_key=event_key, related_table=related_table,
+                                  related_ref=related_ref, created_by=created_by)
+
+
+async def send_template(session: AsyncSession, *, to: str, template_key: str,
+                        variables: list, event_key: str,
+                        related_table: str | None = None, related_ref=None,
+                        created_by: str = "system") -> dict:
+    """Send one of the reusable templates (action_required / status_update /
+    critical_alert / otp_code) with positional body variables."""
+    name = _resolve_template(template_key)
+    payload = _template_payload(to, name, list(variables or []))
+    preview = " · ".join(str(v) for v in (variables or []) if v is not None)
+    return await _record_and_send(session, to=to, payload=payload, preview=preview,
+                                  event_key=event_key, related_table=related_table,
                                   related_ref=related_ref, created_by=created_by)
 
 
@@ -220,3 +270,41 @@ async def user_number(session: AsyncSession, username: str) -> str:
     n = (await session.execute(select(users_t.c["Phone_Number"])
          .where(users_t.c["username"] == username))).scalar_one_or_none()
     return (n or "").strip() or _escalation_to()
+
+
+async def resolve_numbers(session: AsyncSession, *, recipient_user: str | None = None,
+                          recipient_role: str | None = None, recipient_site: str | None = None,
+                          recipient_warehouse: str | None = None, limit: int = 25) -> list[str]:
+    """Resolve the same recipient descriptor the in-app notifier uses (a specific
+    user, or a role optionally narrowed by site/warehouse) to WhatsApp numbers.
+    De-duplicated, capped, and never raises for a missing number."""
+    nums: list[str] = []
+    if recipient_user:
+        n = (await session.execute(select(users_t.c["Phone_Number"])
+             .where(users_t.c["username"] == recipient_user))).scalar_one_or_none()
+        if n and n.strip():
+            nums.append(n.strip())
+    elif recipient_role or recipient_warehouse:
+        conds = [users_t.c["Phone_Number"].isnot(None)]
+        if recipient_role:
+            conds.append(users_t.c["role"] == recipient_role)
+        if recipient_site:
+            conds.append(func.coalesce(users_t.c["Site_ID"], "") == recipient_site)
+        if recipient_warehouse:
+            conds.append(func.coalesce(users_t.c["Warehouse_ID"], "") == recipient_warehouse)
+        rows = (await session.execute(select(users_t.c["Phone_Number"])
+                .where(and_(*conds)).limit(limit * 2))).scalars().all()
+        nums = [r.strip() for r in rows if r and r.strip()]
+        # Opt-in catch-all: if a ROLE/warehouse broadcast matches nobody with a
+        # phone on file, fall back to WHATSAPP_ESCALATION_TO (when configured) so
+        # the alert still reaches someone — same behaviour as hod_numbers(). No
+        # fallback for a user-targeted message (wrong-person risk).
+        if not nums and _escalation_to():
+            nums = [_escalation_to()]
+    seen: set[str] = set()
+    out: list[str] = []
+    for n in nums:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out[:limit]

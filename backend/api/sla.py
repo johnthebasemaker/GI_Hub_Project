@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .auth import require_level
 from .db import get_session
 from .services.ledger import _MD, write_audit
-from .services.notifications import notify
+from .services.notifications import dispatch, notify
 
 router = APIRouter(prefix="/admin", tags=["admin sla"],
                    dependencies=[Depends(require_level(4))])
@@ -238,13 +238,13 @@ async def notify_overdue(kind: str, ref_id: str,
     details = f"{_LABELS[kind]} — {item['summary']}"
     for uname in recipients:
         # Exact template per the T2 spec.
-        await notify(
+        await dispatch(
             session, event_key="sla_nudge", severity="critical",
-            recipient_user=uname,
+            recipient_user=uname, wa_template="critical_alert",
             title="URGENT — Action required on pending submission",
             body=(f"URGENT — Dear {uname}, From: Admin. Subject: Action "
                   f"required on pending submission {ref_id} ({details})."),
-            related_table=kind, related_ref=str(ref_id))
+            related_table=kind, related_ref=str(ref_id), created_by=actor["username"])
     await write_audit(session, actor["username"], "SLA_NOTIFY",
                       "app_notifications",
                       f"kind={kind} ref={ref_id} recipients={','.join(recipients)}")

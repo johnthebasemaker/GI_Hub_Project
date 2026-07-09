@@ -18,7 +18,7 @@ from sqlalchemy import case, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .ledger import _MD, write_audit
-from .notifications import notify
+from .notifications import dispatch, notify
 
 po_assignments_t = _MD.tables["po_assignments"]
 purchase_orders_t = _MD.tables["purchase_orders"]
@@ -249,10 +249,11 @@ async def submit_dn(session: AsyncSession, *, username: str, dn_number: str) -> 
     if res.rowcount == 0:
         return {"error": "DN not found or not in a submittable state"}
     await write_audit(session, username, "SUBMIT_DN", "delivery_notes", f"DN={dn_number}")
-    await notify(session, event_key="dn_pending_logistics", recipient_role="logistics",
-                 title=f"DN {dn_number} awaiting logistics approval",
-                 body="Review the delivery date / logistics details.", link_page="/logistics",
-                 related_table="delivery_notes", related_ref=dn_number)
+    await dispatch(session, event_key="dn_pending_logistics", recipient_role="logistics",
+                   wa_template="action_required",
+                   title=f"DN {dn_number} awaiting logistics approval",
+                   body="Review the delivery date / logistics details.", link_page="/logistics",
+                   related_table="delivery_notes", related_ref=dn_number, created_by=username)
     return {"submitted": True, "dn_number": dn_number, "status": "pending_logistics"}
 
 
@@ -269,20 +270,23 @@ async def decide_dn_logistics(session: AsyncSession, *, username: str, dn_number
         await session.execute(update(delivery_notes_t).where(delivery_notes_t.c["DN_Number"] == dn_number)
             .values(status="pending_hod", logistics_decided_at=func.now(),
                     logistics_decided_by=username, logistics_decision="approved"))
-        await notify(session, event_key="dn_pending_hod", recipient_role="hod",
-                     recipient_site=row[0], title=f"DN {dn_number} awaiting HOD approval",
-                     body="Logistics approved the delivery — review the DN content.",
-                     link_page="/hod/approvals", related_table="delivery_notes", related_ref=dn_number)
+        await dispatch(session, event_key="dn_pending_hod", recipient_role="hod",
+                       recipient_site=row[0], wa_template="action_required",
+                       title=f"DN {dn_number} awaiting HOD approval",
+                       body="Logistics approved the delivery — review the DN content.",
+                       link_page="/hod/approvals", related_table="delivery_notes",
+                       related_ref=dn_number, created_by=username)
         new = "pending_hod"
     else:
         await session.execute(update(delivery_notes_t).where(delivery_notes_t.c["DN_Number"] == dn_number)
             .values(status="rejected", logistics_decided_at=func.now(),
                     logistics_decided_by=username, logistics_decision="rejected",
                     rejection_reason=reason or None))
-        await notify(session, event_key="dn_rejected", recipient_warehouse=row[2],
-                     severity="warning", title=f"DN {dn_number} rejected by logistics",
-                     body=f"Reason: {reason or 'not given'}", link_page="/warehouse",
-                     related_table="delivery_notes", related_ref=dn_number)
+        await dispatch(session, event_key="dn_rejected", recipient_warehouse=row[2],
+                       severity="warning", wa_template="status_update",
+                       title=f"DN {dn_number} rejected by logistics",
+                       body=f"Reason: {reason or 'not given'}", link_page="/warehouse",
+                       related_table="delivery_notes", related_ref=dn_number, created_by=username)
         new = "rejected"
     await write_audit(session, username, f"DN_LOGISTICS_{action.upper()}", "delivery_notes", f"DN={dn_number}")
     return {"decided": new, "dn_number": dn_number}
@@ -300,19 +304,22 @@ async def decide_dn_hod(session: AsyncSession, *, username: str, dn_number: str,
     if action == "approve":
         await session.execute(update(delivery_notes_t).where(delivery_notes_t.c["DN_Number"] == dn_number)
             .values(status="hod_approved", hod_decided_at=func.now(), hod_decided_by=username))
-        await notify(session, event_key="dn_hod_approved", recipient_warehouse=row[2],
-                     severity="success", title=f"DN {dn_number} approved — ready to ship",
-                     body="HOD approved the DN content. Ship it from the Warehouse portal.",
-                     link_page="/warehouse", related_table="delivery_notes", related_ref=dn_number)
+        await dispatch(session, event_key="dn_hod_approved", recipient_warehouse=row[2],
+                       severity="success", wa_template="status_update",
+                       title=f"DN {dn_number} approved — ready to ship",
+                       body="HOD approved the DN content. Ship it from the Warehouse portal.",
+                       link_page="/warehouse", related_table="delivery_notes",
+                       related_ref=dn_number, created_by=username)
         new = "hod_approved"
     else:
         await session.execute(update(delivery_notes_t).where(delivery_notes_t.c["DN_Number"] == dn_number)
             .values(status="rejected", hod_decided_at=func.now(), hod_decided_by=username,
                     rejection_reason=reason or None))
-        await notify(session, event_key="dn_rejected", recipient_warehouse=row[2],
-                     severity="warning", title=f"DN {dn_number} rejected by HOD",
-                     body=f"Reason: {reason or 'not given'}", link_page="/warehouse",
-                     related_table="delivery_notes", related_ref=dn_number)
+        await dispatch(session, event_key="dn_rejected", recipient_warehouse=row[2],
+                       severity="warning", wa_template="status_update",
+                       title=f"DN {dn_number} rejected by HOD",
+                       body=f"Reason: {reason or 'not given'}", link_page="/warehouse",
+                       related_table="delivery_notes", related_ref=dn_number, created_by=username)
         new = "rejected"
     await write_audit(session, username, f"DN_HOD_{action.upper()}", "delivery_notes", f"DN={dn_number}")
     return {"decided": new, "dn_number": dn_number}
@@ -331,11 +338,12 @@ async def ship_dn(session: AsyncSession, *, username: str, dn_number: str) -> di
         delivery_notes_t.c["Site_ID"], delivery_notes_t.c["PO_Number"]
     ).where(delivery_notes_t.c["DN_Number"] == dn_number))).first()
     if dest is not None:
-        await notify(session, event_key="dn_shipped", recipient_role="store_keeper",
-                     recipient_site=dest[0],
-                     title=f"Delivery {dn_number} incoming",
-                     body=f"DN for PO {dest[1] or '—'} is in transit — receive it under Incoming Deliveries.",
-                     link_page="/site/incoming", related_table="delivery_notes", related_ref=dn_number)
+        await dispatch(session, event_key="dn_shipped", recipient_role="store_keeper",
+                       recipient_site=dest[0], wa_template="status_update",
+                       title=f"Delivery {dn_number} incoming",
+                       body=f"DN for PO {dest[1] or '—'} is in transit — receive it under Incoming Deliveries.",
+                       link_page="/site/incoming", related_table="delivery_notes",
+                       related_ref=dn_number, created_by=username)
     return {"shipped": True, "dn_number": dn_number, "status": "in_transit"}
 
 

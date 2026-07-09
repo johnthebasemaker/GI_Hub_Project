@@ -18,7 +18,7 @@ from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .ledger import _MD, write_audit  # reuse metadata + audit writer
-from .notifications import notify
+from .notifications import dispatch, notify
 
 pr_master_t = _MD.tables["pr_master"]
 purchase_orders_t = _MD.tables["purchase_orders"]
@@ -216,10 +216,11 @@ async def submit_pr(session: AsyncSession, *, username: str, pr_number: str, sit
         return {"error": f"PR {pr_number} has no eligible lines to submit"}
     await write_audit(session, username, "SUBMIT_PR_TO_LOGISTICS", "pr_master",
                       f"PR={pr_number} site={site_id} lines={res.rowcount}")
-    await notify(session, event_key="pr_submitted_to_logistics", recipient_role="logistics",
-                 title=f"New PR {pr_number} from {site_id}",
-                 body=f"{res.rowcount} line(s) awaiting PO issuance.",
-                 link_page="/logistics", related_table="pr_master", related_ref=pr_number)
+    await dispatch(session, event_key="pr_submitted_to_logistics", recipient_role="logistics",
+                   wa_template="action_required", title=f"New PR {pr_number} from {site_id}",
+                   body=f"{res.rowcount} line(s) awaiting PO issuance.",
+                   link_page="/logistics", related_table="pr_master", related_ref=pr_number,
+                   created_by=username)
     return {"submitted": True, "pr_number": pr_number, "lines": res.rowcount}
 
 
@@ -433,11 +434,13 @@ async def raise_vendor_return(session: AsyncSession, *, username: str, po_number
 
     await write_audit(session, username, "VENDOR_RETURN_RAISE", "po_returns",
                       f"id={rid} po={po_number} line={po_item_id} qty={qty:g}: {reason}")
-    await notify(session, event_key="vendor_return_raised", recipient_role="logistics",
-                 severity="warning", title=f"Vendor return raised on PO {po_number}",
-                 body=f"{line[0] or 'line'} × {qty:g} — {reason}"
-                      + (f" (resupply {expected_resupply})" if expected_resupply else ""),
-                 link_page="/logistics", related_table="po_returns", related_ref=str(rid))
+    await dispatch(session, event_key="vendor_return_raised", recipient_role="logistics",
+                   severity="warning", wa_template="action_required",
+                   title=f"Vendor return raised on PO {po_number}",
+                   body=f"{line[0] or 'line'} × {qty:g} — {reason}"
+                        + (f" (resupply {expected_resupply})" if expected_resupply else ""),
+                   link_page="/logistics", related_table="po_returns", related_ref=str(rid),
+                   created_by=username)
     return {"raised": True, "id": rid, "po_number": po_number, "reopened_line": reopened}
 
 
@@ -494,11 +497,11 @@ async def raise_reschedule(session: AsyncSession, *, username: str, role: str,
     ).returning(po_reschedule_t.c["id"]))).scalar_one()
     await write_audit(session, username, "RAISE_RESCHEDULE", "po_reschedule_requests",
                       f"id={rid} PO={po_number} → {requested_date}")
-    await notify(session, event_key="reschedule_raised", recipient_role="logistics",
-                 title=f"Reschedule requested — PO {po_number}",
-                 body=f"{role} {username} requests {requested_date}. Reason: {reason}",
-                 link_page="/logistics", related_table="po_reschedule_requests",
-                 related_ref=str(rid))
+    await dispatch(session, event_key="reschedule_raised", recipient_role="logistics",
+                   wa_template="action_required", title=f"Reschedule requested — PO {po_number}",
+                   body=f"{role} {username} requests {requested_date}. Reason: {reason}",
+                   link_page="/logistics", related_table="po_reschedule_requests",
+                   related_ref=str(rid), created_by=username)
     return {"raised": True, "id": rid, "po_number": po_number}
 
 
@@ -532,13 +535,14 @@ async def decide_reschedule(session: AsyncSession, *, username: str, req_id: int
             Expected_Delivery=row["requested_date"]))
     await write_audit(session, username, f"RESCHEDULE_{new_status.upper()}",
                       "po_reschedule_requests", f"id={req_id} PO={row['PO_Number']}")
-    await notify(session, event_key="reschedule_decided", recipient_user=row["requested_by"],
-                 severity=("success" if action == "approve" else "warning"),
-                 title=f"Reschedule {new_status} — PO {row['PO_Number']}",
-                 body=(f"New delivery date: {row['requested_date']}" if action == "approve"
-                       else f"Rejected: {decision_notes or 'no reason given'}"),
-                 link_page="/warehouse", related_table="po_reschedule_requests",
-                 related_ref=str(req_id))
+    await dispatch(session, event_key="reschedule_decided", recipient_user=row["requested_by"],
+                   severity=("success" if action == "approve" else "warning"),
+                   wa_template="status_update",
+                   title=f"Reschedule {new_status} — PO {row['PO_Number']}",
+                   body=(f"New delivery date: {row['requested_date']}" if action == "approve"
+                         else f"Rejected: {decision_notes or 'no reason given'}"),
+                   link_page="/warehouse", related_table="po_reschedule_requests",
+                   related_ref=str(req_id), created_by=username)
     return {"decided": new_status, "id": req_id, "po_number": row["PO_Number"],
             "new_date": row["requested_date"] if action == "approve" else None}
 
@@ -610,10 +614,12 @@ async def force_close(session: AsyncSession, *, username: str, target_type: str,
     ).returning(po_force_closures_t.c["id"]))).scalar_one()
     await write_audit(session, username, "FORCE_CLOSE", "po_force_closures",
                       f"id={cid} {target_type}={target_ref}: {reason}")
-    await notify(session, event_key="force_close", recipient_role="logistics",
-                 severity="warning", title=f"Force-closed {target_type} {target_ref}",
-                 body=f"{username}: {reason}. Undo available for {FORCE_UNDO_WINDOW_H}h.",
-                 link_page="/logistics", related_table="po_force_closures", related_ref=str(cid))
+    await dispatch(session, event_key="force_close", recipient_role="logistics",
+                   severity="warning", wa_template="critical_alert",
+                   title=f"Force-closed {target_type} {target_ref}",
+                   body=f"{username}: {reason}. Undo available for {FORCE_UNDO_WINDOW_H}h.",
+                   link_page="/logistics", related_table="po_force_closures", related_ref=str(cid),
+                   created_by=username)
     return {"closed": True, "id": cid, "target_type": target_type, "target_ref": str(target_ref)}
 
 
@@ -691,9 +697,10 @@ async def assign_po(session: AsyncSession, *, username: str, po_number: str, war
             Expected_Delivery=func.coalesce(purchase_orders_t.c["Expected_Delivery"], expected_delivery)))
     await write_audit(session, username, "ASSIGN_PO", "po_assignments",
                       f"PO={po_number} warehouse={warehouse_id}")
-    await notify(session, event_key="po_assigned_to_warehouse", recipient_role="warehouse_user",
-                 recipient_warehouse=warehouse_id,
-                 title=f"PO {po_number} assigned to {warehouse_id}",
-                 body="Acknowledge and receive it in the Warehouse portal.",
-                 link_page="/warehouse", related_table="po_assignments", related_ref=po_number)
+    await dispatch(session, event_key="po_assigned_to_warehouse", recipient_role="warehouse_user",
+                   recipient_warehouse=warehouse_id, wa_template="action_required",
+                   title=f"PO {po_number} assigned to {warehouse_id}",
+                   body="Acknowledge and receive it in the Warehouse portal.",
+                   link_page="/warehouse", related_table="po_assignments", related_ref=po_number,
+                   created_by=username)
     return {"assigned": True, "po_number": po_number, "warehouse_id": warehouse_id}

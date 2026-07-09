@@ -21,6 +21,7 @@ from __future__ import annotations
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from . import whatsapp as _wa
 from .ledger import _MD  # shared reflected metadata
 
 notifications_t = _MD.tables["app_notifications"]
@@ -51,6 +52,44 @@ async def notify(session: AsyncSession, *, event_key: str, title: str, body: str
         related_table=related_table, related_ref=related_ref,
     ).returning(_c["id"]))
     return res.scalar_one()
+
+
+async def dispatch(session: AsyncSession, *, event_key: str, title: str, body: str = "",
+                   severity: str = "info", recipient_user: str | None = None,
+                   recipient_role: str | None = None, recipient_site: str | None = None,
+                   recipient_warehouse: str | None = None, link_page: str | None = None,
+                   link_anchor: str | None = None, related_table: str | None = None,
+                   related_ref: str | None = None, wa_template: str = "status_update",
+                   wa: bool = True, created_by: str = "system") -> int | None:
+    """Fire an in-app notification AND (best-effort) an identical WhatsApp
+    message to the same recipient(s).
+
+    The in-app row is always written (via notify). The WhatsApp send is
+    best-effort: it is skipped entirely when WhatsApp is not configured, and any
+    failure is swallowed (recorded in whatsapp_outbox as 'failed') so a
+    messaging problem can never break the business action that triggered it.
+    `wa_template` picks the reusable template; the title/body become {{1}}/{{2}}.
+    """
+    ref = str(related_ref) if related_ref is not None else None
+    nid = await notify(session, event_key=event_key, title=title, body=body,
+                       severity=severity, recipient_user=recipient_user,
+                       recipient_role=recipient_role, recipient_site=recipient_site,
+                       recipient_warehouse=recipient_warehouse, link_page=link_page,
+                       link_anchor=link_anchor, related_table=related_table,
+                       related_ref=ref)
+    if wa and _wa.enabled():
+        try:
+            numbers = await _wa.resolve_numbers(
+                session, recipient_user=recipient_user, recipient_role=recipient_role,
+                recipient_site=recipient_site, recipient_warehouse=recipient_warehouse)
+            for n in numbers:
+                await _wa.send_template(
+                    session, to=n, template_key=wa_template,
+                    variables=[title, body or title], event_key=event_key,
+                    related_table=related_table, related_ref=ref, created_by=created_by)
+        except Exception:  # noqa: BLE001 — WhatsApp is best-effort, never fatal
+            pass
+    return nid
 
 
 def _visible(username: str, role: str, site_id: str | None, warehouse_id: str | None):
