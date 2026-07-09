@@ -232,6 +232,11 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-09 (Phase 7c · chunk 2) · actor=interactive · branch=`main` · 🔔 In-app notification center parity (bell)
+- **No new table:** the requested `in_app_notifications` already exists as **`app_notifications`** (cols `recipient_user`/`recipient_role`+site/warehouse, `title`/`body`, `link_page`, `read_at`, `created_at`) with its own `services/notifications.py` + `/notifications` router (list / unread-count / mark-read / read-all) and a **`NotificationBell`** mounted in the single shared `AppLayout` header → present in **every portal** (all authenticated routes render through one layout). Reused it rather than duplicating.
+- **Parity invariant:** chunk 1's `dispatch()` writes an identical in-app row for every WhatsApp send, so the bell now mirrors the WhatsApp stream for the receiving user/role.
+- **Live badge:** `useUnreadCount` gains a gentle 60s visible-tab `refetchInterval` (matches `useWorkQueues`) so an alert raised by someone else surfaces without a manual reload.
+
 ### 2026-07-09 (Phase 7c · chunk 1) · actor=interactive · branch=`main` · 🔔 Reusable WhatsApp templates + unified dispatch() + comprehensive trigger wiring
 - **Goal:** make notifications ubiquitous — every significant action fires BOTH an in-app row and (best-effort) a WhatsApp message, via a small set of reusable Meta templates instead of ad-hoc text.
 - **Templates (`services/whatsapp.py`):** new `send_template(template_key, variables)` + `_TEMPLATES` map of 4 logical keys → env-overridable Meta names: `action_required`→`gi_action_required`, `status_update`→`gi_status_update`, `critical_alert`→`gi_critical_alert`, `otp_code`→`gi_otp_code` (first three take 2 body vars, otp takes 1). `_template_payload` flattens params (Meta #132000) + caps 1024. `resolve_numbers(recipient_user|role|site|warehouse)` maps the in-app recipient descriptor → phone numbers, de-duped/capped, with an opt-in `WHATSAPP_ESCALATION_TO` catch-all for role/warehouse broadcasts (mirrors `hod_numbers`). Legacy `send_text`/`alert_notification` kept for back-compat but no longer used by triggers.

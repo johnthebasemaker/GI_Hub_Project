@@ -710,10 +710,12 @@ export function useUnreadCount() {
     queryKey: ['/notifications/unread-count'],
     queryFn: async () => (await api.get<{ unread: number }>('/notifications/unread-count')).data.unread,
     // The badge refreshes after your own actions (mutations invalidate this
-    // key) and whenever the window regains focus (refetchOnWindowFocus default).
-    // No refetchInterval: a background-polling query does not reliably re-render
-    // on invalidation while the tab is hidden.
+    // key), on window focus, and via gentle visible-tab polling so a WhatsApp/
+    // in-app alert raised by someone else surfaces without a manual reload.
+    // (Hidden tabs rely on the focus refetch — background intervals don't
+    // reliably re-render in throttled/hidden tabs.)
     refetchOnWindowFocus: true,
+    refetchInterval: 60_000,
   })
 }
 
