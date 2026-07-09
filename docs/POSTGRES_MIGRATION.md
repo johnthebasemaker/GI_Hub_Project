@@ -232,6 +232,19 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-09 (MED · chunk 1) · actor=interactive · branch=`main` · 🔓 Logistics vendor-returns (raise-to-vendor → reopen PO line)
+- **Files:** `backend/api/services/procurement.py` (raise/list/close_vendor_return) ·
+  `backend/api/logistics.py` (3 endpoints) · `backend/api/service_tests.py` (suite S,
+  7 checks) · `frontend/src/api/hooks.ts` · `frontend/src/pages/LogisticsPage.tsx` · this doc.
+- **Backend:** `POST /logistics/vendor-returns {po_number, po_item_id, qty, reason,
+  expected_resupply}` — validates qty ≤ delivered-unreturned, inserts a `po_returns`
+  row (raised_by_role='logistics'), and **reopens the PO line** (Returned_Qty += qty,
+  line_status→open, PO delivered/closed→partially_delivered). `GET /logistics/vendor-returns`
+  + `POST .../{id}/close` (resupplied; idempotent). Existing `po_returns` table — no migration.
+- **UI:** LogisticsPage "Vendor Returns" tab — raise form (PO → line picker via
+  usePoItems, qty/reason/resupply) + a returns table with a Close action.
+- **Gates:** service_tests **457/0** (+7) · frontend build ✅.
+
 ### 2026-07-09 (Phase 6 · chunk 3) · actor=interactive · branch=`main` · 🔓 Receipt entry guards — MTC gate (Rubber) + pack→base UoM conversion
 - **Files:** `backend/api/entry.py` (receipt-meta, MTC upload, guards on single +
   bulk receipts) · `backend/api/service_tests.py` (suite R, 9 checks) ·

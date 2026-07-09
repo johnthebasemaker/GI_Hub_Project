@@ -3072,6 +3072,76 @@ async def test_entry_guards():
         await _cleanup()
 
 
+async def test_vendor_returns():
+    """Deferred-MED — logistics vendor returns: raise-to-vendor reopens the PO
+    line, over-return is blocked, list + close (idempotent). Fixtures cleaned up."""
+    from sqlalchemy import delete, insert, select as _sel
+
+    po = ledger._MD.tables["purchase_orders"]
+    poi = ledger._MD.tables["po_items"]
+    ret = ledger._MD.tables["po_returns"]
+    PO = "PO-SVC-VR"
+    async with SessionLocal() as s:
+        await s.execute(delete(ret).where(ret.c["PO_Number"] == PO))
+        await s.execute(delete(poi).where(poi.c["PO_Number"] == PO))
+        await s.execute(delete(po).where(po.c["PO_Number"] == PO))
+        await s.execute(insert(po).values(PO_Number=PO, Site_ID="CNCEC", status="delivered", created_by="svc"))
+        lid = (await s.execute(insert(poi).values(PO_Number=PO, line_no=1, Material_Code="M1",
+               Qty=10.0, Delivered_Qty=10.0, Returned_Qty=0.0, line_status="delivered"
+               ).returning(poi.c["id"]))).scalar_one()
+        await s.commit()
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.88"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            worker_t = await token("worker", "floor2026")
+            admin_t = await token("admin", "admin2026")
+
+            body = {"po_number": PO, "po_item_id": lid, "qty": 4, "reason": "defective", "expected_resupply": "2026-08-01"}
+            r = await ac.post("/logistics/vendor-returns", headers=H(worker_t), json=body)
+            check("vendor-return: worker (lvl0) → 403", r.status_code == 403, f"got {r.status_code}")
+
+            r = await ac.post("/logistics/vendor-returns", headers=H(admin_t),
+                              json={**body, "qty": 15})
+            check("vendor-return: over-return → 409", r.status_code == 409, f"got {r.status_code}")
+
+            r = await ac.post("/logistics/vendor-returns", headers=H(admin_t), json=body)
+            j = r.json() if r.status_code == 201 else {}
+            rid = j.get("id")
+            check("vendor-return: raise → 201 reopened_line",
+                  r.status_code == 201 and rid and j.get("reopened_line") is True, f"got {r.status_code} {str(j)[:120]}")
+
+            async with SessionLocal() as s:
+                lrow = (await s.execute(_sel(poi.c["Returned_Qty"], poi.c["line_status"]).where(poi.c["id"] == lid))).first()
+                pst = (await s.execute(_sel(po.c["status"]).where(po.c["PO_Number"] == PO))).scalar_one()
+            check("vendor-return: PO line reopened (Returned_Qty=4, line open, PO partial)",
+                  float(lrow[0]) == 4.0 and lrow[1] == "open" and pst == "partially_delivered",
+                  f"returned={lrow[0]} line={lrow[1]} po={pst}")
+
+            r = await ac.get("/logistics/vendor-returns", params={"status": "open"}, headers=H(admin_t))
+            items = r.json().get("items", []) if r.status_code == 200 else []
+            check("vendor-return: appears in the open list", any(it.get("id") == rid for it in items), str(len(items)))
+
+            r = await ac.post(f"/logistics/vendor-returns/{rid}/close", headers=H(admin_t), json={"notes": "resupplied"})
+            check("vendor-return: close → 200", r.status_code == 200 and r.json().get("closed"), f"got {r.status_code}")
+            r = await ac.post(f"/logistics/vendor-returns/{rid}/close", headers=H(admin_t), json={})
+            check("vendor-return: re-close → 409", r.status_code == 409, f"got {r.status_code}")
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(ret).where(ret.c["PO_Number"] == PO))
+            await s.execute(delete(poi).where(poi.c["PO_Number"] == PO))
+            await s.execute(delete(po).where(po.c["PO_Number"] == PO))
+            await s.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -3115,6 +3185,8 @@ async def main() -> int:
     await test_supervisor_parity()
     print("\n R. receipt entry guards — MTC + UoM (Phase 6)")
     await test_entry_guards()
+    print("\n S. logistics vendor-returns (deferred MED)")
+    await test_vendor_returns()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

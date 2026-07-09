@@ -7,9 +7,10 @@ import type { ColumnsType } from 'antd/es/table'
 import type { Dayjs } from 'dayjs'
 import { InboxOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import {
-  useAssignPo, useCreate, useCreateManualPo, useCreatePo, useDecideReschedule,
-  useForceClose, useForceClosures, useList, useLogisticsPos, useLogisticsPrs,
-  usePoItems, useReschedules, useSites, useUndoForceClose,
+  useAssignPo, useCloseVendorReturn, useCreate, useCreateManualPo, useCreatePo,
+  useDecideReschedule, useForceClose, useForceClosures, useList, useLogisticsPos,
+  useLogisticsPrs, usePoItems, useRaiseVendorReturn, useReschedules, useSites,
+  useUndoForceClose, useVendorReturns,
 } from '../api/hooks'
 import { api } from '../api/client'
 import type { Row } from '../api/client'
@@ -643,6 +644,87 @@ function CreatePoManual() {
   )
 }
 
+// ---- Vendor Returns (deferred MED): raise-to-vendor + reopen PO line -------
+function VendorReturns() {
+  const { message } = App.useApp()
+  const { data: pos } = useLogisticsPos()
+  const { data: rows, isFetching } = useVendorReturns()
+  const raise = useRaiseVendorReturn()
+  const close = useCloseVendorReturn()
+  const [form] = Form.useForm<{ po_number: string; po_item_id: number; qty: number; reason: string; expected_resupply?: Dayjs }>()
+  const poWatch = Form.useWatch('po_number', form)
+  const { data: lines } = usePoItems(poWatch ?? null)
+
+  const onRaise = async () => {
+    const v = await form.validateFields()
+    try {
+      const res = await raise.mutateAsync({
+        po_number: v.po_number, po_item_id: v.po_item_id, qty: v.qty, reason: v.reason,
+        expected_resupply: v.expected_resupply ? v.expected_resupply.format('YYYY-MM-DD') : null,
+      } as unknown as Row)
+      message.success(`Return raised${res.reopened_line ? ' — PO line reopened' : ''}`)
+      form.resetFields(['po_item_id', 'qty', 'reason', 'expected_resupply'])
+    } catch (e) { message.error(errMsg(e)) }
+  }
+  const doClose = async (id: number) => {
+    try { await close.mutateAsync({ id }); message.success('Closed') }
+    catch (e) { message.error(errMsg(e)) }
+  }
+
+  const poOptions = (pos ?? []).map((p: Row) => ({ value: String(p.PO_Number), label: `${p.PO_Number} (${p.status})` }))
+  const lineOptions = (lines ?? []).map((l: Row) => ({
+    value: Number(l.id),
+    label: `#${l.line_no} ${l.Material_Code ?? ''} — delivered ${Number(l.Delivered_Qty ?? 0)}, returned ${Number(l.Returned_Qty ?? 0)}`,
+  }))
+
+  const columns: ColumnsType<Row> = [
+    { title: 'PO', dataIndex: 'PO_Number' },
+    { title: 'Material', dataIndex: 'Material_Code', render: (v) => v ?? '—' },
+    { title: 'Qty', dataIndex: 'Qty', align: 'right', render: (v) => Number(v) },
+    { title: 'Reason', dataIndex: 'Reason', ellipsis: true },
+    { title: 'Resupply', dataIndex: 'Expected_Resupply', render: (v) => (v ? String(v) : '—') },
+    { title: 'By', dataIndex: 'raised_by', width: 110 },
+    { title: 'Status', dataIndex: 'status', render: (v: string) => <Tag color={v === 'open' ? 'gold' : 'green'}>{v}</Tag> },
+    {
+      title: 'Action', key: '__act', width: 120,
+      render: (_: unknown, r: Row) => (String(r.status) === 'open'
+        ? <Popconfirm title="Mark this return as resupplied / closed?" onConfirm={() => doClose(Number(r.id))}>
+            <Button size="small">Close</Button>
+          </Popconfirm>
+        : <Typography.Text type="secondary">{r.closed_by ? String(r.closed_by) : '—'}</Typography.Text>),
+    },
+  ]
+
+  return (
+    <div>
+      <Card size="small" title="Raise a return to vendor" style={{ marginBottom: 16, maxWidth: 940 }}>
+        <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+          Returning delivered goods to the vendor reopens the PO line so a re-delivery is expected again.
+        </Typography.Paragraph>
+        <Form form={form} layout="inline">
+          <Form.Item name="po_number" rules={[{ required: true, message: 'PO' }]}>
+            <Select showSearch optionFilterProp="label" placeholder="PO" style={{ width: 180 }}
+              options={poOptions} onChange={() => form.setFieldValue('po_item_id', undefined)} />
+          </Form.Item>
+          <Form.Item name="po_item_id" rules={[{ required: true, message: 'line' }]}>
+            <Select placeholder="PO line" style={{ width: 340 }} options={lineOptions} disabled={!poWatch} />
+          </Form.Item>
+          <Form.Item name="qty" rules={[{ required: true, message: 'qty' }]}>
+            <InputNumber min={0.0001} placeholder="Qty" style={{ width: 100 }} />
+          </Form.Item>
+          <Form.Item name="reason" rules={[{ required: true, message: 'reason' }]}>
+            <Input placeholder="Reason" style={{ width: 200 }} />
+          </Form.Item>
+          <Form.Item name="expected_resupply"><DatePicker placeholder="Resupply date" format="YYYY-MM-DD" /></Form.Item>
+          <Button type="primary" loading={raise.isPending} onClick={onRaise}>Raise return</Button>
+        </Form>
+      </Card>
+      <Table size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
+        rowKey={(r) => String(r.id)} pagination={{ pageSize: 20, showTotal: (t) => `${t} returns` }} />
+    </div>
+  )
+}
+
 export default function LogisticsPage() {
   return (
     <div>
@@ -657,6 +739,7 @@ export default function LogisticsPage() {
           { key: 'import', label: '📄 Import PO PDF', children: <ImportPoPdf /> },
           { key: 'pos', label: 'Purchase Orders', children: <PurchaseOrders /> },
           { key: 'dns', label: 'DN Approvals', children: <DnApprovalQueue scope="logistics" /> },
+          { key: 'vreturns', label: 'Vendor Returns', children: <VendorReturns /> },
           { key: 'reschedules', label: 'Reschedules', children: <Reschedules /> },
           { key: 'force', label: 'Force-Closures', children: <ForceClosures /> },
         ]}

@@ -173,6 +173,62 @@ async def decide_reschedule(req_id: int, body: RescheduleDecideIn = Body(...),
         raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
 
 
+# --- logistics vendor-returns (raise to vendor → reopen PO line) ------------
+class VendorReturnIn(BaseModel):
+    po_number: str
+    po_item_id: int
+    qty: float = Field(..., gt=0)
+    reason: str
+    expected_resupply: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class VendorReturnCloseIn(BaseModel):
+    notes: Optional[str] = None
+
+
+@router.get("/vendor-returns", summary="Vendor returns (raise-to-vendor log)")
+async def vendor_returns(status: Optional[str] = None,
+                         session: AsyncSession = Depends(get_session)):
+    return {"items": await procurement.list_vendor_returns(session, status)}
+
+
+@router.post("/vendor-returns", status_code=201, summary="Raise a return to the vendor (reopens the PO line)")
+async def raise_vendor_return(body: VendorReturnIn = Body(...),
+                              user: dict = Depends(require_level(3)),
+                              session: AsyncSession = Depends(get_session)):
+    try:
+        async with session.begin():
+            res = await procurement.raise_vendor_return(
+                session, username=user["username"], po_number=body.po_number,
+                po_item_id=body.po_item_id, qty=body.qty, reason=body.reason,
+                expected_resupply=body.expected_resupply, notes=body.notes)
+        if res.get("error"):
+            raise HTTPException(409, res["error"])
+        return res
+    except HTTPException:
+        raise
+    except (IntegrityError, DataError) as e:
+        raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
+
+
+@router.post("/vendor-returns/{return_id}/close", summary="Close a vendor return (resupplied)")
+async def close_vendor_return(return_id: int, body: VendorReturnCloseIn = Body(default=VendorReturnCloseIn()),
+                              user: dict = Depends(require_level(3)),
+                              session: AsyncSession = Depends(get_session)):
+    try:
+        async with session.begin():
+            res = await procurement.close_vendor_return(
+                session, username=user["username"], return_id=return_id, notes=body.notes)
+        if res.get("error"):
+            raise HTTPException(409, res["error"])
+        return res
+    except HTTPException:
+        raise
+    except (IntegrityError, DataError) as e:
+        raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
+
+
 # --- DN multi-stage approval (Phase 6): logistics stage --------------------
 class DnDecideIn(BaseModel):
     action: str  # approve | reject

@@ -334,6 +334,33 @@ export function useUndoForceClose() {
   })
 }
 
+// Deferred MED — logistics vendor returns.
+export function useVendorReturns(status?: string) {
+  return useQuery({
+    queryKey: ['/logistics/vendor-returns', status],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>('/logistics/vendor-returns', { params: status ? { status } : {} })).data.items,
+  })
+}
+export function useRaiseVendorReturn() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (b: Row) => api.post('/logistics/vendor-returns', b).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['/logistics/vendor-returns'] })
+      qc.invalidateQueries({ queryKey: ['/logistics/pos'] })
+    },
+  })
+}
+export function useCloseVendorReturn() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, notes }: { id: number; notes?: string }) =>
+      api.post(`/logistics/vendor-returns/${id}/close`, { notes }).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/logistics/vendor-returns'] }),
+  })
+}
+
 export function usePoItems(po: string | null) {
   return useQuery({
     queryKey: ['/logistics/pos', po, 'items'],

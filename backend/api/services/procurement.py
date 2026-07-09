@@ -29,6 +29,7 @@ inventory_t = _MD.tables["inventory"]
 po_reschedule_t = _MD.tables["po_reschedule_requests"]
 po_force_closures_t = _MD.tables["po_force_closures"]
 vendors_t = _MD.tables["vendors"]
+po_returns_t = _MD.tables["po_returns"]
 
 # RL/BL family tokens — verbatim from config.py (RL_BL_FAMILY_TOKENS).
 _RL_BL_TOKENS = {
@@ -329,6 +330,76 @@ async def create_po_manual(session: AsyncSession, *, username: str, header: dict
     await write_audit(session, username, "CREATE_PO_MANUAL", "purchase_orders",
                       f"PO={po_number} lines={len(prepared)} total={total}")
     return {"created": True, "po_number": po_number, "lines": len(prepared), "total": total}
+
+
+# --- logistics vendor-returns (raise to vendor → reopen PO line) -------------
+async def raise_vendor_return(session: AsyncSession, *, username: str, po_number: str,
+                              po_item_id: int, qty: float, reason: str,
+                              expected_resupply: str | None = None, notes: str | None = None) -> dict:
+    if not (reason or "").strip():
+        return {"error": "a reason is required"}
+    if qty <= 0:
+        return {"error": "qty must be > 0"}
+    line = (await session.execute(select(
+        po_items_t.c["Material_Code"], po_items_t.c["Delivered_Qty"],
+        po_items_t.c["Returned_Qty"], po_items_t.c["Qty"], po_items_t.c["PO_Number"],
+    ).where((po_items_t.c["id"] == po_item_id) & (po_items_t.c["PO_Number"] == po_number)))).first()
+    if line is None:
+        return {"error": f"PO line {po_item_id} not found on {po_number}"}
+    delivered, returned, ordered = float(line[1] or 0), float(line[2] or 0), float(line[3] or 0)
+    on_hand = delivered - returned
+    if qty > on_hand + 1e-9:
+        return {"error": f"cannot return {qty:g} — only {on_hand:g} delivered-and-unreturned on this line"}
+
+    rid = (await session.execute(insert(po_returns_t).values(
+        PO_Number=po_number, po_item_id=po_item_id, Material_Code=line[0], Qty=qty,
+        Reason=reason, raised_by_role="logistics", raised_by=username,
+        Expected_Resupply=expected_resupply, status="open", notes=notes
+    ).returning(po_returns_t.c["id"]))).scalar_one()
+
+    # Reopen the PO line: track the return + flip it back to open so the vendor
+    # re-delivering is expected again.
+    new_returned = returned + qty
+    reopened = (delivered - new_returned) < ordered - 1e-9
+    await session.execute(update(po_items_t).where(po_items_t.c["id"] == po_item_id).values(
+        Returned_Qty=new_returned,
+        line_status="open" if reopened else po_items_t.c["line_status"]))
+    if reopened:
+        await session.execute(update(purchase_orders_t).where(
+            (purchase_orders_t.c["PO_Number"] == po_number)
+            & (purchase_orders_t.c["status"].in_(["delivered", "closed"]))
+        ).values(status="partially_delivered"))
+
+    await write_audit(session, username, "VENDOR_RETURN_RAISE", "po_returns",
+                      f"id={rid} po={po_number} line={po_item_id} qty={qty:g}: {reason}")
+    await notify(session, event_key="vendor_return_raised", recipient_role="logistics",
+                 severity="warning", title=f"Vendor return raised on PO {po_number}",
+                 body=f"{line[0] or 'line'} × {qty:g} — {reason}"
+                      + (f" (resupply {expected_resupply})" if expected_resupply else ""),
+                 link_page="/logistics", related_table="po_returns", related_ref=str(rid))
+    return {"raised": True, "id": rid, "po_number": po_number, "reopened_line": reopened}
+
+
+async def list_vendor_returns(session: AsyncSession, status: str | None):
+    stmt = select(po_returns_t).order_by(po_returns_t.c["id"].desc()).limit(500)
+    if status:
+        stmt = stmt.where(po_returns_t.c["status"] == status)
+    return _rows(await session.execute(stmt))
+
+
+async def close_vendor_return(session: AsyncSession, *, username: str, return_id: int,
+                              notes: str | None = None) -> dict:
+    row = (await session.execute(select(po_returns_t.c["status"])
+           .where(po_returns_t.c["id"] == return_id))).first()
+    if row is None:
+        return {"error": f"vendor return {return_id} not found"}
+    if row[0] == "closed":
+        return {"error": f"vendor return {return_id} is already closed"}
+    await session.execute(update(po_returns_t).where(po_returns_t.c["id"] == return_id).values(
+        status="closed", closed_at=func.now(), closed_by=username,
+        notes=notes if notes is not None else po_returns_t.c["notes"]))
+    await write_audit(session, username, "VENDOR_RETURN_CLOSE", "po_returns", f"id={return_id}")
+    return {"closed": True, "id": return_id}
 
 
 # --- reschedule workflow (H7) ------------------------------------------------
