@@ -3291,8 +3291,10 @@ async def test_whatsapp_outbox():
 
     saved = (wamod._post_message, wamod._upload_media)
     prev_esc = _o.environ.get("WHATSAPP_ESCALATION_TO")
+    sent_payloads: list = []
 
     async def ok_post(payload):
+        sent_payloads.append(payload)
         return {"ok": True, "message_id": "wamid.TEST"}
 
     async def ok_upload(blob, filename, mime):
@@ -3335,6 +3337,13 @@ async def test_whatsapp_outbox():
             esc = await rows_for("xsite_escalation")
             check("whatsapp: xsite escalation enqueued + sent",
                   any(x["status"] == "sent" and x["meta_message_id"] == "wamid.TEST" for x in esc), str(esc)[:160])
+            # Alert sends must be TEMPLATE messages (deliverable outside the
+            # 24h customer-service window), carrying the alert as {{1}}.
+            tpl = next((p for p in sent_payloads if p.get("type") == "template"), None)
+            check("whatsapp: alert payload is a template w/ body param",
+                  tpl is not None and tpl["template"]["name"]
+                  and "cross-site" in str(tpl["template"]["components"][0]["parameters"][0]["text"]).lower(),
+                  str(tpl)[:200])
 
             # Trigger 2 — FEFO override on an issue alerts the HOD.
             inv = (await ac.get("/inventory", params={"limit": 3}, headers=H(worker_t))).json().get("items", [])

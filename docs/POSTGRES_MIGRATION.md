@@ -232,6 +232,18 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-09 (Phase 7b · chunk 1) · actor=interactive · branch=`main` · 📱 WhatsApp TEMPLATE messages (24h-window fix)
+- **Files:** `backend/api/services/whatsapp.py` (`_text_payload` → template) ·
+  `backend/api/service_tests.py` (suite V payload assertion) · `deploy/.env.example` · this doc.
+- **Why:** free-form text is only deliverable inside Meta's 24-hour customer-service
+  window. Alert sends now use `type: "template"` — an approved Utility template with
+  ONE body variable `{{1}}` carrying the alert text (newlines flattened per Meta
+  #132000; `hello_world` special-cased with no components for smoke tests).
+  Configured via `WHATSAPP_TEMPLATE_NAME` (default `alert_notification`) +
+  `WHATSAPP_TEMPLATE_LANG` (default `en`). Report-document sends unchanged
+  (documents outside 24h need a document-header template — noted, not built).
+- **Gates:** service_tests **485/0** (+1 template assertion) · frontend build n/a (backend-only).
+
 ### 2026-07-09 (Phase 7) · actor=interactive · branch=`main` · 📱 Native v2 WhatsApp outbox + Meta Cloud API (Meta-hold LIFTED)
 - **Files:** `backend/models.py` + `backend/alembic/versions/…e5c3f19a77b2…` (new
   `whatsapp_outbox` table, NEW-STACK-ONLY) · `backend/api/services/whatsapp.py` (new

@@ -10,6 +10,14 @@ This is a from-scratch async implementation — it does NOT reuse the legacy
 SQLite `whatsapp_worker.py`. Credentials come from the environment:
   WHATSAPP_PHONE_NUMBER_ID · WHATSAPP_TOKEN · WHATSAPP_API_VERSION (default v20.0)
   WHATSAPP_ESCALATION_TO (optional fallback number when a recipient has none)
+  WHATSAPP_TEMPLATE_NAME (default alert_notification) · WHATSAPP_TEMPLATE_LANG (default en)
+
+DELIVERABILITY: business-initiated messages outside Meta's 24-hour customer-
+service window MUST be pre-approved template messages, so alert sends use
+`type: "template"` with the alert text as the single {{1}} body parameter
+(the template must be approved with one body variable — e.g.
+`alert_notification`: "{{1}}"). Set WHATSAPP_TEMPLATE_NAME=hello_world only for
+smoke-testing (it takes no variables; we then send it without components).
 
 The two live-HTTP boundaries (`_post_message`, `_upload_media`) are the ONLY
 functions that touch the network — service_tests monkeypatch them so CI never
@@ -89,9 +97,30 @@ async def _upload_media(blob: bytes, filename: str, mime: str) -> dict:
 
 
 # ── payload builders ─────────────────────────────────────────────────────────
+def _template_name() -> str:
+    return os.environ.get("WHATSAPP_TEMPLATE_NAME", "alert_notification").strip()
+
+
+def _template_lang() -> str:
+    return os.environ.get("WHATSAPP_TEMPLATE_LANG", "en").strip()
+
+
 def _text_payload(to: str, body: str) -> dict:
-    return {"messaging_product": "whatsapp", "to": to, "type": "text",
-            "text": {"body": (body or "")[:4096]}}
+    """Alert sends use an approved TEMPLATE (deliverable outside the 24h window).
+
+    The template is expected to carry ONE body variable ({{1}}) that receives the
+    alert text. `hello_world` (Meta's built-in smoke-test template) takes no
+    variables, so it is sent without components. Template body params may not
+    contain newlines/tabs (Meta #132000) — they are flattened to spaces.
+    """
+    name = _template_name()
+    tpl: dict = {"name": name, "language": {"code": _template_lang()}}
+    if name != "hello_world":
+        flat = " ".join((body or "").split())[:1024]
+        tpl["components"] = [{"type": "body",
+                              "parameters": [{"type": "text", "text": flat}]}]
+    return {"messaging_product": "whatsapp", "to": to, "type": "template",
+            "template": tpl}
 
 
 def _doc_payload(to: str, media_id: str, filename: str, caption: str | None) -> dict:
