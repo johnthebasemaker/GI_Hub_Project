@@ -1,4 +1,4 @@
-# PROJECT STATUS — resume here (updated 2026-07-09, 🔓 feature-gap program + Phase 7 COMPLETE — only cutover/S6 remain)
+# PROJECT STATUS — resume here (updated 2026-07-09, 🔓 feature-gap program + Phase 7/7b/7c COMPLETE — only cutover/S6 remain)
 
 **This is the single source of truth for "where we left off."** A fresh chat
 should read this file, then [`REPO_MAP.md`](../REPO_MAP.md) (segregation
@@ -24,13 +24,17 @@ approval + supervisor parity (intent-vs-actual UI, cancel-while-pending, live
 cart stock) + receipt entry guards (MTC gate + UoM conversion) · **Deferred-MED
 backlog** (logistics vendor-returns, HOD draft-PR line-edit/rename, admin lot
 lifecycle). Gates green:
-`service_tests` **495/0**, `parity_check` **5/5**, `bug_check` **599/0**,
-`parity:sme` **509**, frontend build ✅. **Phase 7 (WhatsApp) AND Phase 7b
-(email) are DONE** — native v2 `whatsapp_outbox` (alerts as approved TEMPLATE
-messages, deliverable outside the 24h window) + `email_outbox` (stdlib-SMTP
-async client) + triggers (xsite>5 · FEFO-override · report delivery ·
-MTC-missing → logistics · vendor-return draft → logistics) + admin WhatsApp AND
-Email Consoles. The ONLY remaining parked item is
+`service_tests` **510/0**, `parity_check` **5/5**, `bug_check` **599/0**,
+`parity:sme` **509**, frontend build ✅. **Phase 7 (WhatsApp), 7b (email) AND
+7c (ubiquitous notifications) are DONE** — native v2 `whatsapp_outbox` +
+`email_outbox` + **a reusable-template layer (`gi_action_required` /
+`gi_status_update` / `gi_critical_alert` / `gi_otp_code`) and a unified
+`dispatch()` so every significant action fires BOTH an in-app notification
+(bell, all portals) AND a best-effort WhatsApp** to the concerned party, plus
+**self-service phone changes via a WhatsApp OTP** (`phone_otp`, admins override
+without OTP). Triggers now span PR/PO, DN multi-stage, entries/approvals, MTC
+upload, lot quarantine/dispose, vendor returns, reschedules, force-close, SMR,
+cross-site, SLA, FEFO, report delivery. The ONLY remaining parked item is
 **SME Phase S6 (Master Data CRUD)**, deferred to Cutover Day (dual-write drift protection).
 The user is handling **Cloudflare-Tunnel local hosting** (`gi.giinventory.com`) +
 UI smoke testing himself. Remaining feature backlog: §4 below + the
@@ -106,16 +110,17 @@ Streamlit portal — all EIGHT legacy tabs:
   `progress-list`/`production-log`, plan-export key `overview`.
 
 ### E. Gates (all green, current)
-`service_tests` **495/0** (360 at freeze → +135 across freeze-lift suites
-H–W: SLA tracker, submission intel, bulk entry, reschedule, force-close, manual
+`service_tests` **510/0** (360 at freeze → +150 across freeze-lift suites
+H–X: SLA tracker, submission intel, bulk entry, reschedule, force-close, manual
 PO, rate-limiter IP, reporting/dashboard, DN approval, supervisor parity, entry
 guards, vendor-returns, PR line-edit/rename, lot lifecycle, WhatsApp outbox,
-email outbox) · `bug_check` **599/0** · `parity_check` **5/5** · `parity:sme`
-**509** · frontend build ✅ · `alembic check` clean (single head f7d4a20b88c3) ·
+email outbox, **phone OTP**) · `bug_check` **599/0** · `parity_check` **5/5** · `parity:sme`
+**509** · frontend build ✅ · `alembic check` clean (single head a1e8c4d20f9b) ·
 dual_ci mirror consistent. Schema additions since day one: `auth_sessions`,
 `ai_jobs`, `sla_dismissals`, `users.Location`/`pending_users.Location`,
-`whatsapp_outbox` (Phase 7) and `email_outbox` (Phase 7b) — all user-authorized,
-new-stack-only; Phase-4/5/6 feature work otherwise reused existing tables.
+`whatsapp_outbox` (Phase 7), `email_outbox` (Phase 7b) and `phone_otp`
+(Phase 7c) — all user-authorized, new-stack-only; Phase-4/5/6 feature work
+otherwise reused existing tables (`app_notifications` powers the in-app bell).
 
 ### F. Post-freeze work (2026-07-08 freeze-lift) — SHIPPED, pushed to `origin/main`
 - **Deploy / CI infra:** v2 Postgres backup service (`deploy/backup/backup-pg.sh`,
@@ -170,13 +175,17 @@ LOW polish remains (details in the `feature-gap-program` memory):
   open-POs filters + KPI hero · FEFO auto-suggest on DN prep.
 
 **Cutover / parked:**
-5. ~~**Phase 7/7b — WhatsApp + email outboxes**~~ ✅ **DONE 2026-07-09** — native
-   v2 `whatsapp_outbox` (alerts as approved TEMPLATE messages;
-   `WHATSAPP_TEMPLATE_NAME` must exist as an approved Utility template with one
-   `{{1}}` body variable) + `email_outbox` (stdlib-SMTP; `SMTP_*` +
-   `EMAIL_LOGISTICS_TO` in `deploy/.env`) + triggers (xsite>5 · FEFO-override ·
-   report delivery · MTC-missing · vendor-return draft) + admin WhatsApp/Email
-   Consoles. Legacy `whatsapp_worker.py`/mailer NOT reused.
+5. ~~**Phase 7/7b/7c — WhatsApp + email + ubiquitous notifications**~~ ✅ **DONE 2026-07-09** — native
+   v2 `whatsapp_outbox` + `email_outbox` (stdlib-SMTP; `SMTP_*` +
+   `EMAIL_LOGISTICS_TO` in `deploy/.env`) + a **reusable-template layer + unified
+   `dispatch()`** so every significant action writes BOTH an in-app row (bell)
+   AND a best-effort WhatsApp, plus **self-service phone OTP** (`phone_otp`;
+   admins override without OTP). **⚠️ Operator action:** create + approve **four
+   Meta templates** in WhatsApp Manager — `gi_action_required`, `gi_status_update`,
+   `gi_critical_alert` (each Utility, TWO body vars `{{1}} {{2}}`) and
+   `gi_otp_code` (Authentication, ONE body var `{{1}}`); names are env-overridable
+   (`WHATSAPP_TPL_*`). Exact body text is in the Phase 7c run-log + the delivery
+   report. Legacy `whatsapp_worker.py`/mailer NOT reused.
 6. **Local hosting** — Cloudflare Tunnel → `gi.giinventory.com` (user-driven;
    plan in the `feature-gap-program` memory). **Gotcha:** the rate-limiter keys
    on `X-Real-IP`; behind the tunnel the real client IP is `CF-Connecting-IP` —
