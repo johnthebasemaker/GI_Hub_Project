@@ -660,6 +660,23 @@ class EmailOutbox(Base):
     updated_at = Column(DateTime)
 
 
+class PhoneOtp(Base):
+    """One-time codes for self-service phone-number changes (NEW-STACK ONLY;
+    dual_ci leaves it empty, same contract as whatsapp_outbox/email_outbox).
+    The code is hashed at rest (bcrypt), expires in ~10 min and is single-use;
+    users.Phone_Number only changes after a code verifies. Admins bypass this
+    entirely via PATCH /admin/users/{username}."""
+    __tablename__ = "phone_otp"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(Text, nullable=False, index=True)
+    new_number = Column(Text, nullable=False)
+    code_hash = Column(Text, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    consumed_at = Column(DateTime)
+    attempts = Column(Integer, server_default=text('0'))
+    created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+
+
 class WbsMaster(Base):
     __tablename__ = "wbs_master"
     id = Column(Integer, primary_key=True, autoincrement=True)

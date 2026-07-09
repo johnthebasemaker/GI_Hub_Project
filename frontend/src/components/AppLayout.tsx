@@ -2,7 +2,7 @@ import { Suspense, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Alert, Badge, Button, ConfigProvider, Layout, Menu, Skeleton, Space, Switch, Tooltip, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AppstoreOutlined, LogoutOutlined, MoonOutlined, SearchOutlined, SunOutlined } from '@ant-design/icons'
+import { AppstoreOutlined, LogoutOutlined, MoonOutlined, SearchOutlined, SunOutlined, UserOutlined } from '@ant-design/icons'
 import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth, useOverdueActions, useWorkQueues } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -14,6 +14,7 @@ import { siderTheme } from '../theme/themes'
 import CommandPalette from './CommandPalette'
 import HubAssistant from './HubAssistant'
 import NotificationBell from './NotificationBell'
+import ProfileModal from './ProfileModal'
 
 const { Header, Sider, Content } = Layout
 
@@ -109,6 +110,7 @@ export default function AppLayout() {
   }
   // Red SLA badge — polled only for admins (endpoint is level-4).
   const { data: overdue } = useOverdueActions(level >= 4)
+  const [profileOpen, setProfileOpen] = useState(false)
 
   // Collapsible sidebar groups — the role's primary group opens by default
   // (progressive disclosure); the choice persists, and the active group is
@@ -191,9 +193,12 @@ export default function AppLayout() {
             </Tooltip>
             <NotificationBell />
             {user && (
-              <Typography.Text type="secondary" className="gi-user-label">
-                {user.label} · {user.username}
-              </Typography.Text>
+              <Tooltip title="My profile — update phone number">
+                <Button type="text" className="gi-user-label" icon={<UserOutlined />}
+                  onClick={() => setProfileOpen(true)}>
+                  {user.label} · {user.username}
+                </Button>
+              </Tooltip>
             )}
             <Button size="small" icon={<LogoutOutlined />} onClick={logout}>Sign out</Button>
           </Space>
@@ -218,6 +223,7 @@ export default function AppLayout() {
         </Content>
       </Layout>
       <CommandPalette />
+      <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
     </Layout>
   )
 }

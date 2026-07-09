@@ -45,6 +45,7 @@ pending_users_t = _MD.tables["pending_users"]
 sessions_t = _MD.tables["auth_sessions"]
 app_settings_t = _MD.tables["app_settings"]
 sysset_t = _MD.tables["system_settings"]  # admin-created sites (category='Site')
+phone_otp_t = _MD.tables["phone_otp"]      # self-service phone-change OTP codes
 
 
 async def maintenance_on(session: AsyncSession) -> bool:
@@ -295,6 +296,34 @@ async def _audit(session: AsyncSession, username: str, action: str, details: str
     await session.execute(insert(audit_t).values(
         username=username, action_type=action, target_table="users", details=details))
     await session.commit()
+
+
+# --- phone-number self-service (OTP over WhatsApp) ---------------------------
+_OTP_TTL_MIN = 10          # a code is valid for 10 minutes
+_OTP_MAX_ATTEMPTS = 5      # wrong guesses before a code is burned
+
+
+def _gen_otp() -> str:
+    """A 6-digit numeric code. Isolated so service_tests can monkeypatch it."""
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _normalize_phone(raw: str) -> str:
+    """E.164-ish: keep digits only (drop spaces/dashes/leading +). 8–15 digits."""
+    digits = "".join(ch for ch in (raw or "") if ch.isdigit())
+    if not (8 <= len(digits) <= 15):
+        raise HTTPException(422, "enter a valid phone number in international format "
+                                 "(8–15 digits, country code, no '+')")
+    return digits
+
+
+class PhoneRequestIn(BaseModel):
+    new_number: str
+
+
+class PhoneVerifyIn(BaseModel):
+    new_number: str
+    code: str
 
 
 @router.post("/login", summary="Username + password → JWT (or a 2FA challenge)",
@@ -561,3 +590,84 @@ async def twofa_disable(body: CodeIn, user: dict = Depends(get_current_user),
     await session.commit()
     await _audit(session, user["username"], "2FA_DISABLED", "disabled by user")
     return {"disabled": True}
+
+
+@router.get("/phone", summary="My phone number on file")
+async def get_phone(user: dict = Depends(get_current_user),
+                    session: AsyncSession = Depends(get_session)):
+    n = (await session.execute(select(users_t.c["Phone_Number"])
+         .where(users_t.c["username"] == user["username"]))).scalar_one_or_none()
+    return {"phone_number": (n or None)}
+
+
+@router.post("/phone/request-otp", summary="Send a 6-digit code to a NEW number to verify it",
+             dependencies=[rate_limit(5, 60)])
+async def request_phone_otp(body: PhoneRequestIn, user: dict = Depends(get_current_user),
+                            session: AsyncSession = Depends(get_session)):
+    from .services import whatsapp as wa  # lazy: avoids an auth↔whatsapp import cycle
+    number = _normalize_phone(body.new_number)
+    code = _gen_otp()
+    code_hash = bcrypt.hashpw(code.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    expires = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None) + _dt.timedelta(minutes=_OTP_TTL_MIN)
+    # Supersede any earlier un-consumed code for this user (single active code).
+    await session.execute(update(phone_otp_t).where(
+        (phone_otp_t.c["username"] == user["username"]) & phone_otp_t.c["consumed_at"].is_(None)
+    ).values(consumed_at=func.now()))
+    await session.execute(insert(phone_otp_t).values(
+        username=user["username"], new_number=number, code_hash=code_hash,
+        expires_at=expires, attempts=0))
+    # Send the code to the NEW number (best-effort; the row is committed either
+    # way so a transient send failure doesn't strand the user mid-flow).
+    sent = False
+    try:
+        res = await wa.send_otp(session, to=number, code=code, created_by=user["username"])
+        sent = res.get("status") == "sent"
+    except Exception:  # noqa: BLE001
+        sent = False
+    await session.commit()
+    await _audit(session, user["username"], "PHONE_OTP_REQUEST", f"→ {number} sent={sent}")
+    if not wa.enabled():
+        raise HTTPException(503, "WhatsApp is not configured on the server — "
+                                 "ask an admin to set your number directly.")
+    return {"sent": sent, "expires_in": _OTP_TTL_MIN * 60}
+
+
+@router.post("/phone/verify-otp", summary="Verify the code → save the new number",
+             dependencies=[rate_limit(10, 60)])
+async def verify_phone_otp(body: PhoneVerifyIn, user: dict = Depends(get_current_user),
+                           session: AsyncSession = Depends(get_session)):
+    number = _normalize_phone(body.new_number)
+    now = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+    row = (await session.execute(select(
+        phone_otp_t.c["id"], phone_otp_t.c["code_hash"], phone_otp_t.c["expires_at"],
+        phone_otp_t.c["attempts"]
+    ).where(
+        (phone_otp_t.c["username"] == user["username"])
+        & (phone_otp_t.c["new_number"] == number)
+        & phone_otp_t.c["consumed_at"].is_(None)
+    ).order_by(phone_otp_t.c["id"].desc()).limit(1))).first()
+    if row is None:
+        raise HTTPException(404, "no pending code for this number — request a new one")
+    if row.expires_at < now:
+        await session.execute(update(phone_otp_t).where(phone_otp_t.c["id"] == row.id)
+                              .values(consumed_at=func.now()))
+        await session.commit()
+        raise HTTPException(400, "this code has expired — request a new one")
+    if (row.attempts or 0) >= _OTP_MAX_ATTEMPTS:
+        await session.execute(update(phone_otp_t).where(phone_otp_t.c["id"] == row.id)
+                              .values(consumed_at=func.now()))
+        await session.commit()
+        raise HTTPException(429, "too many attempts — request a new code")
+    if not bcrypt.checkpw(body.code.encode("utf-8"), row.code_hash.encode("utf-8")):
+        await session.execute(update(phone_otp_t).where(phone_otp_t.c["id"] == row.id)
+                              .values(attempts=(row.attempts or 0) + 1))
+        await session.commit()
+        raise HTTPException(400, "incorrect code")
+    # Correct → consume the code and save the number.
+    await session.execute(update(phone_otp_t).where(phone_otp_t.c["id"] == row.id)
+                          .values(consumed_at=func.now()))
+    await session.execute(update(users_t).where(users_t.c["username"] == user["username"])
+                          .values(Phone_Number=number))
+    await session.commit()
+    await _audit(session, user["username"], "PHONE_UPDATED", f"verified → {number}")
+    return {"updated": True, "phone_number": number}

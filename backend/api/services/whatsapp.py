@@ -220,6 +220,19 @@ async def send_template(session: AsyncSession, *, to: str, template_key: str,
                                   related_ref=related_ref, created_by=created_by)
 
 
+async def send_otp(session: AsyncSession, *, to: str, code: str,
+                   created_by: str = "system") -> dict:
+    """Send a phone-verification code via the otp_code template. The outbox
+    `body` preview is redacted (the code still lives in payload_json, which is
+    the message actually sent — short-lived, admin-only)."""
+    name = _resolve_template("otp_code")
+    payload = _template_payload(to, name, [code])
+    return await _record_and_send(session, to=to, payload=payload,
+                                  preview="verification code (redacted)",
+                                  event_key="otp_verification", related_table="phone_otp",
+                                  created_by=created_by)
+
+
 async def send_document(session: AsyncSession, *, to: str, blob: bytes, filename: str,
                         mime: str, caption: str, event_key: str, created_by: str = "system") -> dict:
     up = await _upload_media(blob, filename, mime)

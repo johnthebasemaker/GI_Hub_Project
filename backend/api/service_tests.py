@@ -3541,6 +3541,131 @@ async def test_email_outbox():
         await _cleanup()
 
 
+async def test_phone_otp():
+    """Phase 7c — self-service phone change via WhatsApp OTP. Meta HTTP is MOCKED
+    and _gen_otp is monkeypatched to a fixed code (no live send, deterministic
+    verify). Covers request → wrong code → correct code → number saved, the
+    single-active-code rule, and the admin no-OTP override. Cleans up in finally."""
+    import os as _o
+    from sqlalchemy import delete, select as _sel, update as _upd
+    import backend.api.services.whatsapp as wamod
+    import backend.api.auth as authmod
+
+    ob = ledger._MD.tables["whatsapp_outbox"]
+    otp = ledger._MD.tables["phone_otp"]
+    users = ledger._MD.tables["users"]
+
+    async with SessionLocal() as s:
+        base_ob = (await s.execute(_sel(func.coalesce(func.max(ob.c["id"]), 0)))).scalar_one()
+        prev_phone = (await s.execute(_sel(users.c["Phone_Number"])
+                      .where(users.c["username"] == "worker"))).scalar_one_or_none()
+
+    saved_post = wamod._post_message
+    saved_gen = authmod._gen_otp
+    _ENVK = ("WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_TOKEN")
+    prev_env = {k: _o.environ.get(k) for k in _ENVK}
+    otp_sends: list = []
+
+    async def ok_post(payload):
+        otp_sends.append(payload)
+        return {"ok": True, "message_id": "wamid.OTP"}
+
+    wamod._post_message = ok_post
+    _o.environ["WHATSAPP_PHONE_NUMBER_ID"] = "svc-test-pnid"
+    _o.environ["WHATSAPP_TOKEN"] = "svc-test-token"
+    authmod._gen_otp = lambda: "654321"
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.93"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            worker_t = await token("worker", "floor2026")
+            admin_t = await token("admin", "admin2026")
+
+            r = await ac.get("/auth/phone", headers=H(worker_t))
+            check("otp: GET /auth/phone → 200", r.status_code == 200 and "phone_number" in r.json(),
+                  f"got {r.status_code}")
+
+            # A malformed number is rejected before any code is generated.
+            r = await ac.post("/auth/phone/request-otp", headers={**H(worker_t), **_ip},
+                              json={"new_number": "12"})
+            check("otp: bad number → 422", r.status_code == 422, f"got {r.status_code}")
+
+            # Request a code for a new number (dashes/spaces normalized away).
+            r = await ac.post("/auth/phone/request-otp", headers={**H(worker_t), **_ip},
+                              json={"new_number": "1 555-123-4567"})
+            check("otp: request-otp → 200 sent", r.status_code == 200 and r.json().get("sent") is True,
+                  f"got {r.status_code} {str(r.json())[:120]}")
+            async with SessionLocal() as s:
+                pend = (await s.execute(_sel(func.count()).select_from(otp).where(
+                    (otp.c["username"] == "worker") & (otp.c["new_number"] == "15551234567")
+                    & otp.c["consumed_at"].is_(None)))).scalar_one()
+            check("otp: one active code row for the new number", pend == 1, f"pend={pend}")
+            # The code must NOT appear in the outbox preview (redacted).
+            async with SessionLocal() as s:
+                rows = [dict(m) for m in (await s.execute(_sel(ob.c["body"], ob.c["status"])
+                        .where((ob.c["event_key"] == "otp_verification") & (ob.c["id"] > base_ob)))).mappings().all()]
+            check("otp: code sent via WhatsApp, preview redacted",
+                  any(r["status"] == "sent" for r in rows) and all("654321" not in (r["body"] or "") for r in rows),
+                  str(rows)[:160])
+
+            # A second request supersedes the first (still exactly one active).
+            r = await ac.post("/auth/phone/request-otp", headers={**H(worker_t), **_ip},
+                              json={"new_number": "15551234567"})
+            async with SessionLocal() as s:
+                active = (await s.execute(_sel(func.count()).select_from(otp).where(
+                    (otp.c["username"] == "worker") & otp.c["consumed_at"].is_(None)))).scalar_one()
+            check("otp: re-request supersedes prior code (one active)", active == 1, f"active={active}")
+
+            # Wrong code is rejected; the number is unchanged.
+            r = await ac.post("/auth/phone/verify-otp", headers={**H(worker_t), **_ip},
+                              json={"new_number": "15551234567", "code": "000000"})
+            check("otp: wrong code → 400", r.status_code == 400, f"got {r.status_code}")
+
+            # Correct code saves the new number.
+            r = await ac.post("/auth/phone/verify-otp", headers={**H(worker_t), **_ip},
+                              json={"new_number": "15551234567", "code": "654321"})
+            check("otp: correct code → updated", r.status_code == 200 and r.json().get("phone_number") == "15551234567",
+                  f"got {r.status_code} {str(r.json())[:120]}")
+            r = await ac.get("/auth/phone", headers=H(worker_t))
+            check("otp: phone now reflects the verified number",
+                  r.json().get("phone_number") == "15551234567", str(r.json())[:120])
+
+            # The code is single-use — verifying again fails.
+            r = await ac.post("/auth/phone/verify-otp", headers={**H(worker_t), **_ip},
+                              json={"new_number": "15551234567", "code": "654321"})
+            check("otp: reused code → 404 (already consumed)", r.status_code == 404, f"got {r.status_code}")
+
+            # Admin override sets any user's number directly — no OTP.
+            r = await ac.patch("/admin/users/worker", headers=H(admin_t),
+                               json={"phone_number": "15559990000"})
+            check("otp: admin override → 200", r.status_code == 200, f"got {r.status_code}")
+            r = await ac.get("/auth/phone", headers=H(worker_t))
+            check("otp: admin override applied without OTP",
+                  r.json().get("phone_number") == "15559990000", str(r.json())[:120])
+    finally:
+        wamod._post_message = saved_post
+        authmod._gen_otp = saved_gen
+        for _k, _v in prev_env.items():
+            if _v is None:
+                _o.environ.pop(_k, None)
+            else:
+                _o.environ[_k] = _v
+        async with SessionLocal() as s:
+            await s.execute(delete(otp).where(otp.c["username"] == "worker"))
+            await s.execute(delete(ob).where(ob.c["id"] > base_ob))
+            await s.execute(_upd(users).where(users.c["username"] == "worker")
+                            .values(Phone_Number=prev_phone))
+            await s.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -3594,6 +3719,8 @@ async def main() -> int:
     await test_whatsapp_outbox()
     print("\n W. email outbox + triggers (Phase 7b, SMTP mocked)")
     await test_email_outbox()
+    print("\n X. phone-change OTP + admin override (Phase 7c, Meta mocked)")
+    await test_phone_otp()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

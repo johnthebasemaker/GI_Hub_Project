@@ -232,6 +232,14 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-09 (Phase 7c · chunk 3) · actor=interactive · branch=`main` · 📲 Phone-number self-service (WhatsApp OTP) + admin override
+- **New table `phone_otp`** (model + Alembic `a1e8c4d20f9b`, single head; created in the mirror via checkfirst) — NEW-STACK ONLY, holds short-lived **bcrypt-hashed** 6-digit codes; 10-min TTL, single-use, max 5 attempts.
+- **`auth.py` endpoints:** `GET /auth/phone` (my number), `POST /auth/phone/request-otp` (normalize E.164-ish → generate via mockable `_gen_otp()` → hash + store, supersede any prior active code → send to the NEW number via `wa.send_otp` using the `gi_otp_code` template) and `POST /auth/phone/verify-otp` (checks expiry/attempts/hash → on success writes `users.Phone_Number` + audits `PHONE_UPDATED`). The number changes ONLY after a code verifies. `wa` imported lazily inside the handler to avoid the auth↔whatsapp↔ledger↔stock import cycle.
+- **`whatsapp.send_otp`:** otp_code template send with a **redacted outbox preview** (the code lives only in `payload_json`, the message actually sent).
+- **Admin override (already present):** `PATCH /admin/users/{username}` sets any user's `Phone_Number` directly, no OTP (UsersPage already exposes the field).
+- **Frontend:** `ProfileModal` (two-step: enter number → 6-digit code) opened from a new profile button in the shared `AppLayout` header (every portal); hooks `useMyPhone` / `useRequestPhoneOtp` / `useVerifyPhoneOtp`.
+- **Tests:** suite X (`test_phone_otp`, 12 checks) — Meta HTTP mocked + `_gen_otp` monkeypatched: request → redacted-preview send, single-active-code rule, wrong code → 400, correct code → number saved, reused code → 404, admin override with no OTP. **service_tests 510/0 · parity 5/5 · frontend build ✅ · alembic single head a1e8c4d20f9b.**
+
 ### 2026-07-09 (Phase 7c · chunk 2) · actor=interactive · branch=`main` · 🔔 In-app notification center parity (bell)
 - **No new table:** the requested `in_app_notifications` already exists as **`app_notifications`** (cols `recipient_user`/`recipient_role`+site/warehouse, `title`/`body`, `link_page`, `read_at`, `created_at`) with its own `services/notifications.py` + `/notifications` router (list / unread-count / mark-read / read-all) and a **`NotificationBell`** mounted in the single shared `AppLayout` header → present in **every portal** (all authenticated routes render through one layout). Reused it rather than duplicating.
 - **Parity invariant:** chunk 1's `dispatch()` writes an identical in-app row for every WhatsApp send, so the bell now mirrors the WhatsApp stream for the receiving user/role.

@@ -771,6 +771,31 @@ export function useMarkAllNotifRead() {
   })
 }
 
+// --- self-service phone number (OTP over WhatsApp) --------------------------
+export function useMyPhone() {
+  return useQuery({
+    queryKey: ['/auth/phone'],
+    queryFn: async () => (await api.get<{ phone_number: string | null }>('/auth/phone')).data.phone_number,
+  })
+}
+
+export function useRequestPhoneOtp() {
+  return useMutation({
+    mutationFn: (new_number: string) =>
+      api.post<{ sent: boolean; expires_in: number }>('/auth/phone/request-otp', { new_number })
+        .then((r) => r.data),
+  })
+}
+
+export function useVerifyPhoneOtp() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (v: { new_number: string; code: string }) =>
+      api.post<{ updated: boolean; phone_number: string }>('/auth/phone/verify-otp', v).then((r) => r.data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['/auth/phone'] }) },
+  })
+}
+
 // --- admin inventory master editor ------------------------------------------
 function useInventoryMutation<V>(fn: (v: V) => Promise<Row>) {
   const qc = useQueryClient()
