@@ -11,16 +11,20 @@ run log). Legacy/SME rules: [`handoff.md`](../handoff.md) (SME Canon).
 ## 0. Current state in one paragraph
 
 **The 2026-07-06 code freeze was TEMPORARILY LIFTED (2026-07-08)** to close the
-legacy→new feature-parity gap and prepare for multi-user testing. Since then we
-shipped, in order: **deploy/CI infrastructure** (a Postgres backup service, a
-manual-trigger v2 Hetzner pipeline, and S3 off-box backups); a verified
-**standalone new-stack extract** at `~/gi_hub_v2`; and a **feature-gap program** —
-P0 role-access manifest + AI visibility · P1 SK bulk entry + item snapshot · P2
-HOD reject-reason + auto-draft PR · P3 sidebar ⌘K palette + collapsible nav ·
-**Phase 4 procurement depth** (reschedule workflow, force-close + 24h undo,
-manual PO + vendor picker). Gates are green: `service_tests` **418/0**,
-`parity_check` **5/5**, `bug_check` **599/0**, `parity:sme` **509**, frontend
-build ✅. STILL PARKED: **Phase 7 (WhatsApp/email outbox)** on the Meta token, and
+legacy→new feature-parity gap and prepare for multi-user testing. That whole
+program is now **COMPLETE** (P0–P6 + deploy infra I-A/I-B), shipped in order:
+deploy/CI infra (PG backup service, manual-trigger v2 Hetzner pipeline, S3
+backups) · standalone extract at `~/gi_hub_v2` · P0 role-access manifest + AI
+visibility · P1 SK bulk entry + snapshot · P2 HOD reject-reason + auto-draft PR ·
+P3 sidebar ⌘K + collapsible nav · Phase 4 procurement depth (reschedule,
+force-close + 24h undo, manual PO + vendors) · Phase I-B Cloudflare Tunnel
+(gi-hub hijack) + CF-Connecting-IP rate-limit · Phase 5 PR-status report +
+Dashboard valuation/charts + Admin system-overview · Phase 6 DN two-stage
+approval + supervisor parity (intent-vs-actual UI, cancel-while-pending, live
+cart stock) + receipt entry guards (MTC gate + UoM conversion). Gates green:
+`service_tests` **450/0**, `parity_check` **5/5**, `bug_check` **599/0**,
+`parity:sme` **509**, frontend build ✅. STILL PARKED: **Phase 7 (WhatsApp/email
+outbox)** on the Meta token, and
 **SME Phase S6 (Master Data CRUD)** to Cutover Day (dual-write drift protection).
 The user is handling **Cloudflare-Tunnel local hosting** (`gi.giinventory.com`) +
 UI smoke testing himself. Remaining feature backlog: §4 below + the
@@ -96,13 +100,14 @@ Streamlit portal — all EIGHT legacy tabs:
   `progress-list`/`production-log`, plan-export key `overview`.
 
 ### E. Gates (all green, current)
-`service_tests` **418/0** (360 at freeze → +58 across freeze-lift suites
-H/I/J/K/L/M: SLA tracker, submission intel, bulk entry, reschedule, force-close,
-manual PO) · `bug_check` **599/0** · `parity_check` **5/5** · `parity:sme`
+`service_tests` **450/0** (360 at freeze → +90 across freeze-lift suites
+H–R: SLA tracker, submission intel, bulk entry, reschedule, force-close, manual
+PO, rate-limiter IP, reporting/dashboard, DN approval, supervisor parity, entry
+guards) · `bug_check` **599/0** · `parity_check` **5/5** · `parity:sme`
 **509** · frontend build ✅ · `alembic check` clean · dual_ci mirror consistent.
 Schema additions since day one: `auth_sessions`, `ai_jobs`, `sla_dismissals`,
 `users.Location`/`pending_users.Location` (all user-authorized, new-stack-only;
-Phase-4 procurement tables already existed, so it needed **no** migration).
+every Phase-4/5/6 feature reused existing tables — **no** further migration).
 
 ### F. Post-freeze work (2026-07-08 freeze-lift) — SHIPPED, pushed to `origin/main`
 - **Deploy / CI infra:** v2 Postgres backup service (`deploy/backup/backup-pg.sh`,
@@ -120,33 +125,37 @@ Phase-4 procurement tables already existed, so it needed **no** migration).
   (`a119fa9`); P2 HOD reject-reason modal + auto-draft PR button (`b99935b`); P3
   ⌘K command palette + collapsible role-primary nav (`a176b88`); **Phase 4**
   reschedule (`34a8b62`), force-close + 24h undo (`cc3040a`), manual PO + vendor
-  picker (`1f0d811`). See `feature-gap-program` memory for the audit + backlog.
+  picker (`1f0d811`); **Phase I-B** CF-Connecting-IP rate-limit + gi-hub tunnel
+  hijack config (`b94ecaa`); **Phase 5** PR-status report + Dashboard valuation
+  KPI/charts + Admin system-overview (`685b614`); **Phase 6** DN two-stage
+  approval (`2db5b2f`), supervisor parity — intent-vs-actual UI + cancel + live
+  cart stock (`41712dc`), receipt entry guards — MTC gate + UoM conversion
+  (`7a72ff4`). **The entire approved feature-gap backlog (P0–P6 + I-A/I-B) is
+  DONE.** See `feature-gap-program` memory for the audit + the only-LOW-polish +
+  parked-Meta remainder.
 
 ---
 
 ## 3. WHAT WE'RE DOING NOW
 
-**🔓 Feature-gap program under a temporary freeze-lift.** Closing legacy→new
-gaps in prioritized phases — each phase: backend + `service_tests` → frontend →
-gates (`service_tests` · `parity_check` · frontend build) → commit with a
-`POSTGRES_MIGRATION.md §8` run-log entry → push. Verification is via `tsc`/build
-+ the service suite (the user's own Vite dev server holds `:5173`; **he runs the
-browser smoke tests**). The user is standing up **Cloudflare-Tunnel local
-hosting** for `gi.giinventory.com` so multiple people can test simultaneously.
+**🔓 Feature-gap program COMPLETE (P0–P6 + I-A/I-B), still under the temporary
+freeze-lift.** All approved-scope parity gaps are closed and pushed. The user is
+running the app for multi-user testing via the **Cloudflare Tunnel**
+(`gi.giinventory.com`, config in `deploy/cloudflared/`) and doing browser smoke
+tests. Nothing is in flight — awaiting the next directive (a new feature ask, the
+Meta token for Phase 7, or the cutover go-ahead).
 
 ---
 
 ## 4. WHAT WE WANT TO DO NEXT
 
-**Feature-gap backlog (freeze-lift, on the user's go-ahead — details in the
-`feature-gap-program` memory):**
-1. Supervisor **Intent-vs-Actual** report (HIGH; a `intent-vs-actual` report key
-   may already exist in `reports.py` — check before building).
-2. **DN multi-stage approval** (Logistics delivery-date + HOD content gate before
-   ship) — the biggest remaining procurement gap.
-3. **PR-Status report** (the new build only has PO status today).
-4. **Dashboard** valuation KPI + charts (stock-vs-min, burn forecast,
-   top-consumed) + admin system-overview KPIs. Then deferred LOW polish.
+**Feature-gap backlog — the approved scope is DONE.** Only these remain (all
+optional; details in the `feature-gap-program` memory):
+- **Deferred MED** (not in the approved cut): logistics vendor-returns; PR draft
+  line-edit/rename; lot lifecycle UI (quarantine/dispose — server logic exists).
+- **LOW polish:** barcode/QR pick · smart last-entry defaults · recently-used
+  pills · form draft-recovery · report category filter / SAR toggle / preview ·
+  open-POs filters + KPI hero · FEFO auto-suggest on DN prep.
 
 **Still parked / cutover (unchanged):**
 5. **Phase 7 — WhatsApp/email outbox** when the Meta permanent token arrives.
