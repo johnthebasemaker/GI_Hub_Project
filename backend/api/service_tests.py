@@ -2986,6 +2986,92 @@ async def test_supervisor_parity():
             await s.commit()
 
 
+async def test_entry_guards():
+    """Phase 6 — receipt guards: MTC gate for Rubber materials + pack→base UoM
+    conversion. Synthetic inventory/conversion/MTC rows cleaned up in finally."""
+    from sqlalchemy import delete, insert, select as _sel
+
+    inv = ledger._MD.tables["inventory"]
+    uom = ledger._MD.tables["uom_conversions"]
+    mtc = ledger._MD.tables["mtc_documents"]
+    pr = ledger._MD.tables["pending_receipts"]
+    RUB, UOMSAP = "SVC-RUBBER", "SVC-UOM"
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            await s.execute(delete(pr).where(pr.c["SAP_Code"].in_([RUB, UOMSAP])))
+            await s.execute(delete(mtc).where(mtc.c["SAP_Code"] == RUB))
+            await s.execute(delete(uom).where(uom.c["SAP_Code"] == UOMSAP))
+            await s.execute(delete(inv).where(inv.c["SAP_Code"].in_([RUB, UOMSAP])))
+            await s.commit()
+
+    await _cleanup()
+    async with SessionLocal() as s:
+        await s.execute(insert(inv).values(SAP_Code=RUB, Equipment_Description="Rubber sheet",
+                                           UOM="m2", Category="Rubber Lining"))
+        await s.execute(insert(inv).values(SAP_Code=UOMSAP, Equipment_Description="Solvent",
+                                           UOM="L", Category="Others"))
+        await s.execute(insert(uom).values(SAP_Code=UOMSAP, Pack_UOM="Drum", Factor=200.0))
+        await s.commit()
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.87"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            sk_t = await token("worker", "floor2026")
+
+            r = await ac.get(f"/entry/receipt-meta/{RUB}", headers=H(sk_t))
+            check("guards: receipt-meta flags rubber", r.status_code == 200 and r.json().get("is_rubber") is True,
+                  f"got {r.status_code} {r.text[:100]}")
+            r = await ac.get(f"/entry/receipt-meta/{UOMSAP}", headers=H(sk_t))
+            convs = r.json().get("conversions", []) if r.status_code == 200 else []
+            check("guards: receipt-meta lists pack conversion",
+                  any(c.get("Pack_UOM") == "Drum" and float(c.get("Factor")) == 200.0 for c in convs), str(convs)[:120])
+
+            # Rubber receipt without an MTC → blocked.
+            base = {"Date": "2026-07-09", "SAP_Code": RUB, "Quantity": 5, "Site_ID": "CNCEC"}
+            r = await ac.post("/entry/receipts", headers=H(sk_t), json=base)
+            check("guards: rubber receipt without MTC → 422", r.status_code == 422, f"got {r.status_code}")
+
+            # Upload an MTC, then the receipt is accepted + linked.
+            up = await ac.post("/entry/mtc", headers=H(sk_t),
+                               files={"file": ("mtc.pdf", b"%PDF-1.4 test", "application/pdf")},
+                               data={"sap_code": RUB, "site_id": "CNCEC", "mtc_number": "MTC-1"})
+            mtc_id = up.json().get("id") if up.status_code == 201 else None
+            check("guards: MTC upload → 201 w/ id", up.status_code == 201 and mtc_id, f"got {up.status_code}")
+            r = await ac.post("/entry/receipts", headers=H(sk_t), json={**base, "mtc_document_id": mtc_id})
+            pid = r.json().get("pending_id") if r.status_code == 201 else None
+            check("guards: rubber receipt WITH MTC → 201", r.status_code == 201 and pid, f"got {r.status_code} {r.text[:100]}")
+            async with SessionLocal() as s:
+                linked = (await s.execute(_sel(mtc.c["pending_receipt_id"]).where(mtc.c["id"] == mtc_id))).scalar_one()
+            check("guards: MTC linked to the staged receipt", linked == pid, f"got {linked} want {pid}")
+
+            # UoM conversion: 2 Drum × 200 = 400 L stored on the staged receipt.
+            r = await ac.post("/entry/receipts", headers=H(sk_t),
+                              json={"Date": "2026-07-09", "SAP_Code": UOMSAP, "Quantity": 2,
+                                    "Site_ID": "CNCEC", "entry_uom": "Drum"})
+            pid2 = r.json().get("pending_id") if r.status_code == 201 else None
+            check("guards: UoM receipt → 201", r.status_code == 201 and pid2, f"got {r.status_code}")
+            async with SessionLocal() as s:
+                q = (await s.execute(_sel(pr.c["Quantity"]).where(pr.c["id"] == pid2))).scalar_one()
+            check("guards: pack→base converted (2 Drum × 200 = 400)", float(q) == 400.0, f"got {q}")
+
+            # Unknown pack UoM → 422.
+            r = await ac.post("/entry/receipts", headers=H(sk_t),
+                              json={"Date": "2026-07-09", "SAP_Code": UOMSAP, "Quantity": 1,
+                                    "Site_ID": "CNCEC", "entry_uom": "Pallet"})
+            check("guards: unknown pack UoM → 422", r.status_code == 422, f"got {r.status_code}")
+    finally:
+        await _cleanup()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -3027,6 +3113,8 @@ async def main() -> int:
     await test_dn_approval()
     print("\n Q. supervisor parity (Phase 6)")
     await test_supervisor_parity()
+    print("\n R. receipt entry guards — MTC + UoM (Phase 6)")
+    await test_entry_guards()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

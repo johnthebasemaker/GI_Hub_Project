@@ -86,6 +86,23 @@ export const useReturnEntry = () => useLedgerPost('/entry/returns', ['/returns']
 export const useAdjustmentEntry = () =>
   useLedgerPost('/entry/adjustments', ['/receipts', '/consumption'])
 
+// Phase 6 — receipt guards metadata (rubber? base UoM? pack conversions).
+export interface ReceiptMeta {
+  sap_code: string
+  base_uom: string | null
+  is_rubber: boolean
+  conversions: { Pack_UOM: string; Factor: number }[]
+}
+export function useReceiptMeta(sap?: string) {
+  return useQuery<ReceiptMeta>({
+    queryKey: ['/entry/receipt-meta', sap],
+    enabled: !!sap,
+    staleTime: 60_000,
+    queryFn: async () =>
+      (await api.get<ReceiptMeta>(`/entry/receipt-meta/${encodeURIComponent(sap!)}`)).data,
+  })
+}
+
 // Phase 1 — bulk entry: stage a batch of receipts/issues/returns in one call.
 export interface BulkResult { staged: number; pending_ids: number[]; kind: string }
 export function useBulkEntry(kind: 'receipt' | 'consumption' | 'return', extra: string[] = []) {

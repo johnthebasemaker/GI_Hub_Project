@@ -232,6 +232,24 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-09 (Phase 6 · chunk 3) · actor=interactive · branch=`main` · 🔓 Receipt entry guards — MTC gate (Rubber) + pack→base UoM conversion
+- **Files:** `backend/api/entry.py` (receipt-meta, MTC upload, guards on single +
+  bulk receipts) · `backend/api/service_tests.py` (suite R, 9 checks) ·
+  `frontend/src/api/hooks.ts` (useReceiptMeta) · `frontend/src/pages/ReceivePage.tsx` · this doc.
+- **MTC gate:** `_apply_receipt_guards` blocks a receipt of a **Rubber** material
+  (`inventory.Category` contains "rubber") unless an `mtc_document_id` is supplied.
+  `POST /entry/mtc` (multipart) stores the file in `mtc_documents`; after staging,
+  the MTC is linked via `pending_receipt_id`. Applies to single + bulk receipts (atomic).
+- **UoM conversion:** an `entry_uom` (pack) is converted to the base UoM using
+  `uom_conversions.Factor` (unknown pack → 422); the base qty is stored with a
+  conversion note in Remarks. `GET /entry/receipt-meta/{sap}` feeds the UI
+  (is_rubber, base_uom, conversions). Existing tables — no migration.
+- **UI:** ReceivePage add-line form shows a "Receive in unit" select (when
+  conversions exist) and an MTC upload (when rubber, blocks add without it); both
+  ride each staged row into the bulk submit.
+- **Gates:** service_tests **450/0** (+9) · parity 5/5 · frontend build ✅.
+- **Phase 6 COMPLETE** (DN two-stage approval · supervisor parity · entry guards).
+
 ### 2026-07-09 (Phase 6 · chunk 2) · actor=interactive · branch=`main` · 🔓 Supervisor parity (Intent-vs-Actual UI · cancel-while-pending · live cart stock)
 - **Files:** `backend/api/services/supervisor.py` (cancel_smr) · `backend/api/requests.py`
   (intent-vs-actual, stock-check, cancel endpoints) · `backend/api/service_tests.py`

@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react'
 import {
   App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Popconfirm, Row,
-  Select, Space, Table, Typography,
+  Select, Space, Table, Tag, Typography, Upload,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
+import { DeleteOutlined, EditOutlined, PaperClipOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
-import { useBulkEntry, useList, useSites } from '../api/hooks'
+import { useBulkEntry, useList, useReceiptMeta, useSites } from '../api/hooks'
+import { api } from '../api/client'
 import type { Row as ApiRow } from '../api/client'
 import ItemSnapshot from '../components/ItemSnapshot'
 
@@ -21,6 +22,8 @@ interface FormValues {
   PR_Number?: string
   Lot_Number?: string
   Remarks?: string
+  entry_uom?: string
+  mtc_document_id?: number
 }
 
 interface StagedRow extends ApiRow {
@@ -46,6 +49,8 @@ export default function ReceivePage() {
 
   const watchSap = Form.useWatch('SAP_Code', form)
   const watchSite = Form.useWatch('Site_ID', form)
+  const watchMtc = Form.useWatch('mtc_document_id', form)
+  const { data: meta } = useReceiptMeta(watchSap)
 
   const itemOptions = useMemo(() => (inventory.data?.items ?? []).map((r: ApiRow) => ({
     value: String(r.SAP_Code),
@@ -53,8 +58,14 @@ export default function ReceivePage() {
   })), [inventory.data])
   const labelFor = (sap: string) => itemOptions.find((o) => o.value === sap)?.label ?? sap
 
+  const RESET_FIELDS: (keyof FormValues)[] = ['SAP_Code', 'Quantity', 'Supplier', 'Expiry_Date', 'PR_Number', 'Lot_Number', 'Remarks', 'entry_uom', 'mtc_document_id']
+
   const addToBatch = async () => {
     const v = await form.validateFields()
+    if (meta?.is_rubber && !v.mtc_document_id) {
+      message.error('This is a Rubber material — attach an MTC document before adding it')
+      return
+    }
     const payload: StagedRow = {
       _uid: editingUid ?? `r${++_seq}`,
       _label: labelFor(v.SAP_Code),
@@ -67,12 +78,14 @@ export default function ReceivePage() {
       Expiry_Date: v.Expiry_Date ? v.Expiry_Date.format('YYYY-MM-DD') : null,
       PR_Number: v.PR_Number || null,
       Lot_Number: v.Lot_Number || null,
+      entry_uom: v.entry_uom || null,
+      mtc_document_id: v.mtc_document_id ?? null,
     }
     setStaged((prev) => editingUid
       ? prev.map((r) => (r._uid === editingUid ? payload : r))
       : [...prev, payload])
     setEditingUid(null)
-    form.resetFields(['SAP_Code', 'Quantity', 'Supplier', 'Expiry_Date', 'PR_Number', 'Lot_Number', 'Remarks'])
+    form.resetFields(RESET_FIELDS)
   }
 
   const editLine = (r: StagedRow) => {
@@ -85,6 +98,8 @@ export default function ReceivePage() {
       PR_Number: (r.PR_Number as string) ?? undefined,
       Lot_Number: (r.Lot_Number as string) ?? undefined,
       Remarks: (r.Remarks as string) ?? undefined,
+      entry_uom: (r.entry_uom as string) ?? undefined,
+      mtc_document_id: (r.mtc_document_id as number) ?? undefined,
     })
   }
 
@@ -100,7 +115,7 @@ export default function ReceivePage() {
       const res = await bulk.mutateAsync(rows)
       message.success(`${res.staged} receipt line(s) submitted for HOD approval`)
       setStaged([])
-      form.resetFields(['SAP_Code', 'Quantity', 'Supplier', 'Expiry_Date', 'PR_Number', 'Lot_Number', 'Remarks'])
+      form.resetFields(RESET_FIELDS)
     } catch (e) {
       message.error(errMsg(e))
     }
@@ -173,12 +188,56 @@ export default function ReceivePage() {
             <Col xs={24} md={8}><Form.Item name="PR_Number" label="PR Number (optional)"><Input placeholder="links + auto-closes PR" /></Form.Item></Col>
             <Col xs={24} md={8}><Form.Item name="Lot_Number" label="Lot Number (optional)"><Input placeholder="auto if expiry set" /></Form.Item></Col>
           </Row>
+          {/* Phase 6 receipt guards — pack→base UoM + Rubber MTC gate. */}
+          {(meta?.conversions?.length || meta?.is_rubber) && (
+            <Row gutter={16}>
+              {!!meta?.conversions?.length && (
+                <Col xs={24} md={8}>
+                  <Form.Item name="entry_uom" label="Receive in unit"
+                    tooltip="Pick a pack unit to auto-convert the quantity to the base unit at submit.">
+                    <Select allowClear placeholder={`base: ${meta.base_uom ?? '—'}`}
+                      options={[
+                        ...(meta.base_uom ? [{ value: meta.base_uom, label: `${meta.base_uom} (base)` }] : []),
+                        ...meta.conversions.map((c) => ({ value: c.Pack_UOM, label: `${c.Pack_UOM} (× ${c.Factor})` })),
+                      ]} />
+                  </Form.Item>
+                </Col>
+              )}
+              {meta?.is_rubber && (
+                <Col xs={24} md={16}>
+                  <Form.Item label="MTC (Material Test Certificate) — required for Rubber"
+                    required validateStatus={watchMtc ? 'success' : 'warning'}
+                    help={watchMtc ? 'Attached' : 'A Rubber material cannot be added without an MTC'}>
+                    <Space>
+                      <Upload showUploadList={false} accept=".pdf,.jpg,.jpeg,.png"
+                        customRequest={async ({ file, onSuccess, onError }) => {
+                          const fd = new FormData()
+                          fd.append('file', file as Blob)
+                          fd.append('sap_code', String(watchSap ?? ''))
+                          fd.append('site_id', String(watchSite ?? ''))
+                          try {
+                            const r = await api.post<{ id: number; file_name: string }>('/entry/mtc', fd)
+                            form.setFieldValue('mtc_document_id', r.data.id)
+                            message.success(`MTC attached: ${r.data.file_name}`)
+                            onSuccess?.(r.data)
+                          } catch (e) { message.error(errMsg(e)); onError?.(e as Error) }
+                        }}>
+                        <Button icon={<PaperClipOutlined />} disabled={!watchSap || !watchSite}>Upload MTC</Button>
+                      </Upload>
+                      {watchMtc ? <Tag color="green">MTC #{watchMtc} attached</Tag> : <Tag color="warning">no MTC</Tag>}
+                    </Space>
+                  </Form.Item>
+                  <Form.Item name="mtc_document_id" hidden><InputNumber /></Form.Item>
+                </Col>
+              )}
+            </Row>
+          )}
           <Form.Item name="Remarks" label="Remarks"><Input.TextArea rows={2} placeholder="Notes (optional)" /></Form.Item>
           <Space>
             <Button type={editingUid ? 'primary' : 'default'} icon={<PlusOutlined />} onClick={addToBatch}>
               {editingUid ? 'Update line' : 'Add to batch'}
             </Button>
-            {editingUid && <Button onClick={() => { setEditingUid(null); form.resetFields(['SAP_Code', 'Quantity', 'Supplier', 'Expiry_Date', 'PR_Number', 'Lot_Number', 'Remarks']) }}>Cancel edit</Button>}
+            {editingUid && <Button onClick={() => { setEditingUid(null); form.resetFields(RESET_FIELDS) }}>Cancel edit</Button>}
           </Space>
         </Form>
       </Card>

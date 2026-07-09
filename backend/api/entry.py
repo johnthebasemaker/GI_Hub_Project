@@ -16,9 +16,9 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import LargeBinary
+from sqlalchemy import LargeBinary, insert, text
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,8 +61,55 @@ class ReceiptIn(BaseModel):
     Expiry_Date: Optional[str] = Field(None, description="YYYY-MM-DD; auto-creates a lot")
     PR_Number: Optional[str] = None
     Lot_Number: Optional[str] = None
+    entry_uom: Optional[str] = Field(None, description="pack UoM the qty is entered in; converted to base")
+    mtc_document_id: Optional[int] = Field(None, description="MTC upload id (required for Rubber materials)")
     extra: Optional[dict[str, Any]] = Field(
         None, description="Optional extra receipts columns (logistics fields)")
+
+
+# --- receipt entry guards (Phase 6): MTC gate + pack→base UoM conversion -----
+async def _receipt_meta(session, sap: str) -> dict:
+    row = (await session.execute(text(
+        'SELECT "UOM", "Category" FROM inventory WHERE TRIM("SAP_Code") = TRIM(:s) LIMIT 1'
+    ), {"s": sap})).first()
+    base_uom = row[0] if row else None
+    is_rubber = bool(row and "rubber" in str(row[1] or "").lower())
+    convs = [dict(m) for m in (await session.execute(text(
+        'SELECT "Pack_UOM", "Factor" FROM uom_conversions '
+        'WHERE TRIM("SAP_Code") = TRIM(:s) ORDER BY "Pack_UOM"'), {"s": sap})).mappings().all()]
+    return {"sap_code": sap, "base_uom": base_uom, "is_rubber": is_rubber, "conversions": convs}
+
+
+async def _apply_receipt_guards(session, data: dict) -> Optional[int]:
+    """Enforce the MTC gate for Rubber materials and convert an entry (pack) UoM
+    to the base UoM. Mutates data['Quantity']/['Remarks'] in place; returns the
+    mtc_document_id to link post-stage. Raises HTTPException on a failed gate."""
+    sap = str(data["SAP_Code"]).strip()
+    meta = await _receipt_meta(session, sap)
+    entry_uom = (data.get("entry_uom") or "").strip()
+    if entry_uom and meta["base_uom"] and entry_uom != meta["base_uom"]:
+        factor = next((float(c["Factor"]) for c in meta["conversions"]
+                       if c["Pack_UOM"] == entry_uom), None)
+        if factor is None:
+            raise HTTPException(422, f"no pack→base conversion for {entry_uom!r} on {sap}")
+        orig = float(data["Quantity"])
+        data["Quantity"] = round(orig * factor, 6)
+        note = f"[{orig:g} {entry_uom} × {factor:g} → {data['Quantity']:g} {meta['base_uom']}]"
+        data["Remarks"] = ((str(data.get("Remarks") or "").strip() + " " + note).strip())
+    mtc_id = data.get("mtc_document_id")
+    if meta["is_rubber"] and not mtc_id:
+        raise HTTPException(422, f"{sap} is a Rubber material — an MTC document is required")
+    return mtc_id
+
+
+async def _link_mtc(session, mtc_id: Optional[int], pending_id) -> None:
+    if mtc_id and pending_id is not None:
+        await session.execute(text(
+            "UPDATE mtc_documents SET pending_receipt_id = :pid WHERE id = :mid"),
+            {"pid": int(pending_id), "mid": int(mtc_id)})
+
+
+_mtc_t = ledger._MD.tables["mtc_documents"]
 
 
 class ConsumptionIn(BaseModel):
@@ -117,10 +164,12 @@ async def create_receipt(
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
+            mtc_id = await _apply_receipt_guards(session, data)  # MTC gate + UoM convert
             result = await ledger.stage_receipt(session, username=user["username"], data=data)
+            await _link_mtc(session, mtc_id, result.get("pending_id"))
             await _notify_hod_staged(session, kind_label="Receipt", site_id=body.Site_ID,
                                      actor=user["username"], ref=result.get("pending_id"),
-                                     detail=f"{body.SAP_Code} · qty {body.Quantity:g} · {body.Site_ID}")
+                                     detail=f"{body.SAP_Code} · qty {data['Quantity']:g} · {body.Site_ID}")
         return result
     except HTTPException:
         raise
@@ -201,6 +250,31 @@ async def adjustment_reasons(user: dict = Depends(get_current_user)):
     return ledger.ADJUSTMENT_REASONS
 
 
+@router.get("/receipt-meta/{sap_code}",
+            summary="Receipt guards metadata (rubber? base UoM? pack conversions)")
+async def receipt_meta(sap_code: str, user: dict = Depends(require_roles("store_keeper")),
+                       session: AsyncSession = Depends(get_session)):
+    return await _receipt_meta(session, sap_code.strip())
+
+
+@router.post("/mtc", status_code=201,
+             summary="Upload a Material Test Certificate (required for Rubber receipts)")
+async def upload_mtc(file: UploadFile = File(...), sap_code: str = Form(...),
+                     site_id: str = Form(...), mtc_number: Optional[str] = Form(None),
+                     lot_number: Optional[str] = Form(None),
+                     user: dict = Depends(require_roles("store_keeper")),
+                     session: AsyncSession = Depends(get_session)):
+    blob = await file.read()
+    site = resolve_site_param(user, site_id) or site_id
+    async with session.begin():
+        mid = (await session.execute(insert(_mtc_t).values(
+            Site_ID=site, SAP_Code=sap_code.strip(), mtc_number=mtc_number,
+            Lot_Number=lot_number, file_name=file.filename, mime_type=file.content_type,
+            file_blob=blob, status="attached", submitted_by=user["username"]
+        ).returning(_mtc_t.c["id"]))).scalar_one()
+    return {"id": mid, "file_name": file.filename}
+
+
 # --- Bulk entry (Phase 1) -----------------------------------------------------
 # The SK batches a shift's worth of lines in an editable grid, then submits them
 # all at once. Atomic: every row is validated up-front and nothing stages if any
@@ -243,7 +317,12 @@ async def create_bulk(body: BulkEntryIn = Body(...),
                 if not await ledger.sap_exists(session, m.SAP_Code):
                     raise HTTPException(404, f"row {i}: SAP_Code {m.SAP_Code!r} not in inventory")
             for m in parsed:
-                res = await stager(session, username=user["username"], data=m.model_dump())
+                row = m.model_dump()
+                # Receipt guards (MTC gate + UoM convert) apply only to receipts.
+                mtc_id = await _apply_receipt_guards(session, row) if body.kind == "receipt" else None
+                res = await stager(session, username=user["username"], data=row)
+                if body.kind == "receipt":
+                    await _link_mtc(session, mtc_id, res.get("pending_id"))
                 staged.append(res.get("pending_id"))
                 by_site[m.Site_ID] = by_site.get(m.Site_ID, 0) + 1
             for site_id, cnt in by_site.items():
