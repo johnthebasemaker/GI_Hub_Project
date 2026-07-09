@@ -1,4 +1,4 @@
-# PROJECT STATUS — resume here (updated 2026-07-06, 🧊 CODE FREEZE)
+# PROJECT STATUS — resume here (updated 2026-07-08, 🔓 FREEZE TEMPORARILY LIFTED — feature-gap program active)
 
 **This is the single source of truth for "where we left off."** A fresh chat
 should read this file, then [`REPO_MAP.md`](../REPO_MAP.md) (segregation
@@ -10,14 +10,21 @@ run log). Legacy/SME rules: [`handoff.md`](../handoff.md) (SME Canon).
 
 ## 0. Current state in one paragraph
 
-**CODE FREEZE is in effect (declared 2026-07-06 after commit `4ca97ef`).**
-Every planned build program is complete except two deliberately-parked items:
-**Phase 7 (WhatsApp/email outbox)** — waiting on the user's Meta Business
-verification and permanent API token — and **SME Phase S6 (Master Data CRUD)**
-— deferred to Cutover Day by locked ruling (dual-write drift protection).
-The user is offline handling Meta document verification. The next activation
-is EITHER "here are the Meta keys → build Phase 7" OR "start the deployment
-cutover." Do not write code, refactor, or sweep until one of those arrives.
+**The 2026-07-06 code freeze was TEMPORARILY LIFTED (2026-07-08)** to close the
+legacy→new feature-parity gap and prepare for multi-user testing. Since then we
+shipped, in order: **deploy/CI infrastructure** (a Postgres backup service, a
+manual-trigger v2 Hetzner pipeline, and S3 off-box backups); a verified
+**standalone new-stack extract** at `~/gi_hub_v2`; and a **feature-gap program** —
+P0 role-access manifest + AI visibility · P1 SK bulk entry + item snapshot · P2
+HOD reject-reason + auto-draft PR · P3 sidebar ⌘K palette + collapsible nav ·
+**Phase 4 procurement depth** (reschedule workflow, force-close + 24h undo,
+manual PO + vendor picker). Gates are green: `service_tests` **418/0**,
+`parity_check` **5/5**, `bug_check` **599/0**, `parity:sme` **509**, frontend
+build ✅. STILL PARKED: **Phase 7 (WhatsApp/email outbox)** on the Meta token, and
+**SME Phase S6 (Master Data CRUD)** to Cutover Day (dual-write drift protection).
+The user is handling **Cloudflare-Tunnel local hosting** (`gi.giinventory.com`) +
+UI smoke testing himself. Remaining feature backlog: §4 below + the
+`feature-gap-program` memory. All WhatsApp/email work stays parked.
 
 ---
 
@@ -88,49 +95,83 @@ Streamlit portal — all EIGHT legacy tabs:
   Backend adds (read-only): `GET /sme/production-log`, export keys
   `progress-list`/`production-log`, plan-export key `overview`.
 
-### E. Gates at freeze (all green)
-`service_tests` **360/360** (352 at freeze + 8 export-parity checks added by
-the 2026-07-07 freeze-lift hotfix) · `bug_check` **599/0** · `parity_check`
-**5/5** · `parity:sme` **509** · frontend build ✅ · `alembic check` clean ·
-dual_ci mirror consistent. Schema additions since day one: `auth_sessions`,
-`ai_jobs` (both user-authorized, new-stack-only).
+### E. Gates (all green, current)
+`service_tests` **418/0** (360 at freeze → +58 across freeze-lift suites
+H/I/J/K/L/M: SLA tracker, submission intel, bulk entry, reschedule, force-close,
+manual PO) · `bug_check` **599/0** · `parity_check` **5/5** · `parity:sme`
+**509** · frontend build ✅ · `alembic check` clean · dual_ci mirror consistent.
+Schema additions since day one: `auth_sessions`, `ai_jobs`, `sla_dismissals`,
+`users.Location`/`pending_users.Location` (all user-authorized, new-stack-only;
+Phase-4 procurement tables already existed, so it needed **no** migration).
+
+### F. Post-freeze work (2026-07-08 freeze-lift) — SHIPPED, pushed to `origin/main`
+- **Deploy / CI infra:** v2 Postgres backup service (`deploy/backup/backup-pg.sh`,
+  nightly `pg_dump -Fc` + optional S3 push) · manual-trigger v2 Hetzner pipeline
+  (`.github/workflows/deploy-v2.yml` + `deploy/deploy-v2.sh` / `health-check.sh` /
+  `rollback.sh`, with the v1↔v2 `:80/:443` **port-handover guard**). Commits
+  `35603f5`, `af5a3e9`.
+- **Standalone extract:** `~/gi_hub_v2` — the new stack copied out (bridge tools
+  excluded), `service_tests` 386/0 proven in place. This is a *copy-out*, NOT the
+  in-repo Phase B restructure (still reserved for cutover day).
+- **Feature-gap program:** P0 role-access single-source-of-truth
+  `frontend/src/config/nav.tsx` (ports legacy `_can_access`) + client route
+  guards + lean-admin default / "All areas" toggle + AI insight open-by-default
+  (`f221a95`); P1 SK bulk `POST /entry/bulk` + `GET /entry/snapshot` + batch UI
+  (`a119fa9`); P2 HOD reject-reason modal + auto-draft PR button (`b99935b`); P3
+  ⌘K command palette + collapsible role-primary nav (`a176b88`); **Phase 4**
+  reschedule (`34a8b62`), force-close + 24h undo (`cc3040a`), manual PO + vendor
+  picker (`1f0d811`). See `feature-gap-program` memory for the audit + backlog.
 
 ---
 
 ## 3. WHAT WE'RE DOING NOW
 
-**🧊 Standing by under code freeze.** No code, no refactors, no sweeps.
-User is running Meta WhatsApp Business verification (started 2026-07-05).
+**🔓 Feature-gap program under a temporary freeze-lift.** Closing legacy→new
+gaps in prioritized phases — each phase: backend + `service_tests` → frontend →
+gates (`service_tests` · `parity_check` · frontend build) → commit with a
+`POSTGRES_MIGRATION.md §8` run-log entry → push. Verification is via `tsc`/build
++ the service suite (the user's own Vite dev server holds `:5173`; **he runs the
+browser smoke tests**). The user is standing up **Cloudflare-Tunnel local
+hosting** for `gi.giinventory.com` so multiple people can test simultaneously.
 
 ---
 
-## 4. WHAT WE WANT TO DO NEXT (in the user's order, on his signal)
+## 4. WHAT WE WANT TO DO NEXT
 
-1. **Phase 7 — WhatsApp/email outbox (new stack)** when the permanent Meta
-   token arrives. Legacy already has the Meta Cloud API sender
-   (`whatsapp_worker.py`, provider chain meta|twilio|pywhatkit) — port the
-   outbox to `backend/api` using env-var credentials (never in chat/repo).
-2. **Deployment cutover** (user's go-ahead + target details required):
-   provision Hetzner CPX42 → run `deploy/` kit (`docs/DEPLOY.md`) → TLS via
-   certbot → `ollama pull` the three models (one-warm-model config) → run
-   `backend/scripts/create_ai_readonly_role.sql` with a production password +
-   set `GI_AI_RO_URL` → final `dual_ci` data load → point users at React.
-3. **Phase B restructure** (same day as cutover, one commit): legacy →
-   `legacy/`, artifacts → `data-archive/`, bridge tools → `tools/`, CI paths.
-4. **SME Phase S6 — Master Data CRUD + polish** (AFTER cutover only, when
-   SQLite stops being the writer): equipment/recipe/materials CRUD,
-   locations/types registration, scenario A/B diff, PDF polish.
-5. **User-side ops (no code)**: bulk-assign the 1,672 imported man-hour rows
-   to tanks; populate `tool_catalogue` to tighten AI tool identification;
-   optionally stop the retired LocateAnything sidecar still running on :8503.
+**Feature-gap backlog (freeze-lift, on the user's go-ahead — details in the
+`feature-gap-program` memory):**
+1. Supervisor **Intent-vs-Actual** report (HIGH; a `intent-vs-actual` report key
+   may already exist in `reports.py` — check before building).
+2. **DN multi-stage approval** (Logistics delivery-date + HOD content gate before
+   ship) — the biggest remaining procurement gap.
+3. **PR-Status report** (the new build only has PO status today).
+4. **Dashboard** valuation KPI + charts (stock-vs-min, burn forecast,
+   top-consumed) + admin system-overview KPIs. Then deferred LOW polish.
+
+**Still parked / cutover (unchanged):**
+5. **Phase 7 — WhatsApp/email outbox** when the Meta permanent token arrives.
+   Legacy has the Meta Cloud API sender (`whatsapp_worker.py`) — port to
+   `backend/api` with env-var creds. ALL WhatsApp/email work stays parked until then.
+6. **Local hosting** — Cloudflare Tunnel → `gi.giinventory.com` (user-driven;
+   plan in the `feature-gap-program` memory). **Gotcha:** the rate-limiter keys
+   on `X-Real-IP`; behind the tunnel the real client IP is `CF-Connecting-IP` —
+   map it or all testers share one bucket.
+7. **Deployment cutover** (Hetzner CPX42 → `deploy/` kit (`docs/DEPLOY.md`) → TLS
+   → `ollama pull` the 3 models → `create_ai_readonly_role.sql` + `GI_AI_RO_URL`
+   → final `dual_ci` load → point users at React). The v2 deploy pipeline is
+   built (§2.F) and manual-trigger only.
+8. **Phase B restructure** (in-repo, one commit at cutover): legacy → `legacy/`,
+   artifacts → `data-archive/`, bridge tools → `tools/`. (A verified copy-out
+   already exists at `~/gi_hub_v2`.)
+9. **SME Phase S6 — Master Data CRUD + polish** (AFTER cutover only).
 
 ---
 
 ## 5. Verification commands (run from repo root)
 
 ```bash
-# new-stack service + guard tests (352 checks)
-DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub .venv/bin/python -u -m backend.api.service_tests
+# new-stack service + guard tests (418 checks; needs JWT_SECRET set)
+DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub JWT_SECRET=ci-only-service-test-secret-key-32bytes-min .venv/bin/python -u -m backend.api.service_tests
 # SQLite↔PG derived-view parity (5 views)
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub .venv/bin/python -u -m backend.api.parity_check
 # SME TS↔Python engine parity (509 comparisons)

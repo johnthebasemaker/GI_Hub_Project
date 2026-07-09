@@ -8,10 +8,16 @@ is a *separate* set of processes. Per-slice history is in
 
 ---
 
-## 🎯 CURRENT STATUS (2026-07-06) — read this, then [`PROJECT_STATUS.md`](PROJECT_STATUS.md)
+## 🎯 CURRENT STATUS (2026-07-08) — read this, then [`PROJECT_STATUS.md`](PROJECT_STATUS.md)
 
-**🧊 CODE FREEZE.** The new stack is **feature-complete far beyond the original
-ten slices** — since 2026-07-05 four more full programs landed on `main`:
+**🔓 FREEZE TEMPORARILY LIFTED — feature-gap program active.** On top of the
+frozen build below, a freeze-lift (2026-07-08) shipped deploy/CI infra (v2 backup
+service + manual-trigger Hetzner pipeline + S3 backups), a standalone copy-out at
+`~/gi_hub_v2`, and a feature-gap program (P0 role-access · P1 SK bulk entry · P2
+HOD correctness · P3 sidebar ⌘K · Phase 4 procurement depth). See
+[`PROJECT_STATUS.md`](PROJECT_STATUS.md) §2.F + the `feature-gap-program` memory.
+The frozen build (still the foundation) — **feature-complete far beyond the
+original ten slices**; since 2026-07-05 four more full programs landed on `main`:
 
 - **Man-Hours & Labor Tracking** (Phases 10 + 11A/B/C): roster, timesheets +
   xlsx import, MH estimator, variance, SME link layer (Equipment Scorecard),
@@ -27,10 +33,11 @@ ten slices** — since 2026-07-05 four more full programs landed on `main`:
   Location/matrix reports, Execution Plan (3 sub-views), virtualized Total
   Overview. **S6 (Master Data CRUD) deferred to cutover by locked ruling.**
 
-Gates at freeze: **service_tests 352/352 · bug_check 599/0 · parity_check 5/5 ·
-parity:sme 509 · frontend build ✅ · alembic clean.** The deploy kit
-(`deploy/` + [`docs/DEPLOY.md`](DEPLOY.md)) still has **NOT been run against
-any server.**
+Gates (current): **service_tests 418/0 · bug_check 599/0 · parity_check 5/5 ·
+parity:sme 509 · frontend build ✅ · alembic clean.** (352 at freeze → +66 across
+freeze-lift suites H/I/J/K/L/M.) The deploy kit (`deploy/` + [`docs/DEPLOY.md`](DEPLOY.md))
+still has **NOT been run against any server** — the v2 pipeline is built and
+manual-trigger only, ready for cutover day.
 
 **What's left (user's call, in his order):** Phase 7 WhatsApp/email outbox
 (waiting on the user's Meta permanent token) · deployment cutover + Phase B
@@ -95,7 +102,8 @@ DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
   .venv/bin/python backend/api/parity_check.py --source gi_database.db  # 5 derived views PASS
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
-  .venv/bin/python -m backend.api.service_tests                 # 78/78 (rolled-back services + auth/role guards + JWT + registration + site scoping + token refresh)
+  JWT_SECRET=ci-only-service-test-secret-key-32bytes-min \
+  .venv/bin/python -m backend.api.service_tests                 # 418/0 (suites A–M: services + auth/role + JWT + registration + site scoping + refresh + SLA + AI intel + bulk entry + reschedule + force-close + manual PO)
 npm run build --prefix frontend                                 # tsc + vite green
 ```
 

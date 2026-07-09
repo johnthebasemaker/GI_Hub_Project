@@ -14,13 +14,18 @@ scheduled for cutover day and happens in a single commit; until then **nothing
 moves**. Read [`docs/NEW_STACK_HANDOFF.md`](docs/NEW_STACK_HANDOFF.md) before
 touching the new stack, and `handoff.md` (SME Canon) before touching legacy.
 
-> **STATUS 2026-07-06 — 🧊 CODE FREEZE.** Both apps green; the new stack is
-> feature-complete (parity build + Man-Hours + Intelligence Layer AI-0…AI-5 +
-> SME React rebuild S1…S5). Remaining: Phase 7 (Meta-token hold), cutover,
-> SME S6 (post-cutover). Resume snapshot:
-> [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) — including the
-> **bulletproof separation invariants** (12 guarantees) that keep feature work
-> on one stack from ever affecting the other.
+> **STATUS 2026-07-08 — 🔓 FREEZE TEMPORARILY LIFTED (feature-gap program).**
+> Both apps green (`service_tests` **418/0**, `bug_check` **599/0**, parity 5/5,
+> `parity:sme` 509). On top of the frozen build (parity + Man-Hours + AI-0…AI-5 +
+> SME S1…S5) we shipped, working within this same segregation: deploy/CI infra
+> (v2 backup service + manual-trigger Hetzner pipeline + S3 backups), a
+> standalone new-stack copy-out at `~/gi_hub_v2`, and the feature-gap program
+> (P0 role-access · P1 SK bulk entry · P2 HOD correctness · P3 sidebar ⌘K ·
+> Phase 4 procurement depth). All new-stack work still touches ONLY
+> `backend/` · `frontend/` · `deploy/` · `docs/`. Remaining: feature-gap backlog,
+> Phase 7 (Meta-token hold), cutover, in-repo Phase B, SME S6 (post-cutover).
+> Resume snapshot: [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) — including
+> the **bulletproof separation invariants** (12 guarantees).
 
 ## Ownership
 
@@ -38,7 +43,7 @@ touching the new stack, and `handoff.md` (SME Canon) before touching legacy.
 | `docker-compose.yml` · `Dockerfile.streamlit` · `Dockerfile.fastapi` · `docker/` · `host_setup/` | Legacy deploy | **Workstream-C surface** (nginx/certbot/streamlit/ollama). NB: `Dockerfile.fastapi` is the *RAG sidecar*, **not** the new-stack API |
 | `backend/` | New stack | FastAPI API (`backend/api/`), SQLAlchemy models, Alembic, **plus the bridge tools** `dual_ci.py` / `migrate_sqlite_to_postgres.py` / `api/parity_check.py` (these import legacy `database.py` by design; they retire at cutover) |
 | `frontend/` | New stack | React + Vite + AntD SPA; theme source of truth in `src/theme/` |
-| `deploy/` | New stack deploy | **The new-stack surface**: `docker-compose.prod.yml`, `Dockerfile.api`, `Dockerfile.web`, nginx, certbot — see [`docs/DEPLOY.md`](docs/DEPLOY.md) |
+| `deploy/` | New stack deploy | **The new-stack surface**: `docker-compose.prod.yml` (incl. a `backup` pg_dump service), `Dockerfile.api`, `Dockerfile.web`, nginx, certbot, `backup/backup-pg.sh` (+S3), and the manual-trigger v2 pipeline scripts `deploy-v2.sh` / `health-check.sh` / `rollback.sh` — see [`docs/DEPLOY.md`](docs/DEPLOY.md) §9 |
 | `run_api.sh` | New stack | Local backend launcher (`:8000`) |
 | `backend/requirements.txt` | New stack | The new stack's Python deps; **included by root `requirements.txt` via `-r`** (one shared venv pre-cutover; standalone install post-cutover) |
 | `gi_database.db` | **Shared bridge** | SQLite system of record (legacy runtime) **and** the source for `dual_ci` / parity. Do not move before Phase B |
@@ -67,8 +72,10 @@ touching the new stack, and `handoff.md` (SME Canon) before touching legacy.
    comparisons; `service_tests` suite G + `npm run parity:sme`). Any numeric
    change = change BOTH engines + regenerate the golden in ONE commit.
 7. Audit rows are never deleted (`system_audit_log`); tests use delta counts.
-8. 🧊 While the CODE FREEZE stands: no new code, refactors, or sweeps —
-   activation is the user's Meta keys (Phase 7) or the cutover go-ahead.
+8. 🔓 **Freeze temporarily lifted (2026-07-08)** for the feature-gap program —
+   still additive, still only `backend/`/`frontend/`/`deploy/`/`docs/`, gates
+   green per commit. WhatsApp/email stay parked (Meta token); SME/Man-Hours are
+   not touched. Reverts to 🧊 freeze between phases unless the user says otherwise.
 
 ## Phase B (cutover day, pre-approved plan)
 
