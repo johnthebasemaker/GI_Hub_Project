@@ -36,9 +36,14 @@ from .auth import (get_current_user, require_level, revoke_all_sessions,
                    site_scope)
 from .config import async_database_url
 from .db import get_session
+from .services import whatsapp as wa
 from .services.ledger import _MD, write_audit
 from .services.notifications import notify
 from .stock import SQL_SITE_STOCK
+
+# Cross-site requests above this many units escalate to the target-site HOD via
+# WhatsApp (Phase 7 — legacy ">5 item" cross-site escalation).
+XSITE_ESCALATION_QTY = 5
 
 settings_t = _MD.tables["app_settings"]
 sysset_t = _MD.tables["system_settings"]
@@ -222,6 +227,39 @@ async def revoke_user_sessions(username: str, user: dict = Depends(require_level
     return {"revoked": n, "username": username}
 
 
+# --- WhatsApp Console (admin): outbox viewer + manual retry ---------------------
+outbox_t = _MD.tables["whatsapp_outbox"]
+
+
+@admin.get("/whatsapp", summary="WhatsApp outbox (queue + delivery status)")
+async def whatsapp_outbox(status: Optional[str] = None, limit: int = 200,
+                          session: AsyncSession = Depends(get_session)):
+    cols = [outbox_t.c["id"], outbox_t.c["to_number"], outbox_t.c["message_type"],
+            outbox_t.c["body"], outbox_t.c["status"], outbox_t.c["meta_message_id"],
+            outbox_t.c["error"], outbox_t.c["event_key"], outbox_t.c["related_table"],
+            outbox_t.c["related_ref"], outbox_t.c["attempts"], outbox_t.c["created_by"],
+            outbox_t.c["created_at"], outbox_t.c["sent_at"]]
+    stmt = select(*cols).order_by(outbox_t.c["id"].desc()).limit(max(1, min(int(limit), 1000)))
+    if status:
+        stmt = stmt.where(outbox_t.c["status"] == status)
+    rows = [dict(m) for m in (await session.execute(stmt)).mappings().all()]
+    counts = {r["status"]: r["n"] for r in (await session.execute(text(
+        "SELECT status, COUNT(*) AS n FROM whatsapp_outbox GROUP BY status"))).mappings().all()}
+    return {"items": rows, "counts": counts, "configured": wa.enabled()}
+
+
+@admin.post("/whatsapp/{outbox_id}/retry", summary="Retry a failed/pending WhatsApp message")
+async def whatsapp_retry(outbox_id: int, user: dict = Depends(require_level(4)),
+                         session: AsyncSession = Depends(get_session)):
+    res = await wa.retry(session, outbox_id=outbox_id)
+    if res.get("error"):
+        raise HTTPException(409, res["error"])
+    await write_audit(session, user["username"], "WHATSAPP_RETRY", "whatsapp_outbox",
+                      f"id={outbox_id} → {res.get('status')}")
+    await session.commit()
+    return res
+
+
 # --- Lot lifecycle (admin): quarantine / dispose / release ----------------------
 _LOT_STATUSES = {"open", "quarantined", "disposed"}
 
@@ -387,6 +425,21 @@ async def create_xsite(body: XSiteIn = Body(...),
                  body=f"{req_site} asks {body.target_site} for {body.SAP_Code} × {body.requested_qty:g}",
                  link_page="/admin/console", related_table="requests", related_ref=str(rid))
     await session.commit()
+
+    # Phase 7 — escalate large cross-site requests to the target-site HOD via
+    # WhatsApp. Best-effort: a messaging failure never fails the request.
+    if body.requested_qty > XSITE_ESCALATION_QTY:
+        try:
+            nums = await wa.hod_numbers(session, body.target_site.strip())
+            msg = (f"⚠️ Large cross-site request: {req_site} is asking {body.target_site} "
+                   f"for {body.SAP_Code} × {body.requested_qty:g} (available {float(avail or 0):g}). "
+                   f"Raised by {user['username']}. Please review.")
+            for n in nums:
+                await wa.send_text(session, to=n, body=msg, event_key="xsite_escalation",
+                                   related_table="requests", related_ref=rid, created_by=user["username"])
+            await session.commit()
+        except Exception:  # noqa: BLE001 — notifications are best-effort
+            await session.rollback()
     return {"created": True, "id": rid, "available_at_target": float(avail or 0)}
 
 

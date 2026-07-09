@@ -17,13 +17,15 @@ import io
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .auth import require_level, resolve_site_param, site_scope
 from .db import get_session
+from .services import whatsapp as wa
 from .stock import SQL_EXPIRING, SQL_SITE_STOCK
 
 router = APIRouter(prefix="/reports", tags=["reports"],
@@ -633,3 +635,28 @@ async def download_report(key: str, format: str = Query("xlsx"),
         date_to=date_to, month=month)
     return StreamingResponse(io.BytesIO(data), media_type=media,
                              headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+class ReportWhatsAppIn(BaseModel):
+    to: str
+    format: str = "pdf"
+    site_id: Optional[str] = None
+    days: int = 30
+    status: Optional[str] = None
+
+
+@router.post("/{key}/whatsapp", summary="Send a report to a WhatsApp number (as a document)")
+async def whatsapp_report(key: str, body: ReportWhatsAppIn = Body(...),
+                          user: dict = Depends(require_level(2)),
+                          session: AsyncSession = Depends(get_session)):
+    to = (body.to or "").strip()
+    if not to:
+        raise HTTPException(422, "a recipient WhatsApp number is required")
+    data, fname, media = await render_report(
+        session, key, format=body.format, user=user, site_id=body.site_id,
+        days=body.days, status=body.status)
+    res = await wa.send_document(session, to=to, blob=data, filename=fname, mime=media,
+                                 caption=f"{key} report", event_key="report_delivery",
+                                 created_by=user["username"])
+    await session.commit()
+    return res

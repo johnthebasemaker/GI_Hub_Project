@@ -609,6 +609,33 @@ class AiJob(Base):
     started_at = Column(DateTime)
     finished_at = Column(DateTime)
 
+
+class WhatsappOutbox(Base):
+    """WhatsApp Cloud API outbound queue (NEW-STACK ONLY — no SQLite counterpart;
+    dual_ci leaves it empty on reset, same contract as auth_sessions/ai_jobs).
+    Every outbound message is logged here with its rendered Meta payload and a
+    delivery status (pending → sent | failed); the admin WhatsApp Console lists
+    it and retries failures. Phase 7 native v2 replacement for the legacy
+    SQLite whatsapp_worker."""
+    __tablename__ = "whatsapp_outbox"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    to_number = Column(Text)
+    message_type = Column(Text, server_default=text("'text'"))  # text | document
+    body = Column(Text)                     # human-readable preview / caption
+    payload_json = Column(Text)             # the exact Meta Graph payload sent
+    status = Column(Text, nullable=False, server_default=text("'pending'"), index=True)
+    meta_message_id = Column(Text)          # wamid returned by the Cloud API
+    error = Column(Text)
+    event_key = Column(Text)                # xsite_escalation | fefo_override | report_delivery
+    related_table = Column(Text)
+    related_ref = Column(Text)
+    attempts = Column(Integer, server_default=text('0'))
+    created_by = Column(Text)
+    created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    sent_at = Column(DateTime)
+    updated_at = Column(DateTime)
+
+
 class WbsMaster(Base):
     __tablename__ = "wbs_master"
     id = Column(Integer, primary_key=True, autoincrement=True)

@@ -11,6 +11,7 @@ import {
   useReportArchive, useReports, useScheduleMutation, useSchedules, useSites,
 } from '../api/hooks'
 import { streamSse } from '../api/sse'
+import { api } from '../api/client'
 import type { Row } from '../api/client'
 
 function errMsg(e: unknown): string {
@@ -63,6 +64,22 @@ function ReportCard({ report }: { report: Row }) {
     }
   }
 
+  // Phase 7 — deliver this report to a WhatsApp number (as a PDF document).
+  const [waOpen, setWaOpen] = useState(false)
+  const [waTo, setWaTo] = useState('')
+  const [waBusy, setWaBusy] = useState(false)
+  const doWhatsApp = async () => {
+    if (!waTo.trim()) return
+    setWaBusy(true)
+    try {
+      const res = await api.post(`/reports/${report.key}/whatsapp`,
+        { to: waTo.trim(), format: 'pdf', site_id: params.site_id, days: params.days, status: params.status })
+      if (res.data.status === 'sent') message.success('Report sent to WhatsApp')
+      else message.warning(`Queued but not delivered: ${res.data.error ?? 'see WhatsApp Console'}`)
+      setWaOpen(false); setWaTo('')
+    } catch (e) { message.error(errMsg(e)) } finally { setWaBusy(false) }
+  }
+
   return (
     <Card title={String(report.label)} size="small" style={{ height: '100%' }}>
       <Typography.Paragraph type="secondary" style={{ minHeight: 44 }}>
@@ -102,8 +119,17 @@ function ReportCard({ report }: { report: Row }) {
           <Button icon={<InboxOutlined />} loading={archive.isPending} onClick={doArchive}>
             Archive
           </Button>
+          <Button onClick={() => { setWaOpen(true); setWaTo('') }}>WhatsApp</Button>
         </Space>
       </div>
+      <Modal open={waOpen} title={`Send "${report.label}" via WhatsApp`} onOk={doWhatsApp}
+        onCancel={() => setWaOpen(false)} okText="Send" okButtonProps={{ disabled: !waTo.trim() }}
+        confirmLoading={waBusy} destroyOnHidden>
+        <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+          Sends the report as a PDF document. Enter the recipient number in E.164 (no “+”), e.g. 9665XXXXXXXX.
+        </Typography.Paragraph>
+        <Input placeholder="Recipient WhatsApp number" value={waTo} onChange={(e) => setWaTo(e.target.value)} />
+      </Modal>
     </Card>
   )
 }

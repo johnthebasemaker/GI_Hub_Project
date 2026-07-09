@@ -232,6 +232,30 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-09 (Phase 7) · actor=interactive · branch=`main` · 📱 Native v2 WhatsApp outbox + Meta Cloud API (Meta-hold LIFTED)
+- **Files:** `backend/models.py` + `backend/alembic/versions/…e5c3f19a77b2…` (new
+  `whatsapp_outbox` table, NEW-STACK-ONLY) · `backend/api/services/whatsapp.py` (new
+  Meta client + outbox) · `backend/api/console.py` (xsite>5 escalation + WhatsApp
+  Console endpoints) · `backend/api/entry.py` (FEFO-override alert) · `backend/api/reports.py`
+  (report delivery) · `backend/api/service_tests.py` (suite V, 11 checks, **Meta
+  mocked**) · `frontend/src/pages/{AdminConsolePage,ReportsPage}.tsx` · `deploy/.env.example` · this doc.
+- **Architecture:** from-scratch async impl — does NOT reuse the legacy SQLite
+  `whatsapp_worker.py`. `whatsapp_outbox` logs every message + its exact Meta
+  payload + status (pending→sent|failed). The two live-HTTP boundaries
+  (`_post_message`, `_upload_media`) are the only network calls — monkeypatched in
+  tests so CI never hits Meta. Creds from env (`WHATSAPP_PHONE_NUMBER_ID/TOKEN/
+  API_VERSION/ESCALATION_TO`); `enabled()` false ⇒ messages queue as failed.
+- **Triggers (best-effort, post-commit, never fail the primary action):**
+  cross-site request > 5 units → target-site HOD; FEFO override on an issue → HOD;
+  report delivery (`POST /reports/{key}/whatsapp`) uploads the rendered doc + sends.
+- **Console:** `GET /admin/whatsapp` (+ status counts + configured flag),
+  `POST /admin/whatsapp/{id}/retry`. UI: AdminConsole "WhatsApp" tab (list, status
+  filter, retry) + a "WhatsApp" send button on every ReportsPage report card.
+- **Schema:** `whatsapp_outbox` added to models + Alembic (down_revision
+  d4f1a27c8e90; single head e5c3f19a77b2). dual_ci leaves it empty (new-stack-only).
+- **Gates:** service_tests **484/0** (+11) · parity 5/5 · frontend build ✅ · alembic single head.
+- **Phase 7 COMPLETE — every parked Meta-hold item is now shipped.**
+
 ### 2026-07-09 (MED · chunk 3) · actor=interactive · branch=`main` · 🔓 Admin lot lifecycle (quarantine / release / dispose)
 - **Files:** `backend/api/console.py` (GET /admin/lots, POST /admin/lots/{id}/status) ·
   `backend/api/service_tests.py` (suite U, 7 checks) ·

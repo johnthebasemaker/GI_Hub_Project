@@ -1,4 +1,4 @@
-# PROJECT STATUS — resume here (updated 2026-07-08, 🔓 FREEZE TEMPORARILY LIFTED — feature-gap program active)
+# PROJECT STATUS — resume here (updated 2026-07-09, 🔓 feature-gap program + Phase 7 COMPLETE — only cutover/S6 remain)
 
 **This is the single source of truth for "where we left off."** A fresh chat
 should read this file, then [`REPO_MAP.md`](../REPO_MAP.md) (segregation
@@ -24,13 +24,15 @@ approval + supervisor parity (intent-vs-actual UI, cancel-while-pending, live
 cart stock) + receipt entry guards (MTC gate + UoM conversion) · **Deferred-MED
 backlog** (logistics vendor-returns, HOD draft-PR line-edit/rename, admin lot
 lifecycle). Gates green:
-`service_tests` **473/0**, `parity_check` **5/5**, `bug_check` **599/0**,
-`parity:sme` **509**, frontend build ✅. STILL PARKED: **Phase 7 (WhatsApp/email
-outbox)** on the Meta token, and
-**SME Phase S6 (Master Data CRUD)** to Cutover Day (dual-write drift protection).
+`service_tests` **484/0**, `parity_check` **5/5**, `bug_check` **599/0**,
+`parity:sme` **509**, frontend build ✅. **Phase 7 (WhatsApp Cloud API outbox)
+is now DONE** — the Meta token arrived and the native v2 `whatsapp_outbox` +
+triggers (xsite>5 escalation · FEFO-override alert · report delivery) + admin
+WhatsApp Console shipped. The ONLY remaining parked item is
+**SME Phase S6 (Master Data CRUD)**, deferred to Cutover Day (dual-write drift protection).
 The user is handling **Cloudflare-Tunnel local hosting** (`gi.giinventory.com`) +
 UI smoke testing himself. Remaining feature backlog: §4 below + the
-`feature-gap-program` memory. All WhatsApp/email work stays parked.
+`feature-gap-program` memory (only optional LOW polish left).
 
 ---
 
@@ -102,15 +104,16 @@ Streamlit portal — all EIGHT legacy tabs:
   `progress-list`/`production-log`, plan-export key `overview`.
 
 ### E. Gates (all green, current)
-`service_tests` **473/0** (360 at freeze → +113 across freeze-lift suites
-H–U: SLA tracker, submission intel, bulk entry, reschedule, force-close, manual
+`service_tests` **484/0** (360 at freeze → +124 across freeze-lift suites
+H–V: SLA tracker, submission intel, bulk entry, reschedule, force-close, manual
 PO, rate-limiter IP, reporting/dashboard, DN approval, supervisor parity, entry
-guards, vendor-returns, PR line-edit/rename, lot lifecycle) · `bug_check`
-**599/0** · `parity_check` **5/5** · `parity:sme`
-**509** · frontend build ✅ · `alembic check` clean · dual_ci mirror consistent.
-Schema additions since day one: `auth_sessions`, `ai_jobs`, `sla_dismissals`,
-`users.Location`/`pending_users.Location` (all user-authorized, new-stack-only;
-every Phase-4/5/6 feature reused existing tables — **no** further migration).
+guards, vendor-returns, PR line-edit/rename, lot lifecycle, WhatsApp outbox) ·
+`bug_check` **599/0** · `parity_check` **5/5** · `parity:sme`
+**509** · frontend build ✅ · `alembic check` clean (single head e5c3f19a77b2) ·
+dual_ci mirror consistent. Schema additions since day one: `auth_sessions`,
+`ai_jobs`, `sla_dismissals`, `users.Location`/`pending_users.Location`, and
+`whatsapp_outbox` (Phase 7) — all user-authorized, new-stack-only; Phase-4/5/6
+feature work otherwise reused existing tables.
 
 ### F. Post-freeze work (2026-07-08 freeze-lift) — SHIPPED, pushed to `origin/main`
 - **Deploy / CI infra:** v2 Postgres backup service (`deploy/backup/backup-pg.sh`,
@@ -133,20 +136,23 @@ every Phase-4/5/6 feature reused existing tables — **no** further migration).
   KPI/charts + Admin system-overview (`685b614`); **Phase 6** DN two-stage
   approval (`2db5b2f`), supervisor parity — intent-vs-actual UI + cancel + live
   cart stock (`41712dc`), receipt entry guards — MTC gate + UoM conversion
-  (`7a72ff4`). **The entire approved feature-gap backlog (P0–P6 + I-A/I-B) is
-  DONE.** See `feature-gap-program` memory for the audit + the only-LOW-polish +
-  parked-Meta remainder.
+  (`7a72ff4`); **deferred-MED** vendor-returns (`92daaa8`) + HOD draft-PR
+  line-edit/rename (`e9cea70`) + admin lot lifecycle (`45175bc`); **Phase 7**
+  native WhatsApp Cloud API outbox + triggers + admin console (`whatsapp_outbox`
+  table, Meta-hold lifted). **The entire feature-gap backlog (P0–P6 + I-A/I-B +
+  deferred-MED) AND Phase 7 are DONE.** See `feature-gap-program` memory — only
+  optional LOW polish remains.
 
 ---
 
 ## 3. WHAT WE'RE DOING NOW
 
-**🔓 Feature-gap program COMPLETE (P0–P6 + I-A/I-B), still under the temporary
-freeze-lift.** All approved-scope parity gaps are closed and pushed. The user is
-running the app for multi-user testing via the **Cloudflare Tunnel**
-(`gi.giinventory.com`, config in `deploy/cloudflared/`) and doing browser smoke
-tests. Nothing is in flight — awaiting the next directive (a new feature ask, the
-Meta token for Phase 7, or the cutover go-ahead).
+**🔓 Feature-gap program + Phase 7 COMPLETE, still under the temporary
+freeze-lift.** Every parity gap AND the WhatsApp/Meta outbox are closed and
+pushed. The user is running the app for multi-user testing via the **Cloudflare
+Tunnel** (`gi.giinventory.com`, config in `deploy/cloudflared/`) and doing
+browser smoke tests. Nothing is in flight — awaiting the next directive (a new
+feature ask, optional LOW polish, or the **cutover go-ahead**).
 
 ---
 
@@ -158,10 +164,11 @@ LOW polish remains (details in the `feature-gap-program` memory):
   pills · form draft-recovery · report category filter / SAR toggle / preview ·
   open-POs filters + KPI hero · FEFO auto-suggest on DN prep.
 
-**Still parked / cutover (unchanged):**
-5. **Phase 7 — WhatsApp/email outbox** when the Meta permanent token arrives.
-   Legacy has the Meta Cloud API sender (`whatsapp_worker.py`) — port to
-   `backend/api` with env-var creds. ALL WhatsApp/email work stays parked until then.
+**Cutover / parked:**
+5. ~~**Phase 7 — WhatsApp outbox**~~ ✅ **DONE 2026-07-09** — native v2
+   `whatsapp_outbox` + Meta client + triggers (xsite>5 · FEFO-override · report
+   delivery) + admin WhatsApp Console. Creds live in `deploy/.env`
+   (`WHATSAPP_PHONE_NUMBER_ID`/`WHATSAPP_TOKEN`). Legacy `whatsapp_worker.py` NOT reused.
 6. **Local hosting** — Cloudflare Tunnel → `gi.giinventory.com` (user-driven;
    plan in the `feature-gap-program` memory). **Gotcha:** the rate-limiter keys
    on `X-Real-IP`; behind the tunnel the real client IP is `CF-Connecting-IP` —

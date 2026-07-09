@@ -3276,6 +3276,116 @@ async def test_lot_lifecycle():
             await s.commit()
 
 
+async def test_whatsapp_outbox():
+    """Phase 7 — native WhatsApp outbox. Meta HTTP is MOCKED (no live calls):
+    xsite>5 + FEFO-override triggers enqueue+send, report delivery uploads+sends,
+    the admin console lists + retries. Synthetic rows cleaned up in finally."""
+    import os as _o
+    import json as _j
+    from sqlalchemy import delete, insert, select as _sel
+    import backend.api.services.whatsapp as wamod
+
+    ob = ledger._MD.tables["whatsapp_outbox"]
+    async with SessionLocal() as s:
+        base_id = (await s.execute(_sel(func.coalesce(func.max(ob.c["id"]), 0)))).scalar_one()
+
+    saved = (wamod._post_message, wamod._upload_media)
+    prev_esc = _o.environ.get("WHATSAPP_ESCALATION_TO")
+
+    async def ok_post(payload):
+        return {"ok": True, "message_id": "wamid.TEST"}
+
+    async def ok_upload(blob, filename, mime):
+        return {"ok": True, "media_id": "media.TEST"}
+
+    wamod._post_message, wamod._upload_media = ok_post, ok_upload
+    _o.environ["WHATSAPP_ESCALATION_TO"] = "15550001111"   # fallback recipient
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.91"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            worker_t = await token("worker", "floor2026")
+            admin_t = await token("admin", "admin2026")
+
+            async def rows_for(event_key):
+                async with SessionLocal() as s:
+                    return [dict(m) for m in (await s.execute(_sel(
+                        ob.c["id"], ob.c["status"], ob.c["event_key"], ob.c["meta_message_id"]
+                    ).where((ob.c["event_key"] == event_key) & (ob.c["id"] > base_id)))).mappings().all()]
+
+            # Console list (role-gated).
+            r = await ac.get("/admin/whatsapp", headers=H(worker_t))
+            check("whatsapp: worker → 403 on console", r.status_code == 403, f"got {r.status_code}")
+            r = await ac.get("/admin/whatsapp", headers=H(admin_t))
+            check("whatsapp: admin console → 200 with counts",
+                  r.status_code == 200 and "items" in r.json() and "counts" in r.json(), f"got {r.status_code}")
+
+            # Trigger 1 — cross-site request > 5 units escalates.
+            r = await ac.post("/xsite", headers=H(admin_t),
+                              json={"requesting_site": "HQ", "target_site": "CNCEC", "SAP_Code": "1001", "requested_qty": 10})
+            check("whatsapp: xsite>5 accepted", r.status_code == 201, f"got {r.status_code}")
+            esc = await rows_for("xsite_escalation")
+            check("whatsapp: xsite escalation enqueued + sent",
+                  any(x["status"] == "sent" and x["meta_message_id"] == "wamid.TEST" for x in esc), str(esc)[:160])
+
+            # Trigger 2 — FEFO override on an issue alerts the HOD.
+            inv = (await ac.get("/inventory", params={"limit": 3}, headers=H(worker_t))).json().get("items", [])
+            if inv:
+                sap = str(inv[0]["SAP_Code"]); site = inv[0].get("Site_ID") or "CNCEC"
+                r = await ac.post("/entry/consumption", headers=H(worker_t),
+                                  json={"Date": "2026-07-09", "SAP_Code": sap, "Quantity": 1,
+                                        "Site_ID": site, "FEFO_Override": "yes"})
+                check("whatsapp: FEFO-override issue accepted", r.status_code == 201, f"got {r.status_code}")
+                fo = await rows_for("fefo_override")
+                check("whatsapp: FEFO override alert enqueued + sent",
+                      any(x["status"] == "sent" for x in fo), str(fo)[:160])
+
+            # Trigger 3 — report delivery (upload media + send document).
+            r = await ac.post("/reports/pr-status/whatsapp", headers=H(admin_t),
+                              json={"to": "15550009999", "format": "csv"})
+            j = r.json() if r.status_code == 200 else {}
+            check("whatsapp: report delivery → 200 sent",
+                  r.status_code == 200 and j.get("status") == "sent", f"got {r.status_code} {str(j)[:120]}")
+            r = await ac.post("/reports/pr-status/whatsapp", headers=H(admin_t), json={"to": ""})
+            check("whatsapp: report delivery without recipient → 422", r.status_code == 422, f"got {r.status_code}")
+
+            # Retry path — synthetic failed rows.
+            async with SessionLocal() as s:
+                fid = (await s.execute(insert(ob).values(to_number="15550002222", message_type="text",
+                       body="retry me", payload_json=_j.dumps({"messaging_product": "whatsapp",
+                       "to": "15550002222", "type": "text", "text": {"body": "hi"}}),
+                       status="failed", event_key="svc_retry", attempts=1, created_by="svc"
+                       ).returning(ob.c["id"]))).scalar_one()
+                nid = (await s.execute(insert(ob).values(to_number=None, message_type="text",
+                       body="no recipient", payload_json="{}", status="failed",
+                       event_key="svc_retry", attempts=1, created_by="svc").returning(ob.c["id"]))).scalar_one()
+                await s.commit()
+
+            r = await ac.post(f"/admin/whatsapp/{fid}/retry", headers=H(admin_t))
+            check("whatsapp: retry failed → 200 sent", r.status_code == 200 and r.json().get("status") == "sent", f"got {r.status_code}")
+            r = await ac.post(f"/admin/whatsapp/{fid}/retry", headers=H(admin_t))
+            check("whatsapp: retry an already-sent → 409", r.status_code == 409, f"got {r.status_code}")
+            r = await ac.post(f"/admin/whatsapp/{nid}/retry", headers=H(admin_t))
+            check("whatsapp: retry with no recipient → 409", r.status_code == 409, f"got {r.status_code}")
+    finally:
+        wamod._post_message, wamod._upload_media = saved
+        if prev_esc is None:
+            _o.environ.pop("WHATSAPP_ESCALATION_TO", None)
+        else:
+            _o.environ["WHATSAPP_ESCALATION_TO"] = prev_esc
+        async with SessionLocal() as s:
+            await s.execute(delete(ob).where(ob.c["id"] > base_id))
+            await s.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -3325,6 +3435,8 @@ async def main() -> int:
     await test_pr_management()
     print("\n U. admin lot lifecycle (deferred MED)")
     await test_lot_lifecycle()
+    print("\n V. WhatsApp outbox + triggers (Phase 7, Meta mocked)")
+    await test_whatsapp_outbox()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

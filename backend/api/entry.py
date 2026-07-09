@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .auth import get_current_user, require_roles, resolve_site_param
 from .db import get_session
 from .services import ledger
+from .services import whatsapp as wa
 from .services.notifications import notify
 from .stock import SQL_SITE_STOCK
 
@@ -191,11 +192,27 @@ async def create_consumption(
             await _notify_hod_staged(session, kind_label="Issue", site_id=body.Site_ID,
                                      actor=user["username"], ref=result.get("pending_id"),
                                      detail=f"{body.SAP_Code} · qty {body.Quantity:g} · {body.Site_ID}")
-            return result
     except HTTPException:
         raise
     except (IntegrityError, DataError) as e:
         raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
+
+    # Phase 7 — WhatsApp alert to the HOD when the SK bypassed the FEFO warning.
+    # Best-effort + post-commit: a messaging failure never fails the issue.
+    if body.FEFO_Override:
+        try:
+            nums = await wa.hod_numbers(session, body.Site_ID)
+            msg = (f"⚠️ FEFO override: {user['username']} bypassed FEFO issuing "
+                   f"{body.SAP_Code} × {body.Quantity:g} at {body.Site_ID} "
+                   f"(staged #{result.get('pending_id')}, pending HOD approval).")
+            for n in nums:
+                await wa.send_text(session, to=n, body=msg, event_key="fefo_override",
+                                   related_table="pending_issues", related_ref=result.get("pending_id"),
+                                   created_by=user["username"])
+            await session.commit()
+        except Exception:  # noqa: BLE001 — notifications are best-effort
+            await session.rollback()
+    return result
 
 
 @router.post("/returns", status_code=201, summary="Submit a return for HOD approval")

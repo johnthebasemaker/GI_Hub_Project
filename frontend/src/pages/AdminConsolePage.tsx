@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import {
-  App, Button, Card, Col, Form, Input, InputNumber, Modal, Popconfirm, Row, Select,
+  Alert, App, Button, Card, Col, Form, Input, InputNumber, Modal, Popconfirm, Row, Select,
   Space, Switch, Table, Tabs, Tag, Typography,
 } from 'antd'
 import { CloudDownloadOutlined, DatabaseOutlined, DollarOutlined, SwapOutlined, TeamOutlined } from '@ant-design/icons'
@@ -171,6 +171,59 @@ function KpiBlock({ title, rows }: { title: string; rows?: ApiRow[] }) {
       <Table size="small" dataSource={rows ?? []} columns={cols} pagination={false}
         rowKey={(_, i) => String(i)} />
     </Card>
+  )
+}
+
+const WA_COLOR: Record<string, string> = { pending: 'gold', sent: 'green', failed: 'red' }
+
+function WhatsAppTab() {
+  const { message } = App.useApp()
+  const qc = useQueryClient()
+  const [status, setStatus] = useState<string | undefined>(undefined)
+  const { data, isFetching } = useQuery({
+    queryKey: ['/admin/whatsapp', status],
+    queryFn: async () => (await api.get<{ items: ApiRow[]; counts: Record<string, number>; configured: boolean }>(
+      '/admin/whatsapp', { params: status ? { status } : {} })).data,
+  })
+  const retry = useMutation({
+    mutationFn: (id: number) => api.post(`/admin/whatsapp/${id}/retry`).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/admin/whatsapp'] }),
+  })
+  const doRetry = async (id: number) => {
+    try { await retry.mutateAsync(id); message.success('Retried') }
+    catch (e) { message.error(errMsg(e)) }
+  }
+  const cols: ColumnsType<ApiRow> = [
+    { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
+    { title: 'Event', dataIndex: 'event_key', key: 'ev', render: (v) => v ?? '—' },
+    { title: 'To', dataIndex: 'to_number', key: 'to', render: (v) => v ?? '—' },
+    { title: 'Type', dataIndex: 'message_type', key: 'ty', width: 80 },
+    { title: 'Status', dataIndex: 'status', key: 'st', render: (v: string) => <Tag color={WA_COLOR[v] ?? 'default'}>{v}</Tag> },
+    { title: 'Att.', dataIndex: 'attempts', key: 'at', width: 56, align: 'right' },
+    { title: 'Error', dataIndex: 'error', key: 'er', ellipsis: true, render: (v) => v ?? '—' },
+    { title: 'Created', dataIndex: 'created_at', key: 'cr', width: 150, render: (v) => (v ? String(v).slice(0, 16) : '—') },
+    {
+      title: 'Action', key: 'a', width: 90,
+      render: (_: unknown, r: ApiRow) => (String(r.status) !== 'sent'
+        ? <Button size="small" loading={retry.isPending} onClick={() => doRetry(Number(r.id))}>Retry</Button>
+        : null),
+    },
+  ]
+  return (
+    <>
+      {data && !data.configured && (
+        <Alert type="warning" showIcon style={{ marginBottom: 12 }}
+          message="WhatsApp is not configured — set WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_TOKEN in deploy/.env. Messages queue as 'failed' until then." />
+      )}
+      <Space style={{ marginBottom: 12 }}>
+        <Select allowClear placeholder="All statuses" style={{ width: 200 }} value={status} onChange={setStatus}
+          options={['pending', 'sent', 'failed'].map((s) => ({
+            value: s, label: `${s}${data?.counts?.[s] != null ? ` (${data.counts[s]})` : ''}`,
+          }))} />
+      </Space>
+      <Table size="small" loading={isFetching} columns={cols} dataSource={data?.items ?? []}
+        rowKey={(r) => String(r.id)} pagination={{ pageSize: 20, showTotal: (t) => `${t} messages` }} />
+    </>
   )
 }
 
@@ -356,6 +409,7 @@ export default function AdminConsolePage() {
       <Tabs
         items={[
           { key: 'overview', label: 'Overview', children: <OverviewTab /> },
+          { key: 'whatsapp', label: 'WhatsApp', children: <WhatsAppTab /> },
           { key: 'lots', label: 'Lots', children: <LotsTab /> },
           { key: 'sites', label: 'Sites', children: <SitesTab /> },
           { key: 'settings', label: 'Settings', children: <SettingsTab /> },
