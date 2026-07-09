@@ -45,6 +45,7 @@ sysset_t = _MD.tables["system_settings"]
 sessions_t = _MD.tables["auth_sessions"]
 requests_t = _MD.tables["requests"]
 bugs_t = _MD.tables["bug_reports"]
+lots_t = _MD.tables["lots"]
 
 admin = APIRouter(prefix="/admin", tags=["admin console"],
                   dependencies=[Depends(require_level(4))])
@@ -219,6 +220,48 @@ async def revoke_user_sessions(username: str, user: dict = Depends(require_level
                       f"username={username} n={n}")
     await session.commit()
     return {"revoked": n, "username": username}
+
+
+# --- Lot lifecycle (admin): quarantine / dispose / release ----------------------
+_LOT_STATUSES = {"open", "quarantined", "disposed"}
+
+
+class LotStatusIn(BaseModel):
+    status: str
+    reason: Optional[str] = None
+
+
+@admin.get("/lots", summary="Lots with lifecycle status")
+async def admin_lots(status: Optional[str] = None, sap_code: Optional[str] = None,
+                     session: AsyncSession = Depends(get_session)):
+    stmt = select(lots_t).order_by(lots_t.c["id"].desc()).limit(1000)
+    if status:
+        stmt = stmt.where(lots_t.c["Status"] == status)
+    if sap_code:
+        stmt = stmt.where(func.trim(lots_t.c["SAP_Code"]) == sap_code.strip())
+    return {"items": [dict(m) for m in (await session.execute(stmt)).mappings().all()]}
+
+
+@admin.post("/lots/{lot_id}/status", summary="Quarantine / dispose / release a lot")
+async def set_lot_status(lot_id: int, body: LotStatusIn = Body(...),
+                         user: dict = Depends(require_level(4)),
+                         session: AsyncSession = Depends(get_session)):
+    if body.status not in _LOT_STATUSES:
+        raise HTTPException(422, f"status must be one of {sorted(_LOT_STATUSES)}")
+    async with session.begin():
+        row = (await session.execute(select(lots_t.c["Status"], lots_t.c["Lot_Number"])
+               .where(lots_t.c["id"] == lot_id))).first()
+        if row is None:
+            raise HTTPException(404, f"lot {lot_id} not found")
+        if row[0] == "disposed":
+            raise HTTPException(409, "a disposed lot cannot change status")
+        if row[0] == body.status:
+            raise HTTPException(409, f"lot is already {body.status}")
+        await session.execute(update(lots_t).where(lots_t.c["id"] == lot_id).values(Status=body.status))
+        await write_audit(session, user["username"], f"LOT_{body.status.upper()}", "lots",
+                          f"id={lot_id} lot={row[1]} {row[0]}→{body.status}"
+                          + (f": {body.reason}" if body.reason else ""))
+    return {"updated": True, "id": lot_id, "status": body.status, "prior": row[0]}
 
 
 # --- System-overview KPIs (admin) -----------------------------------------------

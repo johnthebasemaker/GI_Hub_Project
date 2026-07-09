@@ -3217,6 +3217,65 @@ async def test_pr_management():
             await s.commit()
 
 
+async def test_lot_lifecycle():
+    """Deferred-MED — admin lot lifecycle: quarantine → release → dispose (terminal),
+    role-gated + validated. Synthetic lot cleaned up in finally."""
+    from sqlalchemy import delete, insert, select as _sel
+
+    lots = ledger._MD.tables["lots"]
+    LOT = "LOT-SVC-LC"
+    async with SessionLocal() as s:
+        await s.execute(delete(lots).where(lots.c["Lot_Number"] == LOT))
+        lid = (await s.execute(insert(lots).values(Lot_Number=LOT, SAP_Code="1001",
+               Site_ID="CNCEC", Received_Date="2026-07-01", Status="open"
+               ).returning(lots.c["id"]))).scalar_one()
+        await s.commit()
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.90"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            worker_t = await token("worker", "floor2026")
+            admin_t = await token("admin", "admin2026")
+
+            async def lot_status():
+                async with SessionLocal() as s:
+                    return (await s.execute(_sel(lots.c["Status"]).where(lots.c["id"] == lid))).scalar_one()
+
+            r = await ac.post(f"/admin/lots/{lid}/status", headers=H(worker_t), json={"status": "quarantined"})
+            check("lot: worker → 403", r.status_code == 403, f"got {r.status_code}")
+
+            r = await ac.post(f"/admin/lots/{lid}/status", headers=H(admin_t), json={"status": "bogus"})
+            check("lot: invalid status → 422", r.status_code == 422, f"got {r.status_code}")
+
+            r = await ac.get("/admin/lots", params={"status": "open"}, headers=H(admin_t))
+            check("lot: admin list includes the open lot",
+                  any(it.get("id") == lid for it in r.json().get("items", [])), f"got {r.status_code}")
+
+            r = await ac.post(f"/admin/lots/{lid}/status", headers=H(admin_t), json={"status": "quarantined", "reason": "damp"})
+            check("lot: quarantine → 200", r.status_code == 200 and await lot_status() == "quarantined", f"got {r.status_code}")
+
+            r = await ac.post(f"/admin/lots/{lid}/status", headers=H(admin_t), json={"status": "open"})
+            check("lot: release → open", r.status_code == 200 and await lot_status() == "open", f"got {r.status_code}")
+
+            r = await ac.post(f"/admin/lots/{lid}/status", headers=H(admin_t), json={"status": "disposed", "reason": "expired"})
+            check("lot: dispose → 200", r.status_code == 200 and await lot_status() == "disposed", f"got {r.status_code}")
+
+            r = await ac.post(f"/admin/lots/{lid}/status", headers=H(admin_t), json={"status": "open"})
+            check("lot: change disposed → 409 (terminal)", r.status_code == 409, f"got {r.status_code}")
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(lots).where(lots.c["Lot_Number"] == LOT))
+            await s.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -3264,6 +3323,8 @@ async def main() -> int:
     await test_vendor_returns()
     print("\n T. HOD PR line-edit + rename (deferred MED)")
     await test_pr_management()
+    print("\n U. admin lot lifecycle (deferred MED)")
+    await test_lot_lifecycle()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

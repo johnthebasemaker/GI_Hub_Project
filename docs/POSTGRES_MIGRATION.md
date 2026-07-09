@@ -232,6 +232,20 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-09 (MED · chunk 3) · actor=interactive · branch=`main` · 🔓 Admin lot lifecycle (quarantine / release / dispose)
+- **Files:** `backend/api/console.py` (GET /admin/lots, POST /admin/lots/{id}/status) ·
+  `backend/api/service_tests.py` (suite U, 7 checks) ·
+  `frontend/src/pages/AdminConsolePage.tsx` (Lots tab) · this doc.
+- **Backend:** `POST /admin/lots/{id}/status {status, reason}` transitions a lot
+  between open ⇄ quarantined and → disposed (terminal); validated (422 bad status,
+  409 on disposed/no-op), audited. `GET /admin/lots?status=&sap_code=` lists lots.
+  Only status-flip (a disposed lot drops out of FEFO open-lot picking); physical
+  write-off stays the stock-adjustment path. Existing `lots` table — no migration.
+- **UI:** AdminConsolePage "Lots" tab — status filter + Quarantine / Release /
+  Dispose actions per lot.
+- **Gates:** service_tests **473/0** (+7) · parity 5/5 · frontend build ✅.
+- **Deferred-MED backlog COMPLETE** (vendor-returns · PR line-edit/rename · lot lifecycle).
+
 ### 2026-07-09 (MED · chunk 2) · actor=interactive · branch=`main` · 🔓 HOD draft-PR management (line-edit + rename)
 - **Files:** `backend/api/services/procurement.py` (update_pr_line, rename_pr) ·
   `backend/api/hod.py` (GET /prs/{pr}/lines, PATCH /prs/lines/{id}, POST /prs/{pr}/rename) ·

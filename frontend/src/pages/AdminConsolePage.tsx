@@ -174,6 +174,65 @@ function KpiBlock({ title, rows }: { title: string; rows?: ApiRow[] }) {
   )
 }
 
+const LOT_COLOR: Record<string, string> = { open: 'green', quarantined: 'orange', disposed: 'red' }
+
+function LotsTab() {
+  const { message } = App.useApp()
+  const qc = useQueryClient()
+  const [status, setStatus] = useState<string | undefined>(undefined)
+  const { data, isFetching } = useQuery({
+    queryKey: ['/admin/lots', status],
+    queryFn: async () => (await api.get<{ items: ApiRow[] }>('/admin/lots', { params: status ? { status } : {} })).data.items,
+  })
+  const setLot = useMutation({
+    mutationFn: ({ id, st, reason }: { id: number; st: string; reason?: string }) =>
+      api.post(`/admin/lots/${id}/status`, { status: st, reason }).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/admin/lots'] }),
+  })
+  const act = async (id: number, st: string) => {
+    try { await setLot.mutateAsync({ id, st }); message.success(`Lot ${st}`) }
+    catch (e) { message.error(errMsg(e)) }
+  }
+  const cols: ColumnsType<ApiRow> = [
+    { title: 'Lot', dataIndex: 'Lot_Number', key: 'Lot_Number' },
+    { title: 'SAP', dataIndex: 'SAP_Code', key: 'SAP_Code' },
+    { title: 'Site', dataIndex: 'Site_ID', key: 'Site_ID' },
+    { title: 'Received', dataIndex: 'Received_Date', key: 'r', render: (v) => v ?? '—' },
+    { title: 'Expiry', dataIndex: 'Expiry_Date', key: 'e', render: (v) => v ?? '—' },
+    { title: 'Status', dataIndex: 'Status', key: 's', render: (v: string) => <Tag color={LOT_COLOR[v] ?? 'default'}>{v}</Tag> },
+    {
+      title: 'Action', key: 'a', width: 280,
+      render: (_: unknown, r: ApiRow) => {
+        const st = String(r.Status)
+        if (st === 'disposed') return <Typography.Text type="secondary">disposed</Typography.Text>
+        return (
+          <Space>
+            {st !== 'quarantined' && (
+              <Popconfirm title="Quarantine this lot?" onConfirm={() => act(Number(r.id), 'quarantined')}>
+                <Button size="small">Quarantine</Button>
+              </Popconfirm>
+            )}
+            {st === 'quarantined' && <Button size="small" onClick={() => act(Number(r.id), 'open')}>Release</Button>}
+            <Popconfirm title="Dispose this lot? It's removed from FEFO picking." onConfirm={() => act(Number(r.id), 'disposed')}>
+              <Button size="small" danger>Dispose</Button>
+            </Popconfirm>
+          </Space>
+        )
+      },
+    },
+  ]
+  return (
+    <>
+      <Space style={{ marginBottom: 12 }}>
+        <Select allowClear placeholder="All statuses" style={{ width: 180 }} value={status} onChange={setStatus}
+          options={['open', 'quarantined', 'disposed'].map((s) => ({ value: s, label: s }))} />
+      </Space>
+      <Table size="small" loading={isFetching} columns={cols} dataSource={data ?? []}
+        rowKey={(r) => String(r.id)} pagination={{ pageSize: 20, showTotal: (t) => `${t} lots` }} />
+    </>
+  )
+}
+
 function OverviewTab() {
   const { data } = useSystemOverview()
   const txns = data?.transactions
@@ -297,6 +356,7 @@ export default function AdminConsolePage() {
       <Tabs
         items={[
           { key: 'overview', label: 'Overview', children: <OverviewTab /> },
+          { key: 'lots', label: 'Lots', children: <LotsTab /> },
           { key: 'sites', label: 'Sites', children: <SitesTab /> },
           { key: 'settings', label: 'Settings', children: <SettingsTab /> },
           { key: 'sessions', label: 'Sessions', children: <SessionsTab /> },
