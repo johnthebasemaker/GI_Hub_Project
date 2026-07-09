@@ -232,6 +232,19 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-09 (MED · chunk 2) · actor=interactive · branch=`main` · 🔓 HOD draft-PR management (line-edit + rename)
+- **Files:** `backend/api/services/procurement.py` (update_pr_line, rename_pr) ·
+  `backend/api/hod.py` (GET /prs/{pr}/lines, PATCH /prs/lines/{id}, POST /prs/{pr}/rename) ·
+  `backend/api/service_tests.py` (suite T, 9 checks) · `frontend/src/api/hooks.ts` ·
+  `frontend/src/pages/HodPrsPage.tsx` · this doc.
+- **Draft-only guards:** line-edit + rename only act on `logistics_status='site_draft'`
+  rows; rename dup-checks the target PR number; both site-scoped for a scoped HOD.
+  Editable line fields: Requested_Qty(>0)/Supplier/Est_Cost_SAR/Material_Name/UOM/
+  Notes/WBS_Number/Delivery_Date. No migration.
+- **UI:** HodPrsPage "Submit to Logistics" table now expands a draft PR to an
+  editable line grid (per-line Edit modal) and shows a Rename button on draft rows.
+- **Gates:** service_tests **466/0** (+9) · frontend build ✅.
+
 ### 2026-07-09 (MED · chunk 1) · actor=interactive · branch=`main` · 🔓 Logistics vendor-returns (raise-to-vendor → reopen PO line)
 - **Files:** `backend/api/services/procurement.py` (raise/list/close_vendor_return) ·
   `backend/api/logistics.py` (3 endpoints) · `backend/api/service_tests.py` (suite S,

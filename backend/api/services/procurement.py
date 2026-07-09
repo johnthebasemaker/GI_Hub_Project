@@ -332,6 +332,67 @@ async def create_po_manual(session: AsyncSession, *, username: str, header: dict
     return {"created": True, "po_number": po_number, "lines": len(prepared), "total": total}
 
 
+# --- HOD draft-PR management: edit a line + rename the PR number -------------
+_PR_LINE_EDITABLE = {"Requested_Qty", "Supplier", "Est_Cost_SAR", "Material_Name",
+                     "UOM", "Notes", "WBS_Number", "Delivery_Date"}
+
+
+async def update_pr_line(session: AsyncSession, *, username: str, line_id: int,
+                         fields: dict, caller_site: str | None = None) -> dict:
+    row = (await session.execute(select(
+        pr_master_t.c["PR_Number"], pr_master_t.c["logistics_status"], pr_master_t.c["Site_ID"]
+    ).where(pr_master_t.c["id"] == line_id))).first()
+    if row is None:
+        return {"error": f"PR line {line_id} not found"}
+    if (row[1] or "site_draft") != "site_draft":
+        return {"error": f"PR {row[0]} is {row[1]} — only draft lines can be edited"}
+    if caller_site is not None and (row[2] or "HQ") != caller_site:
+        return {"error": "you may only edit PRs for your own site"}
+    clean = {k: v for k, v in fields.items() if k in _PR_LINE_EDITABLE}
+    if not clean:
+        return {"error": "no editable fields provided"}
+    if "Requested_Qty" in clean:
+        try:
+            q = float(clean["Requested_Qty"])
+        except (TypeError, ValueError):
+            return {"error": "Requested_Qty must be a number"}
+        if q <= 0:
+            return {"error": "Requested_Qty must be > 0"}
+        clean["Requested_Qty"] = q
+    if clean.get("Est_Cost_SAR") is not None:
+        try:
+            clean["Est_Cost_SAR"] = float(clean["Est_Cost_SAR"])
+        except (TypeError, ValueError):
+            return {"error": "Est_Cost_SAR must be a number"}
+    await session.execute(update(pr_master_t).where(pr_master_t.c["id"] == line_id).values(**clean))
+    await write_audit(session, username, "PR_LINE_EDIT", "pr_master",
+                      f"line={line_id} pr={row[0]} {sorted(clean)}")
+    return {"updated": True, "id": line_id, "fields": sorted(clean)}
+
+
+async def rename_pr(session: AsyncSession, *, username: str, old_pr: str,
+                    site_id: str, new_pr: str) -> dict:
+    new_pr = (new_pr or "").strip()
+    if not new_pr:
+        return {"error": "a new PR number is required"}
+    if new_pr == old_pr:
+        return {"error": "the new PR number is the same as the old one"}
+    exists = (await session.execute(select(func.count()).select_from(pr_master_t)
+              .where(pr_master_t.c["PR_Number"] == new_pr))).scalar_one()
+    if exists:
+        return {"error": f"PR {new_pr} already exists"}
+    res = await session.execute(update(pr_master_t).where(
+        (pr_master_t.c["PR_Number"] == old_pr)
+        & (func.coalesce(pr_master_t.c["Site_ID"], "HQ") == site_id)
+        & (func.coalesce(pr_master_t.c["logistics_status"], "site_draft") == "site_draft")
+    ).values(PR_Number=new_pr))
+    if res.rowcount == 0:
+        return {"error": f"PR {old_pr} has no draft lines to rename at {site_id}"}
+    await write_audit(session, username, "PR_RENAME", "pr_master",
+                      f"{old_pr}→{new_pr} site={site_id} lines={res.rowcount}")
+    return {"renamed": True, "old_pr": old_pr, "new_pr": new_pr, "lines": res.rowcount}
+
+
 # --- logistics vendor-returns (raise to vendor → reopen PO line) -------------
 async def raise_vendor_return(session: AsyncSession, *, username: str, po_number: str,
                               po_item_id: int, qty: float, reason: str,

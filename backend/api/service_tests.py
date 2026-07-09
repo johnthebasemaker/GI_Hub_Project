@@ -3142,6 +3142,81 @@ async def test_vendor_returns():
             await s.commit()
 
 
+async def test_pr_management():
+    """Deferred-MED — HOD draft-PR line-edit + PR rename (draft-only, dup-guard,
+    role-gated). Synthetic PR rows cleaned up in finally."""
+    from sqlalchemy import delete, insert, select as _sel
+
+    prm = ledger._MD.tables["pr_master"]
+
+    def _line(pr, qty=5.0, status="site_draft"):
+        return insert(prm).values(PR_Number=pr, SAP_Code="1001", Requested_Qty=qty,
+                                  Site_ID="CNCEC", status="open", logistics_status=status
+                                  ).returning(prm.c["id"])
+    async with SessionLocal() as s:
+        await s.execute(delete(prm).where(prm.c["PR_Number"].like("PR-SVC-%")))
+        lid = (await s.execute(_line("PR-SVC-EDIT"))).scalar_one()
+        await s.execute(_line("PR-SVC-EDIT"))
+        await s.execute(_line("PR-SVC-OTHER"))
+        await s.commit()
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.89"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            worker_t = await token("worker", "floor2026")
+            admin_t = await token("admin", "admin2026")
+
+            r = await ac.patch(f"/hod/prs/lines/{lid}", headers=H(worker_t), json={"fields": {"Requested_Qty": 12}})
+            check("pr-edit: worker (lvl0) → 403", r.status_code == 403, f"got {r.status_code}")
+
+            r = await ac.patch(f"/hod/prs/lines/{lid}", headers=H(admin_t),
+                               json={"fields": {"Requested_Qty": 12, "Supplier": "ACME"}})
+            check("pr-edit: draft line edit → 200", r.status_code == 200 and r.json().get("updated"), f"got {r.status_code}")
+            async with SessionLocal() as s:
+                q = (await s.execute(_sel(prm.c["Requested_Qty"]).where(prm.c["id"] == lid))).scalar_one()
+            check("pr-edit: qty persisted (12)", float(q) == 12.0, f"got {q}")
+
+            r = await ac.patch(f"/hod/prs/lines/{lid}", headers=H(admin_t), json={"fields": {"Requested_Qty": 0}})
+            check("pr-edit: qty 0 → 409", r.status_code == 409, f"got {r.status_code}")
+
+            r = await ac.get("/hod/prs/PR-SVC-EDIT/lines", params={"site_id": "CNCEC"}, headers=H(admin_t))
+            check("pr-edit: HOD lines endpoint → 200 with 2 lines",
+                  r.status_code == 200 and len(r.json().get("items", [])) == 2, f"got {r.status_code}")
+
+            r = await ac.post("/hod/prs/PR-SVC-EDIT/rename", headers=H(admin_t),
+                              json={"site_id": "CNCEC", "new_pr": "PR-SVC-RENAMED"})
+            check("pr-rename: draft rename → 200 lines=2",
+                  r.status_code == 200 and r.json().get("lines") == 2, f"got {r.status_code} {r.text[:120]}")
+            async with SessionLocal() as s:
+                n = (await s.execute(_sel(func.count()).select_from(prm).where(prm.c["PR_Number"] == "PR-SVC-RENAMED"))).scalar_one()
+            check("pr-rename: rows carry the new number", n == 2, f"got {n}")
+
+            r = await ac.post("/hod/prs/PR-SVC-RENAMED/rename", headers=H(admin_t),
+                              json={"site_id": "CNCEC", "new_pr": "PR-SVC-OTHER"})
+            check("pr-rename: collide with existing PR → 409", r.status_code == 409, f"got {r.status_code}")
+
+            # A submitted PR line cannot be edited.
+            async with SessionLocal() as s:
+                await s.execute(prm.update().where(prm.c["PR_Number"] == "PR-SVC-RENAMED")
+                                .values(logistics_status="submitted"))
+                sid = (await s.execute(_sel(prm.c["id"]).where(prm.c["PR_Number"] == "PR-SVC-RENAMED").limit(1))).scalar_one()
+                await s.commit()
+            r = await ac.patch(f"/hod/prs/lines/{sid}", headers=H(admin_t), json={"fields": {"Requested_Qty": 3}})
+            check("pr-edit: submitted line → 409 (draft-only)", r.status_code == 409, f"got {r.status_code}")
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(prm).where(prm.c["PR_Number"].like("PR-SVC-%")))
+            await s.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -3187,6 +3262,8 @@ async def main() -> int:
     await test_entry_guards()
     print("\n S. logistics vendor-returns (deferred MED)")
     await test_vendor_returns()
+    print("\n T. HOD PR line-edit + rename (deferred MED)")
+    await test_pr_management()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

@@ -1,14 +1,17 @@
 import { useState } from 'react'
 import {
-  Alert, App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Popconfirm,
+  Alert, App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Popconfirm,
   Row, Select, Space, Table, Tabs, Tag, Typography, Upload,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { Dayjs } from 'dayjs'
-import { DownloadOutlined, InboxOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
+import { DownloadOutlined, EditOutlined, InboxOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useAuth } from '../auth/AuthContext'
 import { api } from '../api/client'
-import { downloadPrPdf, useAutoDraftPr, useCreatePr, useHodPrs, useList, useSites, useSubmitPr } from '../api/hooks'
+import {
+  downloadPrPdf, useAutoDraftPr, useCreatePr, useEditPrLine, useHodPrLines, useHodPrs,
+  useList, useRenamePr, useSites, useSubmitPr,
+} from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 
 function errMsg(e: unknown): string {
@@ -274,12 +277,72 @@ function ImportPrPdf() {
   )
 }
 
+// Draft-PR line editor (deferred MED): edit a line before submission.
+const PR_LINE_FIELDS: { name: string; numeric?: boolean }[] = [
+  { name: 'Requested_Qty', numeric: true }, { name: 'Supplier' },
+  { name: 'Est_Cost_SAR', numeric: true }, { name: 'UOM' }, { name: 'Notes' },
+]
+function PrLinesEditor({ pr, site, editable }: { pr: string; site?: string; editable: boolean }) {
+  const { message } = App.useApp()
+  const { data: lines } = useHodPrLines(pr, site)
+  const edit = useEditPrLine()
+  const [editing, setEditing] = useState<ApiRow | null>(null)
+  const [form] = Form.useForm()
+
+  const save = async () => {
+    const vals = await form.validateFields()
+    const changed: Record<string, unknown> = {}
+    for (const f of PR_LINE_FIELDS) {
+      if (vals[f.name] !== undefined && vals[f.name] !== editing?.[f.name]) changed[f.name] = vals[f.name]
+    }
+    if (!Object.keys(changed).length) { setEditing(null); return }
+    try {
+      await edit.mutateAsync({ id: Number(editing!.id), fields: changed })
+      message.success('Line updated')
+      setEditing(null)
+    } catch (e) { message.error(errMsg(e)) }
+  }
+
+  const cols: ColumnsType<ApiRow> = [
+    { title: 'SAP', dataIndex: 'SAP_Code' },
+    { title: 'Material', dataIndex: 'Material_Name', ellipsis: true, render: (v) => v ?? '—' },
+    { title: 'Qty', dataIndex: 'Requested_Qty', align: 'right', render: (v) => Number(v) },
+    { title: 'UOM', dataIndex: 'UOM', render: (v) => v ?? '—' },
+    { title: 'Supplier', dataIndex: 'Supplier', render: (v) => v ?? '—' },
+    { title: 'Est SAR', dataIndex: 'Est_Cost_SAR', align: 'right', render: (v) => (v == null ? '—' : Number(v)) },
+    ...(editable ? [{
+      title: '', key: '__e', width: 60,
+      render: (_: unknown, r: ApiRow) => (
+        <Button size="small" icon={<EditOutlined />} onClick={() => { setEditing(r); form.setFieldsValue(r) }} />
+      ),
+    }] : []),
+  ]
+  return (
+    <>
+      <Table size="small" columns={cols} dataSource={lines ?? []} rowKey={(r) => String(r.id)} pagination={false} />
+      <Modal open={!!editing} title={`Edit PR line #${editing?.id ?? ''}`} onOk={save}
+        onCancel={() => setEditing(null)} confirmLoading={edit.isPending} destroyOnHidden>
+        <Form form={form} layout="vertical" preserve={false}>
+          {PR_LINE_FIELDS.map((f) => (
+            <Form.Item key={f.name} name={f.name} label={f.name.replace(/_/g, ' ')}>
+              {f.numeric ? <InputNumber min={0} style={{ width: '100%' }} /> : <Input />}
+            </Form.Item>
+          ))}
+        </Form>
+      </Modal>
+    </>
+  )
+}
+
 function PrQueue() {
   const { message } = App.useApp()
   const { data: sites } = useSites()
   const [siteId, setSiteId] = useState<string | undefined>(undefined)
   const { data: rows, isFetching } = useHodPrs(siteId)
   const submit = useSubmitPr()
+  const rename = useRenamePr()
+  const [renaming, setRenaming] = useState<ApiRow | null>(null)
+  const [newPr, setNewPr] = useState('')
 
   const doSubmit = async (r: ApiRow) => {
     try {
@@ -288,6 +351,14 @@ function PrQueue() {
     } catch (e) {
       message.error(errMsg(e))
     }
+  }
+  const doRename = async () => {
+    if (!renaming || !newPr.trim()) return
+    try {
+      const res = await rename.mutateAsync({ pr: String(renaming.PR_Number), site_id: String(renaming.Site_ID), new_pr: newPr.trim() })
+      message.success(`Renamed to ${res.new_pr} (${res.lines} line(s))`)
+      setRenaming(null); setNewPr('')
+    } catch (e) { message.error(errMsg(e)) }
   }
 
   const columns: ColumnsType<ApiRow> = [
@@ -326,6 +397,9 @@ function PrQueue() {
           >
             PDF
           </Button>
+          {r.logistics_status === 'site_draft' && (
+            <Button size="small" onClick={() => { setRenaming(r); setNewPr(String(r.PR_Number)) }}>Rename</Button>
+          )}
         </Space>
       ),
     },
@@ -343,14 +417,28 @@ function PrQueue() {
           options={(sites ?? []).map((s) => ({ value: s, label: s }))}
         />
       </Space>
+      <Typography.Paragraph type="secondary" style={{ marginTop: -4 }}>
+        Expand a <b>draft</b> PR to edit its lines; use Rename to change a draft PR number before submitting.
+      </Typography.Paragraph>
       <Table
         size="small"
         loading={isFetching}
         columns={columns}
         dataSource={rows ?? []}
         rowKey={(r) => `${r.PR_Number}-${r.Site_ID}`}
+        expandable={{
+          expandedRowRender: (r) => (
+            <PrLinesEditor pr={String(r.PR_Number)} site={String(r.Site_ID)}
+              editable={r.logistics_status === 'site_draft'} />
+          ),
+        }}
         pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `${t} PRs` }}
       />
+      <Modal open={!!renaming} title={`Rename PR ${renaming?.PR_Number ?? ''}`} onOk={doRename}
+        onCancel={() => { setRenaming(null); setNewPr('') }} okText="Rename"
+        okButtonProps={{ disabled: !newPr.trim() }} confirmLoading={rename.isPending} destroyOnHidden>
+        <Input placeholder="New PR number" value={newPr} onChange={(e) => setNewPr(e.target.value)} />
+      </Modal>
     </>
   )
 }

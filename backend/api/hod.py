@@ -478,6 +478,51 @@ async def hod_pr_create(body: CreatePRIn = Body(...),
         raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
 
 
+class PrLineEditIn(BaseModel):
+    fields: dict[str, Any]
+
+
+class PrRenameIn(BaseModel):
+    site_id: str
+    new_pr: str
+
+
+@router.get("/prs/{pr_number}/lines", summary="PR lines (for draft editing)")
+async def hod_pr_lines(pr_number: str, site_id: Optional[str] = None,
+                       user: dict = Depends(require_level(2)),
+                       session: AsyncSession = Depends(get_session)):
+    site = resolve_site_param(user, site_id)
+    return {"items": await procurement.pr_lines(session, pr_number, site or None)}
+
+
+@router.patch("/prs/lines/{line_id}", summary="Edit a draft PR line")
+async def hod_pr_line_edit(line_id: int, body: PrLineEditIn = Body(...),
+                           user: dict = Depends(require_level(2)),
+                           session: AsyncSession = Depends(get_session)):
+    async with session.begin():
+        res = await procurement.update_pr_line(
+            session, username=user["username"], line_id=line_id,
+            fields=body.fields, caller_site=site_scope(user))
+    if res.get("error"):
+        raise HTTPException(409, res["error"])
+    return res
+
+
+@router.post("/prs/{pr_number}/rename", summary="Rename a draft PR number")
+async def hod_pr_rename(pr_number: str, body: PrRenameIn = Body(...),
+                        user: dict = Depends(require_level(2)),
+                        session: AsyncSession = Depends(get_session)):
+    scope = site_scope(user)
+    if scope is not None and body.site_id != scope:
+        raise HTTPException(403, "you may only rename PRs for your own site")
+    async with session.begin():
+        res = await procurement.rename_pr(session, username=user["username"],
+                                          old_pr=pr_number, site_id=body.site_id, new_pr=body.new_pr)
+    if res.get("error"):
+        raise HTTPException(409, res["error"])
+    return res
+
+
 @router.post("/prs/{pr_number}/submit", summary="Submit a PR to Logistics")
 async def hod_pr_submit(pr_number: str, site_id: str,
                         user: dict = Depends(require_level(2)),

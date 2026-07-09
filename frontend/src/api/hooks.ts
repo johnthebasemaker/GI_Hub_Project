@@ -202,6 +202,32 @@ export function useCreatePr() {
   })
 }
 
+// Deferred MED — HOD draft-PR management (line edit + rename).
+export function useHodPrLines(pr: string | null, site?: string) {
+  return useQuery({
+    queryKey: ['/hod/prs', pr, 'lines', site],
+    enabled: !!pr,
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>(`/hod/prs/${pr}/lines`, { params: site ? { site_id: site } : {} })).data.items,
+  })
+}
+export function useEditPrLine() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, fields }: { id: number; fields: Record<string, unknown> }) =>
+      api.patch(`/hod/prs/lines/${id}`, { fields }).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/hod/prs'] }),
+  })
+}
+export function useRenamePr() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ pr, site_id, new_pr }: { pr: string; site_id: string; new_pr: string }) =>
+      api.post(`/hod/prs/${pr}/rename`, { site_id, new_pr }).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/hod/prs'] }),
+  })
+}
+
 export function useSubmitPr() {
   const qc = useQueryClient()
   return useMutation({
