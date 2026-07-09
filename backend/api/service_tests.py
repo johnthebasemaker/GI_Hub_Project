@@ -2856,6 +2856,72 @@ async def test_reporting_dashboard():
               and isinstance(j.get("valuation_by_site"), list), f"got {r.status_code} {str(j)[:120]}")
 
 
+async def test_dn_approval():
+    """Phase 6 — DN two-stage approval: WH submit → Logistics decide → HOD decide
+    → ship gated to hod_approved. Role-gated; state-checked. Synthetic DN cleaned up."""
+    from sqlalchemy import delete, insert, select as _sel
+
+    dn = ledger._MD.tables["delivery_notes"]
+    dni = ledger._MD.tables["dn_items"]
+    DN = "DN-SVC-APPROVAL"
+    async with SessionLocal() as s:
+        await s.execute(delete(dni).where(dni.c["DN_Number"] == DN))
+        await s.execute(delete(dn).where(dn.c["DN_Number"] == DN))
+        await s.execute(insert(dn).values(DN_Number=DN, PO_Number="PO-SVC-DN", Warehouse_ID="HQ",
+                                          Site_ID="CNCEC", status="draft", created_by="svc"))
+        await s.execute(insert(dni).values(DN_Number=DN, po_item_id=1, Material_Code="M1", Qty=1.0, status="pending"))
+        await s.commit()
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.85"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            worker_t = await token("worker", "floor2026")
+            hod_t = await token("hod", "hod2026")
+            admin_t = await token("admin", "admin2026")
+
+            async def dn_status():
+                async with SessionLocal() as s:
+                    return (await s.execute(_sel(dn.c["status"]).where(dn.c["DN_Number"] == DN))).scalar_one()
+
+            r = await ac.post(f"/warehouse/dns/{DN}/submit", headers=H(admin_t))
+            check("dn: submit → pending_logistics",
+                  r.status_code == 200 and await dn_status() == "pending_logistics", f"got {r.status_code}")
+
+            r = await ac.post(f"/warehouse/dns/{DN}/ship", headers=H(admin_t))
+            check("dn: ship before approval → 409", r.status_code == 409, f"got {r.status_code}")
+
+            r = await ac.post(f"/logistics/dns/{DN}/decide", headers=H(worker_t), json={"action": "approve"})
+            check("dn: worker → 403 on logistics decide", r.status_code == 403, f"got {r.status_code}")
+
+            r = await ac.post(f"/logistics/dns/{DN}/decide", headers=H(admin_t), json={"action": "approve"})
+            check("dn: logistics approve → pending_hod",
+                  r.status_code == 200 and await dn_status() == "pending_hod", f"got {r.status_code}")
+
+            r = await ac.post(f"/hod/dns/{DN}/decide", headers=H(worker_t), json={"action": "approve"})
+            check("dn: worker → 403 on HOD decide", r.status_code == 403, f"got {r.status_code}")
+
+            r = await ac.post(f"/hod/dns/{DN}/decide", headers=H(hod_t), json={"action": "approve"})
+            check("dn: HOD approve → hod_approved",
+                  r.status_code == 200 and await dn_status() == "hod_approved", f"got {r.status_code}")
+
+            r = await ac.post(f"/warehouse/dns/{DN}/ship", headers=H(admin_t))
+            check("dn: ship after HOD approval → in_transit",
+                  r.status_code == 200 and await dn_status() == "in_transit", f"got {r.status_code}")
+    finally:
+        async with SessionLocal() as s:
+            await s.execute(delete(dni).where(dni.c["DN_Number"] == DN))
+            await s.execute(delete(dn).where(dn.c["DN_Number"] == DN))
+            await s.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -2893,6 +2959,8 @@ async def main() -> int:
     await test_ratelimit_ip()
     print("\n O. reporting + dashboard parity (Phase 5)")
     await test_reporting_dashboard()
+    print("\n P. DN two-stage approval (Phase 6)")
+    await test_dn_approval()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

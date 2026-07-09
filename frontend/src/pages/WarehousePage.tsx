@@ -5,9 +5,9 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import type { Dayjs } from 'dayjs'
 import {
-  useCreateDn, useDnItems, useList, useRaiseReschedule, useShipDn, useWhAck, useWhAssignmentItems,
-  useWhAssignments, useWhCreateReturn, useWhDisposition, useWhDns, useWhHistory,
-  useWhReceive, useWhReturns,
+  useCreateDn, useDnItems, useList, useRaiseReschedule, useShipDn, useSubmitDn, useWhAck,
+  useWhAssignmentItems, useWhAssignments, useWhCreateReturn, useWhDisposition, useWhDns,
+  useWhHistory, useWhReceive, useWhReturns,
 } from '../api/hooks'
 import type { Row } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
@@ -231,6 +231,16 @@ function DeliveryNotes({ warehouseId }: { warehouseId?: string }) {
   const { message } = App.useApp()
   const { data: rows, isFetching } = useWhDns(warehouseId)
   const ship = useShipDn()
+  const submit = useSubmitDn()
+
+  const doSubmit = async (dn: string) => {
+    try {
+      await submit.mutateAsync(dn)
+      message.success('DN submitted — logistics then HOD will approve it')
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
 
   const doShip = async (dn: string) => {
     try {
@@ -249,11 +259,19 @@ function DeliveryNotes({ warehouseId }: { warehouseId?: string }) {
     { title: 'Driver', dataIndex: 'Driver_Name', key: 'Driver_Name', render: (v) => v ?? '—' },
     { title: 'Status', dataIndex: 'status', key: 'status', render: (v: string) => <Tag>{v}</Tag> },
     {
-      title: 'Action', key: '__act',
-      render: (_: unknown, r: Row) =>
-        ['draft', 'prepared'].includes(String(r.status)) ? (
-          <Button size="small" type="primary" onClick={() => doShip(String(r.DN_Number))}>Ship</Button>
-        ) : null,
+      title: 'Action', key: '__act', width: 200,
+      render: (_: unknown, r: Row) => {
+        const st = String(r.status)
+        if (['draft', 'prepared', 'rejected'].includes(st)) {
+          return <Button size="small" onClick={() => doSubmit(String(r.DN_Number))}>Submit for approval</Button>
+        }
+        if (st === 'hod_approved') {
+          return <Button size="small" type="primary" onClick={() => doShip(String(r.DN_Number))}>Ship</Button>
+        }
+        if (st === 'pending_logistics') return <Tag color="gold">awaiting logistics</Tag>
+        if (st === 'pending_hod') return <Tag color="blue">awaiting HOD</Tag>
+        return null
+      },
     },
   ]
 

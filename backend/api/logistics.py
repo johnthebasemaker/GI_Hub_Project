@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .auth import require_level
 from .db import get_session
 from .services import procurement
+from .services import warehouse as wh
 
 router = APIRouter(prefix="/logistics", tags=["logistics"],
                    dependencies=[Depends(require_level(3))])
@@ -163,6 +164,41 @@ async def decide_reschedule(req_id: int, body: RescheduleDecideIn = Body(...),
             res = await procurement.decide_reschedule(
                 session, username=user["username"], req_id=req_id,
                 action=body.action, decision_notes=body.decision_notes or "")
+        if res.get("error"):
+            raise HTTPException(409, res["error"])
+        return res
+    except HTTPException:
+        raise
+    except (IntegrityError, DataError) as e:
+        raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
+
+
+# --- DN multi-stage approval (Phase 6): logistics stage --------------------
+class DnDecideIn(BaseModel):
+    action: str  # approve | reject
+    reason: Optional[str] = None
+
+
+@router.get("/dns", summary="Delivery notes awaiting logistics approval")
+async def dns(status: str = "pending_logistics",
+              session: AsyncSession = Depends(get_session)):
+    return {"items": await wh.dns_for(session, None, status)}
+
+
+@router.get("/dns/{dn_number}/items", summary="DN line items")
+async def dn_items(dn_number: str, session: AsyncSession = Depends(get_session)):
+    return {"items": await wh.dn_lines(session, dn_number)}
+
+
+@router.post("/dns/{dn_number}/decide", summary="Logistics approve/reject a DN (date/logistics stage)")
+async def decide_dn(dn_number: str, body: DnDecideIn = Body(...),
+                    user: dict = Depends(require_level(3)),
+                    session: AsyncSession = Depends(get_session)):
+    try:
+        async with session.begin():
+            res = await wh.decide_dn_logistics(session, username=user["username"],
+                                               dn_number=dn_number, action=body.action,
+                                               reason=body.reason or "")
         if res.get("error"):
             raise HTTPException(409, res["error"])
         return res

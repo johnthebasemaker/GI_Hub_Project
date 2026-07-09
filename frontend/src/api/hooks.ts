@@ -387,6 +387,37 @@ export const useCreateDn = () =>
   useWhMutation((body: Row) => api.post('/warehouse/dns', body).then((r) => r.data as Row))
 export const useShipDn = () =>
   useWhMutation((dn: string) => api.post(`/warehouse/dns/${dn}/ship`).then((r) => r.data as Row))
+// Phase 6 — DN two-stage approval.
+export const useSubmitDn = () =>
+  useWhMutation((dn: string) => api.post(`/warehouse/dns/${dn}/submit`).then((r) => r.data as Row))
+
+export function useDnDecide(scope: 'logistics' | 'hod') {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ dn, action, reason }: { dn: string; action: 'approve' | 'reject'; reason?: string }) =>
+      api.post(`/${scope}/dns/${dn}/decide`, { action, reason }).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['/logistics/dns'] })
+      qc.invalidateQueries({ queryKey: ['/hod/dns'] })
+      qc.invalidateQueries({ queryKey: ['/warehouse/dns'] })
+    },
+  })
+}
+
+export function useDnQueue(scope: 'logistics' | 'hod') {
+  return useQuery({
+    queryKey: [`/${scope}/dns`],
+    queryFn: async () => (await api.get<{ items: Row[] }>(`/${scope}/dns`)).data.items,
+  })
+}
+
+export function useScopedDnItems(scope: 'logistics' | 'hod', dn: string | null) {
+  return useQuery({
+    queryKey: [`/${scope}/dns`, dn, 'items'],
+    enabled: !!dn,
+    queryFn: async () => (await api.get<{ items: Row[] }>(`/${scope}/dns/${dn}/items`)).data.items,
+  })
+}
 
 export function useWhDns(warehouseId?: string, status?: string) {
   return useQuery({

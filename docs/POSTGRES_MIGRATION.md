@@ -232,6 +232,23 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-09 (Phase 6 · chunk 1) · actor=interactive · branch=`main` · 🔓 DN two-stage approval (Logistics date → HOD content → ship)
+- **Files:** `backend/api/services/warehouse.py` (submit_dn/decide_dn_logistics/
+  decide_dn_hod; ship_dn now gated to hod_approved) · `backend/api/warehouse.py`
+  (submit endpoint) · `backend/api/logistics.py` + `backend/api/hod.py` (DN
+  list/items/decide) · `backend/api/service_tests.py` (suite P, 7 checks) ·
+  `frontend/src/api/hooks.ts` · `frontend/src/components/DnApprovalQueue.tsx` (new,
+  shared) · `frontend/src/pages/{WarehousePage,LogisticsPage,ApprovalsPage}.tsx` · this doc.
+- **State machine restored** (schema already had the columns — no migration):
+  draft → (WH `POST /warehouse/dns/{dn}/submit`) pending_logistics → (Logistics
+  `POST /logistics/dns/{dn}/decide`) pending_hod → (HOD `POST /hod/dns/{dn}/decide`)
+  hod_approved → (WH ship, now **gated to hod_approved**) in_transit → SK receipt.
+  Reject at either gate → 'rejected' (WH resubmits). In-app notify only.
+- **UI:** WarehousePage DN actions = Submit / awaiting tags / Ship (only when
+  hod_approved); shared `DnApprovalQueue` on LogisticsPage ("DN Approvals" tab)
+  and ApprovalsPage ("Delivery Notes" tab) with expandable line items + reason-reject.
+- **Gates:** service_tests **434/0** (+7) · frontend build ✅.
+
 ### 2026-07-08 (Phase 5) · actor=interactive · branch=`main` · 🔓 Reporting & Dashboard parity
 - **Files:** `backend/api/reports.py` (rep_pr_status + registry) ·
   `backend/api/dashboard.py` (new, GET /dashboard/metrics) · `backend/api/console.py`

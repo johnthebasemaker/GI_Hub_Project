@@ -13,6 +13,7 @@ import {
 } from '../api/hooks'
 import { api } from '../api/client'
 import type { Row } from '../api/client'
+import DnApprovalQueue from '../components/DnApprovalQueue'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -655,6 +656,7 @@ export default function LogisticsPage() {
           { key: 'create', label: 'Create PO', children: <CreatePoManual /> },
           { key: 'import', label: '📄 Import PO PDF', children: <ImportPoPdf /> },
           { key: 'pos', label: 'Purchase Orders', children: <PurchaseOrders /> },
+          { key: 'dns', label: 'DN Approvals', children: <DnApprovalQueue scope="logistics" /> },
           { key: 'reschedules', label: 'Reschedules', children: <Reschedules /> },
           { key: 'force', label: 'Force-Closures', children: <ForceClosures /> },
         ]}

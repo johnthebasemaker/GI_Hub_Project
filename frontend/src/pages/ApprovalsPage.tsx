@@ -12,6 +12,7 @@ import {
 import type { Row } from '../api/client'
 import { buildColumns } from '../lib/columns'
 import SubmissionInsight from '../components/SubmissionInsight'
+import DnApprovalQueue from '../components/DnApprovalQueue'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -281,15 +282,19 @@ export default function ApprovalsPage() {
       />
 
       <Tabs
-        items={KINDS.map((k) => ({
-          key: k.key,
-          label: (
-            <Badge count={counts?.[k.key] ?? 0} size="small" offset={[10, -2]}>
-              <span style={{ paddingRight: 6 }}>{k.label}</span>
-            </Badge>
-          ),
-          children: <PendingKind kind={k.key} siteId={siteId} />,
-        }))}
+        items={[
+          ...KINDS.map((k) => ({
+            key: k.key,
+            label: (
+              <Badge count={counts?.[k.key] ?? 0} size="small" offset={[10, -2]}>
+                <span style={{ paddingRight: 6 }}>{k.label}</span>
+              </Badge>
+            ),
+            children: <PendingKind kind={k.key} siteId={siteId} />,
+          })),
+          // Phase 6 — HOD content stage of the DN two-stage approval.
+          { key: 'dns', label: 'Delivery Notes', children: <DnApprovalQueue scope="hod" /> },
+        ]}
       />
     </div>
   )

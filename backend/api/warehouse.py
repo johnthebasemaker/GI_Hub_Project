@@ -306,7 +306,16 @@ async def history(warehouse_id: Optional[str] = None,
                            "dn_by_family": [dict(r) for r in by_family]}}
 
 
-@router.post("/dns/{dn_number}/ship", summary="Mark a DN outbound (in_transit)")
+@router.post("/dns/{dn_number}/submit", summary="Submit a DN for logistics + HOD approval")
+async def submit_dn(dn_number: str, user: dict = Depends(_ROLE),
+                    session: AsyncSession = Depends(get_session)):
+    async with session.begin():
+        await _guard_row_warehouse(session, _delivery_notes_t, "DN_Number", dn_number, user)
+        res = await wh.submit_dn(session, username=user["username"], dn_number=dn_number)
+    return _guard(res)
+
+
+@router.post("/dns/{dn_number}/ship", summary="Mark an HOD-approved DN outbound (in_transit)")
 async def ship(dn_number: str, user: dict = Depends(_ROLE),
                session: AsyncSession = Depends(get_session)):
     async with session.begin():

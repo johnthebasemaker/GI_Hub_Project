@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .auth import require_level, resolve_site_param, site_scope
 from .db import get_session
 from .services import ledger, procurement
+from .services import warehouse as wh
 from .services.notifications import notify
 from .stock import SQL_SITE_STOCK
 
@@ -487,6 +488,36 @@ async def hod_pr_submit(pr_number: str, site_id: str,
     async with session.begin():
         res = await procurement.submit_pr(session, username=user["username"],
                                           pr_number=pr_number, site_id=site_id)
+    if res.get("error"):
+        raise HTTPException(409, res["error"])
+    return res
+
+
+# --- DN multi-stage approval (Phase 6): HOD content stage -------------------
+class DnDecideIn(BaseModel):
+    action: str  # approve | reject
+    reason: Optional[str] = None
+
+
+@router.get("/dns", summary="Delivery notes awaiting HOD approval")
+async def hod_dns(status: str = "pending_hod",
+                  session: AsyncSession = Depends(get_session)):
+    return {"items": await wh.dns_for(session, None, status)}
+
+
+@router.get("/dns/{dn_number}/items", summary="DN line items")
+async def hod_dn_items(dn_number: str, session: AsyncSession = Depends(get_session)):
+    return {"items": await wh.dn_lines(session, dn_number)}
+
+
+@router.post("/dns/{dn_number}/decide", summary="HOD approve/reject a DN (content stage)")
+async def hod_decide_dn(dn_number: str, body: DnDecideIn = Body(...),
+                        user: dict = Depends(require_level(2)),
+                        session: AsyncSession = Depends(get_session)):
+    async with session.begin():
+        res = await wh.decide_dn_hod(session, username=user["username"],
+                                     dn_number=dn_number, action=body.action,
+                                     reason=body.reason or "")
     if res.get("error"):
         raise HTTPException(409, res["error"])
     return res
