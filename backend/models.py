@@ -636,6 +636,30 @@ class WhatsappOutbox(Base):
     updated_at = Column(DateTime)
 
 
+class EmailOutbox(Base):
+    """SMTP outbound queue (NEW-STACK ONLY — no SQLite counterpart; dual_ci
+    leaves it empty on reset, same contract as whatsapp_outbox/ai_jobs).
+    Every outbound email is logged with a delivery status (pending → sent |
+    failed); the admin Email Console lists it and retries failures. Phase 7b —
+    native v2 replacement for the legacy SQLite mailer, not a port of it."""
+    __tablename__ = "email_outbox"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    to_email = Column(Text)
+    cc = Column(Text)
+    subject = Column(Text)
+    body = Column(Text)
+    status = Column(Text, nullable=False, server_default=text("'pending'"), index=True)
+    error = Column(Text)
+    event_key = Column(Text)                # mtc_missing | vendor_return | …
+    related_table = Column(Text)
+    related_ref = Column(Text)
+    attempts = Column(Integer, server_default=text('0'))
+    created_by = Column(Text)
+    created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    sent_at = Column(DateTime)
+    updated_at = Column(DateTime)
+
+
 class WbsMaster(Base):
     __tablename__ = "wbs_master"
     id = Column(Integer, primary_key=True, autoincrement=True)

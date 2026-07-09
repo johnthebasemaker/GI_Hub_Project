@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .auth import get_current_user, require_roles, resolve_site_param
 from .db import get_session
+from .services import emailer
 from .services import ledger
 from .services import whatsapp as wa
 from .services.notifications import notify
@@ -113,6 +114,28 @@ async def _link_mtc(session, mtc_id: Optional[int], pending_id) -> None:
 _mtc_t = ledger._MD.tables["mtc_documents"]
 
 
+async def _alert_mtc_missing(session, exc: HTTPException, actor: str) -> None:
+    """Phase 7b — the parked 'missing-MTC → Logistics email' follow-up: when the
+    MTC gate blocks a Rubber receipt, email the logistics inbox so they chase
+    the certificate with the supplier. Best-effort (post-rollback) — never
+    changes the 422 the store keeper sees."""
+    if exc.status_code != 422 or "MTC document is required" not in str(exc.detail):
+        return
+    try:
+        await session.rollback()   # the begin() block already rolled back; be safe
+        await emailer.send_email(
+            session, to=emailer.logistics_to(),
+            subject="MTC missing — Rubber receipt blocked",
+            body=(f"A goods receipt was blocked because no Material Test Certificate "
+                  f"was attached.\n\nDetail: {exc.detail}\nEntered by: {actor}\n\n"
+                  f"Please obtain the MTC from the supplier so the receipt can be re-entered."),
+            event_key="mtc_missing", related_table="pending_receipts",
+            created_by=actor)
+        await session.commit()
+    except Exception:  # noqa: BLE001 — alerting must never mask the 422
+        await session.rollback()
+
+
 class ConsumptionIn(BaseModel):
     Date: str
     SAP_Code: str
@@ -172,7 +195,8 @@ async def create_receipt(
                                      actor=user["username"], ref=result.get("pending_id"),
                                      detail=f"{body.SAP_Code} · qty {data['Quantity']:g} · {body.Site_ID}")
         return result
-    except HTTPException:
+    except HTTPException as e:
+        await _alert_mtc_missing(session, e, user["username"])
         raise
     except (IntegrityError, DataError) as e:
         raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
@@ -348,7 +372,8 @@ async def create_bulk(body: BulkEntryIn = Body(...),
                     actor=user["username"], ref=",".join(str(s) for s in staged),
                     detail=f"{cnt} {label.lower()} line(s) batch-submitted")
         return {"staged": len(staged), "pending_ids": staged, "kind": body.kind}
-    except HTTPException:
+    except HTTPException as e:
+        await _alert_mtc_missing(session, e, user["username"])
         raise
     except (IntegrityError, DataError) as e:
         raise HTTPException(400, f"{type(e).__name__}: {e.orig}")

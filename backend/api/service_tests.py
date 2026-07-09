@@ -3395,6 +3395,122 @@ async def test_whatsapp_outbox():
             await s.commit()
 
 
+async def test_email_outbox():
+    """Phase 7b — native SMTP outbox. The SMTP boundary is MOCKED (no live
+    connections): MTC-missing + vendor-return triggers enqueue+send, the admin
+    Email Console lists + retries. Synthetic rows cleaned up in finally."""
+    import os as _o
+    from sqlalchemy import delete, insert, select as _sel
+    import backend.api.services.emailer as emod
+
+    eb = ledger._MD.tables["email_outbox"]
+    inv = ledger._MD.tables["inventory"]
+    po = ledger._MD.tables["purchase_orders"]
+    poi = ledger._MD.tables["po_items"]
+    ret = ledger._MD.tables["po_returns"]
+    RUB, PO = "SVC-EM-RUBBER", "PO-SVC-EMAIL"
+
+    async with SessionLocal() as s:
+        base_id = (await s.execute(_sel(func.coalesce(func.max(eb.c["id"]), 0)))).scalar_one()
+
+    saved_send = emod._smtp_send
+    prev_to = _o.environ.get("EMAIL_LOGISTICS_TO")
+    sent_mails: list = []
+
+    async def ok_send(to, subject, body, cc=None):
+        sent_mails.append({"to": to, "subject": subject})
+        return {"ok": True}
+
+    emod._smtp_send = ok_send
+    _o.environ["EMAIL_LOGISTICS_TO"] = "logistics@svc.test"
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            await s.execute(delete(eb).where(eb.c["id"] > base_id))
+            await s.execute(delete(ret).where(ret.c["PO_Number"] == PO))
+            await s.execute(delete(poi).where(poi.c["PO_Number"] == PO))
+            await s.execute(delete(po).where(po.c["PO_Number"] == PO))
+            await s.execute(delete(inv).where(inv.c["SAP_Code"] == RUB))
+            await s.commit()
+
+    await _cleanup()
+    async with SessionLocal() as s:
+        await s.execute(insert(inv).values(SAP_Code=RUB, Equipment_Description="Rubber liner",
+                                           UOM="m2", Category="Rubber Lining"))
+        await s.execute(insert(po).values(PO_Number=PO, Site_ID="CNCEC", status="delivered", created_by="svc"))
+        lid = (await s.execute(insert(poi).values(PO_Number=PO, line_no=1, Material_Code="M1",
+               Qty=10.0, Delivered_Qty=10.0, Returned_Qty=0.0, line_status="delivered"
+               ).returning(poi.c["id"]))).scalar_one()
+        await s.commit()
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.92"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            worker_t = await token("worker", "floor2026")
+            admin_t = await token("admin", "admin2026")
+
+            async def rows_for(event_key):
+                async with SessionLocal() as s:
+                    return [dict(m) for m in (await s.execute(_sel(
+                        eb.c["id"], eb.c["status"], eb.c["to_email"]
+                    ).where((eb.c["event_key"] == event_key) & (eb.c["id"] > base_id)))).mappings().all()]
+
+            r = await ac.get("/admin/email", headers=H(worker_t))
+            check("email: worker → 403 on console", r.status_code == 403, f"got {r.status_code}")
+            r = await ac.get("/admin/email", headers=H(admin_t))
+            check("email: admin console → 200 with counts",
+                  r.status_code == 200 and "items" in r.json() and "counts" in r.json(), f"got {r.status_code}")
+
+            # Trigger 1 — MTC-missing: blocked rubber receipt still 422s AND emails logistics.
+            r = await ac.post("/entry/receipts", headers=H(worker_t),
+                              json={"Date": "2026-07-09", "SAP_Code": RUB, "Quantity": 2, "Site_ID": "CNCEC"})
+            check("email: rubber receipt w/o MTC still → 422", r.status_code == 422, f"got {r.status_code}")
+            mm = await rows_for("mtc_missing")
+            check("email: MTC-missing alert enqueued + sent to logistics inbox",
+                  any(x["status"] == "sent" and x["to_email"] == "logistics@svc.test" for x in mm), str(mm)[:160])
+
+            # Trigger 2 — vendor return raised → logistics email draft.
+            r = await ac.post("/logistics/vendor-returns", headers=H(admin_t),
+                              json={"po_number": PO, "po_item_id": lid, "qty": 3, "reason": "damaged"})
+            check("email: vendor return raised → 201", r.status_code == 201, f"got {r.status_code}")
+            vr = await rows_for("vendor_return")
+            check("email: vendor-return draft enqueued + sent",
+                  any(x["status"] == "sent" for x in vr), str(vr)[:160])
+            check("email: SMTP mock actually received the draft",
+                  any("Vendor return raised" in m["subject"] for m in sent_mails), str(sent_mails)[:160])
+
+            # Retry paths.
+            async with SessionLocal() as s:
+                fid = (await s.execute(insert(eb).values(to_email="x@svc.test", subject="retry me",
+                       body="hello", status="failed", event_key="svc_retry", attempts=1,
+                       created_by="svc").returning(eb.c["id"]))).scalar_one()
+                nid = (await s.execute(insert(eb).values(to_email=None, subject="no rcpt",
+                       body="x", status="failed", event_key="svc_retry", attempts=1,
+                       created_by="svc").returning(eb.c["id"]))).scalar_one()
+                await s.commit()
+            r = await ac.post(f"/admin/email/{fid}/retry", headers=H(admin_t))
+            check("email: retry failed → 200 sent", r.status_code == 200 and r.json().get("status") == "sent", f"got {r.status_code}")
+            r = await ac.post(f"/admin/email/{fid}/retry", headers=H(admin_t))
+            check("email: retry an already-sent → 409", r.status_code == 409, f"got {r.status_code}")
+            r = await ac.post(f"/admin/email/{nid}/retry", headers=H(admin_t))
+            check("email: retry with no recipient → 409", r.status_code == 409, f"got {r.status_code}")
+    finally:
+        emod._smtp_send = saved_send
+        if prev_to is None:
+            _o.environ.pop("EMAIL_LOGISTICS_TO", None)
+        else:
+            _o.environ["EMAIL_LOGISTICS_TO"] = prev_to
+        await _cleanup()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -3446,6 +3562,8 @@ async def main() -> int:
     await test_lot_lifecycle()
     print("\n V. WhatsApp outbox + triggers (Phase 7, Meta mocked)")
     await test_whatsapp_outbox()
+    print("\n W. email outbox + triggers (Phase 7b, SMTP mocked)")
+    await test_email_outbox()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

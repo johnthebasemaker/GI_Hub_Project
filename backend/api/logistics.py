@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .auth import require_level
 from .db import get_session
+from .services import emailer
 from .services import procurement
 from .services import warehouse as wh
 
@@ -205,11 +206,30 @@ async def raise_vendor_return(body: VendorReturnIn = Body(...),
                 expected_resupply=body.expected_resupply, notes=body.notes)
         if res.get("error"):
             raise HTTPException(409, res["error"])
-        return res
     except HTTPException:
         raise
     except (IntegrityError, DataError) as e:
         raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
+
+    # Phase 7b — the parked "vendor-return Logistics email draft": a ready-to-
+    # forward email to the logistics inbox. Best-effort, post-commit.
+    try:
+        await emailer.send_email(
+            session, to=emailer.logistics_to(),
+            subject=f"Vendor return raised — PO {body.po_number}",
+            body=(f"A return to the vendor was raised on PO {body.po_number} "
+                  f"(line {body.po_item_id}).\n\n"
+                  f"Quantity: {body.qty:g}\nReason: {body.reason}\n"
+                  f"Expected resupply: {body.expected_resupply or '—'}\n"
+                  f"Raised by: {user['username']}\n\n"
+                  f"The PO line has been reopened pending re-delivery. "
+                  f"Please forward this to the vendor with the delivery details."),
+            event_key="vendor_return", related_table="po_returns",
+            related_ref=res.get("id"), created_by=user["username"])
+        await session.commit()
+    except Exception:  # noqa: BLE001 — email is best-effort
+        await session.rollback()
+    return res
 
 
 @router.post("/vendor-returns/{return_id}/close", summary="Close a vendor return (resupplied)")

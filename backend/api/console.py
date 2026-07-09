@@ -36,6 +36,7 @@ from .auth import (get_current_user, require_level, revoke_all_sessions,
                    site_scope)
 from .config import async_database_url
 from .db import get_session
+from .services import emailer
 from .services import whatsapp as wa
 from .services.ledger import _MD, write_audit
 from .services.notifications import notify
@@ -255,6 +256,41 @@ async def whatsapp_retry(outbox_id: int, user: dict = Depends(require_level(4)),
     if res.get("error"):
         raise HTTPException(409, res["error"])
     await write_audit(session, user["username"], "WHATSAPP_RETRY", "whatsapp_outbox",
+                      f"id={outbox_id} → {res.get('status')}")
+    await session.commit()
+    return res
+
+
+# --- Email Console (admin): outbox viewer + manual retry ------------------------
+email_outbox_t = _MD.tables["email_outbox"]
+
+
+@admin.get("/email", summary="Email outbox (queue + delivery status)")
+async def email_outbox(status: Optional[str] = None, limit: int = 200,
+                       session: AsyncSession = Depends(get_session)):
+    cols = [email_outbox_t.c["id"], email_outbox_t.c["to_email"], email_outbox_t.c["cc"],
+            email_outbox_t.c["subject"], email_outbox_t.c["body"],
+            email_outbox_t.c["status"], email_outbox_t.c["error"],
+            email_outbox_t.c["event_key"], email_outbox_t.c["related_table"],
+            email_outbox_t.c["related_ref"], email_outbox_t.c["attempts"],
+            email_outbox_t.c["created_by"], email_outbox_t.c["created_at"],
+            email_outbox_t.c["sent_at"]]
+    stmt = select(*cols).order_by(email_outbox_t.c["id"].desc()).limit(max(1, min(int(limit), 1000)))
+    if status:
+        stmt = stmt.where(email_outbox_t.c["status"] == status)
+    rows = [dict(m) for m in (await session.execute(stmt)).mappings().all()]
+    counts = {r["status"]: r["n"] for r in (await session.execute(text(
+        "SELECT status, COUNT(*) AS n FROM email_outbox GROUP BY status"))).mappings().all()}
+    return {"items": rows, "counts": counts, "configured": emailer.enabled()}
+
+
+@admin.post("/email/{outbox_id}/retry", summary="Retry a failed/pending email")
+async def email_retry(outbox_id: int, user: dict = Depends(require_level(4)),
+                      session: AsyncSession = Depends(get_session)):
+    res = await emailer.retry(session, outbox_id=outbox_id)
+    if res.get("error"):
+        raise HTTPException(409, res["error"])
+    await write_audit(session, user["username"], "EMAIL_RETRY", "email_outbox",
                       f"id={outbox_id} → {res.get('status')}")
     await session.commit()
     return res

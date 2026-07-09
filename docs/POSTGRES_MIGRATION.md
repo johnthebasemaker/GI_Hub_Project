@@ -232,6 +232,30 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-09 (Phase 7b · chunk 2) · actor=interactive · branch=`main` · 📧 Native SMTP email outbox + parked email triggers + Email Console
+- **Files:** `backend/models.py` + `backend/alembic/versions/…f7d4a20b88c3…`
+  (`email_outbox`, NEW-STACK-ONLY) · `backend/api/services/emailer.py` (new SMTP
+  client + outbox; named *emailer* to stay clear of the stdlib `email` package) ·
+  `backend/api/entry.py` (MTC-missing alert) · `backend/api/logistics.py`
+  (vendor-return draft) · `backend/api/console.py` (Email Console endpoints) ·
+  `backend/api/service_tests.py` (suite W, 10 checks, **SMTP mocked**) ·
+  `frontend/src/pages/AdminConsolePage.tsx` (Email tab) · `deploy/.env.example` · this doc.
+- **Architecture:** mirrors the WhatsApp outbox — NOT a port of the legacy SQLite
+  mailer. stdlib `smtplib` via `asyncio.to_thread`; `_smtp_send` is the single
+  network boundary (monkeypatched in tests). Env: `SMTP_HOST/PORT/USER/PASS/FROM/
+  STARTTLS` + `EMAIL_LOGISTICS_TO` (users have no email column → fixed logistics
+  inbox, same model as the legacy mailer). `enabled()` false ⇒ queue as failed.
+- **Triggers (both parked items, best-effort, never mask the primary result):**
+  MTC gate blocks a Rubber receipt → 422 still returned AND a "chase the MTC"
+  email to the logistics inbox (single + bulk paths); vendor return raised →
+  ready-to-forward Logistics email draft (post-commit).
+- **Console:** `GET /admin/email` (+ status counts + configured flag, body incl.
+  for preview), `POST /admin/email/{id}/retry`. UI: AdminConsole "Email" tab next
+  to WhatsApp (status filter, expandable body preview, Retry).
+- **Gates:** service_tests **495/0** (+10) · parity 5/5 · frontend build ✅ ·
+  alembic single head f7d4a20b88c3.
+- **ALL parked Meta-hold items (WhatsApp + email) are now COMPLETE.**
+
 ### 2026-07-09 (Phase 7b · chunk 1) · actor=interactive · branch=`main` · 📱 WhatsApp TEMPLATE messages (24h-window fix)
 - **Files:** `backend/api/services/whatsapp.py` (`_text_payload` → template) ·
   `backend/api/service_tests.py` (suite V payload assertion) · `deploy/.env.example` · this doc.
