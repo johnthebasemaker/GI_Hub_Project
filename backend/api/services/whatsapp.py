@@ -97,6 +97,13 @@ async def _upload_media(blob: bytes, filename: str, mime: str) -> dict:
 
 
 # ── payload builders ─────────────────────────────────────────────────────────
+def _meta_to(raw: str) -> str:
+    """Meta's `to` field: digits only (strips the canonical '+', spaces, dashes).
+    Numbers are STORED as strict E.164 with a leading '+' (project-wide rule);
+    this is the one boundary where the '+' is dropped for the Graph API."""
+    return "".join(ch for ch in (raw or "") if ch.isdigit())
+
+
 def _template_name() -> str:
     return os.environ.get("WHATSAPP_TEMPLATE_NAME", "alert_notification").strip()
 
@@ -119,7 +126,7 @@ def _text_payload(to: str, body: str) -> dict:
         flat = " ".join((body or "").split())[:1024]
         tpl["components"] = [{"type": "body",
                               "parameters": [{"type": "text", "text": flat}]}]
-    return {"messaging_product": "whatsapp", "to": to, "type": "template",
+    return {"messaging_product": "whatsapp", "to": _meta_to(to), "type": "template",
             "template": tpl}
 
 
@@ -127,7 +134,7 @@ def _doc_payload(to: str, media_id: str, filename: str, caption: str | None) -> 
     doc = {"id": media_id, "filename": filename}
     if caption:
         doc["caption"] = caption[:1024]
-    return {"messaging_product": "whatsapp", "to": to, "type": "document", "document": doc}
+    return {"messaging_product": "whatsapp", "to": _meta_to(to), "type": "document", "document": doc}
 
 
 # ── reusable templates (Phase 7c) ────────────────────────────────────────────
@@ -163,7 +170,7 @@ def _template_payload(to: str, name: str, variables: list) -> dict:
     params = [_tpl_param(v) for v in (variables or [])]
     if name != "hello_world" and params:
         tpl["components"] = [{"type": "body", "parameters": params}]
-    return {"messaging_product": "whatsapp", "to": to, "type": "template", "template": tpl}
+    return {"messaging_product": "whatsapp", "to": _meta_to(to), "type": "template", "template": tpl}
 
 
 # ── outbox record + send ─────────────────────────────────────────────────────
@@ -188,7 +195,7 @@ async def _record_and_send(session: AsyncSession, *, to: str, payload: dict,
         event_key=event_key, related_table=related_table,
         related_ref=(str(related_ref) if related_ref is not None else None),
         attempts=0, created_by=created_by).returning(outbox_t.c["id"]))).scalar_one()
-    if not to:
+    if not _meta_to(to):  # no digits at all → nothing Meta could deliver to
         await session.execute(update(outbox_t).where(outbox_t.c["id"] == oid).values(
             status="failed", error="no recipient number", attempts=1, updated_at=func.now()))
         return {"id": oid, "status": "failed", "error": "no recipient number"}

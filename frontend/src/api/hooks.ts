@@ -782,7 +782,7 @@ export function useMyPhone() {
 export function useRequestPhoneOtp() {
   return useMutation({
     mutationFn: (new_number: string) =>
-      api.post<{ sent: boolean; expires_in: number }>('/auth/phone/request-otp', { new_number })
+      api.post<{ sent: boolean; expires_in: number; error?: string }>('/auth/phone/request-otp', { new_number })
         .then((r) => r.data),
   })
 }

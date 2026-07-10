@@ -562,10 +562,19 @@ class ReturnableIn(BaseModel):
 
 
 def _parse_dt(raw: str) -> _dt.datetime:
+    """ISO datetime → naive LOCAL time (what the whole ledger stores).
+
+    Timezone-aware inputs (…Z / +00:00) are converted to the server's local
+    zone BEFORE the tzinfo is stripped — the old `.replace(tzinfo=None)` kept
+    the UTC wall-clock and made every due-back time show 3 h early next to the
+    local `given_time` (UAT bug). Naive inputs are taken as already-local."""
     try:
-        return _dt.datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+        parsed = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         raise HTTPException(422, "expected_return_time must be ISO format")
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
 
 
 @router.get("/returnables", summary="Tool loans (overdue first-notified once)")
@@ -579,7 +588,8 @@ async def list_returnables(status: Optional[str] = None, site_id: Optional[str] 
     now = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
 
     # One-time overdue notifications, deduped via whatsapp_alert_sent (legacy flag).
-    od = select(t.c["id"], t.c["material_name"], t.c["borrower_name"], t.c["Site_ID"]).where(
+    od = select(t.c["id"], t.c["material_name"], t.c["borrower_name"], t.c["Site_ID"],
+                t.c["borrower_phone"]).where(
         t.c["status"] == "borrowed", t.c["expected_return_time"] < now,
         func.coalesce(t.c["whatsapp_alert_sent"], 0) == 0)
     if site_id:
@@ -592,6 +602,18 @@ async def list_returnables(status: Optional[str] = None, site_id: Optional[str] 
                        body=f"Borrowed by {r.borrower_name} — past its expected return time.",
                        link_page="/entry/returnables", related_table="returnable_items",
                        related_ref=str(r.id))
+        # Also chase the borrower directly when we have their number.
+        if r.borrower_phone and wa.enabled():
+            try:
+                await wa.send_template(
+                    session, to=r.borrower_phone, template_key="critical_alert",
+                    variables=[f"Tool overdue: {r.material_name}",
+                               "This item is past its expected return time — "
+                               "please return it to the store."],
+                    event_key="returnable_overdue", related_table="returnable_items",
+                    related_ref=str(r.id))
+            except Exception:  # noqa: BLE001 — never break the list endpoint
+                pass
         await session.execute(update(t).where(t.c["id"] == r.id).values(whatsapp_alert_sent=1))
     if overdue_rows:
         await session.commit()
@@ -622,6 +644,27 @@ async def create_returnable(body: ReturnableIn = Body(...),
         await ledger.write_audit(session, user["username"], "RETURNABLE_LOAN",
                                  "returnable_items",
                                  f"id={rid} {body.material_name} → {body.borrower_name} due {due}")
+        # In-app trail for the site's store keepers (the loan ledger owners).
+        await notify(session, event_key="loan_created", recipient_role="store_keeper",
+                     recipient_site=site, title=f"Tool loaned: {body.material_name.strip()}",
+                     body=(f"{body.borrower_name.strip()} borrowed qty {body.qty:g}"
+                           f"{' ' + body.uom if body.uom else ''} — due back "
+                           f"{due.strftime('%Y-%m-%d %H:%M')}."),
+                     link_page="/entry/returnables", related_table="returnable_items",
+                     related_ref=str(rid))
+    # WhatsApp the BORROWER (the receiver) directly — best-effort, post-commit.
+    if body.borrower_phone and wa.enabled():
+        try:
+            await wa.send_template(
+                session, to=body.borrower_phone, template_key="status_update",
+                variables=[f"Tool loaned to you: {body.material_name.strip()}",
+                           (f"Qty {body.qty:g}{' ' + body.uom if body.uom else ''} from "
+                            f"{site} store — please return by {due.strftime('%Y-%m-%d %H:%M')}.")],
+                event_key="loan_created", related_table="returnable_items",
+                related_ref=str(rid), created_by=user["username"])
+            await session.commit()
+        except Exception:  # noqa: BLE001 — notifications are best-effort
+            await session.rollback()
     return {"created": True, "id": rid}
 
 
@@ -631,8 +674,10 @@ async def mark_returned(rid: int,
                         session: AsyncSession = Depends(get_session)):
     t = _returnables_t
     async with session.begin():
-        row = (await session.execute(select(t.c["Site_ID"], t.c["status"])
-                                     .where(t.c["id"] == rid))).first()
+        row = (await session.execute(select(
+            t.c["Site_ID"], t.c["status"], t.c["material_name"],
+            t.c["borrower_name"], t.c["borrower_phone"],
+        ).where(t.c["id"] == rid))).first()
         if row is None:
             raise HTTPException(404, f"returnable {rid} not found")
         scope = resolve_site_param(user, None)
@@ -643,4 +688,22 @@ async def mark_returned(rid: int,
         await session.execute(update(t).where(t.c["id"] == rid).values(status="returned"))
         await ledger.write_audit(session, user["username"], "RETURNABLE_RETURN",
                                  "returnable_items", f"id={rid}")
+        await notify(session, event_key="loan_returned", recipient_role="store_keeper",
+                     recipient_site=row.Site_ID, severity="success",
+                     title=f"Tool returned: {row.material_name}",
+                     body=f"{row.borrower_name} returned it — confirmed by {user['username']}.",
+                     link_page="/entry/returnables", related_table="returnable_items",
+                     related_ref=str(rid))
+    # Confirm to the borrower on WhatsApp — best-effort, post-commit.
+    if row.borrower_phone and wa.enabled():
+        try:
+            await wa.send_template(
+                session, to=row.borrower_phone, template_key="status_update",
+                variables=[f"Tool return confirmed: {row.material_name}",
+                           f"Received back at {row.Site_ID or 'the'} store. Thank you."],
+                event_key="loan_returned", related_table="returnable_items",
+                related_ref=str(rid), created_by=user["username"])
+            await session.commit()
+        except Exception:  # noqa: BLE001 — notifications are best-effort
+            await session.rollback()
     return {"returned": True, "id": rid}

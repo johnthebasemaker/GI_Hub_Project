@@ -174,8 +174,9 @@ export default function UsersPage() {
                 <Select allowClear showSearch optionFilterProp="label" options={whOptions}
                   loading={warehouses.isFetching} placeholder="Warehouse binding" />
               </Form.Item>
-              <Form.Item name="phone_number" label="Phone (optional)">
-                <Input placeholder="Phone number" />
+              <Form.Item name="phone_number" label="Phone (optional)"
+                rules={[{ pattern: /^\+[0-9][0-9\s()-]{7,18}$/, message: 'Use +<country code><number>, e.g. +966512345678' }]}>
+                <Input placeholder="+966512345678" inputMode="tel" />
               </Form.Item>
             </>
           )}

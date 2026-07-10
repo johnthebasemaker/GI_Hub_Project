@@ -21,7 +21,7 @@ from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import ROLE_META, require_level, revoke_all_sessions
+from .auth import ROLE_META, normalize_phone, require_level, revoke_all_sessions
 from .db import get_session
 from .services.ledger import _MD, write_audit  # reflected metadata + audit writer
 
@@ -164,7 +164,7 @@ async def create_user(body: CreateUserIn,
             await session.execute(insert(users_t).values(
                 username=uname, password_hash=_hash(body.password), role=body.role,
                 Site_ID=(body.site_id or None), Warehouse_ID=(body.warehouse_id or None),
-                Phone_Number=(body.phone_number or None)))
+                Phone_Number=(normalize_phone(body.phone_number) if body.phone_number else None)))
             await write_audit(session, actor["username"], "CREATE_USER", "users",
                               f"username={uname} role={body.role} site={body.site_id or '-'}")
     except HTTPException:
@@ -190,7 +190,8 @@ async def update_user(username: str, body: UpdateUserIn,
     if body.warehouse_id is not None:
         values["Warehouse_ID"] = body.warehouse_id or None
     if body.phone_number is not None:
-        values["Phone_Number"] = body.phone_number or None
+        # '' clears the number; anything else must be valid +E.164 (global rule).
+        values["Phone_Number"] = normalize_phone(body.phone_number) if body.phone_number else None
     if not values:
         raise HTTPException(422, "no fields to update")
     try:

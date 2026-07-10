@@ -115,8 +115,9 @@ export default function LoginPage() {
                   <Input prefix={<EnvironmentOutlined />} placeholder="e.g. Central Warehouse, Dammam" />
                 </Form.Item>
               )}
-              <Form.Item name="phone_number" label="Phone (optional)">
-                <Input placeholder="Phone number" />
+              <Form.Item name="phone_number" label="Phone (optional)"
+                rules={[{ pattern: /^\+[0-9][0-9\s()-]{7,18}$/, message: 'Use +<country code><number>, e.g. +966512345678' }]}>
+                <Input placeholder="+966512345678" inputMode="tel" />
               </Form.Item>
               <Button type="primary" htmlType="submit" block loading={register.isPending}>
                 Request access

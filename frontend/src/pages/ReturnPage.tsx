@@ -3,6 +3,7 @@ import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import { useList, useReturnEntry, useSites } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
+import ItemSnapshot from '../components/ItemSnapshot'
 
 interface FormValues {
   Site_ID: string
@@ -26,6 +27,8 @@ export default function ReturnPage() {
   const { data: sites } = useSites()
   const inventory = useList('/inventory', { limit: 500 })
   const ret = useReturnEntry()
+  const watchSap = Form.useWatch('SAP_Code', form)
+  const watchSite = Form.useWatch('Site_ID', form)
 
   const itemOptions = (inventory.data?.items ?? []).map((r: ApiRow) => ({
     value: String(r.SAP_Code),
@@ -73,6 +76,10 @@ export default function ReturnPage() {
               </Form.Item>
             </Col>
           </Row>
+
+          {/* Current stock + 30-day trend for the picked material (advisory). */}
+          <ItemSnapshot sap={watchSap} site={watchSite} />
+
           <Row gutter={16}>
             <Col xs={24} md={8}>
               <Form.Item name="Quantity" label="Quantity" rules={[{ required: true }]}>

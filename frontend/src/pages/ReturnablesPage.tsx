@@ -89,7 +89,10 @@ export default function ReturnablesPage() {
         borrower_phone: v.borrower_phone || undefined,
         qty: v.qty ?? 1,
         uom: v.uom || undefined,
-        expected_return_time: (v.due as dayjs.Dayjs).toISOString(),
+        // LOCAL wall-clock time, no timezone conversion — the ledger stores
+        // naive local timestamps (toISOString() shifted every due time to UTC,
+        // showing 3 h early next to given_time; UAT timezone bug).
+        expected_return_time: (v.due as dayjs.Dayjs).format('YYYY-MM-DDTHH:mm:ss'),
         site_id: user?.site_id || undefined,
       })
       message.success('Loan recorded')
@@ -115,10 +118,12 @@ export default function ReturnablesPage() {
     { title: 'Qty', dataIndex: 'qty', align: 'right', width: 70 },
     { title: 'UOM', dataIndex: 'uom', width: 70, render: (v) => v ?? '—' },
     { title: 'Borrower', dataIndex: 'borrower_name', width: 140 },
+    // dayjs parses naive DB timestamps as local and tz-suffixed ones as UTC →
+    // local, so both render in the user's local time (UTC+3 on site).
     { title: 'Given', dataIndex: 'given_time', width: 160,
-      render: (v) => (v ? String(v).slice(0, 16).replace('T', ' ') : '—') },
+      render: (v) => (v ? dayjs(String(v)).format('YYYY-MM-DD HH:mm') : '—') },
     { title: 'Due back', dataIndex: 'expected_return_time', width: 160,
-      render: (v) => (v ? String(v).slice(0, 16).replace('T', ' ') : '—') },
+      render: (v) => (v ? dayjs(String(v)).format('YYYY-MM-DD HH:mm') : '—') },
     {
       title: 'Status', key: '__s', width: 110,
       render: (_: unknown, r: Row) =>
@@ -212,7 +217,10 @@ export default function ReturnablesPage() {
           <Form.Item name="borrower_name" label="Borrower" rules={[{ required: true }]}>
             <Input placeholder="Employee name — or Scan badge ↑" />
           </Form.Item>
-          <Form.Item name="borrower_phone" label="Phone (optional)"><Input /></Form.Item>
+          <Form.Item name="borrower_phone" label="Phone (optional — gets WhatsApp updates)"
+            rules={[{ pattern: /^\+[0-9][0-9\s()-]{7,18}$/, message: 'Use +<country code><number>, e.g. +966512345678' }]}>
+            <Input placeholder="+966512345678" inputMode="tel" />
+          </Form.Item>
           <Space size="middle">
             <Form.Item name="qty" label="Qty"><InputNumber min={0.001} /></Form.Item>
             <Form.Item name="uom" label="UOM (optional)"><Input style={{ width: 100 }} /></Form.Item>

@@ -22,9 +22,17 @@ function Metric({ label, value, suffix, tone }: {
 }
 
 export default function ItemSnapshot({ sap, site }: { sap?: string; site?: string }) {
-  const { data, isFetching } = useItemSnapshot(sap, site)
+  const { data, isFetching, isError } = useItemSnapshot(sap, site)
   if (!sap) return null
   if (isFetching && !data) return <Skeleton.Input active size="small" style={{ width: 320 }} />
+  if (isError) {
+    // Never fail silently (UAT: "stock/trend not rendering") — say why.
+    return (
+      <Typography.Text type="warning" style={{ display: 'block', marginBottom: 12, fontSize: 12 }}>
+        Could not load the stock snapshot for {sap} — check the API is running the latest build.
+      </Typography.Text>
+    )
+  }
   if (!data) return null
   const low = data.days_cover != null && data.days_cover < 14
   return (

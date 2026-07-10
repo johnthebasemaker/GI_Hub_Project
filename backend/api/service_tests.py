@@ -3598,16 +3598,20 @@ async def test_phone_otp():
                               json={"new_number": "12"})
             check("otp: bad number → 422", r.status_code == 422, f"got {r.status_code}")
 
-            # Request a code for a new number (dashes/spaces normalized away).
+            # Request a code for a new number (dashes/spaces normalized away;
+            # stored canonical = strict E.164 WITH the leading '+').
             r = await ac.post("/auth/phone/request-otp", headers={**H(worker_t), **_ip},
-                              json={"new_number": "1 555-123-4567"})
+                              json={"new_number": "+1 555-123-4567"})
             check("otp: request-otp → 200 sent", r.status_code == 200 and r.json().get("sent") is True,
                   f"got {r.status_code} {str(r.json())[:120]}")
             async with SessionLocal() as s:
                 pend = (await s.execute(_sel(func.count()).select_from(otp).where(
-                    (otp.c["username"] == "worker") & (otp.c["new_number"] == "15551234567")
+                    (otp.c["username"] == "worker") & (otp.c["new_number"] == "+15551234567")
                     & otp.c["consumed_at"].is_(None)))).scalar_one()
-            check("otp: one active code row for the new number", pend == 1, f"pend={pend}")
+            check("otp: one active code row for the new number (+E.164)", pend == 1, f"pend={pend}")
+            # Meta payload `to` must be digits-only even though storage keeps '+'.
+            check("otp: Meta payload strips the '+' (digits-only to)",
+                  any(p.get("to") == "15551234567" for p in otp_sends), str(otp_sends)[:160])
             # The code must NOT appear in the outbox preview (redacted).
             async with SessionLocal() as s:
                 rows = [dict(m) for m in (await s.execute(_sel(ob.c["body"], ob.c["status"])
@@ -3629,27 +3633,32 @@ async def test_phone_otp():
                               json={"new_number": "15551234567", "code": "000000"})
             check("otp: wrong code → 400", r.status_code == 400, f"got {r.status_code}")
 
-            # Correct code saves the new number.
+            # Correct code saves the new number (canonical +E.164).
             r = await ac.post("/auth/phone/verify-otp", headers={**H(worker_t), **_ip},
                               json={"new_number": "15551234567", "code": "654321"})
-            check("otp: correct code → updated", r.status_code == 200 and r.json().get("phone_number") == "15551234567",
+            check("otp: correct code → updated", r.status_code == 200 and r.json().get("phone_number") == "+15551234567",
                   f"got {r.status_code} {str(r.json())[:120]}")
             r = await ac.get("/auth/phone", headers=H(worker_t))
             check("otp: phone now reflects the verified number",
-                  r.json().get("phone_number") == "15551234567", str(r.json())[:120])
+                  r.json().get("phone_number") == "+15551234567", str(r.json())[:120])
 
             # The code is single-use — verifying again fails.
             r = await ac.post("/auth/phone/verify-otp", headers={**H(worker_t), **_ip},
                               json={"new_number": "15551234567", "code": "654321"})
             check("otp: reused code → 404 (already consumed)", r.status_code == 404, f"got {r.status_code}")
 
-            # Admin override sets any user's number directly — no OTP.
+            # Admin override sets any user's number directly — no OTP; input is
+            # normalized to the same canonical +E.164.
             r = await ac.patch("/admin/users/worker", headers=H(admin_t),
-                               json={"phone_number": "15559990000"})
+                               json={"phone_number": "1555 999-0000"})
             check("otp: admin override → 200", r.status_code == 200, f"got {r.status_code}")
             r = await ac.get("/auth/phone", headers=H(worker_t))
-            check("otp: admin override applied without OTP",
-                  r.json().get("phone_number") == "15559990000", str(r.json())[:120])
+            check("otp: admin override applied without OTP (+E.164)",
+                  r.json().get("phone_number") == "+15559990000", str(r.json())[:120])
+            r = await ac.patch("/admin/users/worker", headers=H(admin_t),
+                               json={"phone_number": "12"})
+            check("otp: admin override rejects a malformed number → 422",
+                  r.status_code == 422, f"got {r.status_code}")
     finally:
         wamod._post_message = saved_post
         authmod._gen_otp = saved_gen
@@ -3663,6 +3672,129 @@ async def test_phone_otp():
             await s.execute(delete(ob).where(ob.c["id"] > base_ob))
             await s.execute(_upd(users).where(users.c["username"] == "worker")
                             .values(Phone_Number=prev_phone))
+            await s.commit()
+
+
+async def test_returnables_notify():
+    """Phase 1 UAT fixes — tool loans: (a) expected_return_time is stored as the
+    LOCAL wall-clock the SK picked (no UTC shift), (b) loan/return/overdue all
+    notify — in-app for the site SKs + WhatsApp direct to the borrower. Meta
+    HTTP mocked; synthetic rows cleaned up in finally."""
+    import datetime as _dtm
+    import os as _o
+    from sqlalchemy import delete, insert as _ins, select as _sel
+    import backend.api.services.whatsapp as wamod
+
+    ob = ledger._MD.tables["whatsapp_outbox"]
+    rt = ledger._MD.tables["returnable_items"]
+    appn = ledger._MD.tables["app_notifications"]
+    BORROWER = "+966569233053"
+
+    async with SessionLocal() as s:
+        base_ob = (await s.execute(_sel(func.coalesce(func.max(ob.c["id"]), 0)))).scalar_one()
+        base_rt = (await s.execute(_sel(func.coalesce(func.max(rt.c["id"]), 0)))).scalar_one()
+
+    saved_post = wamod._post_message
+    _ENVK = ("WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_TOKEN", "WHATSAPP_ESCALATION_TO")
+    prev_env = {k: _o.environ.get(k) for k in _ENVK}
+    sent: list = []
+
+    async def ok_post(payload):
+        sent.append(payload)
+        return {"ok": True, "message_id": "wamid.LOAN"}
+
+    wamod._post_message = ok_post
+    _o.environ["WHATSAPP_PHONE_NUMBER_ID"] = "svc-test-pnid"
+    _o.environ["WHATSAPP_TOKEN"] = "svc-test-token"
+    _o.environ["WHATSAPP_ESCALATION_TO"] = "+15550001111"
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.94"}
+            r = await ac.post("/auth/login", headers=_ip,
+                              json={"username": "worker", "password": "floor2026"})
+            H = {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+            async def wa_rows(event_key):
+                async with SessionLocal() as s:
+                    return [dict(m) for m in (await s.execute(_sel(
+                        ob.c["to_number"], ob.c["status"], ob.c["payload_json"]
+                    ).where((ob.c["event_key"] == event_key) & (ob.c["id"] > base_ob)))).mappings().all()]
+
+            # (a) Local naive datetime survives verbatim — no UTC shift.
+            r = await ac.post("/entry/returnables", headers=H,
+                              json={"material_name": "SVC Torque Wrench", "borrower_name": "Svc Borrower",
+                                    "borrower_phone": BORROWER, "qty": 1,
+                                    "expected_return_time": "2026-07-15T21:59:00", "site_id": "CNCEC"})
+            check("loan: created → 201", r.status_code == 201, f"got {r.status_code} {r.text[:120]}")
+            rid = r.json().get("id")
+            async with SessionLocal() as s:
+                due = (await s.execute(_sel(rt.c["expected_return_time"])
+                       .where(rt.c["id"] == rid))).scalar_one()
+            check("loan: naive local due-time stored VERBATIM (no UTC shift)",
+                  due.strftime("%H:%M") == "21:59", f"stored {due}")
+
+            # A tz-aware (Z) input converts to LOCAL wall-clock, not raw-stripped.
+            aware = _dtm.datetime(2026, 7, 16, 12, 0, tzinfo=_dtm.timezone.utc)
+            expect_local = aware.astimezone().replace(tzinfo=None)
+            r = await ac.post("/entry/returnables", headers=H,
+                              json={"material_name": "SVC Zulu Tool", "borrower_name": "Svc Borrower",
+                                    "qty": 1, "expected_return_time": "2026-07-16T12:00:00Z",
+                                    "site_id": "CNCEC"})
+            rid2 = r.json().get("id")
+            async with SessionLocal() as s:
+                due2 = (await s.execute(_sel(rt.c["expected_return_time"])
+                        .where(rt.c["id"] == rid2))).scalar_one()
+            check("loan: Z-suffixed input converts UTC → local before storing",
+                  due2 == expect_local, f"stored {due2}, expected {expect_local}")
+
+            # (b) Loan → borrower WhatsApp (digits-only to) + in-app for SKs.
+            lw = await wa_rows("loan_created")
+            check("loan: borrower WhatsApp sent (canonical + stored, digits sent)",
+                  any(x["status"] == "sent" and x["to_number"] == BORROWER
+                      and '"to": "966569233053"' in (x["payload_json"] or "").replace("'", '"')
+                      or (x["status"] == "sent" and "966569233053" in (x["payload_json"] or ""))
+                      for x in lw), str(lw)[:200])
+            async with SessionLocal() as s:
+                n_created = (await s.execute(_sel(func.count()).select_from(appn).where(
+                    (appn.c["event_key"] == "loan_created")
+                    & (appn.c["related_ref"] == str(rid))))).scalar_one()
+            check("loan: in-app row for the site store keepers", n_created >= 1, f"n={n_created}")
+
+            # Return → borrower confirmation + in-app.
+            r = await ac.post(f"/entry/returnables/{rid}/return", headers=H)
+            check("loan: mark returned → 200", r.status_code == 200, f"got {r.status_code}")
+            rw = await wa_rows("loan_returned")
+            check("loan: return confirmation WhatsApp sent",
+                  any(x["status"] == "sent" for x in rw), str(rw)[:160])
+
+            # Overdue sweep — insert an already-late loan, list triggers alerts.
+            async with SessionLocal() as s:
+                late = (await s.execute(_ins(rt).values(
+                    material_name="SVC Late Tool", borrower_name="Svc Late",
+                    borrower_phone=BORROWER, qty=1, status="borrowed", Site_ID="CNCEC",
+                    expected_return_time=_dtm.datetime(2020, 1, 1, 8, 0),
+                    whatsapp_alert_sent=0).returning(rt.c["id"]))).scalar_one()
+                await s.commit()
+            r = await ac.get("/entry/returnables", headers=H)
+            check("loan: overdue sweep runs → 200", r.status_code == 200, f"got {r.status_code}")
+            ow = await wa_rows("returnable_overdue")
+            check("loan: overdue chases the borrower on WhatsApp",
+                  any(x["status"] == "sent" and x["to_number"] == BORROWER for x in ow), str(ow)[:200])
+            async with SessionLocal() as s:
+                flag = (await s.execute(_sel(rt.c["whatsapp_alert_sent"])
+                        .where(rt.c["id"] == late))).scalar_one()
+            check("loan: overdue alert deduped (flag set)", flag == 1, f"flag={flag}")
+    finally:
+        wamod._post_message = saved_post
+        for _k, _v in prev_env.items():
+            if _v is None:
+                _o.environ.pop(_k, None)
+            else:
+                _o.environ[_k] = _v
+        async with SessionLocal() as s:
+            await s.execute(delete(rt).where(rt.c["id"] > base_rt))
+            await s.execute(delete(ob).where(ob.c["id"] > base_ob))
             await s.commit()
 
 
@@ -3721,6 +3853,8 @@ async def main() -> int:
     await test_email_outbox()
     print("\n X. phone-change OTP + admin override (Phase 7c, Meta mocked)")
     await test_phone_otp()
+    print("\n Y. tool-loan notifications + timezone (UAT Phase 1, Meta mocked)")
+    await test_returnables_notify()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

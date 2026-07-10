@@ -13,7 +13,7 @@ import { useAuth } from '../auth/AuthContext'
 export default function ProfileModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { message } = App.useApp()
   const { user } = useAuth()
-  const { data: phone, isFetching } = useMyPhone()
+  const { data: phone, isFetching, isError, refetch } = useMyPhone()
   const requestOtp = useRequestPhoneOtp()
   const verifyOtp = useVerifyPhoneOtp()
 
@@ -21,10 +21,13 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
   const [newNumber, setNewNumber] = useState('')
   const [code, setCode] = useState('')
 
-  // Reset the flow every time the modal is (re)opened.
+  // Reset the flow + refresh the number every time the modal is (re)opened.
   useEffect(() => {
-    if (open) { setStep('enter'); setNewNumber(''); setCode('') }
-  }, [open])
+    if (open) { setStep('enter'); setNewNumber(''); setCode(''); void refetch() }
+  }, [open, refetch])
+
+  // Strict global format: +<country_code><number> (spaces/dashes tolerated).
+  const validNumber = /^\+?[0-9][0-9\s()-]{7,18}$/.test(newNumber.trim())
 
   const send = async () => {
     try {
@@ -33,7 +36,8 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
         message.success('Verification code sent via WhatsApp')
         setStep('verify')
       } else {
-        message.warning('Could not send the code — check the number or try again')
+        const detail = (res as { error?: string }).error
+        message.warning(detail ? `Could not send the code — ${detail}` : 'Could not send the code — check the number or try again')
       }
     } catch (e: unknown) {
       message.error(errMsg(e) ?? 'Could not send the code')
@@ -60,20 +64,27 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
         <div>
           <Typography.Text type="secondary">Phone number on file</Typography.Text>
           <div style={{ fontWeight: 600 }}>
-            {isFetching ? '…' : (phone ? `+${phone}` : 'none set')}
+            {isFetching ? '…' : isError ? '—' : (phone || 'none set')}
           </div>
+          {isError && (
+            <Alert type="error" showIcon style={{ marginTop: 6 }}
+              message="Could not load your phone number — the API may be running an older build. Restart the backend and try again." />
+          )}
         </div>
 
         {step === 'enter' ? (
           <Form layout="vertical" onFinish={send}>
-            <Form.Item label="New phone number (international format, no +)"
-              help="Example: 15551234567. A 6-digit code will be sent to this number on WhatsApp.">
-              <Input prefix={<MobileOutlined />} inputMode="numeric" placeholder="15551234567"
+            <Form.Item label="New phone number (international format)"
+              validateStatus={newNumber && !validNumber ? 'error' : undefined}
+              help={newNumber && !validNumber
+                ? 'Use +<country code><number>, e.g. +966512345678'
+                : 'Example: +966512345678. A 6-digit code will be sent to this number on WhatsApp.'}>
+              <Input prefix={<MobileOutlined />} inputMode="tel" placeholder="+966512345678"
                 value={newNumber} onChange={(e) => setNewNumber(e.target.value)}
                 onPressEnter={send} allowClear />
             </Form.Item>
             <Button type="primary" onClick={send} loading={requestOtp.isPending}
-              disabled={newNumber.replace(/\D/g, '').length < 8} block>
+              disabled={!validNumber || newNumber.replace(/\D/g, '').length < 8} block>
               Send verification code
             </Button>
           </Form>

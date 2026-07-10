@@ -308,13 +308,20 @@ def _gen_otp() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
-def _normalize_phone(raw: str) -> str:
-    """E.164-ish: keep digits only (drop spaces/dashes/leading +). 8–15 digits."""
+def normalize_phone(raw: str) -> str:
+    """Canonical GLOBAL phone format: strict E.164 WITH the leading '+'
+    (`+<country_code><number>`). Accepts '+', spaces, dashes and parentheses on
+    input; stores `+` + 8–15 digits (country code first, so no leading 0).
+    Every write path (OTP, admin create/update, register) goes through this;
+    only the Meta send boundary strips the '+' (whatsapp._meta_to)."""
     digits = "".join(ch for ch in (raw or "") if ch.isdigit())
-    if not (8 <= len(digits) <= 15):
-        raise HTTPException(422, "enter a valid phone number in international format "
-                                 "(8–15 digits, country code, no '+')")
-    return digits
+    if not (8 <= len(digits) <= 15) or digits.startswith("0"):
+        raise HTTPException(422, "enter a valid phone number in international format, "
+                                 "e.g. +966512345678 (country code + 8–15 digits)")
+    return "+" + digits
+
+
+_normalize_phone = normalize_phone  # back-compat alias (older call sites/tests)
 
 
 class PhoneRequestIn(BaseModel):
@@ -498,7 +505,8 @@ async def register(body: RegisterIn, session: AsyncSession = Depends(get_session
 
     pw_hash = bcrypt.hashpw(body.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     values = dict(username=uname, password_hash=pw_hash, role=body.role,
-                  Site_ID=site, Phone_Number=(body.phone_number or None),
+                  Site_ID=site,
+                  Phone_Number=(normalize_phone(body.phone_number) if body.phone_number else None),
                   Warehouse_ID=(body.warehouse_id or None), status="pending",
                   Location=(location or None))
     # username is UNIQUE in pending_users — if a prior (rejected) request exists,
@@ -605,7 +613,11 @@ async def get_phone(user: dict = Depends(get_current_user),
 async def request_phone_otp(body: PhoneRequestIn, user: dict = Depends(get_current_user),
                             session: AsyncSession = Depends(get_session)):
     from .services import whatsapp as wa  # lazy: avoids an auth↔whatsapp import cycle
-    number = _normalize_phone(body.new_number)
+    if not wa.enabled():
+        # Fail BEFORE creating a code row — nothing to strand, clear guidance.
+        raise HTTPException(503, "WhatsApp is not configured on the server — "
+                                 "ask an admin to set your number directly.")
+    number = normalize_phone(body.new_number)
     code = _gen_otp()
     code_hash = bcrypt.hashpw(code.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     expires = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None) + _dt.timedelta(minutes=_OTP_TTL_MIN)
@@ -619,17 +631,17 @@ async def request_phone_otp(body: PhoneRequestIn, user: dict = Depends(get_curre
     # Send the code to the NEW number (best-effort; the row is committed either
     # way so a transient send failure doesn't strand the user mid-flow).
     sent = False
+    err = None
     try:
         res = await wa.send_otp(session, to=number, code=code, created_by=user["username"])
         sent = res.get("status") == "sent"
-    except Exception:  # noqa: BLE001
-        sent = False
+        err = res.get("error")
+    except Exception as e:  # noqa: BLE001
+        sent, err = False, str(e)[:200]
     await session.commit()
     await _audit(session, user["username"], "PHONE_OTP_REQUEST", f"→ {number} sent={sent}")
-    if not wa.enabled():
-        raise HTTPException(503, "WhatsApp is not configured on the server — "
-                                 "ask an admin to set your number directly.")
-    return {"sent": sent, "expires_in": _OTP_TTL_MIN * 60}
+    return {"sent": sent, "expires_in": _OTP_TTL_MIN * 60,
+            **({} if sent else {"error": err or "send failed"})}
 
 
 @router.post("/phone/verify-otp", summary="Verify the code → save the new number",
