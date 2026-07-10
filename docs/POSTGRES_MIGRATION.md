@@ -232,6 +232,12 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 8. Run Log
 
+### 2026-07-10 (UAT · Phase 3) · actor=interactive · branch=`main` · ✨ QoL polish — barcode/QR picking, smart defaults, Open-POs KPI hero
+- **Barcode/QR material picking:** `QrScanner` generalised (`formats` prop — BarcodeDetector now scans code_128/EAN/UPC/ITF/… alongside QR; jsQR fallback stays QR-only; manual-entry placeholder configurable). New `lib/barcode.ts` (`matchScanToSap`: exact → case-insensitive → `SAP:<code>` payload → longest embedded code ≥4 chars). Issue + Receive material pickers gained a scan button (clears the category filter when the scanned item sits outside it; unknown scans warn instead of silently failing). Decode stays 100 % client-side.
+- **Smart last-entry defaults:** new `lib/smartDefaults.ts` (localStorage per form, strings only, corrupt-safe). Issue remembers Site/Work Type/Issued By, Receive remembers Site/Supplier, Return remembers Site/Reason — applied via `initialValues`; volatile fields (material/qty/lot) deliberately never remembered.
+- **Open-POs KPI hero:** LogisticsPage Purchase Orders tab opens with 4 stat cards — Open POs · Overdue delivery (Expected_Delivery < today) · Partially delivered · Delivered/closed — computed from the loaded list; each card is a click-to-filter toggle on the table.
+- **Gates:** frontend build ✅ (backend untouched this phase).
+
 ### 2026-07-10 (UAT · Phase 2) · actor=interactive · branch=`main` · 🔍 Global search & filtering + Purchase Request browse page
 - **Generic entity search:** `crud.make_read_router` list endpoint gains `q` (case-insensitive ILIKE across every emitted TEXT column — SAP codes, names, categories, lot/PR/PO numbers, remarks) → live on ALL read entities (/inventory /receipts /consumption /returns /lots /purchase-orders /purchase-requests /equipment). Site pinning still applies under `q`.
 - **Derived stock search:** `/stock/live|by-site|lots|expiring` gain `q` (SAP + Lot_Number on the view, description/category via an inventory-join subquery) and `category` (exact match via inventory). New **`GET /meta/categories`** (distinct trimmed inventory categories) feeds the dropdowns.

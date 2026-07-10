@@ -4,6 +4,7 @@ import {
   Popconfirm, Row as ARow, Select, Space, Table, Tabs, Tag, Typography, Upload,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import { InboxOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import {
@@ -345,13 +346,63 @@ function ForceClosures() {
   )
 }
 
+// KPI hero (UAT Phase 3): the procurement pulse at a glance. Cards double as
+// filters — click one to narrow the table, click again to clear.
+const _PO_TERMINAL = ['delivered', 'closed', 'force_closed', 'cancelled']
+
+function PoKpiHero({ rows, active, onPick }: {
+  rows: Row[]
+  active: string | null
+  onPick: (k: string | null) => void
+}) {
+  const today = dayjs().format('YYYY-MM-DD')
+  const open = rows.filter((r) => !_PO_TERMINAL.includes(String(r.status)))
+  const overdue = open.filter((r) => r.Expected_Delivery && String(r.Expected_Delivery) < today)
+  const partial = rows.filter((r) => String(r.status) === 'partially_delivered')
+  const done = rows.filter((r) => _PO_TERMINAL.includes(String(r.status)))
+  const kpis = [
+    { key: 'open', label: 'Open POs', value: open.length, color: 'var(--gi-gold, #B8860B)' },
+    { key: 'overdue', label: 'Overdue delivery', value: overdue.length, color: '#EF4444' },
+    { key: 'partial', label: 'Partially delivered', value: partial.length, color: '#3B82F6' },
+    { key: 'done', label: 'Delivered / closed', value: done.length, color: '#22C55E' },
+  ]
+  return (
+    <ARow gutter={12} style={{ marginBottom: 16 }}>
+      {kpis.map((k) => (
+        <Col xs={12} md={6} key={k.key}>
+          <Card size="small" hoverable onClick={() => onPick(active === k.key ? null : k.key)}
+            style={active === k.key ? { borderColor: k.color, boxShadow: `0 0 0 1px ${k.color}` } : undefined}>
+            <div style={{ fontSize: 11, letterSpacing: 0.4, textTransform: 'uppercase', opacity: 0.65 }}>
+              {k.label}{active === k.key ? ' · filtering' : ''}
+            </div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: k.color }}>{k.value}</div>
+          </Card>
+        </Col>
+      ))}
+    </ARow>
+  )
+}
+
 function PurchaseOrders() {
   const { message } = App.useApp()
   const { data: rows, isFetching } = useLogisticsPos()
   const warehouses = useList('/warehouses', { limit: 200 })
   const assign = useAssignPo()
   const [po, setPo] = useState<Row | null>(null)
+  const [kpi, setKpi] = useState<string | null>(null)
   const [form] = Form.useForm<{ warehouse_id: string; expected_delivery?: Dayjs; notes?: string }>()
+
+  const today = dayjs().format('YYYY-MM-DD')
+  const visibleRows = (rows ?? []).filter((r) => {
+    if (kpi === 'open') return !_PO_TERMINAL.includes(String(r.status))
+    if (kpi === 'overdue') {
+      return !_PO_TERMINAL.includes(String(r.status))
+        && r.Expected_Delivery && String(r.Expected_Delivery) < today
+    }
+    if (kpi === 'partial') return String(r.status) === 'partially_delivered'
+    if (kpi === 'done') return _PO_TERMINAL.includes(String(r.status))
+    return true
+  })
 
   const submit = async () => {
     const v = await form.validateFields()
@@ -405,8 +456,9 @@ function PurchaseOrders() {
 
   return (
     <div>
+      <PoKpiHero rows={rows ?? []} active={kpi} onPick={setKpi} />
       <Table
-        size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
+        size="small" loading={isFetching} columns={columns} dataSource={visibleRows}
         rowKey={(r) => String(r.PO_Number)}
         expandable={{ expandedRowRender: (r) => <PoItems po={String(r.PO_Number)} /> }}
         pagination={{ pageSize: 20, showTotal: (t) => `${t} POs` }}

@@ -4,12 +4,15 @@ import {
   Select, Space, Table, Tag, Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
+import { BarcodeOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import { useBins, useBulkEntry, useCategories, useList, useSites } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 import ItemSnapshot from '../components/ItemSnapshot'
+import QrScanner from '../components/QrScanner'
+import { BARCODE_FORMATS, matchScanToSap } from '../lib/barcode'
+import { loadDefaults, saveDefaults } from '../lib/smartDefaults'
 
 interface FormValues {
   Site_ID: string
@@ -47,6 +50,7 @@ export default function IssuePage() {
   const bulk = useBulkEntry('consumption', ['/consumption'])
   const [staged, setStaged] = useState<StagedRow[]>([])
   const [editingUid, setEditingUid] = useState<string | null>(null)
+  const [scanOpen, setScanOpen] = useState(false)
 
   const watchSap = Form.useWatch('SAP_Code', form)
   const watchSite = Form.useWatch('Site_ID', form)
@@ -63,9 +67,24 @@ export default function IssuePage() {
     })), [inventory.data, category])
   const labelFor = (sap: string) => itemOptions.find((o) => o.value === sap)?.label ?? sap
 
+  // Barcode/QR pick: decoded text → SAP code → select it in the form.
+  const onScan = (decoded: string) => {
+    setScanOpen(false)
+    const sap = matchScanToSap(decoded, inventory.data?.items ?? [])
+    if (sap) {
+      setCategory(undefined) // the scanned item may sit outside the filter
+      form.setFieldsValue({ SAP_Code: sap })
+      message.success(`Scanned: ${sap}`)
+    } else {
+      message.warning(`No material matches the scanned code "${decoded.slice(0, 60)}"`)
+    }
+  }
+
   // Add the current form to the batch (or update the line being edited).
   const addToBatch = async () => {
     const v = await form.validateFields()
+    // Smart defaults: remember the routine fields for the next session.
+    saveDefaults('issue', { Site_ID: v.Site_ID, Work_Type: v.Work_Type ?? '', Issued_By: v.Issued_By ?? '' })
     const payload: StagedRow = {
       _uid: editingUid ?? `r${++_seq}`,
       _label: labelFor(v.SAP_Code),
@@ -149,7 +168,8 @@ export default function IssuePage() {
       </Typography.Paragraph>
 
       <Card style={{ maxWidth: 860, marginBottom: 16 }}>
-        <Form<FormValues> form={form} layout="vertical" initialValues={{ Date: dayjs() }}>
+        <Form<FormValues> form={form} layout="vertical"
+          initialValues={{ Date: dayjs(), ...loadDefaults('issue') }}>
           <Row gutter={16}>
             <Col xs={24} md={8}>
               <Form.Item name="Site_ID" label="Site" rules={[{ required: true }]}>
@@ -164,8 +184,14 @@ export default function IssuePage() {
               </Form.Item>
             </Col>
             <Col xs={24} md={11}>
-              <Form.Item name="SAP_Code" label="Material (SAP Code)" rules={[{ required: true }]}>
-                <Select showSearch placeholder="Search material" loading={inventory.isFetching} optionFilterProp="label" options={itemOptions} />
+              <Form.Item label="Material (SAP Code)" required style={{ marginBottom: 0 }}>
+                <Space.Compact style={{ width: '100%' }}>
+                  <Form.Item name="SAP_Code" noStyle rules={[{ required: true, message: 'Pick a material' }]}>
+                    <Select showSearch placeholder="Search material" loading={inventory.isFetching} optionFilterProp="label" options={itemOptions} />
+                  </Form.Item>
+                  <Button icon={<BarcodeOutlined />} onClick={() => setScanOpen(true)}
+                    aria-label="Scan a material barcode" title="Scan barcode / QR" />
+                </Space.Compact>
               </Form.Item>
             </Col>
           </Row>
@@ -229,6 +255,10 @@ export default function IssuePage() {
           pagination={false}
           locale={{ emptyText: 'No lines yet — add materials above, then submit them all at once.' }} />
       </Card>
+
+      <QrScanner open={scanOpen} title="Scan material barcode / QR"
+        formats={BARCODE_FORMATS} manualPlaceholder="…or type the SAP code"
+        onClose={() => setScanOpen(false)} onDecode={onScan} />
     </div>
   )
 }

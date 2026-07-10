@@ -13,9 +13,17 @@ interface Props {
   title?: string
   onClose: () => void
   onDecode: (text: string) => void
+  /** BarcodeDetector formats. Default QR-only (badges); pass 1-D formats too
+   *  for material barcodes. jsQR fallback always decodes QR only. */
+  formats?: string[]
+  /** Placeholder for the manual-entry fallback field. */
+  manualPlaceholder?: string
 }
 
-export default function QrScanner({ open, title = 'Scan badge', onClose, onDecode }: Props) {
+export default function QrScanner({
+  open, title = 'Scan badge', onClose, onDecode,
+  formats = ['qr_code'], manualPlaceholder = '…or type the badge ID',
+}: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -46,7 +54,7 @@ export default function QrScanner({ open, title = 'Scan badge', onClose, onDecod
     let detector: { detect: (src: CanvasImageSource) => Promise<{ rawValue: string }[]> } | null = null
     const BD = (window as unknown as { BarcodeDetector?: new (o: { formats: string[] }) => typeof detector }).BarcodeDetector
     if (BD) {
-      try { detector = new BD({ formats: ['qr_code'] }) } catch { detector = null }
+      try { detector = new BD({ formats }) } catch { detector = null }
     }
 
     const scan = async () => {
@@ -111,7 +119,7 @@ export default function QrScanner({ open, title = 'Scan badge', onClose, onDecod
         </>
       )}
       <Space.Compact style={{ width: '100%' }}>
-        <Input placeholder="…or type the badge ID" value={manual}
+        <Input placeholder={manualPlaceholder} value={manual}
           onChange={(e) => setManual(e.target.value)}
           onPressEnter={() => manual.trim() && finish(manual)} />
         <Button type="primary" disabled={!manual.trim()} onClick={() => finish(manual)}>

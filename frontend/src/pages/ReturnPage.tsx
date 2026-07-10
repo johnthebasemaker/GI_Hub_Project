@@ -5,6 +5,7 @@ import type { Dayjs } from 'dayjs'
 import { useCategories, useList, useReturnEntry, useSites } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 import ItemSnapshot from '../components/ItemSnapshot'
+import { loadDefaults, saveDefaults } from '../lib/smartDefaults'
 
 interface FormValues {
   Site_ID: string
@@ -41,6 +42,8 @@ export default function ReturnPage() {
     }))
 
   const onFinish = async (v: FormValues) => {
+    // Smart defaults: remember the routine fields for the next session.
+    saveDefaults('return', { Site_ID: v.Site_ID, Reason: v.Reason ?? '' })
     const payload: ApiRow = {
       Date: v.Date.format('YYYY-MM-DD'),
       SAP_Code: v.SAP_Code,
@@ -68,7 +71,8 @@ export default function ReturnPage() {
       </Typography.Paragraph>
 
       <Card style={{ maxWidth: 760 }}>
-        <Form<FormValues> form={form} layout="vertical" initialValues={{ Date: dayjs() }} onFinish={onFinish}>
+        <Form<FormValues> form={form} layout="vertical"
+          initialValues={{ Date: dayjs(), ...loadDefaults('return') }} onFinish={onFinish}>
           <Row gutter={16}>
             <Col xs={24} md={8}>
               <Form.Item name="Site_ID" label="Site" rules={[{ required: true }]}>
