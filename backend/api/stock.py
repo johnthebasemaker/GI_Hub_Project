@@ -184,12 +184,27 @@ router = APIRouter(prefix="/stock", tags=["stock (derived)"])
 
 async def _paged(session: AsyncSession, key: str, *, site_id: Optional[str],
                  limit: int, offset: int, extra_where: str = "",
-                 extra_params: Optional[dict] = None) -> dict:
+                 extra_params: Optional[dict] = None,
+                 q: Optional[str] = None, category: Optional[str] = None) -> dict:
     spec = DERIVED[key]
     filters, params = [], dict(extra_params or {})
     if spec["site"] and site_id is not None:
         filters.append('sub."Site_ID" = :site_id')
         params["site_id"] = site_id
+    if q and q.strip():
+        # Free-text: SAP code / lot number on the view itself, plus description
+        # and category via the inventory master (all views expose SAP_Code).
+        cols = ['sub."SAP_Code" ILIKE :q']
+        if '"Lot_Number"' in spec["sql"]:
+            cols.append('sub."Lot_Number" ILIKE :q')
+        cols.append('sub."SAP_Code" IN (SELECT TRIM(i."SAP_Code") FROM inventory i '
+                    'WHERE i."Equipment_Description" ILIKE :q OR i."Category" ILIKE :q)')
+        filters.append("(" + " OR ".join(cols) + ")")
+        params["q"] = f"%{q.strip()}%"
+    if category and category.strip():
+        filters.append('sub."SAP_Code" IN (SELECT TRIM(i."SAP_Code") FROM inventory i '
+                       'WHERE TRIM(i."Category") = :category)')
+        params["category"] = category.strip()
     if extra_where:
         filters.append(extra_where)
     where = (" WHERE " + " AND ".join(filters)) if filters else ""
@@ -207,6 +222,8 @@ async def _paged(session: AsyncSession, key: str, *, site_id: Optional[str],
 
 @router.get("/live", summary="Live stock per SAP_Code (global) — v_live_stock")
 async def stock_live(limit: int = Query(200, ge=1, le=5000), offset: int = Query(0, ge=0),
+                     q: Optional[str] = Query(None, max_length=120),
+                     category: Optional[str] = Query(None, max_length=80),
                      user: dict = Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)):
     # This view aggregates across ALL sites (it has no Site_ID column), so a
@@ -214,29 +231,36 @@ async def stock_live(limit: int = Query(200, ge=1, le=5000), offset: int = Query
     if site_scope(user) is not None:
         raise HTTPException(403, "the global stock view is restricted to "
                                  "logistics/admin — use /stock/by-site")
-    return await _paged(session, "live", site_id=None, limit=limit, offset=offset)
+    return await _paged(session, "live", site_id=None, limit=limit, offset=offset,
+                        q=q, category=category)
 
 
 @router.get("/by-site", summary="Current stock per SAP_Code + Site_ID — v_site_stock")
 async def stock_by_site(limit: int = Query(200, ge=1, le=5000), offset: int = Query(0, ge=0),
                         site_id: Optional[str] = Query(None, description="Filter by Site_ID"),
+                        q: Optional[str] = Query(None, max_length=120),
+                        category: Optional[str] = Query(None, max_length=80),
                         user: dict = Depends(get_current_user),
                         session: AsyncSession = Depends(get_session)):
     site_id = resolve_site_param(user, site_id)
     if site_id == "":
         return _empty_page(limit, offset)
-    return await _paged(session, "by-site", site_id=site_id, limit=limit, offset=offset)
+    return await _paged(session, "by-site", site_id=site_id, limit=limit, offset=offset,
+                        q=q, category=category)
 
 
 @router.get("/lots", summary="Per-lot remaining quantity — v_lot_balance")
 async def stock_lots(limit: int = Query(200, ge=1, le=5000), offset: int = Query(0, ge=0),
                      site_id: Optional[str] = Query(None, description="Filter by Site_ID"),
+                     q: Optional[str] = Query(None, max_length=120),
+                     category: Optional[str] = Query(None, max_length=80),
                      user: dict = Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)):
     site_id = resolve_site_param(user, site_id)
     if site_id == "":
         return _empty_page(limit, offset)
-    return await _paged(session, "lots", site_id=site_id, limit=limit, offset=offset)
+    return await _paged(session, "lots", site_id=site_id, limit=limit, offset=offset,
+                        q=q, category=category)
 
 
 @router.get("/expiring", summary="Receipts with expiry: days-to-expiry + status — v_expiring_stock")
@@ -244,6 +268,8 @@ async def stock_expiring(limit: int = Query(200, ge=1, le=5000), offset: int = Q
                          site_id: Optional[str] = Query(None, description="Filter by Site_ID"),
                          within_days: Optional[int] = Query(
                              None, description="Only rows expiring within N days (incl. already expired)"),
+                         q: Optional[str] = Query(None, max_length=120),
+                         category: Optional[str] = Query(None, max_length=80),
                          user: dict = Depends(get_current_user),
                          session: AsyncSession = Depends(get_session)):
     site_id = resolve_site_param(user, site_id)
@@ -254,4 +280,5 @@ async def stock_expiring(limit: int = Query(200, ge=1, le=5000), offset: int = Q
         extra_where = 'sub."Days_Until_Expiry" <= :within_days'
         extra_params["within_days"] = within_days
     return await _paged(session, "expiring", site_id=site_id, limit=limit, offset=offset,
-                        extra_where=extra_where, extra_params=extra_params)
+                        extra_where=extra_where, extra_params=extra_params,
+                        q=q, category=category)

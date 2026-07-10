@@ -1,7 +1,8 @@
+import { useState } from 'react'
 import { App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Row, Select, Typography } from 'antd'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
-import { useList, useReturnEntry, useSites } from '../api/hooks'
+import { useCategories, useList, useReturnEntry, useSites } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 import ItemSnapshot from '../components/ItemSnapshot'
 
@@ -30,10 +31,14 @@ export default function ReturnPage() {
   const watchSap = Form.useWatch('SAP_Code', form)
   const watchSite = Form.useWatch('Site_ID', form)
 
-  const itemOptions = (inventory.data?.items ?? []).map((r: ApiRow) => ({
-    value: String(r.SAP_Code),
-    label: `${r.SAP_Code} — ${r.Equipment_Description ?? ''}`,
-  }))
+  const { data: categories } = useCategories()
+  const [category, setCategory] = useState<string | undefined>(undefined)
+  const itemOptions = (inventory.data?.items ?? [])
+    .filter((r: ApiRow) => !category || String(r.Category ?? '').trim() === category)
+    .map((r: ApiRow) => ({
+      value: String(r.SAP_Code),
+      label: `${r.SAP_Code} — ${r.Equipment_Description ?? ''}`,
+    }))
 
   const onFinish = async (v: FormValues) => {
     const payload: ApiRow = {
@@ -70,7 +75,14 @@ export default function ReturnPage() {
                 <Select placeholder="Select site" options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
               </Form.Item>
             </Col>
-            <Col xs={24} md={16}>
+            <Col xs={24} md={5}>
+              <Form.Item label="Category">
+                <Select allowClear showSearch placeholder="All" value={category}
+                  onChange={(v) => setCategory(v)}
+                  options={(categories ?? []).map((c) => ({ value: c, label: c }))} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={11}>
               <Form.Item name="SAP_Code" label="Material (SAP Code)" rules={[{ required: true }]}>
                 <Select showSearch placeholder="Search material" loading={inventory.isFetching} optionFilterProp="label" options={itemOptions} />
               </Form.Item>

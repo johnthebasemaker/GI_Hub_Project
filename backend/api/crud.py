@@ -23,7 +23,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import (
-    DateTime, Integer, LargeBinary, delete, func, insert, select, update,
+    DateTime, Integer, LargeBinary, Text, cast, delete, func, insert, or_,
+    select, update,
 )
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,6 +81,10 @@ def make_read_router(table, *, prefix: str, tag: str, id_col: str,
                 raise HTTPException(422, f"{id_col} must be an integer")
         return raw
 
+    # Columns the free-text `q` filter scans: every emitted TEXT column (so a
+    # search hits SAP codes, names, categories, lot/PR/PO numbers, remarks, …).
+    search_cols = [c for c in out_cols if isinstance(c.type, Text)]
+
     @router.get("", summary=f"List {tag}")
     async def list_items(
         limit: int = Query(50, ge=1, le=500),
@@ -89,6 +94,9 @@ def make_read_router(table, *, prefix: str, tag: str, id_col: str,
             description=(f"Filter by {site_col}" if site_col
                          else "(this entity has no site scoping)"),
         ),
+        q: Optional[str] = Query(
+            None, max_length=120,
+            description="Free-text search across all text columns (case-insensitive)"),
         user: dict = Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ):
@@ -104,6 +112,11 @@ def make_read_router(table, *, prefix: str, tag: str, id_col: str,
             if site_id is not None:
                 base = base.where(site_column == site_id)
                 cnt = cnt.where(site_column == site_id)
+        if q and q.strip() and search_cols:
+            needle = f"%{q.strip()}%"
+            cond = or_(*[cast(c, Text).ilike(needle) for c in search_cols])
+            base = base.where(cond)
+            cnt = cnt.where(cond)
         base = base.order_by(id_column).limit(limit).offset(offset)
 
         items = [dict(m) for m in (await session.execute(base)).mappings().all()]

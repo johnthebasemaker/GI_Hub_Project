@@ -77,6 +77,7 @@ ENTITIES = [
     {"name": "returns",         "prefix": "/returns",         "tag": "returns",         "id_col": "id",       "site_col": "Site_ID"},
     {"name": "lots",            "prefix": "/lots",            "tag": "lots",            "id_col": "id",       "site_col": "Site_ID"},
     {"name": "purchase_orders", "prefix": "/purchase-orders", "tag": "purchase_orders", "id_col": "id",       "site_col": "Site_ID"},
+    {"name": "pr_master",       "prefix": "/purchase-requests", "tag": "purchase_requests", "id_col": "id",   "site_col": "Site_ID"},
     {"name": "sme_equipment",   "prefix": "/equipment",       "tag": "equipment",       "id_col": "id",       "site_col": "Site_ID"},
     {"name": "employees",       "prefix": "/employees",       "tag": "employees",       "id_col": "id",       "site_col": "Site_ID", "writable": True},
     {"name": "vendors",         "prefix": "/vendors",         "tag": "vendors",         "id_col": "id",       "site_col": None,       "writable": True},
@@ -233,6 +234,18 @@ async def sites(user: dict = Depends(get_current_user),
     col = inv.c["Site_ID"]
     res = await session.execute(select(distinct(col)).where(col.isnot(None)).order_by(col))
     return {"sites": [r[0] for r in res.all()]}
+
+
+@app.get("/meta/categories", tags=["meta"],
+         summary="Distinct inventory categories (for search/filter dropdowns)")
+async def categories(session: AsyncSession = Depends(get_session),
+                     user: dict = Depends(get_current_user)):
+    inv = _MD.tables["inventory"]
+    col = inv.c["Category"]
+    res = await session.execute(
+        select(distinct(func.trim(col))).where(col.isnot(None))
+        .where(func.trim(col) != "").order_by(func.trim(col)))
+    return {"categories": [r[0] for r in res.all()]}
 
 
 @app.get("/meta/work-queues", tags=["meta"],

@@ -14,7 +14,8 @@ export default function RecordsPage() {
       <Typography.Title level={3} style={{ marginTop: 0 }}>
         {entity.label}
       </Typography.Title>
-      <BrowseTable path={entity.path} hasSite={entity.hasSite} />
+      <BrowseTable path={entity.path} hasSite={entity.hasSite} searchable
+        hasCategory={entity.key === 'inventory'} />
     </div>
   )
 }

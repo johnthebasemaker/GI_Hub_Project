@@ -7,7 +7,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { DeleteOutlined, EditOutlined, PaperClipOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
-import { useBulkEntry, useList, useReceiptMeta, useSites } from '../api/hooks'
+import { useBulkEntry, useCategories, useList, useReceiptMeta, useSites } from '../api/hooks'
 import { api } from '../api/client'
 import type { Row as ApiRow } from '../api/client'
 import ItemSnapshot from '../components/ItemSnapshot'
@@ -52,11 +52,17 @@ export default function ReceivePage() {
   const watchMtc = Form.useWatch('mtc_document_id', form)
   const { data: meta } = useReceiptMeta(watchSap)
 
-  const itemOptions = useMemo(() => (inventory.data?.items ?? []).map((r: ApiRow) => ({
-    value: String(r.SAP_Code),
-    label: `${r.SAP_Code} — ${r.Equipment_Description ?? ''}`,
-  })), [inventory.data])
-  const labelFor = (sap: string) => itemOptions.find((o) => o.value === sap)?.label ?? sap
+  // Category narrows the material picker (search stays available inside it).
+  const { data: categories } = useCategories()
+  const [category, setCategory] = useState<string | undefined>(undefined)
+  const itemOptions = useMemo(() => (inventory.data?.items ?? [])
+    .filter((r: ApiRow) => !category || String(r.Category ?? '').trim() === category)
+    .map((r: ApiRow) => ({
+      value: String(r.SAP_Code),
+      label: `${r.SAP_Code} — ${r.Equipment_Description ?? ''}`,
+    })), [inventory.data, category])
+  const labelFor = (sap: string) =>
+    itemOptions.find((o) => o.value === sap)?.label ?? sap
 
   const RESET_FIELDS: (keyof FormValues)[] = ['SAP_Code', 'Quantity', 'Supplier', 'Expiry_Date', 'PR_Number', 'Lot_Number', 'Remarks', 'entry_uom', 'mtc_document_id']
 
@@ -157,7 +163,14 @@ export default function ReceivePage() {
                 <Select placeholder="Select site" options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
               </Form.Item>
             </Col>
-            <Col xs={24} md={16}>
+            <Col xs={24} md={5}>
+              <Form.Item label="Category">
+                <Select allowClear showSearch placeholder="All" value={category}
+                  onChange={(v) => setCategory(v)}
+                  options={(categories ?? []).map((c) => ({ value: c, label: c }))} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={11}>
               <Form.Item name="SAP_Code" label="Material (SAP Code)" rules={[{ required: true }]}>
                 <Select showSearch placeholder="Search material" loading={inventory.isFetching} optionFilterProp="label" options={itemOptions} />
               </Form.Item>

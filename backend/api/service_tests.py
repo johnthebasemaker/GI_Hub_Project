@@ -3798,6 +3798,73 @@ async def test_returnables_notify():
             await s.commit()
 
 
+async def test_search_filters():
+    """UAT Phase 2 — global search & filtering + the PR browse entity:
+    `q` free-text on generic read entities and the derived stock views,
+    `category` on stock views, /meta/categories, and /purchase-requests."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.95"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        admin_t = await token("admin", "admin2026")
+        worker_t = await token("worker", "floor2026")
+
+        # /meta/categories — distinct, non-empty inventory categories.
+        r = await ac.get("/meta/categories", headers=H(admin_t))
+        cats = r.json().get("categories", [])
+        check("search: /meta/categories → 200 + list",
+              r.status_code == 200 and isinstance(cats, list) and len(cats) >= 1,
+              f"got {r.status_code} {str(cats)[:100]}")
+
+        # Generic entity q: matching description narrows, nonsense → 0.
+        r = await ac.get("/inventory", headers=H(admin_t), params={"q": "WATER STORAGE"})
+        hit = r.json().get("total", 0)
+        r2 = await ac.get("/inventory", headers=H(admin_t), params={"q": "zzz-no-such-material"})
+        miss = r2.json().get("total", -1)
+        check("search: /inventory?q narrows (hit ≥ 1, nonsense = 0)",
+              hit >= 1 and miss == 0, f"hit={hit} miss={miss}")
+
+        # q also hits the SAP code itself.
+        r = await ac.get("/inventory", headers=H(admin_t), params={"q": "1001"})
+        check("search: /inventory?q matches the SAP code", r.json().get("total", 0) >= 1,
+              str(r.json())[:100])
+
+        # Derived stock views: q by description via the inventory join.
+        r = await ac.get("/stock/live", headers=H(admin_t), params={"q": "WATER STORAGE"})
+        check("search: /stock/live?q via inventory join", r.status_code == 200
+              and r.json().get("total", 0) >= 1, f"got {r.status_code} {str(r.json())[:80]}")
+        r = await ac.get("/stock/by-site", headers=H(admin_t), params={"q": "zzz-nope"})
+        check("search: /stock/by-site nonsense q → 0 rows", r.json().get("total", -1) == 0,
+              str(r.json())[:80])
+        if cats:
+            r = await ac.get("/stock/by-site", headers=H(admin_t), params={"category": cats[0]})
+            check("search: /stock/by-site?category filters → 200",
+                  r.status_code == 200 and r.json().get("total", -1) >= 0, f"got {r.status_code}")
+
+        # Site scoping still binds under q (worker pinned to CNCEC).
+        r = await ac.get("/consumption", headers=H(worker_t), params={"q": "1001", "limit": 5})
+        items = r.json().get("items", [])
+        check("search: scoped user q respects site pinning",
+              r.status_code == 200 and all((i.get("Site_ID") or "CNCEC") == "CNCEC" for i in items),
+              f"got {r.status_code} {str(items)[:100]}")
+
+        # New PR browse entity (PO-page standard): hod+ read, list shape.
+        r = await ac.get("/purchase-requests", headers=H(admin_t), params={"limit": 5})
+        check("search: /purchase-requests browse → 200 + paged shape",
+              r.status_code == 200 and {"total", "items"} <= set(r.json().keys()),
+              f"got {r.status_code}")
+        r = await ac.get("/purchase-requests", headers=H(admin_t), params={"q": "zzz-no-such-pr"})
+        check("search: /purchase-requests?q → 0 on nonsense", r.json().get("total", -1) == 0,
+              str(r.json())[:80])
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -3855,6 +3922,8 @@ async def main() -> int:
     await test_phone_otp()
     print("\n Y. tool-loan notifications + timezone (UAT Phase 1, Meta mocked)")
     await test_returnables_notify()
+    print("\n Z. search & filtering + PR browse (UAT Phase 2)")
+    await test_search_filters()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

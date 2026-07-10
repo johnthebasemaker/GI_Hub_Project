@@ -40,6 +40,9 @@ export const READ_ENTITIES: ReadEntity[] = [
   { key: 'returns', label: 'Returns', path: '/returns', hasSite: true, access: { minLevel: 2 } },
   { key: 'lots', label: 'Lots', path: '/lots', hasSite: true, access: { minLevel: 2 } },
   { key: 'purchase-orders', label: 'Purchase Orders', path: '/purchase-orders', hasSite: true, access: { minLevel: 3 } },
+  // Purchase Requests browse — same standard as the PO page (UAT Phase 2).
+  // hod+ (HODs raise PRs; logistics/admin oversee them).
+  { key: 'purchase-requests', label: 'Purchase Requests', path: '/purchase-requests', hasSite: true, access: { minLevel: 2 } },
   { key: 'equipment', label: 'Equipment (SME)', path: '/equipment', hasSite: true, access: { anyRole: ['hod'] } },
 ]
 

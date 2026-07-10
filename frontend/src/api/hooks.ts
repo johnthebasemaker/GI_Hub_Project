@@ -17,6 +17,16 @@ export function useSites() {
   })
 }
 
+export function useCategories(enabled = true) {
+  return useQuery({
+    queryKey: ['categories'],
+    enabled,
+    staleTime: 300_000, // master data — changes rarely
+    queryFn: async () =>
+      (await api.get<{ categories: string[] }>('/meta/categories')).data.categories,
+  })
+}
+
 export function useInventorySummary() {
   return useQuery({
     queryKey: ['inventory-summary'],
@@ -30,6 +40,8 @@ export interface ListParams {
   offset?: number
   site_id?: string
   within_days?: number
+  q?: string
+  category?: string
 }
 
 export function useList(path: string, params: ListParams) {

@@ -9,6 +9,8 @@ function ExpiringTable() {
     <BrowseTable
       path="/stock/expiring"
       hasSite
+      searchable
+      hasCategory
       extraParams={withinDays != null ? { within_days: withinDays } : undefined}
       toolbarExtra={
         <Space>
@@ -39,10 +41,10 @@ export default function StockPage() {
         defaultActiveKey={global ? 'live' : 'by-site'}
         items={[
           ...(global
-            ? [{ key: 'live', label: 'Live (global)', children: <BrowseTable path="/stock/live" /> }]
+            ? [{ key: 'live', label: 'Live (global)', children: <BrowseTable path="/stock/live" searchable hasCategory /> }]
             : []),
-          { key: 'by-site', label: 'By site', children: <BrowseTable path="/stock/by-site" hasSite /> },
-          { key: 'lots', label: 'Lot balances', children: <BrowseTable path="/stock/lots" hasSite /> },
+          { key: 'by-site', label: 'By site', children: <BrowseTable path="/stock/by-site" hasSite searchable hasCategory /> },
+          { key: 'lots', label: 'Lot balances', children: <BrowseTable path="/stock/lots" hasSite searchable hasCategory /> },
           { key: 'expiring', label: 'Expiring', children: <ExpiringTable /> },
         ]}
       />
