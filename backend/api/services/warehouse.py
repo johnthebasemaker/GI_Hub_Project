@@ -282,7 +282,11 @@ async def decide_dn_logistics(session: AsyncSession, *, username: str, dn_number
             .values(status="rejected", logistics_decided_at=func.now(),
                     logistics_decided_by=username, logistics_decision="rejected",
                     rejection_reason=reason or None))
-        await dispatch(session, event_key="dn_rejected", recipient_warehouse=row[2],
+        # recipient_role is REQUIRED alongside the warehouse narrow — notify()
+        # no-ops without a user/role, so a warehouse-only target would send
+        # WhatsApp but silently skip the in-app twin (found by the QA sweep).
+        await dispatch(session, event_key="dn_rejected", recipient_role="warehouse_user",
+                       recipient_warehouse=row[2],
                        severity="warning", wa_template="status_update",
                        title=f"DN {dn_number} rejected by logistics",
                        body=f"Reason: {reason or 'not given'}", link_page="/warehouse",
@@ -304,7 +308,8 @@ async def decide_dn_hod(session: AsyncSession, *, username: str, dn_number: str,
     if action == "approve":
         await session.execute(update(delivery_notes_t).where(delivery_notes_t.c["DN_Number"] == dn_number)
             .values(status="hod_approved", hod_decided_at=func.now(), hod_decided_by=username))
-        await dispatch(session, event_key="dn_hod_approved", recipient_warehouse=row[2],
+        await dispatch(session, event_key="dn_hod_approved", recipient_role="warehouse_user",
+                       recipient_warehouse=row[2],
                        severity="success", wa_template="status_update",
                        title=f"DN {dn_number} approved — ready to ship",
                        body="HOD approved the DN content. Ship it from the Warehouse portal.",
@@ -315,7 +320,8 @@ async def decide_dn_hod(session: AsyncSession, *, username: str, dn_number: str,
         await session.execute(update(delivery_notes_t).where(delivery_notes_t.c["DN_Number"] == dn_number)
             .values(status="rejected", hod_decided_at=func.now(), hod_decided_by=username,
                     rejection_reason=reason or None))
-        await dispatch(session, event_key="dn_rejected", recipient_warehouse=row[2],
+        await dispatch(session, event_key="dn_rejected", recipient_role="warehouse_user",
+                       recipient_warehouse=row[2],
                        severity="warning", wa_template="status_update",
                        title=f"DN {dn_number} rejected by HOD",
                        body=f"Reason: {reason or 'not given'}", link_page="/warehouse",

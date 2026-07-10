@@ -3865,6 +3865,259 @@ async def test_search_filters():
               str(r.json())[:80])
 
 
+async def test_notification_qa():
+    """UAT Phase 4 — automated notification QA: fire EVERY WhatsApp pathway with
+    the target test number +966569233053 and prove each one resolves recipients
+    and lands a SENT row in whatsapp_outbox (Meta HTTP mocked; no live sends).
+    Pathways not re-fired here are covered by sister suites: loans/overdue (Y),
+    OTP (X), MTC-missing email (W). All synthetic data is cleaned up in finally."""
+    import os as _o
+    from sqlalchemy import delete, insert as _ins, select as _sel, update as _upd
+    import backend.api.services.whatsapp as wamod
+    from .services import procurement as _proc
+    from .services import supervisor as _sup
+    from .services import warehouse as _wh
+
+    TARGET = "+966569233053"
+    USERS = ("worker", "hod", "admin", "supervisor")
+    ob = ledger._MD.tables["whatsapp_outbox"]
+    users = ledger._MD.tables["users"]
+    appn = ledger._MD.tables["app_notifications"]
+    po_t = ledger._MD.tables["purchase_orders"]
+    poi_t = ledger._MD.tables["po_items"]
+    dn_t = ledger._MD.tables["delivery_notes"]
+    dni_t = ledger._MD.tables["dn_items"]
+    lots_tt = ledger._MD.tables["lots"]
+    cons_t = ledger._MD.tables["consumption"]
+    pend_i = ledger._MD.tables["pending_issues"]
+    mtc_t = ledger._MD.tables["mtc_documents"]
+    bugs_tt = ledger._MD.tables["bug_reports"]
+    req_t = ledger._MD.tables["requests"]
+    prm_t = ledger._MD.tables["pr_master"]
+    smr_tt = ledger._MD.tables["supervisor_material_requests"]
+    smri_t = ledger._MD.tables["supervisor_material_request_items"]
+    resch_t = ledger._MD.tables["po_reschedule_requests"]
+    pret_t = ledger._MD.tables["po_returns"]
+    pofc_t = ledger._MD.tables["po_force_closures"]
+    poa_t = ledger._MD.tables["po_assignments"]
+    wh_t = ledger._MD.tables["warehouses"]
+    PO, DN, LOT, WH = "PO-SVC-QA", "DN-SVC-QA", "SVC-QA-LOT", "WH-SVC-QA"
+
+    async with SessionLocal() as s:
+        base_ob = (await s.execute(_sel(func.coalesce(func.max(ob.c["id"]), 0)))).scalar_one()
+        base_app = (await s.execute(_sel(func.coalesce(func.max(appn.c["id"]), 0)))).scalar_one()
+        base_cons = (await s.execute(_sel(func.coalesce(func.max(cons_t.c["id"]), 0)))).scalar_one()
+        base_pend = (await s.execute(_sel(func.coalesce(func.max(pend_i.c["id"]), 0)))).scalar_one()
+        base_mtc = (await s.execute(_sel(func.coalesce(func.max(mtc_t.c["id"]), 0)))).scalar_one()
+        prev_phones = {u: p for u, p in (await s.execute(
+            _sel(users.c["username"], users.c["Phone_Number"])
+            .where(users.c["username"].in_(USERS)))).all()}
+        # Force the target number on every test role (the QA requirement).
+        await s.execute(_upd(users).where(users.c["username"].in_(USERS))
+                        .values(Phone_Number=TARGET))
+        await s.commit()
+
+    saved = (wamod._post_message, wamod._upload_media)
+    _ENVK = ("WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_TOKEN", "WHATSAPP_ESCALATION_TO")
+    prev_env = {k: _o.environ.get(k) for k in _ENVK}
+    sent_payloads: list = []
+
+    async def ok_post(payload):
+        sent_payloads.append(payload)
+        return {"ok": True, "message_id": "wamid.QA"}
+
+    async def ok_upload(blob, filename, mime):
+        return {"ok": True, "media_id": "media.QA"}
+
+    wamod._post_message, wamod._upload_media = ok_post, ok_upload
+    _o.environ["WHATSAPP_PHONE_NUMBER_ID"] = "svc-test-pnid"
+    _o.environ["WHATSAPP_TOKEN"] = "svc-test-token"
+    _o.environ["WHATSAPP_ESCALATION_TO"] = TARGET  # catch-all → target number
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            await s.execute(delete(pret_t).where(pret_t.c["PO_Number"] == PO))
+            await s.execute(delete(resch_t).where(resch_t.c["PO_Number"] == PO))
+            await s.execute(delete(pofc_t).where(pofc_t.c["PO_Number"] == PO))
+            await s.execute(delete(poa_t).where(poa_t.c["PO_Number"] == PO))
+            await s.execute(delete(dni_t).where(dni_t.c["DN_Number"] == DN))
+            await s.execute(delete(dn_t).where(dn_t.c["DN_Number"] == DN))
+            await s.execute(delete(poi_t).where(poi_t.c["PO_Number"] == PO))
+            await s.execute(delete(po_t).where(po_t.c["PO_Number"] == PO))
+            await s.execute(delete(wh_t).where(wh_t.c["Warehouse_ID"] == WH))
+            await s.execute(delete(lots_tt).where(lots_tt.c["Lot_Number"] == LOT))
+            await s.execute(delete(cons_t).where(cons_t.c["id"] > base_cons))
+            await s.execute(delete(pend_i).where(pend_i.c["id"] > base_pend))
+            await s.execute(delete(mtc_t).where(mtc_t.c["id"] > base_mtc))
+            await s.execute(delete(bugs_tt).where(bugs_tt.c["description"] == "svc notification qa"))
+            await s.execute(delete(req_t).where(req_t.c["notes"] == "svc-qa"))
+            await s.execute(delete(ob).where(ob.c["id"] > base_ob))
+            await s.commit()
+
+    await _cleanup()
+    async with SessionLocal() as s:  # synthetic PO + DN + lot fixtures
+        await s.execute(_ins(po_t).values(PO_Number=PO, Site_ID="CNCEC", status="open",
+                                          Expected_Delivery="2026-07-01", created_by="svc"))
+        lid = (await s.execute(_ins(poi_t).values(
+            PO_Number=PO, line_no=1, Material_Code="M1", Qty=10.0, Delivered_Qty=5.0,
+            Returned_Qty=0.0, line_status="open").returning(poi_t.c["id"]))).scalar_one()
+        await s.execute(_ins(dn_t).values(DN_Number=DN, PO_Number=PO, Warehouse_ID="HQ",
+                                          Site_ID="CNCEC", status="draft", created_by="svc"))
+        await s.execute(_ins(dni_t).values(DN_Number=DN, po_item_id=1, Material_Code="M1",
+                                           Qty=1.0, status="pending"))
+        await s.execute(_ins(wh_t).values(Warehouse_ID=WH, Name="Svc QA Warehouse",
+                                          status="active"))
+        lot_id = (await s.execute(_ins(lots_tt).values(
+            Lot_Number=LOT, SAP_Code="1001", Site_ID="CNCEC", Received_Date="2026-07-01",
+            Status="open").returning(lots_tt.c["id"]))).scalar_one()
+        await s.commit()
+
+    smr_no = pr_no = None
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.96"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            def H(t):
+                return {"Authorization": f"Bearer {t}"}
+
+            worker_t = await token("worker", "floor2026")
+            admin_t = await token("admin", "admin2026")
+
+            # 1-3 · Entry pathway: stage → FEFO override → HOD approval feedback.
+            r = await ac.post("/entry/consumption", headers=H(worker_t),
+                              json={"Date": "2026-07-10", "SAP_Code": "1001",
+                                    "Quantity": 1, "Site_ID": "CNCEC"})
+            pid = r.json().get("pending_id")
+            await ac.post("/entry/consumption", headers=H(worker_t),
+                          json={"Date": "2026-07-10", "SAP_Code": "1001", "Quantity": 1,
+                                "Site_ID": "CNCEC", "FEFO_Override": "yes"})
+            await ac.post(f"/hod/pending/issues/{pid}/approve", headers=H(admin_t))
+
+            # 4 · MTC upload → logistics.
+            await ac.post("/entry/mtc", headers=H(worker_t),
+                          data={"sap_code": "1001", "site_id": "CNCEC", "mtc_number": "MTC-QA"},
+                          files={"file": ("mtc.pdf", b"%PDF-1.4 svc qa", "application/pdf")})
+
+            # 5-10 · Procurement pathway (services fire the same dispatch()).
+            async with SessionLocal() as s:
+                res = await _proc.create_pr(s, username="hod", site_id="CNCEC",
+                                            lines=[{"SAP_Code": "1001", "Requested_Qty": 2}])
+                pr_no = res.get("pr_number")
+                await _proc.submit_pr(s, username="hod", pr_number=pr_no, site_id="CNCEC")
+                await _proc.assign_po(s, username="admin", po_number=PO,
+                                      warehouse_id=WH, expected_delivery="2026-07-20", notes="")
+                rr = await _proc.raise_reschedule(s, username="hod", role="hod", po_number=PO,
+                                                  requested_date="2026-07-25", reason="svc qa")
+                await _proc.decide_reschedule(s, username="admin", req_id=rr["id"],
+                                              action="approve", decision_notes="")
+                await _proc.raise_vendor_return(s, username="admin", po_number=PO,
+                                                po_item_id=lid, qty=1, reason="svc qa damaged")
+                await _proc.force_close(s, username="admin", target_type="po",
+                                        target_ref=PO, reason="svc qa close")
+                await s.commit()
+
+            # 11-14 · DN multi-stage machine.
+            async with SessionLocal() as s:
+                await _wh.submit_dn(s, username="admin", dn_number=DN)
+                await _wh.decide_dn_logistics(s, username="admin", dn_number=DN, action="approve")
+                await _wh.decide_dn_hod(s, username="hod", dn_number=DN, action="approve")
+                await _wh.ship_dn(s, username="admin", dn_number=DN)
+                await s.commit()
+
+            # 15-16 · Supervisor request → SK approval.
+            async with SessionLocal() as s:
+                res = await _sup.create_smr(s, supervisor="supervisor", site_id="CNCEC",
+                                            worker_id="30001", job_tank_place="svc qa",
+                                            old_ppe_returned=1, no_return_reason=None,
+                                            items=[{"SAP_Code": "1001", "Requested_Qty": 1}])
+                smr_no = res.get("request_no")
+                await _sup.approve_smr(s, sk_username="worker", request_id=res["request_id"])
+                await s.commit()
+
+            # 17-19 · Cross-site request (>5 escalates) + decision.
+            r = await ac.post("/xsite", headers=H(admin_t),
+                              json={"requesting_site": "HQ", "target_site": "CNCEC",
+                                    "SAP_Code": "1001", "requested_qty": 9, "notes": "svc-qa"})
+            rid = r.json().get("id")
+            await ac.post(f"/xsite/{rid}/decide", headers=H(admin_t), json={"action": "approve"})
+
+            # 20 · Lot lifecycle.
+            await ac.post(f"/admin/lots/{lot_id}/status", headers=H(admin_t),
+                          json={"status": "quarantined", "reason": "svc qa"})
+
+            # 21 · Feedback status update back to the reporter.
+            r = await ac.post("/feedback", headers=H(worker_t),
+                              json={"type": "bug", "page": "/qa", "description": "svc notification qa"})
+            fid = r.json().get("id")
+            await ac.patch(f"/admin/feedback/{fid}", headers=H(admin_t),
+                           json={"status": "resolved", "admin_response": "svc qa done"})
+
+            # 22 · Report document delivery straight to the target number.
+            await ac.post("/reports/pr-status/whatsapp", headers=H(admin_t),
+                          json={"to": TARGET, "format": "csv"})
+
+        EXPECTED = ["entry_staged", "fefo_override", "entry_approved", "mtc_uploaded",
+                    "pr_submitted_to_logistics", "po_assigned_to_warehouse",
+                    "reschedule_raised", "reschedule_decided", "vendor_return_raised",
+                    "force_close", "dn_pending_logistics", "dn_pending_hod",
+                    "dn_hod_approved", "dn_shipped", "smr_created", "smr_approved",
+                    "cross_site_requested", "xsite_escalation", "cross_site_decided",
+                    "lot_quarantined", "feedback_updated", "report_delivery"]
+        async with SessionLocal() as s:
+            rows = [dict(m) for m in (await s.execute(_sel(
+                ob.c["event_key"], ob.c["status"], ob.c["to_number"], ob.c["error"]
+            ).where(ob.c["id"] > base_ob))).mappings().all()]
+            in_app = {r[0] for r in (await s.execute(_sel(appn.c["event_key"])
+                      .where(appn.c["id"] > base_app))).all()}
+        by_event: dict = {}
+        for r in rows:
+            by_event.setdefault(r["event_key"], []).append(r)
+        for ev in EXPECTED:
+            ok = any(x["status"] == "sent" for x in by_event.get(ev, []))
+            check(f"qa: {ev} → whatsapp_outbox SENT", ok,
+                  str(by_event.get(ev, "NO ROWS"))[:140])
+        bad = [r for r in rows if r["status"] != "sent"]
+        check("qa: ZERO failed/unresolved rows across the whole sweep",
+              not bad, str(bad)[:200])
+        check("qa: payloads went to the target number (digits-only to)",
+              any(p.get("to") == "966569233053" for p in sent_payloads),
+              str([p.get("to") for p in sent_payloads[:10]]))
+        DISPATCHED = [e for e in EXPECTED if e not in ("xsite_escalation", "report_delivery")]
+        missing_app = [e for e in DISPATCHED if e not in in_app]
+        check("qa: every dispatch pathway also wrote its in-app twin",
+              not missing_app, f"missing in-app: {missing_app}")
+    finally:
+        wamod._post_message, wamod._upload_media = saved
+        for _k, _v in prev_env.items():
+            if _v is None:
+                _o.environ.pop(_k, None)
+            else:
+                _o.environ[_k] = _v
+        async with SessionLocal() as s:
+            for u, p in prev_phones.items():
+                await s.execute(_upd(users).where(users.c["username"] == u)
+                                .values(Phone_Number=p))
+            if smr_no:
+                sid = (await s.execute(_sel(smr_tt.c["id"]).where(
+                    smr_tt.c["request_no"] == smr_no))).scalar_one_or_none()
+                if sid is not None:
+                    await s.execute(delete(smri_t).where(smri_t.c["request_id"] == sid))
+                    await s.execute(delete(smr_tt).where(smr_tt.c["id"] == sid))
+            if pr_no:
+                await s.execute(delete(prm_t).where(prm_t.c["PR_Number"] == pr_no))
+            # The sweep's in-app rows must go too: deleting the PR/SMR fixtures
+            # frees their sequence numbers, so a later run would re-mint the
+            # same refs and collide with suite A's exact-count assertions.
+            await s.execute(delete(appn).where(appn.c["id"] > base_app))
+            await s.commit()
+        await _cleanup()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -3924,6 +4177,8 @@ async def main() -> int:
     await test_returnables_notify()
     print("\n Z. search & filtering + PR browse (UAT Phase 2)")
     await test_search_filters()
+    print("\n AA. notification QA — every pathway → whatsapp_outbox (UAT Phase 4)")
+    await test_notification_qa()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "
