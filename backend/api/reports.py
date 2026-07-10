@@ -224,12 +224,12 @@ async def rep_wbs(session, *, site_id=None, days=90, **_):
         where += ' AND COALESCE("Site_ID", \'HQ\') = :site'
         params["site"] = site_id
     sql = f'''
-        SELECT COALESCE(NULLIF(TRIM(wbs), ''), '(no WBS)') AS "WBS",
+        SELECT COALESCE(NULLIF(TRIM("WBS"), ''), '(no WBS)') AS "WBS",
                TRIM("SAP_Code") AS "SAP_Code",
                ROUND(CAST(SUM("Quantity") AS NUMERIC),3) AS "Consumed",
                COUNT(*) AS "Transactions", MAX("Date") AS "Last_Issue"
         FROM consumption WHERE {where}
-        GROUP BY COALESCE(NULLIF(TRIM(wbs), ''), '(no WBS)'), TRIM("SAP_Code")
+        GROUP BY COALESCE(NULLIF(TRIM("WBS"), ''), '(no WBS)'), TRIM("SAP_Code")
         ORDER BY "WBS", "Consumed" DESC'''
     cols, rows = await _run(session, sql, params)
     return f"WBS Report (last {days} days)", cols, rows

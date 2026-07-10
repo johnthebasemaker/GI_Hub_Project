@@ -60,7 +60,11 @@ class Consumption(Base):
     Serial_No = Column(Text)
     PR_Number = Column(Text)
     Site_ID = Column(Text, server_default=text("'HQ'"))
-    wbs = Column(Text)
+    # DB column is "WBS" (matches legacy SQLite exactly — a lowercase 'wbs'
+    # here silently dropped the legacy data at migration time).
+    wbs = Column("WBS", Text)
+    status = Column(Text)          # legacy workflow flag — preserved, not used by v2
+    Technician = Column(Text)      # legacy field — preserved, not used by v2
     Source_Ref = Column(Text)
     Requested_By = Column(Text)
     Approved_By = Column("Approved By", Text)
@@ -160,6 +164,7 @@ class Inventory(Base):
     Expiry_Date = Column(Text)
     Category = Column(Text, server_default=text("'Others'"))
     Opening_Stock = Column(Float, server_default=text('0'))
+    Sl_No = Column(Text)   # legacy serial label (293 live values — keep at cutover)
 
 class InventorySiteCosts(Base):
     __tablename__ = "inventory_site_costs"
@@ -234,7 +239,8 @@ class PendingIssues(Base):
     PR_Number = Column(Text)
     Site_ID = Column(Text, server_default=text("'HQ'"))
     status = Column(Text, server_default=text("'draft'"))
-    wbs = Column(Text)
+    wbs = Column(Text)             # lowercase in legacy pending_issues (verified)
+    Technician = Column(Text)      # legacy field — preserved, not used by v2
     Source_Ref = Column(Text)
     Requested_By = Column(Text)
 
@@ -403,7 +409,7 @@ class Receipts(Base):
     Received_by = Column(Text)
     DN_Copy = Column(Text)
     Bin_Location = Column(Text)
-    wbs = Column(Text)
+    wbs = Column("WBS", Text)   # DB column is "WBS" in legacy SQLite (case fix)
     DN_Number = Column(Text)
     Warehouse_ID = Column(Text)
     PO_Number_Source = Column(Text)
@@ -431,6 +437,7 @@ class RejectedIssuesArchive(Base):
     rejected_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     reject_reason = Column(Text)
     wbs = Column(Text)
+    Technician = Column(Text)      # legacy field — preserved, not used by v2
 
 class Requests(Base):
     __tablename__ = "requests"

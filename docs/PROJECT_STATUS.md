@@ -23,9 +23,21 @@ Dashboard valuation/charts + Admin system-overview · Phase 6 DN two-stage
 approval + supervisor parity (intent-vs-actual UI, cancel-while-pending, live
 cart stock) + receipt entry guards (MTC gate + UoM conversion) · **Deferred-MED
 backlog** (logistics vendor-returns, HOD draft-PR line-edit/rename, admin lot
-lifecycle). Gates green:
-`service_tests` **510/0**, `parity_check` **5/5**, `bug_check` **599/0**,
-`parity:sme` **509**, frontend build ✅. **Phase 7 (WhatsApp), 7b (email) AND
+lifecycle). **2026-07-10: the five-phase UAT master plan is DONE** — Phase 1
+critical fixes (global **+E.164 phone format**, profile-modal bugs, the 3-hour
+returnables **timezone offset**, loan/return/overdue **borrower WhatsApp** +
+in-app), Phase 2 (global search `q`/`category` on all read entities + stock
+views, **/purchase-requests browse page**), Phase 3 QoL (**barcode/QR
+picking**, smart last-entry defaults, **Open-POs KPI hero**), Phase 4
+(**notification QA suite AA** — 22 pathways → whatsapp_outbox with the target
+number; caught + fixed the warehouse-only dispatch in-app gap), Phase 5
+(**production cutover script `scripts/migration/cutover_migrate.py`** +
+runbook; dry-run **VERIFIED --strict** on a scratch PG; fixed a real data-loss
+bug — `inventory.Sl_No` 293 values + `consumption.WBS/status` case-drop).
+Gates green:
+`service_tests` **556/0**, `parity_check` **5/5**, `bug_check` **599/0**,
+`parity:sme` **509**, frontend build ✅, alembic single head **b8d2f4a61c07**.
+**Phase 7 (WhatsApp), 7b (email) AND
 7c (ubiquitous notifications) are DONE** — native v2 `whatsapp_outbox` +
 `email_outbox` + **a reusable-template layer (`gi_action_required` /
 `gi_status_update` / `gi_critical_alert` / `gi_otp_code`) and a unified
@@ -110,17 +122,23 @@ Streamlit portal — all EIGHT legacy tabs:
   `progress-list`/`production-log`, plan-export key `overview`.
 
 ### E. Gates (all green, current)
-`service_tests` **510/0** (360 at freeze → +150 across freeze-lift suites
-H–X: SLA tracker, submission intel, bulk entry, reschedule, force-close, manual
+`service_tests` **556/0** (360 at freeze → +196 across freeze-lift suites
+H–AA: SLA tracker, submission intel, bulk entry, reschedule, force-close, manual
 PO, rate-limiter IP, reporting/dashboard, DN approval, supervisor parity, entry
 guards, vendor-returns, PR line-edit/rename, lot lifecycle, WhatsApp outbox,
-email outbox, **phone OTP**) · `bug_check` **599/0** · `parity_check` **5/5** · `parity:sme`
-**509** · frontend build ✅ · `alembic check` clean (single head a1e8c4d20f9b) ·
+email outbox, phone OTP, **loan notifications + timezone (Y)**, **search/PR
+browse (Z)**, **22-pathway notification QA (AA)**) · `bug_check` **599/0** ·
+`parity_check` **5/5** · `parity:sme`
+**509** · frontend build ✅ · `alembic check` clean (single head **b8d2f4a61c07**) ·
 dual_ci mirror consistent. Schema additions since day one: `auth_sessions`,
 `ai_jobs`, `sla_dismissals`, `users.Location`/`pending_users.Location`,
-`whatsapp_outbox` (Phase 7), `email_outbox` (Phase 7b) and `phone_otp`
-(Phase 7c) — all user-authorized, new-stack-only; Phase-4/5/6 feature work
-otherwise reused existing tables (`app_notifications` powers the in-app bell).
+`whatsapp_outbox` (Phase 7), `email_outbox` (Phase 7b), `phone_otp`
+(Phase 7c) and the **legacy-column preservation set** (`inventory.Sl_No`,
+`consumption."WBS"/status/Technician`, `pending_issues.Technician`,
+`rejected_issues_archive.Technician` — UAT Phase 5 cutover audit) — all
+user-authorized; Phase-4/5/6 feature work otherwise reused existing tables
+(`app_notifications` powers the in-app bell). **Cutover data migration:**
+`scripts/migration/cutover_migrate.py` + runbook, dry-run VERIFIED `--strict`.
 
 ### F. Post-freeze work (2026-07-08 freeze-lift) — SHIPPED, pushed to `origin/main`
 - **Deploy / CI infra:** v2 Postgres backup service (`deploy/backup/backup-pg.sh`,
