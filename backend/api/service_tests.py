@@ -18,7 +18,14 @@ Exit code is non-zero if any check fails (so CI fails the build).
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
+
+# CI determinism: never let backend.api.config pull a developer's local
+# .env/deploy/.env into the test process — a real WHATSAPP_TOKEN there would
+# flip wa.enabled() True and un-mocked suites could hit Meta live. Must be set
+# BEFORE the .db/.main imports below trigger the config loader.
+os.environ.setdefault("GI_DOTENV", "0")
 
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select

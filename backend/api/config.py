@@ -8,6 +8,34 @@ uses the sync psycopg2 driver) also works here without editing.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+
+def _load_env_files() -> list[str]:
+    """Bare-metal convenience: load repo-root `.env` then `deploy/.env` so a
+    plain `uvicorn backend.api.main:app` sees the same WhatsApp/SMTP secrets
+    docker-compose injects in production. Variables already present in the
+    process environment ALWAYS win (override=False), so compose/systemd/CLI
+    settings are never clobbered. Set GI_DOTENV=0 to skip entirely —
+    service_tests do, so CI never depends on a developer's local secrets."""
+    if os.environ.get("GI_DOTENV", "1").strip().lower() in ("0", "false", "no"):
+        return []
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return []
+    root = Path(__file__).resolve().parents[2]
+    loaded: list[str] = []
+    for p in (root / ".env", root / "deploy" / ".env"):
+        if p.is_file():
+            load_dotenv(p, override=False)
+            loaded.append(str(p))
+    return loaded
+
+
+# Runs at import time, BEFORE any os.environ reads below (and before the other
+# api modules read WHATSAPP_*/SMTP_*/JWT_SECRET lazily at request time).
+LOADED_ENV_FILES = _load_env_files()
 
 # Local default: the throwaway Postgres 16 cluster on port 5433 (trust auth, no
 # password), database `gihub` — the one the migration/dual-CI already populate.
