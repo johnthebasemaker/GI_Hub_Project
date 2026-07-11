@@ -1109,6 +1109,66 @@ export async function downloadPrPdf(prNumber: string, siteId?: string) {
   URL.revokeObjectURL(url)
 }
 
+// --- HOD Executive Summary ---------------------------------------------------------
+export interface ExecSummaryKpi {
+  count: number; qty: number; prev_qty: number
+  delta_pct: number | null; daily_avg_7d: number
+}
+export interface ExecSummary {
+  site_id: string | null; date_from: string; date_to: string; days: number
+  generated_at: string
+  kpis: {
+    receipts: ExecSummaryKpi; consumption: ExecSummaryKpi; returns: ExecSummaryKpi
+    sqm_done: { total: number; prev: number; delta_pct: number | null }
+    man_hours: { total: number; prev: number; delta_pct: number | null }
+    manpower: { present: number; absent: number; active_total: number }
+  }
+  receipts_detail: Record<string, unknown>[]
+  consumption_detail: Record<string, unknown>[]
+  returns_detail: Record<string, unknown>[]
+  sqm_detail: Record<string, unknown>[]
+  manpower: { present: Record<string, unknown>[]; absent: Record<string, unknown>[] }
+  pr_status: { raised_in_period: number; open_by_state: { state: string; n: number }[] }
+  po_status: { by_status: { status: string; n: number }[]; open: number; overdue: number }
+  delivery_plan: {
+    dn_in_flight: Record<string, unknown>[]
+    upcoming_deliveries: Record<string, unknown>[]
+    window_to: string
+  }
+  actions: {
+    taken: Record<string, number>
+    pending: { entry_approvals: number; dn_queue: Record<string, number>; smr_pending: number; draft_prs: number }
+  }
+  sqm_capacity: {
+    per_equipment: Record<string, unknown>[]
+    per_system: Record<string, unknown>[]
+  }
+  cross_site: Record<string, unknown>[]
+}
+
+export interface ExecSummaryParams { date_from: string; date_to: string; site_id?: string }
+
+export function useExecutiveSummary(params: ExecSummaryParams) {
+  return useQuery({
+    queryKey: ['/hod/executive-summary', params],
+    queryFn: async () =>
+      (await api.get<ExecSummary>('/hod/executive-summary', { params })).data,
+  })
+}
+
+export async function downloadExecSummaryXlsx(params: ExecSummaryParams) {
+  const res = await api.get('/hod/executive-summary/export.xlsx',
+    { params, responseType: 'blob' })
+  const url = URL.createObjectURL(res.data as Blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `executive_summary_${params.site_id || 'ALL'}_${params.date_from}_${params.date_to}.xlsx`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
 // --- SME read-parity (Phase 8) ---------------------------------------------------
 export function useSmeEquipmentReport(siteId?: string) {
   return useQuery({

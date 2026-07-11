@@ -21,7 +21,7 @@ import {
   AlertOutlined, AuditOutlined, BarChartOutlined, CameraOutlined, CarOutlined,
   DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FallOutlined,
   FieldTimeOutlined, FileProtectOutlined, FileSearchOutlined, FireOutlined,
-  FormOutlined, InboxOutlined, MessageOutlined, ProfileOutlined,
+  FormOutlined, FundProjectionScreenOutlined, InboxOutlined, MessageOutlined, ProfileOutlined,
   SafetyCertificateOutlined, SolutionOutlined, StockOutlined, TeamOutlined,
   ToolOutlined, ControlOutlined, UserAddOutlined,
 } from '@ant-design/icons'
@@ -96,6 +96,7 @@ export const NAV: NavGroup[] = [
     label: 'HOD',
     access: { anyRole: ['hod'] },   // HOD Portal exact-locked {hod, admin}
     children: [
+      { key: '/hod/executive-summary', label: 'Executive Summary', icon: <FundProjectionScreenOutlined />, access: { anyRole: ['hod'] } },
       { key: '/hod/approvals', label: 'Approvals', icon: <AuditOutlined />, access: { anyRole: ['hod'] }, badge: 'approvals' },
       { key: '/hod/burn-rate', label: 'Burn Rate', icon: <FireOutlined />, access: { anyRole: ['hod'] } },
       { key: '/hod/low-stock', label: 'Low Stock', icon: <FallOutlined />, access: { anyRole: ['hod'] } },

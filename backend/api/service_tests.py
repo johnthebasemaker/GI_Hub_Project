@@ -4463,6 +4463,113 @@ async def test_webhook_and_digest():
             await s.commit()
 
 
+async def test_executive_summary():
+    """HOD Executive Summary — endpoint shape, exact site-scoped KPI math,
+    role guard, date validation, Excel bytes, and the SME capacity rollup
+    (unit-tested against a synthetic model). Read-only — nothing to clean."""
+    from sqlalchemy import text as _sqt
+    from . import exec_summary as esmod
+
+    DF, DT = "2026-01-01", "2026-12-31"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.99"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+            return r.json().get("access_token")
+
+        hod_t = await token("hod", "hod2026")
+        H = {"Authorization": f"Bearer {hod_t}"}
+
+        r = await ac.get("/hod/executive-summary", headers=H,
+                         params={"date_from": DF, "date_to": DT})
+        d = r.json() if r.status_code == 200 else {}
+        sections = ("kpis", "receipts_detail", "consumption_detail", "returns_detail",
+                    "sqm_detail", "manpower", "pr_status", "po_status", "delivery_plan",
+                    "actions", "sqm_capacity", "cross_site")
+        check("exec: GET → 200 with every section present",
+              r.status_code == 200 and all(k in d for k in sections),
+              f"got {r.status_code} missing={[k for k in sections if k not in d]}")
+
+        # HOD is pinned to their own site; the receipts KPI must equal the
+        # database truth for that site + range exactly.
+        async with SessionLocal() as s:
+            hod_site = (await s.execute(_sqt(
+                "SELECT COALESCE(\"Site_ID\",'HQ') FROM users WHERE username='hod'"))).scalar_one()
+            truth = (await s.execute(_sqt(
+                'SELECT COUNT(*), COALESCE(SUM("Quantity"),0) FROM receipts '
+                'WHERE substring("Date" FROM 1 FOR 10) BETWEEN :a AND :b '
+                "AND COALESCE(\"Site_ID\",'HQ') = :st"),
+                {"a": DF, "b": DT, "st": hod_site})).first()
+        check("exec: site pinned to the HOD's site + exact receipts KPI",
+              d.get("site_id") == hod_site
+              and d["kpis"]["receipts"]["count"] == truth[0]
+              and abs(d["kpis"]["receipts"]["qty"] - float(truth[1])) < 1e-6,
+              f"site={d.get('site_id')}/{hod_site} kpi={d['kpis']['receipts']} truth={tuple(truth)}")
+
+        # Manpower invariant: present + absent = active headcount.
+        mp = d["kpis"]["manpower"]
+        check("exec: manpower present+absent == active headcount",
+              mp["present"] + mp["absent"] == mp["active_total"], str(mp))
+
+        # Date validation.
+        r = await ac.get("/hod/executive-summary", headers=H,
+                         params={"date_from": "2026-1-1"})
+        r2 = await ac.get("/hod/executive-summary", headers=H,
+                          params={"date_from": "2026-02-02", "date_to": "2026-02-01"})
+        check("exec: malformed date / inverted range → 422",
+              r.status_code == 422 and r2.status_code == 422,
+              f"got {r.status_code}/{r2.status_code}")
+
+        # Role guard: store keeper locked out (hod+admin exact lock).
+        wk_t = await token("worker", "floor2026")
+        r = await ac.get("/hod/executive-summary",
+                         headers={"Authorization": f"Bearer {wk_t}"})
+        check("exec: store keeper → 403", r.status_code == 403, f"got {r.status_code}")
+
+        # Admin: unrestricted (all sites) or pinned by ?site_id=.
+        adm_t = await token("admin", "admin2026")
+        HA = {"Authorization": f"Bearer {adm_t}"}
+        ra = await ac.get("/hod/executive-summary", headers=HA,
+                          params={"date_from": DF, "date_to": DT})
+        rb = await ac.get("/hod/executive-summary", headers=HA,
+                          params={"date_from": DF, "date_to": DT, "site_id": hod_site})
+        check("exec: admin sees all sites by default, one site on request",
+              ra.status_code == 200 and ra.json().get("site_id") is None
+              and rb.status_code == 200 and rb.json().get("site_id") == hod_site,
+              f"{ra.status_code}/{ra.json().get('site_id')} · {rb.status_code}/{rb.json().get('site_id')}")
+
+        # Excel export: valid xlsx bytes + attachment filename.
+        r = await ac.get("/hod/executive-summary/export.xlsx", headers=H,
+                         params={"date_from": DF, "date_to": DT})
+        cd = r.headers.get("content-disposition", "")
+        check("exec: Excel export → valid workbook + filename",
+              r.status_code == 200 and r.content[:2] == b"PK"
+              and "executive_summary_" in cd and cd.endswith('.xlsx"'),
+              f"got {r.status_code} {len(r.content)}b cd={cd[:80]}")
+
+    # SME capacity rollup — synthetic model, strict-bottleneck expectation:
+    # unit remaining 100 SQM, two materials at 50% and 100% coverage → the
+    # 50% material caps achievable at 50 SQM.
+    model = {"units": {("TK-1", "1"): {"remaining": 100.0, "short_name": "CBL30"}},
+             "tag_meta": {"TK-1": {"Name": "Tank 1"}}}
+    lines = [
+        {"Equipment_Tag_No": "TK-1", "Lining_System_Code": "1", "Material_Code": "M-A",
+         "Material_Name": "Mat A", "Demand_Qty": 200.0, "Allocated_Qty": 100.0,
+         "Shortfall_Qty": 100.0},
+        {"Equipment_Tag_No": "TK-1", "Lining_System_Code": "1", "Material_Code": "M-B",
+         "Material_Name": "Mat B", "Demand_Qty": 50.0, "Allocated_Qty": 50.0,
+         "Shortfall_Qty": 0.0},
+    ]
+    eq, sy = esmod._capacity_from_lines(model, lines)
+    check("exec: capacity math = strict bottleneck (50% mat → 50/100 SQM)",
+          len(eq) == 1 and eq[0]["Achievable_SQM"] == 50.0 and eq[0]["Coverage_Pct"] == 50.0
+          and "M-A" in eq[0]["Bottleneck"]
+          and len(sy) == 1 and sy[0]["System_Code"] == "1" and sy[0]["Achievable_SQM"] == 50.0,
+          f"eq={eq} sy={sy}")
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -4526,6 +4633,8 @@ async def main() -> int:
     await test_notification_qa()
     print("\n AB. inbound webhook + dynamic delivery (Phase 6)")
     await test_webhook_and_digest()
+    print("\n AC. HOD executive summary")
+    await test_executive_summary()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

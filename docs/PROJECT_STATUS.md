@@ -48,7 +48,7 @@ recipient (critical alerts always immediate). Operator TODO: approve
 `WHATSAPP_WEBHOOK_VERIFY_TOKEN`/`WHATSAPP_APP_SECRET` + subscribe the webhook
 URL in Meta.
 Gates green:
-`service_tests` **579/0**, `parity_check` **5/5**, `bug_check` **599/0**,
+`service_tests` **587/0**, `parity_check` **5/5**, `bug_check` **599/0**,
 `parity:sme` **509**, frontend build ✅, alembic single head **c3a9d51e42b0**.
 **Phase 7 (WhatsApp), 7b (email) AND
 7c (ubiquitous notifications) are DONE** — native v2 `whatsapp_outbox` +
@@ -135,14 +135,14 @@ Streamlit portal — all EIGHT legacy tabs:
   `progress-list`/`production-log`, plan-export key `overview`.
 
 ### E. Gates (all green, current)
-`service_tests` **579/0** (360 at freeze → +219 across freeze-lift suites
-H–AB: SLA tracker, submission intel, bulk entry, reschedule, force-close, manual
+`service_tests` **587/0** (360 at freeze → +227 across freeze-lift suites
+H–AC: SLA tracker, submission intel, bulk entry, reschedule, force-close, manual
 PO, rate-limiter IP, reporting/dashboard, DN approval, supervisor parity, entry
 guards, vendor-returns, PR line-edit/rename, lot lifecycle, WhatsApp outbox,
 email outbox, phone OTP **+ Meta sandbox #131030 graceful-degradation +
 OTP-to-old-number**, **loan notifications + timezone (Y)**, **search/PR
 browse (Z)**, **22-pathway notification QA (AA)**, **inbound webhook + dynamic
-delivery/evening digest (AB)**) · `bug_check` **599/0** ·
+delivery/evening digest (AB)**, **HOD executive summary (AC)**) · `bug_check` **599/0** ·
 `parity_check` **5/5** · `parity:sme`
 **509** · frontend build ✅ · `alembic check` clean (single head **b8d2f4a61c07**) ·
 dual_ci mirror consistent. Schema additions since day one: `auth_sessions`,

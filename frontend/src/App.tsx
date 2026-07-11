@@ -18,6 +18,7 @@ const AdjustPage = lazy(() => import('./pages/AdjustPage'))
 const StockCountPage = lazy(() => import('./pages/StockCountPage'))
 const ReturnablesPage = lazy(() => import('./pages/ReturnablesPage'))
 const ApprovalsPage = lazy(() => import('./pages/ApprovalsPage'))
+const ExecutiveSummaryPage = lazy(() => import('./pages/ExecutiveSummaryPage'))
 const BurnRatePage = lazy(() => import('./pages/BurnRatePage'))
 const LowStockPage = lazy(() => import('./pages/LowStockPage'))
 const HodPrsPage = lazy(() => import('./pages/HodPrsPage'))
@@ -61,6 +62,7 @@ export default function App() {
         <Route path="sk/requests" element={<SkRequestsPage />} />
         <Route path="sme" element={<SmePage />} />
         <Route path="hod/approvals" element={<ApprovalsPage />} />
+        <Route path="hod/executive-summary" element={<ExecutiveSummaryPage />} />
         <Route path="hod/burn-rate" element={<BurnRatePage />} />
         <Route path="hod/low-stock" element={<LowStockPage />} />
         <Route path="hod/prs" element={<HodPrsPage />} />
