@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react'
-import { App, Alert, Button, Form, Input, Modal, Space, Typography } from 'antd'
+import { App, Alert, Button, Form, Input, Modal, Segmented, Space, Typography } from 'antd'
 import { MobileOutlined, SafetyOutlined } from '@ant-design/icons'
 import { useMyPhone, useRequestPhoneOtp, useVerifyPhoneOtp } from '../api/hooks'
+import { getDeliveryPreference, setDeliveryPreference } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
 /**
  * Self-service profile modal — lets any user verify a new phone number via a
- * 6-digit WhatsApp OTP. Step 1: enter the new number → a code is sent to it.
- * Step 2: enter the code → the number is saved. The number only changes after
- * the code verifies (admins can set it directly from User Management, no OTP).
+ * 6-digit WhatsApp OTP. Step 1: enter the new number → a code is sent to the
+ * CURRENTLY registered number (possession proof; first-time setup falls back
+ * to the new number). Step 2: enter the code → the number is saved. Admins can
+ * set numbers directly from User Management, no OTP.
+ * Also hosts the WhatsApp delivery preference (urgent vs 16:00 evening digest).
  */
 export default function ProfileModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { message } = App.useApp()
@@ -20,6 +23,8 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
   const [step, setStep] = useState<'enter' | 'verify'>('enter')
   const [newNumber, setNewNumber] = useState('')
   const [code, setCode] = useState('')
+  const [sentTo, setSentTo] = useState<'current' | 'new'>('new')
+  const [deliveryPref, setDeliveryPref] = useState<'urgent' | 'evening'>(getDeliveryPreference())
 
   // Reset the flow + refresh the number every time the modal is (re)opened.
   useEffect(() => {
@@ -33,7 +38,10 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
     try {
       const res = await requestOtp.mutateAsync(newNumber)
       if (res.sent) {
-        message.success('Verification code sent via WhatsApp')
+        setSentTo(res.sent_to === 'current' ? 'current' : 'new')
+        message.success(res.sent_to === 'current'
+          ? 'Verification code sent to your CURRENT registered number on WhatsApp'
+          : 'Verification code sent via WhatsApp')
         setStep('verify')
       } else {
         const detail = (res as { error?: string }).error
@@ -78,7 +86,9 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
               validateStatus={newNumber && !validNumber ? 'error' : undefined}
               help={newNumber && !validNumber
                 ? 'Use +<country code><number>, e.g. +966512345678'
-                : 'Example: +966512345678. A 6-digit code will be sent to this number on WhatsApp.'}>
+                : phone
+                  ? 'Example: +966512345678. To prove it is you, the 6-digit code goes to your CURRENT number on WhatsApp.'
+                  : 'Example: +966512345678. A 6-digit code will be sent to this number on WhatsApp.'}>
               <Input prefix={<MobileOutlined />} inputMode="tel" placeholder="+966512345678"
                 value={newNumber} onChange={(e) => setNewNumber(e.target.value)}
                 onPressEnter={send} allowClear />
@@ -91,7 +101,9 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
         ) : (
           <Form layout="vertical" onFinish={verify}>
             <Alert type="info" showIcon style={{ marginBottom: 12 }}
-              message={`Enter the 6-digit code sent to ${newNumber} on WhatsApp.`} />
+              message={sentTo === 'current'
+                ? `Enter the 6-digit code sent to your current number ${phone || ''} on WhatsApp.`
+                : `Enter the 6-digit code sent to ${newNumber} on WhatsApp.`} />
             <Form.Item label="Verification code">
               <Input prefix={<SafetyOutlined />} inputMode="numeric" maxLength={6}
                 placeholder="000000" value={code}
@@ -107,6 +119,30 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
             </Space>
           </Form>
         )}
+
+        <div>
+          <Typography.Text type="secondary">WhatsApp delivery preference</Typography.Text>
+          <div style={{ marginTop: 6 }}>
+            <Segmented
+              value={deliveryPref}
+              onChange={(v) => {
+                const pref = v as 'urgent' | 'evening'
+                setDeliveryPref(pref)
+                setDeliveryPreference(pref)
+                message.success(pref === 'evening'
+                  ? 'Non-critical alerts you trigger will be batched into one 16:00 digest'
+                  : 'Alerts you trigger will send immediately')
+              }}
+              options={[
+                { label: 'Urgent (immediate)', value: 'urgent' },
+                { label: 'Evening digest (16:00)', value: 'evening' },
+              ]}
+            />
+          </div>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Critical alerts always send immediately regardless of this setting.
+          </Typography.Text>
+        </div>
       </Space>
     </Modal>
   )

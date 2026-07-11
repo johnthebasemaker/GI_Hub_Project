@@ -261,6 +261,35 @@ async def whatsapp_retry(outbox_id: int, user: dict = Depends(require_level(4)),
     return res
 
 
+# --- Evening digest (Phase 6): staged queue viewer + manual run -----------------
+pending_summary_t = _MD.tables["pending_summary_notifications"]
+
+
+@admin.get("/digests/pending", summary="Evening-digest staging queue")
+async def digest_pending(limit: int = 500, session: AsyncSession = Depends(get_session)):
+    p = pending_summary_t.c
+    stmt = (select(p["id"], p["recipient_user"], p["event_key"], p["title"], p["body"],
+                   p["related_table"], p["related_ref"], p["created_at"])
+            .where(p["processed_at"].is_(None)).order_by(p["recipient_user"], p["id"])
+            .limit(max(1, min(int(limit), 2000))))
+    rows = [dict(m) for m in (await session.execute(stmt)).mappings().all()]
+    per_user = {r["n_user"]: r["n"] for r in (await session.execute(text(
+        "SELECT recipient_user AS n_user, COUNT(*) AS n FROM pending_summary_notifications "
+        "WHERE processed_at IS NULL GROUP BY recipient_user"))).mappings().all()}
+    return {"items": rows, "pending_by_recipient": per_user, "configured": wa.enabled()}
+
+
+@admin.post("/digests/run", summary="Run the evening-digest aggregator NOW")
+async def digest_run(user: dict = Depends(require_level(4)),
+                     session: AsyncSession = Depends(get_session)):
+    from .services.notifications import send_evening_digests
+    res = await send_evening_digests(session)
+    await write_audit(session, user["username"], "DIGEST_RUN_MANUAL",
+                      "pending_summary_notifications", str(res))
+    await session.commit()
+    return res
+
+
 # --- Email Console (admin): outbox viewer + manual retry ------------------------
 email_outbox_t = _MD.tables["email_outbox"]
 

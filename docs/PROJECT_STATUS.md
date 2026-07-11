@@ -34,9 +34,22 @@ number; caught + fixed the warehouse-only dispatch in-app gap), Phase 5
 (**production cutover script `scripts/migration/cutover_migrate.py`** +
 runbook; dry-run **VERIFIED --strict** on a scratch PG; fixed a real data-loss
 bug — `inventory.Sl_No` 293 values + `consumption.WBS/status` case-drop).
+**2026-07-11: Phase 6 (inbound WhatsApp) is DONE** — Meta webhook
+(`GET/POST /whatsapp/webhook` + `/api/v1/…` alias; verify-token handshake,
+X-Hub-Signature-256 HMAC), sender→user resolution (+E.164), interactive
+**STOCK <SAP>** (site-scoped) / **RESET PASSWORD** (temp credential, sessions
+revoked) commands with session-text replies, **OTP-to-OLD-number** possession
+proof on phone changes, and the **dynamic delivery engine**:
+`X-Delivery-Preference: evening` stages events in
+`pending_summary_notifications`; a 16:00 aggregator (lifespan task, manual
+`POST /admin/digests/run`) compiles ONE `gi_evening_summary` template per
+recipient (critical alerts always immediate). Operator TODO: approve
+`gi_evening_summary` (2 body vars, lang `en`) + set
+`WHATSAPP_WEBHOOK_VERIFY_TOKEN`/`WHATSAPP_APP_SECRET` + subscribe the webhook
+URL in Meta.
 Gates green:
-`service_tests` **560/0**, `parity_check` **5/5**, `bug_check` **599/0**,
-`parity:sme` **509**, frontend build ✅, alembic single head **b8d2f4a61c07**.
+`service_tests` **579/0**, `parity_check` **5/5**, `bug_check` **599/0**,
+`parity:sme` **509**, frontend build ✅, alembic single head **c3a9d51e42b0**.
 **Phase 7 (WhatsApp), 7b (email) AND
 7c (ubiquitous notifications) are DONE** — native v2 `whatsapp_outbox` +
 `email_outbox` + **a reusable-template layer (`gi_action_required` /
@@ -122,13 +135,14 @@ Streamlit portal — all EIGHT legacy tabs:
   `progress-list`/`production-log`, plan-export key `overview`.
 
 ### E. Gates (all green, current)
-`service_tests` **560/0** (360 at freeze → +200 across freeze-lift suites
-H–AA: SLA tracker, submission intel, bulk entry, reschedule, force-close, manual
+`service_tests` **579/0** (360 at freeze → +219 across freeze-lift suites
+H–AB: SLA tracker, submission intel, bulk entry, reschedule, force-close, manual
 PO, rate-limiter IP, reporting/dashboard, DN approval, supervisor parity, entry
 guards, vendor-returns, PR line-edit/rename, lot lifecycle, WhatsApp outbox,
-email outbox, phone OTP **+ Meta sandbox #131030 graceful-degradation**, **loan
-notifications + timezone (Y)**, **search/PR browse (Z)**, **22-pathway
-notification QA (AA)**) · `bug_check` **599/0** ·
+email outbox, phone OTP **+ Meta sandbox #131030 graceful-degradation +
+OTP-to-old-number**, **loan notifications + timezone (Y)**, **search/PR
+browse (Z)**, **22-pathway notification QA (AA)**, **inbound webhook + dynamic
+delivery/evening digest (AB)**) · `bug_check` **599/0** ·
 `parity_check` **5/5** · `parity:sme`
 **509** · frontend build ✅ · `alembic check` clean (single head **b8d2f4a61c07**) ·
 dual_ci mirror consistent. Schema additions since day one: `auth_sessions`,

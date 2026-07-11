@@ -608,16 +608,26 @@ async def get_phone(user: dict = Depends(get_current_user),
     return {"phone_number": (n or None)}
 
 
-@router.post("/phone/request-otp", summary="Send a 6-digit code to a NEW number to verify it",
+@router.post("/phone/request-otp", summary="Send a 6-digit code to verify a phone change",
              dependencies=[rate_limit(5, 60)])
 async def request_phone_otp(body: PhoneRequestIn, user: dict = Depends(get_current_user),
                             session: AsyncSession = Depends(get_session)):
+    """Phase 6 possession proof: the code is dispatched to the OLD (currently
+    registered) number — only whoever holds the existing device can approve
+    moving the account to a new number (an attacker with a stolen web session
+    can't silently redirect WhatsApp alerts to their own phone). First-time
+    setup (no number on file) has no old device to prove, so the code
+    bootstraps to the new number instead."""
     from .services import whatsapp as wa  # lazy: avoids an auth↔whatsapp import cycle
     if not wa.enabled():
         # Fail BEFORE creating a code row — nothing to strand, clear guidance.
         raise HTTPException(503, "WhatsApp is not configured on the server — "
                                  "ask an admin to set your number directly.")
     number = normalize_phone(body.new_number)
+    current = ((await session.execute(select(users_t.c["Phone_Number"])
+                .where(users_t.c["username"] == user["username"]))).scalar_one_or_none()
+               or "").strip()
+    send_to = current or number
     code = _gen_otp()
     code_hash = bcrypt.hashpw(code.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     expires = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None) + _dt.timedelta(minutes=_OTP_TTL_MIN)
@@ -628,19 +638,21 @@ async def request_phone_otp(body: PhoneRequestIn, user: dict = Depends(get_curre
     await session.execute(insert(phone_otp_t).values(
         username=user["username"], new_number=number, code_hash=code_hash,
         expires_at=expires, attempts=0))
-    # Send the code to the NEW number (best-effort; the row is committed either
-    # way so a transient send failure doesn't strand the user mid-flow).
+    # Send is best-effort; the row is committed either way so a transient send
+    # failure doesn't strand the user mid-flow.
     sent = False
     err = None
     try:
-        res = await wa.send_otp(session, to=number, code=code, created_by=user["username"])
+        res = await wa.send_otp(session, to=send_to, code=code, created_by=user["username"])
         sent = res.get("status") == "sent"
         err = res.get("error")
     except Exception as e:  # noqa: BLE001
         sent, err = False, str(e)[:200]
     await session.commit()
-    await _audit(session, user["username"], "PHONE_OTP_REQUEST", f"→ {number} sent={sent}")
+    await _audit(session, user["username"], "PHONE_OTP_REQUEST",
+                 f"→ {'old number on file' if current else 'new number (bootstrap)'} sent={sent}")
     return {"sent": sent, "expires_in": _OTP_TTL_MIN * 60,
+            "sent_to": "current" if current else "new",
             **({} if sent else {"error": err or "send failed"})}
 
 

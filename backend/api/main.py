@@ -51,6 +51,8 @@ from .console import xsite as xsite_router  # noqa: E402
 from .documents import router as documents_router  # noqa: E402
 from .report_center import router as report_center_router  # noqa: E402
 from .report_center import scheduler_loop  # noqa: E402
+from .services.notifications import digest_loop, reset_delivery_preference, set_delivery_preference  # noqa: E402
+from .webhook import router as webhook_router  # noqa: E402
 from .reports import router as reports_router  # noqa: E402
 from .receiving import router as receiving_router  # noqa: E402
 from .requests import router as requests_router  # noqa: E402
@@ -91,9 +93,13 @@ async def lifespan(app: FastAPI):
     # prevented by the atomic last_run claim in run_due_schedules(). Disable
     # with GI_SCHEDULER=0 (tests/CI import the app without running lifespan).
     task = None
+    digest_task = None
     if os.environ.get("GI_SCHEDULER", "1") != "0":
         import asyncio
         task = asyncio.create_task(scheduler_loop())
+        # Evening-digest aggregator (Phase 6): daily 16:00 local batch send of
+        # staged "evening" notifications. Same GI_SCHEDULER=0 escape hatch.
+        digest_task = asyncio.create_task(digest_loop())
     # AI-job orphan sweep: queued/running rows from a dead process can never
     # finish (their asyncio task died with it) — fail them with a clear message.
     try:
@@ -106,6 +112,8 @@ async def lifespan(app: FastAPI):
     yield
     if task:
         task.cancel()
+    if digest_task:
+        digest_task.cancel()
     await engine.dispose()
 
 
@@ -128,8 +136,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def _delivery_preference_middleware(request, call_next):
+    """Phase 6: X-Delivery-Preference ("urgent" | "evening") sets the
+    request-scoped WhatsApp delivery mode for every dispatch() the request
+    triggers — no per-endpoint threading. Absent header = urgent (immediate)."""
+    pref = request.headers.get("X-Delivery-Preference")
+    if not pref:
+        return await call_next(request)
+    token = set_delivery_preference(pref)
+    try:
+        return await call_next(request)
+    finally:
+        reset_delivery_preference(token)
+
 # Auth (open): login + JWT + /auth/me.
 app.include_router(auth_router)
+
+# Inbound WhatsApp webhook (Phase 6). Unauthenticated by design — Meta calls it
+# with its own verify-token (GET) / X-Hub-Signature-256 HMAC (POST). Mounted at
+# both the bare path (single-origin nginx strips /api) and the /api/v1 form.
+app.include_router(webhook_router, prefix="/whatsapp")
+app.include_router(webhook_router, prefix="/api/v1/whatsapp")
 
 # Everything below requires a valid bearer token. `get_current_user` guards the
 # read entities + derived stock; the entry routes self-guard (they need the

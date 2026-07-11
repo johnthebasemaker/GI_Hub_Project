@@ -188,6 +188,9 @@ _TEMPLATES: dict[str, tuple[str, str]] = {
     "status_update": ("WHATSAPP_TPL_STATUS", "gi_status_update"),
     "critical_alert": ("WHATSAPP_TPL_CRITICAL", "gi_critical_alert"),
     "otp_code": ("WHATSAPP_TPL_OTP", "gi_otp_code"),
+    # Evening digest (Phase 6): {{1}} = header (date + count), {{2}} = the
+    # compiled bullet list. Must be approved in the WABA's template language.
+    "evening_summary": ("WHATSAPP_TPL_SUMMARY", "gi_evening_summary"),
 }
 
 
@@ -262,6 +265,22 @@ async def send_template(session: AsyncSession, *, to: str, template_key: str,
     payload = _template_payload(to, name, list(variables or []))
     preview = " · ".join(str(v) for v in (variables or []) if v is not None)
     return await _record_and_send(session, to=to, payload=payload, preview=preview,
+                                  event_key=event_key, related_table=related_table,
+                                  related_ref=related_ref, created_by=created_by)
+
+
+async def send_session_text(session: AsyncSession, *, to: str, body: str, event_key: str,
+                            related_table: str | None = None, related_ref=None,
+                            created_by: str = "system") -> dict:
+    """Send a FREE-FORM text message (`type: "text"`, not a template).
+
+    Only deliverable inside Meta's 24-hour customer-service window — i.e. as a
+    REPLY to a user-initiated inbound message (the webhook flows). Business-
+    initiated alerts must keep using the approved templates via send_template.
+    """
+    payload = {"messaging_product": "whatsapp", "to": _meta_to(to), "type": "text",
+               "text": {"preview_url": False, "body": (body or "")[:4096]}}
+    return await _record_and_send(session, to=to, payload=payload, preview=body,
                                   event_key=event_key, related_table=related_table,
                                   related_ref=related_ref, created_by=created_by)
 

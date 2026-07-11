@@ -3566,6 +3566,11 @@ async def test_phone_otp():
         base_ob = (await s.execute(_sel(func.coalesce(func.max(ob.c["id"]), 0)))).scalar_one()
         prev_phone = (await s.execute(_sel(users.c["Phone_Number"])
                       .where(users.c["username"] == "worker"))).scalar_one_or_none()
+        # Start from the FIRST-TIME state (no number on file) so the bootstrap
+        # path — code to the NEW number — is what the first request exercises.
+        await s.execute(_upd(users).where(users.c["username"] == "worker")
+                        .values(Phone_Number=None))
+        await s.commit()
 
     saved_post = wamod._post_message
     saved_gen = authmod._gen_otp
@@ -3609,7 +3614,9 @@ async def test_phone_otp():
             # stored canonical = strict E.164 WITH the leading '+').
             r = await ac.post("/auth/phone/request-otp", headers={**H(worker_t), **_ip},
                               json={"new_number": "+1 555-123-4567"})
-            check("otp: request-otp → 200 sent", r.status_code == 200 and r.json().get("sent") is True,
+            check("otp: request-otp → 200 sent (bootstrap → new number)",
+                  r.status_code == 200 and r.json().get("sent") is True
+                  and r.json().get("sent_to") == "new",
                   f"got {r.status_code} {str(r.json())[:120]}")
             async with SessionLocal() as s:
                 pend = (await s.execute(_sel(func.count()).select_from(otp).where(
@@ -3653,6 +3660,22 @@ async def test_phone_otp():
             r = await ac.post("/auth/phone/verify-otp", headers={**H(worker_t), **_ip},
                               json={"new_number": "15551234567", "code": "654321"})
             check("otp: reused code → 404 (already consumed)", r.status_code == 404, f"got {r.status_code}")
+
+            # ── Phase 6 possession proof: with a number ON FILE, the change
+            # code goes to the OLD registered number, not the new one.
+            otp_sends.clear()
+            r = await ac.post("/auth/phone/request-otp", headers={**H(worker_t), **_ip},
+                              json={"new_number": "+1 555 999 8888"})
+            check("otp: change request → code dispatched to the OLD number",
+                  r.status_code == 200 and r.json().get("sent_to") == "current"
+                  and any(p.get("to") == "15551234567" for p in otp_sends)
+                  and not any(p.get("to") == "15559998888" for p in otp_sends),
+                  f"got {r.status_code} {str(r.json())[:100]} sends={str(otp_sends)[:120]}")
+            r = await ac.post("/auth/phone/verify-otp", headers={**H(worker_t), **_ip},
+                              json={"new_number": "+15559998888", "code": "654321"})
+            check("otp: code from the old device commits the new number",
+                  r.status_code == 200 and r.json().get("phone_number") == "+15559998888",
+                  f"got {r.status_code} {str(r.json())[:120]}")
 
             # ── Meta sandbox restriction (#131030) is handled gracefully ─────
             # The Graph error parser maps 131030 to a user-facing message while
@@ -4166,6 +4189,280 @@ async def test_notification_qa():
         await _cleanup()
 
 
+async def test_webhook_and_digest():
+    """Phase 6 — inbound WhatsApp webhook + dynamic delivery preference.
+
+    Meta HTTP is MOCKED (payloads captured). Covers: the GET verification
+    handshake, X-Hub-Signature-256 enforcement, unknown-sender drop, the
+    site-scoped STOCK command, RESET PASSWORD (temp credential actually logs
+    in; sessions revoked), evening staging vs urgent, the critical-alert
+    bypass, the digest compiler formatting, the batch aggregator send +
+    processed marking, and the X-Delivery-Preference header end-to-end.
+    All fixtures restored / rows deleted in finally."""
+    import hashlib as _hl
+    import hmac as _hm
+    import json as _json
+    import os as _o
+    import re as _re
+
+    from sqlalchemy import delete, select as _sel, update as _upd
+    import backend.api.services.whatsapp as wamod
+    from .services.notifications import _compile_digest, dispatch as _dispatch, send_evening_digests
+
+    ob = ledger._MD.tables["whatsapp_outbox"]
+    ps = ledger._MD.tables["pending_summary_notifications"]
+    users = ledger._MD.tables["users"]
+    appn = ledger._MD.tables["app_notifications"]
+    sess_t = ledger._MD.tables["auth_sessions"]
+    req_t = ledger._MD.tables["requests"]
+
+    WK_PHONE = "+15551230001"
+    VERIFY_TOK = "svc-verify-token"
+    APP_SECRET = "svc-app-secret"
+
+    async with SessionLocal() as s:
+        base_ob = (await s.execute(_sel(func.coalesce(func.max(ob.c["id"]), 0)))).scalar_one()
+        base_ps = (await s.execute(_sel(func.coalesce(func.max(ps.c["id"]), 0)))).scalar_one()
+        base_app = (await s.execute(_sel(func.coalesce(func.max(appn.c["id"]), 0)))).scalar_one()
+        prev = {u: (await s.execute(_sel(users.c["Phone_Number"])
+                    .where(users.c["username"] == u))).scalar_one_or_none()
+                for u in ("worker", "admin")}
+        prev_hash = (await s.execute(_sel(users.c["password_hash"])
+                     .where(users.c["username"] == "worker"))).scalar_one()
+        wk_site = ((await s.execute(_sel(users.c["Site_ID"])
+                    .where(users.c["username"] == "worker"))).scalar_one_or_none() or "").strip()
+        await s.execute(_upd(users).where(users.c["username"] == "worker")
+                        .values(Phone_Number=WK_PHONE))
+        await s.execute(_upd(users).where(users.c["username"] == "admin")
+                        .values(Phone_Number="+15559990002"))
+        await s.commit()
+        # A SAP with activity at the worker's site (for a deterministic STOCK hit).
+        from .stock import SQL_SITE_STOCK as _SQL_SITE
+        from sqlalchemy import text as _sqt
+        srow = (await s.execute(_sqt(
+            f'SELECT * FROM ({_SQL_SITE}) sub WHERE sub."Site_ID" = :site LIMIT 1'
+        ), {"site": wk_site})).mappings().first()
+        stock_sap = (srow or {}).get("SAP_Code")
+
+    saved_post = wamod._post_message
+    _ENVK = ("WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_TOKEN",
+             "WHATSAPP_WEBHOOK_VERIFY_TOKEN", "WHATSAPP_APP_SECRET")
+    prev_env = {k: _o.environ.get(k) for k in _ENVK}
+    payloads: list = []
+
+    async def ok_post(payload):
+        payloads.append(payload)
+        return {"ok": True, "message_id": f"wamid.AB{len(payloads)}"}
+
+    wamod._post_message = ok_post
+    _o.environ["WHATSAPP_PHONE_NUMBER_ID"] = "svc-test-pnid"
+    _o.environ["WHATSAPP_TOKEN"] = "svc-test-token"
+    _o.environ["WHATSAPP_WEBHOOK_VERIFY_TOKEN"] = VERIFY_TOK
+    _o.environ["WHATSAPP_APP_SECRET"] = APP_SECRET
+
+    def sign(raw: bytes) -> str:
+        return "sha256=" + _hm.new(APP_SECRET.encode(), raw, _hl.sha256).hexdigest()
+
+    def inbound(sender_digits: str, text_body: str) -> bytes:
+        return _json.dumps({"entry": [{"changes": [{"value": {"messages": [
+            {"type": "text", "from": sender_digits, "text": {"body": text_body}}
+        ]}}]}]}).encode()
+
+    xsite_rid = None
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            _ip = {"X-Real-IP": "203.0.113.97"}
+
+            async def token(u, p):
+                r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+                return r.json().get("access_token")
+
+            # 1) Meta verification handshake.
+            r = await ac.get("/whatsapp/webhook", params={
+                "hub.mode": "subscribe", "hub.verify_token": VERIFY_TOK,
+                "hub.challenge": "42challenge"})
+            check("wh: handshake echoes hub.challenge", r.status_code == 200
+                  and r.text == "42challenge", f"got {r.status_code} {r.text[:60]}")
+            r = await ac.get("/api/v1/whatsapp/webhook", params={
+                "hub.mode": "subscribe", "hub.verify_token": "wrong",
+                "hub.challenge": "x"})
+            check("wh: wrong verify_token → 403 (both mounts live)",
+                  r.status_code == 403, f"got {r.status_code}")
+
+            # 2) Signature enforcement.
+            raw = inbound("15551230001", "HELP")
+            r = await ac.post("/whatsapp/webhook", content=raw,
+                              headers={"X-Hub-Signature-256": "sha256=deadbeef",
+                                       "Content-Type": "application/json"})
+            check("wh: invalid X-Hub-Signature-256 → 403", r.status_code == 403,
+                  f"got {r.status_code}")
+
+            # 3) Unknown sender: logged + silently dropped (no reply row).
+            raw = inbound("19998887777", "STOCK 123")
+            r = await ac.post("/whatsapp/webhook", content=raw,
+                              headers={"X-Hub-Signature-256": sign(raw),
+                                       "Content-Type": "application/json"})
+            async with SessionLocal() as s:
+                n_ob = (await s.execute(_sel(func.count()).select_from(ob)
+                        .where(ob.c["id"] > base_ob))).scalar_one()
+            check("wh: unregistered number dropped (ack 200, no reply, no send)",
+                  r.status_code == 200 and r.json().get("handled") == 0 and n_ob == 0,
+                  f"got {r.status_code} {str(r.json())[:80]} outbox+{n_ob}")
+
+            # 4) STOCK command from a verified store keeper — site-scoped.
+            q_sap = stock_sap or "SVC-NO-SUCH-SAP"
+            raw = inbound("15551230001", f"STOCK {q_sap}")
+            r = await ac.post("/whatsapp/webhook", content=raw,
+                              headers={"X-Hub-Signature-256": sign(raw),
+                                       "Content-Type": "application/json"})
+            reply = (payloads[-1] if payloads else {})
+            body_txt = ((reply.get("text") or {}).get("body") or "")
+            ok_stock = (reply.get("type") == "text" and reply.get("to") == "15551230001"
+                        and ((stock_sap and "Current stock" in body_txt
+                              and str(stock_sap) in body_txt)
+                             or (not stock_sap and "not found" in body_txt)))
+            check("wh: STOCK → session-text reply with the site balance",
+                  r.json().get("handled") == 1 and ok_stock,
+                  f"{str(reply)[:160]}")
+            async with SessionLocal() as s:
+                wrow = (await s.execute(_sel(ob.c["status"], ob.c["event_key"], ob.c["message_type"])
+                        .where(ob.c["id"] > base_ob).order_by(ob.c["id"].desc()).limit(1))).first()
+            check("wh: reply recorded in whatsapp_outbox as sent/text",
+                  wrow is not None and wrow[0] == "sent" and wrow[1] == "webhook_reply"
+                  and wrow[2] == "text", str(wrow))
+
+            # 5) Unknown command → help text.
+            raw = inbound("15551230001", "what can you do?")
+            await ac.post("/whatsapp/webhook", content=raw,
+                          headers={"X-Hub-Signature-256": sign(raw),
+                                   "Content-Type": "application/json"})
+            check("wh: unknown command → command help",
+                  "GI Hub WhatsApp commands" in ((payloads[-1].get("text") or {}).get("body") or ""),
+                  str(payloads[-1])[:120])
+
+            # 6) RESET PASSWORD → single-use temp credential that really logs in.
+            raw = inbound("15551230001", "RESET PASSWORD")
+            r = await ac.post("/whatsapp/webhook", content=raw,
+                              headers={"X-Hub-Signature-256": sign(raw),
+                                       "Content-Type": "application/json"})
+            m = _re.search(r"temporary password: (\S+)",
+                           ((payloads[-1].get("text") or {}).get("body") or ""))
+            async with SessionLocal() as s:
+                n_sess = (await s.execute(_sel(func.count()).select_from(sess_t)
+                          .where(sess_t.c["username"] == "worker"))).scalar_one()
+            check("wh: RESET PASSWORD sends a temp credential + revokes sessions",
+                  r.json().get("handled") == 1 and m is not None and n_sess == 0,
+                  f"handled={str(r.json())[:60]} temp={'yes' if m else 'no'} sessions={n_sess}")
+            rl = await ac.post("/auth/login", headers=_ip,
+                               json={"username": "worker", "password": m.group(1) if m else "x"})
+            check("wh: the temp password actually authenticates",
+                  rl.status_code == 200 and bool(rl.json().get("access_token")),
+                  f"got {rl.status_code} {rl.text[:80]}")
+            async with SessionLocal() as s:  # restore the real credential at once
+                await s.execute(_upd(users).where(users.c["username"] == "worker")
+                                .values(password_hash=prev_hash))
+                await s.execute(delete(sess_t).where(sess_t.c["username"] == "worker"))
+                await s.commit()
+
+            # 7) Delivery preference: evening stages, critical bypasses.
+            ob_before = len(payloads)
+            async with SessionLocal() as s:
+                await _dispatch(s, event_key="p6_evening_a", title="PR SVC-P6 submitted",
+                                body="awaiting HOD review", recipient_user="worker",
+                                wa_template="action_required", delivery="evening")
+                await _dispatch(s, event_key="p6_evening_b", title="DN SVC-P6 approved",
+                                body="", recipient_user="worker",
+                                wa_template="status_update", delivery="evening")
+                await _dispatch(s, event_key="p6_critical", title="FEFO override at HQ",
+                                body="lot skipped", recipient_user="worker", severity="critical",
+                                wa_template="critical_alert", delivery="evening")
+                await s.commit()
+                staged = [dict(m) for m in (await s.execute(
+                    _sel(ps.c["id"], ps.c["event_key"], ps.c["processed_at"])
+                    .where(ps.c["id"] > base_ps))).mappings().all()]
+            check("digest: evening events staged, no immediate send",
+                  len([x for x in staged if x["event_key"].startswith("p6_evening")]) == 2
+                  and len(payloads) == ob_before + 1,  # ONLY the critical went out
+                  f"staged={str(staged)[:120]} sends+{len(payloads) - ob_before}")
+            check("digest: critical alert bypasses the evening queue",
+                  not any(x["event_key"] == "p6_critical" for x in staged)
+                  and (payloads[-1].get("template") or {}).get("name") == "gi_critical_alert",
+                  str(payloads[-1])[:140])
+
+            # 8) The compiler: clean bullets, hard cap with explicit remainder.
+            d = _compile_digest([{"title": "PR-1 submitted", "body": "3 items"},
+                                 {"title": "DN-2 approved", "body": ""}])
+            check("digest: compiler formats •-bullets with title — body",
+                  d == "• PR-1 submitted — 3 items  • DN-2 approved", d)
+            many = [{"title": f"event {i} with a reasonably long tail", "body": "x" * 40}
+                    for i in range(60)]
+            dm = _compile_digest(many)
+            check("digest: compiler caps under the Meta 1024 limit with (+N more)",
+                  len(dm) <= 1024 and "more)" in dm, f"len={len(dm)} tail={dm[-30:]}")
+
+            # 9) The batch aggregator: ONE message per recipient, rows marked.
+            async with SessionLocal() as s:
+                res = await send_evening_digests(s)
+                await s.commit()
+                left = [dict(m) for m in (await s.execute(
+                    _sel(ps.c["id"], ps.c["event_key"], ps.c["processed_at"], ps.c["digest_outbox_id"])
+                    .where(ps.c["id"] > base_ps))).mappings().all()]
+            dig = next((p for p in reversed(payloads)
+                        if (p.get("template") or {}).get("name") == "gi_evening_summary"), None)
+            dig_params = [prm["text"] for comp in ((dig or {}).get("template") or {}).get("components", [])
+                          for prm in comp.get("parameters", [])]
+            check("digest: aggregator sends ONE gi_evening_summary per recipient",
+                  res.get("sent") == 1 and res.get("recipients") == 1 and dig is not None
+                  and any("PR SVC-P6 submitted" in v and "DN SVC-P6 approved" in v
+                          for v in dig_params),
+                  f"res={res} params={str(dig_params)[:160]}")
+            check("digest: staged rows marked processed + linked to the outbox row",
+                  all(x["processed_at"] is not None and x["digest_outbox_id"] for x in left),
+                  str(left)[:160])
+            async with SessionLocal() as s:
+                res2 = await send_evening_digests(s)
+                await s.commit()
+            check("digest: second run is a no-op (nothing pending)",
+                  res2.get("recipients") == 0, str(res2))
+
+            # 10) X-Delivery-Preference header end-to-end (middleware → dispatch).
+            hod_t = await token("hod", "hod2026")
+            r = await ac.post("/xsite", headers={"Authorization": f"Bearer {hod_t}",
+                                                 "X-Delivery-Preference": "evening", **_ip},
+                              json={"target_site": "SVC-P6-TARGET", "SAP_Code": "SVC-P6-SAP",
+                                    "requested_qty": 1})
+            xsite_rid = (r.json() or {}).get("id")
+            async with SessionLocal() as s:
+                hdr_staged = (await s.execute(_sel(func.count()).select_from(ps).where(
+                    (ps.c["id"] > base_ps) & (ps.c["event_key"] == "cross_site_requested")
+                    & ps.c["processed_at"].is_(None)))).scalar_one()
+                hdr_sent = (await s.execute(_sel(func.count()).select_from(ob).where(
+                    (ob.c["id"] > base_ob) & (ob.c["event_key"] == "cross_site_requested")))).scalar_one()
+            check("digest: X-Delivery-Preference header stages instead of sending",
+                  r.status_code == 201 and hdr_staged >= 1 and hdr_sent == 0,
+                  f"got {r.status_code} staged={hdr_staged} sent={hdr_sent}")
+    finally:
+        wamod._post_message = saved_post
+        for _k, _v in prev_env.items():
+            if _v is None:
+                _o.environ.pop(_k, None)
+            else:
+                _o.environ[_k] = _v
+        async with SessionLocal() as s:
+            await s.execute(_upd(users).where(users.c["username"] == "worker")
+                            .values(Phone_Number=prev["worker"], password_hash=prev_hash))
+            await s.execute(_upd(users).where(users.c["username"] == "admin")
+                            .values(Phone_Number=prev["admin"]))
+            if xsite_rid:
+                await s.execute(delete(req_t).where(req_t.c["id"] == xsite_rid))
+            await s.execute(delete(ps).where(ps.c["id"] > base_ps))
+            await s.execute(delete(ob).where(ob.c["id"] > base_ob))
+            await s.execute(delete(appn).where(appn.c["id"] > base_app))
+            await s.execute(delete(sess_t).where(sess_t.c["username"] == "worker"))
+            await s.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -4227,6 +4524,8 @@ async def main() -> int:
     await test_search_filters()
     print("\n AA. notification QA — every pathway → whatsapp_outbox (UAT Phase 4)")
     await test_notification_qa()
+    print("\n AB. inbound webhook + dynamic delivery (Phase 6)")
+    await test_webhook_and_digest()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

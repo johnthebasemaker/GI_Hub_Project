@@ -684,6 +684,26 @@ class PhoneOtp(Base):
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
 
 
+class PendingSummaryNotifications(Base):
+    """Staged WhatsApp events awaiting the 16:00 evening digest (NEW-STACK
+    ONLY; dual_ci leaves it empty, same contract as phone_otp). One row per
+    (recipient, event); the batch aggregator groups by recipient_user, compiles
+    a single bulleted digest per person via the gi_evening_summary template,
+    and stamps processed_at + digest_outbox_id only after a successful send
+    (failed sends stay pending and retry on the next run)."""
+    __tablename__ = "pending_summary_notifications"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    recipient_user = Column(Text, nullable=False, index=True)
+    event_key = Column(Text, nullable=False)
+    title = Column(Text, nullable=False)
+    body = Column(Text)
+    related_table = Column(Text)
+    related_ref = Column(Text)
+    created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    processed_at = Column(DateTime)
+    digest_outbox_id = Column(Integer)
+
+
 class WbsMaster(Base):
     __tablename__ = "wbs_master"
     id = Column(Integer, primary_key=True, autoincrement=True)

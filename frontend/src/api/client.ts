@@ -18,8 +18,25 @@ export function getAuthToken(): string | null {
   return _token
 }
 
+// --- WhatsApp delivery preference (Phase 6) -----------------------------------
+// "urgent" (default) = WhatsApp alerts send immediately; "evening" = staged and
+// batched into one 16:00 digest. Sent as a header on every write so the backend
+// dispatch() picks it up without per-endpoint plumbing.
+export const DELIVERY_PREF_KEY = 'gi-delivery-pref'
+
+export function getDeliveryPreference(): 'urgent' | 'evening' {
+  return localStorage.getItem(DELIVERY_PREF_KEY) === 'evening' ? 'evening' : 'urgent'
+}
+
+export function setDeliveryPreference(pref: 'urgent' | 'evening') {
+  if (pref === 'evening') localStorage.setItem(DELIVERY_PREF_KEY, pref)
+  else localStorage.removeItem(DELIVERY_PREF_KEY)
+}
+
 api.interceptors.request.use((cfg) => {
   if (_token) cfg.headers.Authorization = `Bearer ${_token}`
+  const pref = getDeliveryPreference()
+  if (pref !== 'urgent') cfg.headers['X-Delivery-Preference'] = pref
   return cfg
 })
 
