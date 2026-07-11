@@ -3654,6 +3654,47 @@ async def test_phone_otp():
                               json={"new_number": "15551234567", "code": "654321"})
             check("otp: reused code → 404 (already consumed)", r.status_code == 404, f"got {r.status_code}")
 
+            # ── Meta sandbox restriction (#131030) is handled gracefully ─────
+            # The Graph error parser maps 131030 to a user-facing message while
+            # keeping the raw Meta detail for the outbox row.
+            import json as _json
+            _sandbox_body = _json.dumps({"error": {
+                "message": "(#131030) Recipient phone number not in allowed list",
+                "code": 131030, "type": "OAuthException",
+                "error_data": {"messaging_product": "whatsapp",
+                               "details": "Recipient phone number not in allowed list: "
+                                          "Add recipient phone number to recipient list "
+                                          "and try again."}}})
+            ge = wamod._graph_error(400, _sandbox_body)
+            check("otp: _graph_error maps #131030 to a friendly message",
+                  ge["ok"] is False and ge.get("code") == 131030
+                  and "not whitelisted in the Meta Developer Sandbox" in ge["error"]
+                  and "400 (#131030)" in ge["error"], str(ge)[:200])
+
+            async def sandbox_post(payload):
+                return wamod._graph_error(400, _sandbox_body)
+
+            wamod._post_message = sandbox_post
+            try:
+                r = await ac.post("/auth/phone/request-otp", headers={**H(worker_t), **_ip},
+                                  json={"new_number": "+1555777333"})
+                j = r.json()
+                check("otp: sandbox rejection → 200 (no generic 4xx/5xx), sent=false",
+                      r.status_code == 200 and j.get("sent") is False,
+                      f"got {r.status_code} {str(j)[:120]}")
+                check("otp: sandbox rejection surfaces the descriptive message",
+                      "not whitelisted in the Meta Developer Sandbox" in (j.get("error") or ""),
+                      str(j)[:200])
+                async with SessionLocal() as s:
+                    fr = (await s.execute(_sel(ob.c["status"], ob.c["error"]).where(
+                        (ob.c["id"] > base_ob) & (ob.c["status"] == "failed"))
+                        .order_by(ob.c["id"].desc()).limit(1))).first()
+                check("otp: sandbox rejection recorded FAILED in outbox with detail",
+                      fr is not None and "Sandbox" in (fr[1] or "") and "131030" in (fr[1] or ""),
+                      str(fr)[:200])
+            finally:
+                wamod._post_message = ok_post
+
             # Admin override sets any user's number directly — no OTP; input is
             # normalized to the same canonical +E.164.
             r = await ac.patch("/admin/users/worker", headers=H(admin_t),

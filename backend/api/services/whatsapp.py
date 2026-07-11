@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime as _dt  # noqa: F401  (imported for parity / future use)
 import json
+import logging
 import os
 
 import httpx
@@ -40,6 +41,44 @@ users_t = _MD.tables["users"]
 
 _API_VERSION = os.environ.get("WHATSAPP_API_VERSION", "v20.0")
 _TIMEOUT_S = 15.0
+
+_log = logging.getLogger("gi.whatsapp")
+
+# Meta error 131030: "Recipient phone number not in allowed list" — the app is
+# in Development/Sandbox mode and the destination isn't whitelisted under
+# WhatsApp → API Setup. Mapped to a user-facing message so the frontend never
+# has to surface the raw Graph JSON blob.
+SANDBOX_NOT_WHITELISTED = 131030
+
+_FRIENDLY_ERRORS: dict[int, str] = {
+    SANDBOX_NOT_WHITELISTED: (
+        "WhatsApp delivery failed: Destination number is not whitelisted in the "
+        "Meta Developer Sandbox console. Add the recipient under WhatsApp → "
+        "API Setup → allowed recipient list (or switch the app to Live mode)."),
+}
+
+
+def _graph_error(status: int, body_text: str) -> dict:
+    """Normalise a non-2xx Graph response into {"ok": False, "error", "code"}.
+
+    Known codes get a user-facing message first; the raw Meta detail is kept
+    (bracketed, truncated) so the whatsapp_outbox row stays fully diagnostic."""
+    code = None
+    detail = ""
+    try:
+        err = (json.loads(body_text or "{}").get("error") or {})
+        code = err.get("code")
+        detail = (err.get("error_data") or {}).get("details") or err.get("message") or ""
+    except (ValueError, TypeError):
+        pass
+    raw = f"{status}{f' (#{code})' if code else ''}: {detail or (body_text or '')[:300]}"
+    friendly = _FRIENDLY_ERRORS.get(code)
+    if code == SANDBOX_NOT_WHITELISTED:
+        _log.warning("Meta sandbox restriction (#131030): recipient not in the "
+                     "allowed list — send recorded as failed, app flow continues")
+    else:
+        _log.warning("WhatsApp send failed: %s", raw[:300])
+    return {"ok": False, "code": code, "error": f"{friendly} [{raw}]" if friendly else raw}
 
 
 def _phone_id() -> str:
@@ -74,7 +113,7 @@ async def _post_message(payload: dict) -> dict:
         if r.status_code // 100 == 2:
             mid = ((r.json().get("messages") or [{}])[0] or {}).get("id")
             return {"ok": True, "message_id": mid}
-        return {"ok": False, "error": f"{r.status_code}: {r.text[:400]}"}
+        return _graph_error(r.status_code, r.text)
     except Exception as e:  # network/timeout — recorded, retryable
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -91,7 +130,7 @@ async def _upload_media(blob: bytes, filename: str, mime: str) -> dict:
                              files={"file": (filename, blob, mime)})
         if r.status_code // 100 == 2:
             return {"ok": True, "media_id": r.json().get("id")}
-        return {"ok": False, "error": f"{r.status_code}: {r.text[:400]}"}
+        return _graph_error(r.status_code, r.text)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
