@@ -57,8 +57,8 @@ function SectionTable({ rows, columns, empty }: {
   return (
     <Table
       size="small"
-      rowKey={(_, i) => String(i)}
-      dataSource={rows}
+      rowKey="__k"
+      dataSource={rows.map((r, i) => ({ ...r, __k: i }))}
       columns={columns}
       pagination={rows.length > 8 ? { pageSize: 8, size: 'small' } : false}
       scroll={{ x: true }}
@@ -132,7 +132,7 @@ export default function ExecutiveSummaryPage() {
 
       {isError && (
         <Alert type="error" showIcon style={{ marginBottom: 16 }}
-          message="Could not load the executive summary — check your connection or restart the backend." />
+          title="Could not load the executive summary — check your connection or restart the backend." />
       )}
 
       {!d ? (

@@ -206,7 +206,7 @@ export default function AppLayout() {
         <Content style={{ margin: 24 }}>
           {Boolean((health as { maintenance?: boolean } | undefined)?.maintenance) && (
             <Alert type="warning" showIcon banner style={{ marginBottom: 16 }}
-              message="Maintenance mode is ON — non-admin sign-ins are paused until it is switched off." />
+              title="Maintenance mode is ON — non-admin sign-ins are paused until it is switched off." />
           )}
           <Suspense
             fallback={

@@ -49,7 +49,14 @@ recipient (critical alerts always immediate). Operator TODO: approve
 URL in Meta.
 Gates green:
 `service_tests` **591/0**, `parity_check` **5/5**, `bug_check` **599/0**,
-`parity:sme` **509**, frontend build ✅, alembic single head **d6b0e72f51a8**.
+`parity:sme` **509**, frontend build ✅, `tsc --noEmit` ✅, alembic single head **d6b0e72f51a8**.
+QA night shift (2026-07-12): full multi-role E2E on an isolated `gihub_e2e`
+clone — 21/21 workflow checks (W1 entry-approval, W2 SMR, W3 PR→PO) + 63/63
+page-render probes (0×500) + negative-access lattice, all green; **no
+functional bugs found**. Cleaned up antd-6 console deprecations (Alert
+message→title ×7, Modal destroyOnClose→destroyOnHidden, Space
+direction→orientation, rowKey index-param ×3) → fresh-tab console is silent.
+Permanent matrix at `docs/automatic_test.md`; Playwright automation plan in §F2.
 UAT round 2 (2026-07-12): the Executive Summary PDF is now SERVER-rendered
 (`exec_pdf.py`, fpdf2 — measured tables, nothing cut at page edges; the
 print-the-webpage approach is gone); the Urgent/Evening delivery toggle moved
@@ -194,6 +201,23 @@ user-authorized; Phase-4/5/6 feature work otherwise reused existing tables
   Console. **The entire feature-gap backlog (P0–P6 + I-A/I-B + deferred-MED)
   AND Phase 7/7b are DONE.** See `feature-gap-program` memory — only optional
   LOW polish remains.
+
+---
+
+### F2. Automated visual E2E — the Playwright plan (2026-07-12 QA night shift)
+
+`docs/automatic_test.md` is the permanent, human-run test matrix. To turn it
+into a **scripted, headless CI suite**, here is exactly what it takes:
+
+1. **Runner:** add Playwright (`@playwright/test`) to `frontend/` — `npm i -D @playwright/test && npx playwright install chromium`. Tests live in `frontend/e2e/*.spec.ts`. It bundles browser control, network assertions, auto-waiting, trace/video capture, and parallel workers — no Selenium glue.
+2. **Isolated backend fixture (the key piece, already proven tonight):** a `globalSetup` that clones the DB (`CREATE DATABASE gihub_e2e_ci TEMPLATE gihub`), boots uvicorn with `GI_DOTENV=0 GI_SCHEDULER=0 DATABASE_URL=…gihub_e2e_ci JWT_SECRET=…` on a test port, waits for `/health`, and a `globalTeardown` that drops the DB. This is the recipe in `automatic_test.md §0` — it makes runs hermetic and repeatable (WhatsApp/Meta stay dark). Each `test.describe` can `TRUNCATE` its own scratch rows or re-clone for full isolation.
+3. **Role sessions:** one `storageState` JSON per role (admin/hod/sk/supervisor/logistics/warehouse), created once in setup by POSTing `/auth/login` and saving the token to `localStorage` — tests then start already-authenticated (no login-rate-limit flakiness). Playwright `test.use({ storageState })` per project.
+4. **Matrix → specs, 1:1:** every table row in `automatic_test.md` becomes one `test()`. The cross-role workflows (§11 W1–W10) become sequential specs that hand off between role contexts in a single file — precisely the flows validated tonight via the `e2e_workflows.py` harness (that script is the executable spec; port its 21 assertions verbatim). Negative-access (§12) becomes a data-driven `for (const [role, path] of matrix)` loop asserting 403.
+5. **Assertions:** prefer Playwright's `page.waitForResponse(/\/api\/…/)` + `expect(status).toBe(200)` and DOM `expect(locator).toHaveText(...)` over pixel checks; add `toHaveScreenshot()` snapshots only for the 3–4 layouts that matter (dashboard, exec summary, SME grid) to catch visual regressions without brittleness.
+6. **CI wiring:** a GitHub Actions job (or the existing runner) with a Postgres service container, `alembic upgrade head`, seed, then `npx playwright test`. Publish the HTML report + traces as artifacts; fail the build on any red. Gate merges on it alongside `service_tests`.
+7. **Effort estimate:** ~1 day to stand up the harness (fixture + role sessions + 5 smoke specs), then ~2–3 days to port the full matrix (~120 checks). The backend is already E2E-friendly (in-process ASGI tests, deterministic seed, IP-keyed rate limits you can bypass with a header) so most of the cost is writing selectors, not fighting infrastructure.
+
+Bottom line: the two hard parts of visual E2E — a disposable real-data backend and multi-role session handoff — are already solved and documented; Playwright is the thin, mergeable layer on top.
 
 ---
 

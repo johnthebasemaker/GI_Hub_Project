@@ -168,8 +168,8 @@ function KpiBlock({ title, rows }: { title: string; rows?: ApiRow[] }) {
     : []
   return (
     <Card size="small" title={title} style={{ height: '100%' }}>
-      <Table size="small" dataSource={rows ?? []} columns={cols} pagination={false}
-        rowKey={(_, i) => String(i)} />
+      <Table size="small" dataSource={(rows ?? []).map((r, i) => ({ ...r, __k: i }))} columns={cols}
+        pagination={false} rowKey="__k" />
     </Card>
   )
 }
@@ -213,7 +213,7 @@ function WhatsAppTab() {
     <>
       {data && !data.configured && (
         <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-          message="WhatsApp is not configured — set WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_TOKEN in deploy/.env. Messages queue as 'failed' until then." />
+          title="WhatsApp is not configured — set WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_TOKEN in deploy/.env. Messages queue as 'failed' until then." />
       )}
       <Space style={{ marginBottom: 12 }}>
         <Select allowClear placeholder="All statuses" style={{ width: 200 }} value={status} onChange={setStatus}
@@ -264,7 +264,7 @@ function EmailTab() {
     <>
       {data && !data.configured && (
         <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-          message="SMTP is not configured — set SMTP_HOST / SMTP_USER / SMTP_PASS in deploy/.env. Emails queue as 'failed' until then." />
+          title="SMTP is not configured — set SMTP_HOST / SMTP_USER / SMTP_PASS in deploy/.env. Emails queue as 'failed' until then." />
       )}
       <Space style={{ marginBottom: 12 }}>
         <Select allowClear placeholder="All statuses" style={{ width: 200 }} value={status} onChange={setStatus}

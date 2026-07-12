@@ -251,7 +251,7 @@ export default function ApprovalsPage() {
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message={`Pre-flight: ${deficits.length} material(s) would go NEGATIVE if all pending issues were approved`}
+          title={`Pre-flight: ${deficits.length} material(s) would go NEGATIVE if all pending issues were approved`}
           description={
             <Table
               size="small"

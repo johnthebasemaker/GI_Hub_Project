@@ -44,7 +44,7 @@ export default function SubmissionInsight({ kind, refId }: {
       type={data.tone === 'error' ? 'error' : data.tone}
       showIcon
       style={{ padding: '6px 10px' }}
-      message={(
+      title={(
         <span style={{ fontSize: '0.82rem' }}>
           {data.summary}{' '}
           <Tag style={{ marginLeft: 6 }} color={data.source === 'ai' ? 'geekblue' : 'default'}>

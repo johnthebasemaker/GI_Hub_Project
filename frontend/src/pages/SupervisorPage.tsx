@@ -210,8 +210,9 @@ function IntentVsActual() {
       <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
         Approved request quantities vs actual consumption over the last 90 days, with variance.
       </Typography.Paragraph>
-      <Table size="small" loading={isFetching} columns={columns} dataSource={data?.rows ?? []}
-        rowKey={(_, i) => String(i)} scroll={{ x: 'max-content' }}
+      <Table size="small" loading={isFetching} columns={columns}
+        dataSource={(data?.rows ?? []).map((r: Record<string, unknown>, i: number) => ({ ...r, __k: i }))}
+        rowKey="__k" scroll={{ x: 'max-content' }}
         pagination={{ pageSize: 20, showTotal: (t) => `${t} lines` }} />
     </Card>
   )

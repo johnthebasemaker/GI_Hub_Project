@@ -83,8 +83,8 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
   const twoStep = Boolean(phone) // a number on file means the dual-OTP path
 
   return (
-    <Modal open={open} onCancel={onClose} footer={null} title="My profile" destroyOnClose>
-      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+    <Modal open={open} onCancel={onClose} footer={null} title="My profile" destroyOnHidden>
+      <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
         <div>
           <Typography.Text type="secondary">Signed in as</Typography.Text>
           <div style={{ fontWeight: 600 }}>{user?.label} · {user?.username}</div>
@@ -96,7 +96,7 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
           </div>
           {isError && (
             <Alert type="error" showIcon style={{ marginTop: 6 }}
-              message="Could not load your phone number — the API may be running an older build. Restart the backend and try again." />
+              title="Could not load your phone number — the API may be running an older build. Restart the backend and try again." />
           )}
         </div>
 
@@ -129,7 +129,7 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
                 ]} />
             )}
             <Alert type="info" showIcon style={{ marginBottom: 12 }}
-              message={stage === 'old'
+              title={stage === 'old'
                 ? `Enter the 6-digit code sent to your CURRENT number ${phone || ''} on WhatsApp.`
                 : `Enter the 6-digit code sent to the NEW number ${newNumber} on WhatsApp.`} />
             <Form.Item label="Verification code">

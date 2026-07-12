@@ -92,7 +92,7 @@ export default function BrowseTable({
           type="error"
           showIcon
           style={{ marginBottom: 12 }}
-          message={(error as Error).message}
+          title={(error as Error).message}
         />
       )}
       {/* First load = shimmer skeleton; refetches keep the spinner overlay */}
