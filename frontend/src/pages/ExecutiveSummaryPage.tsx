@@ -9,7 +9,7 @@ import {
 } from '@ant-design/icons'
 import dayjs, { Dayjs } from 'dayjs'
 import {
-  downloadExecSummaryXlsx, useExecutiveSummary, useSites,
+  downloadExecSummaryPdf, downloadExecSummaryXlsx, useExecutiveSummary, useSites,
   type ExecSummaryKpi,
 } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -17,30 +17,15 @@ import { useAuth } from '../auth/AuthContext'
 const { RangePicker } = DatePicker
 
 /**
- * HOD Executive Summary — one professional, print-ready page covering the
- * period's full picture: ledger movements, SQM done, manpower, PR/PO pipeline,
- * the warehouse delivery plan, actions taken vs pending, SME achievable-SQM
- * capacity (read-only engine run) and cross-site enquiries.
- * "Download PDF" prints the report area through a dedicated A4 stylesheet;
- * "Download Excel" streams the server-rendered multi-sheet workbook.
+ * HOD Executive Summary — one professional page covering the period's full
+ * picture: ledger movements, SQM done, manpower, PR/PO pipeline, the warehouse
+ * delivery plan, actions taken vs pending, SME achievable-SQM capacity
+ * (read-only engine run) and cross-site enquiries.
+ * "Download PDF" and "Download Excel" both stream server-rendered files —
+ * the PDF is a measured, paginated A4 report (exec_pdf.py), not a page print.
  */
-const PRINT_CSS = `
-@media print {
-  @page { size: A4; margin: 11mm; }
-  .ant-layout-sider, .ant-layout-header, .no-print { display: none !important; }
-  .ant-layout, .ant-layout-content { padding: 0 !important; margin: 0 !important; background: #fff !important; }
-  .exec-report { padding: 0 !important; }
-  .exec-report .ant-card { box-shadow: none !important; border: 1px solid #d9d9d9 !important;
-    break-inside: avoid; margin-bottom: 8px !important; }
-  .exec-report .ant-table { font-size: 10px; }
-  .exec-report .ant-statistic-content { font-size: 16px; }
-  .exec-print-header { display: block !important; }
-}
-.exec-print-header { display: none; }
-`
-
 function TrendTag({ pct }: { pct: number | null | undefined }) {
-  if (pct === null || pct === undefined) return <Tag className="no-print">—</Tag>
+  if (pct === null || pct === undefined) return <Tag>—</Tag>
   const up = pct >= 0
   return (
     <Tag color={up ? 'green' : 'red'} icon={up ? <ArrowUpOutlined /> : <ArrowDownOutlined />}>
@@ -89,6 +74,7 @@ export default function ExecutiveSummaryPage() {
   const isAdmin = user?.role === 'admin'
   const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs(), dayjs()])
   const [site, setSite] = useState<string | undefined>(undefined)
+  const [pdfBusy, setPdfBusy] = useState(false)
 
   const params = useMemo(() => ({
     date_from: range[0].format('YYYY-MM-DD'),
@@ -107,20 +93,7 @@ export default function ExecutiveSummaryPage() {
 
   return (
     <div className="exec-report">
-      <style>{PRINT_CSS}</style>
-
-      {/* Print-only letterhead */}
-      <div className="exec-print-header" style={{ marginBottom: 12 }}>
-        <Typography.Title level={3} style={{ marginBottom: 0 }}>
-          GI Hub — Executive Summary
-        </Typography.Title>
-        <Typography.Text type="secondary">
-          Site: {d?.site_id ?? 'All sites'} · Period: {d?.date_from} → {d?.date_to}
-          {' '}· Generated {d?.generated_at} by {user?.username}
-        </Typography.Text>
-      </div>
-
-      <Space className="no-print" wrap style={{ marginBottom: 16, justifyContent: 'space-between', width: '100%' }}>
+      <Space wrap style={{ marginBottom: 16, justifyContent: 'space-between', width: '100%' }}>
         <Space wrap>
           <FundProjectionScreenOutlined style={{ fontSize: 20 }} />
           <Typography.Title level={4} style={{ margin: 0 }}>Executive Summary</Typography.Title>
@@ -143,7 +116,11 @@ export default function ExecutiveSummaryPage() {
           <Button icon={<ReloadOutlined />} onClick={() => refetch()} loading={isFetching} />
         </Space>
         <Space>
-          <Button icon={<FilePdfOutlined />} onClick={() => window.print()} disabled={!d}>
+          <Button icon={<FilePdfOutlined />} disabled={!d} loading={pdfBusy}
+            onClick={() => {
+              setPdfBusy(true)
+              downloadExecSummaryPdf(params).finally(() => setPdfBusy(false))
+            }}>
             Download PDF
           </Button>
           <Button type="primary" icon={<FileExcelOutlined />} disabled={!d}
@@ -154,7 +131,7 @@ export default function ExecutiveSummaryPage() {
       </Space>
 
       {isError && (
-        <Alert type="error" showIcon className="no-print" style={{ marginBottom: 16 }}
+        <Alert type="error" showIcon style={{ marginBottom: 16 }}
           message="Could not load the executive summary — check your connection or restart the backend." />
       )}
 
@@ -356,7 +333,7 @@ export default function ExecutiveSummaryPage() {
           <Typography.Text type="secondary" style={{ display: 'block', marginTop: 12, fontSize: 12 }}>
             Generated {d.generated_at} · Site {d.site_id ?? 'ALL'} · {d.date_from} → {d.date_to}
             {' '}· Trends compare the preceding {d.days}-day window.
-            <span className="no-print"> Use <DownloadOutlined /> Download PDF for the print layout.</span>
+            <span> <DownloadOutlined /> Download PDF streams the full paginated report.</span>
           </Typography.Text>
         </Spin>
       )}

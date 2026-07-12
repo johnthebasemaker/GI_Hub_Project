@@ -670,14 +670,18 @@ class EmailOutbox(Base):
 class PhoneOtp(Base):
     """One-time codes for self-service phone-number changes (NEW-STACK ONLY;
     dual_ci leaves it empty, same contract as whatsapp_outbox/email_outbox).
-    The code is hashed at rest (bcrypt), expires in ~10 min and is single-use;
-    users.Phone_Number only changes after a code verifies. Admins bypass this
-    entirely via PATCH /admin/users/{username}."""
+    The code is hashed at rest (bcrypt), expires in ~10 min and is single-use.
+    Dual-OTP flow: stage='old' authorizes the change from the currently
+    registered device; stage='new' then proves the NEW number can receive
+    WhatsApp (typo lock-out guard) — users.Phone_Number only changes after the
+    stage='new' code verifies. First-time setup (no number on file) skips the
+    'old' stage. Admins bypass this entirely via PATCH /admin/users/{username}."""
     __tablename__ = "phone_otp"
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(Text, nullable=False, index=True)
     new_number = Column(Text, nullable=False)
     code_hash = Column(Text, nullable=False)
+    stage = Column(Text, nullable=False, server_default=text("'new'"))
     expires_at = Column(DateTime, nullable=False)
     consumed_at = Column(DateTime)
     attempts = Column(Integer, server_default=text('0'))

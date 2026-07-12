@@ -6,9 +6,10 @@ ledger activity (receipts / consumption / returns), SQM done + manpower from
 the Man-Hours module, PR/PO pipeline status, the warehouse delivery plan,
 actions taken vs pending, achievable-SQM capacity from the SME engine
 (READ-ONLY — the frozen estimator data and both engines are untouched), and
-cross-site enquiries. A sibling endpoint renders the same payload as a styled
-multi-sheet Excel workbook (reports.to_xlsx_sheets); PDF is produced
-client-side from the print-styled page.
+cross-site enquiries. Sibling endpoints render the same payload as a styled
+multi-sheet Excel workbook (reports.to_xlsx_sheets) and as a server-rendered
+paginated PDF (exec_pdf.render_exec_pdf — measured tables, nothing cut at
+the page edges).
 
 Scope: require_roles("hod") — hod + admin, the same lock as Man-Hours/SME.
 HODs are pinned to their site; admins may pass ?site_id= or omit it for all
@@ -420,4 +421,21 @@ async def executive_summary_xlsx(date_from: str | None = Query(None),
     return StreamingResponse(
         io.BytesIO(blob),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@router.get("/executive-summary/export.pdf", summary="Executive summary (PDF)")
+async def executive_summary_pdf(date_from: str | None = Query(None),
+                                date_to: str | None = Query(None),
+                                site_id: str | None = Query(None),
+                                user: dict = Depends(require_roles("hod")),
+                                session: AsyncSession = Depends(get_session)):
+    from .exec_pdf import render_exec_pdf
+    dfrom, dto = _resolve_range(date_from, date_to)
+    site = _resolve_site(user, site_id)
+    d = await _build_summary(session, site=site, dfrom=dfrom, dto=dto, detail_limit=500)
+    blob = render_exec_pdf(d, site=site, username=user["username"])
+    fname = f"executive_summary_{(site or 'ALL')}_{dfrom}_{dto}.pdf"
+    return StreamingResponse(
+        io.BytesIO(blob), media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'})

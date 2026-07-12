@@ -9,6 +9,7 @@ import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import { useBins, useBulkEntry, useCategories, useList, useSites } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
+import DeliveryPrefRadio from '../components/DeliveryPrefRadio'
 import ItemSnapshot from '../components/ItemSnapshot'
 import QrScanner from '../components/QrScanner'
 import { BARCODE_FORMATS, matchScanToSap } from '../lib/barcode'
@@ -246,9 +247,12 @@ export default function IssuePage() {
       <Card
         title={`Batch (${staged.length} line${staged.length === 1 ? '' : 's'})`}
         extra={
-          <Button type="primary" disabled={!staged.length} loading={bulk.isPending} onClick={submitBatch}>
-            Submit batch to HOD
-          </Button>
+          <Space size={16} wrap>
+            <DeliveryPrefRadio />
+            <Button type="primary" disabled={!staged.length} loading={bulk.isPending} onClick={submitBatch}>
+              Submit batch to HOD
+            </Button>
+          </Space>
         }
       >
         <Table<StagedRow> size="small" rowKey="_uid" columns={columns} dataSource={staged}

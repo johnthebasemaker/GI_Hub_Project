@@ -48,8 +48,16 @@ recipient (critical alerts always immediate). Operator TODO: approve
 `WHATSAPP_WEBHOOK_VERIFY_TOKEN`/`WHATSAPP_APP_SECRET` + subscribe the webhook
 URL in Meta.
 Gates green:
-`service_tests` **587/0**, `parity_check` **5/5**, `bug_check` **599/0**,
-`parity:sme` **509**, frontend build ✅, alembic single head **c3a9d51e42b0**.
+`service_tests` **591/0**, `parity_check` **5/5**, `bug_check` **599/0**,
+`parity:sme` **509**, frontend build ✅, alembic single head **d6b0e72f51a8**.
+UAT round 2 (2026-07-12): the Executive Summary PDF is now SERVER-rendered
+(`exec_pdf.py`, fpdf2 — measured tables, nothing cut at page edges; the
+print-the-webpage approach is gone); the Urgent/Evening delivery toggle moved
+from ProfileModal to the Issue/Receive/Return forms (only transaction posts
+send `X-Delivery-Preference`; profile/OTP calls are always immediate); phone
+changes use a DUAL-OTP flow (`phone_otp.stage`: code 1 → OLD number
+authorizes, code 2 → NEW number proves deliverability before commit;
+first-time setup skips step 1).
 **Phase 7 (WhatsApp), 7b (email) AND
 7c (ubiquitous notifications) are DONE** — native v2 `whatsapp_outbox` +
 `email_outbox` + **a reusable-template layer (`gi_action_required` /
@@ -135,16 +143,17 @@ Streamlit portal — all EIGHT legacy tabs:
   `progress-list`/`production-log`, plan-export key `overview`.
 
 ### E. Gates (all green, current)
-`service_tests` **587/0** (360 at freeze → +227 across freeze-lift suites
+`service_tests` **591/0** (360 at freeze → +231 across freeze-lift suites
 H–AC: SLA tracker, submission intel, bulk entry, reschedule, force-close, manual
 PO, rate-limiter IP, reporting/dashboard, DN approval, supervisor parity, entry
 guards, vendor-returns, PR line-edit/rename, lot lifecycle, WhatsApp outbox,
 email outbox, phone OTP **+ Meta sandbox #131030 graceful-degradation +
 OTP-to-old-number**, **loan notifications + timezone (Y)**, **search/PR
 browse (Z)**, **22-pathway notification QA (AA)**, **inbound webhook + dynamic
-delivery/evening digest (AB)**, **HOD executive summary (AC)**) · `bug_check` **599/0** ·
+delivery/evening digest (AB)**, **HOD executive summary + server PDF (AC)**,
+**dual-OTP phone change (X)**) · `bug_check` **599/0** ·
 `parity_check` **5/5** · `parity:sme`
-**509** · frontend build ✅ · `alembic check` clean (single head **b8d2f4a61c07**) ·
+**509** · frontend build ✅ · `alembic check` clean (single head **d6b0e72f51a8**) ·
 dual_ci mirror consistent. Schema additions since day one: `auth_sessions`,
 `ai_jobs`, `sla_dismissals`, `users.Location`/`pending_users.Location`,
 `whatsapp_outbox` (Phase 7), `email_outbox` (Phase 7b), `phone_otp`

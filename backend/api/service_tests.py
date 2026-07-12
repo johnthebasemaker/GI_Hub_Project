@@ -3614,9 +3614,10 @@ async def test_phone_otp():
             # stored canonical = strict E.164 WITH the leading '+').
             r = await ac.post("/auth/phone/request-otp", headers={**H(worker_t), **_ip},
                               json={"new_number": "+1 555-123-4567"})
-            check("otp: request-otp → 200 sent (bootstrap → new number)",
+            check("otp: request-otp → 200 sent (first-time setup skips the old-number stage)",
                   r.status_code == 200 and r.json().get("sent") is True
-                  and r.json().get("sent_to") == "new",
+                  and r.json().get("sent_to") == "new"
+                  and r.json().get("stage") == "new",
                   f"got {r.status_code} {str(r.json())[:120]}")
             async with SessionLocal() as s:
                 pend = (await s.execute(_sel(func.count()).select_from(otp).where(
@@ -3661,20 +3662,40 @@ async def test_phone_otp():
                               json={"new_number": "15551234567", "code": "654321"})
             check("otp: reused code → 404 (already consumed)", r.status_code == 404, f"got {r.status_code}")
 
-            # ── Phase 6 possession proof: with a number ON FILE, the change
-            # code goes to the OLD registered number, not the new one.
+            # ── Dual-OTP change flow: with a number ON FILE, code 1 goes to
+            # the OLD registered number (stage='old'); verifying it does NOT
+            # save anything — it dispatches code 2 to the NEW number
+            # (stage='new'), and only THAT verification commits the change.
             otp_sends.clear()
             r = await ac.post("/auth/phone/request-otp", headers={**H(worker_t), **_ip},
                               json={"new_number": "+1 555 999 8888"})
-            check("otp: change request → code dispatched to the OLD number",
+            check("otp: change request → stage 'old', code dispatched to the OLD number only",
                   r.status_code == 200 and r.json().get("sent_to") == "current"
+                  and r.json().get("stage") == "old"
                   and any(p.get("to") == "15551234567" for p in otp_sends)
                   and not any(p.get("to") == "15559998888" for p in otp_sends),
                   f"got {r.status_code} {str(r.json())[:100]} sends={str(otp_sends)[:120]}")
             r = await ac.post("/auth/phone/verify-otp", headers={**H(worker_t), **_ip},
                               json={"new_number": "+15559998888", "code": "654321"})
-            check("otp: code from the old device commits the new number",
-                  r.status_code == 200 and r.json().get("phone_number") == "+15559998888",
+            j = r.json()
+            check("otp: old-device code authorizes → NOT saved yet, code 2 → NEW number",
+                  r.status_code == 200 and j.get("updated") is False
+                  and j.get("stage") == "new" and j.get("sent") is True
+                  and any(p.get("to") == "15559998888" for p in otp_sends),
+                  f"got {r.status_code} {str(j)[:140]} sends={str(otp_sends)[:140]}")
+            r = await ac.get("/auth/phone", headers=H(worker_t))
+            check("otp: number UNCHANGED until the new device verifies",
+                  r.json().get("phone_number") == "+15551234567", str(r.json())[:120])
+            async with SessionLocal() as s:
+                st = (await s.execute(_sel(otp.c["stage"]).where(
+                    (otp.c["username"] == "worker") & otp.c["consumed_at"].is_(None))
+                    .order_by(otp.c["id"].desc()).limit(1))).scalar_one()
+            check("otp: active code row is stage='new'", st == "new", f"stage={st}")
+            r = await ac.post("/auth/phone/verify-otp", headers={**H(worker_t), **_ip},
+                              json={"new_number": "+15559998888", "code": "654321"})
+            check("otp: new-device code commits the new number",
+                  r.status_code == 200 and r.json().get("updated") is True
+                  and r.json().get("phone_number") == "+15559998888",
                   f"got {r.status_code} {str(r.json())[:120]}")
 
             # ── Meta sandbox restriction (#131030) is handled gracefully ─────
@@ -4548,6 +4569,19 @@ async def test_executive_summary():
               r.status_code == 200 and r.content[:2] == b"PK"
               and "executive_summary_" in cd and cd.endswith('.xlsx"'),
               f"got {r.status_code} {len(r.content)}b cd={cd[:80]}")
+
+        # PDF export: server-rendered (fpdf2) — valid PDF magic, >1 page for a
+        # full-year window, attachment filename. (Replaces the print-the-page
+        # approach the HOD rejected in UAT.)
+        r = await ac.get("/hod/executive-summary/export.pdf", headers=H,
+                         params={"date_from": DF, "date_to": DT})
+        cd = r.headers.get("content-disposition", "")
+        pages = r.content.count(b"/Type /Page") - r.content.count(b"/Type /Pages")
+        check("exec: PDF export → valid paginated PDF + filename",
+              r.status_code == 200 and r.content[:5] == b"%PDF-" and pages >= 1
+              and r.headers.get("content-type") == "application/pdf"
+              and "executive_summary_" in cd and cd.endswith('.pdf"'),
+              f"got {r.status_code} {len(r.content)}b pages={pages} cd={cd[:80]}")
 
     # SME capacity rollup — synthetic model, strict-bottleneck expectation:
     # unit remaining 100 SQM, two materials at 50% and 100% coverage → the

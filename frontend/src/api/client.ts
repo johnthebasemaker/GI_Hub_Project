@@ -18,10 +18,13 @@ export function getAuthToken(): string | null {
   return _token
 }
 
-// --- WhatsApp delivery preference (Phase 6) -----------------------------------
+// --- WhatsApp delivery preference (Phase 6, refined post-UAT) ------------------
 // "urgent" (default) = WhatsApp alerts send immediately; "evening" = staged and
-// batched into one 16:00 digest. Sent as a header on every write so the backend
-// dispatch() picks it up without per-endpoint plumbing.
+// batched into one 16:00 digest. The X-Delivery-Preference header is sent ONLY
+// by the material-transaction mutations (issue / receive / return) — see
+// deliveryHeaders() below. Profile changes and OTP requests never carry it, so
+// they always bypass the digest queue. localStorage just keeps the form
+// selector sticky across the three entry pages.
 export const DELIVERY_PREF_KEY = 'gi-delivery-pref'
 
 export function getDeliveryPreference(): 'urgent' | 'evening' {
@@ -33,10 +36,15 @@ export function setDeliveryPreference(pref: 'urgent' | 'evening') {
   else localStorage.removeItem(DELIVERY_PREF_KEY)
 }
 
+// Headers for a transaction POST: {} when urgent (backend default) so the
+// header only appears when the user explicitly chose the evening digest.
+export function deliveryHeaders(): Record<string, string> {
+  const pref = getDeliveryPreference()
+  return pref === 'evening' ? { 'X-Delivery-Preference': pref } : {}
+}
+
 api.interceptors.request.use((cfg) => {
   if (_token) cfg.headers.Authorization = `Bearer ${_token}`
-  const pref = getDeliveryPreference()
-  if (pref !== 'urgent') cfg.headers['X-Delivery-Preference'] = pref
   return cfg
 })
 

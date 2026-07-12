@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Row, Select, Typography } from 'antd'
+import { App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Row, Select, Space, Typography } from 'antd'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import { useCategories, useList, useReturnEntry, useSites } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
+import DeliveryPrefRadio from '../components/DeliveryPrefRadio'
 import ItemSnapshot from '../components/ItemSnapshot'
 import { loadDefaults, saveDefaults } from '../lib/smartDefaults'
 
@@ -114,7 +115,10 @@ export default function ReturnPage() {
             </Col>
           </Row>
           <Form.Item name="Remarks" label="Remarks"><Input.TextArea rows={2} /></Form.Item>
-          <Button type="primary" htmlType="submit" loading={ret.isPending}>Post return</Button>
+          <Space size={16} wrap>
+            <Button type="primary" htmlType="submit" loading={ret.isPending}>Post return</Button>
+            <DeliveryPrefRadio />
+          </Space>
         </Form>
       </Card>
     </div>

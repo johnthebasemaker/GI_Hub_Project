@@ -1,17 +1,18 @@
 import { useEffect, useState } from 'react'
-import { App, Alert, Button, Form, Input, Modal, Segmented, Space, Typography } from 'antd'
+import { App, Alert, Button, Form, Input, Modal, Space, Steps, Typography } from 'antd'
 import { MobileOutlined, SafetyOutlined } from '@ant-design/icons'
 import { useMyPhone, useRequestPhoneOtp, useVerifyPhoneOtp } from '../api/hooks'
-import { getDeliveryPreference, setDeliveryPreference } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
 /**
- * Self-service profile modal — lets any user verify a new phone number via a
- * 6-digit WhatsApp OTP. Step 1: enter the new number → a code is sent to the
- * CURRENTLY registered number (possession proof; first-time setup falls back
- * to the new number). Step 2: enter the code → the number is saved. Admins can
- * set numbers directly from User Management, no OTP.
- * Also hosts the WhatsApp delivery preference (urgent vs 16:00 evening digest).
+ * Self-service profile modal — dual-OTP phone change over WhatsApp.
+ * With a number on file: code 1 goes to the OLD (current) number to authorize
+ * the change, then code 2 goes to the NEW number to prove it can actually
+ * receive WhatsApp; the database only updates after code 2 verifies (a typo
+ * can never lock the user out). First-time setup skips code 1. Admins can set
+ * numbers directly from User Management, no OTP. Profile/OTP requests always
+ * send immediately — the WhatsApp delivery preference lives on the material
+ * transaction forms (issue / receive / return), not here.
  */
 export default function ProfileModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { message } = App.useApp()
@@ -21,14 +22,14 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
   const verifyOtp = useVerifyPhoneOtp()
 
   const [step, setStep] = useState<'enter' | 'verify'>('enter')
+  // Which device the pending code went to: 'old' = current number, 'new' = new number.
+  const [stage, setStage] = useState<'old' | 'new'>('new')
   const [newNumber, setNewNumber] = useState('')
   const [code, setCode] = useState('')
-  const [sentTo, setSentTo] = useState<'current' | 'new'>('new')
-  const [deliveryPref, setDeliveryPref] = useState<'urgent' | 'evening'>(getDeliveryPreference())
 
   // Reset the flow + refresh the number every time the modal is (re)opened.
   useEffect(() => {
-    if (open) { setStep('enter'); setNewNumber(''); setCode(''); void refetch() }
+    if (open) { setStep('enter'); setStage('new'); setNewNumber(''); setCode(''); void refetch() }
   }, [open, refetch])
 
   // Strict global format: +<country_code><number> (spaces/dashes tolerated).
@@ -38,10 +39,12 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
     try {
       const res = await requestOtp.mutateAsync(newNumber)
       if (res.sent) {
-        setSentTo(res.sent_to === 'current' ? 'current' : 'new')
-        message.success(res.sent_to === 'current'
-          ? 'Verification code sent to your CURRENT registered number on WhatsApp'
-          : 'Verification code sent via WhatsApp')
+        const st = res.stage === 'old' ? 'old' : 'new'
+        setStage(st)
+        message.success(st === 'old'
+          ? 'Step 1 of 2 — authorization code sent to your CURRENT number on WhatsApp'
+          : 'Verification code sent to the new number via WhatsApp')
+        setCode('')
         setStep('verify')
       } else {
         const detail = (res as { error?: string }).error
@@ -55,12 +58,29 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
   const verify = async () => {
     try {
       const res = await verifyOtp.mutateAsync({ new_number: newNumber, code })
-      message.success(`Phone number updated to ${res.phone_number}`)
-      onClose()
+      if (res.updated) {
+        message.success(`Phone number updated to ${res.phone_number}`)
+        onClose()
+        return
+      }
+      // Stage 1 (old number) passed — a second code is on its way to the NEW number.
+      if (res.sent) {
+        setStage('new')
+        setCode('')
+        message.success('Step 2 of 2 — a second code was sent to the NEW number on WhatsApp')
+      } else {
+        const detail = (res as { error?: string }).error
+        message.warning(detail
+          ? `Authorized, but the code to the new number failed — ${detail}`
+          : 'Authorized, but the code to the new number could not be sent — check the number and restart')
+        setStep('enter')
+      }
     } catch (e: unknown) {
       message.error(errMsg(e) ?? 'Verification failed')
     }
   }
+
+  const twoStep = Boolean(phone) // a number on file means the dual-OTP path
 
   return (
     <Modal open={open} onCancel={onClose} footer={null} title="My profile" destroyOnClose>
@@ -87,7 +107,7 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
               help={newNumber && !validNumber
                 ? 'Use +<country code><number>, e.g. +966512345678'
                 : phone
-                  ? 'Example: +966512345678. To prove it is you, the 6-digit code goes to your CURRENT number on WhatsApp.'
+                  ? 'Two-step verification: a code to your CURRENT number authorizes the change, then a second code verifies the NEW number before it is saved.'
                   : 'Example: +966512345678. A 6-digit code will be sent to this number on WhatsApp.'}>
               <Input prefix={<MobileOutlined />} inputMode="tel" placeholder="+966512345678"
                 value={newNumber} onChange={(e) => setNewNumber(e.target.value)}
@@ -100,10 +120,18 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
           </Form>
         ) : (
           <Form layout="vertical" onFinish={verify}>
+            {twoStep && (
+              <Steps size="small" style={{ marginBottom: 12 }}
+                current={stage === 'old' ? 0 : 1}
+                items={[
+                  { title: 'Authorize', description: 'code to current number' },
+                  { title: 'Verify new', description: 'code to new number' },
+                ]} />
+            )}
             <Alert type="info" showIcon style={{ marginBottom: 12 }}
-              message={sentTo === 'current'
-                ? `Enter the 6-digit code sent to your current number ${phone || ''} on WhatsApp.`
-                : `Enter the 6-digit code sent to ${newNumber} on WhatsApp.`} />
+              message={stage === 'old'
+                ? `Enter the 6-digit code sent to your CURRENT number ${phone || ''} on WhatsApp.`
+                : `Enter the 6-digit code sent to the NEW number ${newNumber} on WhatsApp.`} />
             <Form.Item label="Verification code">
               <Input prefix={<SafetyOutlined />} inputMode="numeric" maxLength={6}
                 placeholder="000000" value={code}
@@ -113,36 +141,12 @@ export default function ProfileModal({ open, onClose }: { open: boolean; onClose
             <Space>
               <Button type="primary" onClick={verify} loading={verifyOtp.isPending}
                 disabled={code.length !== 6}>
-                Verify &amp; save
+                {stage === 'old' ? 'Authorize change' : 'Verify & save'}
               </Button>
               <Button type="link" onClick={() => setStep('enter')}>Use a different number</Button>
             </Space>
           </Form>
         )}
-
-        <div>
-          <Typography.Text type="secondary">WhatsApp delivery preference</Typography.Text>
-          <div style={{ marginTop: 6 }}>
-            <Segmented
-              value={deliveryPref}
-              onChange={(v) => {
-                const pref = v as 'urgent' | 'evening'
-                setDeliveryPref(pref)
-                setDeliveryPreference(pref)
-                message.success(pref === 'evening'
-                  ? 'Non-critical alerts you trigger will be batched into one 16:00 digest'
-                  : 'Alerts you trigger will send immediately')
-              }}
-              options={[
-                { label: 'Urgent (immediate)', value: 'urgent' },
-                { label: 'Evening digest (16:00)', value: 'evening' },
-              ]}
-            />
-          </div>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Critical alerts always send immediately regardless of this setting.
-          </Typography.Text>
-        </div>
       </Space>
     </Modal>
   )

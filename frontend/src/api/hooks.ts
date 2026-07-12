@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api, fetchList } from './client'
+import { api, deliveryHeaders, fetchList } from './client'
 import type { Health, InventorySummary, ListResponse, Row } from './client'
 import type { SmeSnapshot } from '../sme/engine'
 
@@ -87,7 +87,10 @@ function invalidateLedger(qc: ReturnType<typeof useQueryClient>, extra: string[]
 function useLedgerPost(path: string, extra: string[]) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: Row) => api.post(path, body).then((r) => r.data),
+    // Material transactions carry the per-form delivery preference so the
+    // backend can stage "evening" notifications; other endpoints never do.
+    mutationFn: (body: Row) =>
+      api.post(path, body, { headers: deliveryHeaders() }).then((r) => r.data),
     onSuccess: () => invalidateLedger(qc, extra),
   })
 }
@@ -121,7 +124,8 @@ export function useBulkEntry(kind: 'receipt' | 'consumption' | 'return', extra: 
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (rows: Row[]) =>
-      api.post<BulkResult>('/entry/bulk', { kind, rows }).then((r) => r.data),
+      api.post<BulkResult>('/entry/bulk', { kind, rows },
+        { headers: deliveryHeaders() }).then((r) => r.data),
     onSuccess: () => invalidateLedger(qc, extra),
   })
 }
@@ -794,16 +798,18 @@ export function useMyPhone() {
 export function useRequestPhoneOtp() {
   return useMutation({
     mutationFn: (new_number: string) =>
-      api.post<{ sent: boolean; expires_in: number; sent_to?: 'current' | 'new'; error?: string }>('/auth/phone/request-otp', { new_number })
+      api.post<{ sent: boolean; expires_in: number; stage?: 'old' | 'new'; sent_to?: 'current' | 'new'; error?: string }>('/auth/phone/request-otp', { new_number })
         .then((r) => r.data),
   })
 }
 
+// Dual-OTP: verifying a stage='old' code returns updated:false + a second
+// code dispatched to the NEW number; verifying stage='new' commits the number.
 export function useVerifyPhoneOtp() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (v: { new_number: string; code: string }) =>
-      api.post<{ updated: boolean; phone_number: string }>('/auth/phone/verify-otp', v).then((r) => r.data),
+      api.post<{ updated: boolean; phone_number?: string; stage?: 'old' | 'new'; sent?: boolean; error?: string }>('/auth/phone/verify-otp', v).then((r) => r.data),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['/auth/phone'] }) },
   })
 }
@@ -1156,18 +1162,23 @@ export function useExecutiveSummary(params: ExecSummaryParams) {
   })
 }
 
-export async function downloadExecSummaryXlsx(params: ExecSummaryParams) {
-  const res = await api.get('/hod/executive-summary/export.xlsx',
+async function downloadExecSummary(params: ExecSummaryParams, ext: 'xlsx' | 'pdf') {
+  const res = await api.get(`/hod/executive-summary/export.${ext}`,
     { params, responseType: 'blob' })
   const url = URL.createObjectURL(res.data as Blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `executive_summary_${params.site_id || 'ALL'}_${params.date_from}_${params.date_to}.xlsx`
+  a.download = `executive_summary_${params.site_id || 'ALL'}_${params.date_from}_${params.date_to}.${ext}`
   document.body.appendChild(a)
   a.click()
   a.remove()
   URL.revokeObjectURL(url)
 }
+
+export const downloadExecSummaryXlsx = (params: ExecSummaryParams) =>
+  downloadExecSummary(params, 'xlsx')
+export const downloadExecSummaryPdf = (params: ExecSummaryParams) =>
+  downloadExecSummary(params, 'pdf')
 
 // --- SME read-parity (Phase 8) ---------------------------------------------------
 export function useSmeEquipmentReport(siteId?: string) {

@@ -608,16 +608,48 @@ async def get_phone(user: dict = Depends(get_current_user),
     return {"phone_number": (n or None)}
 
 
+async def _issue_phone_code(session: AsyncSession, *, username: str, number: str,
+                            stage: str, send_to: str) -> tuple[bool, str | None]:
+    """Supersede any active code, insert a fresh one for `stage`, and
+    (best-effort) WhatsApp it to `send_to`. Returns (sent, error)."""
+    from .services import whatsapp as wa  # lazy: avoids an auth↔whatsapp import cycle
+    code = _gen_otp()
+    code_hash = bcrypt.hashpw(code.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    expires = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None) + _dt.timedelta(minutes=_OTP_TTL_MIN)
+    # Single active code per user across both stages.
+    await session.execute(update(phone_otp_t).where(
+        (phone_otp_t.c["username"] == username) & phone_otp_t.c["consumed_at"].is_(None)
+    ).values(consumed_at=func.now()))
+    await session.execute(insert(phone_otp_t).values(
+        username=username, new_number=number, code_hash=code_hash,
+        stage=stage, expires_at=expires, attempts=0))
+    # Send is best-effort; the row is committed either way so a transient send
+    # failure doesn't strand the user mid-flow.
+    sent, err = False, None
+    try:
+        res = await wa.send_otp(session, to=send_to, code=code, created_by=username)
+        sent = res.get("status") == "sent"
+        err = res.get("error")
+    except Exception as e:  # noqa: BLE001
+        sent, err = False, str(e)[:200]
+    await session.commit()
+    return sent, err
+
+
 @router.post("/phone/request-otp", summary="Send a 6-digit code to verify a phone change",
              dependencies=[rate_limit(5, 60)])
 async def request_phone_otp(body: PhoneRequestIn, user: dict = Depends(get_current_user),
                             session: AsyncSession = Depends(get_session)):
-    """Phase 6 possession proof: the code is dispatched to the OLD (currently
-    registered) number — only whoever holds the existing device can approve
-    moving the account to a new number (an attacker with a stolen web session
-    can't silently redirect WhatsApp alerts to their own phone). First-time
-    setup (no number on file) has no old device to prove, so the code
-    bootstraps to the new number instead."""
+    """Dual-OTP phone change (UAT refinement).
+    Step A (stage='old'): with a number on file, the first code goes to the
+    OLD (currently registered) number — only whoever holds the existing device
+    can authorize moving the account (a stolen web session can't silently
+    redirect WhatsApp alerts). Verifying it does NOT save anything; it issues
+    a second code to the NEW number (stage='new').
+    Step B (stage='new'): the code proves the NEW number actually receives
+    WhatsApp before it is committed, so a typo can never lock the user out.
+    First-time setup (no number on file) has no old device to prove — it
+    starts directly at stage='new'."""
     from .services import whatsapp as wa  # lazy: avoids an auth↔whatsapp import cycle
     if not wa.enabled():
         # Fail BEFORE creating a code row — nothing to strand, clear guidance.
@@ -627,44 +659,29 @@ async def request_phone_otp(body: PhoneRequestIn, user: dict = Depends(get_curre
     current = ((await session.execute(select(users_t.c["Phone_Number"])
                 .where(users_t.c["username"] == user["username"]))).scalar_one_or_none()
                or "").strip()
-    send_to = current or number
-    code = _gen_otp()
-    code_hash = bcrypt.hashpw(code.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-    expires = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None) + _dt.timedelta(minutes=_OTP_TTL_MIN)
-    # Supersede any earlier un-consumed code for this user (single active code).
-    await session.execute(update(phone_otp_t).where(
-        (phone_otp_t.c["username"] == user["username"]) & phone_otp_t.c["consumed_at"].is_(None)
-    ).values(consumed_at=func.now()))
-    await session.execute(insert(phone_otp_t).values(
-        username=user["username"], new_number=number, code_hash=code_hash,
-        expires_at=expires, attempts=0))
-    # Send is best-effort; the row is committed either way so a transient send
-    # failure doesn't strand the user mid-flow.
-    sent = False
-    err = None
-    try:
-        res = await wa.send_otp(session, to=send_to, code=code, created_by=user["username"])
-        sent = res.get("status") == "sent"
-        err = res.get("error")
-    except Exception as e:  # noqa: BLE001
-        sent, err = False, str(e)[:200]
-    await session.commit()
+    stage = "old" if current else "new"
+    sent, err = await _issue_phone_code(session, username=user["username"],
+                                        number=number, stage=stage,
+                                        send_to=current or number)
     await _audit(session, user["username"], "PHONE_OTP_REQUEST",
-                 f"→ {'old number on file' if current else 'new number (bootstrap)'} sent={sent}")
-    return {"sent": sent, "expires_in": _OTP_TTL_MIN * 60,
+                 f"stage={stage} → {'old number on file' if current else 'new number (first-time)'} sent={sent}")
+    return {"sent": sent, "expires_in": _OTP_TTL_MIN * 60, "stage": stage,
             "sent_to": "current" if current else "new",
             **({} if sent else {"error": err or "send failed"})}
 
 
-@router.post("/phone/verify-otp", summary="Verify the code → save the new number",
+@router.post("/phone/verify-otp", summary="Verify the code → next stage or save the number",
              dependencies=[rate_limit(10, 60)])
 async def verify_phone_otp(body: PhoneVerifyIn, user: dict = Depends(get_current_user),
                            session: AsyncSession = Depends(get_session)):
+    """Dual-OTP: a correct stage='old' code authorizes the change and issues a
+    second code to the NEW number (nothing saved yet); a correct stage='new'
+    code commits users.Phone_Number. See request_phone_otp for the flow."""
     number = _normalize_phone(body.new_number)
     now = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
     row = (await session.execute(select(
         phone_otp_t.c["id"], phone_otp_t.c["code_hash"], phone_otp_t.c["expires_at"],
-        phone_otp_t.c["attempts"]
+        phone_otp_t.c["attempts"], phone_otp_t.c["stage"]
     ).where(
         (phone_otp_t.c["username"] == user["username"])
         & (phone_otp_t.c["new_number"] == number)
@@ -687,9 +704,20 @@ async def verify_phone_otp(body: PhoneVerifyIn, user: dict = Depends(get_current
                               .values(attempts=(row.attempts or 0) + 1))
         await session.commit()
         raise HTTPException(400, "incorrect code")
-    # Correct → consume the code and save the number.
+    # Correct → consume this code.
     await session.execute(update(phone_otp_t).where(phone_otp_t.c["id"] == row.id)
                           .values(consumed_at=func.now()))
+    if (row.stage or "new") == "old":
+        # Step A passed: the old device authorized the change. Now prove the
+        # NEW number can receive WhatsApp before anything is committed.
+        sent, err = await _issue_phone_code(session, username=user["username"],
+                                            number=number, stage="new", send_to=number)
+        await _audit(session, user["username"], "PHONE_OTP_STAGE2",
+                     f"old-number code verified → second code to {number} sent={sent}")
+        return {"updated": False, "stage": "new", "sent": sent, "sent_to": "new",
+                "expires_in": _OTP_TTL_MIN * 60,
+                **({} if sent else {"error": err or "send failed"})}
+    # Step B passed: the new number verified end-to-end — commit it.
     await session.execute(update(users_t).where(users_t.c["username"] == user["username"])
                           .values(Phone_Number=number))
     await session.commit()
