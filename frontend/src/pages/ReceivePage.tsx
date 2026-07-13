@@ -13,7 +13,7 @@ import type { Row as ApiRow } from '../api/client'
 import DeliveryPrefRadio from '../components/DeliveryPrefRadio'
 import DraftBanner from '../components/DraftBanner'
 import EntryDocsUpload from '../components/EntryDocsUpload'
-import type { EntryDoc } from '../components/EntryDocsUpload'
+import type { EntryDoc, OcrDocResult } from '../components/EntryDocsUpload'
 import { useFormDraft } from '../lib/formDraft'
 import ItemSnapshot from '../components/ItemSnapshot'
 import QrScanner from '../components/QrScanner'
@@ -82,6 +82,31 @@ export default function ReceivePage() {
 
   const RESET_FIELDS: (keyof FormValues)[] = ['SAP_Code', 'Quantity', 'Supplier', 'Expiry_Date', 'PR_Number', 'Lot_Number', 'Remarks', 'entry_uom', 'mtc_document_id', 'mtc_number', 'Bin_Location']
 
+  // C3 doc assist: the delivery-note header extracted from the attached
+  // photo. Shared by every line of the batch — merged into each staged row's
+  // `extra` (real receipts columns) on add.
+  const [dnHeader, setDnHeader] = useState<Record<string, string | null> | null>(null)
+  const onOcrResult = (res: OcrDocResult) => {
+    const h = res.header ?? {}
+    setDnHeader(h)
+    const patch: Record<string, unknown> = {}
+    const d = h.Date ? dayjs(String(h.Date)) : null
+    if (d && d.isValid()) patch.Date = d
+    if (h.Mob_From && !form.getFieldValue('Supplier')) patch.Supplier = h.Mob_From
+    // One confidently-matched item and no material picked yet → prefill it.
+    const auto = (res.items ?? []).filter((it) => it.match_state === 'auto')
+    if (auto.length === 1 && !form.getFieldValue('SAP_Code')) {
+      patch.SAP_Code = String(auto[0].SAP_Code)
+      if (auto[0].quantity != null) patch.Quantity = Number(auto[0].quantity)
+    }
+    form.setFieldsValue(patch)
+    const bits = [h.DN_No && `DN ${h.DN_No}`, h.Date, h.Mob_From,
+                  auto.length === 1 && `item ${auto[0].SAP_Code}`].filter(Boolean)
+    message.success(bits.length
+      ? `Read from the note: ${bits.join(' · ')} — fields pre-filled`
+      : 'Document read, but no usable header found — fill the fields manually')
+  }
+
   // Barcode/QR pick: decoded text → SAP code → select it in the form.
   const onScan = (decoded: string) => {
     setScanOpen(false)
@@ -119,6 +144,15 @@ export default function ReceivePage() {
       mtc_document_id: v.mtc_document_id ?? null,
       wbs: v.wbs || null,
       Bin_Location: v.Bin_Location || null,
+      // C3: DN header (if a note was AI-read) rides along as real receipt
+      // columns — server whitelists them via ReceiptIn.extra.
+      ...(dnHeader ? {
+        extra: Object.fromEntries(Object.entries({
+          DN_No: dnHeader.DN_No, Vehicle_No: dnHeader.Vehicle_No,
+          Driver_Name: dnHeader.Driver_Name, Mob_From: dnHeader.Mob_From,
+          Prepared_by: dnHeader.Prepared_by,
+        }).filter(([, v2]) => v2)),
+      } : {}),
     }
     setStaged((prev) => editingUid
       ? prev.map((r) => (r._uid === editingUid ? payload : r))
@@ -160,6 +194,7 @@ export default function ReceivePage() {
       else message.success(`${res.staged} receipt line(s) submitted for HOD approval`)
       setStaged([])
       setDocs([])
+      setDnHeader(null)
       draft.clear()
       form.resetFields(RESET_FIELDS)
     } catch (e) {
@@ -337,7 +372,8 @@ export default function ReceivePage() {
         }
       >
         <EntryDocsUpload docType="receipt" siteId={watchSite}
-          value={docs} onChange={setDocs} required={docsRequired !== false} />
+          value={docs} onChange={setDocs} required={docsRequired !== false}
+          ocrKind="ocr_delivery_note" onOcrResult={onOcrResult} />
         <Table<StagedRow> size="small" rowKey="_uid" columns={columns} dataSource={staged}
           pagination={false}
           locale={{ emptyText: 'No lines yet — add materials above, then submit them all at once.' }} />

@@ -5684,6 +5684,122 @@ async def test_bulk_import():
             await s.commit()
 
 
+async def test_ocr_doc_assist():
+    """Suite AK — parity C3: OCR doc assist on the entry forms
+    (POST /ai/jobs/from-attachment) + ask-data SCHEMA_HINT pins."""
+    import io as _io
+
+    from sqlalchemy import text as _sqt
+
+    from .ai import analytics as _ana
+    from .ai import client as aic
+
+    # ── prompt pins: the NL lane must know the post-injection schema/terms ──
+    for needle in ('"DN_No"', '"Opening_Stock"', "Surface Shields",
+                   "ILIKE 'surface shield%'", '"WBS"', '"Reason"'):
+        check(f"ak: SCHEMA_HINT teaches {needle}", needle in _ana.SCHEMA_HINT)
+
+    def tiny_jpeg() -> bytes:
+        from PIL import Image
+        buf = _io.BytesIO()
+        Image.new("RGB", (32, 32), (200, 180, 40)).save(buf, format="JPEG")
+        return buf.getvalue()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.88"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", json={"username": u, "password": p},
+                              headers=_ip)
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        worker_t = await token("worker", "floor2026")
+        hod_t = await token("hod", "hod2026")
+
+        async def poll(jid):
+            import asyncio as _aio
+            for _ in range(80):
+                r = await ac.get(f"/ai/jobs/{jid}", headers=H(worker_t))
+                j = r.json()
+                if j["status"] in ("done", "error"):
+                    return j
+                await _aio.sleep(0.05)
+            return {"status": "timeout"}
+
+        # attach a photo the normal entry-form way
+        r = await ac.post("/entry/attachments", headers=H(worker_t),
+                          files={"file": ("dn.jpg", tiny_jpeg(), "image/jpeg")},
+                          data={"doc_type": "receipt", "site_id": "CNCEC"})
+        check("ak: photo attachment uploads", r.status_code in (200, 201), f"{r.status_code} {r.text[:100]}")
+        aid = r.json()["id"]
+
+        r = await ac.post("/ai/jobs/from-attachment", headers=H(hod_t),
+                          json={"attachment_id": aid, "kind": "ocr_delivery_note"})
+        check("ak: hod → 403 (SK exact-lock, like the legacy Daily Issue Log)",
+              r.status_code == 403, f"got {r.status_code}")
+        r = await ac.post("/ai/jobs/from-attachment", headers=H(worker_t),
+                          json={"attachment_id": 999999999, "kind": "ocr_delivery_note"})
+        check("ak: unknown attachment → 404", r.status_code == 404, f"got {r.status_code}")
+        r = await ac.post("/ai/jobs/from-attachment", headers=H(worker_t),
+                          json={"attachment_id": aid, "kind": "nope"})
+        check("ak: unknown kind → 422", r.status_code == 422, f"got {r.status_code}")
+
+        real_gen, real_health = aic.generate, aic.health
+        try:
+            async def up_health():
+                return True
+
+            async def fake_models():
+                return [aic.MODEL_VISION, aic.MODEL_CHAT, aic.MODEL_CODER]
+
+            async def fake_vision_dn(model, prompt, **kw):
+                import json as _json
+                return _json.dumps({
+                    "header": {"DN_No": "15733", "Date": "2026-07-13",
+                               "Mob_From": "GI - ABU HADRIYAH",
+                               "Driver_Name": "Imran", "Vehicle_No": "3909",
+                               "Prepared_by": "H", "Mob_To": "CNCEC"},
+                    "items": []})
+            real_list = aic.list_models
+            aic.health, aic.generate, aic.list_models = up_health, fake_vision_dn, fake_models
+            r = await ac.post("/ai/jobs/from-attachment", headers=H(worker_t),
+                              json={"attachment_id": aid, "kind": "ocr_delivery_note"})
+            check("ak: from-attachment job accepted (202)",
+                  r.status_code == 202, f"{r.status_code} {r.text[:120]}")
+            j = await poll(r.json().get("job_id"))
+            check("ak: stored attachment bytes → DN header extracted",
+                  j.get("status") == "done"
+                  and j.get("result", {}).get("header", {}).get("DN_No") == "15733",
+                  str(j)[:160])
+        finally:
+            aic.generate, aic.health, aic.list_models = real_gen, real_health, real_list
+
+        # a PDF attachment can't be OCR'd — friendly 422, not a dead job
+        r = await ac.post("/entry/attachments", headers=H(worker_t),
+                          files={"file": ("note.pdf", b"%PDF-1.4 fake", "application/pdf")},
+                          data={"doc_type": "receipt", "site_id": "CNCEC"})
+        pdf_aid = r.json().get("id")
+        r = await ac.post("/ai/jobs/from-attachment", headers=H(worker_t),
+                          json={"attachment_id": pdf_aid, "kind": "ocr_delivery_note"})
+        check("ak: PDF attachment → friendly 422 (photograph instead)",
+              r.status_code == 422 and "photograph" in r.text.lower(),
+              f"{r.status_code} {r.text[:120]}")
+
+        # cleanup — test attachments + jobs
+        async with SessionLocal() as s:
+            await s.execute(_sqt(
+                "DELETE FROM entry_attachments WHERE id IN (:a, :b)"),
+                {"a": aid, "b": pdf_aid or -1})
+            await s.execute(_sqt(
+                "DELETE FROM ai_jobs WHERE actor='worker' AND kind='ocr_delivery_note' "
+                "AND created_at > NOW() - INTERVAL '10 minutes'"))
+            await s.commit()
+
+
 async def _relax_entry_gates() -> None:
     """Parity A1 — require_entry_documents defaults ON in production. Switch
     it OFF for the functional suites (they submit entries without documents);
@@ -5776,6 +5892,8 @@ async def main() -> int:
     await test_sme_master_crud()
     print("\n AJ. bulk Excel import (dry-run/commit, reconcile)")
     await test_bulk_import()
+    print("\n AK. OCR doc assist (C3) + ask-data prompt pins")
+    await test_ocr_doc_assist()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

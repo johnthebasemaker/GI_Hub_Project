@@ -259,6 +259,48 @@ async def get_ocr_job(job_id: int,
     return out
 
 
+class FromAttachmentIn(BaseModel):
+    attachment_id: int
+    kind: str = "ocr_delivery_note"
+
+
+@router.post("/jobs/from-attachment", status_code=202,
+             summary="Queue a vision-OCR job over an ALREADY-UPLOADED entry "
+                     "attachment (parity C3 — doc assist on the entry forms)")
+async def create_ocr_job_from_attachment(body: FromAttachmentIn,
+                                         user: dict = Depends(require_roles("store_keeper")),
+                                         session: AsyncSession = Depends(get_session)):
+    """The SK just photographed/attached the delivery note for the batch —
+    read the SAME bytes back out of entry_attachments and extract the DN
+    header / consumption rows so the form can auto-fill. No re-upload."""
+    import asyncio as _aio
+    await _require_ocr(session)
+    if body.kind not in ai_jobs.JOB_KINDS:
+        raise HTTPException(422, f"kind must be one of {list(ai_jobs.JOB_KINDS)}")
+    att_t = _MD.tables["entry_attachments"]
+    row = (await session.execute(select(att_t).where(
+        att_t.c["id"] == body.attachment_id))).mappings().first()
+    if row is None:
+        raise HTTPException(404, "attachment not found")
+    # Same authz rule as the attachment download: uploader, or any allowed
+    # role within the attachment's site (admin implicit via require_roles).
+    if user["role"] != "admin" and row["uploaded_by"] != user["username"] \
+            and (user.get("site_id") or "") != (row["Site_ID"] or ""):
+        raise HTTPException(403, "not your attachment")
+    try:
+        prepped = await _aio.to_thread(ocr.prep_image_for_vision, row["file_blob"])
+    except ocr.ImagePrepError:
+        raise HTTPException(422, "This attachment isn't a readable photo "
+                                 "(PDF/XLSX can't be OCR'd here) — photograph "
+                                 "the note instead.")
+    job_id = await ai_jobs.create_job(
+        session, kind=body.kind, actor=user["username"],
+        site_id=(user.get("site_id") or None), image_b64=ai_jobs.to_b64(prepped))
+    await session.commit()
+    ai_jobs.spawn(job_id)
+    return {"job_id": job_id, "status": "queued"}
+
+
 class PasteIn(BaseModel):
     text: str
 

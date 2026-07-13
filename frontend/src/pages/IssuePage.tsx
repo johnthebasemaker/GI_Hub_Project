@@ -12,7 +12,7 @@ import type { Row as ApiRow } from '../api/client'
 import DeliveryPrefRadio from '../components/DeliveryPrefRadio'
 import DraftBanner from '../components/DraftBanner'
 import EntryDocsUpload from '../components/EntryDocsUpload'
-import type { EntryDoc } from '../components/EntryDocsUpload'
+import type { EntryDoc, OcrDocResult } from '../components/EntryDocsUpload'
 import { useFormDraft } from '../lib/formDraft'
 import ItemSnapshot from '../components/ItemSnapshot'
 import QrScanner from '../components/QrScanner'
@@ -89,6 +89,33 @@ export default function IssuePage() {
       message.success(`Scanned: ${sap}`)
     } else {
       message.warning(`No material matches the scanned code "${decoded.slice(0, 60)}"`)
+    }
+  }
+
+  // C3 doc assist: hand-written consumption note → fuzzy-matched rows.
+  // A single confident row pre-fills the form; more rows → point at the
+  // OCR Import page, which stages a whole grid at once.
+  const onOcrResult = (res: OcrDocResult) => {
+    const rows = res.rows ?? []
+    const auto = rows.filter((r) => r.match_state === 'auto')
+    if (auto.length === 1 && !form.getFieldValue('SAP_Code')) {
+      const r = auto[0]
+      setCategory(undefined)
+      form.setFieldsValue({
+        SAP_Code: String(r.SAP_Code),
+        ...(r.quantity != null ? { Quantity: Number(r.quantity) } : {}),
+        ...(r.issued_to ? { Issued_To: String(r.issued_to) } : {}),
+        ...(r.work_type ? { Work_Type: String(r.work_type) } : {}),
+      })
+      message.success(`Read from the note: ${r.SAP_Code} — fields pre-filled`)
+    } else if (rows.length > 1) {
+      message.info(`The note lists ${rows.length} materials — use the OCR Import `
+        + 'page to stage them all at once')
+    } else if (auto.length === 0 && rows.length === 1) {
+      message.warning('Read the note but could not confidently match the '
+        + 'material — pick it manually')
+    } else {
+      message.warning('No consumption rows found on this document')
     }
   }
 
@@ -299,7 +326,8 @@ export default function IssuePage() {
         }
       >
         <EntryDocsUpload docType="consumption" siteId={watchSite}
-          value={docs} onChange={setDocs} required={docsRequired !== false} />
+          value={docs} onChange={setDocs} required={docsRequired !== false}
+          ocrKind="ocr_consumption" onOcrResult={onOcrResult} />
         <Table<StagedRow> size="small" rowKey="_uid" columns={columns} dataSource={staged}
           pagination={false}
           locale={{ emptyText: 'No lines yet — add materials above, then submit them all at once.' }} />

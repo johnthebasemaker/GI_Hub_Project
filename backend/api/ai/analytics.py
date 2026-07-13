@@ -63,12 +63,16 @@ are mixed-case and MUST be double-quoted exactly as shown.
 
 Tables:
 - inventory("SAP_Code" text PK, "Equipment_Description" text, "Material_Code" text,
-    "Category" text, "UOM" text, "Minimum_Qty" float, "Site_ID" text, "Expiry_Date" text)
+    "Category" text, "UOM" text, "Minimum_Qty" float, "Opening_Stock" float,
+    "Site_ID" text, "Expiry_Date" text, "Sl_No" text)
 - receipts(id, "Date" text 'YYYY-MM-DD', "SAP_Code" text, "Quantity" float,
-    "Supplier" text, "Site_ID" text, "PR_Number" text)
+    "Supplier" text, "Site_ID" text, "PR_Number" text, "DN_No" text,
+    "WBS" text, "Vehicle_No" text, "Driver_Name" text, "Mob_From" text)
 - consumption(id, "Date" text 'YYYY-MM-DD', "SAP_Code" text, "Quantity" float,
-    "Work_Type" text, "Issued_To" text, "Site_ID" text)
-- returns(id, "Date" text, "SAP_Code" text, "Quantity" float, "Site_ID" text)
+    "Work_Type" text, "Issued_To" text, "Issued_By" text, "Tank_No" text,
+    "WBS" text, "Site_ID" text)
+- returns(id, "Date" text, "SAP_Code" text, "Quantity" float, "Reason" text,
+    "Site_ID" text)
 - pr_master(id, "PR_Number" text, "SAP_Code" text, "Material_Name" text,
     "Requested_Qty" float, "Site_ID" text, status text, workflow_state text)
 - purchase_orders(id, "PO_Number" text, "PR_Number" text, "Vendor_Name" text,
@@ -77,8 +81,18 @@ Tables:
 Facts:
 - "Date"/"Expiry_Date" are ISO text — compare with e.g.
   "Date" >= (CURRENT_DATE - INTERVAL '30 days')::date::text
-- Live stock per item = SUM(receipts) − SUM(consumption) − SUM(returns).
+- Live stock per item = SUM(receipts) − SUM(consumption) − SUM(returns)
+  ("Opening_Stock" exists but is 0 for every item — the ledger already
+  carries the full history, never add it on top).
 - Join consumption/receipts to inventory on "SAP_Code" for descriptions.
+- "Category" values include 'Surface Shields' (rubber lining materials — the
+  ones that require an MTC certificate on receipt), 'R/L Consumables',
+  'R/L Tools', 'EQUIPMENTS/TOOLS', 'BR CC PU Tools', 'Safety', 'Office',
+  'Electrical Items', 'VEHICLES', 'CONTRACTING SERVICES'. Users may say
+  "surface shield" (singular) — match with "Category" ILIKE 'surface shield%'.
+- "DN_No" is the delivery-note ("DN") number; "WBS" is the work-breakdown
+  code; "Tank_No" identifies the tank an issue was consumed on.
+- "Site_ID" values are short site codes like 'CNCEC' and 'HQ'.
 
 Examples:
 Q: items below minimum stock
@@ -95,6 +109,19 @@ SQL: SELECT "Supplier", COUNT(*) AS orders, SUM("Quantity") AS total_qty
   FROM receipts WHERE "Supplier" IS NOT NULL AND "Supplier" <> ''
   AND "Date" >= (CURRENT_DATE - INTERVAL '90 days')::date::text
   GROUP BY "Supplier" ORDER BY total_qty DESC
+
+Q: what was received on delivery note 15610
+SQL: SELECT r."Date", r."SAP_Code", i."Equipment_Description", r."Quantity",
+  r."Supplier" FROM receipts r JOIN inventory i ON i."SAP_Code" = r."SAP_Code"
+  WHERE r."DN_No" = '15610' ORDER BY r."Date", r."SAP_Code"
+
+Q: surface shields stock by item
+SQL: SELECT i."SAP_Code", i."Equipment_Description",
+  COALESCE((SELECT SUM(r."Quantity") FROM receipts r WHERE r."SAP_Code"=i."SAP_Code"),0)
+  - COALESCE((SELECT SUM(c."Quantity") FROM consumption c WHERE c."SAP_Code"=i."SAP_Code"),0)
+  - COALESCE((SELECT SUM(t."Quantity") FROM returns t WHERE t."SAP_Code"=i."SAP_Code"),0)
+  AS current_stock FROM inventory i
+  WHERE i."Category" ILIKE 'surface shield%' ORDER BY current_stock DESC
 
 Rules: output ONLY the SQL (no fences, no prose). SELECT/WITH only. Always
 double-quote mixed-case identifiers. Add a sensible ORDER BY.
