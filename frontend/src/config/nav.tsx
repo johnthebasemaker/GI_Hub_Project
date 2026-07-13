@@ -20,7 +20,7 @@ import type { ReactNode } from 'react'
 import {
   AlertOutlined, AuditOutlined, BarChartOutlined, CameraOutlined, CarOutlined,
   DashboardOutlined, DatabaseOutlined, ExperimentOutlined, FallOutlined,
-  FieldTimeOutlined, FileProtectOutlined, FileSearchOutlined, FireOutlined,
+  FieldTimeOutlined, FileExcelOutlined, FileProtectOutlined, FileSearchOutlined, FireOutlined,
   FormOutlined, FundProjectionScreenOutlined, InboxOutlined, MessageOutlined, ProfileOutlined,
   SafetyCertificateOutlined, SolutionOutlined, StockOutlined, TeamOutlined,
   ToolOutlined, ControlOutlined, UserAddOutlined,
@@ -104,6 +104,9 @@ export const NAV: NavGroup[] = [
       { key: '/hod/low-stock', label: 'Low Stock', icon: <FallOutlined />, access: { anyRole: ['hod'] } },
       { key: '/hod/prs', label: 'Purchase Requests', icon: <ProfileOutlined />, access: { anyRole: ['hod'] } },
       { key: '/hod/requests', label: 'Cross-Site Requests', icon: <SolutionOutlined />, access: { anyRole: ['hod'] } },
+      // Bulk Excel import — SME kinds for HOD; inventory/ledger cards appear
+      // for admin only (server enforces both).
+      { key: '/bulk-import', label: 'Bulk Excel Import', icon: <FileExcelOutlined />, access: { anyRole: ['hod'] } },
     ],
   },
   {

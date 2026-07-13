@@ -5396,6 +5396,294 @@ async def test_sme_master_crud():
             await s.commit()
 
 
+def _xlsx(sheets: dict[str, list[list]]) -> bytes:
+    """Build a small workbook in memory: {sheet_name: [row, row, …]}."""
+    import io as _io
+
+    import openpyxl as _px
+    wb = _px.Workbook()
+    wb.remove(wb.active)
+    for name, rows in sheets.items():
+        ws = wb.create_sheet(title=name)
+        for row in rows:
+            ws.append(row)
+    buf = _io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+async def test_bulk_import():
+    """Suite AJ — Bulk Excel Import (dry-run/commit, upsert-only, reconcile).
+
+    Hermetic: every workbook is built in memory with unique SVCJ- keys and
+    all committed rows are cleaned up at the end (audit rows stay)."""
+    from sqlalchemy import text as _sqt
+
+    async def _scalar(sql: str, **params):
+        async with SessionLocal() as s:
+            return (await s.execute(_sqt(sql), params)).scalar()
+
+    _INV_HDR = ["Sl. No.", "SAP CODE", "Material Code", "Equipment Description",
+                "UOM", "Category", "Opening Stock", "Receipt", "Consumption",
+                "Return", "Current Stock", "Minimum Qty"]
+    _RCT_HDR = ["Date ", "SAP CODE", "Material Code", "Equipment Description",
+                "UOM", "Qty.", "Serial No.", "PR#", "WBS#", "Location",
+                "Vehicle No.", "Driver Name", "DN. No.", "Pallet No.",
+                "Mob. From", "Prepared by"]
+    _TITLE = ["CNCEC PROJECT Equipement and"]
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.87"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", json={"username": u, "password": p},
+                              headers=_ip)
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        def up(data, name="t.xlsx"):
+            return {"file": (name, data,
+                             "application/vnd.openxmlformats-officedocument"
+                             ".spreadsheetml.sheet")}
+
+        worker_t = await token("worker", "floor2026")
+        hod_t = await token("hod", "hod2026")
+        admin_t = await token("admin", "admin2026")
+
+        # ── guards ──────────────────────────────────────────────────────────
+        wb = _xlsx({"Sheet1": [["Lining_System_Code", "Material_Code", "For_1_SQM"]]})
+        r = await ac.post("/import/sme-recipes", headers=H(worker_t), files=up(wb))
+        check("aj: worker → 403 on SME import", r.status_code == 403, f"got {r.status_code}")
+        r = await ac.post("/import/inventory", headers=H(hod_t), files=up(wb))
+        check("aj: hod → 403 on inventory import (admin-only)",
+              r.status_code == 403, f"got {r.status_code}")
+        r = await ac.post("/import/nope", headers=H(hod_t), files=up(wb))
+        check("aj: unknown kind → 404", r.status_code == 404, f"got {r.status_code}")
+        r = await ac.post("/import/sme-recipes", headers=H(hod_t),
+                          files={"file": ("t.xlsx", b"not a zip", "application/octet-stream")})
+        check("aj: non-xlsx payload → 422", r.status_code == 422, f"got {r.status_code}")
+
+        # ── inventory master: insert + canonicalised category ───────────────
+        mat_1001 = await _scalar(
+            "SELECT \"Material_Code\" FROM inventory WHERE \"SAP_Code\"='1001'")
+        inv_wb = _xlsx({"Inventory": [
+            _TITLE, _INV_HDR,
+            ["901", "SVCJ-1", "GI-SVCJ-1", "SVCJ test item", "EA",
+             "Surface Shield", 3, 0, 0, 0, 3, 1],
+            ["902", "SVCJ-2", mat_1001, "conflict row", "EA", "Office",
+             0, 0, 0, 0, 0, 0],
+        ]})
+        r = await ac.post("/import/inventory", headers=H(admin_t), files=up(inv_wb),
+                          params={"site_id": "CNCEC"})
+        j = r.json() if r.status_code == 200 else {}
+        check("aj: inventory dry-run plans 2 inserts; foreign Material_Code "
+              "dropped with a warning (owner not re-mapped)",
+              r.status_code == 200 and j.get("summary", {}).get("inserts") == 2
+              and not j.get("committed")
+              and any("stays with SAP 1001" in w for w in j.get("warnings", [])),
+              f"{r.status_code} {j.get('summary')} warn={j.get('warnings')}")
+        n = await _scalar("SELECT COUNT(*) FROM inventory WHERE \"SAP_Code\" LIKE 'SVCJ-%'")
+        check("aj: dry-run wrote nothing", n == 0, f"got {n}")
+        r = await ac.post("/import/inventory", headers=H(admin_t), files=up(inv_wb),
+                          params={"site_id": "CNCEC", "commit": "true"})
+        cat = await _scalar(
+            "SELECT \"Category\" FROM inventory WHERE \"SAP_Code\"='SVCJ-1'")
+        check("aj: commit inserts + canonicalises 'Surface Shield' → 'Surface Shields'"
+              " (the MTC gate keeps matching)",
+              r.status_code == 200 and cat == "Surface Shields", f"{r.status_code} cat={cat}")
+        r = await ac.get("/entry/receipt-meta/SVCJ-1", headers=H(worker_t))
+        check("aj: imported Surface-Shields item IS rubber/MTC-gated",
+              r.status_code == 200 and r.json().get("is_rubber") is True, f"{r.text[:100]}")
+        inv_wb2 = _xlsx({"Inventory": [
+            _TITLE, _INV_HDR,
+            ["901", "SVCJ-1", "GI-SVCJ-1", "SVCJ test item", "EA",
+             "Surface Shield", 3, 0, 0, 0, 3, 7],
+        ]})
+        r = await ac.post("/import/inventory", headers=H(admin_t), files=up(inv_wb2),
+                          params={"site_id": "CNCEC", "commit": "true"})
+        mq = await _scalar(
+            "SELECT \"Minimum_Qty\" FROM inventory WHERE \"SAP_Code\"='SVCJ-1'")
+        check("aj: re-import updates changed fields only (Minimum_Qty 1→7)",
+              r.status_code == 200 and abs(float(mq) - 7) < 1e-9, f"{r.status_code} mq={mq}")
+
+        # ── ledger reconcile: insert → exact-skip → qty correction ──────────
+        led_wb = _xlsx({"Receipt Log": [
+            _TITLE, _RCT_HDR,
+            ["2026-07-01 00:00:00", "SVCJ-1", "GI-SVCJ-1", "SVCJ test item",
+             "EA", 5, None, None, None, None, None, None, "SVCJ-DN1", None, None, "svc"],
+            ["2026-07-02 00:00:00", "SVCJ-NOPE", None, None, "EA", 1,
+             None, None, None, None, None, None, "SVCJ-DN2", None, None, "svc"],
+            ["2026-07-03 00:00:00", "SVCJ-1", None, None, "EA", 0,
+             None, None, None, None, None, None, "SVCJ-DN3", None, None, "svc"],
+        ]})
+        r = await ac.post("/import/ledger", headers=H(admin_t), files=up(led_wb),
+                          params={"site_id": "CNCEC", "commit": "true"})
+        j = r.json() if r.status_code == 200 else {}
+        sec = j.get("summary", {}).get("receipts", {})
+        check("aj: ledger commit — 1 insert, 1 orphan-SAP reject, 1 zero-skip",
+              r.status_code == 200 and sec.get("inserts") == 1
+              and sec.get("zero_skipped") == 1 and len(j.get("rejects", [])) == 1,
+              f"{r.status_code} {sec} rejects={len(j.get('rejects', []))}")
+        r = await ac.post("/import/ledger", headers=H(admin_t), files=up(led_wb),
+                          params={"site_id": "CNCEC", "commit": "true"})
+        sec = (r.json().get("summary", {}) or {}).get("receipts", {})
+        check("aj: re-import is idempotent (exact multiset match, 0 inserts)",
+              sec.get("inserts") == 0 and sec.get("matched") == 1, f"{sec}")
+        led_wb2 = _xlsx({"Receipt Log": [
+            _TITLE, _RCT_HDR,
+            ["2026-07-01 00:00:00", "SVCJ-1", None, None, "EA", 3,
+             None, None, None, None, None, None, "SVCJ-DN1", None, None, "svc"],
+        ]})
+        r = await ac.post("/import/ledger", headers=H(admin_t), files=up(led_wb2),
+                          params={"site_id": "CNCEC", "commit": "true"})
+        sec = (r.json().get("summary", {}) or {}).get("receipts", {})
+        qty = await _scalar(
+            "SELECT \"Quantity\" FROM receipts WHERE \"DN_No\"='SVCJ-DN1'")
+        check("aj: workbook qty change lands as a CORRECTION (5→3), not a dup row",
+              sec.get("corrections") == 1 and abs(float(qty) - 3) < 1e-9,
+              f"{sec} qty={qty}")
+        n = await _scalar("SELECT COUNT(*) FROM receipts WHERE \"DN_No\" LIKE 'SVCJ-%'")
+        check("aj: exactly one SVCJ ledger row exists after all passes", n == 1, f"got {n}")
+
+        # ── sme-equipment: area aggregation + Name identity + Done preserved ─
+        _EQ_HDR = ["Sl. #", "Project", "WBS #", "Sub_Location", "Location",
+                   "Type", "Substrate", "Equipment_Tag_No.", "Name", "Drawing #",
+                   "Design", "Dia / L", "Ht. /W", "Equipment Total SQM",
+                   "Remaraks", "Lining_System_Code", "Lining_System_Short_Name",
+                   "Lining_Type", "Lining_System", "Material Spec.",
+                   "Lining_Area/location", "Surface_Area_SQM"]
+
+        def eq_rows(sqm_a, sqm_b):
+            return [_EQ_HDR,
+                    ["1", "SVCJ", None, None, "BROWN FIELD", "ME", "TANK",
+                     "SVCJ-T1", "svc tank", None, None, None, None, 25, None,
+                     "9905", "SVCJ30", None, None, None, "Bottom", sqm_a],
+                    ["2", "SVCJ", None, None, "Brown Field ", "ME", "TANK",
+                     "SVCJ-T1", "svc tank", None, None, None, None, 25, None,
+                     "9905", "SVCJ30", None, None, None, "Shell", sqm_b],
+                    ["3", "SVCJ", None, None, "TRAIN J", "CIVIL", "AREA",
+                     None, "SVCJ Area", None, None, None, None, 5, None,
+                     "9906", None, None, None, None, None, 5],
+                    ["4", "SVCJ", None, None, "TRAIN J", "ME", "TANK",
+                     "SVCJ-T2", "tbc tank", None, None, None, None, 1, None,
+                     "To_Be_Confirmed_LSC", None, None, None, None, None, 1]]
+
+        eq_wb = _xlsx({"Data Input": eq_rows(10, 15)})
+        r = await ac.post("/import/sme-equipment", headers=H(hod_t), files=up(eq_wb),
+                          params={"commit": "true"})
+        j = r.json() if r.status_code == 200 else {}
+        sqm = await _scalar(
+            "SELECT \"Surface_Area_SQM\" FROM sme_equipment "
+            "WHERE \"Equipment_Tag_No\"='SVCJ-T1' AND \"Lining_System_Code\"='9905'")
+        loc = await _scalar(
+            "SELECT \"Location\" FROM sme_equipment WHERE \"Equipment_Tag_No\"='SVCJ-T1'")
+        check("aj: equipment area rows aggregate (10+15=25) + Location canonicalised",
+              r.status_code == 200 and sqm is not None and abs(float(sqm) - 25) < 1e-9
+              and loc == "Brown Field", f"{r.status_code} sqm={sqm} loc={loc}")
+        name_row = await _scalar(
+            "SELECT COUNT(*) FROM sme_equipment WHERE \"Equipment_Tag_No\"='SVCJ Area'")
+        tbc = await _scalar(
+            "SELECT COUNT(*) FROM sme_equipment WHERE \"Equipment_Tag_No\"='SVCJ-T2'")
+        check("aj: Name-identity area imported; non-numeric code row skipped",
+              name_row == 1 and tbc == 0, f"area={name_row} tbc={tbc}")
+        prog = await _scalar(
+            "SELECT \"Original_SQM\" FROM sme_sqm_progress "
+            "WHERE \"Equipment_Tag_No\"='SVCJ-T1' AND \"Lining_System_Code\"='9905'")
+        check("aj: import seeds the SQM-progress baseline",
+              prog is not None and abs(float(prog) - 25) < 1e-9, f"got {prog}")
+        async with SessionLocal() as s:  # simulate real progress before re-import
+            await s.execute(_sqt(
+                "UPDATE sme_sqm_progress SET \"Done_SQM\"=4 "
+                "WHERE \"Equipment_Tag_No\"='SVCJ-T1' AND \"Lining_System_Code\"='9905'"))
+            await s.commit()
+        eq_wb2 = _xlsx({"Data Input": eq_rows(12, 18)})
+        r = await ac.post("/import/sme-equipment", headers=H(hod_t), files=up(eq_wb2),
+                          params={"commit": "true"})
+        row = None
+        async with SessionLocal() as s:
+            row = (await s.execute(_sqt(
+                "SELECT \"Original_SQM\", \"Done_SQM\" FROM sme_sqm_progress "
+                "WHERE \"Equipment_Tag_No\"='SVCJ-T1' AND \"Lining_System_Code\"='9905'"
+            ))).first()
+        check("aj: re-import re-baselines Original_SQM (30) and PRESERVES Done_SQM (4)",
+              r.status_code == 200 and row is not None
+              and abs(float(row[0]) - 30) < 1e-9 and abs(float(row[1]) - 4) < 1e-9,
+              f"{r.status_code} row={tuple(row) if row else None}")
+
+        # ── sme-recipes ──────────────────────────────────────────────────────
+        rec_hdr = ["Sl. #", "Lining_System_Code", "Substrate", "Lining_System",
+                   "System Key's", "Lining_Thicknes", "Lining_System_Short_Name",
+                   "Lining_Type", "Material_Code", "Material_Description",
+                   "Material_Name", "For_1_SQM", "UOM", "PACKAGE SIZE"]
+        rec_wb = _xlsx({"LINING SYSTEM MATERIAL CONSM": [
+            rec_hdr,
+            ["1", "9905", "Steel", "SVCJ Lining", "SVCJ", "30 mm", "SVCJ30",
+             "Brick", "SVCJ-MAT-1", "Primer", "SVCJ Primer", 2.5, "KG", "25"],
+            ["2", "9905", "Steel", "SVCJ Lining", "SVCJ", "30 mm", "SVCJ30",
+             "Brick", "SVCJ-MAT-1", "dup", "dup", 9, "KG", "25"],
+        ]})
+        r = await ac.post("/import/sme-recipes", headers=H(hod_t), files=up(rec_wb),
+                          params={"commit": "true"})
+        j = r.json() if r.status_code == 200 else {}
+        got = await _scalar(
+            "SELECT \"For_1_SQM\" FROM sme_recipe WHERE \"Material_Code\"='SVCJ-MAT-1'")
+        check("aj: recipe import inserts once; in-file repeat skipped first-wins",
+              r.status_code == 200 and j["summary"]["inserts"] == 1
+              and abs(float(got) - 2.5) < 1e-9
+              and any("first occurrence wins" in w for w in j.get("warnings", [])),
+              f"{r.status_code} {j.get('summary')} warn={j.get('warnings')} got={got}")
+        n2 = await _scalar(
+            "SELECT COUNT(*) FROM sme_recipe WHERE \"Material_Code\" LIKE 'SVCJ-%'")
+        check("aj: comma-split + first-wins leaves exactly one SVCJ recipe row",
+              n2 == 1, f"got {n2}")
+
+        # ── sme-materials: PO lines aggregate on Material_Code ──────────────
+        mat_hdr = ["Item", "Vendor/supplying plant", "Purchasing Document",
+                   "Document Date", "Material_Code", "Material_Name", "Nature",
+                   "UOM", "Available_Qty", "Ordered_Qty"]
+        mat_wb = _xlsx({"Materials": [
+            mat_hdr,
+            ["1", "SVCJ Vendor", "4700000001", "2026-01-05", "SVCJ-MAT-1",
+             "SVCJ Primer", "Liquid", "KG", 100, 40],
+            ["2", "SVCJ Vendor", "4700000002", "2026-02-05", "SVCJ-MAT-1",
+             "SVCJ Primer", "Liquid", "KG", 30, None],
+        ]})
+        r = await ac.post("/import/sme-materials", headers=H(hod_t), files=up(mat_wb),
+                          params={"commit": "true"})
+        row = None
+        async with SessionLocal() as s:
+            row = (await s.execute(_sqt(
+                "SELECT \"Initial_Available_Qty\", \"Initial_Ordered_Qty\", "
+                "\"Document_Date\" FROM sme_inventory_seed "
+                "WHERE \"Material_Code\"='SVCJ-MAT-1'"))).first()
+        check("aj: materials PO lines aggregate (130/40) + latest Document_Date wins",
+              r.status_code == 200 and row is not None
+              and abs(float(row[0]) - 130) < 1e-9 and abs(float(row[1]) - 40) < 1e-9
+              and str(row[2]) == "2026-02-05", f"{r.status_code} row={tuple(row) if row else None}")
+
+        audits = await _scalar(
+            "SELECT COUNT(DISTINCT action_type) FROM system_audit_log "
+            "WHERE action_type LIKE 'BULK_IMPORT_%'")
+        check("aj: every committed kind wrote its audit action", audits >= 4, f"got {audits}")
+
+        # cleanup — every SVCJ- artifact (audit rows stay, append-only contract)
+        async with SessionLocal() as s:
+            await s.execute(_sqt("DELETE FROM receipts WHERE \"DN_No\" LIKE 'SVCJ-%'"))
+            await s.execute(_sqt("DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SVCJ-%'"))
+            await s.execute(_sqt(
+                "DELETE FROM sme_sqm_progress WHERE \"Equipment_Tag_No\" LIKE 'SVCJ%'"))
+            await s.execute(_sqt(
+                "DELETE FROM sme_equipment WHERE \"Equipment_Tag_No\" LIKE 'SVCJ%'"))
+            await s.execute(_sqt(
+                "DELETE FROM sme_recipe WHERE \"Material_Code\" LIKE 'SVCJ-%'"))
+            await s.execute(_sqt(
+                "DELETE FROM sme_inventory_seed WHERE \"Material_Code\" LIKE 'SVCJ-%'"))
+            await s.commit()
+
+
 async def _relax_entry_gates() -> None:
     """Parity A1 — require_entry_documents defaults ON in production. Switch
     it OFF for the functional suites (they submit entries without documents);
@@ -5486,6 +5774,8 @@ async def main() -> int:
     await test_entry_documents()
     print("\n AI. SME S6 master-data CRUD (cutover day)")
     await test_sme_master_crud()
+    print("\n AJ. bulk Excel import (dry-run/commit, reconcile)")
+    await test_bulk_import()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

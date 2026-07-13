@@ -62,6 +62,7 @@ from .receiving import router as receiving_router  # noqa: E402
 from .requests import router as requests_router  # noqa: E402
 from .sme import router as sme_router  # noqa: E402
 from .sme_master import router as sme_master_router  # noqa: E402
+from .bulk_import import router as bulk_import_router  # noqa: E402
 from .stock import router as stock_router  # noqa: E402
 from .warehouse import router as warehouse_router  # noqa: E402
 from .dashboard import router as dashboard_router  # noqa: E402
@@ -223,6 +224,10 @@ app.include_router(sme_router)
 
 # SME Phase S6 (cutover day) — Master Data CRUD, exact-lock {hod, admin}.
 app.include_router(sme_master_router)
+
+# Bulk Excel import — dry-run/commit upserts for inventory + SME masters
+# (self-guarded: SME kinds {hod, admin}; inventory/ledger admin-only).
+app.include_router(bulk_import_router)
 
 # Admin console — user management + audit-log viewer (self-guarded, admin only).
 app.include_router(admin_router)
