@@ -30,6 +30,14 @@ and verifies 5 semantic aggregates; the production cutover script is
 `tools/migration/cutover_migrate.py` (sync psycopg2 URL, `--strict --wipe`;
 asyncpg URLs fail with MissingGreenlet by design). After every mirror reload,
 re-run `backend/scripts/create_ai_readonly_role.sql` (grants get wiped).
+**⚠️ 2026-07-13 Excel injection: PostgreSQL is now AHEAD of the frozen SQLite**
+(CNCEC workbook sync: inventory 306→436, full ledger backfill, stock verified
+423/423 vs the workbook). A `dual_ci`/cutover reload from `gi_database.db`
+WIPES that data — after ANY reload you must re-run
+`tools/excel_sync.py --commit` + `tools/excel_sync_reconcile.py --commit`
+(same on the production box after the final load; the runbook says so).
+Consequently `tools/parity_check.py` now fails against the live mirror BY
+DESIGN (it's only meaningful on CI or a freshly-reloaded mirror).
 
 ## 2. Backend map (`backend/api/`)
 

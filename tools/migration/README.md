@@ -37,6 +37,18 @@ Exit code `0` only when every blocking check passes.
 5. **Manual follow-ups** (the script reminds you):
    - `psql … -f scripts/create_ai_readonly_role.sql` (re-run after ANY reload —
      the REVOKEs are wiped by a wipe-load),
+   - **⚠️ 2026-07-13 Excel data injection** — the CNCEC workbook data
+     (inventory 306→436 + full ledger backfill + SME master refresh) lives
+     ONLY in PostgreSQL, never in `gi_database.db`. After the load, re-run it
+     against the target (needs the four workbooks from the operator):
+
+     ```bash
+     DATABASE_URL=… .venv/bin/python tools/excel_sync.py \
+         --dir <dir-with-the-4-xlsx> --site CNCEC --commit
+     DATABASE_URL=… .venv/bin/python tools/excel_sync_reconcile.py \
+         --workbook <dir>/CNCEC_Inventory.xlsx --commit
+     ```
+     and confirm the closing line reads `STOCK VERIFICATION: 423/423`.
    - `VACUUM ANALYZE;`,
    - confirm `deploy/.env` secrets on the server (`JWT_SECRET`, `WHATSAPP_*`,
      `SMTP_*`, `EMAIL_LOGISTICS_TO`).
