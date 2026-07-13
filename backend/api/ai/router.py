@@ -26,7 +26,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import get_current_user, require_level, require_roles
+from ..auth import get_current_user, require_level, require_roles, site_scope
 from ..db import SessionLocal, get_session
 from ..services.ledger import _MD
 from ..services.procurement import classify_rl_bl_family
@@ -332,6 +332,52 @@ async def nl_search(body: NlSearchIn = Body(...),
     if not body.question.strip():
         raise HTTPException(422, "ask a question")
     return await analytics.run_nl_query(body.question.strip())
+
+
+# --- Phase C: "Chat with your data" ------------------------------------------------
+# Two-lane router (see ai/query_router.py): deterministic site-scoped SQL
+# templates for everyone level ≥2 (works with AI switched off / Ollama down),
+# then the existing NL→SQL lane as a fallback for UNSCOPED roles only — the
+# AI-5 scoping ruling stands: generated SQL is never run for a scoped user.
+from . import query_router as qr
+
+
+class DataQueryIn(BaseModel):
+    question: str
+
+
+@router.get("/query/examples", summary="Example questions for the Ask-your-data card")
+async def query_examples(user: dict = Depends(require_level(2))):
+    return {"examples": qr.EXAMPLES}
+
+
+@router.post("/query", summary="Chat with your data — template router + NL fallback (level ≥2)")
+async def data_query(body: DataQueryIn = Body(...),
+                     user: dict = Depends(require_level(2)),
+                     session: AsyncSession = Depends(get_session)):
+    q = body.question.strip()
+    if not q:
+        raise HTTPException(422, "ask a question")
+    scope = site_scope(user)
+    known_sites: list[str] = []
+    if scope is None:
+        col = inventory_t.c["Site_ID"]
+        res = await session.execute(select(func.distinct(col)).where(col.isnot(None)))
+        known_sites = [r[0] for r in res.all()]
+
+    templ = await qr.run_query(session, q, site_scope=scope, known_sites=known_sites)
+    if templ is not None:
+        return templ
+
+    flags = await _flags(session)
+    if scope is None and user["level"] >= 3 and flags["ai_enabled"] and flags["ai_nl_search_enabled"]:
+        out = await analytics.run_nl_query(q)
+        out["mode"] = "nl"
+        return out
+
+    return {"ok": False, "mode": "template", "sql": "", "columns": [], "rows": [],
+            "message": "I couldn't map that question to your data. Try one of the examples.",
+            "examples": qr.EXAMPLES}
 
 
 @router.post("/insights", summary="AI insights — 5 SQL probes + streamed commentary")

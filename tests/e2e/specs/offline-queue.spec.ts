@@ -15,6 +15,9 @@ test('offline entry queues, badges, and syncs on reconnect', async ({ page, cont
   const supplier = `OFFL${Date.now()}`
   await page.goto('/entry/receive')
   await page.waitForFunction(() => '__giOffline' in window)
+  // the badge lives in the app header — make sure the layout is mounted (and
+  // its queue listeners attached) before we cut the network
+  await expect(page.getByRole('button', { name: /sign out/i })).toBeVisible()
 
   await context.setOffline(true)
   const queued = await page.evaluate(

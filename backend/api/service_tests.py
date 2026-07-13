@@ -4604,6 +4604,120 @@ async def test_executive_summary():
           f"eq={eq} sy={sy}")
 
 
+
+async def test_data_query():
+    """Phase C — chat-with-your-data (/ai/query). The template lane must be
+    deterministic, site-pinned for scoped roles, and independent of Ollama;
+    the NL lane must only ever serve unscoped roles. Read-only."""
+    from datetime import date, timedelta
+    from sqlalchemy import text as _sqt
+    from .ai import analytics as _an
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.104"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+            return r.json().get("access_token")
+
+        hod_t = await token("hod", "hod2026")
+        worker_t = await token("worker", "floor2026")
+        admin_t = await token("admin", "admin2026")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}", **_ip}
+
+        # role gate: store keeper (level 0) is refused
+        r = await ac.post("/ai/query", headers=H(worker_t), json={"question": "stock"})
+        check("query: store keeper → 403", r.status_code == 403, f"{r.status_code}")
+        r = await ac.get("/ai/query/examples", headers=H(worker_t))
+        check("query: examples gated the same way", r.status_code == 403, f"{r.status_code}")
+        r = await ac.get("/ai/query/examples", headers=H(hod_t))
+        check("query: HOD gets example questions",
+              r.status_code == 200 and len(r.json().get("examples", [])) >= 3, f"{r.status_code}")
+
+        async with SessionLocal() as ses:
+            hod_site = (await ses.execute(_sqt(
+                "SELECT COALESCE(\"Site_ID\",'HQ') FROM users WHERE username='hod'"))).scalar_one()
+
+        # template lane: returns, last week, HOD → every row pinned to own site
+        r = await ac.post("/ai/query", headers=H(hod_t),
+                          json={"question": "Show me all material returns from last week"})
+        d = r.json() if r.status_code == 200 else {}
+        site_col = d.get("columns", []).index("site") if "site" in d.get("columns", []) else -1
+        check("query: HOD returns/last-week → template lane, ok",
+              r.status_code == 200 and d.get("ok") is True and d.get("mode") == "template"
+              and d.get("intent") == "returns" and ":site" in d.get("sql", ""),
+              f"{r.status_code} {str(d)[:200]}")
+        check("query: every returned row is the HOD's own site",
+              site_col >= 0 and all(row[site_col] == hod_site for row in d.get("rows", [])),
+              f"site_col={site_col} rows={len(d.get('rows', []))}")
+
+        # naming ANOTHER site must not widen the scope for a scoped role
+        other = "HQ" if hod_site != "HQ" else "CNCEC"
+        r = await ac.post("/ai/query", headers=H(hod_t),
+                          json={"question": f"returns in {other} last week"})
+        d = r.json()
+        rows = d.get("rows", [])
+        sc = d["columns"].index("site") if "site" in d.get("columns", []) else -1
+        check("query: scoped user naming another site stays pinned to their own",
+              d.get("ok") is True and (sc < 0 or all(row[sc] == hod_site for row in rows)),
+              f"{str(d)[:160]}")
+
+        # count/total → metric card, and the numbers equal DB truth exactly
+        r = await ac.post("/ai/query", headers=H(hod_t),
+                          json={"question": "How many issues in the last 30 days?"})
+        d = r.json()
+        dfrom = (date.today() - timedelta(days=30)).isoformat()
+        async with SessionLocal() as ses:
+            truth = (await ses.execute(_sqt(
+                'SELECT COUNT(*), COALESCE(SUM("Quantity"),0) FROM consumption '
+                'WHERE "Date" >= :a AND COALESCE("Site_ID",\'HQ\') = :st'),
+                {"a": dfrom, "st": hod_site})).first()
+        m = d.get("metric") or {}
+        check("query: count question → metric equals DB truth",
+              d.get("ok") is True and m.get("entries") == truth[0]
+              and abs(float(m.get("value", -1)) - float(truth[1])) < 1e-6,
+              f"metric={m} truth={tuple(truth)}")
+
+        # unmatched question, SCOPED role → friendly refusal + examples (never NL)
+        r = await ac.post("/ai/query", headers=H(hod_t),
+                          json={"question": "please summarise everything interesting"})
+        d = r.json()
+        check("query: unmatched + scoped → ok:false with examples, not the NL lane",
+              r.status_code == 200 and d.get("ok") is False and d.get("examples"),
+              f"{str(d)[:160]}")
+
+        # unmatched question, UNSCOPED role → the NL lane is invoked (stubbed)
+        async def _fake_nl(question):
+            return {"ok": True, "sql": "SELECT 1", "columns": ["one"], "rows": [[1]],
+                    "message": "stub", "question": question}
+        orig = _an.run_nl_query
+        _an.run_nl_query = _fake_nl
+        try:
+            r = await ac.post("/ai/query", headers=H(admin_t),
+                              json={"question": "please summarise everything interesting"})
+            d = r.json()
+            check("query: unmatched + admin → NL fallback lane",
+                  r.status_code == 200 and d.get("mode") == "nl" and d.get("ok") is True,
+                  f"{str(d)[:160]}")
+        finally:
+            _an.run_nl_query = orig
+
+        # admin naming a site narrows the template query to it
+        r = await ac.post("/ai/query", headers=H(admin_t),
+                          json={"question": f"receipts in {hod_site} last 90 days"})
+        d = r.json()
+        check("query: admin + site mention → template narrowed to that site",
+              d.get("ok") is True and d.get("mode") == "template"
+              and f"site {hod_site}" in d.get("message", ""), f"{str(d)[:160]}")
+
+        # empty question → 422
+        r = await ac.post("/ai/query", headers=H(admin_t), json={"question": "   "})
+        check("query: blank question → 422", r.status_code == 422, f"{r.status_code}")
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -4669,6 +4783,8 @@ async def main() -> int:
     await test_webhook_and_digest()
     print("\n AC. HOD executive summary")
     await test_executive_summary()
+    print("\n AD. chat-with-your-data query router (Phase C)")
+    await test_data_query()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "
