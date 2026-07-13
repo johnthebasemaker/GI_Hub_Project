@@ -3,7 +3,7 @@
  *
  *   1. (re)create the throwaway Postgres DB `gihub_e2e_pw` on the local :5433
  *      cluster and load it with the REAL legacy data via the production
- *      cutover script (scripts/migration/cutover_migrate.py --wipe).
+ *      cutover script (tools/migration/cutover_migrate.py --wipe).
  *   2. overwrite the role users' bcrypt hashes with a known E2E password —
  *      inside the throwaway DB only.
  *   3. spawn a hermetic uvicorn on :8010 (GI_DOTENV=0 ⇒ WhatsApp/SMTP disabled,
@@ -53,7 +53,7 @@ export default async function globalSetup() {
     psql(`CREATE DATABASE ${E2E_DB}`)
   }
   execFileSync(
-    PY, [path.join(ROOT, 'scripts', 'migration', 'cutover_migrate.py'),
+    PY, [path.join(ROOT, 'tools', 'migration', 'cutover_migrate.py'),
       '--wipe', '--target', SYNC_DB_URL],
     { cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'] },
   )

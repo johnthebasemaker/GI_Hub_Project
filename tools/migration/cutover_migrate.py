@@ -47,10 +47,13 @@ import os
 import sqlite3
 import sys
 
+# Phase B layout: tools/migration/ — siblings migrate/dual_ci live in tools/,
+# the schema contract (models.py) stays in backend/.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.abspath(os.path.join(_HERE, "..", ".."))
-sys.path.insert(0, os.path.join(_ROOT, "backend"))   # models, migrate, dual_ci
-sys.path.insert(0, _ROOT)                            # repo root
+sys.path.insert(0, os.path.dirname(_HERE))            # tools/ (migrate, dual_ci)
+sys.path.insert(0, os.path.join(_ROOT, "backend"))    # models
+sys.path.insert(0, _ROOT)                             # repo root
 
 import models  # noqa: E402
 import migrate_sqlite_to_postgres as mig  # noqa: E402

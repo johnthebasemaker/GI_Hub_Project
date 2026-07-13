@@ -18,19 +18,19 @@ on:
   push:
     branches: [main]
     paths:
-      - 'database.py'
+      - 'legacy/**'
       - 'backend/**'
       - 'frontend/**'
-      - 'bug_check.py'
+      - 'tools/**'
       - 'requirements.txt'
       - '.github/workflows/postgres-dual-ci.yml'
       - 'gi_database.db'
   pull_request:
     paths:
-      - 'database.py'
+      - 'legacy/**'
       - 'backend/**'
       - 'frontend/**'
-      - 'bug_check.py'
+      - 'tools/**'
   workflow_dispatch: {}   # allow manual runs from the Actions tab
 
 jobs:
@@ -69,8 +69,10 @@ jobs:
           pip install -r requirements.txt
           pip install psycopg2-binary
 
-      - name: SQLite regression suite (bug_check.py)
-        run: python bug_check.py          # SQLite only (no DATABASE_URL here)
+      # Phase B layout: the legacy app lives in legacy/ (bug_check is
+      # self-rooted — it resolves every path from its own directory).
+      - name: SQLite regression suite (legacy/bug_check.py)
+        run: python legacy/bug_check.py   # SQLite only (no DATABASE_URL here)
 
       # Data-layer migration to Postgres (tables + row parity + facade smoke).
       # Views + full Streamlit-on-PG behaviour are intentionally out of scope —
@@ -79,7 +81,7 @@ jobs:
       - name: Dual-CI — data-layer migrate + parity (SQLite → PostgreSQL)
         env:
           DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
-        run: python backend/dual_ci.py --source gi_database.db
+        run: python tools/dual_ci.py --source gi_database.db
 
       # Accuracy guard for the FastAPI backend's derived-stock SQL: assert each
       # ported Postgres query matches its SQLite reporting view row-for-row on the
@@ -87,7 +89,7 @@ jobs:
       - name: Derived-view parity (SQLite views vs ported PG SQL)
         env:
           DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
-        run: python backend/api/parity_check.py --source gi_database.db
+        run: python tools/parity_check.py --source gi_database.db
 
       # Service-level invariants (rolled back — no persistence) + auth/role guards
       # driven through the real ASGI app. Runs after dual_ci has populated Postgres.

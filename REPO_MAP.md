@@ -1,84 +1,59 @@
 # REPO MAP — who owns what in this repository
 
-Two applications deliberately coexist in this repo until **cutover day**:
+> **PHASE B EXECUTED 2026-07-13 (cutover day).** The physical restructure this
+> file used to *schedule* has happened: the legacy app moved to `legacy/`,
+> root data artifacts to `data-archive/`, and the SQLite→PG bridge tools to
+> `tools/`. The repo root is now the NEW STACK's home. This file remains the
+> boundary contract.
 
-1. **LEGACY (production):** Python + Streamlit + SQLite. Feature-frozen for
-   new-stack work; must stay green (`bug_check.py` 599/0, `test_ui_crawler.py`
-   21/21) after every change.
-2. **NEW STACK (ship-ready, pre-cutover):** React + FastAPI + PostgreSQL.
-   Lives only in `backend/`, `frontend/`, `deploy/`.
+Two applications still coexist until the legacy Streamlit instance is switched
+off (users are being pointed at the React app):
 
-This file is the boundary contract. The physical restructure (**Phase B** —
-moving the legacy app into `legacy/`, stray data into `data-archive/`) is
-scheduled for cutover day and happens in a single commit; until then **nothing
-moves**. Read [`docs/NEW_STACK_HANDOFF.md`](docs/NEW_STACK_HANDOFF.md) before
-touching the new stack, and `handoff.md` (SME Canon) before touching legacy.
-
-> **STATUS 2026-07-08 — 🔓 FREEZE TEMPORARILY LIFTED (feature-gap program).**
-> Both apps green (`service_tests` **418/0**, `bug_check` **599/0**, parity 5/5,
-> `parity:sme` 509). On top of the frozen build (parity + Man-Hours + AI-0…AI-5 +
-> SME S1…S5) we shipped, working within this same segregation: deploy/CI infra
-> (v2 backup service + manual-trigger Hetzner pipeline + S3 backups), a
-> standalone new-stack copy-out at `~/gi_hub_v2`, and the feature-gap program
-> (P0 role-access · P1 SK bulk entry · P2 HOD correctness · P3 sidebar ⌘K ·
-> Phase 4 procurement depth). All new-stack work still touches ONLY
-> `backend/` · `frontend/` · `deploy/` · `docs/`. Remaining: feature-gap backlog,
-> Phase 7 (Meta-token hold), cutover, in-repo Phase B, SME S6 (post-cutover).
-> Resume snapshot: [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) — including
-> the **bulletproof separation invariants** (12 guarantees).
+1. **LEGACY (being retired):** Python + Streamlit + SQLite, feature-frozen,
+   now entirely under `legacy/`. Its regression gate must stay green
+   (`.venv/bin/python legacy/bug_check.py` → 599/0).
+2. **NEW STACK (production):** React + FastAPI + PostgreSQL — `backend/`,
+   `frontend/`, `deploy/`, `tests/e2e/` at the repo root.
 
 ## Ownership
 
 | Path | Owner | Notes |
 |---|---|---|
-| `main.py` | Legacy | Streamlit entrypoint — **also the Streamlit Cloud demo entry; path-sensitive, do not move before Phase B** |
-| `database.py` | Legacy ⚠ bridge | Legacy data layer. **Imported by `backend/dual_ci.py`** as the SQLite→PG migration reader — never edit for new-stack work |
-| `auth.py` · `ui_components.py` · `cache_layer.py` · `error_handling.py` · `mailer.py` · `reports.py` · `recover.py` · `migrate_role.py` | Legacy | Streamlit app modules |
-| `config.py` | Legacy ⚠ reference | Brand colors here are **mirrored (not imported)** by `frontend/src/theme/tokens.ts` — keep the two in sync when brand colors change |
-| `whatsapp_worker.py` | Legacy | Outbound WhatsApp queue worker — provider chain `WHATSAPP_PROVIDER=meta\|twilio\|pywhatkit` (Meta Cloud API already implemented) |
-| `pages_internal/` · `services/` · `ai/` · `pwa/` · `scripts/` · `tests/` | Legacy | Portal pages · RAG sidecar + WhatsApp-webhook helpers · Ollama/CV · Phase-4 PWA · ops/seed scripts · pytest |
-| `uploads/` · `logs/` · `backups/` | Legacy | Runtime data dirs |
-| `bug_check.py` · `test_ui_crawler.py` | Legacy gate | The old app's regression gates; run in the **shared** CI |
-| `packages.txt` · `requirements-server.txt` | Legacy | Streamlit Cloud apt deps · Linux-server dependency subset (workstream C) |
-| `docker-compose.yml` · `Dockerfile.streamlit` · `Dockerfile.fastapi` · `docker/` · `host_setup/` | Legacy deploy | **Workstream-C surface** (nginx/certbot/streamlit/ollama). NB: `Dockerfile.fastapi` is the *RAG sidecar*, **not** the new-stack API |
-| `backend/` | New stack | FastAPI API (`backend/api/`), SQLAlchemy models, Alembic, **plus the bridge tools** `dual_ci.py` / `migrate_sqlite_to_postgres.py` / `api/parity_check.py` (these import legacy `database.py` by design; they retire at cutover) |
-| `frontend/` | New stack | React + Vite + AntD SPA; theme source of truth in `src/theme/` |
-| `deploy/` | New stack deploy | **The new-stack surface**: `docker-compose.prod.yml` (incl. a `backup` pg_dump service), `Dockerfile.api`, `Dockerfile.web`, nginx, certbot, `backup/backup-pg.sh` (+S3), and the manual-trigger v2 pipeline scripts `deploy-v2.sh` / `health-check.sh` / `rollback.sh` — see [`docs/DEPLOY.md`](docs/DEPLOY.md) §9 |
+| `legacy/` | Legacy | The complete frozen Streamlit app: `main.py`, `database.py`, `pages_internal/`, `ai/`, `services/`, `pwa/`, `scripts/` (bootstrap/ops), `tests/` (pytest), `.streamlit/`, gates (`bug_check.py`, `test_ui_crawler.py`), legacy deploy surface (`docker-compose.yml`, `Dockerfile.streamlit`, `Dockerfile.fastapi` = RAG sidecar, `docker/`, `host_setup/`), runtime dirs (`uploads/`, `logs/`, `backups/`). Run it with `GI_DB_FILE=../gi_database.db` (the DB stays at root) |
+| `backend/` | New stack | FastAPI API (`backend/api/`), SQLAlchemy `models.py` (the schema contract — also verified by legacy bug_check's parity check), Alembic |
+| `frontend/` | New stack | React + Vite + AntD SPA; SME TS engine twin in `src/sme/engine.ts` |
+| `deploy/` | New stack deploy | `docker-compose.prod.yml`, `Dockerfile.api`/`Dockerfile.web`, nginx, certbot, backup + v2 pipeline scripts — see `docs/DEPLOY.md` |
+| `tests/e2e/` | New stack | Playwright suite (39) — global-setup loads its throwaway DB via `tools/migration/cutover_migrate.py` |
+| `tools/` | Bridge (retiring) | `dual_ci.py` (mirror reload; imports `legacy/database.py` by design), `migrate_sqlite_to_postgres.py` (core copier), `parity_check.py` (SQLite-views ↔ PG-SQL oracle, 5/5), `pg_smoke.py`, `migration/cutover_migrate.py` + `migration/README.md` (**the production cutover runbook**). These retire once the legacy app is switched off |
+| `data-archive/` | Archive | Root-level artifacts moved at Phase B: seed xlsx files, sample PO pdf, `IMG_2397.JPG`, `gi_database.*.bak`, `PyWhatKit_DB.txt`, `demo_seed.db` |
+| `gi_database.db` | **Shared bridge — root by design** | The legacy SQLite system of record AND the source for `tools/dual_ci.py` / `parity_check.py` / the final production `cutover_migrate.py` load. Deliberately NOT moved (and never staged — it is live, constantly-modified data) |
+| `reports_archive/` | Shared runtime | Deliberately the same directory both stacks' report archives use |
+| `GI_Hub_SOP.pdf` · `GI_Hub_User_Manual.pdf` · `SOP.md` · `USER_MANUAL.md` · `build_*_pdf.py` | New stack docs | Served by `backend/api/documents.py` (repo root) and read by `ai/manual_qa.py` — must stay at root |
+| `deletion.html` · `privacy_policy_whatsapp.html` · `terms.html` | Shared | Meta/WhatsApp app compliance pages (registered by URL) — do not move |
+| `requirements.txt` | Shared | The one venv both Python stacks use; pulls in `backend/requirements.txt` |
 | `run_api.sh` | New stack | Local backend launcher (`:8000`) |
-| `backend/requirements.txt` | New stack | The new stack's Python deps; **included by root `requirements.txt` via `-r`** (one shared venv pre-cutover; standalone install post-cutover) |
-| `gi_database.db` | **Shared bridge** | SQLite system of record (legacy runtime) **and** the source for `dual_ci` / parity. Do not move before Phase B |
-| `requirements.txt` | **Shared** | The one venv both Python stacks use; ends up pulling `backend/requirements.txt` in |
-| `.github/workflows/postgres-dual-ci.yml` | **Shared** | One workflow gating BOTH apps: bug_check + dual_ci + parity + service_tests + frontend build. Needs both codebases in one checkout — do not split before cutover |
-| `docs/` · `handoff.md` | Shared docs | New-stack handoff/migration log/deploy runbook · SME Canon + legacy handoff |
-| `*.xlsx` · `*.pdf` · `IMG_2397.JPG` · `gi_database.*.bak` · `PyWhatKit_DB.txt` · `demo_seed.db` | Data/archive | Root-level artifacts; Phase B destination `data-archive/` |
-| `BUG_REPORT.md` · `UI_CRAWLER_REPORT.md` | Generated | Test-run output (checked in); regenerate, don't hand-edit |
+| `.github/workflows/postgres-dual-ci.yml` | Shared | One workflow gating BOTH apps: `legacy/bug_check.py` + `tools/dual_ci.py` + `tools/parity_check.py` + `backend.api.service_tests` + frontend build |
+| `docs/` · `handoff.md` | Shared docs | New-stack brain (`ARCHITECTURE.md`) + status/migration log · SME Canon + legacy handoff |
 
 ## Rules of engagement (the short version)
 
-1. New-stack work touches **only** `backend/`, `frontend/`, `deploy/`, `docs/`.
-2. Never edit `database.py` or the Streamlit app for new-stack work; legacy
-   gates (599/0 · 21/21) must stay green after every change.
-3. SME (`sme_*` tables) is frozen — read-only, explicit-PK ordering. The new
-   stack has ZERO sme_* write endpoints (test-proven); Master Data CRUD is
-   deferred to cutover (Phase S6) to prevent dual-write drift.
-4. Keep local PG == SQLite (reset with `backend/dual_ci.py`); verify with the
-   5-check list in `docs/NEW_STACK_HANDOFF.md` §1b and
-   `backend/api/parity_check.py` (5/5).
-5. Two deployment surfaces exist until cutover — legacy = root compose,
-   new stack = `deploy/`. Don't mix them.
+1. New-stack work touches **only** `backend/`, `frontend/`, `deploy/`,
+   `tests/e2e/`, `docs/`.
+2. Never edit `legacy/**` for new-stack work; the legacy gate
+   (`legacy/bug_check.py` 599/0) must stay green after every change until the
+   Streamlit instance is switched off.
+3. ~~SME `sme_*` read-only freeze~~ **lifted at cutover (Phase S6, 2026-07-13)**
+   — Master Data CRUD lives in `backend/api/sme_master.py` (exact-lock
+   {hod, admin}, audited). The rest of the Canon holds: explicit-PK ordering,
+   `sme_inventory_seed` never mingles with ERP `inventory`.
+4. Keep local PG == SQLite while legacy still runs (reset with
+   `tools/dual_ci.py`); verify with `tools/parity_check.py` (5/5). Re-run
+   `backend/scripts/create_ai_readonly_role.sql` after every reload.
+5. Two deployment surfaces until the legacy switch-off — legacy =
+   `legacy/docker-compose.yml`, new stack = `deploy/`. Don't mix them.
 6. **SME engine parity contract:** `frontend/src/sme/engine.ts` and
-   `backend/api/sme_engine.py` are byte-equivalent ports proven against
+   `backend/api/sme_engine.py` are proven equal against
    `backend/api/sme_parity_fixture.json`/`sme_parity_golden.json` (509
    comparisons; `service_tests` suite G + `npm run parity:sme`). Any numeric
    change = change BOTH engines + regenerate the golden in ONE commit.
 7. Audit rows are never deleted (`system_audit_log`); tests use delta counts.
-8. 🔓 **Freeze temporarily lifted (2026-07-08)** for the feature-gap program —
-   still additive, still only `backend/`/`frontend/`/`deploy/`/`docs/`, gates
-   green per commit. WhatsApp/email stay parked (Meta token); SME/Man-Hours are
-   not touched. Reverts to 🧊 freeze between phases unless the user says otherwise.
-
-## Phase B (cutover day, pre-approved plan)
-
-One commit: legacy app → `legacy/`, root data artifacts → `data-archive/`,
-bridge tools → `tools/`, CI paths updated, root becomes the new stack's home.
-Until then, this map is the segregation.

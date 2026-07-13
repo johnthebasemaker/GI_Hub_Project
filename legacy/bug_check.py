@@ -52,6 +52,10 @@ platform.system = lambda: "Linux"          # avoid Windows COM path
 os.environ.pop("DATABASE_URL", None)
 os.environ.setdefault("LOGISTICS_EMAIL", "qa-dummy@example.invalid")
 sys.path.insert(0, str(REPO_ROOT))
+# Phase B: shared root-level modules the checks import (build_manual_pdf /
+# build_sop_pdf live at the REPO root next to the docs they render; no legacy
+# module names remain at root, so this cannot shadow anything).
+sys.path.insert(1, str(REPO_ROOT.parent))
 
 import config
 config.DB_FILE = str(TMP_DB)
@@ -1373,7 +1377,10 @@ def check_models_schema_parity() -> None:
     table+column appears in the models; the only model-only columns are the
     documented Postgres-target ledger `id` PKs not yet added to SQLite."""
     import importlib.util, sqlite3, tempfile, os
-    spec = importlib.util.spec_from_file_location("_gimodels", "backend/models.py")
+    # Phase B: the schema contract lives in backend/ at the REPO root (this
+    # file now lives in legacy/), so resolve from REPO_ROOT.parent.
+    spec = importlib.util.spec_from_file_location(
+        "_gimodels", str(REPO_ROOT.parent / "backend" / "models.py"))
     M = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(M)
     model_cols = {t: {c.name for c in tbl.columns}
@@ -1400,14 +1407,29 @@ def check_models_schema_parity() -> None:
     missing_tables = set(live_cols) - set(model_cols)
     assert not missing_tables, f"tables in DB but not in models.py: {missing_tables}"
 
+    # Documented case exception (UAT-5 cutover audit): the REAL migrated DB
+    # carries consumption."WBS" (uppercase) and models.py matches it — a
+    # lowercase mapping silently dropped legacy data at migration time. A
+    # FRESH init_db, however, self-heals a lowercase `wbs` (the CREATE TABLE
+    # has neither). Same column, different casing origin — equate them.
+    _CASE_EQUIV = {("consumption", "wbs"): "WBS", ("receipts", "wbs"): "WBS"}
+
     model_only = set()
     for t, cols in live_cols.items():
+        cols = {_CASE_EQUIV.get((t, c), c) for c in cols}
         miss = cols - model_cols[t]
         assert not miss, f"columns in `{t}` missing from models.py: {miss}"
         model_only |= {(t, c) for c in (model_cols[t] - cols)}
 
     allowed = {("consumption", "id"), ("receipts", "id"), ("returns", "id"),
-               ("system_settings", "id")}
+               ("system_settings", "id"),
+               # UAT-5 cutover-audit preservation set (user-authorized):
+               # columns that exist in the REAL migrated DB (and therefore in
+               # models.py, so the cutover copier can't drop their data) but
+               # are absent from a FRESH init_db schema.
+               ("inventory", "Sl_No"), ("consumption", "status"),
+               ("consumption", "Technician"), ("pending_issues", "Technician"),
+               ("rejected_issues_archive", "Technician")}
     extra = model_only - allowed
     assert not extra, f"unexpected model-only columns (update models.py or DB): {extra}"
 
@@ -1443,7 +1465,7 @@ def check_sqlite_to_pg_migration_dryrun() -> None:
     c.commit(); c.close()
 
     spec = importlib.util.spec_from_file_location(
-        "_mig", "backend/migrate_sqlite_to_postgres.py")
+        "_mig", str(REPO_ROOT.parent / "tools" / "migrate_sqlite_to_postgres.py"))
     mig = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mig)
     tgt = "sqlite:///" + os.path.join(tempfile.mkdtemp(), "m_tgt.db")
@@ -1479,7 +1501,8 @@ def check_dual_ci_harness_dryrun() -> None:
               "VALUES ('2026-01-01','S1',9,'HQ','L1')")
     c.commit(); c.close()
 
-    spec = importlib.util.spec_from_file_location("_dci", "backend/dual_ci.py")
+    spec = importlib.util.spec_from_file_location(
+        "_dci", str(REPO_ROOT.parent / "tools" / "dual_ci.py"))
     dci = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(dci)
     tgt = "sqlite:///" + os.path.join(tempfile.mkdtemp(), "dci_tgt.db")
@@ -7375,7 +7398,8 @@ def check_7e_requirements_has_local_storage() -> None:
     """requirements.txt must declare streamlit-local-storage so the
     client-side primary draft layer ships with the app."""
     import pathlib
-    text = pathlib.Path(REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    # Phase B: the shared requirements.txt stays at the REPO root.
+    text = pathlib.Path(REPO_ROOT.parent / "requirements.txt").read_text(encoding="utf-8")
     assert "streamlit-local-storage" in text.lower(), \
         "streamlit-local-storage missing from requirements.txt"
 
@@ -7384,10 +7408,11 @@ def check_7e_requirements_has_local_storage() -> None:
 # Phase 7F — Role-segregated manual PDFs + screenshot embedding
 # ═══════════════════════════════════════════════════════════════════════════
 def _7f_load_real_md() -> str:
-    """Read the actual USER_MANUAL.md from the repo root. Slicer tests rely
-    on the real chapter titles being present, so we don't use a fixture."""
+    """Read the actual USER_MANUAL.md from the repo root (Phase B: this file
+    lives in legacy/, the manual stays at root — the API serves it). Slicer
+    tests rely on the real chapter titles being present, so no fixture."""
     import pathlib
-    return pathlib.Path(REPO_ROOT / "USER_MANUAL.md").read_text(encoding="utf-8")
+    return pathlib.Path(REPO_ROOT.parent / "USER_MANUAL.md").read_text(encoding="utf-8")
 
 
 def check_7f_recipes_cover_all_roles() -> None:
@@ -7492,7 +7517,7 @@ def check_7f_screenshot_placeholders_exist() -> None:
     must be present on disk so the manual PDF doesn't render all-placeholder
     cards in production. (CI / fresh-clone owners run the script once.)"""
     import pathlib
-    d = pathlib.Path(REPO_ROOT / "docs" / "screenshots")
+    d = pathlib.Path(REPO_ROOT.parent / "docs" / "screenshots")  # docs/ stays at root
     assert d.exists(), f"directory missing: {d}"
     pngs = list(d.glob("*.png"))
     assert len(pngs) >= 10, f"expected >=10 seed placeholders, found {len(pngs)}"
@@ -7762,8 +7787,9 @@ def check_8a_sidecar_requirements_file_exists() -> None:
     req = pathlib.Path(REPO_ROOT / "ai" / "locate_anything" / "requirements.txt")
     assert req.exists(), f"missing: {req}"
     body = req.read_text(encoding="utf-8")
-    # Sanity — should NOT have leaked into the project-root requirements.
-    root_req = pathlib.Path(REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    # Sanity — should NOT have leaked into the project-root requirements
+    # (Phase B: the shared requirements.txt stays at the REPO root).
+    root_req = pathlib.Path(REPO_ROOT.parent / "requirements.txt").read_text(encoding="utf-8")
     assert "transformers>=" not in root_req, \
         "transformers must NOT appear in project-root requirements.txt"
     # Sidecar reqs must declare torch + transformers + fastapi.

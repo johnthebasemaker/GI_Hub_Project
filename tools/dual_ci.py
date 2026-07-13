@@ -30,9 +30,14 @@ import sqlite3
 import sys
 import tempfile
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _HERE)                      # backend/  (models, migrate)
-sys.path.insert(0, os.path.dirname(_HERE))     # repo root (database)
+# Phase B layout: this bridge tool lives in tools/; the schema contract stays
+# in backend/ and the legacy reader (database.py) now lives in legacy/.
+_HERE = os.path.dirname(os.path.abspath(__file__))            # tools/
+_ROOT = os.path.dirname(_HERE)                                # repo root
+sys.path.insert(0, _HERE)                                     # tools/ (migrate)
+sys.path.insert(0, os.path.join(_ROOT, "backend"))            # models
+sys.path.insert(0, os.path.join(_ROOT, "legacy"))             # database
+sys.path.insert(0, _ROOT)
 import models  # noqa: E402
 import migrate_sqlite_to_postgres as mig  # noqa: E402
 

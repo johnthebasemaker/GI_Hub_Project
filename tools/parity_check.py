@@ -26,8 +26,9 @@ import sys
 from collections import Counter
 from decimal import Decimal
 
+# Phase B layout: this bridge tool lives in tools/ (was backend/api/).
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))  # repo root
+sys.path.insert(0, os.path.dirname(_HERE))  # repo root (backend package)
 
 from sqlalchemy import create_engine, text  # noqa: E402
 

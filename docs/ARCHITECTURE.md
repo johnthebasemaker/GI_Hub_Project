@@ -17,13 +17,19 @@
 | DB | SQLite `gi_database.db` (**system of record until cutover**) | PostgreSQL 16 — CI mirror `postgresql://postgres@127.0.0.1:5433/gihub` |
 | Deploy | on-prem | Hetzner CPX42 plan + Cloudflare Tunnel (`gi.giinventory.com`), nginx, deploy/ |
 
-Rules ([REPO_MAP.md](../REPO_MAP.md) is the contract): never edit `database.py`
-/ `pages_internal/` for new-stack work; new-stack commits touch only
-`backend/`, `frontend/`, `deploy/`, `tests/`, `docs/`. `dual_ci` reloads the
-mirror from SQLite and verifies 5 semantic aggregates; the production cutover
-script is `scripts/migration/cutover_migrate.py` (sync psycopg2 URL, `--strict
---wipe`; asyncpg URLs fail with MissingGreenlet by design). After every mirror
-reload, re-run `backend/scripts/create_ai_readonly_role.sql` (grants get wiped).
+Rules ([REPO_MAP.md](../REPO_MAP.md) is the contract): never edit
+`legacy/database.py` / `legacy/pages_internal/` for new-stack work; new-stack
+commits touch only `backend/`, `frontend/`, `deploy/`, `tests/`, `docs/`.
+**Phase B executed 2026-07-13**: the legacy app lives under `legacy/`, root
+data artifacts under `data-archive/`, and the bridge tools under `tools/`
+(`dual_ci.py`, `migrate_sqlite_to_postgres.py`, `parity_check.py`,
+`migration/cutover_migrate.py` + runbook); `gi_database.db` deliberately stays
+at the repo root (bridge tools + the final production load read it there, and
+it must never be staged). `tools/dual_ci.py` reloads the mirror from SQLite
+and verifies 5 semantic aggregates; the production cutover script is
+`tools/migration/cutover_migrate.py` (sync psycopg2 URL, `--strict --wipe`;
+asyncpg URLs fail with MissingGreenlet by design). After every mirror reload,
+re-run `backend/scripts/create_ai_readonly_role.sql` (grants get wiped).
 
 ## 2. Backend map (`backend/api/`)
 
@@ -150,8 +156,8 @@ DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
 JWT_SECRET=ci-only-service-test-secret-key-32bytes-min \
 .venv/bin/python -u -m backend.api.service_tests
 
-# 2. SQLite↔PG parity oracle (5 aggregates) — same env vars
-.venv/bin/python -m backend.api.parity_check
+# 2. SQLite↔PG parity oracle (5 aggregates) — same env vars (Phase B: tools/)
+.venv/bin/python tools/parity_check.py
 
 # 3. frontend
 npm run build --prefix frontend && cd frontend && npx tsc --noEmit
@@ -165,8 +171,9 @@ cd tests/e2e && npm test        # 39 tests, ~15 s
 Test-compat switches: service_tests sets `require_entry_documents='0'` first
 (suite AH tests it ON); Playwright global-setup does the same in its clone —
 the `gated` project (entry-docs.spec) runs AFTER the parallel pack because it
-flips the global setting. Legacy `bug_check.py` (599) guards the frozen
-Streamlit app. Manual matrix: [automatic_test.md](automatic_test.md).
+flips the global setting. Legacy `legacy/bug_check.py` (599, self-rooted —
+run `.venv/bin/python legacy/bug_check.py`) guards the frozen Streamlit app.
+Manual matrix: [automatic_test.md](automatic_test.md).
 
 ## 9. Operational notes
 
@@ -177,7 +184,7 @@ Streamlit app. Manual matrix: [automatic_test.md](automatic_test.md).
   remain: approve `gi_evening_summary`, set webhook env + subscribe URL,
   set `PUBLIC_BASE_URL`.
 - Remaining program work: production cutover execution (runbook
-  `scripts/migration/README.md`) — SME S6 CRUD SHIPPED 2026-07-13
-  (`sme_master.py` + Master Data tab); optional LOW polish + skipped parity
-  items (B2 SME batch entry lane, B3 QR request queue, B4 PO PDF blob,
-  B7 admin extras, C3 OCR doc assist).
+  `tools/migration/README.md`) — SME S6 CRUD + the Phase B restructure both
+  SHIPPED 2026-07-13; optional LOW polish + skipped parity items (B2 SME
+  batch entry lane, B3 QR request queue, B4 PO PDF blob, B7 admin extras,
+  C3 OCR doc assist).

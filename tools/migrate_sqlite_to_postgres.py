@@ -38,8 +38,11 @@ import sqlite3
 import sys
 import tempfile
 
-# Import the Declarative schema (this module lives in backend/, next to it).
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Import the Declarative schema (Phase B: this bridge tool lives in tools/;
+# the schema contract stays in backend/).
+_MIG_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _MIG_HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(_MIG_HERE), "backend"))
 import models  # noqa: E402  (backend/models.py)
 
 from sqlalchemy import create_engine, func, insert, select, text  # noqa: E402

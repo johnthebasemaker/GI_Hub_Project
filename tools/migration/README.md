@@ -28,7 +28,7 @@ Exit code `0` only when every blocking check passes.
 4. **Run the migration** (from the repo root, venv active):
 
    ```bash
-   .venv/bin/python scripts/migration/cutover_migrate.py \
+   .venv/bin/python tools/migration/cutover_migrate.py \
        --source gi_database.db \
        --target postgresql+psycopg2://gihub:<pw>@localhost:5432/gihub \
        --wipe
@@ -51,7 +51,7 @@ Exit code `0` only when every blocking check passes.
 7. **Re-verify any time** without reloading:
 
    ```bash
-   .venv/bin/python scripts/migration/cutover_migrate.py --verify-only \
+   .venv/bin/python tools/migration/cutover_migrate.py --verify-only \
        --source gi_database.cutover-YYYYMMDD.db --target postgresql+psycopg2://…
    ```
 

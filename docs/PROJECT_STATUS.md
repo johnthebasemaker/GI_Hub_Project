@@ -1,4 +1,4 @@
-# PROJECT STATUS — resume here (updated 2026-07-13 · CUTOVER DAY: SME S6 SHIPPED — only cutover deployment + optional polish remain)
+# PROJECT STATUS — resume here (updated 2026-07-13 · CUTOVER DAY: SME S6 + PHASE B RESTRUCTURE SHIPPED — only the Hetzner deployment + optional polish remain)
 
 **This is the single source of truth for "where we left off."** A fresh chat
 should read this file, then [`ARCHITECTURE.md`](ARCHITECTURE.md) (**the full
@@ -318,9 +318,12 @@ LOW polish remains (details in the `feature-gap-program` memory):
    → `ollama pull` the 3 models → `create_ai_readonly_role.sql` + `GI_AI_RO_URL`
    → final `dual_ci` load → point users at React). The v2 deploy pipeline is
    built (§2.F) and manual-trigger only.
-8. **Phase B restructure** (in-repo, one commit at cutover): legacy → `legacy/`,
-   artifacts → `data-archive/`, bridge tools → `tools/`. (A verified copy-out
-   already exists at `~/gi_hub_v2`.)
+8. ~~**Phase B restructure**~~ ✅ **EXECUTED 2026-07-13 (cutover day)** —
+   legacy → `legacy/`, artifacts → `data-archive/`, bridge tools → `tools/`;
+   CI/Playwright/runbook paths updated; ALL gates re-verified green
+   (bug_check 599/0 · crawler 21/21 · service_tests 681/0 · parity 5/5 ·
+   Playwright 39/39). `gi_database.db` deliberately stays at root (final
+   production load reads it; never staged). Run-log: POSTGRES_MIGRATION.md §8.
 9. ~~**SME Phase S6 — Master Data CRUD**~~ ✅ **SHIPPED 2026-07-13 (cutover
    day)** — `backend/api/sme_master.py` + SmePage 🗄️ Master Data tab; suite
    AI → service_tests 681/0. Optional polish only.
@@ -332,12 +335,12 @@ LOW polish remains (details in the `feature-gap-program` memory):
 ```bash
 # new-stack service + guard tests (418 checks; needs JWT_SECRET set)
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub JWT_SECRET=ci-only-service-test-secret-key-32bytes-min .venv/bin/python -u -m backend.api.service_tests
-# SQLite↔PG derived-view parity (5 views)
-DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub .venv/bin/python -u -m backend.api.parity_check
+# SQLite↔PG derived-view parity (5 views) — Phase B: now in tools/
+DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub .venv/bin/python tools/parity_check.py
 # SME TS↔Python engine parity (509 comparisons)
 node frontend/scripts/sme_parity.mjs          # or: npm run parity:sme --prefix frontend
-# legacy gates
-.venv/bin/python bug_check.py                 # 599/0
+# legacy gates — Phase B: the legacy app lives in legacy/
+.venv/bin/python legacy/bug_check.py          # 599/0
 # frontend build
 npm run build --prefix frontend
 ```

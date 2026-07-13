@@ -45,8 +45,10 @@ COLOR_SCHEMES = {
 }
 LOC_COLOR_MAP = {"Brown Field": "brown_field", "TRAIN J": "train_j", "TRAIN K": "train_k"}
 
-_LOGO_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__)))), "pages_internal", "sme_logo.png")
+# Phase B: the logo is vendored next to this module so the new stack never
+# reaches into legacy/ (the original lives at legacy/pages_internal/).
+_LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "sme_logo.png")
 
 TITLE_ROW = 4  # rows 0-3 = logo + meta band
 

@@ -22,9 +22,10 @@ import datetime
 import os
 import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))            # tools/
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.dirname(_HERE))  # repo root, so `import database` works
+sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "legacy"))  # database
+sys.path.insert(0, os.path.dirname(_HERE))                    # repo root
 
 
 def _build_paths(db):
