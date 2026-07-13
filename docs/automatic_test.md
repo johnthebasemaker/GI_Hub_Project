@@ -43,6 +43,18 @@ Reads for level <3 are pinned to the user's own site (fail-closed when siteless)
 
 ---
 
+### Scripted suite (Playwright — the headless twin of this matrix)
+
+```bash
+cd tests/e2e && npm test          # 39 tests ≈15 s; builds+drops its own gihub_e2e_pw
+npm run report                    # HTML report
+```
+`global-setup` loads the clone via the real cutover script and sets
+`require_entry_documents='0'` so functional specs submit freely; the `gated`
+project (`specs/entry-docs.spec.ts`) runs AFTER the parallel pack, flips the
+setting ON, and tests the document gate itself. service_tests does the same
+(`_relax_entry_gates()` + suite AH).
+
 ## 1. Cross-cutting chrome (every role)
 
 | # | Check | Expect |
@@ -102,6 +114,20 @@ Reads for level <3 are pinned to the user's own site (fail-closed when siteless)
 | E7 | OCR import: photo→job→poll or paste lane; review grid; stage rows (AI offline ⇒ paste lane still works) |
 | E8 | Incoming deliveries: in-transit DNs listed; Receive → staged pending receipt (§W5 step 7) |
 | E9 | SK requests: SMR queue; review modal (per-line qty, 0=withdraw); approve mirrors to HOD queue; reject |
+
+### 5b. Entry-document gate (parity A1/A2 — `require_entry_documents` ON, the production default)
+
+| # | Check |
+|---|---|
+| D1 | Issue/Receive batch submit WITHOUT a supporting document → blocked (client toast + server 422 "supporting document…") |
+| D2 | "Attach file" and "📷 Photograph note" (camera capture on mobile PWA) both upload; chip appears; unlinked chip is removable |
+| D3 | After upload, the same batch submits 201; the attachment shows "submitted/linked" in the Document Library |
+| D4 | Return form: source-receipt picker only lists receipts ≤30 days (365 with the override checkbox); return qty is CAPPED to the source receipt qty; Return DN No. + document required; >30-day source demands a justification |
+| D5 | HOD Approvals: returns with override show the red ">30d" tag (hover = justification); every row's 📎 button opens the entry-date-matched documents with inline image/PDF preview |
+| D6 | /hod/documents Document Library: type tabs, doc-number + date filters, download + preview; SK gets 403 on the full library but can list own uploads (mine=1) |
+| D7 | MTC: a `Surface Shields`-category receipt cannot be added without an MTC upload (422 + logistics email); MTC number field persists with the upload |
+| D8 | WBS: once the HOD adds an active WBS for the site, Issue/Receive without one → 422; the form shows a required WBS select; closing the WBS lifts the gate |
+| D9 | Draft recovery: type into an entry form, reload → "unsaved form draft" banner; Restore refills (incl. dates), Discard clears |
 
 ## 6. HOD portal (hod; admin shadow)
 
@@ -163,7 +189,7 @@ Reads for level <3 are pinned to the user's own site (fail-closed when siteless)
 
 ## 🔁 11. Multi-user workflows (the night-shift core)
 
-**W1 — Entry approval (SK→HOD):** SK stages receipt+issue+return (E1–E3) → HOD sees exact rows in Approvals, edits one, approves receipt+issue, rejects return with reason → SK sees bell notifications (approved + rejected w/ reason); ledger rows exist in Records; stock moved; rejected row in archive, NOT in ledger.
+**W1 — Entry approval (SK→HOD):** *(with the doc gate ON, every stage step below first needs a supporting document attached — see §5b)* SK stages receipt+issue+return (E1–E3) → HOD sees exact rows in Approvals, edits one, approves receipt+issue, rejects return with reason → SK sees bell notifications (approved + rejected w/ reason); ledger rows exist in Records; stock moved; rejected row in archive, NOT in ledger.
 > ⚠️ Scripted-suite findings (2026-07-13): (a) **receipt** approvals do NOT bell the submitter — `pending_receipts` has no submitter column (`_SUBMITTER_COL` maps receipts→None in `backend/api/hod.py`); assert the submitter bell on **returns/issues/adjustments** instead. (b) On pending returns the entry form's `Reason` lands in `Return_Reason` (and `Remarks` in `override_reason`); the committed ledger row stores it as plain `Reason`. (c) SK visiting `/stock` is landed on the Issue page by the role manifest — assert that lock, not a Stock render.
 **W2 — SMR (Supervisor→SK→HOD):** supervisor raises 2-line SMR → SK adjusts one qty, withdraws other (0) → approve ⇒ pending_issue appears in HOD queue tagged SMR → HOD approves → consumption ledger row; supervisor intent-vs-actual updates.
 **W3 — PR→PO (HOD→Logistics):** HOD auto-drafts from low stock or creates PR → edits line, renames, submits → logistics sees it in Incoming PRs → creates PO ⇒ PR in_po; PR PDF downloads at each stage.

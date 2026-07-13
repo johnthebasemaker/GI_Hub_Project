@@ -1,10 +1,13 @@
-# PROJECT STATUS — resume here (updated 2026-07-09, 🔓 feature-gap program + Phase 7/7b/7c COMPLETE — only cutover/S6 remain)
+# PROJECT STATUS — resume here (updated 2026-07-13 · parity sprint DONE — only cutover execution/S6 + optional polish remain)
 
 **This is the single source of truth for "where we left off."** A fresh chat
-should read this file, then [`REPO_MAP.md`](../REPO_MAP.md) (segregation
-contract), then [`NEW_STACK_HANDOFF.md`](NEW_STACK_HANDOFF.md) (how-to-work
-rules), then [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md) §8 (per-slice
-run log). Legacy/SME rules: [`handoff.md`](../handoff.md) (SME Canon).
+should read this file, then [`ARCHITECTURE.md`](ARCHITECTURE.md) (**the full
+system map: backend modules, DB traps, entry gates, rate limiting, AI routing,
+PWA/offline mechanics, test commands — read it before touching code**), then
+[`REPO_MAP.md`](../REPO_MAP.md) (segregation contract),
+[`NEW_STACK_HANDOFF.md`](NEW_STACK_HANDOFF.md) (how-to-work rules), and
+[`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md) §8 (per-slice run log).
+Legacy/SME rules: [`handoff.md`](../handoff.md) (SME Canon).
 
 ---
 
@@ -48,9 +51,27 @@ recipient (critical alerts always immediate). Operator TODO: approve
 `WHATSAPP_WEBHOOK_VERIFY_TOKEN`/`WHATSAPP_APP_SECRET` + subscribe the webhook
 URL in Meta.
 Gates green:
-`service_tests` **626/0**, `parity_check` **5/5**, `bug_check` **599/0**,
-`parity:sme` **509**, frontend build ✅, `tsc --noEmit` ✅, alembic single head
-**e7c31a9f24d5**, Playwright E2E **38/38** (`cd tests/e2e && npm test`).
+`service_tests` **649/0** (suites A…AH), `parity_check` **5/5**, `bug_check`
+**599/0**, `parity:sme` **509**, frontend build ✅, `tsc --noEmit` ✅, alembic
+single head **e7c31a9f24d5**, Playwright E2E **39/39** (`cd tests/e2e && npm
+test`; the `gated` project runs entry-docs last because it flips a global
+setting). Exact commands: ARCHITECTURE.md §8.
+**Parity sprint (2026-07-13, approved plan):** the legacy **entry-document
+system is back** — SK uploads (file or 📷 camera) hard-gate Issue/Receipt/
+Return submission via the `require_entry_documents` setting (**default ON**;
+tests relax it), HOD **Document Library** at /hod/documents (35 migrated
+legacy files included) + inline 📎 preview in Approvals; **returns** are made
+against a source receipt (30-day window, override+justification → red >30d
+badge, qty capped, Return DN No. required, approval auto-emails logistics);
+**MTC** detection fixed to legacy `Category == "Surface Shields"` (setting
+`mtc_required_category`) with an MTC-number field, hard-block kept; **WBS**
+master per site (HOD config) required on entries once configured; FEFO
+manual-lot override captures a reason → HOD alert; Bin/Shelf on Receive;
+localStorage form-draft recovery; Records→Documents links. Known deliberate
+divergences from legacy: allow-and-log over-issue/FEFO (locked ruling),
+per-row+bulk approvals instead of the legacy single EOD commit, MTC block
+(stricter than legacy warn-only). Skipped by choice: B2 SME batch entry lane,
+B3 QR request queue, B4 PO-PDF blob, B7 admin extras, C3 OCR doc assist.
 Phase 8 (2026-07-13): **/analytics/lining-coverage** — the SME engine run
 against LIVE ledger stock (RL/BL coverage + burn-based depletion dates,
 HOD/Logistics page at /hod/lining-coverage) · **abuse hardening** — OTP 3/h

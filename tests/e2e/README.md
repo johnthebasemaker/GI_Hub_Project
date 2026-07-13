@@ -34,6 +34,9 @@ Prereqs: repo `.venv` (backend deps), local Postgres on `:5433` with the
 | `specs/workflows.spec.ts` | W1/W1b/W2/W3 multi-role state machines (the 21-check QA harness, ported) |
 | `specs/negative-access.spec.ts` | role-lock 403 lattice + UI affordance hiding |
 | `specs/exec-summary.spec.ts` | Executive Summary renders; Download PDF yields a real `%PDF-` file |
+| `specs/offline-queue.spec.ts` | offline mutation queue: queue → badge → reconnect → HOD sees the replayed entry |
+| `specs/ask-data.spec.ts` | /ai/query template lane from the HOD dashboard card |
+| `specs/entry-docs.spec.ts` | **`gated` project, runs last** — flips `require_entry_documents` ON and proves the document gate + library |
 
 ## CI
 
