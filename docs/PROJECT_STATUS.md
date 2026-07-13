@@ -48,8 +48,19 @@ recipient (critical alerts always immediate). Operator TODO: approve
 `WHATSAPP_WEBHOOK_VERIFY_TOKEN`/`WHATSAPP_APP_SECRET` + subscribe the webhook
 URL in Meta.
 Gates green:
-`service_tests` **591/0**, `parity_check` **5/5**, `bug_check` **599/0**,
-`parity:sme` **509**, frontend build ✅, `tsc --noEmit` ✅, alembic single head **d6b0e72f51a8**.
+`service_tests` **602/0**, `parity_check` **5/5**, `bug_check` **599/0**,
+`parity:sme` **509**, frontend build ✅, `tsc --noEmit` ✅, alembic single head
+**d6b0e72f51a8**, Playwright E2E **38/38** (`cd tests/e2e && npm test`).
+Polish sprint (2026-07-13): cutover migration EXECUTED against the :5433
+mirror (`cutover_migrate.py --strict --wipe`, sync driver) → CUTOVER ✅
+VERIFIED + migrated data visually QA'd in the live UI; the §F2 Playwright
+plan is now BUILT (`tests/e2e/` — throwaway-DB globalSetup, per-role
+storageState, auth/smoke/workflows/negative-access/exec-PDF/offline/ask-data
+specs); the SPA is an installable PWA (manifest + autoUpdate SW + NetworkFirst
+read cache) with an IndexedDB offline mutation queue on the entry forms
+(header sync badge, auto-replay on reconnect); and `POST /ai/query` powers an
+"Ask your data" dashboard card for level ≥2 — deterministic site-pinned SQL
+templates for HODs, NL→SQL fallback (unscoped only, AI-5 ruling intact).
 QA night shift (2026-07-12): full multi-role E2E on an isolated `gihub_e2e`
 clone — 21/21 workflow checks (W1 entry-approval, W2 SMR, W3 PR→PO) + 63/63
 page-render probes (0×500) + negative-access lattice, all green; **no
@@ -205,6 +216,15 @@ user-authorized; Phase-4/5/6 feature work otherwise reused existing tables
 ---
 
 ### F2. Automated visual E2E — the Playwright plan (2026-07-12 QA night shift)
+
+> ✅ **BUILT 2026-07-13 (polish sprint Phase A)** — the suite lives at
+> `tests/e2e/` (not `frontend/e2e/`): DB-clone globalSetup via the real
+> cutover script, hermetic uvicorn :8010 + Vite :5183, per-role storageState
+> (admin/hod/sk/supervisor/logistics), specs for auth, per-role smoke,
+> W1/W1b/W1c/W2/W3 workflows, negative access, exec-summary PDF, the offline
+> queue and the ask-data card — **38/38 in ~14 s** via `npm test`. The plan
+> below is kept for the CI wiring + remaining matrix rows (see
+> `tests/e2e/README.md`).
 
 `docs/automatic_test.md` is the permanent, human-run test matrix. To turn it
 into a **scripted, headless CI suite**, here is exactly what it takes:
