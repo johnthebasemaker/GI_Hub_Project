@@ -132,7 +132,8 @@ export default function IssuePage() {
     const rows = staged.map(({ _uid, _label, ...rest }) => { void _uid; void _label; return rest })
     try {
       const res = await bulk.mutateAsync(rows)
-      message.success(`${res.staged} issue line(s) submitted for HOD approval`)
+      if (res.queued) message.warning(`Offline — ${res.staged} issue line(s) saved to the sync queue`)
+      else message.success(`${res.staged} issue line(s) submitted for HOD approval`)
       setStaged([])
       form.resetFields(['SAP_Code', 'Quantity', 'Issued_To', 'PR_Number', 'Tank_No', 'Serial_No', 'Lot_Number', 'Remarks'])
     } catch (e) {

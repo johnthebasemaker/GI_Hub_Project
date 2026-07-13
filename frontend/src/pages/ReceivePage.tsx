@@ -139,7 +139,8 @@ export default function ReceivePage() {
     const rows = staged.map(({ _uid, _label, ...rest }) => { void _uid; void _label; return rest })
     try {
       const res = await bulk.mutateAsync(rows)
-      message.success(`${res.staged} receipt line(s) submitted for HOD approval`)
+      if (res.queued) message.warning(`Offline — ${res.staged} receipt line(s) saved to the sync queue`)
+      else message.success(`${res.staged} receipt line(s) submitted for HOD approval`)
       setStaged([])
       form.resetFields(RESET_FIELDS)
     } catch (e) {

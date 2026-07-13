@@ -10,6 +10,13 @@ import { AuthProvider } from './auth/AuthContext'
 import ErrorBoundary from './components/ErrorBoundary'
 import { ThemeModeProvider, useThemeMode } from './theme/ThemeContext'
 import { darkTheme, lightTheme } from './theme/themes'
+import { registerSW } from 'virtual:pwa-register'
+import { initOfflineQueue } from './offline/queue'
+
+// Phase B — PWA: SW registration (no-op in dev; auto-updates in prod builds)
+// + the offline mutation queue's boot flush / online listener / badge events.
+registerSW({ immediate: true })
+initOfflineQueue()
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 15_000, refetchOnWindowFocus: false } },

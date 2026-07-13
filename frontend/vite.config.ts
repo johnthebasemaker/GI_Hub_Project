@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { VitePWA } from 'vite-plugin-pwa'
 
 // The SPA calls the FastAPI backend under /api; the dev server proxies that to
 // the uvicorn process on :8000 (so there are no CORS concerns in dev and the
@@ -12,7 +13,51 @@ import react from '@vitejs/plugin-react'
 const tunnel = process.env.VITE_TUNNEL === '1'
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    // Phase B — PWA: installable app + offline read cache. The service worker
+    // is generated only for `vite build` output (dev/HMR is unaffected). The
+    // offline MUTATION queue is separate app code (src/offline/queue.ts) and
+    // works in dev too.
+    VitePWA({
+      registerType: 'autoUpdate',
+      includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
+      manifest: {
+        name: 'GI Hub — Warehouse & Inventory',
+        short_name: 'GI Hub',
+        description: 'Warehouse, inventory & procurement console',
+        theme_color: '#0a192f',
+        background_color: '#0a192f',
+        display: 'standalone',
+        start_url: '/',
+        icons: [
+          { src: '/pwa-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/pwa-512.png', sizes: '512x512', type: 'image/png' },
+          { src: '/pwa-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+        ],
+      },
+      workbox: {
+        // never let the SPA fallback swallow API calls
+        navigateFallbackDenylist: [/^\/api\//],
+        runtimeCaching: [
+          {
+            // core READ endpoints for offline warehouse viewing: stock views,
+            // inventory master, ledger lists, notifications. Network first
+            // (4 s), fall back to the last good copy for up to a day.
+            urlPattern: /\/api\/(stock\/|inventory|receipts|consumption|returns|notifications|meta\/)/,
+            method: 'GET',
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'gi-api-read',
+              networkTimeoutSeconds: 4,
+              expiration: { maxEntries: 300, maxAgeSeconds: 24 * 60 * 60 },
+              cacheableResponse: { statuses: [200] },
+            },
+          },
+        ],
+      },
+    }),
+  ],
   server: {
     port: 5173,
     ...(tunnel ? { allowedHosts: ['gi.giinventory.com'] as string[] } : {}),

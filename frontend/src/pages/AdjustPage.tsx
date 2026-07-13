@@ -43,7 +43,8 @@ export default function AdjustPage() {
     }
     try {
       const res = await adjust.mutateAsync(payload)
-      message.success(res.message ?? 'Submitted for HOD approval')
+      if ((res as { queued?: boolean }).queued) message.warning('Offline — entry saved to the sync queue')
+      else message.success(String((res as { message?: string }).message ?? 'Submitted for HOD approval'))
       form.resetFields(['SAP_Code', 'system_qty', 'counted_qty', 'reason_code', 'Lot_Number', 'notes'])
     } catch (e) {
       message.error(errMsg(e))

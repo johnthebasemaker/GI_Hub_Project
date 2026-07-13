@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, deliveryHeaders, fetchList } from './client'
+import { postWithOfflineFallback } from '../offline/queue'
 import type { Health, InventorySummary, ListResponse, Row } from './client'
 import type { SmeSnapshot } from '../sme/engine'
 
@@ -89,8 +90,10 @@ function useLedgerPost(path: string, extra: string[]) {
   return useMutation({
     // Material transactions carry the per-form delivery preference so the
     // backend can stage "evening" notifications; other endpoints never do.
+    // They also opt in to the offline queue: a network failure saves the
+    // payload to IndexedDB and resolves {queued:true} instead of throwing.
     mutationFn: (body: Row) =>
-      api.post(path, body, { headers: deliveryHeaders() }).then((r) => r.data),
+      postWithOfflineFallback<Row>(path, body, deliveryHeaders()),
     onSuccess: () => invalidateLedger(qc, extra),
   })
 }
@@ -119,13 +122,19 @@ export function useReceiptMeta(sap?: string) {
 }
 
 // Phase 1 — bulk entry: stage a batch of receipts/issues/returns in one call.
-export interface BulkResult { staged: number; pending_ids: number[]; kind: string }
+export interface BulkResult { staged: number; pending_ids: number[]; kind: string; queued?: boolean }
 export function useBulkEntry(kind: 'receipt' | 'consumption' | 'return', extra: string[] = []) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (rows: Row[]) =>
-      api.post<BulkResult>('/entry/bulk', { kind, rows },
-        { headers: deliveryHeaders() }).then((r) => r.data),
+    // Bulk staging also opts in to the offline queue (see offline/queue.ts):
+    // a network failure saves the batch and resolves {queued:true}.
+    mutationFn: async (rows: Row[]): Promise<BulkResult> => {
+      const res = await postWithOfflineFallback<BulkResult>(
+        '/entry/bulk', { kind, rows }, deliveryHeaders())
+      return 'queued' in res && res.queued === true
+        ? { staged: rows.length, pending_ids: [], kind, queued: true }
+        : (res as BulkResult)
+    },
     onSuccess: () => invalidateLedger(qc, extra),
   })
 }

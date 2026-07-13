@@ -55,7 +55,8 @@ export default function ReturnPage() {
     }
     try {
       const res = await ret.mutateAsync(payload)
-      message.success(res.message ?? 'Submitted for HOD approval')
+      if ((res as { queued?: boolean }).queued) message.warning('Offline — entry saved to the sync queue')
+      else message.success(String((res as { message?: string }).message ?? 'Submitted for HOD approval'))
       form.resetFields(['SAP_Code', 'Quantity', 'Reason', 'Remarks'])
     } catch (e) {
       message.error(errMsg(e))

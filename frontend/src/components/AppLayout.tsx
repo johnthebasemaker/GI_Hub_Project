@@ -14,6 +14,7 @@ import { siderTheme } from '../theme/themes'
 import CommandPalette from './CommandPalette'
 import HubAssistant from './HubAssistant'
 import NotificationBell from './NotificationBell'
+import OfflineSyncBadge from './OfflineSyncBadge'
 import ProfileModal from './ProfileModal'
 
 const { Header, Sider, Content } = Layout
@@ -191,6 +192,7 @@ export default function AppLayout() {
               <Button type="text" aria-label="Toggle color theme"
                 icon={mode === 'dark' ? <SunOutlined /> : <MoonOutlined />} onClick={toggle} />
             </Tooltip>
+            <OfflineSyncBadge />
             <NotificationBell />
             {user && (
               <Tooltip title="My profile — update phone number">
