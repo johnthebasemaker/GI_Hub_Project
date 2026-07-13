@@ -3,8 +3,8 @@
 > **Purpose:** a fresh AI instance (or engineer) reading ONLY this file plus
 > [`PROJECT_STATUS.md`](PROJECT_STATUS.md) must understand the exact state,
 > tech stack and rules of the project with no chat history. Written 2026-07-13
-> at gates `service_tests 649/0 · Playwright 39/39 · parity 5/5 · build+tsc ✅ ·
-> alembic head e7c31a9f24d5`.
+> at gates `service_tests 681/0 · Playwright 39/39 · parity 5/5 · build+tsc ✅ ·
+> alembic head e7c31a9f24d5` (updated same day: SME S6 shipped at cutover).
 
 ---
 
@@ -44,14 +44,15 @@ contract; alembic migrations in `backend/alembic/versions` (single head
 | `lining_analytics.py` | `GET /analytics/lining-coverage` — read-only SME engine with **live-ledger availability pool**; RL/BL family coverage + 90-day-burn depletion dates (hod/logistics; scoped site-pinned, default CNCEC) |
 | `logistics.py` / `warehouse.py` / `receiving.py` | PR→PO→assignment→DN two-stage approval state machine (`draft→pending_logistics→…→received`), RL/BL family separation, reschedules, force-close + 24 h undo, vendor returns |
 | `requests.py` | supervisor SMRs (worker must be an active employee at the site) → SK approve → HOD issue queue |
-| `sme.py` + `sme_engine.py` | frozen SME read layer + planning engine — **dual TS/Python engines with golden parity; change BOTH or neither** (frontend twin: `frontend/src/sme/engine.ts`) |
+| `sme.py` + `sme_engine.py` | SME read layer + planning engine — **dual TS/Python engines with golden parity; change BOTH or neither** (frontend twin: `frontend/src/sme/engine.ts`) |
+| `sme_master.py` | **Phase S6 (cutover day): Master Data CRUD** — `/sme/master/*` equipment/recipes/materials-seed/progress/settings, exact-lock {hod, admin}, HOD site-pinned, every write audited; equipment create seeds `sme_sqm_progress`, delete cascades it; materials write `sme_inventory_seed` ONLY (Canon Rule 2) |
 | `ai/` | Hub Assistant SSE, OCR lanes, PDF extract, `/ai/nl-search` (unscoped, Ollama→safety gate→`gi_ai_ro` read-only PG login), **`/ai/query` two-lane chat-with-your-data** (below) |
 | `notifications.py` + `services/notifications.py` | in-app bell (`app_notifications`) + unified `dispatch()` (bell ALWAYS + best-effort WhatsApp; `X-Delivery-Preference: evening` stages into `pending_summary_notifications` for the 16:00 digest; critical always immediate) |
 | `services/whatsapp.py` | Meta Cloud API v2 outbox (`whatsapp_outbox`), approved templates `gi_action_required/gi_status_update/gi_critical_alert/gi_otp_code/gi_evening_summary` (lang **`en`**), friendly #131030 sandbox handling |
 | `webhook.py` | inbound Meta webhook (`/whatsapp/webhook` + `/api/v1/…`): verify-token handshake, **X-Hub-Signature-256 HMAC**, STOCK/RESET PASSWORD commands, session-text replies |
 | `ratelimit.py` | see §6 |
 | `console.py` | admin settings (whitelist incl. `maintenance_mode`, `require_entry_documents`, `mtc_required_category`), pg_dump backup, sessions revoke, outbox retries, lot lifecycle |
-| `service_tests.py` | the 649-check gate (suites A…AH), see §8 |
+| `service_tests.py` | the 681-check gate (suites A…AI), see §8 |
 
 ## 3. Database facts that bite
 
@@ -144,7 +145,7 @@ memory — deliberately not reproduced here).
 ## 8. Testing — the gates
 
 ```bash
-# 1. service tests (649 checks, suites A…AH) — CI mirror, hermetic
+# 1. service tests (681 checks, suites A…AI) — CI mirror, hermetic
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
 JWT_SECRET=ci-only-service-test-secret-key-32bytes-min \
 .venv/bin/python -u -m backend.api.service_tests
@@ -176,6 +177,7 @@ Streamlit app. Manual matrix: [automatic_test.md](automatic_test.md).
   remain: approve `gi_evening_summary`, set webhook env + subscribe URL,
   set `PUBLIC_BASE_URL`.
 - Remaining program work: production cutover execution (runbook
-  `scripts/migration/README.md`), SME S6 CRUD (cutover day), optional LOW
-  polish + skipped parity items (B2 SME batch entry lane, B3 QR request
-  queue, B4 PO PDF blob, B7 admin extras, C3 OCR doc assist).
+  `scripts/migration/README.md`) — SME S6 CRUD SHIPPED 2026-07-13
+  (`sme_master.py` + Master Data tab); optional LOW polish + skipped parity
+  items (B2 SME batch entry lane, B3 QR request queue, B4 PO PDF blob,
+  B7 admin extras, C3 OCR doc assist).

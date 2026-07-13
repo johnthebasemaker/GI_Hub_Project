@@ -1,4 +1,4 @@
-# PROJECT STATUS — resume here (updated 2026-07-13 · parity sprint DONE — only cutover execution/S6 + optional polish remain)
+# PROJECT STATUS — resume here (updated 2026-07-13 · CUTOVER DAY: SME S6 SHIPPED — only cutover deployment + optional polish remain)
 
 **This is the single source of truth for "where we left off."** A fresh chat
 should read this file, then [`ARCHITECTURE.md`](ARCHITECTURE.md) (**the full
@@ -115,8 +115,16 @@ first-time setup skips step 1).
 **self-service phone changes via a WhatsApp OTP** (`phone_otp`, admins override
 without OTP). Triggers now span PR/PO, DN multi-stage, entries/approvals, MTC
 upload, lot quarantine/dispose, vendor returns, reschedules, force-close, SMR,
-cross-site, SLA, FEFO, report delivery. The ONLY remaining parked item is
-**SME Phase S6 (Master Data CRUD)**, deferred to Cutover Day (dual-write drift protection).
+cross-site, SLA, FEFO, report delivery.
+**CUTOVER DAY (2026-07-13): SME Phase S6 (Master Data CRUD) SHIPPED** — the
+last parked phase. `backend/api/sme_master.py` (`/sme/master/*`, exact-lock
+{hod, admin}, HOD site-pinned, all writes audited; legacy Tab 8 semantics:
+equipment create seeds `sme_sqm_progress` and delete cascades it, materials
+write `sme_inventory_seed` only, settings guarded by equipment usage) + the
+🗄️ Master Data tab in SmePage (5 sub-tabs, mutations invalidate the whole
+/sme query family). Suite **AI** (+32) → `service_tests` **681/0**; engines
++ goldens untouched (`parity:sme` 509 PASS). Run-log:
+POSTGRES_MIGRATION.md §8.
 The user is handling **Cloudflare-Tunnel local hosting** (`gi.giinventory.com`) +
 UI smoke testing himself. Remaining feature backlog: §4 below + the
 `feature-gap-program` memory (only optional LOW polish left).
@@ -313,7 +321,9 @@ LOW polish remains (details in the `feature-gap-program` memory):
 8. **Phase B restructure** (in-repo, one commit at cutover): legacy → `legacy/`,
    artifacts → `data-archive/`, bridge tools → `tools/`. (A verified copy-out
    already exists at `~/gi_hub_v2`.)
-9. **SME Phase S6 — Master Data CRUD + polish** (AFTER cutover only).
+9. ~~**SME Phase S6 — Master Data CRUD**~~ ✅ **SHIPPED 2026-07-13 (cutover
+   day)** — `backend/api/sme_master.py` + SmePage 🗄️ Master Data tab; suite
+   AI → service_tests 681/0. Optional polish only.
 
 ---
 

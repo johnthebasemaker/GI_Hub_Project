@@ -1,8 +1,10 @@
 """
-backend/api/sme.py — SME Material Estimator (READ-ONLY).
+backend/api/sme.py — SME Material Estimator (reads + pure compute).
 
-The SME integration is FROZEN in the Streamlit app (see the SME Canon in
-handoff.md). This portal only READS the sme_* tables — it never writes them.
+This module only READS the sme_* tables — it never writes them. Master Data
+writes live in backend/api/sme_master.py (Phase S6, unlocked at cutover);
+everything here stays a pure read so the analytics/engine surface is
+side-effect-free.
 `SQL_SME_MATERIALS` is a Postgres-native port of the SQLite `sme_materials_view`
 (derived Available_Qty = seed + received − consumed, joined via
 SAP_Code → inventory.Material_Code); parity vs the SQLite view is asserted by
@@ -348,7 +350,7 @@ async def demand_matrix(site_id: Optional[str] = None,
 # engine.ts); the cascade endpoint runs the SAME algorithm server-side via
 # backend/api/sme_engine.py — it is the parity oracle for the TS port and the
 # compute backend for session-scoped exports (Phase S3). POST here is compute,
-# not mutation: nothing is written (SME Canon holds — no write endpoints exist).
+# not mutation: nothing is written (S6 writes live in sme_master.py only).
 
 class CascadeBody(BaseModel):
     priority_order: list[str] = Field(default_factory=list, max_length=2000)

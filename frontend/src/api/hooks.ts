@@ -1323,6 +1323,95 @@ export function useSmeSnapshot(siteId?: string) {
   })
 }
 
+// --- SME Phase S6 (cutover day): Master Data CRUD --------------------------------
+// Any master-data write changes the engine's INPUTS, so invalidate the whole
+// /sme query family — dashboard, session builder, coverage and grids all
+// recompute from the fresh snapshot.
+function invalidateSmeFamily(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0] ?? '').startsWith('/sme') })
+}
+
+export type SmeMasterKind = 'equipment' | 'recipes' | 'materials' | 'progress'
+
+export function useSmeMasterList(kind: SmeMasterKind, siteId?: string) {
+  const scoped = kind === 'equipment' || kind === 'progress'
+  return useQuery({
+    queryKey: [`/sme/master/${kind}`, scoped ? siteId ?? '' : ''],
+    queryFn: async () =>
+      (await api.get<{ items: Row[] }>(`/sme/master/${kind}`,
+        { params: scoped && siteId ? { site_id: siteId } : {} })).data.items,
+  })
+}
+
+export function useSmeMasterCreate(kind: 'equipment' | 'recipes' | 'materials') {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Row) => api.post(`/sme/master/${kind}`, body).then((r) => r.data),
+    onSuccess: () => invalidateSmeFamily(qc),
+  })
+}
+
+export function useSmeMasterPatch(kind: 'equipment' | 'recipes' | 'materials') {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string | number; body: Row }) =>
+      api.patch(`/sme/master/${kind}/${encodeURIComponent(String(id))}`, body)
+        .then((r) => r.data),
+    onSuccess: () => invalidateSmeFamily(qc),
+  })
+}
+
+export function useSmeMasterDelete(kind: 'equipment' | 'recipes' | 'materials') {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string | number) =>
+      api.delete(`/sme/master/${kind}/${encodeURIComponent(String(id))}`)
+        .then((r) => r.data),
+    onSuccess: () => invalidateSmeFamily(qc),
+  })
+}
+
+export function useSmeProgressUpsert() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: Row) => api.put('/sme/master/progress', body).then((r) => r.data),
+    onSuccess: () => invalidateSmeFamily(qc),
+  })
+}
+
+export interface SmeMasterSettings { site_id: string; locations: string[]; types: string[] }
+export function useSmeMasterSettings(siteId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['/sme/master/settings', siteId ?? ''],
+    enabled,
+    queryFn: async () =>
+      (await api.get<SmeMasterSettings>('/sme/master/settings',
+        { params: siteId ? { site_id: siteId } : {} })).data,
+  })
+}
+
+export function useSmeSettingAdd() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ kind, value, site_id }:
+      { kind: 'locations' | 'types'; value: string; site_id?: string }) =>
+      api.post(`/sme/master/settings/${kind}`,
+        { value, ...(site_id ? { site_id } : {}) }).then((r) => r.data),
+    onSuccess: () => invalidateSmeFamily(qc),
+  })
+}
+
+export function useSmeSettingDelete() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ kind, value, site_id }:
+      { kind: 'locations' | 'types'; value: string; site_id?: string }) =>
+      api.delete(`/sme/master/settings/${kind}`,
+        { params: { value, ...(site_id ? { site_id } : {}) } }).then((r) => r.data),
+    onSuccess: () => invalidateSmeFamily(qc),
+  })
+}
+
 // --- Report archive + schedules -------------------------------------------------
 export function useReportArchive(reportType?: string) {
   return useQuery({

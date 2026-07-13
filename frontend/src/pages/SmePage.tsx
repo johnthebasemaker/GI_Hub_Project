@@ -11,10 +11,12 @@ import ExecutionPlan from '../sme/ExecutionPlan'
 import LocationReport from '../sme/LocationReport'
 import { EquipmentMatrixReport, ScopedExport, SystemCodeReport } from '../sme/MatrixReports'
 import TotalOverview from '../sme/TotalOverview'
+import MasterData from '../sme/MasterData'
 import { ScenarioProvider } from '../sme/ScenarioContext'
 import SessionBuilder from '../sme/SessionBuilder'
 import SessionReport from '../sme/SessionReport'
 import SmeDashboard from '../sme/SmeDashboard'
+import { useAuth } from '../auth/AuthContext'
 
 // One-click XLSX export of an SME view (read-only server render).
 function ExportButton({ exportKey, siteId }: { exportKey: string; siteId?: string }) {
@@ -103,6 +105,10 @@ function SmePageBody({ siteId, setSiteId, sites }: {
   const sqm = useSmeSqm(siteId)
   const materials = useSmeMaterials()
   const comparison = useSmeComparison(siteId)
+  // S6: master-data editing is the legacy exact-lock {hod, admin}; the page
+  // itself is reachable at level ≥2, so hide the tab from anyone else.
+  const { user } = useAuth()
+  const canEditMasters = user?.role === 'hod' || user?.role === 'admin'
 
   // T3 sticky header: the title + site-picker block pins at the viewport top
   // and the Tabs nav pins right below it (offset measured live so wrapping /
@@ -136,8 +142,8 @@ function SmePageBody({ siteId, setSiteId, sites }: {
           SME Material Estimator
         </Typography.Title>
         <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
-          Read-only view of the estimator data (equipment, recipes/BOM, SQM progress,
-          materials with derived available quantity).
+          Estimator data (equipment, recipes/BOM, SQM progress, materials with
+          derived available quantity) — masters editable in 🗄️ Master Data (S6).
         </Typography.Paragraph>
         <Space style={{ marginBottom: 12 }}>
           <Select allowClear placeholder="All sites" style={{ width: 180 }} value={siteId}
@@ -209,6 +215,10 @@ function SmePageBody({ siteId, setSiteId, sites }: {
             ),
           },
           { key: 'demand', label: 'Demand Matrix', children: <DemandMatrix siteId={siteId} /> },
+          ...(canEditMasters ? [{
+            key: 'master', label: '🗄️ Master Data',
+            children: <MasterData siteId={siteId} />,
+          }] : []),
         ]}
       />
     </div>

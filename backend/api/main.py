@@ -61,6 +61,7 @@ from .reports import router as reports_router  # noqa: E402
 from .receiving import router as receiving_router  # noqa: E402
 from .requests import router as requests_router  # noqa: E402
 from .sme import router as sme_router  # noqa: E402
+from .sme_master import router as sme_master_router  # noqa: E402
 from .stock import router as stock_router  # noqa: E402
 from .warehouse import router as warehouse_router  # noqa: E402
 from .dashboard import router as dashboard_router  # noqa: E402
@@ -217,8 +218,11 @@ app.include_router(receiving_router)
 # Supervisor material requests — create → SK approve → pending_issues (self-guarded).
 app.include_router(requests_router)
 
-# SME Material Estimator — READ-ONLY over the frozen sme_* tables (self-guarded, ≥hod).
+# SME Material Estimator — reads over the sme_* tables (self-guarded, ≥hod).
 app.include_router(sme_router)
+
+# SME Phase S6 (cutover day) — Master Data CRUD, exact-lock {hod, admin}.
+app.include_router(sme_master_router)
 
 # Admin console — user management + audit-log viewer (self-guarded, admin only).
 app.include_router(admin_router)

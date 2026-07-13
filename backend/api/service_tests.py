@@ -5185,6 +5185,217 @@ async def test_entry_documents():
             await _set_gate("0")
 
 
+async def test_sme_master_crud():
+    """Suite AI — SME Phase S6 (cutover day): Master Data CRUD.
+
+    The write endpoints COMMIT real rows (unique SVC6- prefixes), so this
+    suite cleans up after itself. Audit rows are left in place (never delete
+    system_audit_log; assertions are delta-counted)."""
+    from sqlalchemy import text as _sqt
+
+    async def _scalar(sql: str, **params):
+        async with SessionLocal() as s:
+            return (await s.execute(_sqt(sql), params)).scalar()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        # Own X-Real-IP: by this suite the shared client IP has long burned
+        # through the 10/min login budget.
+        _ip = {"X-Real-IP": "203.0.113.86"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", json={"username": u, "password": p},
+                              headers=_ip)
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        worker_t = await token("worker", "floor2026")       # store_keeper (0)
+        sup_t = await token("supervisor", "super2026")      # supervisor (1)
+        hod_t = await token("hod", "hod2026")               # hod @ CNCEC (2)
+        admin_t = await token("admin", "admin2026")         # admin (4)
+
+        # ── exact-lock {hod, admin} ─────────────────────────────────────────
+        r = await ac.get("/sme/master/equipment", headers=H(worker_t))
+        check("s6: worker → 403 on master reads", r.status_code == 403, f"got {r.status_code}")
+        r = await ac.post("/sme/master/recipes", headers=H(sup_t),
+                          json={"Lining_System_Code": "9901", "Material_Code": "X"})
+        check("s6: supervisor → 403 on master writes", r.status_code == 403, f"got {r.status_code}")
+
+        # ── equipment: create pairs with a progress seed ────────────────────
+        audit_before = await _scalar(
+            "SELECT COUNT(*) FROM system_audit_log WHERE action_type='SME_CREATE_EQUIPMENT'")
+        r = await ac.post("/sme/master/equipment", headers=H(hod_t), json={
+            "Equipment_Tag_No": "SVC6-TANK-1", "Lining_System_Code": "9901",
+            "Surface_Area_SQM": 50, "Name": "S6 test tank", "Location": "SVC6-LOC"})
+        check("s6: hod creates equipment → 201", r.status_code == 201, f"{r.status_code} {r.text[:120]}")
+        eq_id = r.json().get("id")
+        prog_orig = await _scalar(
+            "SELECT \"Original_SQM\" FROM sme_sqm_progress WHERE \"Site_ID\"='CNCEC' "
+            "AND \"Equipment_Tag_No\"='SVC6-TANK-1' AND \"Lining_System_Code\"='9901'")
+        check("s6: create seeds the SQM-progress row (Original=50)",
+              prog_orig is not None and abs(float(prog_orig) - 50) < 1e-9, f"got {prog_orig}")
+        audit_after = await _scalar(
+            "SELECT COUNT(*) FROM system_audit_log WHERE action_type='SME_CREATE_EQUIPMENT'")
+        check("s6: create writes an SME_CREATE_EQUIPMENT audit",
+              audit_after == audit_before + 1, f"{audit_before} → {audit_after}")
+
+        r = await ac.post("/sme/master/equipment", headers=H(hod_t), json={
+            "Equipment_Tag_No": "SVC6-TANK-1", "Lining_System_Code": "9901",
+            "Surface_Area_SQM": 10})
+        check("s6: duplicate (site, tag, code) → 409", r.status_code == 409, f"got {r.status_code}")
+        r = await ac.post("/sme/master/equipment", headers=H(hod_t), json={
+            "Equipment_Tag_No": "SVC6-TANK-X", "Lining_System_Code": "9901",
+            "Surface_Area_SQM": 10, "site_id": "HQ"})
+        check("s6: hod naming a foreign site → 403", r.status_code == 403, f"got {r.status_code}")
+        r = await ac.post("/sme/master/equipment", headers=H(admin_t), json={
+            "Equipment_Tag_No": "SVC6-TANK-X", "Lining_System_Code": "9901",
+            "Surface_Area_SQM": 10})
+        check("s6: admin without site_id → 422", r.status_code == 422, f"got {r.status_code}")
+
+        # the new tag flows into the prediction model snapshot (CNCEC scope)
+        r = await ac.get("/sme/model-snapshot", headers=H(hod_t))
+        tags = {e["Equipment_Tag_No"] for e in r.json().get("equipment", [])}
+        check("s6: model snapshot picks up the new equipment",
+              r.status_code == 200 and "SVC6-TANK-1" in tags, f"got {r.status_code}")
+
+        # update: legacy cell-edit semantics — progress is NOT cascaded
+        r = await ac.patch(f"/sme/master/equipment/{eq_id}", headers=H(hod_t),
+                           json={"Surface_Area_SQM": 60, "Name": "S6 renamed"})
+        check("s6: hod edits equipment → 200", r.status_code == 200, f"got {r.status_code}")
+        new_name = await _scalar(
+            'SELECT "Name" FROM sme_equipment WHERE id=:i', i=eq_id)
+        prog_after = await _scalar(
+            "SELECT \"Original_SQM\" FROM sme_sqm_progress WHERE \"Site_ID\"='CNCEC' "
+            "AND \"Equipment_Tag_No\"='SVC6-TANK-1' AND \"Lining_System_Code\"='9901'")
+        check("s6: edit lands on the row; progress untouched (legacy semantics)",
+              new_name == "S6 renamed" and abs(float(prog_after) - 50) < 1e-9,
+              f"name={new_name} orig={prog_after}")
+
+        # ── progress: None-preserving upsert ────────────────────────────────
+        r = await ac.put("/sme/master/progress", headers=H(hod_t), json={
+            "Equipment_Tag_No": "SVC6-TANK-1", "Lining_System_Code": "9901",
+            "Done_SQM": 5})
+        prog_row = None
+        if r.status_code == 200:
+            async with SessionLocal() as s:
+                prog_row = (await s.execute(_sqt(
+                    "SELECT \"Original_SQM\", \"Done_SQM\" FROM sme_sqm_progress "
+                    "WHERE \"Site_ID\"='CNCEC' AND \"Equipment_Tag_No\"='SVC6-TANK-1' "
+                    "AND \"Lining_System_Code\"='9901'"))).first()
+        check("s6: progress upsert with only Done_SQM preserves Original_SQM",
+              r.status_code == 200 and prog_row is not None
+              and abs(float(prog_row[0]) - 50) < 1e-9 and abs(float(prog_row[1]) - 5) < 1e-9,
+              f"{r.status_code} row={tuple(prog_row) if prog_row else None}")
+        r = await ac.put("/sme/master/progress", headers=H(hod_t), json={
+            "Equipment_Tag_No": "SVC6-TANK-1", "Lining_System_Code": "9901"})
+        check("s6: progress upsert with no values → 422", r.status_code == 422, f"got {r.status_code}")
+
+        # ── settings: add / dup / in-use guard / delete ─────────────────────
+        r = await ac.post("/sme/master/settings/locations", headers=H(hod_t),
+                          json={"value": "SVC6-LOC"})
+        check("s6: add location → 201", r.status_code == 201, f"got {r.status_code}")
+        r = await ac.post("/sme/master/settings/locations", headers=H(hod_t),
+                          json={"value": "SVC6-LOC"})
+        check("s6: duplicate location → 409", r.status_code == 409, f"got {r.status_code}")
+        r = await ac.get("/sme/master/settings", headers=H(hod_t))
+        check("s6: settings list carries the new value",
+              r.status_code == 200 and "SVC6-LOC" in r.json().get("locations", []),
+              f"{r.status_code} {r.text[:120]}")
+        r = await ac.delete("/sme/master/settings/locations", headers=H(hod_t),
+                            params={"value": "SVC6-LOC"})
+        check("s6: delete refused while equipment uses the location (409)",
+              r.status_code == 409, f"got {r.status_code}")
+        r = await ac.delete("/sme/master/settings/nope", headers=H(hod_t),
+                            params={"value": "x"})
+        check("s6: unknown setting kind → 404", r.status_code == 404, f"got {r.status_code}")
+
+        # ── equipment delete cascades progress; location then removable ─────
+        r = await ac.delete(f"/sme/master/equipment/{eq_id}", headers=H(hod_t))
+        prog_count = await _scalar(
+            "SELECT COUNT(*) FROM sme_sqm_progress WHERE \"Equipment_Tag_No\"='SVC6-TANK-1'")
+        check("s6: delete cascades the SQM-progress row",
+              r.status_code == 200 and prog_count == 0,
+              f"{r.status_code} progress={prog_count}")
+        r = await ac.delete("/sme/master/settings/locations", headers=H(hod_t),
+                            params={"value": "SVC6-LOC"})
+        check("s6: location removable once unused", r.status_code == 200, f"got {r.status_code}")
+        r = await ac.delete(f"/sme/master/equipment/{eq_id}", headers=H(hod_t))
+        check("s6: deleting a gone row → 404", r.status_code == 404, f"got {r.status_code}")
+
+        # ── recipes (global) ────────────────────────────────────────────────
+        r = await ac.post("/sme/master/recipes", headers=H(hod_t), json={
+            "Lining_System_Code": "9901", "Material_Code": "SVC6-MAT-1",
+            "Material_Name": "S6 resin", "UOM": "KG", "For_1_SQM": 2.5})
+        check("s6: create recipe → 201", r.status_code == 201, f"{r.status_code} {r.text[:120]}")
+        rec_id = r.json().get("id")
+        r = await ac.post("/sme/master/recipes", headers=H(hod_t), json={
+            "Lining_System_Code": "9901", "Material_Code": "SVC6-MAT-1"})
+        check("s6: duplicate (code, material) recipe → 409", r.status_code == 409, f"got {r.status_code}")
+        r = await ac.patch(f"/sme/master/recipes/{rec_id}", headers=H(hod_t),
+                           json={"For_1_SQM": 3.25})
+        got = await _scalar('SELECT "For_1_SQM" FROM sme_recipe WHERE id=:i', i=rec_id)
+        check("s6: recipe patch lands", r.status_code == 200 and abs(float(got) - 3.25) < 1e-9,
+              f"{r.status_code} got={got}")
+        r = await ac.delete(f"/sme/master/recipes/{rec_id}", headers=H(hod_t))
+        check("s6: recipe delete → 200", r.status_code == 200, f"got {r.status_code}")
+        r = await ac.patch("/sme/master/recipes/999999999", headers=H(hod_t),
+                           json={"UOM": "L"})
+        check("s6: patch on a missing recipe → 404", r.status_code == 404, f"got {r.status_code}")
+
+        # ── materials: seed-only upsert (Canon Rule 2: ERP inventory untouched)
+        inv_before = await _scalar("SELECT COUNT(*) FROM inventory")
+        r = await ac.post("/sme/master/materials", headers=H(hod_t), json={
+            "Material_Code": "SVC6-MAT-1", "Material_Name": "S6 resin",
+            "UOM": "KG", "Initial_Available_Qty": 100})
+        check("s6: material seed create → 201", r.status_code == 201, f"{r.status_code} {r.text[:120]}")
+        r = await ac.post("/sme/master/materials", headers=H(hod_t), json={
+            "Material_Code": "SVC6-MAT-1", "Material_Name": "S6 resin v2",
+            "UOM": "KG", "Initial_Available_Qty": 130})
+        n_seed = await _scalar(
+            "SELECT COUNT(*) FROM sme_inventory_seed WHERE \"Material_Code\"='SVC6-MAT-1'")
+        qty = await _scalar(
+            "SELECT \"Initial_Available_Qty\" FROM sme_inventory_seed "
+            "WHERE \"Material_Code\"='SVC6-MAT-1'")
+        check("s6: re-POST is an upsert (1 row, re-baselined to 130)",
+              r.status_code == 201 and n_seed == 1 and abs(float(qty) - 130) < 1e-9,
+              f"{r.status_code} rows={n_seed} qty={qty}")
+        r = await ac.get("/sme/master/materials", headers=H(hod_t))
+        mat = next((m for m in r.json().get("items", [])
+                    if m["material_code"] == "SVC6-MAT-1"), None)
+        check("s6: materials grid derives availability for the seed",
+              mat is not None and abs(float(mat["available_qty"]) - 130) < 1e-9,
+              f"row={mat}")
+        r = await ac.patch("/sme/master/materials/SVC6-MAT-1", headers=H(hod_t),
+                           json={"Vendor": "S6 Vendor"})
+        check("s6: material patch → 200", r.status_code == 200, f"got {r.status_code}")
+        r = await ac.patch("/sme/master/materials/SVC6-NOPE", headers=H(hod_t),
+                           json={"Vendor": "x"})
+        check("s6: patch on a missing material → 404", r.status_code == 404, f"got {r.status_code}")
+        r = await ac.delete("/sme/master/materials/SVC6-MAT-1", headers=H(hod_t))
+        inv_after = await _scalar("SELECT COUNT(*) FROM inventory")
+        check("s6: material delete → 200; ERP inventory untouched throughout",
+              r.status_code == 200 and inv_before == inv_after,
+              f"{r.status_code} inv {inv_before}→{inv_after}")
+
+        # cleanup — remove every SVC6- artifact this suite committed
+        # (audit rows stay: system_audit_log is append-only by contract).
+        async with SessionLocal() as s:
+            await s.execute(_sqt(
+                "DELETE FROM sme_sqm_progress WHERE \"Equipment_Tag_No\" LIKE 'SVC6-%'"))
+            await s.execute(_sqt(
+                "DELETE FROM sme_equipment WHERE \"Equipment_Tag_No\" LIKE 'SVC6-%'"))
+            await s.execute(_sqt(
+                "DELETE FROM sme_recipe WHERE \"Material_Code\" LIKE 'SVC6-%'"))
+            await s.execute(_sqt(
+                "DELETE FROM sme_inventory_seed WHERE \"Material_Code\" LIKE 'SVC6-%'"))
+            await s.execute(_sqt(
+                "DELETE FROM system_settings WHERE value LIKE 'SVC6-%' "
+                "AND category IN ('sme_location','sme_equipment_type')"))
+            await s.commit()
+
+
 async def _relax_entry_gates() -> None:
     """Parity A1 — require_entry_documents defaults ON in production. Switch
     it OFF for the functional suites (they submit entries without documents);
@@ -5273,6 +5484,8 @@ async def main() -> int:
     await test_weekly_report()
     print("\n AH. entry documents + return gates + WBS (parity A1/A2/A3/A4)")
     await test_entry_documents()
+    print("\n AI. SME S6 master-data CRUD (cutover day)")
+    await test_sme_master_crud()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "
