@@ -122,20 +122,80 @@ export function useReceiptMeta(sap?: string) {
 }
 
 // Phase 1 — bulk entry: stage a batch of receipts/issues/returns in one call.
+// Parity A1: the batch may (must, while require_entry_documents is on) carry
+// batch-level supporting-document ids.
 export interface BulkResult { staged: number; pending_ids: number[]; kind: string; queued?: boolean }
+export interface BulkPayload { rows: Row[]; attachment_ids?: number[] }
 export function useBulkEntry(kind: 'receipt' | 'consumption' | 'return', extra: string[] = []) {
   const qc = useQueryClient()
   return useMutation({
     // Bulk staging also opts in to the offline queue (see offline/queue.ts):
     // a network failure saves the batch and resolves {queued:true}.
-    mutationFn: async (rows: Row[]): Promise<BulkResult> => {
+    mutationFn: async ({ rows, attachment_ids }: BulkPayload): Promise<BulkResult> => {
       const res = await postWithOfflineFallback<BulkResult>(
-        '/entry/bulk', { kind, rows }, deliveryHeaders())
+        '/entry/bulk', { kind, rows, attachment_ids: attachment_ids ?? [] }, deliveryHeaders())
       return 'queued' in res && res.queued === true
         ? { staged: rows.length, pending_ids: [], kind, queued: true }
         : (res as BulkResult)
     },
     onSuccess: () => invalidateLedger(qc, extra),
+  })
+}
+
+// Parity A4 — active WBS numbers for a site (entry forms; required once set).
+export function useWbsOptions(site?: string) {
+  return useQuery<string[]>({
+    queryKey: ['/entry/wbs', site],
+    enabled: !!site,
+    staleTime: 60_000,
+    queryFn: async () =>
+      (await api.get<{ wbs: string[] }>('/entry/wbs', { params: { site_id: site } })).data.wbs,
+  })
+}
+
+// Parity A1 — is the supporting-document gate on? (drives the required marks)
+export function useDocsRequired() {
+  return useQuery<boolean>({
+    queryKey: ['docs-required'],
+    staleTime: 300_000,
+    queryFn: async () => {
+      try {
+        const r = await api.get<{ settings: Record<string, string> }>('/admin/settings')
+        return (r.data.settings['require_entry_documents'] ?? '1') !== '0'
+      } catch {
+        return true // non-admins can't read settings — assume the strict default
+      }
+    },
+  })
+}
+
+// Parity A1/C1 — Document Library rows (HOD/logistics/admin; SK via mine=1).
+export interface EntryDocRow {
+  id: number; Site_ID: string; doc_type: string; doc_number: string
+  entry_table: string | null; entry_date: string | null
+  file_name: string; mime_type: string | null; file_size: number | null
+  uploaded_by: string; uploaded_at: string
+}
+export function useEntryDocs(params: Record<string, string | number | boolean | undefined>) {
+  return useQuery<EntryDocRow[]>({
+    queryKey: ['/entry/attachments', params],
+    queryFn: async () =>
+      (await api.get<{ items: EntryDocRow[] }>('/entry/attachments', { params })).data.items,
+  })
+}
+
+// Parity A2 — receipts a return can be made against (30/365-day window).
+export interface ReturnSource {
+  id: number; Date: string; Quantity: number
+  DN_No: string | null; Supplier: string | null; Lot_Number: string | null
+}
+export function useReturnSources(sap?: string, site?: string, days: 30 | 365 = 30) {
+  return useQuery<ReturnSource[]>({
+    queryKey: ['/entry/return-sources', sap, site, days],
+    enabled: !!sap && !!site,
+    queryFn: async () =>
+      (await api.get<{ items: ReturnSource[] }>('/entry/return-sources',
+        { params: { sap, site_id: site, days } })).data.items,
   })
 }
 

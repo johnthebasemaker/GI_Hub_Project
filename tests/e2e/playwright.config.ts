@@ -30,6 +30,15 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
       dependencies: ['setup'],
       testMatch: /specs\/.*\.spec\.ts/,
+      testIgnore: /specs\/entry-docs\.spec\.ts/,
+    },
+    {
+      // entry-docs flips the GLOBAL require_entry_documents setting — run it
+      // strictly AFTER the parallel pack so the flip can't 422 other specs.
+      name: 'gated',
+      use: { ...devices['Desktop Chrome'] },
+      dependencies: ['chromium'],
+      testMatch: /specs\/entry-docs\.spec\.ts/,
     },
   ],
 })

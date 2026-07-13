@@ -3015,7 +3015,7 @@ async def test_entry_guards():
     await _cleanup()
     async with SessionLocal() as s:
         await s.execute(insert(inv).values(SAP_Code=RUB, Equipment_Description="Rubber sheet",
-                                           UOM="m2", Category="Rubber Lining"))
+                                           UOM="m2", Category="Surface Shields"))
         await s.execute(insert(inv).values(SAP_Code=UOMSAP, Equipment_Description="Solvent",
                                            UOM="L", Category="Others"))
         await s.execute(insert(uom).values(SAP_Code=UOMSAP, Pack_UOM="Drum", Factor=200.0))
@@ -3473,7 +3473,7 @@ async def test_email_outbox():
     await _cleanup()
     async with SessionLocal() as s:
         await s.execute(insert(inv).values(SAP_Code=RUB, Equipment_Description="Rubber liner",
-                                           UOM="m2", Category="Rubber Lining"))
+                                           UOM="m2", Category="Surface Shields"))
         await s.execute(insert(po).values(PO_Number=PO, Site_ID="CNCEC", status="delivered", created_by="svc"))
         lid = (await s.execute(insert(poi).values(PO_Number=PO, line_no=1, Material_Code="M1",
                Qty=10.0, Delivered_Qty=10.0, Returned_Qty=0.0, line_status="delivered"
@@ -4978,7 +4978,227 @@ async def test_weekly_report():
             await ses.commit()
 
 
+
+async def test_entry_documents():
+    """Parity A1/A2/A4 — the legacy entry-document system, return gates and
+    WBS enforcement, tested with the master switch ON (the suite flips
+    require_entry_documents to '1' and restores '0' afterwards)."""
+    import io as _io
+    from sqlalchemy import text as _sqt
+
+    async def _set_gate(v: str):
+        async with SessionLocal() as s_:
+            await s_.execute(_sqt(
+                "INSERT INTO app_settings (key, value) VALUES ('require_entry_documents', :v) "
+                "ON CONFLICT (key) DO UPDATE SET value = :v"), {"v": v})
+            await s_.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.108"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}", **_ip}
+
+        worker_t = await token("worker", "floor2026")
+        hod_t = await token("hod", "hod2026")
+        sup_t = await token("supervisor", "super2026")
+
+        async with SessionLocal() as ses:
+            site = (await ses.execute(_sqt(
+                "SELECT COALESCE(\"Site_ID\",'HQ') FROM users WHERE username='worker'"))).scalar_one()
+
+        await _set_gate("1")
+        try:
+            # gate: no document → receipt refused
+            r = await ac.post("/entry/receipts", headers=H(worker_t), json={
+                "Date": "2026-07-13", "SAP_Code": "1001", "Quantity": 1, "Site_ID": site})
+            check("docs: receipt without document → 422",
+                  r.status_code == 422 and "document" in str(r.json().get("detail", "")),
+                  f"{r.status_code} {str(r.json())[:120]}")
+
+            # upload (SK-only) then the same receipt passes and links
+            r = await ac.post("/entry/attachments", headers=H(sup_t),
+                              files={"file": ("n.pdf", b"%PDF-1.4 note", "application/pdf")},
+                              data={"doc_type": "receipt", "site_id": site})
+            check("docs: upload is store-keeper-gated (supervisor → 403)",
+                  r.status_code == 403, f"{r.status_code}")
+            r = await ac.post("/entry/attachments", headers=H(worker_t),
+                              files={"file": ("note.pdf", b"%PDF-1.4 handwritten", "application/pdf")},
+                              data={"doc_type": "receipt", "site_id": site, "doc_number": "DN-777"})
+            check("docs: SK upload → 201 with doc number",
+                  r.status_code == 201 and r.json().get("doc_number") == "DN-777",
+                  f"{r.status_code} {str(r.json())[:120]}")
+            aid = r.json()["id"]
+
+            r = await ac.post("/entry/receipts", headers=H(worker_t), json={
+                "Date": "2026-07-13", "SAP_Code": "1001", "Quantity": 1, "Site_ID": site,
+                "Supplier": "AH-DOCS", "attachment_ids": [aid]})
+            check("docs: receipt WITH document → 201", r.status_code == 201, f"{r.status_code} {r.text[:120]}")
+            pid = r.json().get("pending_id")
+            async with SessionLocal() as ses:
+                linked = (await ses.execute(_sqt(
+                    "SELECT entry_table, entry_date FROM entry_attachments WHERE id=:i"),
+                    {"i": aid})).first()
+            check("docs: attachment linked to the staged batch",
+                  linked and linked.entry_table == "pending_receipts"
+                  and str(linked.entry_date)[:10] == "2026-07-13", f"{tuple(linked) if linked else None}")
+
+            # wrong doc_type refused; someone else's doc refused
+            r = await ac.post("/entry/attachments", headers=H(worker_t),
+                              files={"file": ("x.pdf", b"%PDF-1.4", "application/pdf")},
+                              data={"doc_type": "consumption", "site_id": site})
+            cons_aid = r.json()["id"]
+            r = await ac.post("/entry/receipts", headers=H(worker_t), json={
+                "Date": "2026-07-13", "SAP_Code": "1001", "Quantity": 1, "Site_ID": site,
+                "attachment_ids": [cons_aid]})
+            check("docs: doc_type mismatch → 422", r.status_code == 422, f"{r.status_code}")
+
+            # library: HOD browses + downloads; SK sees own via mine=1
+            r = await ac.get("/entry/attachments", headers=H(hod_t),
+                             params={"doc_type": "receipt", "doc_number": "DN-777"})
+            items = r.json().get("items", [])
+            check("docs: HOD library lists the upload",
+                  r.status_code == 200 and any(x["id"] == aid for x in items),
+                  f"{r.status_code} n={len(items)}")
+            r = await ac.get(f"/entry/attachments/{aid}/download", headers=H(hod_t))
+            check("docs: HOD download streams the original bytes",
+                  r.status_code == 200 and r.content.startswith(b"%PDF-1.4 handwritten"),
+                  f"{r.status_code}")
+            r = await ac.get("/entry/attachments", headers=H(worker_t))
+            check("docs: full library is level ≥2 (SK → 403)", r.status_code == 403, f"{r.status_code}")
+            r = await ac.get("/entry/attachments", headers=H(worker_t), params={"mine": "1"})
+            check("docs: SK can list own uploads (mine=1)",
+                  r.status_code == 200 and any(x["id"] == aid for x in r.json()["items"]),
+                  f"{r.status_code}")
+
+            # linked docs can't be deleted
+            r = await ac.delete(f"/entry/attachments/{aid}", headers=H(worker_t))
+            check("docs: linked attachment delete → 409", r.status_code == 409, f"{r.status_code}")
+
+            # ── A2: return gates ─────────────────────────────────────────────
+            r = await ac.post("/entry/attachments", headers=H(worker_t),
+                              files={"file": ("ret.jpg", b"\xff\xd8jpegret", "image/jpeg")},
+                              data={"doc_type": "return", "site_id": site})
+            ret_aid = r.json()["id"]
+            r = await ac.post("/entry/returns", headers=H(worker_t), json={
+                "Date": "2026-07-13", "SAP_Code": "1001", "Quantity": 1, "Site_ID": site,
+                "Reason": "AH-no-dn", "attachment_ids": [ret_aid]})
+            check("return: missing Return DN No. → 422",
+                  r.status_code == 422 and "DN" in str(r.json().get("detail", "")), f"{r.status_code}")
+
+            # source-receipt discipline: qty capped + 30-day window
+            async with SessionLocal() as ses:
+                src_ok = (await ses.execute(_sqt(
+                    'INSERT INTO receipts ("Date","SAP_Code","Quantity","Site_ID","DN_No") '
+                    "VALUES (CURRENT_DATE::text, '1001', 5, :s, 'AH-SRC-DN') RETURNING id"),
+                    {"s": site})).scalar_one()
+                src_old = (await ses.execute(_sqt(
+                    'INSERT INTO receipts ("Date","SAP_Code","Quantity","Site_ID","DN_No") '
+                    "VALUES ((CURRENT_DATE - INTERVAL '90 days')::date::text, '1001', 5, :s, 'AH-OLD-DN') "
+                    "RETURNING id"), {"s": site})).scalar_one()
+                await ses.commit()
+
+            base = {"Date": "2026-07-13", "SAP_Code": "1001", "Site_ID": site,
+                    "Reason": "AH-ret", "Return_DN_No": "AH-RDN-1"}
+            r = await ac.post("/entry/returns", headers=H(worker_t), json={
+                **base, "Quantity": 9, "source_receipt_id": src_ok,
+                "attachment_ids": [ret_aid]})
+            check("return: qty above the source receipt → 422",
+                  r.status_code == 422 and "exceeds" in str(r.json().get("detail", "")), f"{r.status_code}")
+            r = await ac.post("/entry/returns", headers=H(worker_t), json={
+                **base, "Quantity": 1, "source_receipt_id": src_old,
+                "attachment_ids": [ret_aid]})
+            check("return: >30-day-old receipt without justification → 422",
+                  r.status_code == 422 and "older" in str(r.json().get("detail", "")), f"{r.status_code}")
+            r = await ac.post("/entry/returns", headers=H(worker_t), json={
+                **base, "Quantity": 1, "source_receipt_id": src_old,
+                "override_reason": "vendor recall approved by PM",
+                "attachment_ids": [ret_aid]})
+            check("return: override justification → 201 + flagged for HOD",
+                  r.status_code == 201, f"{r.status_code} {r.text[:120]}")
+            ret_pid = r.json().get("pending_id")
+            async with SessionLocal() as ses:
+                flag = (await ses.execute(_sqt(
+                    "SELECT override_required, override_reason, received_dn_no "
+                    "FROM pending_returns WHERE id=:i"), {"i": ret_pid})).first()
+            check("return: pending row carries override flag + source provenance",
+                  flag and flag.override_required == 1 and "recall" in flag.override_reason
+                  and flag.received_dn_no == "AH-OLD-DN", f"{tuple(flag) if flag else None}")
+
+            # ── A4: WBS gate (bites only once the site has active WBS) ──────
+            r = await ac.post("/hod/site-config/wbs", headers=H(worker_t),
+                              json={"WBS_Number": "WBS-AH-1"})
+            check("wbs: config is HOD-gated (SK → 403)", r.status_code == 403, f"{r.status_code}")
+            r = await ac.post("/hod/site-config/wbs", headers=H(hod_t),
+                              json={"WBS_Number": "WBS-AH-1", "Description": "AH test"})
+            check("wbs: HOD adds a WBS → 201", r.status_code == 201, f"{r.status_code}")
+            wid = r.json()["id"]
+            # (WBS is checked before the document gate, so no attachment needed here)
+            r = await ac.post("/entry/receipts", headers=H(worker_t), json={
+                "Date": "2026-07-13", "SAP_Code": "1001", "Quantity": 1, "Site_ID": site})
+            check("wbs: entry without WBS once configured → 422",
+                  r.status_code == 422 and "WBS" in str(r.json().get("detail", "")), f"{r.status_code} {r.text[:120]}")
+            r = await ac.post("/entry/attachments", headers=H(worker_t),
+                              files={"file": ("w.pdf", b"%PDF-1.4 w", "application/pdf")},
+                              data={"doc_type": "receipt", "site_id": site})
+            aid2 = r.json()["id"]
+            r = await ac.post("/entry/receipts", headers=H(worker_t), json={
+                "Date": "2026-07-13", "SAP_Code": "1001", "Quantity": 1, "Site_ID": site,
+                "wbs": "WBS-AH-1", "Bin_Location": "R2-S4", "attachment_ids": [aid2]})
+            check("wbs: entry with an active WBS (+bin) → 201", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+            pid2 = r.json().get("pending_id")
+            async with SessionLocal() as ses:
+                row = (await ses.execute(_sqt(
+                    'SELECT wbs, "Bin_Location" FROM pending_receipts WHERE id=:i'),
+                    {"i": pid2})).first()
+            check("wbs: staged row stores wbs + bin",
+                  row and row.wbs == "WBS-AH-1" and row.Bin_Location == "R2-S4",
+                  f"{tuple(row) if row else None}")
+            r = await ac.patch(f"/hod/site-config/wbs/{wid}", headers=H(hod_t),
+                               params={"status": "closed"})
+            check("wbs: HOD closes the WBS (gate lifts)", r.status_code == 200, f"{r.status_code}")
+
+            # ── A3: MTC category detection (legacy Surface Shields rule) ────
+            r = await ac.get("/entry/receipt-meta/1001", headers=H(worker_t))
+            check("mtc: ordinary category is NOT rubber-gated",
+                  r.status_code == 200 and r.json().get("is_rubber") is False, f"{r.text[:100]}")
+
+            # cleanup: staged rows + uploads + wbs + source receipts
+            async with SessionLocal() as ses:
+                await ses.execute(_sqt("DELETE FROM pending_receipts WHERE id IN (:a,:b)"),
+                                  {"a": pid or -1, "b": pid2 or -1})
+                await ses.execute(_sqt("DELETE FROM pending_returns WHERE id=:i"), {"i": ret_pid or -1})
+                await ses.execute(_sqt(
+                    "DELETE FROM entry_attachments WHERE uploaded_by='worker' AND id >= :i"), {"i": aid})
+                await ses.execute(_sqt("DELETE FROM wbs_master WHERE \"WBS_Number\" LIKE 'WBS-AH-%'"))
+                await ses.execute(_sqt("DELETE FROM receipts WHERE \"DN_No\" IN ('AH-SRC-DN','AH-OLD-DN')"))
+                await ses.execute(_sqt(
+                    "DELETE FROM email_outbox WHERE event_key IN ('return_approved')")) \
+                    if False else None
+                await ses.commit()
+        finally:
+            await _set_gate("0")
+
+
+async def _relax_entry_gates() -> None:
+    """Parity A1 — require_entry_documents defaults ON in production. Switch
+    it OFF for the functional suites (they submit entries without documents);
+    suite AH flips it back on to test the gate itself."""
+    from sqlalchemy import text as _sqt
+    async with SessionLocal() as s:
+        await s.execute(_sqt(
+            "INSERT INTO app_settings (key, value) VALUES ('require_entry_documents','0') "
+            "ON CONFLICT (key) DO UPDATE SET value='0'"))
+        await s.commit()
+
+
 async def main() -> int:
+    await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
     await test_create_and_submit_pr()
@@ -5051,6 +5271,8 @@ async def main() -> int:
     await test_strict_limits()
     print("\n AG. automated weekly executive PDF (Phase 8-3)")
     await test_weekly_report()
+    print("\n AH. entry documents + return gates + WBS (parity A1/A2/A3/A4)")
+    await test_entry_documents()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

@@ -58,6 +58,12 @@ export default async function globalSetup() {
     { cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'] },
   )
 
+  // ── 1b. relax the entry-document gate for the functional specs ──────────
+  // (require_entry_documents defaults ON in production; the entry-docs spec
+  // flips it on itself to test the gate.)
+  psql("INSERT INTO app_settings (key, value) VALUES ('require_entry_documents','0') "
+       + "ON CONFLICT (key) DO UPDATE SET value='0'", E2E_DB)
+
   // ── 2. known passwords for the role users (throwaway DB only) ────────────
   const resetScript = [
     'import bcrypt, sys',

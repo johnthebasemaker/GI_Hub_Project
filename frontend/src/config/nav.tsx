@@ -100,6 +100,7 @@ export const NAV: NavGroup[] = [
       { key: '/hod/approvals', label: 'Approvals', icon: <AuditOutlined />, access: { anyRole: ['hod'] }, badge: 'approvals' },
       { key: '/hod/burn-rate', label: 'Burn Rate', icon: <FireOutlined />, access: { anyRole: ['hod'] } },
       { key: '/hod/lining-coverage', label: 'Lining Coverage', icon: <ExperimentOutlined />, access: { anyRole: ['hod', 'logistics'] } },
+      { key: '/hod/documents', label: 'Document Library', icon: <FileSearchOutlined />, access: { anyRole: ['hod'] } },
       { key: '/hod/low-stock', label: 'Low Stock', icon: <FallOutlined />, access: { anyRole: ['hod'] } },
       { key: '/hod/prs', label: 'Purchase Requests', icon: <ProfileOutlined />, access: { anyRole: ['hod'] } },
       { key: '/hod/requests', label: 'Cross-Site Requests', icon: <SolutionOutlined />, access: { anyRole: ['hod'] } },

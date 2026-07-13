@@ -7,9 +7,13 @@ import type { ColumnsType } from 'antd/es/table'
 import { BarcodeOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
-import { useBins, useBulkEntry, useCategories, useList, useSites } from '../api/hooks'
+import { useBins, useBulkEntry, useCategories, useDocsRequired, useList, useSites, useWbsOptions } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 import DeliveryPrefRadio from '../components/DeliveryPrefRadio'
+import DraftBanner from '../components/DraftBanner'
+import EntryDocsUpload from '../components/EntryDocsUpload'
+import type { EntryDoc } from '../components/EntryDocsUpload'
+import { useFormDraft } from '../lib/formDraft'
 import ItemSnapshot from '../components/ItemSnapshot'
 import QrScanner from '../components/QrScanner'
 import { BARCODE_FORMATS, matchScanToSap } from '../lib/barcode'
@@ -28,6 +32,8 @@ interface FormValues {
   Serial_No?: string
   Lot_Number?: string
   Remarks?: string
+  wbs?: string
+  FEFO_Override?: string
 }
 
 // A batched line: API-shaped payload + a local uid + a display label.
@@ -52,10 +58,15 @@ export default function IssuePage() {
   const [staged, setStaged] = useState<StagedRow[]>([])
   const [editingUid, setEditingUid] = useState<string | null>(null)
   const [scanOpen, setScanOpen] = useState(false)
+  const [docs, setDocs] = useState<EntryDoc[]>([])
+  const draft = useFormDraft(form, 'issue')
 
   const watchSap = Form.useWatch('SAP_Code', form)
   const watchSite = Form.useWatch('Site_ID', form)
+  const watchLot = Form.useWatch('Lot_Number', form)
   const { data: bins } = useBins(watchSap, watchSite)
+  const { data: wbsOptions } = useWbsOptions(watchSite)
+  const { data: docsRequired } = useDocsRequired()
 
   // Category narrows the material picker (search stays available inside it).
   const { data: categories } = useCategories()
@@ -101,6 +112,10 @@ export default function IssuePage() {
       Serial_No: v.Serial_No || null,
       Lot_Number: v.Lot_Number || null,
       Remarks: v.Remarks || null,
+      wbs: v.wbs || null,
+      // Parity B1 — a manual lot pick is a FEFO override; the reason travels
+      // to the HOD (allow-and-log ruling: never blocks).
+      FEFO_Override: v.Lot_Number ? (v.FEFO_Override || 'manual lot (no reason given)') : null,
     }
     setStaged((prev) => editingUid
       ? prev.map((r) => (r._uid === editingUid ? payload : r))
@@ -129,12 +144,18 @@ export default function IssuePage() {
 
   const submitBatch = async () => {
     if (!staged.length) return
+    if (docsRequired !== false && !docs.length) {
+      message.error('Attach a supporting document (hand-written note / delivery note) before submitting')
+      return
+    }
     const rows = staged.map(({ _uid, _label, ...rest }) => { void _uid; void _label; return rest })
     try {
-      const res = await bulk.mutateAsync(rows)
+      const res = await bulk.mutateAsync({ rows, attachment_ids: docs.map((d) => d.id) })
       if (res.queued) message.warning(`Offline — ${res.staged} issue line(s) saved to the sync queue`)
       else message.success(`${res.staged} issue line(s) submitted for HOD approval`)
       setStaged([])
+      setDocs([])
+      draft.clear()
       form.resetFields(['SAP_Code', 'Quantity', 'Issued_To', 'PR_Number', 'Tank_No', 'Serial_No', 'Lot_Number', 'Remarks'])
     } catch (e) {
       message.error(errMsg(e))
@@ -169,8 +190,10 @@ export default function IssuePage() {
         allowed and logged (not blocked) — same as the old app.
       </Typography.Paragraph>
 
+      <DraftBanner hasDraft={draft.hasDraft} onRestore={draft.restore} onDiscard={draft.discard} />
       <Card style={{ maxWidth: 860, marginBottom: 16 }}>
         <Form<FormValues> form={form} layout="vertical"
+          onValuesChange={draft.onValuesChange}
           initialValues={{ Date: dayjs(), ...loadDefaults('issue') }}>
           <Row gutter={16}>
             <Col xs={24} md={8}>
@@ -226,6 +249,25 @@ export default function IssuePage() {
             </Col>
           </Row>
           <Row gutter={16}>
+            {!!wbsOptions?.length && (
+              <Col xs={24} md={8}>
+                <Form.Item name="wbs" label="WBS Number"
+                  rules={[{ required: true, message: 'This site requires a WBS' }]}>
+                  <Select showSearch placeholder="Pick WBS"
+                    options={wbsOptions.map((w) => ({ value: w, label: w }))} />
+                </Form.Item>
+              </Col>
+            )}
+            {!!watchLot && (
+              <Col xs={24} md={8}>
+                <Form.Item name="FEFO_Override" label="Reason for manual lot (FEFO override)"
+                  rules={[{ min: 5, message: 'Give at least 5 characters' }]}>
+                  <Input placeholder="why not the FEFO lot?" />
+                </Form.Item>
+              </Col>
+            )}
+          </Row>
+          <Row gutter={16}>
             <Col xs={24} md={8}><Form.Item name="Work_Type" label="Work Type"><Input placeholder="e.g. Maintenance" /></Form.Item></Col>
             <Col xs={24} md={8}><Form.Item name="Issued_To" label="Issued To"><Input placeholder="recipient / crew" /></Form.Item></Col>
             <Col xs={24} md={8}><Form.Item name="Issued_By" label="Issued By"><Input placeholder="issuer" /></Form.Item></Col>
@@ -256,6 +298,8 @@ export default function IssuePage() {
           </Space>
         }
       >
+        <EntryDocsUpload docType="consumption" siteId={watchSite}
+          value={docs} onChange={setDocs} required={docsRequired !== false} />
         <Table<StagedRow> size="small" rowKey="_uid" columns={columns} dataSource={staged}
           pagination={false}
           locale={{ emptyText: 'No lines yet — add materials above, then submit them all at once.' }} />

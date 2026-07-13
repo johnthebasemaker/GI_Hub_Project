@@ -261,7 +261,10 @@ async def stage_receipt(session: AsyncSession, *, username: str, data: dict) -> 
         "Supplier": data.get("Supplier") or None, "Remarks": data.get("Remarks") or None,
         "Site_ID": data["Site_ID"], "Expiry_Date": data.get("Expiry_Date") or None,
         "PR_Number": data.get("PR_Number") or None,
-        "Lot_Number": (data.get("Lot_Number") or "").strip() or None, "status": PENDING,
+        "Lot_Number": (data.get("Lot_Number") or "").strip() or None,
+        "wbs": (data.get("wbs") or "").strip() or None,          # parity A4
+        "Bin_Location": (data.get("Bin_Location") or "").strip() or None,  # parity B5
+        "status": PENDING,
     }
     values.update(data.get("extra") or {})
     pid = (await session.execute(insert(pending_receipts_t).values(**values)
@@ -281,6 +284,7 @@ async def stage_consumption(session: AsyncSession, *, username: str, data: dict)
         "Remarks": data.get("Remarks") or None, "Requested_By": data.get("Requested_By") or None,
         "Lot_Number": (data.get("Lot_Number") or "").strip() or None,
         "FEFO_Override": data.get("FEFO_Override") or None,
+        "wbs": (data.get("wbs") or "").strip() or None,          # parity A4
         "Site_ID": data["Site_ID"], "status": PENDING,
     }
     pid = (await session.execute(insert(pending_issues_t).values(**values)
@@ -298,7 +302,14 @@ async def stage_return(session: AsyncSession, *, username: str, data: dict) -> d
         "Return_DN_No": data.get("Return_DN_No") or "",
         "PR_Number": data.get("PR_Number") or None,
         "Lot_Number": data.get("Lot_Number") or None,
-        "override_required": 0, "override_reason": data.get("Remarks") or "",
+        # parity A2: source-receipt provenance + the 30-day-window override.
+        # (override_reason used to piggyback Remarks — the real justification
+        # now wins; Remarks only lands here when no override is in play.)
+        "received_date": data.get("received_date") or None,
+        "received_dn_no": data.get("received_dn_no") or None,
+        "received_qty": data.get("received_qty"),
+        "override_required": 1 if data.get("override_reason") else 0,
+        "override_reason": data.get("override_reason") or data.get("Remarks") or "",
         "status": PENDING, "submitted_by": username,
     }
     pid = (await session.execute(insert(pending_returns_t).values(**values)
@@ -341,6 +352,10 @@ async def commit_receipt(session: AsyncSession, *, approver: str, pending_id: in
     # Carry DN/PO/warehouse trace fields onto the committed receipt.
     data = dict(row)
     extra = {k: row[k] for k in _RECEIPT_TRACE_COLS if row.get(k) is not None}
+    if row.get("wbs"):
+        extra["WBS"] = row["wbs"]          # pending 'wbs' → ledger 'WBS' (parity A4)
+    if row.get("Bin_Location"):
+        extra["Bin_Location"] = row["Bin_Location"]
     if extra:
         data["extra"] = {**(data.get("extra") or {}), **extra}
     res = await post_receipt(session, username=approver, data=data)
@@ -353,6 +368,10 @@ async def commit_consumption(session: AsyncSession, *, approver: str, pending_id
     if row is None:
         return {"error": "not found or already handled"}
     res = await post_consumption(session, username=approver, data=row)
+    if row.get("wbs"):                      # pending 'wbs' → ledger 'WBS' (parity A4)
+        await session.execute(update(consumption_t)
+                              .where(consumption_t.c["id"] == res.get("consumption_id", res.get("id", -1)))
+                              .values(WBS=row["wbs"]))
     await session.execute(delete(pending_issues_t).where(pending_issues_t.c["id"] == pending_id))
     return {"committed": True, **res}
 

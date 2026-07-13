@@ -14,6 +14,7 @@ Records/Stock but do not stage entries.
 """
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
@@ -24,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .auth import get_current_user, require_roles, resolve_site_param
 from .db import get_session
+from . import entry_docs
 from .services import emailer
 from .services import ledger
 from .services import whatsapp as wa
@@ -66,17 +68,31 @@ class ReceiptIn(BaseModel):
     Lot_Number: Optional[str] = None
     entry_uom: Optional[str] = Field(None, description="pack UoM the qty is entered in; converted to base")
     mtc_document_id: Optional[int] = Field(None, description="MTC upload id (required for Rubber materials)")
+    wbs: Optional[str] = Field(None, description="WBS Number (required once the site has active WBS)")
+    Bin_Location: Optional[str] = Field(None, description="Bin / shelf tag (parity B5)")
+    attachment_ids: list[int] = Field(default_factory=list,
+                                      description="entry_attachments ids (gated by require_entry_documents)")
     extra: Optional[dict[str, Any]] = Field(
         None, description="Optional extra receipts columns (logistics fields)")
 
 
 # --- receipt entry guards (Phase 6): MTC gate + pack→base UoM conversion -----
+async def _mtc_category(session) -> str:
+    """Parity A3 — the LEGACY rubber trigger is an exact inventory Category
+    match (config.py MTC_REQUIRED_CATEGORY = "Surface Shields"), NOT a
+    description token. Configurable via app_settings mtc_required_category."""
+    v = (await session.execute(text(
+        "SELECT value FROM app_settings WHERE key = 'mtc_required_category'"))).scalar()
+    return (v or "Surface Shields").strip()
+
+
 async def _receipt_meta(session, sap: str) -> dict:
     row = (await session.execute(text(
         'SELECT "UOM", "Category" FROM inventory WHERE TRIM("SAP_Code") = TRIM(:s) LIMIT 1'
     ), {"s": sap})).first()
     base_uom = row[0] if row else None
-    is_rubber = bool(row and "rubber" in str(row[1] or "").lower())
+    is_rubber = bool(row and str(row[1] or "").strip().lower()
+                     == (await _mtc_category(session)).lower())
     convs = [dict(m) for m in (await session.execute(text(
         'SELECT "Pack_UOM", "Factor" FROM uom_conversions '
         'WHERE TRIM("SAP_Code") = TRIM(:s) ORDER BY "Pack_UOM"'), {"s": sap})).mappings().all()]
@@ -152,6 +168,8 @@ class ConsumptionIn(BaseModel):
     Requested_By: Optional[str] = None
     Lot_Number: Optional[str] = Field(None, description="explicit lot; blank → FEFO auto-pick")
     FEFO_Override: Optional[str] = None
+    wbs: Optional[str] = Field(None, description="WBS Number (required once the site has active WBS)")
+    attachment_ids: list[int] = Field(default_factory=list)
 
 
 class ReturnIn(BaseModel):
@@ -161,6 +179,13 @@ class ReturnIn(BaseModel):
     Site_ID: str
     Reason: Optional[str] = None
     Remarks: Optional[str] = None
+    # Parity A2 — legacy return gates (enforced when require_entry_documents is on)
+    Return_DN_No: Optional[str] = None
+    source_receipt_id: Optional[int] = Field(
+        None, description="the receipt being returned against (30-day window)")
+    override_reason: Optional[str] = Field(
+        None, description="justification when returning against a receipt older than 30 days")
+    attachment_ids: list[int] = Field(default_factory=list)
 
 
 class AdjustmentIn(BaseModel):
@@ -189,9 +214,17 @@ async def create_receipt(
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
+            # Parity A4/A1 — WBS (when the site has any) + supporting document
+            await entry_docs.assert_wbs(session, site_id=body.Site_ID, wbs=body.wbs)
+            doc_ids = await entry_docs.assert_entry_docs(
+                session, doc_type="receipt", attachment_ids=body.attachment_ids,
+                username=user["username"])
             mtc_id = await _apply_receipt_guards(session, data)  # MTC gate + UoM convert
             result = await ledger.stage_receipt(session, username=user["username"], data=data)
             await _link_mtc(session, mtc_id, result.get("pending_id"))
+            await entry_docs.link_attachments(session, doc_ids,
+                                              entry_table="pending_receipts",
+                                              entry_date=body.Date)
             await _notify_hod_staged(session, kind_label="Receipt", site_id=body.Site_ID,
                                      actor=user["username"], ref=result.get("pending_id"),
                                      detail=f"{body.SAP_Code} · qty {data['Quantity']:g} · {body.Site_ID}")
@@ -213,7 +246,14 @@ async def create_consumption(
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
+            await entry_docs.assert_wbs(session, site_id=body.Site_ID, wbs=body.wbs)
+            doc_ids = await entry_docs.assert_entry_docs(
+                session, doc_type="consumption", attachment_ids=body.attachment_ids,
+                username=user["username"])
             result = await ledger.stage_consumption(session, username=user["username"], data=body.model_dump())
+            await entry_docs.link_attachments(session, doc_ids,
+                                              entry_table="pending_issues",
+                                              entry_date=body.Date)
             await _notify_hod_staged(session, kind_label="Issue", site_id=body.Site_ID,
                                      actor=user["username"], ref=result.get("pending_id"),
                                      detail=f"{body.SAP_Code} · qty {body.Quantity:g} · {body.Site_ID}")
@@ -250,7 +290,44 @@ async def create_return(
         async with session.begin():
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
-            result = await ledger.stage_return(session, username=user["username"], data=body.model_dump())
+            data = body.model_dump()
+            strict = await entry_docs.docs_required(session)
+            # Parity A2 — the legacy return gates, active with the master
+            # require_entry_documents switch: mandatory Return DN No. +
+            # attachment; returns are made against a source receipt from the
+            # last 30 days (older needs a justification → flagged for HOD).
+            if strict and not (body.Return_DN_No or "").strip():
+                raise HTTPException(422, "Return DN No. is required")
+            doc_ids = await entry_docs.assert_entry_docs(
+                session, doc_type="return", attachment_ids=body.attachment_ids,
+                username=user["username"])
+            if body.source_receipt_id:
+                src = (await session.execute(text(
+                    'SELECT "Date", "Quantity", "DN_No", "SAP_Code", COALESCE("Site_ID",\'HQ\') AS s '
+                    'FROM receipts WHERE id = :i'), {"i": body.source_receipt_id})).first()
+                if src is None:
+                    raise HTTPException(404, "source receipt not found")
+                if src.SAP_Code.strip() != body.SAP_Code.strip() or src.s != body.Site_ID:
+                    raise HTTPException(422, "source receipt is for a different material/site")
+                if float(body.Quantity) > float(src.Quantity) + 1e-9:
+                    raise HTTPException(422, f"return qty {body.Quantity:g} exceeds the "
+                                             f"source receipt qty {float(src.Quantity):g}")
+                age_days = (dt.date.today()
+                            - dt.date.fromisoformat(str(src.Date)[:10])).days
+                if age_days > 30 and not (body.override_reason or "").strip():
+                    raise HTTPException(422, "receipt is older than 30 days — an override "
+                                             "justification is required")
+                data["received_date"] = str(src.Date)[:10]
+                data["received_dn_no"] = src.DN_No
+                data["received_qty"] = float(src.Quantity)
+                if age_days <= 30:
+                    data["override_reason"] = None   # inside the window — no flag
+            elif strict:
+                raise HTTPException(422, "pick the source receipt this return is against")
+            result = await ledger.stage_return(session, username=user["username"], data=data)
+            await entry_docs.link_attachments(session, doc_ids,
+                                              entry_table="pending_returns",
+                                              entry_date=body.Date)
             await _notify_hod_staged(session, kind_label="Return", site_id=body.Site_ID,
                                      actor=user["username"], ref=result.get("pending_id"),
                                      detail=f"{body.SAP_Code} · qty {body.Quantity:g} · {body.Site_ID}")
@@ -259,6 +336,24 @@ async def create_return(
         raise
     except (IntegrityError, DataError) as e:
         raise HTTPException(400, f"{type(e).__name__}: {e.orig}")
+
+
+@router.get("/return-sources", summary="Receipts a return can be made against (parity A2)")
+async def return_sources(sap: str, site_id: str, days: int = 30,
+                         user: dict = Depends(require_roles("store_keeper")),
+                         session: AsyncSession = Depends(get_session)):
+    """Legacy rule: returns are picked from receipts in the last 30 days
+    (365 with the override window). Rows carry qty + DN so the form can cap
+    the return quantity."""
+    days = 365 if days > 30 else 30
+    cutoff = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    rows = (await session.execute(text(
+        'SELECT id, "Date", "Quantity", "DN_No", "Supplier", "Lot_Number" '
+        'FROM receipts WHERE TRIM("SAP_Code") = TRIM(:sap) '
+        "AND COALESCE(\"Site_ID\",'HQ') = :site AND \"Date\" >= :cutoff "
+        'ORDER BY "Date" DESC, id DESC LIMIT 100'),
+        {"sap": sap, "site": site_id, "cutoff": cutoff})).mappings().all()
+    return {"items": [dict(r) for r in rows], "window_days": days}
 
 
 @router.post("/adjustments", status_code=201, summary="Submit a stock-count adjustment for HOD approval")
@@ -339,6 +434,9 @@ class BulkEntryIn(BaseModel):
     kind: Literal["receipt", "consumption", "return"]
     rows: list[dict[str, Any]] = Field(..., min_length=1,
                                        description="one dict per line, shaped like the single-entry body")
+    attachment_ids: list[int] = Field(
+        default_factory=list,
+        description="batch-level supporting documents (gated by require_entry_documents)")
 
 
 @router.post("/bulk", status_code=201,
@@ -359,13 +457,22 @@ async def create_bulk(body: BulkEntryIn = Body(...),
     if errors:
         raise HTTPException(422, {"message": "some rows are invalid — nothing was staged",
                                   "rows": errors})
+    _DOC_TYPE = {"receipt": "receipt", "consumption": "consumption", "return": "return"}
     try:
         staged: list = []
         by_site: dict[str, int] = {}
         async with session.begin():
+            # Parity A1/A4 — batch gates: one supporting document covers the
+            # whole batch (legacy "Whole entry" scope); WBS checked per row.
+            doc_ids = await entry_docs.assert_entry_docs(
+                session, doc_type=_DOC_TYPE[body.kind],
+                attachment_ids=body.attachment_ids, username=user["username"])
             for i, m in enumerate(parsed):
                 if not await ledger.sap_exists(session, m.SAP_Code):
                     raise HTTPException(404, f"row {i}: SAP_Code {m.SAP_Code!r} not in inventory")
+                if body.kind in ("receipt", "consumption"):
+                    await entry_docs.assert_wbs(session, site_id=m.Site_ID,
+                                                wbs=getattr(m, "wbs", None))
             for m in parsed:
                 row = m.model_dump()
                 # Receipt guards (MTC gate + UoM convert) apply only to receipts.
@@ -375,6 +482,11 @@ async def create_bulk(body: BulkEntryIn = Body(...),
                     await _link_mtc(session, mtc_id, res.get("pending_id"))
                 staged.append(res.get("pending_id"))
                 by_site[m.Site_ID] = by_site.get(m.Site_ID, 0) + 1
+            await entry_docs.link_attachments(
+                session, doc_ids,
+                entry_table={"receipt": "pending_receipts", "consumption": "pending_issues",
+                             "return": "pending_returns"}[body.kind],
+                entry_date=(parsed[0].Date if hasattr(parsed[0], "Date") else None))
             for site_id, cnt in by_site.items():
                 await _notify_hod_staged(
                     session, kind_label=f"{cnt} {label}(s)", site_id=site_id,

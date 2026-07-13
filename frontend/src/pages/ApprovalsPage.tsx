@@ -13,6 +13,47 @@ import type { Row } from '../api/client'
 import { buildColumns } from '../lib/columns'
 import SubmissionInsight from '../components/SubmissionInsight'
 import DnApprovalQueue from '../components/DnApprovalQueue'
+import { useEntryDocs } from '../api/hooks'
+import type { EntryDocRow } from '../api/hooks'
+import { DocPreviewDrawer } from './DocumentLibraryPage'
+import { PaperClipOutlined, WarningOutlined } from '@ant-design/icons'
+import { Drawer, Tag } from 'antd'
+
+// which document type backs each approval kind (C1 — inline preview)
+const DOC_TYPE_FOR: Record<string, 'receipt' | 'consumption' | 'return' | undefined> = {
+  receipts: 'receipt', issues: 'consumption', returns: 'return',
+}
+
+/** C1 — the batch's supporting documents, matched on entry date, previewable inline. */
+function RowDocs({ kind, row }: { kind: string; row: Row }) {
+  const docType = DOC_TYPE_FOR[kind]
+  const [open, setOpen] = useState(false)
+  const [preview, setPreview] = useState<EntryDocRow | null>(null)
+  const { data: docs } = useEntryDocs(
+    docType ? { doc_type: docType, site_id: String(row.Site_ID ?? '') } : {})
+  if (!docType) return null
+  const rowDate = String(row.Date ?? '').slice(0, 10)
+  const mine = (docs ?? []).filter((d) => !rowDate || (d.entry_date ?? '').slice(0, 10) === rowDate)
+  if (!mine.length) return <Tag>no docs</Tag>
+  return (
+    <>
+      <Button size="small" icon={<PaperClipOutlined />} onClick={() => setOpen(true)}>
+        {mine.length}
+      </Button>
+      <Drawer open={open} onClose={() => setOpen(false)} width={420}
+        title={`Documents · ${rowDate || 'batch'}`}>
+        <Space orientation="vertical" style={{ width: '100%' }}>
+          {mine.map((d) => (
+            <Button key={d.id} block onClick={() => setPreview(d)}>
+              {d.file_name} · {d.doc_number}
+            </Button>
+          ))}
+        </Space>
+      </Drawer>
+      <DocPreviewDrawer doc={preview} onClose={() => setPreview(null)} />
+    </>
+  )
+}
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -144,7 +185,17 @@ function PendingKind({ kind, siteId }: { kind: string; siteId?: string }) {
   }
 
   const columns: ColumnsType<Row> = [
+    ...(kind === 'returns' ? [{
+      title: '', key: '__ovr', width: 46,
+      render: (_: unknown, r: Row) => (Number(r.override_required) === 1
+        ? <Tag color="red" title={String(r.override_reason ?? '')}><WarningOutlined /> &gt;30d</Tag>
+        : null),
+    } as ColumnsType<Row>[number]] : []),
     ...buildColumns(rows ?? []),
+    ...(DOC_TYPE_FOR[kind] ? [{
+      title: '📎', key: '__docs', width: 80,
+      render: (_: unknown, r: Row) => <RowDocs kind={kind} row={r} />,
+    } as ColumnsType<Row>[number]] : []),
     {
       title: 'Action',
       key: '__act',

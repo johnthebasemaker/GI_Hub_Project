@@ -157,6 +157,21 @@ async def approve(kind: str, pid: int, user: dict = Depends(require_level(2)),
                                body=f"Approved by {user['username']} and committed to the ledger.",
                                related_table="pending", related_ref=str(pid),
                                created_by=user["username"])
+            if kind == "returns":
+                # Parity A2 — legacy auto-drafted a logistics email on return
+                # approval (hod_portal.py:2637). Best-effort via the outbox.
+                try:
+                    from .services import emailer
+                    await emailer.send_email(
+                        session, to=emailer.logistics_to(),
+                        subject=f"Material return approved at site (pending #{pid})",
+                        body=(f"A material return was approved by {user['username']} "
+                              f"and posted to the ledger (pending id {pid}). "
+                              f"Please arrange onward disposition with the vendor/site."),
+                        event_key="return_approved", related_table="pending_returns",
+                        created_by=user["username"])
+                except Exception:  # noqa: BLE001 — email must never fail the approve
+                    pass
         return res
     except HTTPException:
         raise

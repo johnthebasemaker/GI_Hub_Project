@@ -23,6 +23,7 @@ const BurnRatePage = lazy(() => import('./pages/BurnRatePage'))
 const LowStockPage = lazy(() => import('./pages/LowStockPage'))
 const HodPrsPage = lazy(() => import('./pages/HodPrsPage'))
 const LiningCoveragePage = lazy(() => import('./pages/LiningCoveragePage'))
+const DocumentLibraryPage = lazy(() => import('./pages/DocumentLibraryPage'))
 const LogisticsPage = lazy(() => import('./pages/LogisticsPage'))
 const WarehousePage = lazy(() => import('./pages/WarehousePage'))
 const IncomingDeliveriesPage = lazy(() => import('./pages/IncomingDeliveriesPage'))
@@ -68,6 +69,7 @@ export default function App() {
         <Route path="hod/low-stock" element={<LowStockPage />} />
         <Route path="hod/prs" element={<HodPrsPage />} />
         <Route path="hod/lining-coverage" element={<LiningCoveragePage />} />
+        <Route path="hod/documents" element={<DocumentLibraryPage />} />
         <Route path="logistics/lining-coverage" element={<LiningCoveragePage />} />
         <Route path="logistics" element={<LogisticsPage />} />
         <Route path="warehouse" element={<WarehousePage />} />

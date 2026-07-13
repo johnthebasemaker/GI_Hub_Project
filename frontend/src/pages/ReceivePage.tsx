@@ -7,10 +7,14 @@ import type { ColumnsType } from 'antd/es/table'
 import { BarcodeOutlined, DeleteOutlined, EditOutlined, PaperClipOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
-import { useBulkEntry, useCategories, useList, useReceiptMeta, useSites } from '../api/hooks'
+import { useBulkEntry, useCategories, useDocsRequired, useList, useReceiptMeta, useSites, useWbsOptions } from '../api/hooks'
 import { api } from '../api/client'
 import type { Row as ApiRow } from '../api/client'
 import DeliveryPrefRadio from '../components/DeliveryPrefRadio'
+import DraftBanner from '../components/DraftBanner'
+import EntryDocsUpload from '../components/EntryDocsUpload'
+import type { EntryDoc } from '../components/EntryDocsUpload'
+import { useFormDraft } from '../lib/formDraft'
 import ItemSnapshot from '../components/ItemSnapshot'
 import QrScanner from '../components/QrScanner'
 import { BARCODE_FORMATS, matchScanToSap } from '../lib/barcode'
@@ -28,6 +32,9 @@ interface FormValues {
   Remarks?: string
   entry_uom?: string
   mtc_document_id?: number
+  mtc_number?: string
+  wbs?: string
+  Bin_Location?: string
 }
 
 interface StagedRow extends ApiRow {
@@ -52,10 +59,14 @@ export default function ReceivePage() {
   const [editingUid, setEditingUid] = useState<string | null>(null)
   const [scanOpen, setScanOpen] = useState(false)
 
+  const [docs, setDocs] = useState<EntryDoc[]>([])
+  const draft = useFormDraft(form, 'receive')
   const watchSap = Form.useWatch('SAP_Code', form)
   const watchSite = Form.useWatch('Site_ID', form)
   const watchMtc = Form.useWatch('mtc_document_id', form)
   const { data: meta } = useReceiptMeta(watchSap)
+  const { data: wbsOptions } = useWbsOptions(watchSite)
+  const { data: docsRequired } = useDocsRequired()
 
   // Category narrows the material picker (search stays available inside it).
   const { data: categories } = useCategories()
@@ -69,7 +80,7 @@ export default function ReceivePage() {
   const labelFor = (sap: string) =>
     itemOptions.find((o) => o.value === sap)?.label ?? sap
 
-  const RESET_FIELDS: (keyof FormValues)[] = ['SAP_Code', 'Quantity', 'Supplier', 'Expiry_Date', 'PR_Number', 'Lot_Number', 'Remarks', 'entry_uom', 'mtc_document_id']
+  const RESET_FIELDS: (keyof FormValues)[] = ['SAP_Code', 'Quantity', 'Supplier', 'Expiry_Date', 'PR_Number', 'Lot_Number', 'Remarks', 'entry_uom', 'mtc_document_id', 'mtc_number', 'Bin_Location']
 
   // Barcode/QR pick: decoded text → SAP code → select it in the form.
   const onScan = (decoded: string) => {
@@ -106,6 +117,8 @@ export default function ReceivePage() {
       Lot_Number: v.Lot_Number || null,
       entry_uom: v.entry_uom || null,
       mtc_document_id: v.mtc_document_id ?? null,
+      wbs: v.wbs || null,
+      Bin_Location: v.Bin_Location || null,
     }
     setStaged((prev) => editingUid
       ? prev.map((r) => (r._uid === editingUid ? payload : r))
@@ -136,12 +149,18 @@ export default function ReceivePage() {
 
   const submitBatch = async () => {
     if (!staged.length) return
+    if (docsRequired !== false && !docs.length) {
+      message.error('Attach a supporting document (delivery note / hand-written note) before submitting')
+      return
+    }
     const rows = staged.map(({ _uid, _label, ...rest }) => { void _uid; void _label; return rest })
     try {
-      const res = await bulk.mutateAsync(rows)
+      const res = await bulk.mutateAsync({ rows, attachment_ids: docs.map((d) => d.id) })
       if (res.queued) message.warning(`Offline — ${res.staged} receipt line(s) saved to the sync queue`)
       else message.success(`${res.staged} receipt line(s) submitted for HOD approval`)
       setStaged([])
+      setDocs([])
+      draft.clear()
       form.resetFields(RESET_FIELDS)
     } catch (e) {
       message.error(errMsg(e))
@@ -176,8 +195,10 @@ export default function ReceivePage() {
         fully received (same rules as the old app).
       </Typography.Paragraph>
 
+      <DraftBanner hasDraft={draft.hasDraft} onRestore={draft.restore} onDiscard={draft.discard} />
       <Card style={{ maxWidth: 820, marginBottom: 16 }}>
         <Form<FormValues> form={form} layout="vertical"
+          onValuesChange={draft.onValuesChange}
           initialValues={{ Date: dayjs(), ...loadDefaults('receive') }}>
           <Row gutter={16}>
             <Col xs={24} md={8}>
@@ -229,6 +250,22 @@ export default function ReceivePage() {
             <Col xs={24} md={8}><Form.Item name="PR_Number" label="PR Number (optional)"><Input placeholder="links + auto-closes PR" /></Form.Item></Col>
             <Col xs={24} md={8}><Form.Item name="Lot_Number" label="Lot Number (optional)"><Input placeholder="auto if expiry set" /></Form.Item></Col>
           </Row>
+          <Row gutter={16}>
+            {!!wbsOptions?.length && (
+              <Col xs={24} md={8}>
+                <Form.Item name="wbs" label="WBS Number"
+                  rules={[{ required: true, message: 'This site requires a WBS' }]}>
+                  <Select showSearch placeholder="Pick WBS"
+                    options={wbsOptions.map((w) => ({ value: w, label: w }))} />
+                </Form.Item>
+              </Col>
+            )}
+            <Col xs={24} md={8}>
+              <Form.Item name="Bin_Location" label="Bin / Shelf (optional)">
+                <Input placeholder="e.g. R2-S4" />
+              </Form.Item>
+            </Col>
+          </Row>
           {/* Phase 6 receipt guards — pack→base UoM + Rubber MTC gate. */}
           {(meta?.conversions?.length || meta?.is_rubber) && (
             <Row gutter={16}>
@@ -256,6 +293,8 @@ export default function ReceivePage() {
                           fd.append('file', file as Blob)
                           fd.append('sap_code', String(watchSap ?? ''))
                           fd.append('site_id', String(watchSite ?? ''))
+                          const mtcNo = form.getFieldValue('mtc_number')
+                          if (mtcNo) fd.append('mtc_number', String(mtcNo))
                           try {
                             const r = await api.post<{ id: number; file_name: string }>('/entry/mtc', fd)
                             form.setFieldValue('mtc_document_id', r.data.id)
@@ -266,6 +305,9 @@ export default function ReceivePage() {
                         <Button icon={<PaperClipOutlined />} disabled={!watchSap || !watchSite}>Upload MTC</Button>
                       </Upload>
                       {watchMtc ? <Tag color="green">MTC #{watchMtc} attached</Tag> : <Tag color="warning">no MTC</Tag>}
+                      <Form.Item name="mtc_number" noStyle>
+                        <Input placeholder="MTC number (optional)" style={{ width: 180 }} />
+                      </Form.Item>
                     </Space>
                   </Form.Item>
                   <Form.Item name="mtc_document_id" hidden><InputNumber /></Form.Item>
@@ -294,6 +336,8 @@ export default function ReceivePage() {
           </Space>
         }
       >
+        <EntryDocsUpload docType="receipt" siteId={watchSite}
+          value={docs} onChange={setDocs} required={docsRequired !== false} />
         <Table<StagedRow> size="small" rowKey="_uid" columns={columns} dataSource={staged}
           pagination={false}
           locale={{ emptyText: 'No lines yet — add materials above, then submit them all at once.' }} />

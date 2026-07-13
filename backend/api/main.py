@@ -41,6 +41,7 @@ from .entry import router as entry_router  # noqa: E402
 from .exec_summary import router as exec_summary_router  # noqa: E402
 from .lining_analytics import router as lining_analytics_router  # noqa: E402
 from .weekly_report import router as weekly_report_router, weekly_report_loop  # noqa: E402
+from .entry_docs import router as entry_docs_router  # noqa: E402
 from .hod import router as hod_router  # noqa: E402
 from .logistics import router as logistics_router  # noqa: E402
 from .manhours import router as manhours_router  # noqa: E402
@@ -201,6 +202,8 @@ app.include_router(exec_summary_router)
 app.include_router(lining_analytics_router)
 # Phase 8-3 — weekly exec PDF: tokenized download + admin run-now.
 app.include_router(weekly_report_router)
+# Parity A1/A4 — entry documents (upload/library/download) + site WBS config.
+app.include_router(entry_docs_router)
 
 # Logistics portal — PR queue → create PO → assign to warehouse (self-guarded, ≥logistics).
 app.include_router(logistics_router)
