@@ -4890,6 +4890,94 @@ async def test_strict_limits():
             _os.environ.pop("GI_FORCE_STRICT_LIMITS", None)
 
 
+
+async def test_weekly_report():
+    """Phase 8-3 — automated weekly executive PDF: Friday-17:00 schedule math,
+    render + tokenized storage, secure expiring download, admin run-now, and
+    the bell/WhatsApp dispatch fan-out to admins + HODs. Cleans up after."""
+    import datetime as _dtm
+    from sqlalchemy import text as _sqt
+
+    from .weekly_report import next_friday_1700
+
+    # schedule math (Friday = weekday 4)
+    wed = _dtm.datetime(2026, 7, 8, 9, 0)       # Wednesday
+    fri_after = next_friday_1700(wed)
+    check("weekly: Wednesday → this Friday 17:00",
+          fri_after == _dtm.datetime(2026, 7, 10, 17, 0), f"{fri_after}")
+    fri_eve = _dtm.datetime(2026, 7, 10, 18, 0)  # Friday after 17:00
+    nxt = next_friday_1700(fri_eve)
+    check("weekly: Friday 18:00 → NEXT Friday 17:00",
+          nxt == _dtm.datetime(2026, 7, 17, 17, 0), f"{nxt}")
+    fri_noon = _dtm.datetime(2026, 7, 10, 12, 0)
+    check("weekly: Friday noon → same day 17:00",
+          next_friday_1700(fri_noon) == _dtm.datetime(2026, 7, 10, 17, 0),
+          f"{next_friday_1700(fri_noon)}")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.107"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}", **_ip}
+
+        worker_t = await token("worker", "floor2026")
+        admin_t = await token("admin", "admin2026")
+
+        r = await ac.post("/admin/reports/weekly-exec/run", headers=H(worker_t))
+        check("weekly: run-now is admin-only (SK → 403)", r.status_code == 403, f"{r.status_code}")
+
+        r = await ac.post("/admin/reports/weekly-exec/run", headers=H(admin_t))
+        d = r.json() if r.status_code == 200 else {}
+        check("weekly: admin run-now → ≥1 PDF, ≥2 recipients (admins + HODs)",
+              r.status_code == 200 and d.get("reports", 0) >= 1
+              and d.get("recipients", 0) >= 2 and "ALL" in d.get("links", {}),
+              f"{r.status_code} {str(d)[:200]}")
+
+        # the WhatsApp-style link really serves a PDF, no auth required
+        url = d["links"]["ALL"]
+        tok = url.rsplit("/", 1)[-1]
+        r = await ac.get(f"/reports/weekly-exec/{tok}")
+        check("weekly: tokenized link → 200 application/pdf with %PDF magic",
+              r.status_code == 200
+              and r.headers.get("content-type", "").startswith("application/pdf")
+              and r.content[:5] == b"%PDF-", f"{r.status_code}")
+
+        r = await ac.get("/reports/weekly-exec/not-a-real-token")
+        check("weekly: unknown token → 404", r.status_code == 404, f"{r.status_code}")
+
+        # force-expire the artifact → the same link dies with 410
+        async with SessionLocal() as ses:
+            await ses.execute(_sqt(
+                "UPDATE generated_reports SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' "
+                "WHERE kind = 'weekly_exec'"))
+            await ses.commit()
+        r = await ac.get(f"/reports/weekly-exec/{tok}")
+        check("weekly: expired link → 410", r.status_code == 410, f"{r.status_code}")
+
+        # every admin/hod got the in-app bell row with the download link
+        async with SessionLocal() as ses:
+            n_bell = (await ses.execute(_sqt(
+                "SELECT COUNT(*) FROM app_notifications "
+                "WHERE event_key = 'weekly_exec_report' "
+                "AND body LIKE '%/reports/weekly-exec/%'"))).scalar_one()
+            n_recip = (await ses.execute(_sqt(
+                "SELECT COUNT(*) FROM users WHERE role IN ('admin','hod')"))).scalar_one()
+        check("weekly: one bell row per admin/HOD recipient, carrying the link",
+              n_bell >= n_recip, f"bell={n_bell} recipients={n_recip}")
+
+        # cleanup — this suite COMMITS real rows
+        async with SessionLocal() as ses:
+            await ses.execute(_sqt("DELETE FROM generated_reports WHERE kind='weekly_exec'"))
+            await ses.execute(_sqt(
+                "DELETE FROM app_notifications WHERE event_key='weekly_exec_report'"))
+            await ses.commit()
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -4961,6 +5049,8 @@ async def main() -> int:
     await test_lining_coverage()
     print("\n AF. strict abuse limits — OTP toll fraud + webhook HMAC ban (Phase 8-2)")
     await test_strict_limits()
+    print("\n AG. automated weekly executive PDF (Phase 8-3)")
+    await test_weekly_report()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

@@ -1267,6 +1267,28 @@ class BugReports(Base):
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     updated_at = Column(DateTime)
 
+class GeneratedReport(Base):
+    """Phase 8-3 — auto-generated report artifacts (weekly executive PDF).
+
+    Each row is one rendered PDF plus a SECURE EXPIRING DOWNLOAD token: the
+    WhatsApp message carries `{PUBLIC_BASE_URL}/reports/weekly-exec/{token}`;
+    the raw token is never stored (only its sha256), and downloads stop at
+    `expires_at`. NEW-STACK ONLY — no SQLite counterpart; dual_ci reloads
+    leave it empty, which just means old links die (they expire in 72 h
+    anyway)."""
+    __tablename__ = "generated_reports"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kind = Column(Text, nullable=False)                 # 'weekly_exec'
+    Site_ID = Column(Text)                              # NULL = all sites
+    date_from = Column(Text, nullable=False)
+    date_to = Column(Text, nullable=False)
+    filename = Column(Text, nullable=False)
+    content = Column(LargeBinary, nullable=False)
+    token_hash = Column(Text, nullable=False, unique=True)
+    created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    expires_at = Column(DateTime, nullable=False)
+
+
 class SystemAuditLog(Base):
     __tablename__ = "system_audit_log"
     id = Column(Integer, primary_key=True, autoincrement=True)

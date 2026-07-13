@@ -40,6 +40,7 @@ from .db import engine, get_session  # noqa: E402
 from .entry import router as entry_router  # noqa: E402
 from .exec_summary import router as exec_summary_router  # noqa: E402
 from .lining_analytics import router as lining_analytics_router  # noqa: E402
+from .weekly_report import router as weekly_report_router, weekly_report_loop  # noqa: E402
 from .hod import router as hod_router  # noqa: E402
 from .logistics import router as logistics_router  # noqa: E402
 from .manhours import router as manhours_router  # noqa: E402
@@ -96,12 +97,15 @@ async def lifespan(app: FastAPI):
     # with GI_SCHEDULER=0 (tests/CI import the app without running lifespan).
     task = None
     digest_task = None
+    weekly_task = None
     if os.environ.get("GI_SCHEDULER", "1") != "0":
         import asyncio
         task = asyncio.create_task(scheduler_loop())
         # Evening-digest aggregator (Phase 6): daily 16:00 local batch send of
         # staged "evening" notifications. Same GI_SCHEDULER=0 escape hatch.
         digest_task = asyncio.create_task(digest_loop())
+        # Weekly executive PDF (Phase 8-3): Friday 17:00 local render+dispatch.
+        weekly_task = asyncio.create_task(weekly_report_loop())
     # AI-job orphan sweep: queued/running rows from a dead process can never
     # finish (their asyncio task died with it) — fail them with a clear message.
     try:
@@ -116,6 +120,8 @@ async def lifespan(app: FastAPI):
         task.cancel()
     if digest_task:
         digest_task.cancel()
+    if weekly_task:
+        weekly_task.cancel()
     await engine.dispose()
 
 
@@ -193,6 +199,8 @@ app.include_router(hod_router)
 app.include_router(exec_summary_router)
 # Phase 8-1 — predictive RL/BL lining coverage from LIVE stock (hod/logistics).
 app.include_router(lining_analytics_router)
+# Phase 8-3 — weekly exec PDF: tokenized download + admin run-now.
+app.include_router(weekly_report_router)
 
 # Logistics portal — PR queue → create PO → assign to warehouse (self-guarded, ≥logistics).
 app.include_router(logistics_router)
