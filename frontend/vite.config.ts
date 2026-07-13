@@ -19,7 +19,9 @@ export default defineConfig({
     ...(tunnel ? { hmr: { host: 'gi.giinventory.com', clientPort: 443, protocol: 'wss' } } : {}),
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        // VITE_API_PROXY lets the Playwright E2E harness (tests/e2e) point a
+        // throwaway dev server at its own isolated backend port.
+        target: process.env.VITE_API_PROXY ?? 'http://127.0.0.1:8000',
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/api/, ''),
       },
