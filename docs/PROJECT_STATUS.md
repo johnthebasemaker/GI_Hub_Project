@@ -48,9 +48,18 @@ recipient (critical alerts always immediate). Operator TODO: approve
 `WHATSAPP_WEBHOOK_VERIFY_TOKEN`/`WHATSAPP_APP_SECRET` + subscribe the webhook
 URL in Meta.
 Gates green:
-`service_tests` **602/0**, `parity_check` **5/5**, `bug_check` **599/0**,
+`service_tests` **626/0**, `parity_check` **5/5**, `bug_check` **599/0**,
 `parity:sme` **509**, frontend build ✅, `tsc --noEmit` ✅, alembic single head
-**d6b0e72f51a8**, Playwright E2E **38/38** (`cd tests/e2e && npm test`).
+**e7c31a9f24d5**, Playwright E2E **38/38** (`cd tests/e2e && npm test`).
+Phase 8 (2026-07-13): **/analytics/lining-coverage** — the SME engine run
+against LIVE ledger stock (RL/BL coverage + burn-based depletion dates,
+HOD/Logistics page at /hod/lining-coverage) · **abuse hardening** — OTP 3/h
+per IP AND per phone + webhook HMAC penalty box (5 bad sigs → 15-min IP ban),
+relaxed under GI_DOTENV=0, `GI_FORCE_STRICT_LIMITS=1` for the limits suite,
+global 429 countdown toast · **weekly exec PDF automation** — Friday 17:00
+lifespan daemon → `generated_reports` + 72-h tokenized download link via
+WhatsApp/bell to every admin+HOD (`POST /admin/reports/weekly-exec/run` for
+on-demand; ⚠️ set `PUBLIC_BASE_URL` in deploy/.env).
 Polish sprint (2026-07-13): cutover migration EXECUTED against the :5433
 mirror (`cutover_migrate.py --strict --wipe`, sync driver) → CUTOVER ✅
 VERIFIED + migrated data visually QA'd in the live UI; the §F2 Playwright
