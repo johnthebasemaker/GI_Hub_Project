@@ -22,7 +22,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import LargeBinary, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import get_current_user, require_level, resolve_site_param
+from .auth import get_current_user, require_level, resolve_site_param, site_scope
 from .db import get_session
 from .reports import _FORMATS, _latin
 from .services.ledger import _MD
@@ -152,9 +152,17 @@ async def qr_labels(site_id: Optional[str] = None,
     if site_id:
         stmt = stmt.where(inv.c["Site_ID"] == site_id)
     if sap_codes:
+        # The list may REPEAT a code — one label per occurrence (the legacy
+        # QR-request flow printed a per-item label quantity). Order and
+        # multiplicity are preserved; the sheet caps at 600 cells.
         wanted = [s.strip() for s in sap_codes.split(",") if s.strip()]
-        stmt = stmt.where(inv.c["SAP_Code"].in_(wanted))
-    rows = [dict(m) for m in (await session.execute(stmt.order_by(inv.c["SAP_Code"]).limit(600))).mappings().all()]
+        stmt = stmt.where(inv.c["SAP_Code"].in_(set(wanted)))
+        by_code = {m["SAP_Code"]: dict(m) for m in
+                   (await session.execute(stmt)).mappings().all()}
+        rows = [by_code[c] for c in wanted if c in by_code][:600]
+    else:
+        rows = [dict(m) for m in (await session.execute(
+            stmt.order_by(inv.c["SAP_Code"]).limit(600))).mappings().all()]
     data = _grid_pdf("Bin Labels", rows, _draw_bin_label)
     return _pdf_response(data, "qr-bin-labels.pdf")
 
@@ -175,6 +183,28 @@ async def employee_badges(site_id: Optional[str] = None,
     rows = [dict(m) for m in (await session.execute(stmt.order_by(emp.c["Name"]).limit(600))).mappings().all()]
     data = _grid_pdf("Employee Badges", rows, _draw_badge)
     return _pdf_response(data, "employee-badges.pdf")
+
+
+# --- single employee badge (PNG — the legacy encode_id_to_png parity) ---------
+@router.get("/employee-badge/{id_number}",
+            summary="One employee's QR badge as a PNG (payload = raw ID_Number)")
+async def employee_badge_png(id_number: str,
+                             user: dict = Depends(require_level(2)),
+                             session: AsyncSession = Depends(get_session)):
+    from fastapi.responses import Response
+    emp = _MD.tables["employees"]
+    stmt = select(emp.c["ID_Number"], emp.c["Name"], emp.c["Site_ID"]).where(
+        emp.c["ID_Number"] == id_number.strip())
+    row = (await session.execute(stmt)).first()
+    if row is None:
+        raise HTTPException(404, "no employee with that ID number")
+    scope = site_scope(user)
+    if scope is not None and (row.Site_ID or "") != scope:
+        raise HTTPException(404, "no employee with that ID number")
+    buf = _qr_png(str(row.ID_Number))
+    return Response(content=buf.getvalue(), media_type="image/png",
+                    headers={"Content-Disposition":
+                             f'attachment; filename="badge_{row.ID_Number}.png"'})
 
 
 # --- SOP / Manual (pre-built root PDFs, reference material for any user) -------

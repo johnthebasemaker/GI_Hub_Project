@@ -35,9 +35,10 @@ export default function ReturnablesPage() {
   // verifies the active employee and prefills the borrower. Tier 2: a tool
   // photo → tool_identify vision job → prefills the item name.
   const [scanOpen, setScanOpen] = useState(false)
-  const [badge, setBadge] = useState<{ name: string; active: boolean } | null>(null)
+  const [badge, setBadge] = useState<{ id: string; name: string; active: boolean } | null>(null)
   const [toolJobId, setToolJobId] = useState<number | null>(null)
   const [toolAlts, setToolAlts] = useState<string[]>([])
+  const [toolCv, setToolCv] = useState<{ name: string; confidence?: number } | null>(null)
 
   const onBadgeDecoded = async (id: string) => {
     setScanOpen(false)
@@ -48,10 +49,29 @@ export default function ReturnablesPage() {
         message.warning(r.message)
         return
       }
-      setBadge({ name: r.name, active: r.active })
+      setBadge({ id, name: r.name, active: r.active })
       form.setFieldsValue({ borrower_name: r.name, borrower_phone: r.phone || undefined })
       if (r.active) message.success(`Badge verified: ${r.name} (${r.department})`)
       else message.warning(r.message)
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
+
+  // Return-side "Employee QR check" (legacy parity): scan a returning
+  // borrower's badge to show ONLY their open loans.
+  const [filterScanOpen, setFilterScanOpen] = useState(false)
+  const [loanFilter, setLoanFilter] = useState<{ id: string; name: string } | null>(null)
+  const onFilterBadge = async (id: string) => {
+    setFilterScanOpen(false)
+    try {
+      const r = (await api.get(`/ai/badge/${encodeURIComponent(id)}`)).data
+      if (!r.found) {
+        message.warning(r.message)
+        return
+      }
+      setLoanFilter({ id, name: r.name })
+      message.success(`Showing loans for ${r.name}`)
     } catch (e) {
       message.error(errMsg(e))
     }
@@ -71,6 +91,7 @@ export default function ReturnablesPage() {
         const t = r.result.tool
         form.setFieldsValue({ material_name: t.name })
         setToolAlts([t.name, ...t.alternatives.map((a: { name: string }) => a.name)])
+        setToolCv({ name: t.name, confidence: t.confidence })
         message.success(`Identified: ${t.name}${t.description ? ` — ${t.description}` : ''}`)
       } else if (r.status === 'error') {
         setToolJobId(null)
@@ -94,6 +115,10 @@ export default function ReturnablesPage() {
         // showing 3 h early next to given_time; UAT timezone bug).
         expected_return_time: (v.due as dayjs.Dayjs).format('YYYY-MM-DDTHH:mm:ss'),
         site_id: user?.site_id || undefined,
+        // Smart-Scan adoption audit: how this loan was identified.
+        cv_employee_id: badge?.id || undefined,
+        cv_tool_class: toolCv?.name || undefined,
+        cv_confidence: toolCv?.confidence ?? undefined,
       })
       message.success('Loan recorded')
       setOpen(false)
@@ -156,17 +181,28 @@ export default function ReturnablesPage() {
         raise a one-time notification.
       </Typography.Paragraph>
 
-      <Space style={{ marginBottom: 12 }}>
+      <Space style={{ marginBottom: 12 }} wrap>
         <Button type="primary" onClick={() => {
-          setBadge(null); setToolAlts([]); setToolJobId(null); setOpen(true)
+          setBadge(null); setToolAlts([]); setToolJobId(null); setToolCv(null); setOpen(true)
         }}>Loan a tool</Button>
+        <Button icon={<QrcodeOutlined />} onClick={() => setFilterScanOpen(true)}>
+          Scan badge — show this employee's loans
+        </Button>
+        {loanFilter && (
+          <Tag closable color="blue" onClose={() => setLoanFilter(null)}>
+            loans for {loanFilter.name}
+          </Tag>
+        )}
       </Space>
 
       <Table
         size="small"
         loading={isFetching}
         columns={columns}
-        dataSource={data?.items ?? []}
+        dataSource={(data?.items ?? []).filter((r) => !loanFilter
+          || String(r.cv_employee_id ?? '') === loanFilter.id
+          || String(r.borrower_name ?? '').trim().toLowerCase()
+             === loanFilter.name.trim().toLowerCase())}
         rowKey={(r) => String(r.id)}
         rowClassName={(r) => (isOverdue(r) ? 'gi-row-overdue' : '')}
         scroll={{ x: 'max-content' }}
@@ -233,6 +269,8 @@ export default function ReturnablesPage() {
 
       <QrScanner open={scanOpen} title="Scan employee badge"
         onClose={() => setScanOpen(false)} onDecode={onBadgeDecoded} />
+      <QrScanner open={filterScanOpen} title="Scan the returning employee's badge"
+        onClose={() => setFilterScanOpen(false)} onDecode={onFilterBadge} />
     </div>
   )
 }

@@ -5800,6 +5800,85 @@ async def test_ocr_doc_assist():
             await s.commit()
 
 
+async def test_qr_returnables_parity():
+    """Suite AL — QR + returnables parity: single-badge PNG, label-quantity
+    repeats, and the Smart-Scan adoption audit on loan creation."""
+    from sqlalchemy import text as _sqt
+
+    async def _scalar(sql: str, **params):
+        async with SessionLocal() as s:
+            return (await s.execute(_sqt(sql), params)).scalar()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.89"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", json={"username": u, "password": p},
+                              headers=_ip)
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        worker_t = await token("worker", "floor2026")
+        hod_t = await token("hod", "hod2026")
+
+        emp_id = await _scalar(
+            "SELECT \"ID_Number\" FROM employees WHERE status='active' "
+            "AND COALESCE(\"Site_ID\",'')='CNCEC' LIMIT 1")
+        r = await ac.get(f"/documents/employee-badge/{emp_id}", headers=H(hod_t))
+        check("al: single employee badge downloads as a PNG",
+              r.status_code == 200 and r.content[:8] == b"\x89PNG\r\n\x1a\n",
+              f"{r.status_code} {r.content[:8]!r}")
+        r = await ac.get("/documents/employee-badge/NOPE-999", headers=H(hod_t))
+        check("al: unknown employee badge → 404", r.status_code == 404, f"got {r.status_code}")
+        r = await ac.get(f"/documents/employee-badge/{emp_id}", headers=H(worker_t))
+        check("al: store keeper (level 0) → 403 on badge PNG",
+              r.status_code == 403, f"got {r.status_code}")
+
+        sap = await _scalar("SELECT \"SAP_Code\" FROM inventory "
+                            "WHERE \"Site_ID\"='CNCEC' LIMIT 1")
+        r = await ac.get("/documents/qr-labels", headers=H(hod_t),
+                         params={"sap_codes": ",".join([sap] * 3)})
+        check("al: label sheet accepts repeated codes (copies) and is a PDF",
+              r.status_code == 200 and r.content[:5] == b"%PDF-",
+              f"{r.status_code} {r.content[:5]!r}")
+
+        # loan with Smart-Scan provenance → cv_* audit columns land
+        r = await ac.post("/entry/returnables", headers=H(worker_t), json={
+            "material_name": "SVCL torque wrench", "borrower_name": "SVCL Borrower",
+            "expected_return_time": "2027-01-01T10:00:00", "qty": 1,
+            "cv_employee_id": str(emp_id), "cv_tool_class": "torque wrench",
+            "cv_confidence": 0.9})
+        rid = r.json().get("id")
+        row = None
+        async with SessionLocal() as s:
+            row = (await s.execute(_sqt(
+                "SELECT cv_detected, cv_employee_id, cv_tool_class, cv_confidence "
+                "FROM returnable_items WHERE id=:i"), {"i": rid or -1})).first()
+        check("al: loan stores the Smart-Scan adoption audit (cv_* columns)",
+              r.status_code in (200, 201) and row is not None and row[0] == 1
+              and row[1] == str(emp_id) and row[2] == "torque wrench"
+              and abs(float(row[3]) - 0.9) < 1e-9,
+              f"{r.status_code} row={tuple(row) if row else None}")
+        r = await ac.post("/entry/returnables", headers=H(worker_t), json={
+            "material_name": "SVCL manual loan", "borrower_name": "SVCL Borrower",
+            "expected_return_time": "2027-01-01T10:00:00", "qty": 1})
+        rid2 = r.json().get("id")
+        cvd = await _scalar("SELECT cv_detected FROM returnable_items WHERE id=:i",
+                            i=rid2 or -1)
+        check("al: manual loan stays cv_detected=0", cvd == 0, f"got {cvd}")
+
+        async with SessionLocal() as s:  # cleanup (notifications keyed by ref stay)
+            await s.execute(_sqt(
+                "DELETE FROM returnable_items WHERE material_name LIKE 'SVCL %'"))
+            await s.execute(_sqt(
+                "DELETE FROM app_notifications WHERE related_table='returnable_items' "
+                "AND related_ref IN (:a, :b)"), {"a": str(rid), "b": str(rid2)})
+            await s.commit()
+
+
 async def _relax_entry_gates() -> None:
     """Parity A1 — require_entry_documents defaults ON in production. Switch
     it OFF for the functional suites (they submit entries without documents);
@@ -5894,6 +5973,8 @@ async def main() -> int:
     await test_bulk_import()
     print("\n AK. OCR doc assist (C3) + ask-data prompt pins")
     await test_ocr_doc_assist()
+    print("\n AL. QR + returnables parity (badge PNG, label copies, cv audit)")
+    await test_qr_returnables_parity()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

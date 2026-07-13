@@ -671,6 +671,12 @@ class ReturnableIn(BaseModel):
     uom: Optional[str] = None
     borrower_phone: Optional[str] = None
     site_id: Optional[str] = None
+    # Smart-Scan adoption audit (legacy parity): set when the borrower was
+    # identified by a badge scan and/or the tool by the vision model — the
+    # columns existed but were never written by the v2 create.
+    cv_employee_id: Optional[str] = Field(None, description="badge-scanned ID_Number")
+    cv_tool_class: Optional[str] = Field(None, description="vision-identified tool name")
+    cv_confidence: Optional[float] = Field(None, ge=0, le=1)
 
 
 def _parse_dt(raw: str) -> _dt.datetime:
@@ -752,7 +758,12 @@ async def create_returnable(body: ReturnableIn = Body(...),
             material_name=body.material_name.strip(), uom=body.uom, qty=body.qty,
             borrower_name=body.borrower_name.strip(), borrower_phone=body.borrower_phone,
             expected_return_time=due, status="borrowed", Site_ID=site,
-            whatsapp_alert_sent=0).returning(_returnables_t.c["id"]))).scalar_one()
+            whatsapp_alert_sent=0,
+            cv_detected=1 if (body.cv_employee_id or body.cv_tool_class) else 0,
+            cv_employee_id=(body.cv_employee_id or None),
+            cv_tool_class=(body.cv_tool_class or None),
+            cv_confidence=body.cv_confidence,
+        ).returning(_returnables_t.c["id"]))).scalar_one()
         await ledger.write_audit(session, user["username"], "RETURNABLE_LOAN",
                                  "returnable_items",
                                  f"id={rid} {body.material_name} → {body.borrower_name} due {due}")

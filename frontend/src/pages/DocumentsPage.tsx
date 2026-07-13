@@ -1,9 +1,10 @@
-import { useState } from 'react'
-import { App, Button, Card, Col, Row, Select, Space, Typography } from 'antd'
+import { useMemo, useState } from 'react'
+import { App, Button, Card, Col, InputNumber, Row, Select, Space, Typography } from 'antd'
 import {
   FileExcelOutlined, FilePdfOutlined, FileTextOutlined, IdcardOutlined, QrcodeOutlined,
 } from '@ant-design/icons'
-import { downloadDocument, useSites } from '../api/hooks'
+import { downloadDocument, useList, useSites } from '../api/hooks'
+import type { Row as ApiRow } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
 function errMsg(e: unknown): string {
@@ -27,6 +28,27 @@ export default function DocumentsPage() {
   const [site, setSite] = useState<string | undefined>()
   const [entity, setEntity] = useState('vendors')
   const [busy, setBusy] = useState<string | null>(null)
+
+  // Label sheet scoping: pick specific materials (blank = every item at the
+  // site) and how many copies of each label to print (legacy per-item qty).
+  const inventory = useList('/inventory', { limit: 600 })
+  const [labelSaps, setLabelSaps] = useState<string[]>([])
+  const [labelCopies, setLabelCopies] = useState(1)
+  const materialOptions = useMemo(() => (inventory.data?.items ?? [])
+    .map((r: ApiRow) => ({
+      value: String(r.SAP_Code),
+      label: `${r.SAP_Code} — ${r.Equipment_Description ?? ''}`,
+    })), [inventory.data])
+
+  // Single employee badge PNG (legacy admin Roster+Badges parity).
+  const employees = useList('/employees', { limit: 600 })
+  const [badgeEmp, setBadgeEmp] = useState<string | undefined>()
+  const employeeOptions = useMemo(() => (employees.data?.items ?? [])
+    .filter((r: ApiRow) => String(r.status ?? 'active') === 'active')
+    .map((r: ApiRow) => ({
+      value: String(r.ID_Number),
+      label: `${r.Name} (${r.ID_Number})`,
+    })), [employees.data])
 
   const go = async (tag: string, path: string, params: Record<string, unknown>, fallback: string) => {
     setBusy(tag)
@@ -79,9 +101,25 @@ export default function DocumentsPage() {
                   value={site} onChange={setSite}
                   options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
               )}
+              <Select mode="multiple" allowClear showSearch optionFilterProp="label"
+                placeholder="Specific materials (blank = all items)"
+                style={{ width: '100%', marginBottom: 8 }}
+                value={labelSaps} onChange={setLabelSaps}
+                options={materialOptions} maxTagCount={3} />
+              <Space wrap style={{ marginBottom: 8 }}>
+                <span>Copies per label:</span>
+                <InputNumber min={1} max={20} value={labelCopies}
+                  onChange={(v) => setLabelCopies(v ?? 1)} />
+              </Space>
               <Space wrap>
                 <Button icon={<QrcodeOutlined />} loading={busy === 'qr'}
-                  onClick={() => go('qr', '/documents/qr-labels', siteParam, 'qr-bin-labels.pdf')}>
+                  onClick={() => go('qr', '/documents/qr-labels', {
+                    ...siteParam,
+                    ...(labelSaps.length ? {
+                      sap_codes: labelSaps
+                        .flatMap((s) => Array(labelCopies).fill(s)).join(','),
+                    } : {}),
+                  }, 'qr-bin-labels.pdf')}>
                   Bin labels
                 </Button>
                 <Button icon={<IdcardOutlined />} loading={busy === 'badges'}
@@ -89,6 +127,22 @@ export default function DocumentsPage() {
                   Employee badges
                 </Button>
               </Space>
+              <div style={{ marginTop: 12 }}>
+                <Typography.Text type="secondary">Single badge (PNG):</Typography.Text>
+                <Space.Compact style={{ width: '100%', marginTop: 4 }}>
+                  <Select allowClear showSearch optionFilterProp="label"
+                    placeholder="Pick an employee" style={{ width: '100%' }}
+                    value={badgeEmp} onChange={setBadgeEmp}
+                    options={employeeOptions} />
+                  <Button icon={<IdcardOutlined />} disabled={!badgeEmp}
+                    loading={busy === 'badge1'}
+                    onClick={() => badgeEmp && go('badge1',
+                      `/documents/employee-badge/${encodeURIComponent(badgeEmp)}`,
+                      {}, `badge_${badgeEmp}.png`)}>
+                    PNG
+                  </Button>
+                </Space.Compact>
+              </div>
             </Card>
           </Col>
         )}
