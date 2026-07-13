@@ -4605,6 +4605,92 @@ async def test_executive_summary():
 
 
 
+
+async def test_lining_coverage():
+    """Phase 8-1 — predictive lining analytics (/analytics/lining-coverage).
+    Read-only; the SME engine input pool must be the LIVE ledger stock."""
+    from sqlalchemy import text as _sqt
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.105"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}", **_ip}
+
+        worker_t = await token("worker", "floor2026")
+        sup_t = await token("supervisor", "super2026")
+        hod_t = await token("hod", "hod2026")
+
+        r = await ac.get("/analytics/lining-coverage", headers=H(worker_t))
+        check("lining: store keeper → 403", r.status_code == 403, f"{r.status_code}")
+        r = await ac.get("/analytics/lining-coverage", headers=H(sup_t))
+        check("lining: supervisor → 403", r.status_code == 403, f"{r.status_code}")
+
+        r = await ac.get("/analytics/lining-coverage", headers=H(hod_t))
+        d = r.json() if r.status_code == 200 else {}
+        check("lining: HOD → 200 with families/per_system/materials",
+              r.status_code == 200 and all(k in d for k in
+                                           ("families", "per_system", "materials", "source")),
+              f"{r.status_code} {str(d)[:160]}")
+
+        async with SessionLocal() as ses:
+            hod_site = (await ses.execute(_sqt(
+                "SELECT COALESCE(\"Site_ID\",'HQ') FROM users WHERE username='hod'"))).scalar_one()
+        check("lining: scoped HOD is pinned to their own site",
+              d.get("site") == hod_site, f"site={d.get('site')} vs {hod_site}")
+
+        fams = {f["family"] for f in d.get("families", [])}
+        check("lining: RL and BL families present with sane math",
+              {"RL", "BL"} <= fams and all(
+                  f["achievable_sqm"] <= f["remaining_sqm"] + 1e-6
+                  and 0 <= f["coverage_pct"] <= 100 for f in d["families"]),
+              f"fams={fams}")
+
+        # per_system sorted worst-coverage-first; each system carries a family tag
+        cov = [s_["Coverage_Pct"] for s_ in d.get("per_system", [])]
+        check("lining: systems sorted worst-coverage-first",
+              cov == sorted(cov), f"{cov[:8]}")
+
+        # the availability pool really is the LIVE ledger: pick a material the
+        # engine consumed that exists in the live master and compare its
+        # live_stock to the ledger truth for the HOD's site
+        live_rows = [m for m in d.get("materials", []) if m["stock_source"] == "live"]
+        check("lining: live-ledger materials present in the pool",
+              len(live_rows) >= 1 and d["source"]["live"] >= 1,
+              f"live={d.get('source')}")
+        if live_rows:
+            probe = live_rows[0]
+            async with SessionLocal() as ses:
+                truth = (await ses.execute(_sqt('''
+                    SELECT COALESCE(SUM(x.q), 0) FROM (
+                      SELECT (SELECT COALESCE(SUM(r."Quantity"),0) FROM receipts r
+                              WHERE TRIM(r."SAP_Code") = TRIM(i."SAP_Code")
+                                AND COALESCE(r."Site_ID",'HQ') = :st)
+                           - (SELECT COALESCE(SUM(c."Quantity"),0) FROM consumption c
+                              WHERE TRIM(c."SAP_Code") = TRIM(i."SAP_Code")
+                                AND COALESCE(c."Site_ID",'HQ') = :st)
+                           - (SELECT COALESCE(SUM(rt."Quantity"),0) FROM returns rt
+                              WHERE TRIM(rt."SAP_Code") = TRIM(i."SAP_Code")
+                                AND COALESCE(rt."Site_ID",'HQ') = :st) AS q
+                      FROM inventory i
+                      WHERE TRIM(i."Material_Code") = :mc
+                        AND COALESCE(i."Site_ID",'HQ') = :st) x'''),
+                    {"mc": probe["material_code"], "st": hod_site})).scalar_one()
+            check("lining: live_stock equals the ledger truth",
+                  abs(float(probe["live_stock"]) - float(truth)) < 1e-6,
+                  f'{probe["material_code"]}: api={probe["live_stock"]} db={truth}')
+
+        # materials sorted biggest-shortfall-first
+        shorts = [m["shortfall_qty"] for m in d.get("materials", [])]
+        check("lining: materials sorted by shortfall desc",
+              shorts == sorted(shorts, reverse=True), f"{shorts[:8]}")
+
+
 async def test_data_query():
     """Phase C — chat-with-your-data (/ai/query). The template lane must be
     deterministic, site-pinned for scoped roles, and independent of Ollama;
@@ -4785,6 +4871,8 @@ async def main() -> int:
     await test_executive_summary()
     print("\n AD. chat-with-your-data query router (Phase C)")
     await test_data_query()
+    print("\n AE. predictive lining-coverage analytics (Phase 8-1)")
+    await test_lining_coverage()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

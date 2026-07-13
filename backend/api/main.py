@@ -39,6 +39,7 @@ from .crud import make_read_router  # noqa: E402
 from .db import engine, get_session  # noqa: E402
 from .entry import router as entry_router  # noqa: E402
 from .exec_summary import router as exec_summary_router  # noqa: E402
+from .lining_analytics import router as lining_analytics_router  # noqa: E402
 from .hod import router as hod_router  # noqa: E402
 from .logistics import router as logistics_router  # noqa: E402
 from .manhours import router as manhours_router  # noqa: E402
@@ -190,6 +191,8 @@ app.include_router(entry_router)
 app.include_router(hod_router)
 # HOD portal — executive summary report (hod+admin exact lock, read-only).
 app.include_router(exec_summary_router)
+# Phase 8-1 — predictive RL/BL lining coverage from LIVE stock (hod/logistics).
+app.include_router(lining_analytics_router)
 
 # Logistics portal — PR queue → create PO → assign to warehouse (self-guarded, ≥logistics).
 app.include_router(logistics_router)

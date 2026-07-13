@@ -99,6 +99,7 @@ export const NAV: NavGroup[] = [
       { key: '/hod/executive-summary', label: 'Executive Summary', icon: <FundProjectionScreenOutlined />, access: { anyRole: ['hod'] } },
       { key: '/hod/approvals', label: 'Approvals', icon: <AuditOutlined />, access: { anyRole: ['hod'] }, badge: 'approvals' },
       { key: '/hod/burn-rate', label: 'Burn Rate', icon: <FireOutlined />, access: { anyRole: ['hod'] } },
+      { key: '/hod/lining-coverage', label: 'Lining Coverage', icon: <ExperimentOutlined />, access: { anyRole: ['hod', 'logistics'] } },
       { key: '/hod/low-stock', label: 'Low Stock', icon: <FallOutlined />, access: { anyRole: ['hod'] } },
       { key: '/hod/prs', label: 'Purchase Requests', icon: <ProfileOutlined />, access: { anyRole: ['hod'] } },
       { key: '/hod/requests', label: 'Cross-Site Requests', icon: <SolutionOutlined />, access: { anyRole: ['hod'] } },
@@ -134,6 +135,9 @@ export const NAV: NavGroup[] = [
     access: { minLevel: 3 },   // {logistics, admin} (hod level 2 < 3)
     children: [
       { key: '/logistics', label: 'Procurement', icon: <CarOutlined />, access: { minLevel: 3 } },
+      // same page as /hod/lining-coverage — distinct route key so the two nav
+      // groups never share an antd menu key (admin "All areas" shows both)
+      { key: '/logistics/lining-coverage', label: 'Lining Coverage', icon: <ExperimentOutlined />, access: { minLevel: 3 } },
     ],
   },
   {
