@@ -23,7 +23,7 @@ import sys
 
 import bcrypt
 import jwt
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy import func, insert, select, update
@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import jwt_secret
 from .db import get_session
-from .ratelimit import rate_limit
+from .ratelimit import check_bucket, client_ip, rate_limit, strict_limits_enabled
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT not in sys.path:
@@ -638,7 +638,8 @@ async def _issue_phone_code(session: AsyncSession, *, username: str, number: str
 
 @router.post("/phone/request-otp", summary="Send a 6-digit code to verify a phone change",
              dependencies=[rate_limit(5, 60)])
-async def request_phone_otp(body: PhoneRequestIn, user: dict = Depends(get_current_user),
+async def request_phone_otp(body: PhoneRequestIn, request: Request,
+                            user: dict = Depends(get_current_user),
                             session: AsyncSession = Depends(get_session)):
     """Dual-OTP phone change (UAT refinement).
     Step A (stage='old'): with a number on file, the first code goes to the
@@ -651,11 +652,21 @@ async def request_phone_otp(body: PhoneRequestIn, user: dict = Depends(get_curre
     First-time setup (no number on file) has no old device to prove — it
     starts directly at stage='new'."""
     from .services import whatsapp as wa  # lazy: avoids an auth↔whatsapp import cycle
+    number = normalize_phone(body.new_number)
+    # Phase 8-2 — SMS-toll-fraud guard: max 3 OTP requests per HOUR, counted
+    # BOTH per source IP and per target phone number (an attacker rotating
+    # IPs still exhausts the number's budget, and vice versa). Checked BEFORE
+    # anything else so even misconfigured/failed sends burn quota. Relaxed in
+    # hermetic test envs — see ratelimit.strict_limits_enabled().
+    if strict_limits_enabled():
+        check_bucket(f"otp:ip:{client_ip(request)}", 3, 3600,
+                     "too many verification codes requested from this address — try again later")
+        check_bucket(f"otp:phone:{number}", 3, 3600,
+                     "too many verification codes for this number — try again later")
     if not wa.enabled():
         # Fail BEFORE creating a code row — nothing to strand, clear guidance.
         raise HTTPException(503, "WhatsApp is not configured on the server — "
                                  "ask an admin to set your number directly.")
-    number = normalize_phone(body.new_number)
     current = ((await session.execute(select(users_t.c["Phone_Number"])
                 .where(users_t.c["username"] == user["username"]))).scalar_one_or_none()
                or "").strip()

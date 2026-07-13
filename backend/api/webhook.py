@@ -47,6 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .auth import ROLE_META, SITE_SCOPE_MIN_LEVEL, _audit
 from .db import get_session
 from .services import whatsapp as wa
+from .ratelimit import PenaltyBox, client_ip, strict_limits_enabled
 from .services.ledger import _MD
 from .stock import SQL_LIVE_STOCK, SQL_SITE_STOCK
 
@@ -182,11 +183,27 @@ async def _handle_command(session: AsyncSession, user: dict, body: str) -> str:
     return _HELP
 
 
+# Phase 8-2 — HMAC-probing penalty box: 5 invalid signatures inside 10 minutes
+# from one IP ⇒ that IP is refused for 15 minutes BEFORE any body processing.
+# Relaxed in hermetic test envs (see ratelimit.strict_limits_enabled), so the
+# functional webhook suites keep working; the limits suite forces it on.
+_hmac_penalty = PenaltyBox(threshold=5, window_seconds=600, ban_seconds=900)
+
+
 @router.post("/webhook", summary="Inbound WhatsApp messages (Meta Cloud API)")
 async def receive_webhook(request: Request, session: AsyncSession = Depends(get_session)):
+    ip = client_ip(request)
+    if strict_limits_enabled():
+        remaining = _hmac_penalty.banned_for(ip)
+        if remaining is not None:
+            return PlainTextResponse("temporarily blocked",
+                                     status_code=429,
+                                     headers={"Retry-After": str(remaining)})
     raw = await request.body()
     if not _signature_ok(raw, request.headers.get("X-Hub-Signature-256", "")):
         log.warning("webhook POST rejected: X-Hub-Signature-256 mismatch")
+        if strict_limits_enabled() and _hmac_penalty.strike(ip):
+            log.warning("webhook: IP %s banned for repeated invalid HMAC signatures", ip)
         return PlainTextResponse("invalid signature", status_code=403)
     try:
         payload = json.loads(raw or b"{}")

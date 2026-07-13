@@ -75,6 +75,15 @@ api.interceptors.response.use(
   async (err) => {
     const cfg = err?.config
     const url: string = cfg?.url ?? ''
+    // Phase 8-2 — rate limited: surface a global countdown toast (handled in
+    // AppLayout) with the server's Retry-After. The error still rejects so
+    // each caller's own handler runs too.
+    if (err?.response?.status === 429) {
+      const retryAfter = Number(err.response.headers?.['retry-after']) || 30
+      window.dispatchEvent(new CustomEvent('gi-rate-limited', {
+        detail: { seconds: retryAfter, url },
+      }))
+    }
     if (
       err?.response?.status === 401 &&
       cfg &&

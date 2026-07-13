@@ -16,6 +16,7 @@ import HubAssistant from './HubAssistant'
 import NotificationBell from './NotificationBell'
 import OfflineSyncBadge from './OfflineSyncBadge'
 import ProfileModal from './ProfileModal'
+import RateLimitToast from './RateLimitToast'
 
 const { Header, Sider, Content } = Layout
 
@@ -192,6 +193,7 @@ export default function AppLayout() {
               <Button type="text" aria-label="Toggle color theme"
                 icon={mode === 'dark' ? <SunOutlined /> : <MoonOutlined />} onClick={toggle} />
             </Tooltip>
+            <RateLimitToast />
             <OfflineSyncBadge />
             <NotificationBell />
             {user && (

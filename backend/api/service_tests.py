@@ -4804,6 +4804,92 @@ async def test_data_query():
         check("query: blank question → 422", r.status_code == 422, f"{r.status_code}")
 
 
+
+async def test_strict_limits():
+    """Phase 8-2 — SMS-toll-fraud + HMAC-probing hardening. The strict rules
+    are relaxed under GI_DOTENV=0 (so every other suite runs freely); this
+    suite forces them on via GI_FORCE_STRICT_LIMITS and verifies:
+      · OTP: 3/hour per source IP  · 3/hour per target phone (across IPs)
+      · webhook: 5 invalid HMAC signatures in 10 min ⇒ 15-min IP ban (429)
+      · Retry-After present on every 429."""
+    import hashlib as _hl
+    import hmac as _hm
+    import os as _os
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.106"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", headers=_ip, json={"username": u, "password": p})
+            return r.json().get("access_token")
+
+        worker_t = await token("worker", "floor2026")
+
+        def H(t, ip):
+            return {"Authorization": f"Bearer {t}", "X-Real-IP": ip}
+
+        _os.environ["GI_FORCE_STRICT_LIMITS"] = "1"
+        try:
+            # ── OTP per-IP: 4th request from ONE IP inside the hour → 429 ────
+            ip_a = "198.51.100.31"
+            codes = []
+            for i in range(4):
+                r = await ac.post("/auth/phone/request-otp", headers=H(worker_t, ip_a),
+                                  json={"new_number": f"+96650000010{i}"})
+                codes.append(r.status_code)
+            # hermetic env ⇒ WhatsApp off ⇒ allowed calls surface as 503, but
+            # the 4th must be the limiter's 429 (quota burns on attempts)
+            check("limits: OTP per-IP — 3 attempts pass the gate, 4th → 429",
+                  codes[:3] == [503, 503, 503] and codes[3] == 429, f"{codes}")
+            r = await ac.post("/auth/phone/request-otp", headers=H(worker_t, ip_a),
+                              json={"new_number": "+966500000109"})
+            check("limits: 429 carries Retry-After",
+                  r.status_code == 429 and int(r.headers.get("retry-after", 0)) > 0,
+                  f'{r.status_code} ra={r.headers.get("retry-after")}')
+
+            # ── OTP per-phone: same number from ROTATING IPs still capped ────
+            phone = "+966500000777"
+            codes = []
+            for i in range(4):
+                r = await ac.post("/auth/phone/request-otp",
+                                  headers=H(worker_t, f"198.51.100.{40 + i}"),
+                                  json={"new_number": phone})
+                codes.append(r.status_code)
+            check("limits: OTP per-phone — rotating IPs, 4th for the number → 429",
+                  codes[:3] == [503, 503, 503] and codes[3] == 429
+                  and "number" in r.json().get("detail", ""), f"{codes}")
+
+            # ── webhook HMAC penalty box ──────────────────────────────────────
+            _os.environ["WHATSAPP_APP_SECRET"] = "af-test-secret"
+            try:
+                bad = {"X-Hub-Signature-256": "sha256=" + "0" * 64, "X-Real-IP": "198.51.100.60"}
+                sigs = []
+                for _ in range(5):
+                    r = await ac.post("/whatsapp/webhook", headers=bad, content=b"{}")
+                    sigs.append(r.status_code)
+                check("limits: invalid HMACs are 403 until the ban trips",
+                      sigs == [403] * 5, f"{sigs}")
+                # 6th request from the SAME IP — even with a VALID signature — 429
+                good_sig = "sha256=" + _hm.new(b"af-test-secret", b"{}", _hl.sha256).hexdigest()
+                r = await ac.post("/whatsapp/webhook",
+                                  headers={"X-Hub-Signature-256": good_sig,
+                                           "X-Real-IP": "198.51.100.60"}, content=b"{}")
+                check("limits: banned IP → 429 with Retry-After (even valid sig)",
+                      r.status_code == 429 and int(r.headers.get("retry-after", 0)) > 0,
+                      f'{r.status_code} ra={r.headers.get("retry-after")}')
+                # an unrelated IP with a valid signature is untouched
+                r = await ac.post("/whatsapp/webhook",
+                                  headers={"X-Hub-Signature-256": good_sig,
+                                           "X-Real-IP": "198.51.100.61"}, content=b"{}")
+                check("limits: other IPs unaffected by the ban",
+                      r.status_code == 200, f"{r.status_code}")
+            finally:
+                _os.environ.pop("WHATSAPP_APP_SECRET", None)
+        finally:
+            _os.environ.pop("GI_FORCE_STRICT_LIMITS", None)
+
+
 async def main() -> int:
     print("Service-level invariants (rolled back) + auth/role guards:\n")
     print(" A. service invariants")
@@ -4873,6 +4959,8 @@ async def main() -> int:
     await test_data_query()
     print("\n AE. predictive lining-coverage analytics (Phase 8-1)")
     await test_lining_coverage()
+    print("\n AF. strict abuse limits — OTP toll fraud + webhook HMAC ban (Phase 8-2)")
+    await test_strict_limits()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "
