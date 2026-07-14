@@ -30,3 +30,8 @@ yolov8*.pt
 # Runtime error logs (developer-facing; not source)
 logs/
 reports_archive/
+
+# Live operational tracking workbooks (operator-owned, synced via
+# tools/excel_sync.py — never commit; archived snapshots in data-archive/
+# and legacy/scripts/sme_seed_data/ predate this rule and stay tracked).
+*.xlsx
