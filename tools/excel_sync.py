@@ -9,7 +9,11 @@ inventory master lands first so the ledger backfill's soft-FK check passes.
 
     DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
     .venv/bin/python tools/excel_sync.py \
-        --dir ~/Downloads --site CNCEC [--commit]
+        --site CNCEC [--dir /path/to/workbooks] [--commit]
+
+Workbooks are read from --dir (default: the repo root, where the 4 tracking
+files live). All columns are resolved by HEADER NAME, so reordering or adding
+columns in the workbooks is safe; unknown columns are reported as warnings.
 
 Ends with a per-SAP stock verification: Opening_Stock + Σreceipts −
 Σconsumption − Σreturns in the DB must equal the workbook's "Current Stock"
@@ -50,7 +54,8 @@ def _fmt(summary) -> str:
 
 async def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dir", default=os.path.expanduser("~/Downloads"))
+    ap.add_argument("--dir", default=_ROOT,
+                    help="folder holding the 4 workbooks (default: repo root)")
     ap.add_argument("--site", default="CNCEC")
     ap.add_argument("--commit", action="store_true",
                     help="apply the plans (default: dry-run report only)")
@@ -109,18 +114,16 @@ async def main() -> int:
                 print("    ✅ committed")
 
     # ── verification: DB stock == workbook Current Stock ────────────────────
-    import io
-
-    import openpyxl
-    wb = openpyxl.load_workbook(io.BytesIO(datas["inventory"]), read_only=True,
-                                data_only=True)
-    ws = wb["Inventory"]
-    rows = list(ws.iter_rows(min_row=3, values_only=True))
-    wb.close()
+    # Header-driven like the importers (the operator reorders/adds columns in
+    # the tracking workbook — positional reads would silently mis-verify).
+    headers, vrows = bi._sheet_rows(datas["inventory"], "Inventory",
+                                    ("sap code", "current stock"))
+    sap_i = bi._col(headers, "SAP CODE", "SAP_Code")
+    cur_i = bi._col(headers, "Current Stock", "Current_Stock")
     expected = {}
-    for r in rows:
-        sap = bi._s(r[1])
-        cur = bi._f(r[10])
+    for r in vrows:
+        sap = bi._s(r[sap_i]) if sap_i < len(r) else None
+        cur = bi._f(r[cur_i]) if cur_i < len(r) else None
         if sap and cur is not None:
             expected[sap] = cur
     async with SessionLocal() as session:

@@ -53,9 +53,11 @@ DATELESS_LINES = [
                  "Remarks": "[excel-sync] workbook row without date"}),
 ]
 
-_SHEETS = {"receipts": ("Receipt Log", 12, "DN_No"),
-           "consumption": ("Consumption Log", 9, "Tank_No"),
-           "returns": ("Return Log", 9, "Reason")}
+# (sheet name, workbook ref-column HEADER, DB ref column) — columns are
+# resolved by header name so workbook restructures can't shift the read.
+_SHEETS = {"receipts": ("Receipt Log", "DN. No.", "DN_No"),
+           "consumption": ("Consumption Log", "Tank No.", "Tank_No"),
+           "returns": ("Return Log", "Reason", "Reason")}
 
 _ZERO_REMARK = (" [excel-sync 2026-07-13] zeroed: no counterpart in the "
                 "authoritative workbook (test/double entry)")
@@ -68,27 +70,29 @@ def _day(v) -> str:
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--workbook",
-                    default=os.path.expanduser("~/Downloads/CNCEC_Inventory.xlsx"))
+                    default=os.path.join(_ROOT, "CNCEC_Inventory.xlsx"))
     ap.add_argument("--commit", action="store_true")
     args = ap.parse_args()
 
-    import openpyxl
     from sqlalchemy import text
 
     from backend.api import bulk_import as bi
     from backend.api.db import SessionLocal, engine
 
-    wb = openpyxl.load_workbook(args.workbook, read_only=True, data_only=True)
-
-    def sheet_rows(name):
-        return [r for r in wb[name].iter_rows(min_row=3, values_only=True)
-                if r[1] not in (None, "")]
+    with open(args.workbook, "rb") as fh:
+        data = fh.read()
 
     zeroed, inserted = [], []
     async with SessionLocal() as s:
-        inv = sheet_rows("Inventory")
-        expected = {bi._s(r[1]): bi._f(r[10]) for r in inv
-                    if bi._s(r[1]) and bi._f(r[10]) is not None}
+        hdrs, inv = bi._sheet_rows(data, "Inventory", ("sap code", "current stock"))
+        isap_i = bi._col(hdrs, "SAP CODE", "SAP_Code")
+        icur_i = bi._col(hdrs, "Current Stock", "Current_Stock")
+        expected = {}
+        for r in inv:
+            sap = bi._s(r[isap_i]) if isap_i < len(r) else None
+            cur = bi._f(r[icur_i]) if icur_i < len(r) else None
+            if sap and cur is not None:
+                expected[sap] = cur
         dbstock = {r[0]: float(r[1]) for r in (await s.execute(text('''
             SELECT i."SAP_Code", COALESCE(i."Opening_Stock",0)
               + COALESCE((SELECT SUM(r."Quantity") FROM receipts r
@@ -103,13 +107,21 @@ async def main() -> int:
                       or abs(dbstock[sap] - expected[sap]) > 1e-6}
         print(f"mismatched SAPs before reconcile: {len(mismatched)}")
 
-        for tab, (sheet, refi, refcol) in _SHEETS.items():
+        for tab, (sheet, refhdr, refcol) in _SHEETS.items():
+            shdrs, srows = bi._sheet_rows(data, sheet, ("sap code", "qty."))
+            sap_i = bi._col(shdrs, "SAP CODE", "SAP_Code")
+            date_i = bi._col(shdrs, "Date", "Date ")
+            qty_i = bi._col(shdrs, "Qty.", "Quantity")
+            ref_i = bi._col(shdrs, refhdr)
             xl = collections.Counter()
-            for r in sheet_rows(sheet):
-                sap, d, q = bi._s(r[1]), bi._iso(r[0]), bi._f(r[5])
+            for r in srows:
+                sap = bi._s(r[sap_i]) if sap_i < len(r) else None
+                d = bi._iso(r[date_i]) if date_i is not None and date_i < len(r) else None
+                q = bi._f(r[qty_i]) if qty_i is not None and qty_i < len(r) else None
                 if not sap or d is None or q is None:
                     continue
-                xl[(_day(d), sap, round(q, 4), bi._s(r[refi]) or "")] += 1
+                ref = bi._s(r[ref_i]) if ref_i is not None and ref_i < len(r) else None
+                xl[(_day(d), sap, round(q, 4), ref or "")] += 1
             rows = (await s.execute(text(
                 f'SELECT id, "Date", "SAP_Code", "Quantity", '
                 f'COALESCE("{refcol}", \'\') FROM {tab} '

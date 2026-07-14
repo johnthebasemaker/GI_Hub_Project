@@ -159,16 +159,23 @@ async def plan_inventory(session: AsyncSession, data: bytes, site_id: str) -> di
                                 required=False)
     if not headers:  # single-sheet master file fallback
         headers, rows = _sheet_rows(data, None, ("sap code", "category"))
-    ix = {k: _col(headers, *names) for k, names in {
+    colspec = {
         "sl": ("Sl. No.", "Sl_No", "Sl. #"), "sap": ("SAP CODE", "SAP_Code"),
         "mat": ("Material Code", "Material_Code"),
         "desc": ("Equipment Description", "Equipment_Description"),
         "uom": ("UOM",), "cat": ("Category",),
         "open": ("Opening Stock", "Opening_Stock"),
         "min": ("Minimum Qty", "Minimum_Qty"),
-    }.items()}
+    }
+    ix = {k: _col(headers, *names) for k, names in colspec.items()}
     if ix["sap"] is None:
         raise HTTPException(422, "SAP CODE column missing")
+    # Columns are resolved by NAME (order-independent). Anything the workbook
+    # carries beyond the mapped set + the ledger-derived aggregates is ignored
+    # — but LOUDLY, so a restructured sheet never loses data silently.
+    _known = {n.lower() for names in colspec.values() for n in names}
+    _known |= {"receipt", "consumption", "return", "current stock"}
+    extra_cols = [h for h in headers if h and h.lower() not in _known]
 
     existing = {r["SAP_Code"]: dict(r) for r in
                 (await session.execute(select(inventory_t))).mappings().all()}
@@ -180,6 +187,8 @@ async def plan_inventory(session: AsyncSession, data: bytes, site_id: str) -> di
     # current owner is re-mapped in the same workbook).
     parsed: list[dict] = []
     rejects, warnings = [], []
+    if extra_cols:
+        warnings.append("ignored unmapped column(s): " + ", ".join(extra_cols))
     normalised_cats = Counter()
     seen_saps = set()
     for n, row in enumerate(rows, start=1):
@@ -280,6 +289,13 @@ async def apply_inventory(session: AsyncSession, plan: dict, username: str) -> N
 
 
 # ─── ledger backfill (receipts / consumption / returns) ───────────────────────
+# Every sheet's columns resolve by NAME (order-independent). "ignore" lists
+# workbook columns that deliberately have no DB home — anything else that is
+# unmapped raises a warning so a restructured sheet never drops data silently.
+# ("Material Code" / "Equipment Description" / "UOM" repeat the inventory
+# master on every log sheet and are always ignored.)
+_LEDGER_ALWAYS_IGNORED = ("date", "sap code", "sap_code", "material code",
+                          "equipment description", "uom")
 _LEDGER_SHEETS = {
     "receipts": {
         "sheet": "Receipt Log", "table": receipts_t,
@@ -289,8 +305,9 @@ _LEDGER_SHEETS = {
                  "Driver_Name": ("Driver Name",), "DN_No": ("DN. No.",),
                  "Pallet_No": ("Pallet No.",), "Mob_From": ("Mob. From",),
                  "Mob_To": ("Mob. To",), "Prepared_by": ("Prepared by",),
-                 "Received_by": ("Received by",)},
-        "ref": "DN_No",
+                 "Received_by": ("Received by",), "DN_Copy": ("DN. Copy",),
+                 "Remarks": ("Remarks",)},
+        "ref": "DN_No", "ignore": (),
     },
     "consumption": {
         "sheet": "Consumption Log", "table": consumption_t,
@@ -298,13 +315,21 @@ _LEDGER_SHEETS = {
                  "PR_Number": ("PR#",), "Work_Type": ("Work Type",),
                  "Tank_No": ("Tank No.",), "WBS": ("WBS#",),
                  "Approved By": ("Approved By",), "Issued_To": ("Received by",),
-                 "Issued_By": ("Prepared by",)},
-        "ref": "Tank_No",
+                 "Issued_By": ("Prepared by",), "Remarks": ("Remarks",)},
+        # `consumption` has no Pallet_No / paper-number columns — 2026-07-14
+        # workbook restructure adds both to the sheet; ignored by design.
+        "ref": "Tank_No", "ignore": ("cons. paper no.", "pallet no."),
     },
     "returns": {
         "sheet": "Return Log", "table": returns_t,
-        "cols": {"Quantity": ("Qty.",), "Reason": ("Reason",)},
+        "cols": {"Quantity": ("Qty.",), "Reason": ("Reason",),
+                 "Remarks": ("Remarks",)},
+        # the Return Log reuses the Receipt Log template; `returns` is a
+        # narrow table (Date/SAP/Qty/Reason/Remarks) so the rest has no home
         "ref": "Reason",
+        "ignore": ("serial no.", "pr#", "wbs#", "location", "vehicle no.",
+                   "driver name", "dn. no.", "pallet no.", "mob. from",
+                   "mob. to", "prepared by", "received by", "dn. copy"),
     },
 }
 
@@ -332,6 +357,12 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
         date_i = _col(headers, "Date", "Date ")
         colmap = {field: _col(headers, *names)
                   for field, names in spec["cols"].items()}
+        _known = set(_LEDGER_ALWAYS_IGNORED) | set(spec["ignore"])
+        _known |= {n.lower() for names in spec["cols"].values() for n in names}
+        extra_cols = [h for h in headers if h and h.lower() not in _known]
+        if extra_cols:
+            out["warnings"].append(f"{spec['sheet']}: ignored unmapped "
+                                   f"column(s): {', '.join(extra_cols)}")
 
         file_rows = []
         for n, row in enumerate(rows, start=1):

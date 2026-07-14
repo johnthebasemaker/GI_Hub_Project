@@ -5548,6 +5548,58 @@ async def test_bulk_import():
         n = await _scalar("SELECT COUNT(*) FROM receipts WHERE \"DN_No\" LIKE 'SVCJ-%'")
         check("aj: exactly one SVCJ ledger row exists after all passes", n == 1, f"got {n}")
 
+        # ── 2026-07-14 workbook restructure: columns resolve by NAME ────────
+        # Reordered headers + operator-added columns (Current Location /
+        # Audit …) must map identically and surface an "ignored" warning.
+        inv_wb3 = _xlsx({"Inventory": [
+            _TITLE,
+            ["Category", "SAP CODE", "Equipment Description", "UOM",
+             "Current Location", "Opening Stock", "Material Code",
+             "Minimum Qty", "Audit 13/06/26", "Sl. No."],
+            ["Surface Shield", "SVCJ-1", "SVCJ test item", "EA", "Rack A",
+             3, "GI-SVCJ-1", 7, "ok", "901"],
+        ]})
+        r = await ac.post("/import/inventory", headers=H(admin_t), files=up(inv_wb3),
+                          params={"site_id": "CNCEC"})
+        j = r.json() if r.status_code == 200 else {}
+        check("aj: reordered inventory headers map by NAME (row unchanged) + "
+              "unknown columns warned",
+              r.status_code == 200 and j.get("summary", {}).get("unchanged") == 1
+              and j.get("summary", {}).get("updates") == 0
+              and any("Current Location" in w and "Audit 13/06/26" in w
+                      for w in j.get("warnings", [])),
+              f"{r.status_code} {j.get('summary')} warn={j.get('warnings')}")
+        led_wb3 = _xlsx({
+            "Receipt Log": [
+                _TITLE,
+                ["Qty.", "Date ", "DN. No.", "SAP CODE", "Remarks ",
+                 "DN. Copy", "Mystery Col"],
+                [4, "2026-07-04 00:00:00", "SVCJ-DN9", "SVCJ-1", "note-9",
+                 "Yes", "zzz"],
+            ],
+            "Consumption Log": [
+                _TITLE,
+                ["Date ", "SAP CODE", "Qty.", "Tank No.", "Cons. Paper No."],
+                ["2026-07-05 00:00:00", "SVCJ-1", 2, "SVCJ-TK1", "CP-9"],
+            ]})
+        r = await ac.post("/import/ledger", headers=H(admin_t), files=up(led_wb3),
+                          params={"site_id": "CNCEC"})
+        j = r.json() if r.status_code == 200 else {}
+        rins = (j.get("preview", {}).get("receipts", {}) or {}).get("inserts", [])
+        check("aj: reordered Receipt Log captures Remarks + DN_Copy; truly "
+              "unknown column warned",
+              r.status_code == 200 and len(rins) == 1
+              and rins[0].get("Remarks") == "note-9"
+              and rins[0].get("DN_Copy") == "Yes"
+              and any("Mystery Col" in w for w in j.get("warnings", [])),
+              f"{r.status_code} ins={rins} warn={j.get('warnings')}")
+        csec = j.get("summary", {}).get("consumption", {})
+        check("aj: 'Cons. Paper No.' is spec-ignored (no DB home, no warning "
+              "noise); reordered Consumption Log still plans the insert",
+              csec.get("inserts") == 1
+              and not any("Cons. Paper No." in w for w in j.get("warnings", [])),
+              f"{csec} warn={j.get('warnings')}")
+
         # ── sme-equipment: area aggregation + Name identity + Done preserved ─
         _EQ_HDR = ["Sl. #", "Project", "WBS #", "Sub_Location", "Location",
                    "Type", "Substrate", "Equipment_Tag_No.", "Name", "Drawing #",
