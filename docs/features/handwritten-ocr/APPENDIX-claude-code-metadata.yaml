@@ -1,0 +1,349 @@
+# Handwritten OCR Feature — Consolidated Machine-Readable Spec
+# ===============================================================
+# This file consolidates every deterministic rule from the numbered spec files.
+# Read this AFTER reading the .md files in order (01 → 11).
+#
+# For every module, the source .md file is the authority. This YAML mirrors the
+# rules so Claude Code can parse without needing to interpret prose.
+#
+# Version: 1.0
+# Derived from: MPC3P1-CNCEC PROJECT consumption workflow, forms dated 07/06/26 – 13/07/26.
+
+spec:
+  name: handwritten-form-ocr
+  version: 1.0
+  target_project: GI_Hub_Project
+  target_feature_path: "SK Portal → Issue page"
+
+modules_in_execution_order:
+  - image-preprocessing
+  - header-extraction
+  - row-parsing
+  - column-mapping
+  - fuzzy-matching
+  - stock-validation
+  - stock-simulation
+  - flag-system
+  - batch-processing
+  - output-format
+  - common-corrections   # runs inside fuzzy-matching, not as a separate stage
+
+# ---------------------------------------------------------------
+# 01 — Image Preprocessing
+# ---------------------------------------------------------------
+image_preprocessing:
+  constants:
+    MAX_SHORT_SIDE_PX: 2400
+    MIN_SHORT_SIDE_PX: 800
+    MAX_SKEW_DEGREES: 15
+    CROP_MARGIN_PCT: 0.02
+  accepted_mime_types:
+    - image/jpeg
+    - image/png
+    - image/webp
+    - image/heic
+  header_marker: "MPC3P1-CNCEC PROJECT"
+  title_markers:
+    - "Daily - Consumption"
+    - "Safety & Production Consumables"
+  rejection_reasons:
+    - unsupported_mime_type
+    - image_too_small
+    - image_too_skewed
+    - not_a_form
+    - header_not_found
+    - unreadable_exposure
+  prohibited_operations:
+    - grayscale_conversion
+    - contrast_enhancement
+    - sharpening
+    - denoising_filters
+
+# ---------------------------------------------------------------
+# 02 — Header Extraction
+# ---------------------------------------------------------------
+header_extraction:
+  date_formats_in_priority_order:
+    - {name: DD/MM/YYYY, regex: '^(\d{1,2})/(\d{1,2})/(\d{4})$', century_assumption: null}
+    - {name: DD/MM/YY,   regex: '^(\d{1,2})/(\d{1,2})/(\d{2})$', century_assumption: 2000}
+    - {name: DD.MM.YY,   regex: '^(\d{1,2})\.(\d{1,2})\.(\d{2})$', century_assumption: 2000}
+  ocr_character_fixes_between_digits:
+    l: "1"
+    I: "1"
+    O: "0"
+    o: "0"
+  validity_gates:
+    year_window_relative_to_today: [-2, +1]
+  never:
+    - swap_DD_MM_to_MM_DD
+    - assume_missing_year
+    - autocorrect_date_typo
+
+# ---------------------------------------------------------------
+# 03 — Row Parsing
+# ---------------------------------------------------------------
+row_parsing:
+  form_grid:
+    total_rows: 30
+    columns: [S.No., Name, "Tank No.#", Product Name, UOM, QTY, Remarks]
+  ditto_glyphs: ['"', '〃', ',,', "''", '`']
+  qty_parsing:
+    additive_form_regex: '^\d+(\+\d+)+$'
+    leading_integer_regex: '^(\d+)'
+    zero_or_negative: reject
+  blank_qty_default:
+    condition: "product_name != null"
+    default_value: 1
+    emit_flag: WARN_QTY_DEFAULTED
+  row_keep_condition: "product_name != null OR qty != null"
+  struck_through:
+    strategies: [horizontal_line_detection, vision_model_report]
+    scope: entire_row_only
+    include_in_output_rows: false
+    include_in_summary_counts: true
+
+# ---------------------------------------------------------------
+# 04 — Column Mapping
+# ---------------------------------------------------------------
+column_mapping:
+  form_to_logical:
+    S.No.:          source_row_no
+    Name:           received_by
+    "Tank No.#":    tank_no
+    "Product Name": product_name_raw
+    UOM:            "*discarded*"
+    QTY:            qty
+    Remarks:        work_type
+  added_fields: [date_iso, source_form_id, qty_defaulted, ditto_flags]
+  verbatim_fields: [received_by, tank_no, work_type, product_name_raw]
+
+# ---------------------------------------------------------------
+# 05 — Fuzzy Matching
+# ---------------------------------------------------------------
+fuzzy_matching:
+  constants:
+    AUTO_ACCEPT_MIN_CONFIDENCE: 40
+    AUTO_ACCEPT_MIN_LEAD: 8
+    TOP_N_CANDIDATES: 5
+    MIN_WORD_LENGTH: 3
+    STOPWORDS: [a, an, the, of, for, and, or, to, with]
+  scoring:
+    substring_query_in_candidate: 20
+    substring_candidate_in_query: 15
+    shared_word_each: 5
+    shared_word_bonus_threshold: 3
+    shared_word_bonus_points: 5
+    first_word_match: 3
+    hint_word_each: 3
+  passes:
+    - name: exact
+      normalise: [trim, collapse_whitespace, lowercase]
+      tie_break: fall_through
+    - name: weighted
+      normalise_score: "min(100, raw_score * 2)"
+  decision:
+    auto_accept:
+      confidence_gte: 40
+      lead_over_runner_up_gte: 8
+    else: needs_review
+
+# ---------------------------------------------------------------
+# 06 — Stock Validation
+# ---------------------------------------------------------------
+stock_validation:
+  rules_in_order:
+    - R1_passthrough_if_stock_positive
+    - R2_substitute_if_zero_and_rule_exists_and_substitute_has_stock
+    - R3_block_if_zero_and_no_rule
+    - R4_block_if_substitute_also_zero
+  chained_substitution: false
+  show_substitution_in_ui: mandatory
+  substitutions:
+    - {out_sap: "1107", in_sap: "1097", reason: "Vaultex is current supplier"}
+    - {out_sap: "1137", in_sap: "1165", reason: "Bulk-pack replacement"}
+    - {out_sap: "1176", in_sap: "1076", reason: "Colour distinction dropped"}
+    - {out_sap: "1235", in_sap: "1163", reason: "Consolidated cable-tie SKU"}
+    - {out_sap: "1271", in_sap: "1272", reason: "HSE re-label"}
+    - {out_sap: "1141", in_sap: "1072", reason: "Generic FE retired for DCP-specific"}
+    - {out_sap: "1105", in_sap: "1163", reason: "Merged with cable-tie stock"}
+    - {out_sap: "1237", in_sap: "1163", reason: "Merged with cable-tie stock"}
+  substitution_list_is_closed: true
+
+# ---------------------------------------------------------------
+# 07 — Stock Simulation
+# ---------------------------------------------------------------
+stock_simulation:
+  constants:
+    LOW_STOCK_THRESHOLD: 5
+  ordering_expectation:
+    sort_key: [date_iso, source_form_id, source_row_no]
+  per_row_output_fields:
+    - stock_before
+    - stock_after
+    - would_go_negative
+    - crosses_low_stock
+    - blocked
+    - simulation_note
+  event_types:
+    would_go_negative: {severity: critical, aggregation: per_sap}
+    crosses_low_stock: {severity: warning, aggregation: per_sap, emit_once_per_sap: true}
+  side_effects: none
+
+# ---------------------------------------------------------------
+# 08 — Flag System
+# ---------------------------------------------------------------
+flag_system:
+  severities:
+    info:     {marker: "[?]", blocks_submission: false}
+    warning:  {marker: "⚠️",  blocks_submission: false}
+    critical: {marker: "🚨",  blocks_submission: true}
+  flag_codes:
+    info:
+      - INFO_NAME_ILLEGIBLE
+      - INFO_REMARKS_ILLEGIBLE
+      - INFO_TANK_NO_ILLEGIBLE
+      - INFO_MATCH_UNCERTAIN
+      - INFO_DITTO_WITH_NO_SOURCE
+    warning:
+      - WARN_QTY_DEFAULTED
+      - WARN_ADDITIVE_QTY
+      - WARN_SUBSTITUTED
+      - WARN_LOW_STOCK_CROSSED
+      - WARN_MULTI_SUBSTITUTIONS_IN_BATCH
+      - WARN_QTY_APPROXIMATE
+    critical:
+      - CRIT_ZERO_STOCK_NO_SUBSTITUTE
+      - CRIT_WOULD_GO_NEGATIVE
+      - CRIT_DATE_UNPARSEABLE
+      - CRIT_PRODUCT_NAME_MISSING
+      - CRIT_QTY_ZERO_OR_NEGATIVE
+  batch_flags:
+    - BATCH_IMAGE_REJECTED
+    - BATCH_HEADER_UNCERTAIN
+    - BATCH_HIGH_STRUCK_THROUGH_COUNT
+    - BATCH_EMPTY
+    - BATCH_MANY_ILLEGIBLE
+    - BATCH_ALL_IMAGES_REJECTED
+  blocking_condition: "any row has severity=critical"
+
+# ---------------------------------------------------------------
+# 09 — Output Format
+# ---------------------------------------------------------------
+output_format:
+  primary: json
+  legacy_export: tsv
+  row_id_format: "{source_form_id}_{source_row_no}"
+  tsv_export:
+    include_only_when: "row.blocked == false AND no severity=critical flag"
+    columns_positional:
+      - date_iso
+      - ""     # SAP code — VBA fills
+      - ""     # Material code — VBA fills
+      - product_name_or_resolved
+      - ""     # UOM — VBA fills
+      - qty
+      - ""     # spacer
+      - ""     # spacer
+      - ""     # spacer
+      - work_type
+      - tank_no
+      - ""
+      - ""
+      - ""
+      - ""
+      - received_by
+      - ""
+  db_write:
+    target_table: consumption_log
+    append_only: true
+    flags_stored_separately: true
+    raw_extraction_field: jsonb
+
+# ---------------------------------------------------------------
+# 10 — Batch Processing
+# ---------------------------------------------------------------
+batch_processing:
+  id_generation:
+    batch_id_format: "batch_{unix_ts}_{short_hash}"
+    form_id_format:  "form_{unix_ms}_{content_hash_8}"
+  sort_key: [date_iso, source_form_id, source_row_no]
+  inventory_snapshot:
+    taken_when: batch_start
+    scope: entire_batch
+    refresh_on_post_attempt: true
+  mixed_quality_uploads: continue_with_valid_forms
+  cross_form_ditto: false
+  cross_form_stock_deduction: true
+  limits:
+    images_per_batch: 10
+    rows_per_form: 30
+    rows_per_batch: 300
+  idempotency:
+    ocr_endpoint: false
+    post_endpoint_by_batch_id: true
+
+# ---------------------------------------------------------------
+# 11 — Common Corrections
+# ---------------------------------------------------------------
+common_corrections:
+  applies_to_fields: [product_name_raw]
+  applied_before: fuzzy_matching
+  applied_after:  ditto_resolution
+  application_order: sequential
+  entries:
+    - {pattern: "Yloues",              replacement: "Gloves",                       mode: substring_ci}
+    - {pattern: "Ylones",              replacement: "Gloves",                       mode: substring_ci}
+    - {pattern: "Yvek",                replacement: "Tyvek",                        mode: substring_ci}
+    - {pattern: "Tywek",               replacement: "Tyvek",                        mode: substring_ci}
+    - {pattern: "Yreen",               replacement: "Green",                        mode: substring_ci}
+    - {pattern: "Slasting",            replacement: "Blasting",                     mode: substring_ci}
+    - {pattern: "Head Lamp",           replacement: "HANGLING LAMP",                mode: substring_ci}
+    - {pattern: "Yellow holder",       replacement: "Blast nozzle Holder",          mode: substring_ci}
+    - {pattern: "Yland glass",         replacement: "Blasting glass",               mode: substring_ci}
+    - {pattern: "^Mask$",              replacement: "Dust Mask",                    mode: regex_ci}
+    - {pattern: "10x10 Tarpaulin",     replacement: "Tarpaulin 10x10",              mode: substring_ci}
+    - {pattern: "Tarpaulin (10x10)",   replacement: "Tarpaulin 10x10",              mode: substring_ci}
+    - {pattern: "50m messuring tape",  replacement: "Measuring Tape 50m",           mode: substring_ci}
+    - {pattern: "Vaultex earplug",     replacement: "Ear PLUG Vaultex",             mode: substring_ci}
+    - {pattern: "Stanley bag",         replacement: "Tool Box STANLEY",             mode: substring_ci}
+    - {pattern: "Stanley Tool Bag",    replacement: "Tool Box STANLEY",             mode: substring_ci}
+    - {pattern: "Uvex goggle",         replacement: "UVEX MONO GOGGLE",             mode: substring_ci}
+    - {pattern: "KARAM helmet",        replacement: "KARAM SAFETY HELMET WHITE",    mode: substring_ci}
+
+# ---------------------------------------------------------------
+# Cross-cutting invariants
+# ---------------------------------------------------------------
+invariants:
+  never_fabricate_data: true
+  never_silently_drop_data: true
+  substitution_requires_explicit_rule: true
+  fuzzy_match_returns_candidate_list_not_single_answer: true
+  operator_always_sees_what_changed: true
+  ocr_endpoint_does_not_write_to_db: true
+  post_writes_are_append_only: true
+
+# ---------------------------------------------------------------
+# What Claude Code should adapt vs preserve
+# ---------------------------------------------------------------
+adapt_freely:
+  - OCR engine choice (LLM vision, Tesseract, cloud OCR)
+  - Framework layer (which endpoint, which service class)
+  - Storage schema details (table names, column types)
+  - UI rendering (React components, styling)
+  - Auth / authorisation
+  - Logging / observability
+
+preserve_exactly:
+  - Fuzzy matching algorithm and thresholds (file 05)
+  - Substitution table (file 06)
+  - Stock simulation ordering key (file 07, 10)
+  - Flag taxonomy (file 08)
+  - Output row_id format (file 09)
+  - Corrections list (file 11)
+
+modification_process:
+  before_changing_a_preserved_rule:
+    - "Read the file that owns the rule"
+    - "Add a note in that file explaining the change and why"
+    - "Update this appendix"
+    - "Add a regression test if applicable"

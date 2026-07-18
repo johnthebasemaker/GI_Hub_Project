@@ -91,27 +91,43 @@ def prep_image_for_vision(raw_bytes: bytes, *, max_dim: int = 1600,
 
 # --- prompts (byte-identical to legacy — calibrated on real site paperwork) ----
 CONSUMPTION_PROMPT = """\
-You are reading a handwritten or printed warehouse consumption list.
-Each line describes ONE material issued to a person.
+You are reading a handwritten "Daily - Consumption / Safety & Production
+Consumables" form (header "MPC3P1-CNCEC PROJECT"). It is a table of up to 30
+rows with columns: S.No. | Name | Tank No.# | Product Name | UOM | QTY |
+Remarks. The DATE is handwritten in the top-right corner.
+
+Your job is FAITHFUL TRANSCRIPTION ONLY — downstream code resolves ditto
+marks, corrects known OCR confusions and validates quantities. Do not
+interpret, normalise or fix anything yourself.
 
 Output STRICT JSON with this shape and no extra commentary:
 {
+  "date_text": "the date EXACTLY as written (e.g. 13/07/26, 7.6.26)",
   "rows": [
     {
-      "issued_to":    "person name (if any)",
-      "material_text":"material description as written",
-      "uom":          "unit if shown (e.g. Nos, PCS, M, L)",
-      "quantity":     <number>,
-      "work_type":    "job / work type if shown"
+      "sno":          <S.No. as written, or null>,
+      "issued_to":    "Name column exactly as written",
+      "tank_no":      "Tank No. column exactly as written",
+      "material_text":"Product Name EXACTLY as written (keep spelling errors)",
+      "uom":          "UOM if shown",
+      "qty_text":     "QTY exactly as written (e.g. '5', '2+3', '~4', '')",
+      "quantity":     <number if unambiguous, else null>,
+      "work_type":    "Remarks column exactly as written",
+      "struck_through": <true ONLY if a horizontal line is drawn through the
+                         whole row (a cancelled entry), else false>
     }
   ]
 }
 
 Rules:
 - Output JSON only. No markdown fences, no prose.
-- Use the number 0 for unreadable quantities.
-- Use empty strings for unreadable text fields.
-- Skip header rows like "Material Description" — those are column titles, not data.
+- Ditto marks (\", 〃, ,,) mean "same as above" — transcribe the GLYPH
+  itself, never copy the value down.
+- Additive quantities like "2+3" go in qty_text verbatim; leave quantity null.
+- A blank QTY cell is qty_text "" and quantity null — never invent 0 or 1.
+- Use empty strings for unreadable text fields; never guess a person's name.
+- Skip printed column-title rows; skip fully empty rows.
+- Include struck-through rows WITH struck_through=true (do not drop them).
 """
 
 DN_PROMPT = """\
@@ -176,11 +192,19 @@ def _to_float(s: Any) -> float:
 
 
 def clean_consumption_row(r: dict) -> dict:
-    return {"issued_to": str(r.get("issued_to") or "").strip(),
-            "material_text": str(r.get("material_text") or "").strip(),
-            "uom": str(r.get("uom") or "").strip(),
-            "quantity": _to_float(r.get("quantity")),
-            "work_type": str(r.get("work_type") or "").strip()}
+    out = {"issued_to": str(r.get("issued_to") or "").strip(),
+           "material_text": str(r.get("material_text") or "").strip(),
+           "uom": str(r.get("uom") or "").strip(),
+           "quantity": _to_float(r.get("quantity")),
+           "work_type": str(r.get("work_type") or "").strip()}
+    # 2026-07-18 handwritten-form spec fields (additive — old consumers see
+    # the same keys as before; ai/handwritten.py consumes the extras)
+    out["tank_no"] = str(r.get("tank_no") or "").strip()
+    out["qty_text"] = str(r.get("qty_text") if r.get("qty_text") is not None else "").strip()
+    out["struck_through"] = bool(r.get("struck_through"))
+    if r.get("sno") is not None:
+        out["sno"] = r.get("sno")
+    return out
 
 
 def clean_item_row(r: dict) -> dict:
@@ -206,7 +230,9 @@ def parse_vision_reply(kind: str, raw: str) -> dict:
             raise ValueError("Vision model returned an unparseable response. "
                              "Try the Paste tab.")
         rows = [clean_consumption_row(r) for r in obj["rows"] if isinstance(r, dict)]
-        return {"rows": [r for r in rows if r["material_text"] or r["quantity"]]}
+        return {"date_text": str(obj.get("date_text") or "").strip(),
+                "rows": [r for r in rows
+                         if r["material_text"] or r["quantity"] or r["qty_text"]]}
     if not obj or "items" not in obj:
         raise ValueError("Vision model returned an unparseable response. "
                          "Try the Paste tab.")

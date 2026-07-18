@@ -77,6 +77,16 @@ Tables:
     "Requested_Qty" float, "Site_ID" text, status text, workflow_state text)
 - purchase_orders(id, "PO_Number" text, "PR_Number" text, "Vendor_Name" text,
     "PO_Date" text, "Site_ID" text, status text)
+- sme_recipe(id, "Lining_System_Code" text, "Lining_System_Name" text,
+    "Material_Code" text, "SAP_Code" text, "Material_Name" text,
+    "Material_Description" text, "For_1_SQM" float, "UOM" text)
+    — lining-system BOM lines; "SAP_Code" joins straight to
+    inventory."SAP_Code" (incl. variant SAPs like '1041-1')
+- sme_equipment(id, "Site_ID" text, "Equipment_Tag_No" text,
+    "Lining_System_Code" text, "Surface_Area_SQM" float, "Location" text,
+    "Name" text, "Substrate" text)
+- sme_sqm_progress("Site_ID" text, "Equipment_Tag_No" text,
+    "Lining_System_Code" text, "Original_SQM" float, "Done_SQM" float)
 
 Facts:
 - "Date"/"Expiry_Date" are ISO text — compare with e.g.
@@ -93,6 +103,15 @@ Facts:
 - "DN_No" is the delivery-note ("DN") number; "WBS" is the work-breakdown
   code; "Tank_No" identifies the tank an issue was consumed on.
 - "Site_ID" values are short site codes like 'CNCEC' and 'HQ'.
+- When the user names a MATERIAL FAMILY or brand ('remafix', 'furan',
+  'chemoline', 'cumifuran'…) rather than a category, search DEEP with ILIKE
+  on BOTH the ERP description and the SME material names via the SAP join:
+    i."Equipment_Description" ILIKE '%furan%'
+    OR EXISTS (SELECT 1 FROM sme_recipe sr
+               WHERE TRIM(sr."SAP_Code") = TRIM(i."SAP_Code")
+               AND (sr."Material_Name" ILIKE '%furan%'
+                    OR sr."Material_Description" ILIKE '%furan%'))
+  Never answer such questions from memory — always filter with ILIKE.
 
 Examples:
 Q: items below minimum stock
@@ -122,6 +141,19 @@ SQL: SELECT i."SAP_Code", i."Equipment_Description",
   - COALESCE((SELECT SUM(t."Quantity") FROM returns t WHERE t."SAP_Code"=i."SAP_Code"),0)
   AS current_stock FROM inventory i
   WHERE i."Category" ILIKE 'surface shield%' ORDER BY current_stock DESC
+
+Q: current stock of furan materials
+SQL: SELECT i."SAP_Code", i."Equipment_Description", i."Category",
+  COALESCE((SELECT SUM(r."Quantity") FROM receipts r WHERE r."SAP_Code"=i."SAP_Code"),0)
+  - COALESCE((SELECT SUM(c."Quantity") FROM consumption c WHERE c."SAP_Code"=i."SAP_Code"),0)
+  - COALESCE((SELECT SUM(t."Quantity") FROM returns t WHERE t."SAP_Code"=i."SAP_Code"),0)
+  AS current_stock FROM inventory i
+  WHERE i."Equipment_Description" ILIKE '%furan%'
+  OR EXISTS (SELECT 1 FROM sme_recipe sr
+             WHERE TRIM(sr."SAP_Code") = TRIM(i."SAP_Code")
+             AND (sr."Material_Name" ILIKE '%furan%'
+                  OR sr."Material_Description" ILIKE '%furan%'))
+  ORDER BY current_stock DESC
 
 Rules: output ONLY the SQL (no fences, no prose). SELECT/WITH only. Always
 double-quote mixed-case identifiers. Add a sensible ORDER BY.

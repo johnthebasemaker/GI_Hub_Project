@@ -52,6 +52,94 @@ _INTENTS: list[tuple[str, re.Pattern]] = [
 _COUNT_RX = re.compile(r"\b(how many|how much|count|total|sum)\b", re.I)
 _DAYS_RX = re.compile(r"\blast\s+(\d{1,3})\s+days?\b", re.I)
 
+# ── deep filters (2026-07-18): category + material-keyword narrowing ──────── #
+# "Current stock for surface shield category items" must return EXACTLY the
+# Surface Shields rows, not the whole stock table. Categories are matched by
+# alias → bound ILIKE pattern; leftover distinctive words ("remafix",
+# "furan", "chemoline"…) become description/SME-material keywords.
+_CATEGORY_ALIASES: list[tuple[re.Pattern, str, str]] = [
+    (re.compile(r"\bsurface\s*shields?\b", re.I), "surface shield%", "Surface Shields"),
+    (re.compile(r"\br/?l\s*consum\w*\b", re.I), "r/l cons%", "R/L Consumables"),
+    (re.compile(r"\br/?l\s*tools?\b", re.I), "r/l tool%", "R/L Tools"),
+    (re.compile(r"\bsafety\b", re.I), "safety%", "Safety"),
+    (re.compile(r"\boffice\b", re.I), "office%", "Office"),
+    (re.compile(r"\belectrical\b", re.I), "electrical%", "Electrical Items"),
+    (re.compile(r"\bvehicles?\b", re.I), "vehicles%", "VEHICLES"),
+    (re.compile(r"\bequipments?[\s/]*tools?\b|\bequipments?\b", re.I),
+     "equipments/tools%", "EQUIPMENTS/TOOLS"),
+    (re.compile(r"\bpu\s*tools?\b", re.I), "%pu tools%", "BR CC PU Tools"),
+]
+
+# words that never identify a material — intents, fillers, units, windows
+_KW_STOP = {
+    "stock", "stocks", "inventory", "balance", "current", "level", "levels",
+    "item", "items", "material", "materials", "category", "categories",
+    "show", "list", "give", "find", "what", "which", "have", "much", "many",
+    "with", "from", "this", "that", "those", "these", "them", "then", "than",
+    "please", "site", "sites", "last", "week", "month", "year", "days",
+    "today", "yesterday", "hand", "consumption", "consumed", "issued",
+    "issues", "issue", "received", "receipts", "returns", "return",
+    "shield", "shields", "surface", "safety", "office", "electrical",
+    "vehicle", "vehicles", "tools", "tool", "consumables", "consumable",
+    "equipments", "equipment", "like", "e.g", "example", "such",
+    "position", "overview", "summary", "report", "warehouse", "store",
+    "available", "availability", "quantity", "quantities", "detail",
+    "details", "data", "info", "about", "full", "complete", "everything",
+}
+
+
+def _category_filter(q: str) -> Optional[tuple[str, str]]:
+    """(ILIKE pattern, canonical label) when the question names a category.
+
+    The three R/L families are distinctive enough to always fire; generic
+    words ('safety', 'office'…) only become a category filter when the user
+    says 'category' — 'safety helmet stock' keeps 'helmet' as a keyword."""
+    for rx, pat, label in _CATEGORY_ALIASES[:3]:
+        if rx.search(q):
+            return pat, label
+    if re.search(r"\bcategor\w+\b", q, re.I):
+        for rx, pat, label in _CATEGORY_ALIASES[3:]:
+            if rx.search(q):
+                return pat, label
+    return None
+
+
+def _material_keywords(q: str, sites: list[str], max_kw: int = 3) -> list[str]:
+    """Distinctive leftover words → ILIKE keywords (description, material
+    code, or SME recipe/seed material names via the SAP_Code join)."""
+    ql = re.sub(r"[^\w\s/-]", " ", q.lower())
+    site_l = {s.lower() for s in sites if s}
+    out: list[str] = []
+    for tok in ql.split():
+        t = tok.strip("-/")
+        if (len(t) >= 4 and t not in _KW_STOP and t not in site_l
+                and not t.isdigit() and t not in out):
+            out.append(t)
+    return out[:max_kw]
+
+
+# EXISTS over the SME tables: recipe lines carry exact SAP codes since
+# b3f2a9c47d18, so "furan" finds Cumifuran via sme_recipe.Material_Name even
+# when the ERP description says something else entirely.
+_SME_KW_EXISTS = (
+    'EXISTS (SELECT 1 FROM sme_recipe sr WHERE TRIM(sr."SAP_Code") = TRIM(i."SAP_Code") '
+    'AND (sr."Material_Name" ILIKE :{p} OR sr."Material_Description" ILIKE :{p})) '
+    'OR EXISTS (SELECT 1 FROM sme_inventory_seed ss WHERE ss."SAP_Code" IS NOT NULL '
+    "AND (', ' || ss.\"SAP_Code\" || ', ') ILIKE ('%, ' || TRIM(i.\"SAP_Code\") || ', %') "
+    'AND ss."Material_Name" ILIKE :{p})')
+
+
+def _kw_clause(keywords: list[str], params: dict) -> str:
+    """OR-of-keywords clause over description/material-code/SME names."""
+    ors = []
+    for i, kw in enumerate(keywords):
+        p = f"kw{i}"
+        params[p] = f"%{kw}%"
+        ors.append(f'(i."Equipment_Description" ILIKE :{p} '
+                   f'OR i."Material_Code" ILIKE :{p} '
+                   f'OR ' + _SME_KW_EXISTS.format(p=p) + ')')
+    return "(" + " OR ".join(ors) + ")"
+
 
 def _window(q: str, today: date) -> tuple[Optional[str], Optional[str], str]:
     """(date_from, date_to, label) as ISO strings; ledger dates are ISO text."""
@@ -97,7 +185,9 @@ _LEDGER = {
 
 
 def _ledger_sql(intent: str, count: bool, site: Optional[str],
-                dfrom: Optional[str], dto: Optional[str]) -> tuple[str, dict]:
+                dfrom: Optional[str], dto: Optional[str],
+                cat: Optional[str] = None,
+                keywords: Optional[list[str]] = None) -> tuple[str, dict]:
     table, extra = _LEDGER[intent]
     p: dict[str, Any] = {}
     where = ["1=1"]
@@ -110,15 +200,23 @@ def _ledger_sql(intent: str, count: bool, site: Optional[str],
     if dto:
         where.append('r."Date" < :dto')
         p["dto"] = dto
+    if cat:
+        where.append('i."Category" ILIKE :cat')
+        p["cat"] = cat
+    if keywords:
+        where.append(_kw_clause(keywords, p))
     w = " AND ".join(where)
+    # category/keyword filters read inventory → both branches need the join
+    join = ('LEFT JOIN inventory i ON TRIM(i."SAP_Code") = TRIM(r."SAP_Code") '
+            if (cat or keywords or not count) else '')
     if count:
         sql = (f'SELECT COUNT(*) AS entries, COALESCE(SUM(r."Quantity"),0) AS total_qty '
-               f'FROM {table} r WHERE {w}')
+               f'FROM {table} r {join}WHERE {w}')
     else:
         sql = (f'SELECT r."Date" AS date, r."SAP_Code" AS sap_code, '
                f'i."Equipment_Description" AS description, r."Quantity" AS qty, '
                f'{extra}, COALESCE(r."Site_ID", \'HQ\') AS site '
-               f'FROM {table} r LEFT JOIN inventory i ON TRIM(i."SAP_Code") = TRIM(r."SAP_Code") '
+               f'FROM {table} r {join}'
                f'WHERE {w} ORDER BY r."Date" DESC, r.id DESC LIMIT 100')
     return sql, p
 
@@ -129,17 +227,26 @@ _STOCK_EXPR = ('COALESCE((SELECT SUM(x."Quantity") FROM receipts x WHERE TRIM(x.
 
 
 def _build(intent: str, count: bool, site: Optional[str],
-           dfrom: Optional[str], dto: Optional[str]) -> tuple[str, dict]:
+           dfrom: Optional[str], dto: Optional[str],
+           cat: Optional[str] = None,
+           keywords: Optional[list[str]] = None) -> tuple[str, dict]:
     if intent in _LEDGER:
-        return _ledger_sql(intent, count, site, dfrom, dto)
+        return _ledger_sql(intent, count, site, dfrom, dto, cat, keywords)
     p: dict[str, Any] = {}
     site_w = 'AND COALESCE(i."Site_ID", \'HQ\') = :site' if site else ''
     if site:
         p["site"] = site
     if intent == "stock":
+        extra_w = ""
+        if cat:
+            extra_w += ' AND i."Category" ILIKE :cat'
+            p["cat"] = cat
+        if keywords:
+            extra_w += " AND " + _kw_clause(keywords, p)
         return (f'SELECT i."SAP_Code" AS sap_code, i."Equipment_Description" AS description, '
                 f'i."Category" AS category, i."UOM" AS uom, {_STOCK_EXPR} AS current_stock '
-                f'FROM inventory i WHERE 1=1 {site_w} ORDER BY current_stock DESC LIMIT 100'), p
+                f'FROM inventory i WHERE 1=1 {site_w}{extra_w} '
+                f'ORDER BY current_stock DESC LIMIT 100'), p
     if intent == "low_stock":
         return (f'SELECT i."SAP_Code" AS sap_code, i."Equipment_Description" AS description, '
                 f'i."Minimum_Qty" AS minimum_qty, {_STOCK_EXPR} AS current_stock '
@@ -215,7 +322,12 @@ async def run_query(session: AsyncSession, question: str, *,
     else:
         site = _mentioned_site(q, known_sites)
 
-    sql, params = _build(intent, count, site, dfrom, dto)
+    cat = keywords = None
+    if intent in ("stock",) or intent in _LEDGER:
+        cf = _category_filter(q)
+        cat = cf[0] if cf else None
+        keywords = _material_keywords(q, known_sites) or None
+    sql, params = _build(intent, count, site, dfrom, dto, cat, keywords)
     res = await session.execute(text(sql), params)
     rows = res.mappings().all()
     columns = list(rows[0].keys()) if rows else list(res.keys())
@@ -223,7 +335,9 @@ async def run_query(session: AsyncSession, question: str, *,
         "ok": True, "mode": "template", "intent": intent, "sql": sql,
         "columns": columns, "rows": [[_plain(r[c]) for c in columns] for r in rows],
         "message": f"{intent.replace('_', ' ')} · {wlabel}"
-                   + (f" · site {site}" if site and site != "__none__" else " · all sites"),
+                   + (f" · site {site}" if site and site != "__none__" else " · all sites")
+                   + (f" · category ≈ {cf[1]}" if cat else "")
+                   + (f" · matching {', '.join(keywords)}" if keywords else ""),
     }
     if count and rows:
         out["metric"] = {"label": f"{_METRIC_LABEL.get(intent, intent)} ({wlabel})",

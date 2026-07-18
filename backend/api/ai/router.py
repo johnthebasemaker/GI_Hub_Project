@@ -24,6 +24,7 @@ from fastapi import (APIRouter, Body, Depends, File, HTTPException,
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
+from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import get_current_user, require_level, require_roles, site_scope
@@ -31,6 +32,7 @@ from ..db import SessionLocal, get_session
 from ..services.ledger import _MD
 from ..services.procurement import classify_rl_bl_family
 from . import client as aic
+from . import handwritten as hw
 from . import jobs as ai_jobs
 from . import manual_qa
 from . import ocr
@@ -322,6 +324,77 @@ async def parse_paste(kind: str, body: PasteIn = Body(...),
     except ValueError as e:
         raise HTTPException(422, str(e))
     return await ai_jobs._resolve(kind, parsed, session)
+
+
+# --- Handwritten consumption forms (docs/features/handwritten-ocr spec) ----------
+class HandwrittenForm(BaseModel):
+    form_id: Optional[str] = None
+    date_text: Optional[str] = None
+    date_iso: Optional[str] = None
+    rows: list[dict] = []
+
+
+class HandwrittenBatchIn(BaseModel):
+    forms: list[HandwrittenForm]
+
+
+@router.post("/ocr/handwritten-process",
+             summary="Deterministic post-processing for handwritten forms")
+async def handwritten_process(body: HandwrittenBatchIn,
+                              user: dict = Depends(require_roles("store_keeper")),
+                              session: AsyncSession = Depends(get_session)):
+    """Runs the handwritten-form spec stages (corrections → ditto → qty rules
+    → spec fuzzy match → substitutions → batch stock simulation → flags) over
+    transcribed rows from the vision or paste lane, and returns the JSON rows
+    plus the 17-column legacy TSV export. READ-ONLY: posting still goes
+    through the normal Issue flow."""
+    await _require_ocr(session)
+    total = sum(len(f.rows) for f in body.forms)
+    if not body.forms or total == 0:
+        raise HTTPException(422, "no rows to process")
+    if len(body.forms) > 10 or total > hw.ROWS_PER_BATCH:
+        raise HTTPException(422, "batch limits: 10 forms / 300 rows")
+
+    scope = site_scope(user)
+    inv_q = select(inventory_t.c["SAP_Code"], inventory_t.c["Equipment_Description"],
+                   inventory_t.c["Material_Code"], inventory_t.c["UOM"])
+    if scope is not None:
+        inv_q = inv_q.where(func.coalesce(inventory_t.c["Site_ID"], "HQ") == scope)
+    inventory = [dict(m) for m in (await session.execute(inv_q)).mappings().all()]
+
+    stock_rows = (await session.execute(sa_text('''
+        SELECT TRIM(i."SAP_Code") AS sap,
+               COALESCE((SELECT SUM(r."Quantity") FROM receipts r
+                         WHERE TRIM(r."SAP_Code")=TRIM(i."SAP_Code")),0)
+             - COALESCE((SELECT SUM(c."Quantity") FROM consumption c
+                         WHERE TRIM(c."SAP_Code")=TRIM(i."SAP_Code")),0)
+             - COALESCE((SELECT SUM(t."Quantity") FROM returns t
+                         WHERE TRIM(t."SAP_Code")=TRIM(i."SAP_Code")),0) AS stock
+        FROM inventory i''' + (
+        ' WHERE COALESCE(i."Site_ID", \'HQ\') = :site' if scope is not None else '')),
+        ({"site": scope} if scope is not None else {}))).all()
+    stock = {r.sap: float(r.stock or 0) for r in stock_rows}
+
+    # 04 column map: the vision/paste lanes emit issued_to/material_text/
+    # qty_text — translate to the spec's logical fields.
+    forms = []
+    for f in body.forms:
+        rows = []
+        for r in f.rows:
+            rows.append({
+                "source_row_no": r.get("sno") or r.get("source_row_no"),
+                "received_by": r.get("received_by") or r.get("issued_to"),
+                "tank_no": r.get("tank_no"),
+                "product_name_raw": (r.get("product_name_raw")
+                                     or r.get("material_text")),
+                "qty": (r.get("qty_text") if str(r.get("qty_text") or "").strip()
+                        else r.get("qty", r.get("quantity"))),
+                "work_type": r.get("work_type"),
+                "struck_through": bool(r.get("struck_through")),
+            })
+        forms.append({"form_id": f.form_id, "date_text": f.date_text,
+                      "date_iso": f.date_iso, "rows": rows})
+    return hw.process_batch(forms, inventory, stock)
 
 
 # --- Phase AI-4: Smart Scan --------------------------------------------------------

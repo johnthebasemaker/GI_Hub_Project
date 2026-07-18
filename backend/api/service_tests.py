@@ -5979,6 +5979,160 @@ async def test_qr_returnables_parity():
             await s.commit()
 
 
+async def test_ai_phase2_upgrades():
+    """Suite AM — handwritten-form OCR spec stages + ask-data deep filters.
+
+    The deterministic stages (docs/features/handwritten-ocr) are pinned as
+    pure-function checks; the endpoint and the query-router category/keyword
+    filters run hermetically with SVCM- fixtures."""
+    from sqlalchemy import text as _sqt
+
+    from .ai import handwritten as hw
+
+    async def _scalar(sql: str, **params):
+        async with SessionLocal() as s:
+            return (await s.execute(_sqt(sql), params)).scalar()
+
+    from datetime import date as _date
+    _today = _date(2026, 7, 18)
+
+    # ── pure spec stages ────────────────────────────────────────────────────
+    d1, _ = hw.parse_form_date("13/07/26", _today)
+    d2, _ = hw.parse_form_date("7.6.26", _today)
+    d3, _ = hw.parse_form_date("l8/07/26", _today)   # OCR l → 1
+    _, f4 = hw.parse_form_date("31/02/26", _today)   # impossible date
+    _, f5 = hw.parse_form_date("13/07/20", _today)   # outside year window
+    check("am: form dates — 3 formats, digit fixes, validity gates",
+          d1 == "2026-07-13" and d2 == "2026-06-07" and d3 == "2026-07-18"
+          and f4 == "CRIT_DATE_UNPARSEABLE" and f5 == "CRIT_DATE_UNPARSEABLE",
+          f"{d1} {d2} {d3} {f4} {f5}")
+    c1, n1 = hw.apply_corrections("Yloues blasting large")
+    c2, _ = hw.apply_corrections("Mask")
+    c3, _ = hw.apply_corrections("Face Mask")  # regex is ^Mask$ — no touch
+    check("am: corrections — substring_ci + anchored regex_ci",
+          c1 == "Gloves blasting large" and n1 and c2 == "Dust Mask"
+          and c3 == "Face Mask", f"{c1!r} {c2!r} {c3!r}")
+    q1, fl1 = hw.parse_qty("2+3", True)
+    q2, fl2 = hw.parse_qty("", True)
+    q3, fl3 = hw.parse_qty("0", True)
+    q4, fl4 = hw.parse_qty("~4", True)
+    check("am: qty rules — additive sums, blank defaults to 1, zero rejects",
+          q1 == 5 and "WARN_ADDITIVE_QTY" in fl1
+          and q2 == 1 and "WARN_QTY_DEFAULTED" in fl2
+          and "CRIT_QTY_ZERO_OR_NEGATIVE" in fl3
+          and q4 == 4 and "WARN_QTY_APPROXIMATE" in fl4,
+          f"{q1}{fl1} {q2}{fl2} {q3}{fl3} {q4}{fl4}")
+    r_sub = {"sap_code": "1107", "flags": []}
+    hw.validate_stock(r_sub, {"1107": 0.0, "1097": 3.0})
+    r_blk = {"sap_code": "9998", "flags": []}
+    hw.validate_stock(r_blk, {"9998": 0.0})
+    check("am: substitution R2 rewrites SAP with reason; R3 blocks",
+          r_sub["sap_code"] == "1097" and "WARN_SUBSTITUTED" in r_sub["flags"]
+          and r_sub.get("substituted_from") == "1107"
+          and "CRIT_ZERO_STOCK_NO_SUBSTITUTE" in r_blk["flags"],
+          f"{r_sub} {r_blk}")
+
+    # ── endpoint: batch process + TSV ───────────────────────────────────────
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.90"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", json={"username": u, "password": p},
+                              headers=_ip)
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        worker_t = await token("worker", "floor2026")
+        hod_t = await token("hod", "hod2026")
+        admin_t = await token("admin", "admin2026")
+
+        async with SessionLocal() as s:
+            await s.execute(_sqt(
+                'INSERT INTO inventory ("SAP_Code", "Equipment_Description", '
+                '"Category", "UOM", "Site_ID") VALUES '
+                "('SVCM-1', 'GLOVES SVCMALPHA', 'Safety', 'PAIR', 'CNCEC'), "
+                "('SVCM-CAT', 'SVCM Category Item', 'Surface Shields', 'EA', 'CNCEC')"))
+            await s.execute(_sqt(
+                'INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID") '
+                "VALUES ('2026-07-01 00:00:00', 'SVCM-1', 8, 'CNCEC')"))
+            await s.execute(_sqt(
+                'INSERT INTO sme_recipe ("Lining_System_Code", "Material_Code", '
+                '"SAP_Code", "Material_Name", "For_1_SQM") VALUES '
+                "('9907', 'SVCM-MAT-9', 'SVCM-CAT', 'SVCM Furanoid Syrup', 1.5)"))
+            await s.commit()
+
+        batch = {"forms": [{"form_id": "form_svcm", "date_text": "l8/07/26",
+                            "rows": [
+            {"sno": 1, "issued_to": "Imran", "tank_no": "TK-1",
+             "material_text": "Yloues SVCMALPHA", "qty_text": "", "work_type": "blasting"},
+            {"sno": 2, "issued_to": '"', "tank_no": '"',
+             "material_text": '"', "qty_text": "2+3", "work_type": '"'},
+            {"sno": 3, "issued_to": "Ali", "tank_no": "",
+             "material_text": "SVCM UNKNOWNIUM", "qty_text": "1", "work_type": ""},
+            {"sno": 4, "issued_to": "X", "tank_no": "",
+             "material_text": "cancelled thing", "qty_text": "9",
+             "struck_through": True},
+        ]}]}
+        r = await ac.post("/ai/ocr/handwritten-process", headers=H(hod_t), json=batch)
+        check("am: handwritten-process is SK exact-locked (hod → 403)",
+              r.status_code == 403, f"got {r.status_code}")
+        r = await ac.post("/ai/ocr/handwritten-process", headers=H(worker_t), json=batch)
+        j = r.json() if r.status_code == 200 else {}
+        rows = j.get("rows", [])
+        summ = j.get("summary", {})
+        by_no = {x["source_row_no"]: x for x in rows}
+        check("am: batch processes — auto-match, ditto, defaults, struck count",
+              r.status_code == 200 and summ.get("total_rows") == 3
+              and summ.get("struck_through_excluded") == 1
+              and by_no.get(1, {}).get("sap_code") == "SVCM-1"
+              and by_no.get(1, {}).get("date_iso") == "2026-07-18"
+              and "WARN_QTY_DEFAULTED" in by_no.get(1, {}).get("flags", [])
+              and by_no.get(2, {}).get("sap_code") == "SVCM-1"
+              and by_no.get(2, {}).get("qty") == 5
+              and "WARN_ADDITIVE_QTY" in by_no.get(2, {}).get("flags", [])
+              and "INFO_MATCH_UNCERTAIN" in by_no.get(3, {}).get("flags", []),
+              f"{r.status_code} summ={summ} rows={[(x.get('source_row_no'), x.get('sap_code'), x.get('qty'), x.get('flags')) for x in rows]}")
+        check("am: batch simulation — 8 − 1 − 5 crosses the low-stock line",
+              "WARN_LOW_STOCK_CROSSED" in by_no.get(2, {}).get("flags", [])
+              and by_no.get(2, {}).get("stock_after") == 2,
+              f"{by_no.get(2, {}).get('flags')} after={by_no.get(2, {}).get('stock_after')}")
+        tsv_lines = (j.get("tsv") or "").split("\n")
+        cols0 = tsv_lines[0].split("\t") if tsv_lines and tsv_lines[0] else []
+        check("am: TSV export — 17 positional columns, spec slots filled",
+              len(tsv_lines) == 3 and len(cols0) == 17
+              and cols0[0] == "2026-07-18" and cols0[3] == "GLOVES SVCMALPHA"
+              and cols0[5] == "1" and cols0[9] == "blasting"
+              and cols0[10] == "TK-1" and cols0[15] == "Imran",
+              f"lines={len(tsv_lines)} cols={len(cols0)} {cols0[:6]}")
+
+        # ── ask-data deep filters ───────────────────────────────────────────
+        r = await ac.post("/ai/query", headers=H(admin_t),
+                          json={"question": "Current stock for surface shield category items"})
+        j = r.json() if r.status_code == 200 else {}
+        check("am: ask-data — category question filters with bound ILIKE",
+              r.status_code == 200 and j.get("mode") == "template"
+              and 'ILIKE :cat' in j.get("sql", "")
+              and "category ≈ Surface Shields" in j.get("message", "")
+              and j.get("rows"), f"{r.status_code} {j.get('message')} sql={j.get('sql', '')[:120]}")
+        r = await ac.post("/ai/query", headers=H(admin_t),
+                          json={"question": "current stock of furanoid materials"})
+        j = r.json() if r.status_code == 200 else {}
+        saps = {row[0] for row in j.get("rows", [])}
+        check("am: ask-data — material family resolves via the SME SAP join",
+              r.status_code == 200 and "sme_recipe" in j.get("sql", "")
+              and "SVCM-CAT" in saps,
+              f"{r.status_code} saps={sorted(saps)[:5]} sql={j.get('sql', '')[:120]}")
+
+        async with SessionLocal() as s:  # cleanup
+            await s.execute(_sqt("DELETE FROM receipts WHERE \"SAP_Code\" LIKE 'SVCM-%'"))
+            await s.execute(_sqt("DELETE FROM sme_recipe WHERE \"Material_Code\" LIKE 'SVCM-%'"))
+            await s.execute(_sqt("DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SVCM-%'"))
+            await s.commit()
+
+
 async def _relax_entry_gates() -> None:
     """Parity A1 — require_entry_documents defaults ON in production. Switch
     it OFF for the functional suites (they submit entries without documents);
@@ -6075,6 +6229,8 @@ async def main() -> int:
     await test_ocr_doc_assist()
     print("\n AL. QR + returnables parity (badge PNG, label copies, cv audit)")
     await test_qr_returnables_parity()
+    print("\n AM. Handwritten-OCR spec stages + ask-data deep filters")
+    await test_ai_phase2_upgrades()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "
