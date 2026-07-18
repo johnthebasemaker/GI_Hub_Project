@@ -91,11 +91,26 @@ jobs:
           DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
         run: python tools/parity_check.py --source gi_database.db
 
+      # Phase AI-5 second wall: the NL→SQL round-trip check connects as the
+      # TRUE read-only role gi_ai_ro. A fresh CI database has no such role —
+      # provision it exactly like the runbook does after every reload
+      # (this was the 071d6d3 dual-CI failure: the Phase-C RO round-trip
+      # check landed with no CI-side role provisioning).
+      - name: Provision the AI read-only role (gi_ai_ro)
+        env:
+          PGPASSWORD: gihub_ci
+        run: |
+          psql -h localhost -U gihub -d gihub -v ON_ERROR_STOP=1 \
+               -f backend/scripts/create_ai_readonly_role.sql
+          psql -h localhost -U gihub -d gihub -v ON_ERROR_STOP=1 \
+               -c "ALTER ROLE gi_ai_ro PASSWORD 'gi_ai_ro_ci'"
+
       # Service-level invariants (rolled back — no persistence) + auth/role guards
       # driven through the real ASGI app. Runs after dual_ci has populated Postgres.
       - name: Service + guard tests (rolled-back services, HTTP auth/role gates)
         env:
           DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
+          GI_AI_RO_URL: postgresql+asyncpg://gi_ai_ro:gi_ai_ro_ci@localhost:5432/gihub
           JWT_SECRET: ci-only-service-test-secret-key-32bytes-min
         run: python -m backend.api.service_tests
 

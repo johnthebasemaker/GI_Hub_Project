@@ -24,10 +24,13 @@
 
 name: Deploy to Hetzner
 
+# 2026-07-18: MANUAL-ONLY. The v1 (Streamlit) stack is retired to legacy/
+# and the Hetzner box is not provisioned yet — the old `push: main` trigger
+# made every push fail with an SSH error against a server that does not
+# exist. The v2 cutover path is deploy-v2.yml (also manual). Re-add a push
+# trigger only if the v1 pipeline is ever deliberately resurrected.
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:        # lets you re-run a deploy manually from the Actions tab
+  workflow_dispatch:        # run manually from the Actions tab
 
 # Serialize deploys: if one is mid-flight, queue the next instead of overlapping.
 concurrency:

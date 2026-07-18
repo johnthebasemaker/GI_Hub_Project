@@ -6250,6 +6250,85 @@ async def test_sme_sk_upgrades():
             await s.commit()
 
 
+async def test_bug_tracking_engine():
+    """Suite AO — Bug Tracking Engine: severity/triage fields + the
+    implementation-prompt export (the coding-agent automation bridge)."""
+    from sqlalchemy import text as _sqt
+
+    async def _scalar(sql: str, **params):
+        async with SessionLocal() as s:
+            return (await s.execute(_sqt(sql), params)).scalar()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.92"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", json={"username": u, "password": p},
+                              headers=_ip)
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        hod_t = await token("hod", "hod2026")
+        admin_t = await token("admin", "admin2026")
+
+        r = await ac.post("/feedback", headers=H(hod_t), json={
+            "type": "bug", "title": "SVCO ghost rows in stock",
+            "severity": "high", "page": "/stock",
+            "description": "SVCO test: stock table shows ghost rows after filter"})
+        fid = r.json().get("id")
+        sev = await _scalar("SELECT severity FROM bug_reports WHERE id=:i", i=fid or -1)
+        check("ao: submission stores title + severity",
+              r.status_code == 201 and fid and sev == "high",
+              f"{r.status_code} id={fid} sev={sev}")
+        r = await ac.post("/feedback", headers=H(hod_t), json={
+            "type": "bug", "severity": "apocalyptic", "description": "SVCO bad sev"})
+        check("ao: unknown severity → 422", r.status_code == 422, f"got {r.status_code}")
+
+        r = await ac.patch(f"/admin/feedback/{fid}", headers=H(admin_t), json={
+            "status": "in_progress", "severity": "critical",
+            "triage_notes": "SVCO triage: filter state leaks between renders",
+            "safety_constraints": "SVCO: must not touch the append-only ledger",
+            "rollback_notes": "SVCO: revert the single commit; no data migration"})
+        row = None
+        async with SessionLocal() as s:
+            row = (await s.execute(_sqt(
+                "SELECT severity, triage_notes, safety_constraints, rollback_notes "
+                "FROM bug_reports WHERE id=:i"), {"i": fid})).first()
+        check("ao: admin triage persists severity + rollback/safety/analysis",
+              r.status_code == 200 and row is not None and row[0] == "critical"
+              and "filter state" in row[1] and "append-only" in row[2]
+              and "revert" in row[3], f"{r.status_code} row={row}")
+
+        r = await ac.get(f"/admin/feedback/{fid}/prompt", headers=H(hod_t))
+        check("ao: prompt export is admin-only (hod → 403)",
+              r.status_code == 403, f"got {r.status_code}")
+        r = await ac.get(f"/admin/feedback/{fid}/prompt", headers=H(admin_t))
+        p = r.json().get("prompt", "") if r.status_code == 200 else ""
+        check("ao: prompt is self-contained — report + triage + gates + rollback",
+              r.status_code == 200 and "SVCO ghost rows" in p
+              and "Rollback plan" in p and "Safety constraints" in p
+              and "NON-NEGOTIABLE" in p and "service_tests" in p
+              and "CRITICAL" in p, f"{r.status_code} len={len(p)}")
+        r = await ac.get("/admin/feedback-export.md", headers=H(admin_t),
+                         params={"status": "in_progress"})
+        check("ao: markdown digest bundles the triaged reports",
+              r.status_code == 200 and f"#{fid}" in r.text
+              and "SVCO ghost rows" in r.text,
+              f"{r.status_code} len={len(r.text)}")
+
+        async with SessionLocal() as s:  # cleanup
+            await s.execute(_sqt(
+                "DELETE FROM app_notifications WHERE related_table='bug_reports' "
+                "AND related_ref IN (SELECT id::text FROM bug_reports "
+                "WHERE description LIKE 'SVCO%')"))
+            await s.execute(_sqt(
+                "DELETE FROM bug_reports WHERE description LIKE 'SVCO%'"))
+            await s.commit()
+
+
 async def _relax_entry_gates() -> None:
     """Parity A1 — require_entry_documents defaults ON in production. Switch
     it OFF for the functional suites (they submit entries without documents);
@@ -6350,6 +6429,8 @@ async def main() -> int:
     await test_ai_phase2_upgrades()
     print("\n AN. Surface-Shields issue workflow + Smart Calculator")
     await test_sme_sk_upgrades()
+    print("\n AO. Bug Tracking Engine (triage fields + prompt export)")
+    await test_bug_tracking_engine()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

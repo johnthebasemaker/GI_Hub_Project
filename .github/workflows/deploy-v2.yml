@@ -71,19 +71,32 @@ jobs:
           pip install -r requirements.txt
           pip install psycopg2-binary
 
+      # Phase B layout: the bridge tools moved to tools/ on cutover day —
+      # these two steps still pointed at the old backend/ paths and were the
+      # 071d6d3 gate failure alongside the missing gi_ai_ro role below.
       - name: Populate Postgres (dual_ci — same as the shared CI)
         env:
           DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
-        run: python backend/dual_ci.py --source gi_database.db
+        run: python tools/dual_ci.py --source gi_database.db
 
       - name: Derived-view parity (SQLite views vs ported PG SQL)
         env:
           DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
-        run: python backend/api/parity_check.py --source gi_database.db
+        run: python tools/parity_check.py --source gi_database.db
+
+      - name: Provision the AI read-only role (gi_ai_ro)
+        env:
+          PGPASSWORD: gihub_ci
+        run: |
+          psql -h localhost -U gihub -d gihub -v ON_ERROR_STOP=1 \
+               -f backend/scripts/create_ai_readonly_role.sql
+          psql -h localhost -U gihub -d gihub -v ON_ERROR_STOP=1 \
+               -c "ALTER ROLE gi_ai_ro PASSWORD 'gi_ai_ro_ci'"
 
       - name: Service + guard tests
         env:
           DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
+          GI_AI_RO_URL: postgresql+asyncpg://gi_ai_ro:gi_ai_ro_ci@localhost:5432/gihub
           JWT_SECRET: ci-only-service-test-secret-key-32bytes-min
         run: python -m backend.api.service_tests
 

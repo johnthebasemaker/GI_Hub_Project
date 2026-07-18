@@ -1273,6 +1273,14 @@ class BugReports(Base):
     admin_response = Column(Text)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     updated_at = Column(DateTime)
+    # 2026-07-18 Bug Tracking Engine (alembic c7d4e8f19a25) — safe
+    # change-management fields, new-stack only (frozen SQLite never learns
+    # them; allowlisted in bug_check models-parity).
+    title = Column(Text)
+    severity = Column(Text)             # low | medium | high | critical
+    rollback_notes = Column(Text)       # how to back the change out
+    safety_constraints = Column(Text)   # what must NOT break / gates to run
+    triage_notes = Column(Text)         # admin analysis before implementation
 
 class GeneratedReport(Base):
     """Phase 8-3 — auto-generated report artifacts (weekly executive PDF).

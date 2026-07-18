@@ -400,6 +400,10 @@ const FB_COLOR: Record<string, string> = {
   open: 'gold', in_progress: 'blue', resolved: 'green', closed: 'default',
 }
 
+const SEV_COLORS: Record<string, string> = {
+  low: 'default', medium: 'blue', high: 'orange', critical: 'red',
+}
+
 function FeedbackTab() {
   const { message } = App.useApp()
   const qc = useQueryClient()
@@ -416,40 +420,99 @@ function FeedbackTab() {
     },
     onError: (e) => message.error(errMsg(e)),
   })
+  // Bug Tracking Engine: every triaged report exports as a self-contained
+  // implementation prompt for a coding-agent session on the repo — this
+  // portal never changes code itself.
+  const copyPrompt = async (id: number) => {
+    try {
+      const r = await api.get(`/admin/feedback/${id}/prompt`)
+      await navigator.clipboard.writeText(r.data.prompt)
+      message.success('Implementation prompt copied — paste it into a Claude Code session on the repo')
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
+  const exportDigest = async () => {
+    try {
+      const r = await api.get('/admin/feedback-export.md', { params: { status: 'open' } })
+      const blob = new Blob([r.data], { type: 'text/markdown' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = 'feedback-digest-open.md'
+      a.click()
+      URL.revokeObjectURL(a.href)
+    } catch (e) {
+      message.error(errMsg(e))
+    }
+  }
   return (
     <div>
+      <Space style={{ marginBottom: 12 }}>
+        <Button onClick={exportDigest}>Export open reports (.md digest)</Button>
+      </Space>
       <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} dataSource={items ?? []} rowKey={(r) => String(r.id)}
         scroll={{ x: 'max-content' }} pagination={{ pageSize: 20 }}
         columns={[
           { title: 'ID', dataIndex: 'id', width: 60 },
           { title: 'Type', dataIndex: 'type', width: 90, render: (v: string) => <Tag>{v}</Tag> },
+          { title: 'Sev', dataIndex: 'severity', width: 90,
+            render: (v: string) => <Tag color={SEV_COLORS[v] ?? 'blue'}>{v ?? 'medium'}</Tag> },
           { title: 'From', dataIndex: 'username', width: 110 },
           { title: 'Page', dataIndex: 'page', width: 130, render: (v) => v ?? '—' },
-          { title: 'Description', dataIndex: 'description', ellipsis: true },
+          { title: 'Title / Description', key: 'd', ellipsis: true,
+            render: (_: unknown, r: ApiRow) => String(r.title || r.description || '') },
           { title: 'Status', dataIndex: 'status', width: 120,
             render: (v: string) => <Tag color={FB_COLOR[v] ?? 'default'}>{v}</Tag> },
           {
-            title: 'Action', key: 'a', width: 110,
+            title: 'Action', key: 'a', width: 200,
             render: (_: unknown, r: ApiRow) => (
-              <Button size="small" onClick={() => { setResponding(r); form.setFieldsValue({ status: r.status, admin_response: r.admin_response }) }}>
-                Respond
-              </Button>
+              <Space>
+                <Button size="small" onClick={() => {
+                  setResponding(r)
+                  form.setFieldsValue({
+                    status: r.status, admin_response: r.admin_response,
+                    severity: r.severity ?? 'medium',
+                    rollback_notes: r.rollback_notes,
+                    safety_constraints: r.safety_constraints,
+                    triage_notes: r.triage_notes,
+                  })
+                }}>
+                  Triage
+                </Button>
+                <Button size="small" onClick={() => copyPrompt(Number(r.id))}>
+                  📋 Prompt
+                </Button>
+              </Space>
             ),
           },
         ] as ColumnsType<ApiRow>} />
-      <Modal title={`Report #${responding?.id ?? ''}`} open={!!responding}
+      <Modal title={`Report #${responding?.id ?? ''} — triage`} open={!!responding}
         onCancel={() => setResponding(null)} confirmLoading={patch.isPending}
         onOk={async () => {
           const v = await form.validateFields()
           patch.mutate({ id: Number(responding!.id), ...v })
-        }} okText="Save & notify" destroyOnHidden>
+        }} okText="Save & notify" destroyOnHidden width={640}>
         <Typography.Paragraph type="secondary">{String(responding?.description ?? '')}</Typography.Paragraph>
         <Form form={form} layout="vertical" preserve={false}>
-          <Form.Item name="status" label="Status" rules={[{ required: true }]}>
-            <Select options={['open', 'in_progress', 'resolved', 'closed'].map((s) => ({ value: s, label: s }))} />
+          <Space.Compact block>
+            <Form.Item name="status" label="Status" rules={[{ required: true }]} style={{ flex: 1 }}>
+              <Select options={['open', 'in_progress', 'resolved', 'closed'].map((s) => ({ value: s, label: s }))} />
+            </Form.Item>
+            <Form.Item name="severity" label="Severity" style={{ flex: 1 }}>
+              <Select options={['low', 'medium', 'high', 'critical'].map((s) => ({ value: s, label: s }))} />
+            </Form.Item>
+          </Space.Compact>
+          <Form.Item name="triage_notes" label="Triage analysis (what/where/why)">
+            <Input.TextArea rows={2} placeholder="root cause, affected module(s)…" />
+          </Form.Item>
+          <Form.Item name="safety_constraints" label="Safety constraints (what must NOT break)">
+            <Input.TextArea rows={2} placeholder="e.g. must not touch the SME engines / append-only ledger…" />
+          </Form.Item>
+          <Form.Item name="rollback_notes" label="Rollback plan">
+            <Input.TextArea rows={2} placeholder="how to back the change out if it misbehaves" />
           </Form.Item>
           <Form.Item name="admin_response" label="Response to the submitter">
-            <Input.TextArea rows={3} />
+            <Input.TextArea rows={2} />
           </Form.Item>
         </Form>
       </Modal>

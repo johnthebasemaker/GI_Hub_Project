@@ -1433,7 +1433,13 @@ def check_models_schema_parity() -> None:
                # 2026-07-18 SME SAP-code overhaul (alembic b3f2a9c47d18):
                # exact ERP↔SME join keys, new-stack only — the frozen legacy
                # SQLite never learns them.
-               ("sme_recipe", "SAP_Code"), ("sme_inventory_seed", "SAP_Code")}
+               ("sme_recipe", "SAP_Code"), ("sme_inventory_seed", "SAP_Code"),
+               # 2026-07-18 Bug Tracking Engine (alembic c7d4e8f19a25):
+               # triage/safety fields on bug_reports, new-stack only.
+               ("bug_reports", "title"), ("bug_reports", "severity"),
+               ("bug_reports", "rollback_notes"),
+               ("bug_reports", "safety_constraints"),
+               ("bug_reports", "triage_notes")}
     extra = model_only - allowed
     assert not extra, f"unexpected model-only columns (update models.py or DB): {extra}"
 

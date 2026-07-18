@@ -28,6 +28,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -597,15 +598,26 @@ async def delete_xsite(rid: int, user: dict = Depends(require_level(2)),
 
 
 # --- Feedback / bug reports -------------------------------------------------------
+_SEVERITIES = ("low", "medium", "high", "critical")
+
+
 class FeedbackIn(BaseModel):
     type: str  # bug | feature | other
     description: str
     page: Optional[str] = None
+    title: Optional[str] = None
+    severity: Optional[str] = None  # low | medium | high | critical
 
 
 class FeedbackDecideIn(BaseModel):
     status: str  # open | in_progress | resolved | closed
     admin_response: Optional[str] = None
+    # 2026-07-18 Bug Tracking Engine: triage fields — captured BEFORE any
+    # implementation so a change can always be reasoned about and backed out.
+    severity: Optional[str] = None
+    rollback_notes: Optional[str] = None
+    safety_constraints: Optional[str] = None
+    triage_notes: Optional[str] = None
 
 
 @public.post("/feedback", status_code=201, summary="Submit a bug report / feature request")
@@ -616,9 +628,13 @@ async def submit_feedback(body: FeedbackIn = Body(...),
         raise HTTPException(422, "type must be bug | feature | other")
     if not body.description.strip():
         raise HTTPException(422, "description is required")
+    if body.severity is not None and body.severity not in _SEVERITIES:
+        raise HTTPException(422, f"severity must be one of {_SEVERITIES}")
     fid = (await session.execute(insert(bugs_t).values(
         username=user["username"], type=body.type, page=body.page,
-        description=body.description.strip(), status="open")
+        description=body.description.strip(), status="open",
+        title=(body.title or "").strip() or None,
+        severity=body.severity or "medium")
         .returning(bugs_t.c["id"]))).scalar_one()
     await notify(session, event_key="feedback_submitted", recipient_role="admin",
                  severity="info", title=f"New {body.type} report from {user['username']}",
@@ -657,10 +673,16 @@ async def decide_feedback(fid: int, body: FeedbackDecideIn = Body(...),
     row = (await session.execute(select(bugs_t.c["username"]).where(bugs_t.c["id"] == fid))).first()
     if row is None:
         raise HTTPException(404, f"report {fid} not found")
+    if body.severity is not None and body.severity not in _SEVERITIES:
+        raise HTTPException(422, f"severity must be one of {_SEVERITIES}")
     values: dict = {"status": body.status,
                     "updated_at": _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)}
     if body.admin_response is not None:
         values["admin_response"] = body.admin_response
+    for f in ("severity", "rollback_notes", "safety_constraints", "triage_notes"):
+        v = getattr(body, f)
+        if v is not None:
+            values[f] = v
     await session.execute(update(bugs_t).where(bugs_t.c["id"] == fid).values(**values))
     await dispatch(session, event_key="feedback_updated", recipient_user=row.username,
                    severity="info", wa_template="status_update",
@@ -672,6 +694,85 @@ async def decide_feedback(fid: int, body: FeedbackDecideIn = Body(...),
                       f"id={fid} → {body.status}")
     await session.commit()
     return {"id": fid, "status": body.status}
+
+
+# ── Bug Tracking Engine: the automation bridge (2026-07-18) ──────────────────
+# The maintainer's coding agent is not connected to this running system, so
+# every triaged report can export as a SELF-CONTAINED implementation prompt:
+# what/where/severity + the admin's rollback and safety constraints + the
+# project's non-negotiable gates. The operator pastes it into a Claude Code
+# session on the repo; nothing is ever changed from inside the portal itself.
+
+_PROMPT_GATES = """\
+NON-NEGOTIABLE PROJECT CONSTRAINTS (GI Hub — see docs/ARCHITECTURE.md first):
+- Run and keep GREEN: `python -m backend.api.service_tests` (vs the :5433
+  mirror), `npx playwright test` (tests/e2e), `npm run build --prefix
+  frontend`, `python legacy/bug_check.py`, `alembic heads` = single head.
+- Never stage gi_database.db or any *.xlsx; secrets live only in deploy/.env.
+- Ledger tables are append-only; FEFO/over-issue stay allow-and-log (never
+  hard-block); system_audit_log rows are never deleted.
+- SME engines (backend/api/sme_engine.py + frontend/src/sme/engine.ts) change
+  ONLY together with a golden regeneration in the same commit.
+- New service checks go in backend/api/service_tests.py following the
+  check()/unique-prefix/cleanup conventions.
+- Commit with a run-log entry in docs/POSTGRES_MIGRATION.md §8."""
+
+
+def _build_prompt(r: dict) -> str:
+    sev = (r.get("severity") or "medium").upper()
+    lines = [
+        f"# {r['type'].upper()} #{r['id']}: "
+        + (r.get("title") or (r["description"][:60] + "…")),
+        "",
+        f"Reported by `{r['username']}` on {str(r.get('created_at'))[:16]}"
+        + (f" · page: `{r['page']}`" if r.get("page") else "")
+        + f" · severity: **{sev}** · status: {r['status']}",
+        "",
+        "## Report",
+        r["description"].strip(),
+    ]
+    if r.get("triage_notes"):
+        lines += ["", "## Admin triage analysis", str(r["triage_notes"]).strip()]
+    if r.get("safety_constraints"):
+        lines += ["", "## Safety constraints (MUST hold — from the admin)",
+                  str(r["safety_constraints"]).strip()]
+    if r.get("rollback_notes"):
+        lines += ["", "## Rollback plan", str(r["rollback_notes"]).strip()]
+    if r.get("admin_response"):
+        lines += ["", "## Admin response so far", str(r["admin_response"]).strip()]
+    lines += ["", "## Task",
+              "Reproduce/verify the report in the GI Hub repo, implement the "
+              "smallest safe fix (or explain why no change is needed), add a "
+              "regression check, and run every gate below before committing.",
+              "", _PROMPT_GATES]
+    return "\n".join(lines)
+
+
+@admin.get("/feedback/{fid}/prompt",
+           summary="Self-contained implementation prompt for a report (admin)")
+async def feedback_prompt(fid: int,
+                          session: AsyncSession = Depends(get_session)):
+    row = (await session.execute(select(bugs_t).where(bugs_t.c["id"] == fid))
+           ).mappings().first()
+    if row is None:
+        raise HTTPException(404, f"report {fid} not found")
+    return {"id": fid, "prompt": _build_prompt(dict(row))}
+
+
+@admin.get("/feedback-export.md",
+           summary="Markdown digest of reports for batch analysis (admin)")
+async def feedback_export(status: Optional[str] = "open",
+                          session: AsyncSession = Depends(get_session)):
+    stmt = select(bugs_t)
+    if status:
+        stmt = stmt.where(bugs_t.c["status"] == status)
+    rows = (await session.execute(stmt.order_by(bugs_t.c["id"]))).mappings().all()
+    parts = [f"# GI Hub feedback digest — status: {status or 'all'} "
+             f"({len(rows)} report(s))", ""]
+    for r in rows:
+        parts.append(_build_prompt(dict(r)))
+        parts.append("\n---\n")
+    return PlainTextResponse("\n".join(parts), media_type="text/markdown")
 
 
 @admin.delete("/feedback/{fid}", summary="Delete a report (admin)")

@@ -56,13 +56,25 @@ export default function FeedbackPage() {
       </Typography.Paragraph>
 
       <Card size="small" title="New report" style={{ maxWidth: 640, marginBottom: 16 }}>
-        <Form form={form} layout="vertical" initialValues={{ type: 'bug', page: location.pathname }}
+        <Form form={form} layout="vertical"
+          initialValues={{ type: 'bug', severity: 'medium', page: location.pathname }}
           onFinish={(v) => submit.mutate(v)}>
           <Form.Item name="type" label="Type" rules={[{ required: true }]}>
             <Select options={[
               { value: 'bug', label: '🐞 Bug' },
               { value: 'feature', label: '✨ Feature request' },
               { value: 'other', label: '💬 Other' },
+            ]} />
+          </Form.Item>
+          <Form.Item name="title" label="Short title (optional)">
+            <Input maxLength={120} placeholder="one-line summary" />
+          </Form.Item>
+          <Form.Item name="severity" label="How urgent is it?">
+            <Select options={[
+              { value: 'low', label: 'Low — cosmetic / nice-to-have' },
+              { value: 'medium', label: 'Medium — annoying but has a workaround' },
+              { value: 'high', label: 'High — blocks part of my work' },
+              { value: 'critical', label: 'Critical — data wrong or work stopped' },
             ]} />
           </Form.Item>
           <Form.Item name="page" label="Page (optional)"><Input /></Form.Item>
