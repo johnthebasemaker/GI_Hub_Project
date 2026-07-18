@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "frontend",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "/Users/johnsonandrew/GI_Hub_Project/frontend", "run", "dev"],
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["VITE_TUNNEL=1", "npm", "--prefix", "/Users/johnsonandrew/GI_Hub_Project/frontend", "run", "dev"],
       "port": 5173
     }
   ]

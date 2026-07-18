@@ -7,10 +7,12 @@ import { VitePWA } from 'vite-plugin-pwa'
 // same relative paths keep working in prod behind a reverse proxy).
 //
 // Tunnel mode (`VITE_TUNNEL=1 npm run dev`): exposes the dev server through the
-// Cloudflare Tunnel at gi.giinventory.com for multi-user testing. It allows that
-// host (Vite blocks unknown Hosts by default) and points HMR's websocket at the
-// tunnel's TLS port. Local dev without the flag is unchanged.
+// Cloudflare Tunnel at gi.giinventory.com for multi-user testing. The tunnel
+// host is allowed unconditionally below (Vite blocks unknown Hosts by default);
+// the flag only repoints HMR's websocket at the tunnel's TLS port, so local dev
+// without it is unchanged (HMR just won't work through the tunnel).
 const tunnel = process.env.VITE_TUNNEL === '1'
+const TUNNEL_HOST = 'gi.giinventory.com'
 
 export default defineConfig({
   plugins: [
@@ -60,8 +62,8 @@ export default defineConfig({
   ],
   server: {
     port: 5173,
-    ...(tunnel ? { allowedHosts: ['gi.giinventory.com'] as string[] } : {}),
-    ...(tunnel ? { hmr: { host: 'gi.giinventory.com', clientPort: 443, protocol: 'wss' } } : {}),
+    allowedHosts: [TUNNEL_HOST],
+    ...(tunnel ? { hmr: { host: TUNNEL_HOST, clientPort: 443, protocol: 'wss' } } : {}),
     proxy: {
       '/api': {
         // VITE_API_PROXY lets the Playwright E2E harness (tests/e2e) point a
@@ -71,5 +73,8 @@ export default defineConfig({
         rewrite: (p) => p.replace(/^\/api/, ''),
       },
     },
+  },
+  preview: {
+    allowedHosts: [TUNNEL_HOST],
   },
 })
