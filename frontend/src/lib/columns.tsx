@@ -10,6 +10,9 @@ function renderCell(v: unknown) {
 }
 
 // Derive antd columns from the first row's keys — generic across every entity.
+// Every column reserves enough width for its full header title (headers must
+// never truncate — the derived key IS the label); body cells keep their
+// ellipsis and the table scrolls horizontally instead.
 export function buildColumns(rows: Row[]): ColumnsType<Row> {
   if (!rows.length) return []
   return Object.keys(rows[0]).map((key) => ({
@@ -17,6 +20,8 @@ export function buildColumns(rows: Row[]): ColumnsType<Row> {
     dataIndex: key,
     key,
     ellipsis: true,
+    width: Math.max(96, Math.round(key.length * 8.5) + 40),
+    onHeaderCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
     render: (v: unknown) => renderCell(v),
   }))
 }
