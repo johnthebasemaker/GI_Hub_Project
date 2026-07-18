@@ -603,13 +603,22 @@ async def plan_sme_recipes(session: AsyncSession, data: bytes) -> dict:
     code_i = _col(headers, "Lining_System_Code")
     mat_i = _col(headers, "Material_Code")
     sqm_i = _col(headers, "For_1_SQM")
+    sap_i = _col(headers, "SAP_Code", "SAP CODE")
+    sap_aware = sap_i is not None  # 2026-07-18 workbook layout
     if code_i is None or mat_i is None or sqm_i is None:
         raise HTTPException(422, "recipe sheet needs Lining_System_Code, "
                                  "Material_Code and For_1_SQM")
-    existing = {(str(r["Lining_System_Code"]).strip(), r["Material_Code"]): dict(r)
+    existing = {(str(r["Lining_System_Code"]).strip(), r["Material_Code"],
+                 _s(r.get("SAP_Code")) or ""): dict(r)
                 for r in (await session.execute(select(recipe_t))).mappings().all()}
-    inserts, updates, unchanged, rejects = [], [], 0, []
-    seen, dup_skips = set(), 0
+    rejects: list[dict] = []
+    # Line identity is (code, material, SAP). PU systems carry Comp-A/B/C/D
+    # lines that share one Material_Code and differ only by variant SAP; a
+    # repeat of the SAME identity in a SAP-aware file is a deliberate coat
+    # line — For_1_SQM sums (e.g. CONDL2 primer + body coat). Legacy files
+    # (no SAP column) keep the historical first-occurrence-wins dedupe.
+    agg: dict[tuple, dict] = {}
+    dup_skips, coat_merges = 0, 0
     for n, row in enumerate(rows, start=1):
         code, mat_cell = _s(row[code_i]), _s(row[mat_i])
         if not code or not mat_cell:
@@ -619,35 +628,48 @@ async def plan_sme_recipes(session: AsyncSession, data: bytes) -> dict:
         except ValueError:
             rejects.append({"row": n, "reason": f"non-numeric code {code!r}"})
             continue
-        fields = {"For_1_SQM": _f(row[sqm_i]) or 0.0}
+        sap = _s(row[sap_i]) if sap_aware and sap_i < len(row) else None
+        qty = _f(row[sqm_i]) or 0.0
+        fields = {}
         for field, i in ix.items():
             v = _s(row[i]) if i is not None and i < len(row) else None
             if v is not None:
                 fields[field] = v
-        # Legacy bootstrap semantics: a comma-separated Material_Code cell is
-        # one line per material (same For_1_SQM); later (code, mat) repeats in
-        # the file are skipped — the FIRST occurrence wins.
+        # a comma-separated Material_Code cell is one line per material
         for mat in (m.strip() for m in mat_cell.split(",")):
             if not mat:
                 continue
-            if (code, mat) in seen:
-                dup_skips += 1
-                continue
-            seen.add((code, mat))
-            cur = existing.get((code, mat))
-            if cur is None:
-                inserts.append({"Lining_System_Code": code, "Material_Code": mat,
-                                **fields})
-            else:
-                diff = {k: v for k, v in fields.items() if cur.get(k) != v}
-                if diff:
-                    updates.append({"id": cur["id"], "diff": diff})
+            key = (code, mat, sap or "")
+            cur = agg.get(key)
+            if cur is not None:
+                if sap_aware:
+                    cur["For_1_SQM"] += qty
+                    coat_merges += 1
                 else:
-                    unchanged += 1
+                    dup_skips += 1
+                continue
+            agg[key] = {"For_1_SQM": qty, **fields,
+                        **({"SAP_Code": sap} if sap else {})}
+
+    inserts, updates, unchanged = [], [], 0
+    for (code, mat, sap), fields in agg.items():
+        cur = existing.get((code, mat, sap))
+        if cur is None:
+            inserts.append({"Lining_System_Code": code, "Material_Code": mat,
+                            **fields})
+        else:
+            diff = {k: v for k, v in fields.items() if cur.get(k) != v}
+            if diff:
+                updates.append({"id": cur["id"], "diff": diff})
+            else:
+                unchanged += 1
     warnings = []
     if dup_skips:
         warnings.append(f"{dup_skips} repeated (code, material) line(s) skipped "
                         f"— first occurrence wins (legacy bootstrap rule)")
+    if coat_merges:
+        warnings.append(f"{coat_merges} repeated (code, material, SAP) coat "
+                        f"line(s) merged — For_1_SQM summed")
     return {"inserts": inserts, "updates": updates, "unchanged": unchanged,
             "rejects": rejects, "warnings": warnings}
 
@@ -670,6 +692,7 @@ async def plan_sme_materials(session: AsyncSession, data: bytes) -> dict:
           "Document_Date": _col(headers, "Document Date"),
           "Material_Name": _col(headers, "Material_Name"),
           "Nature": _col(headers, "Nature"), "UOM": _col(headers, "UOM"),
+          "sap": _col(headers, "SAP_Code", "SAP CODE"),
           "avail": _col(headers, "Available_Qty"),
           "ordered": _col(headers, "Ordered_Qty")}
     mat_i = _col(headers, "Material_Code")
@@ -692,6 +715,11 @@ async def plan_sme_materials(session: AsyncSession, data: bytes) -> dict:
         dd = (_iso(dd) or "")[:10] or None
         if dd and dd > (a.get("Document_Date") or ""):
             a["Document_Date"] = dd  # most recent PO date wins
+        sap = _s(cell("sap"))
+        if sap is not None:  # one material can span variant SAPs (1041-1 …)
+            saps = a.setdefault("_saps", [])
+            if sap not in saps:
+                saps.append(sap)
         for field in ("Item", "Vendor", "Purchasing_Document",
                       "Material_Name", "Nature", "UOM"):
             v = _s(cell(field))
@@ -701,6 +729,9 @@ async def plan_sme_materials(session: AsyncSession, data: bytes) -> dict:
                 (await session.execute(select(seed_t))).mappings().all()}
     inserts, updates, unchanged = [], [], 0
     for mat, a in agg.items():
+        saps = a.pop("_saps", None)
+        if saps:
+            a["SAP_Code"] = ", ".join(saps)
         a["Initial_Available_Qty"] = round(a["Initial_Available_Qty"], 4)
         a["Initial_Ordered_Qty"] = round(a["Initial_Ordered_Qty"], 4)
         cur = existing.get(mat)

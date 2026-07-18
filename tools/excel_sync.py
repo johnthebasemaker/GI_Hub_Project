@@ -59,6 +59,18 @@ async def main() -> int:
     ap.add_argument("--site", default="CNCEC")
     ap.add_argument("--commit", action="store_true",
                     help="apply the plans (default: dry-run report only)")
+    ap.add_argument("--kinds", default=None,
+                    help="comma list to restrict the run (e.g. "
+                         "'inventory,ledger'); default: all five kinds")
+    ap.add_argument("--sme-reseed", action="store_true",
+                    help="drop existing SME rows (recipes global, equipment/"
+                         "progress for --site, materials seed) before the SME "
+                         "loads — required when the workbook RENUMBERS "
+                         "Lining_System_Codes, where an upsert would leave "
+                         "stale old-code rows double-counting SQM")
+    ap.add_argument("--force-drop-progress", action="store_true",
+                    help="allow --sme-reseed to drop progress rows that have "
+                         "recorded Done_SQM (otherwise the run aborts)")
     ap.add_argument("--user", default="excel-sync",
                     help="username stamped on the audit rows")
     args = ap.parse_args()
@@ -93,11 +105,58 @@ async def main() -> int:
         "sme-materials": bi.apply_sme_materials,
     }
 
+    # ── SME reseed (workbook renumbered the Lining_System_Codes) ────────────
+    # Recipes are global seed data; equipment/progress are per-site. A code
+    # renumbering makes upserts WRONG (old-code rows would linger and
+    # double-count SQM), so the workbook replaces the SME trio wholesale.
+    RESEED_SQL = {
+        "sme-equipment": [
+            ('sme_sqm_progress',
+             'DELETE FROM sme_sqm_progress WHERE "Site_ID" = :site'),
+            ('sme_equipment',
+             'DELETE FROM sme_equipment WHERE "Site_ID" = :site')],
+        "sme-recipes": [('sme_recipe', 'DELETE FROM sme_recipe')],
+        "sme-materials": [('sme_inventory_seed',
+                           'DELETE FROM sme_inventory_seed')],
+    }
+    if args.sme_reseed:
+        async with SessionLocal() as s:
+            done = (await s.execute(text(
+                'SELECT COUNT(*) FROM sme_sqm_progress WHERE "Site_ID"=:site '
+                'AND COALESCE("Done_SQM",0)+COALESCE("Done_SQM_staged",0) > 0'),
+                {"site": args.site})).scalar()
+        if done and not args.force_drop_progress:
+            print(f"❌ --sme-reseed would drop {done} progress row(s) with "
+                  f"recorded Done_SQM — rerun with --force-drop-progress to "
+                  f"accept losing that progress")
+            return 3
+
+    kinds = list(FILES)
+    if args.kinds:
+        want = {k.strip() for k in args.kinds.split(",") if k.strip()}
+        bad = want - set(FILES)
+        if bad:
+            print(f"❌ unknown --kinds {sorted(bad)} (choose from {list(FILES)})")
+            return 2
+        kinds = [k for k in FILES if k in want]  # keep the safe sequence
+
     mode = "COMMIT" if args.commit else "DRY-RUN"
     print(f"== Excel sync ({mode}) → site {args.site} ==")
     failures = 0
-    for kind in FILES:  # dict order == the safe sequence
+    for kind in kinds:  # dict order == the safe sequence
         async with SessionLocal() as session:
+            if args.sme_reseed and kind in RESEED_SQL:
+                for table, sql in RESEED_SQL[kind]:
+                    params = {"site": args.site} if ":site" in sql else {}
+                    if args.commit:
+                        res = await session.execute(text(sql), params)
+                        print(f"  reseed: dropped {res.rowcount} {table} row(s)")
+                    else:
+                        count_sql = ("SELECT COUNT(*) FROM ("
+                                     + sql.replace("DELETE FROM",
+                                                   "SELECT 1 FROM", 1) + ") q")
+                        n = (await session.execute(text(count_sql), params)).scalar()
+                        print(f"  reseed (dry-run): would drop {n} {table} row(s)")
             plan = await planners[kind](session, datas[kind])
             if kind == "inventory" and not args.commit:
                 pending_saps |= {row["SAP_Code"] for row in plan["inserts"]}

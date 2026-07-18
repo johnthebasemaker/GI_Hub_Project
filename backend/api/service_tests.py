@@ -5716,6 +5716,54 @@ async def test_bulk_import():
               and abs(float(row[0]) - 130) < 1e-9 and abs(float(row[1]) - 40) < 1e-9
               and str(row[2]) == "2026-02-05", f"{r.status_code} row={tuple(row) if row else None}")
 
+        # ── SAP-aware SME files (2026-07-18 layout): (code, mat, SAP) identity ─
+        rec_hdr2 = rec_hdr[:9] + ["SAP_Code"] + rec_hdr[9:]
+        rec_wb2 = _xlsx({"LINING SYSTEM MATERIAL CONSM": [
+            rec_hdr2,
+            ["1", "9906", "Steel", "SVCJ PU", "SVCJ", "3 mm", "SVCJPU3",
+             "PU", "SVCJ-MAT-2", "SVCJ-S1", "Comp-A", "SVCJ PU", 0.5, "KG", None],
+            ["2", "9906", "Steel", "SVCJ PU", "SVCJ", "3 mm", "SVCJPU3",
+             "PU", "SVCJ-MAT-2", "SVCJ-S1-1", "Comp-B", "SVCJ PU", 0.7, "KG", None],
+            ["3", "9906", "Steel", "SVCJ PU", "SVCJ", "3 mm", "SVCJPU3",
+             "PU", "SVCJ-MAT-3", "SVCJ-S2", "Primer", "SVCJ Primer", 0.2, "KG", None],
+            ["4", "9906", "Steel", "SVCJ PU", "SVCJ", "3 mm", "SVCJPU3",
+             "PU", "SVCJ-MAT-3", "SVCJ-S2", "Primer", "SVCJ Primer", 0.3, "KG", None],
+        ]})
+        r = await ac.post("/import/sme-recipes", headers=H(hod_t), files=up(rec_wb2),
+                          params={"commit": "true"})
+        j = r.json() if r.status_code == 200 else {}
+        async with SessionLocal() as s:
+            comp = (await s.execute(_sqt(
+                "SELECT \"SAP_Code\", \"For_1_SQM\" FROM sme_recipe "
+                "WHERE \"Material_Code\"='SVCJ-MAT-2' ORDER BY \"SAP_Code\""))).all()
+            coat = (await s.execute(_sqt(
+                "SELECT \"For_1_SQM\" FROM sme_recipe "
+                "WHERE \"Material_Code\"='SVCJ-MAT-3'"))).scalar()
+        check("aj: SAP-aware recipe file keeps variant-SAP component lines apart",
+              r.status_code == 200 and j.get("summary", {}).get("inserts") == 3
+              and [t[0] for t in comp] == ["SVCJ-S1", "SVCJ-S1-1"],
+              f"{r.status_code} {j.get('summary')} comp={comp}")
+        check("aj: repeated (code, mat, SAP) coat lines merge — For_1_SQM sums",
+              coat is not None and abs(float(coat) - 0.5) < 1e-9
+              and any("coat line" in w for w in j.get("warnings", [])),
+              f"coat={coat} warn={j.get('warnings')}")
+        mat_hdr2 = mat_hdr[:5] + ["SAP_Code"] + mat_hdr[5:]
+        mat_wb2 = _xlsx({"Materials": [
+            mat_hdr2,
+            ["1", "SVCJ Vendor", "4700000003", "2026-03-01", "SVCJ-MAT-2",
+             "SVCJ-S1", "SVCJ PU", "Liquid", "KG", 10, 5],
+            ["2", "SVCJ Vendor", "4700000003", "2026-03-01", "SVCJ-MAT-2",
+             "SVCJ-S1-1", "SVCJ PU", "Liquid", "KG", 4, None],
+        ]})
+        r = await ac.post("/import/sme-materials", headers=H(hod_t), files=up(mat_wb2),
+                          params={"commit": "true"})
+        sap_join = await _scalar(
+            "SELECT \"SAP_Code\" FROM sme_inventory_seed "
+            "WHERE \"Material_Code\"='SVCJ-MAT-2'")
+        check("aj: materials seed records the distinct variant SAP list",
+              r.status_code == 200 and sap_join == "SVCJ-S1, SVCJ-S1-1",
+              f"{r.status_code} sap={sap_join}")
+
         audits = await _scalar(
             "SELECT COUNT(DISTINCT action_type) FROM system_audit_log "
             "WHERE action_type LIKE 'BULK_IMPORT_%'")

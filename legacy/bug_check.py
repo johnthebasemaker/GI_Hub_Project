@@ -1429,7 +1429,11 @@ def check_models_schema_parity() -> None:
                # are absent from a FRESH init_db schema.
                ("inventory", "Sl_No"), ("consumption", "status"),
                ("consumption", "Technician"), ("pending_issues", "Technician"),
-               ("rejected_issues_archive", "Technician")}
+               ("rejected_issues_archive", "Technician"),
+               # 2026-07-18 SME SAP-code overhaul (alembic b3f2a9c47d18):
+               # exact ERP↔SME join keys, new-stack only — the frozen legacy
+               # SQLite never learns them.
+               ("sme_recipe", "SAP_Code"), ("sme_inventory_seed", "SAP_Code")}
     extra = model_only - allowed
     assert not extra, f"unexpected model-only columns (update models.py or DB): {extra}"
 

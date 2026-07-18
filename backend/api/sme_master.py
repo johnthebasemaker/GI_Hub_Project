@@ -260,6 +260,7 @@ async def delete_equipment(eq_id: int,
 class RecipeCreate(BaseModel):
     Lining_System_Code: str = Field(min_length=1, max_length=40)
     Material_Code: str = Field(min_length=1, max_length=80)
+    SAP_Code: Optional[str] = Field(default=None, max_length=40)
     For_1_SQM: float = Field(default=0, ge=0)
     Lining_System_Name: Optional[str] = None
     Material_Name: Optional[str] = None
@@ -278,6 +279,7 @@ class RecipeCreate(BaseModel):
 class RecipePatch(BaseModel):
     Lining_System_Code: Optional[str] = Field(default=None, min_length=1, max_length=40)
     Material_Code: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    SAP_Code: Optional[str] = Field(default=None, max_length=40)
     For_1_SQM: Optional[float] = Field(default=None, ge=0)
     Lining_System_Name: Optional[str] = None
     Material_Name: Optional[str] = None
@@ -305,12 +307,18 @@ async def create_recipe(body: RecipeCreate,
                         session: AsyncSession = Depends(get_session)):
     code = body.Lining_System_Code.strip()
     mat = body.Material_Code.strip()
+    sap = (body.SAP_Code or "").strip() or None
+    # Identity is (code, material, SAP) — PU component lines share a material
+    # and differ only by variant SAP (1041 / 1041-1 / …).
     dup = (await session.execute(
         select(func.count()).select_from(recipe_t)
         .where(recipe_t.c["Lining_System_Code"] == code,
-               recipe_t.c["Material_Code"] == mat))).scalar_one()
+               recipe_t.c["Material_Code"] == mat,
+               recipe_t.c["SAP_Code"].is_(None) if sap is None
+               else recipe_t.c["SAP_Code"] == sap))).scalar_one()
     if dup:
-        raise HTTPException(409, f"system {code} already has a line for {mat}")
+        raise HTTPException(409, f"system {code} already has a line for {mat}"
+                                 + (f" (SAP {sap})" if sap else ""))
     values = {k: v for k, v in body.model_dump().items() if v is not None}
     values["Lining_System_Code"], values["Material_Code"] = code, mat
     new_id = (await session.execute(
@@ -338,7 +346,8 @@ async def update_recipe(rec_id: int, body: RecipePatch,
         await session.commit()
     except IntegrityError:
         await session.rollback()
-        raise HTTPException(409, "that (system code, material) line already exists")
+        raise HTTPException(409, "that (system code, material, SAP) line "
+                                 "already exists")
     return {"updated": True}
 
 

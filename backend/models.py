@@ -792,6 +792,9 @@ class SmeInventorySeed(Base):
     UOM = Column(Text)
     Initial_Available_Qty = Column(Float, server_default=text('0'))
     Initial_Ordered_Qty = Column(Float, server_default=text('0'))
+    # Comma-joined distinct ERP SAP codes this material maps to (a material
+    # can span variant SAPs, e.g. GI-8005765 → 1041, 1041-1, 1041-2, 1041-3).
+    SAP_Code = Column(Text)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     updated_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
 
@@ -814,8 +817,12 @@ class SmeRecipe(Base):
     Lining_Type = Column(Text)
     Material_Description = Column(Text)
     Package_Size = Column(Text)
+    # Exact ERP inventory item for this line. PU systems list one material
+    # (e.g. GI-8005765) as four Comp-A/B/C/D lines that only the variant SAP
+    # (1041 / 1041-1 / -2 / -3) distinguishes — hence part of the identity.
+    SAP_Code = Column(Text)
     __table_args__ = (
-        UniqueConstraint("Lining_System_Code", "Material_Code"),
+        UniqueConstraint("Lining_System_Code", "Material_Code", "SAP_Code"),
     )
 
 class SmeSqmProgress(Base):
