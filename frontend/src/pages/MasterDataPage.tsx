@@ -144,7 +144,7 @@ function Crud({ entity }: { entity: WriteEntity }) {
         </Space>
       </div>
 
-      <Table
+      <Table sticky={{ offsetHeader: 64 }}
         size="small"
         loading={isFetching}
         columns={columns}

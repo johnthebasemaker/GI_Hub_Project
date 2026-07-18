@@ -103,7 +103,7 @@ export default function InventoryAdminPage() {
           onChange={(v) => { setSite(v); setPage(1) }}
           options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
       </Space>
-      <Table
+      <Table sticky={{ offsetHeader: 64 }}
         size="small"
         loading={isFetching}
         columns={columns}

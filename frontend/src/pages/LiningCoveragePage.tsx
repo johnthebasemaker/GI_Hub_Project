@@ -143,7 +143,7 @@ export default function LiningCoveragePage() {
       </Row>
 
       <Card size="small" title="Coverage per lining system (worst first)" style={{ marginTop: 16 }}>
-        <Table size="small" loading={isFetching} columns={sysColumns}
+        <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={sysColumns}
           dataSource={data?.per_system ?? []} rowKey="System_Code"
           pagination={false} scroll={{ x: 'max-content' }}
           locale={{ emptyText: <Empty description="No SME systems for this site" /> }} />
@@ -156,7 +156,7 @@ export default function LiningCoveragePage() {
             {data.source.live} live · {data.source.seed_only} seed-only · generated {data.generated_at}
           </Typography.Text>
         )}>
-        <Table size="small" loading={isFetching} columns={matColumns}
+        <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={matColumns}
           dataSource={data?.materials ?? []} rowKey="material_code"
           pagination={{ pageSize: 20, showTotal: (t) => `${t} materials` }}
           scroll={{ x: 'max-content' }} />

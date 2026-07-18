@@ -234,7 +234,7 @@ function ImportPrPdf() {
           <Typography.Title level={5}>
             PDF PR {preview.pr_number} — {preview.matched.length} matched line(s)
           </Typography.Title>
-          <Table size="small" dataSource={preview.matched} rowKey={(r) => r.SAP_Code}
+          <Table sticky={{ offsetHeader: 64 }} size="small" dataSource={preview.matched} rowKey={(r) => r.SAP_Code}
             pagination={false}
             columns={[
               { title: 'Material Code', dataIndex: 'Material_Code', width: 130 },
@@ -319,7 +319,7 @@ function PrLinesEditor({ pr, site, editable }: { pr: string; site?: string; edit
   ]
   return (
     <>
-      <Table size="small" columns={cols} dataSource={lines ?? []} rowKey={(r) => String(r.id)} pagination={false} />
+      <Table sticky={{ offsetHeader: 64 }} size="small" columns={cols} dataSource={lines ?? []} rowKey={(r) => String(r.id)} pagination={false} />
       <Modal open={!!editing} title={`Edit PR line #${editing?.id ?? ''}`} onOk={save}
         onCancel={() => setEditing(null)} confirmLoading={edit.isPending} destroyOnHidden>
         <Form form={form} layout="vertical" preserve={false}>
@@ -420,7 +420,7 @@ function PrQueue() {
       <Typography.Paragraph type="secondary" style={{ marginTop: -4 }}>
         Expand a <b>draft</b> PR to edit its lines; use Rename to change a draft PR number before submitting.
       </Typography.Paragraph>
-      <Table
+      <Table sticky={{ offsetHeader: 64 }}
         size="small"
         loading={isFetching}
         columns={columns}

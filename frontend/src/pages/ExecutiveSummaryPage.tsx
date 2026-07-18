@@ -55,7 +55,7 @@ function SectionTable({ rows, columns, empty }: {
 }) {
   if (!rows.length) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={empty} />
   return (
-    <Table
+    <Table sticky={{ offsetHeader: 64 }}
       size="small"
       rowKey="__k"
       dataSource={rows.map((r, i) => ({ ...r, __k: i }))}

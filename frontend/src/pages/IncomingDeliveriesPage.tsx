@@ -16,7 +16,7 @@ function DnItems({ dn }: { dn: string }) {
     { title: 'Qty', dataIndex: 'Qty', key: 'Qty', align: 'right', render: (v) => Number(v) },
     { title: 'Lot', dataIndex: 'Lot_Number', key: 'Lot_Number', render: (v) => v ?? '—' },
   ]
-  return <Table size="small" loading={isFetching} columns={columns} dataSource={items ?? []} rowKey={(r) => String(r.id)} pagination={false} />
+  return <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={items ?? []} rowKey={(r) => String(r.id)} pagination={false} />
 }
 
 export default function IncomingDeliveriesPage() {
@@ -59,7 +59,7 @@ export default function IncomingDeliveriesPage() {
         In-transit Delivery Notes headed to your site. Receiving stages each line as a
         pending receipt for HOD approval (which commits it to the ledger).
       </Typography.Paragraph>
-      <Table
+      <Table sticky={{ offsetHeader: 64 }}
         size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
         rowKey={(r) => String(r.DN_Number)}
         expandable={{ expandedRowRender: (r) => <DnItems dn={String(r.DN_Number)} /> }}

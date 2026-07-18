@@ -131,7 +131,7 @@ export default function Dashboard() {
       <Row gutter={[16, 16]} style={{ marginTop: 16 }} className="gi-cascade">
         <Col xs={24} lg={10}>
           <Card title="Inventory by category" size="small">
-            <Table<CatRow>
+            <Table<CatRow> sticky={{ offsetHeader: 64 }}
               size="small"
               columns={catColumns}
               dataSource={summary?.by_category ?? []}

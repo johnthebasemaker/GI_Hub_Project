@@ -47,9 +47,12 @@ function ExportButton({ exportKey, siteId }: { exportKey: string; siteId?: strin
   )
 }
 
-function SmeTable({ rows, loading }: { rows?: ApiRow[]; loading?: boolean }) {
+// stickyTop: inside SmePage the pinned title+tabs band replaces the 64px app
+// header, so table headers freeze right below the band (measured live).
+function SmeTable({ rows, loading, stickyTop }:
+  { rows?: ApiRow[]; loading?: boolean; stickyTop?: number }) {
   return (
-    <Table
+    <Table sticky={{ offsetHeader: stickyTop ?? 64 }}
       size="small"
       loading={loading}
       columns={buildColumns(rows ?? [])}
@@ -128,6 +131,9 @@ function SmePageBody({ siteId, setSiteId, sites }: {
     return () => ro.disconnect()
   }, [])
 
+  // table headers freeze right under the pinned band (title + ~46px tabs nav)
+  const smeOffset = headH + 46
+
   return (
     <div>
       {/* colorBgLayout is 'transparent' in both themes (body gradient shows
@@ -194,15 +200,15 @@ function SmePageBody({ siteId, setSiteId, sites }: {
               </div>
             ),
           },
-          { key: 'equip', label: 'Equipment', children: <SmeTable rows={equipment.data} loading={equipment.isFetching} /> },
-          { key: 'recipes', label: 'Recipes / BOM', children: <SmeTable rows={recipes.data} loading={recipes.isFetching} /> },
-          { key: 'sqm', label: 'SQM Progress', children: <SmeTable rows={sqm.data} loading={sqm.isFetching} /> },
+          { key: 'equip', label: 'Equipment', children: <SmeTable rows={equipment.data} loading={equipment.isFetching} stickyTop={smeOffset} /> },
+          { key: 'recipes', label: 'Recipes / BOM', children: <SmeTable rows={recipes.data} loading={recipes.isFetching} stickyTop={smeOffset} /> },
+          { key: 'sqm', label: 'SQM Progress', children: <SmeTable rows={sqm.data} loading={sqm.isFetching} stickyTop={smeOffset} /> },
           {
             key: 'materials', label: 'Materials',
             children: (
               <div>
                 <ExportButton exportKey="materials" siteId={siteId} />
-                <SmeTable rows={materials.data} loading={materials.isFetching} />
+                <SmeTable rows={materials.data} loading={materials.isFetching} stickyTop={smeOffset} />
               </div>
             ),
           },
@@ -211,13 +217,13 @@ function SmePageBody({ siteId, setSiteId, sites }: {
             children: (
               <div>
                 <ExportButton exportKey="consumption-comparison" siteId={siteId} />
-                <SmeTable rows={comparison.data} loading={comparison.isFetching} />
+                <SmeTable rows={comparison.data} loading={comparison.isFetching} stickyTop={smeOffset} />
               </div>
             ),
           },
           { key: 'demand', label: 'Demand Matrix', children: <DemandMatrix siteId={siteId} /> },
           { key: 'calculator', label: '🧮 Smart Calculator',
-            children: <SmartCalculator siteId={siteId} /> },
+            children: <SmartCalculator siteId={siteId} stickyTop={smeOffset} /> },
           ...(canEditMasters ? [{
             key: 'master', label: '🗄️ Master Data',
             children: <MasterData siteId={siteId} />,

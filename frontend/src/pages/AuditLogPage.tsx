@@ -64,7 +64,7 @@ export default function AuditLogPage() {
         <Button onClick={resetFilters}>Clear</Button>
         <Button icon={<ReloadOutlined />} onClick={() => refetch()}>Refresh</Button>
       </Space>
-      <Table
+      <Table sticky={{ offsetHeader: 64 }}
         size="small"
         loading={isFetching}
         columns={columns}

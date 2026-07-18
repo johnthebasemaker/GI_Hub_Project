@@ -100,7 +100,7 @@ function EmployeesTab({ site }: TabProps) {
       <Typography.Paragraph type="secondary">
         {items.length} workers ({supply} Supply) — kept separate from the system users table.
       </Typography.Paragraph>
-      <Table size="small" loading={isFetching} columns={columns} dataSource={items}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={items}
         rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
         pagination={{ pageSize: 15, showTotal: (t) => `${t} workers` }} />
     </div>
@@ -182,7 +182,7 @@ function AssignCard({ site }: TabProps) {
           📍 Location auto-fills from SME equipment: <strong>{meta.tag_locations[tag]}</strong>
         </Typography.Paragraph>
       )}
-      <Table size="small" loading={isFetching} columns={columns} dataSource={items}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={items}
         rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
         rowSelection={{ selectedRowKeys: selected, onChange: setSelected }}
         pagination={{ pageSize: 10, showTotal: (t) => `${t} unassigned rows` }} />
@@ -369,7 +369,7 @@ function TimesheetTab({ site }: TabProps) {
             📍 Location (from SME equipment): <strong>{location}</strong>
           </Typography.Paragraph>
         )}
-        <Table size="small" loading={roster.isFetching} columns={gridColumns}
+        <Table sticky={{ offsetHeader: 64 }} size="small" loading={roster.isFetching} columns={gridColumns}
           dataSource={roster.data?.items ?? []} rowKey={(r) => String(r.Employee_Code)}
           pagination={{ pageSize: 12, showTotal: (t) => `${t} active workers` }} />
         <Space style={{ marginTop: 12 }} wrap>
@@ -396,7 +396,7 @@ function TimesheetTab({ site }: TabProps) {
       </Card>
 
       <Typography.Title level={5}>Rows booked on {workDate} ({existing.data?.items?.length ?? 0})</Typography.Title>
-      <Table size="small" loading={existing.isFetching} columns={existingColumns}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={existing.isFetching} columns={existingColumns}
         dataSource={existing.data?.items ?? []} rowKey={(r) => String(r.id)}
         scroll={{ x: 'max-content' }} pagination={{ pageSize: 10 }} />
     </div>
@@ -477,7 +477,7 @@ function EstimatorTab({ site }: TabProps) {
           <Button type="primary" htmlType="submit" loading={upsert.isPending}>💾 Save</Button>
         </Form>
       </Card>
-      <Table size="small" loading={isFetching} columns={columns} dataSource={data?.items ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={data?.items ?? []}
         rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
         pagination={{ pageSize: 15, showTotal: (t) => `${t} estimates` }} />
       <div style={{ marginTop: 16 }}>
@@ -584,7 +584,7 @@ function AutoDraftCard({ site }: TabProps) {
       </Space>
       {hint && <Typography.Paragraph type="warning">{hint}</Typography.Paragraph>}
       {drafts.length > 0 && (
-        <Table size="small" columns={columns} dataSource={drafts} rowKey={key}
+        <Table sticky={{ offsetHeader: 64 }} size="small" columns={columns} dataSource={drafts} rowKey={key}
           rowSelection={{ selectedRowKeys: selected, onChange: setSelected }}
           scroll={{ x: 'max-content' }}
           pagination={{ pageSize: 10, showTotal: (t) => `${t} draftable scopes` }} />
@@ -635,7 +635,7 @@ function ForecastCard({ site }: TabProps) {
           </Tag>
         )}
       </Space>
-      <Table size="small" loading={isFetching} columns={columns} dataSource={data?.items ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={data?.items ?? []}
         rowKey={(r) => `${r.Equipment_Tag}·${r.System_Code}`} scroll={{ x: 'max-content' }}
         pagination={{ pageSize: 10, showTotal: (t) => `${t} scopes` }} />
     </Card>
@@ -699,7 +699,7 @@ function VarianceTab({ site }: TabProps) {
           styles={(k?.over_consuming ?? 0) > 0 ? { content: { color: '#dc3545' } } : undefined} /></Card></Col>
         <Col span={8}><Card size="small"><Statistic title="Total actual MH" value={k?.total_actual ?? 0} precision={1} /></Card></Col>
       </Row>
-      <Table size="small" loading={isFetching} columns={columns} dataSource={items}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={items}
         rowKey={(r) => `${r.Equipment_Tag}·${r.System_Code}`} scroll={{ x: 'max-content' }}
         onRow={(r) => {
           const v = r.Variance_Pct == null ? null : Number(r.Variance_Pct)
@@ -788,7 +788,7 @@ function ScorecardTab({ site }: TabProps) {
           PDF
         </Button>
       </Space>
-      <Table size="small" loading={isFetching} columns={columns} dataSource={items}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={items}
         rowKey={(r) => `${r.Equipment_Tag}·${r.System_Code}`} scroll={{ x: 'max-content' }}
         onRow={(r) => (r.Reconciliation === 'drift'
           ? { style: { background: 'rgba(220,53,69,0.12)' } } : {})}
@@ -840,7 +840,7 @@ function EmployeeWiseTab({ site }: TabProps) {
       <Typography.Paragraph type="secondary">
         {data?.items?.length ?? 0} rows · {data?.total_hours ?? 0} man-hours in this window
       </Typography.Paragraph>
-      <Table size="small" loading={isFetching} columns={columns} dataSource={data?.items ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={data?.items ?? []}
         rowKey={(r) => `${r.Employee_Code}-${r.Work_Date}-${r.Equipment_Tag}-${r.System_Code}`}
         scroll={{ x: 'max-content' }} pagination={{ pageSize: 20, showTotal: (t) => `${t} rows` }} />
     </div>

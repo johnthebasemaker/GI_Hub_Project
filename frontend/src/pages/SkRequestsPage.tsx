@@ -18,7 +18,7 @@ function Items({ id }: { id: number }) {
     { title: 'Stock@req', dataIndex: 'Stock_At_Request', key: 's', align: 'right', render: (v) => Number(v ?? 0) },
     { title: 'Available', dataIndex: 'Available_Flag', key: 'a', render: (v) => (v ? <Tag color="green">yes</Tag> : <Tag color="red">short</Tag>) },
   ]
-  return <Table size="small" columns={columns} dataSource={items ?? []} rowKey={(r) => String(r.id)} pagination={false} />
+  return <Table sticky={{ offsetHeader: 64 }} size="small" columns={columns} dataSource={items ?? []} rowKey={(r) => String(r.id)} pagination={false} />
 }
 
 // Approve modal: the SK can trim (or zero-out = withdraw) each line before it
@@ -71,7 +71,7 @@ function ApproveModal({ id, onClose }: { id: number | null; onClose: () => void 
     <Modal title="Approve request — adjust quantities if needed" open={id != null}
       onOk={ok} onCancel={onClose} confirmLoading={decide.isPending}
       okText="Approve & stage" width={640} destroyOnHidden>
-      <Table size="small" columns={columns} dataSource={items ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" columns={columns} dataSource={items ?? []}
         rowKey={(r) => String(r.id)} pagination={false} />
     </Modal>
   )
@@ -123,7 +123,7 @@ export default function SkRequestsPage() {
         Review a supervisor's material request — adjust or withdraw lines if stock
         demands it — then approve to stage the issues for HOD approval.
       </Typography.Paragraph>
-      <Table
+      <Table sticky={{ offsetHeader: 64 }}
         size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
         rowKey={(r) => String(r.id)}
         expandable={{ expandedRowRender: (r) => <Items id={Number(r.id)} /> }}

@@ -208,7 +208,7 @@ function CrudTab({ kind, fields, idKey, siteId, needsSite, siteMissing,
         disabled={blocked} style={{ marginBottom: 12 }}>
         Add
       </Button>
-      <Table
+      <Table sticky={{ offsetHeader: 64 }}
         size="small"
         loading={list.isFetching}
         columns={columns}
@@ -286,7 +286,7 @@ function ProgressTab({ siteId, siteMissing }: { siteId?: string; siteMissing: bo
         disabled={siteMissing} style={{ marginBottom: 12 }}>
         Add / update entry
       </Button>
-      <Table
+      <Table sticky={{ offsetHeader: 64 }}
         size="small" loading={list.isFetching} columns={columns}
         dataSource={rows.map((r, i) => ({ ...r, __rk: i }))} rowKey="__rk"
         scroll={{ x: 'max-content' }}

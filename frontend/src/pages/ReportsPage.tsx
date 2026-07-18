@@ -167,7 +167,7 @@ function ArchiveTab() {
     },
   ]
 
-  return <Table size="small" loading={isFetching} columns={columns} dataSource={items ?? []}
+  return <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={items ?? []}
     rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
     pagination={{ pageSize: 20, showTotal: (t) => `${t} archived` }} />
 }
@@ -234,7 +234,7 @@ function SchedulesTab() {
       <Button type="primary" style={{ marginBottom: 12 }} onClick={() => setOpen(true)}>
         New schedule
       </Button>
-      <Table size="small" loading={isFetching} columns={columns} dataSource={items ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={items ?? []}
         rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }} pagination={false} />
       <Modal title="Schedule a report" open={open} onOk={submit} onCancel={() => setOpen(false)}
         confirmLoading={create.isPending} okText="Create" destroyOnHidden>

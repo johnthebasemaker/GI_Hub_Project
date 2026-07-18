@@ -79,7 +79,7 @@ function IncomingPRs() {
           options={(sites ?? []).map((s) => ({ value: s, label: s }))}
         />
       </Space>
-      <Table
+      <Table sticky={{ offsetHeader: 64 }}
         size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
         rowKey={(r) => `${r.PR_Number}-${r.Site_ID}`}
         pagination={{ pageSize: 20, showTotal: (t) => `${t} in queue` }}
@@ -193,7 +193,7 @@ function ImportPoPdf() {
           <Typography.Title level={5} style={{ marginTop: 16 }}>
             Extracted items ({preview.items.length}) — reconcile against the PR
           </Typography.Title>
-          <Table size="small" dataSource={preview.items} rowKey={(r) => String(r.line_no)}
+          <Table sticky={{ offsetHeader: 64 }} size="small" dataSource={preview.items} rowKey={(r) => String(r.line_no)}
             pagination={false} scroll={{ x: 'max-content' }}
             columns={[
               { title: '#', dataIndex: 'line_no', width: 50 },
@@ -209,7 +209,7 @@ function ImportPoPdf() {
           {preview.shipment_schedule.length > 0 && (
             <>
               <Typography.Title level={5} style={{ marginTop: 16 }}>Delivery schedule</Typography.Title>
-              <Table size="small" dataSource={preview.shipment_schedule}
+              <Table sticky={{ offsetHeader: 64 }} size="small" dataSource={preview.shipment_schedule}
                 rowKey={(r) => r.shipment_no} pagination={false}
                 columns={[
                   { title: 'Shipment', dataIndex: 'shipment_no' },
@@ -304,7 +304,7 @@ function PoItems({ po }: { po: string }) {
     },
   ]
   return (
-    <Table size="small" loading={isFetching} columns={columns} dataSource={items ?? []}
+    <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={items ?? []}
       rowKey={(r) => String(r.id)} pagination={false} />
   )
 }
@@ -341,7 +341,7 @@ function ForceClosures() {
     },
   ]
   return (
-    <Table size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
+    <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
       rowKey={(r) => String(r.id)} pagination={{ pageSize: 20, showTotal: (t) => `${t} closures` }} />
   )
 }
@@ -457,7 +457,7 @@ function PurchaseOrders() {
   return (
     <div>
       <PoKpiHero rows={rows ?? []} active={kpi} onPick={setKpi} />
-      <Table
+      <Table sticky={{ offsetHeader: 64 }}
         size="small" loading={isFetching} columns={columns} dataSource={visibleRows}
         rowKey={(r) => String(r.PO_Number)}
         expandable={{ expandedRowRender: (r) => <PoItems po={String(r.PO_Number)} /> }}
@@ -535,7 +535,7 @@ function Reschedules() {
 
   return (
     <>
-      <Table size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
         rowKey={(r) => String(r.id)} pagination={{ pageSize: 20, showTotal: (t) => `${t} requests` }} />
       <Modal open={rejectId != null} title="Reject reschedule request" onOk={doReject}
         onCancel={() => { setRejectId(null); setNotes('') }} okText="Reject"
@@ -771,7 +771,7 @@ function VendorReturns() {
           <Button type="primary" loading={raise.isPending} onClick={onRaise}>Raise return</Button>
         </Form>
       </Card>
-      <Table size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
         rowKey={(r) => String(r.id)} pagination={{ pageSize: 20, showTotal: (t) => `${t} returns` }} />
     </div>
   )

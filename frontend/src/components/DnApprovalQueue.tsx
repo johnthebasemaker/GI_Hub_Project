@@ -23,7 +23,7 @@ function DnLines({ scope, dn }: { scope: 'logistics' | 'hod'; dn: string }) {
     { title: 'Qty', dataIndex: 'Qty', align: 'right', render: (v) => Number(v) },
     { title: 'Lot', dataIndex: 'Lot_Number', render: (v) => v ?? '—' },
   ]
-  return <Table size="small" loading={isFetching} columns={cols} dataSource={data ?? []}
+  return <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={cols} dataSource={data ?? []}
     rowKey={(r) => String(r.id)} pagination={false} />
 }
 
@@ -78,7 +78,7 @@ export default function DnApprovalQueue({ scope }: { scope: 'logistics' | 'hod' 
           ? 'Vet the delivery date / logistics details. Approving forwards the DN to the HOD.'
           : 'Vet the DN content. Approving lets the warehouse ship it.'}
       </Typography.Paragraph>
-      <Table size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
         rowKey={(r) => String(r.DN_Number)}
         expandable={{ expandedRowRender: (r) => <DnLines scope={scope} dn={String(r.DN_Number)} /> }}
         pagination={{ pageSize: 20, showTotal: (t) => `${t} awaiting` }} />

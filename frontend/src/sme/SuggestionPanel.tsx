@@ -70,7 +70,7 @@ export default function SuggestionPanel({ model, order, onPause }: {
         key: 'all',
         label: `All ${result.suggestions.length} simulated scenarios`,
         children: (
-          <Table size="small" rowKey="Pause_Tag" columns={columns}
+          <Table sticky={{ offsetHeader: 64 }} size="small" rowKey="Pause_Tag" columns={columns}
             dataSource={result.suggestions} pagination={{ pageSize: 8 }}
             scroll={{ x: 'max-content' }} />
         ),

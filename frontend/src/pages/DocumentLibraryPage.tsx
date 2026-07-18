@@ -126,7 +126,7 @@ export default function DocumentLibraryPage() {
           { key: 'consumption', label: 'Consumption / Issues' },
           { key: 'return', label: 'Returns' },
         ]} />
-        <Table<EntryDocRow> size="small" rowKey="id" loading={isFetching}
+        <Table<EntryDocRow> sticky={{ offsetHeader: 64 }} size="small" rowKey="id" loading={isFetching}
           columns={columns} dataSource={items ?? []}
           pagination={{ pageSize: 20, showTotal: (t) => `${t} document(s)` }}
           scroll={{ x: 'max-content' }} />

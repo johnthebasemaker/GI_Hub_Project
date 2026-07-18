@@ -72,7 +72,7 @@ export default function TagDetail({ lines, stat, preview }: {
             </span>
             <FulfilPill pct={cs.fulfillPct} />
           </div>
-          <Table size="small" rowKey={(r) => `${r.Lining_System_Code}|${r.Material_Code}`}
+          <Table sticky={{ offsetHeader: 64 }} size="small" rowKey={(r) => `${r.Lining_System_Code}|${r.Material_Code}`}
             columns={matColumns} pagination={false} scroll={{ x: 'max-content' }}
             dataSource={lines.filter((l) => l.Lining_System_Code === cs.code)} />
         </div>

@@ -411,7 +411,7 @@ export default function IssuePage() {
         <EntryDocsUpload docType="consumption" siteId={watchSite}
           value={docs} onChange={setDocs} required={docsRequired !== false}
           ocrKind="ocr_consumption" onOcrResult={onOcrResult} />
-        <Table<StagedRow> size="small" rowKey="_uid" columns={columns} dataSource={staged}
+        <Table<StagedRow> sticky={{ offsetHeader: 64 }} size="small" rowKey="_uid" columns={columns} dataSource={staged}
           pagination={false}
           locale={{ emptyText: 'No lines yet — add materials above, then submit them all at once.' }} />
       </Card>

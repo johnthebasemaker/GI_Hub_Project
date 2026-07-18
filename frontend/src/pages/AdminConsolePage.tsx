@@ -48,7 +48,7 @@ function SitesTab() {
         <Button type="primary" loading={add.isPending} disabled={!name.trim()}
           onClick={() => add.mutate()}>Add site</Button>
       </Space>
-      <Table size="small" loading={isFetching} dataSource={items ?? []} rowKey={(r) => String(r.id)}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} dataSource={items ?? []} rowKey={(r) => String(r.id)}
         pagination={false}
         columns={[
           { title: 'ID', dataIndex: 'id', width: 70 },
@@ -136,7 +136,7 @@ function SessionsTab() {
     onError: (e) => message.error(errMsg(e)),
   })
   return (
-    <Table size="small" loading={isFetching} dataSource={items ?? []} rowKey={(r) => String(r.id)}
+    <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} dataSource={items ?? []} rowKey={(r) => String(r.id)}
       pagination={{ pageSize: 20, showTotal: (t) => `${t} active sessions` }}
       columns={[
         { title: 'ID', dataIndex: 'id', width: 70 },
@@ -168,7 +168,7 @@ function KpiBlock({ title, rows }: { title: string; rows?: ApiRow[] }) {
     : []
   return (
     <Card size="small" title={title} style={{ height: '100%' }}>
-      <Table size="small" dataSource={(rows ?? []).map((r, i) => ({ ...r, __k: i }))} columns={cols}
+      <Table sticky={{ offsetHeader: 64 }} size="small" dataSource={(rows ?? []).map((r, i) => ({ ...r, __k: i }))} columns={cols}
         pagination={false} rowKey="__k" />
     </Card>
   )
@@ -221,7 +221,7 @@ function WhatsAppTab() {
             value: s, label: `${s}${data?.counts?.[s] != null ? ` (${data.counts[s]})` : ''}`,
           }))} />
       </Space>
-      <Table size="small" loading={isFetching} columns={cols} dataSource={data?.items ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={cols} dataSource={data?.items ?? []}
         rowKey={(r) => String(r.id)} pagination={{ pageSize: 20, showTotal: (t) => `${t} messages` }} />
     </>
   )
@@ -272,7 +272,7 @@ function EmailTab() {
             value: s, label: `${s}${data?.counts?.[s] != null ? ` (${data.counts[s]})` : ''}`,
           }))} />
       </Space>
-      <Table size="small" loading={isFetching} columns={cols} dataSource={data?.items ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={cols} dataSource={data?.items ?? []}
         rowKey={(r) => String(r.id)}
         expandable={{ expandedRowRender: (r) => (
           <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{String(r.body ?? '')}</Typography.Paragraph>
@@ -335,7 +335,7 @@ function LotsTab() {
         <Select allowClear placeholder="All statuses" style={{ width: 180 }} value={status} onChange={setStatus}
           options={['open', 'quarantined', 'disposed'].map((s) => ({ value: s, label: s }))} />
       </Space>
-      <Table size="small" loading={isFetching} columns={cols} dataSource={data ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={cols} dataSource={data ?? []}
         rowKey={(r) => String(r.id)} pagination={{ pageSize: 20, showTotal: (t) => `${t} lots` }} />
     </>
   )
@@ -355,7 +355,7 @@ function OverviewTab() {
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col xs={24} md={12}>
           <Card size="small" title="Transactions by type">
-            <Table<ApiRow> size="small" pagination={false} rowKey="k"
+            <Table<ApiRow> sticky={{ offsetHeader: 64 }} size="small" pagination={false} rowKey="k"
               dataSource={txns ? [
                 { k: 'Receipts', n: txns.receipts }, { k: 'Consumption', n: txns.consumption },
                 { k: 'Returns', n: txns.returns }, { k: 'Adjustments', n: txns.adjustments },
@@ -369,7 +369,7 @@ function OverviewTab() {
         </Col>
         <Col xs={24} md={12}>
           <Card size="small" title="Valuation by site (SAR)">
-            <Table<ApiRow> size="small" pagination={false} rowKey={(r) => String(r.Site_ID)}
+            <Table<ApiRow> sticky={{ offsetHeader: 64 }} size="small" pagination={false} rowKey={(r) => String(r.Site_ID)}
               dataSource={data?.valuation_by_site ?? []}
               columns={[
                 { title: 'Site', dataIndex: 'Site_ID' },
@@ -418,7 +418,7 @@ function FeedbackTab() {
   })
   return (
     <div>
-      <Table size="small" loading={isFetching} dataSource={items ?? []} rowKey={(r) => String(r.id)}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} dataSource={items ?? []} rowKey={(r) => String(r.id)}
         scroll={{ x: 'max-content' }} pagination={{ pageSize: 20 }}
         columns={[
           { title: 'ID', dataIndex: 'id', width: 60 },

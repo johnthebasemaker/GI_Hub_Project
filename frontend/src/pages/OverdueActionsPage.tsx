@@ -109,7 +109,7 @@ export default function OverdueActionsPage() {
         <Alert type="success" showIcon title="No overdue actions"
           description="Every pending submission is inside the 24-hour SLA. 🎉" />
       ) : (
-        <Table
+        <Table sticky={{ offsetHeader: 64 }}
           size="small"
           loading={isFetching}
           columns={columns}

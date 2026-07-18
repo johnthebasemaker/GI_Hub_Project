@@ -46,7 +46,12 @@ def _cutoff(days: int) -> str:
 
 
 async def rep_stock(session, *, site_id=None, **_):
-    sql = f'SELECT * FROM ({SQL_SITE_STOCK}) s'
+    # Report scoping (2026-07-18): a CURRENT-STOCK report carries identity +
+    # levels only — the ledger totals (received/consumed/returned) belong to
+    # the Receipts/Consumption reports, not here.
+    sql = (f'SELECT s."SAP_Code", s."Equipment_Description", s."Material_Code", '
+           f's."UOM", s."Site_ID", s."Current_Stock", s."Minimum_Qty" '
+           f'FROM ({SQL_SITE_STOCK}) s')
     params: dict = {}
     if site_id:
         sql += ' WHERE s."Site_ID" = :site'
@@ -68,33 +73,41 @@ async def rep_expiring(session, *, within_days=30, site_id=None, **_):
 
 
 async def rep_consumption(session, *, site_id=None, days=30, **_):
-    where = '"Date" >= :cutoff'
+    where = 'c."Date" >= :cutoff'
     params = {"cutoff": _cutoff(days)}
     if site_id:
-        where += ' AND COALESCE("Site_ID", \'HQ\') = :site'
+        where += ' AND COALESCE(c."Site_ID", \'HQ\') = :site'
         params["site"] = site_id
     sql = f'''
-        SELECT TRIM("SAP_Code") AS "SAP_Code", COALESCE("Site_ID",'HQ') AS "Site_ID",
-               ROUND(CAST(SUM("Quantity") AS NUMERIC), 3) AS "Total_Consumed",
-               COUNT(*) AS "Transactions", MAX("Date") AS "Last_Issue"
-        FROM consumption WHERE {where}
-        GROUP BY TRIM("SAP_Code"), COALESCE("Site_ID",'HQ')
+        SELECT TRIM(c."SAP_Code") AS "SAP_Code",
+               MAX(i."Equipment_Description") AS "Material",
+               MAX(i."UOM") AS "UOM", COALESCE(c."Site_ID",'HQ') AS "Site_ID",
+               ROUND(CAST(SUM(c."Quantity") AS NUMERIC), 3) AS "Total_Consumed",
+               COUNT(*) AS "Transactions", MAX(c."Date") AS "Last_Issue"
+        FROM consumption c
+        LEFT JOIN inventory i ON TRIM(i."SAP_Code") = TRIM(c."SAP_Code")
+        WHERE {where}
+        GROUP BY TRIM(c."SAP_Code"), COALESCE(c."Site_ID",'HQ')
         ORDER BY "Total_Consumed" DESC'''
     cols, rows = await _run(session, sql, params)
     return f"Consumption (last {days} days)", cols, rows
 
 
 async def rep_receipts(session, *, site_id=None, days=30, **_):
-    where = '"Date" >= :cutoff'
+    where = 'r."Date" >= :cutoff'
     params = {"cutoff": _cutoff(days)}
     if site_id:
-        where += ' AND COALESCE("Site_ID", \'HQ\') = :site'
+        where += ' AND COALESCE(r."Site_ID", \'HQ\') = :site'
         params["site"] = site_id
     sql = f'''
-        SELECT "Date", TRIM("SAP_Code") AS "SAP_Code", "Quantity", "Supplier",
-               COALESCE("Site_ID",'HQ') AS "Site_ID", "PR_Number", "Lot_Number", "Expiry_Date"
-        FROM receipts WHERE {where}
-        ORDER BY "Date" DESC, "SAP_Code" LIMIT 5000'''
+        SELECT r."Date", TRIM(r."SAP_Code") AS "SAP_Code",
+               i."Equipment_Description" AS "Material", r."Quantity", r."Supplier",
+               COALESCE(r."Site_ID",'HQ') AS "Site_ID", r."PR_Number",
+               r."Lot_Number", r."Expiry_Date"
+        FROM receipts r
+        LEFT JOIN inventory i ON TRIM(i."SAP_Code") = TRIM(r."SAP_Code")
+        WHERE {where}
+        ORDER BY r."Date" DESC, r."SAP_Code" LIMIT 5000'''
     cols, rows = await _run(session, sql, params)
     return f"Goods Receipts (last {days} days)", cols, rows
 
@@ -160,17 +173,20 @@ async def rep_inventory(session, *, site_id=None, **_):
 async def rep_daily_consumption(session, *, site_id=None, date_from=None, date_to=None, **_):
     f = date_from or _dt.date.today().isoformat()
     t = date_to or f
-    where = '"Date" >= :f AND "Date" <= :t'
+    where = 'c."Date" >= :f AND c."Date" <= :t'
     params: dict = {"f": f, "t": t}
     if site_id:
-        where += ' AND COALESCE("Site_ID", \'HQ\') = :site'
+        where += ' AND COALESCE(c."Site_ID", \'HQ\') = :site'
         params["site"] = site_id
     sql = f'''
-        SELECT "Date", TRIM("SAP_Code") AS "SAP_Code", "Quantity", "Work_Type",
-               "Issued_By", "Issued_To", "Tank_No", COALESCE("Site_ID",'HQ') AS "Site_ID",
-               "Lot_Number", "Remarks"
-        FROM consumption WHERE {where}
-        ORDER BY "Date", "SAP_Code" LIMIT 5000'''
+        SELECT c."Date", TRIM(c."SAP_Code") AS "SAP_Code",
+               i."Equipment_Description" AS "Material", c."Quantity", c."Work_Type",
+               c."Issued_By", c."Issued_To", c."Tank_No",
+               COALESCE(c."Site_ID",'HQ') AS "Site_ID", c."Lot_Number", c."Remarks"
+        FROM consumption c
+        LEFT JOIN inventory i ON TRIM(i."SAP_Code") = TRIM(c."SAP_Code")
+        WHERE {where}
+        ORDER BY c."Date", c."SAP_Code" LIMIT 5000'''
     cols, rows = await _run(session, sql, params)
     return f"Daily Consumption ({f} → {t})", cols, rows
 
@@ -218,18 +234,21 @@ async def rep_monthly_summary(session, *, site_id=None, month=None, **_):
 
 
 async def rep_wbs(session, *, site_id=None, days=90, **_):
-    where = '"Date" >= :cutoff'
+    where = 'c."Date" >= :cutoff'
     params: dict = {"cutoff": _cutoff(days)}
     if site_id:
-        where += ' AND COALESCE("Site_ID", \'HQ\') = :site'
+        where += ' AND COALESCE(c."Site_ID", \'HQ\') = :site'
         params["site"] = site_id
     sql = f'''
-        SELECT COALESCE(NULLIF(TRIM("WBS"), ''), '(no WBS)') AS "WBS",
-               TRIM("SAP_Code") AS "SAP_Code",
-               ROUND(CAST(SUM("Quantity") AS NUMERIC),3) AS "Consumed",
-               COUNT(*) AS "Transactions", MAX("Date") AS "Last_Issue"
-        FROM consumption WHERE {where}
-        GROUP BY COALESCE(NULLIF(TRIM("WBS"), ''), '(no WBS)'), TRIM("SAP_Code")
+        SELECT COALESCE(NULLIF(TRIM(c."WBS"), ''), '(no WBS)') AS "WBS",
+               TRIM(c."SAP_Code") AS "SAP_Code",
+               MAX(i."Equipment_Description") AS "Material",
+               ROUND(CAST(SUM(c."Quantity") AS NUMERIC),3) AS "Consumed",
+               COUNT(*) AS "Transactions", MAX(c."Date") AS "Last_Issue"
+        FROM consumption c
+        LEFT JOIN inventory i ON TRIM(i."SAP_Code") = TRIM(c."SAP_Code")
+        WHERE {where}
+        GROUP BY COALESCE(NULLIF(TRIM(c."WBS"), ''), '(no WBS)'), TRIM(c."SAP_Code")
         ORDER BY "WBS", "Consumed" DESC'''
     cols, rows = await _run(session, sql, params)
     return f"WBS Report (last {days} days)", cols, rows
@@ -261,17 +280,20 @@ async def rep_low_stock(session, *, site_id=None, **_):
 
 async def rep_burn_rate(session, *, site_id=None, days=30, **_):
     days = max(1, min(int(days or 30), 365))
-    where = '"Date" >= :cutoff'
+    where = 'c."Date" >= :cutoff'
     params: dict = {"cutoff": _cutoff(days), "days": days}
     if site_id:
-        where += ' AND COALESCE("Site_ID", \'HQ\') = :site'
+        where += ' AND COALESCE(c."Site_ID", \'HQ\') = :site'
         params["site"] = site_id
     sql = f'''
-        SELECT TRIM("SAP_Code") AS "SAP_Code",
-               ROUND(CAST(SUM("Quantity") AS NUMERIC),3) AS "Consumed",
-               ROUND(CAST(SUM("Quantity")/:days AS NUMERIC),3) AS "Daily_Avg"
-        FROM consumption WHERE {where}
-        GROUP BY TRIM("SAP_Code") ORDER BY "Consumed" DESC LIMIT 500'''
+        SELECT TRIM(c."SAP_Code") AS "SAP_Code",
+               MAX(i."Equipment_Description") AS "Material",
+               ROUND(CAST(SUM(c."Quantity") AS NUMERIC),3) AS "Consumed",
+               ROUND(CAST(SUM(c."Quantity")/:days AS NUMERIC),3) AS "Daily_Avg"
+        FROM consumption c
+        LEFT JOIN inventory i ON TRIM(i."SAP_Code") = TRIM(c."SAP_Code")
+        WHERE {where}
+        GROUP BY TRIM(c."SAP_Code") ORDER BY "Consumed" DESC LIMIT 500'''
     cols, rows = await _run(session, sql, params)
     return f"Burn Rate ({days} days)", cols, rows
 

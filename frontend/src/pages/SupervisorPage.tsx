@@ -158,7 +158,7 @@ function SmrItems({ id }: { id: number }) {
     { title: 'Stock@req', dataIndex: 'Stock_At_Request', key: 's', align: 'right', render: (v) => Number(v ?? 0) },
     { title: 'Available', dataIndex: 'Available_Flag', key: 'a', render: (v) => (v ? <Tag color="green">yes</Tag> : <Tag color="red">short</Tag>) },
   ]
-  return <Table size="small" columns={columns} dataSource={items ?? []} rowKey={(r) => String(r.id)} pagination={false} />
+  return <Table sticky={{ offsetHeader: 64 }} size="small" columns={columns} dataSource={items ?? []} rowKey={(r) => String(r.id)} pagination={false} />
 }
 
 const STATUS_COLOR: Record<string, string> = { pending_sk: 'blue', approved: 'green', rejected: 'red', cancelled: 'default' }
@@ -191,7 +191,7 @@ function MyRequests() {
     },
   ]
   return (
-    <Table size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
+    <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
       rowKey={(r) => String(r.id)}
       expandable={{ expandedRowRender: (r) => <SmrItems id={Number(r.id)} /> }}
       pagination={{ pageSize: 20, showTotal: (t) => `${t} requests` }} />
@@ -210,7 +210,7 @@ function IntentVsActual() {
       <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
         Approved request quantities vs actual consumption over the last 90 days, with variance.
       </Typography.Paragraph>
-      <Table size="small" loading={isFetching} columns={columns}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns}
         dataSource={(data?.rows ?? []).map((r: Record<string, unknown>, i: number) => ({ ...r, __k: i }))}
         rowKey="__k" scroll={{ x: 'max-content' }}
         pagination={{ pageSize: 20, showTotal: (t) => `${t} lines` }} />

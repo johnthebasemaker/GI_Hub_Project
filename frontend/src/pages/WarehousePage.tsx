@@ -59,7 +59,7 @@ function ReceiveModal({ assignment, onClose }: { assignment: Row | null; onClose
   return (
     <Modal open={!!assignment} title={`Receive goods — PO ${assignment?.PO_Number ?? ''}`}
       width={760} onCancel={onClose} onOk={submit} confirmLoading={receive.isPending}>
-      <Table size="small" columns={columns} dataSource={items ?? []} rowKey={(r) => String(r.id)} pagination={false} />
+      <Table sticky={{ offsetHeader: 64 }} size="small" columns={columns} dataSource={items ?? []} rowKey={(r) => String(r.id)} pagination={false} />
     </Modal>
   )
 }
@@ -118,7 +118,7 @@ function PrepareDNModal({ assignment, onClose }: { assignment: Row | null; onClo
       <Typography.Paragraph type="secondary">
         Ship received goods to the site. RL and BL families must be on separate DNs.
       </Typography.Paragraph>
-      <Table size="small" columns={columns} dataSource={items ?? []} rowKey={(r) => String(r.id)} pagination={false} />
+      <Table sticky={{ offsetHeader: 64 }} size="small" columns={columns} dataSource={items ?? []} rowKey={(r) => String(r.id)} pagination={false} />
     </Modal>
   )
 }
@@ -204,7 +204,7 @@ function Assignments({ warehouseId }: { warehouseId?: string }) {
 
   return (
     <>
-      <Table size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
         rowKey={(r) => String(r.assignment_id)}
         pagination={{ pageSize: 20, showTotal: (t) => `${t} assignments` }} />
       <ReceiveModal assignment={receiveFor} onClose={() => setReceiveFor(null)} />
@@ -224,7 +224,7 @@ function DnItems({ dn }: { dn: string }) {
     { title: 'Lot', dataIndex: 'Lot_Number', key: 'Lot_Number', render: (v) => v ?? '—' },
     { title: 'Status', dataIndex: 'status', key: 'status' },
   ]
-  return <Table size="small" loading={isFetching} columns={columns} dataSource={items ?? []} rowKey={(r) => String(r.id)} pagination={false} />
+  return <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={items ?? []} rowKey={(r) => String(r.id)} pagination={false} />
 }
 
 function DeliveryNotes({ warehouseId }: { warehouseId?: string }) {
@@ -276,7 +276,7 @@ function DeliveryNotes({ warehouseId }: { warehouseId?: string }) {
   ]
 
   return (
-    <Table size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
+    <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
       rowKey={(r) => String(r.DN_Number)}
       expandable={{ expandedRowRender: (r) => <DnItems dn={String(r.DN_Number)} /> }}
       pagination={{ pageSize: 20, showTotal: (t) => `${t} DNs` }} />
@@ -350,7 +350,7 @@ function ReturnsFromSite() {
       <Button type="primary" style={{ marginBottom: 12 }} onClick={() => setOpen(true)}>
         Record return from site
       </Button>
-      <Table size="small" loading={isFetching} columns={columns} dataSource={items ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={items ?? []}
         rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
         pagination={{ pageSize: 20, showTotal: (t) => `${t} returns` }} />
       <Modal title="Record a return received from a site" open={open} onOk={submit}
@@ -391,7 +391,7 @@ function HistoryTab({ warehouseId }: { warehouseId?: string }) {
         ))}
       </Space>
       <Typography.Title level={5}>Completed delivery notes</Typography.Title>
-      <Table size="small" loading={isFetching} dataSource={data?.dns ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} dataSource={data?.dns ?? []}
         rowKey={(r) => String(r.DN_Number)} scroll={{ x: 'max-content' }}
         columns={[
           { title: 'DN', dataIndex: 'DN_Number' }, { title: 'PO', dataIndex: 'PO_Number' },
@@ -401,7 +401,7 @@ function HistoryTab({ warehouseId }: { warehouseId?: string }) {
         ] as ColumnsType<Row>}
         pagination={{ pageSize: 10 }} />
       <Typography.Title level={5}>Fulfilled assignments</Typography.Title>
-      <Table size="small" loading={isFetching} dataSource={data?.assignments ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} dataSource={data?.assignments ?? []}
         rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
         columns={[
           { title: 'ID', dataIndex: 'id', width: 60 }, { title: 'PO', dataIndex: 'PO_Number' },

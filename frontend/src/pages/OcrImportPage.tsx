@@ -357,7 +357,7 @@ export default function OcrImportPage() {
 
       {rows.length > 0 && (
         <>
-          <Table size="small" columns={columns} dataSource={rows}
+          <Table sticky={{ offsetHeader: 64 }} size="small" columns={columns} dataSource={rows}
             rowKey={(r) => String(r._key)} pagination={false} scroll={{ x: 'max-content' }} />
           <Space style={{ marginTop: 16 }} wrap>
             {isConsumption && (

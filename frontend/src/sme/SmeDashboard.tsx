@@ -301,7 +301,7 @@ export default function SmeDashboard({ siteId }: { siteId?: string }) {
                 label: `${c.label}${c.shortName ? ` – ${c.shortName.slice(0, 14)}` : ''}`,
                 val: c.coveragePct,
               }))} />
-            <Table size="small" style={{ marginTop: 8 }} columns={scTableCols}
+            <Table sticky={{ offsetHeader: 64 }} size="small" style={{ marginTop: 8 }} columns={scTableCols}
               dataSource={codes} rowKey="key" pagination={false} scroll={{ x: 'max-content', y: 260 }} />
           </Card>
         </Col>
@@ -337,7 +337,7 @@ export default function SmeDashboard({ siteId }: { siteId?: string }) {
             })} />
           </Space>
         )}>
-        <Table<BalanceRow> size="small" columns={balanceCols} dataSource={balanceSorted}
+        <Table<BalanceRow> sticky={{ offsetHeader: 64 }} size="small" columns={balanceCols} dataSource={balanceSorted}
           rowKey="Material_Code" pagination={{ pageSize: 20, showTotal: (t) => `${t} materials` }}
           scroll={{ x: 'max-content' }}
           onRow={(r) => ({ style: { background: fcBg(r.Coverage_Pct) } })} />
@@ -349,7 +349,7 @@ export default function SmeDashboard({ siteId }: { siteId?: string }) {
           key: 'stock-only',
           label: `📦 Stock-Only Materials (No Demand in Any System Code) — ${stockOnly.length}`,
           children: (
-            <Table size="small" rowKey="Material_Code" pagination={false}
+            <Table sticky={{ offsetHeader: 64 }} size="small" rowKey="Material_Code" pagination={false}
               scroll={{ x: 'max-content' }}
               columns={[
                 { title: 'Code', dataIndex: 'Material_Code', key: 'c' },

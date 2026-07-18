@@ -75,7 +75,7 @@ export default function FeedbackPage() {
       </Card>
 
       <Typography.Title level={5}>My reports</Typography.Title>
-      <Table size="small" loading={isFetching} columns={columns} dataSource={mine ?? []}
+      <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={mine ?? []}
         rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
         pagination={{ pageSize: 10 }} />
     </div>

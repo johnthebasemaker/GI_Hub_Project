@@ -31,7 +31,8 @@ const fmt = (v: number | null | undefined) =>
 // 🧮 Smart Calculator — "system code + target SQM → segregated material list
 // with explanations" (recipe demand model: For_1_SQM × SQM, live ERP stock
 // through the sme_recipe.SAP_Code join).
-export default function SmartCalculator({ siteId }: { siteId?: string }) {
+export default function SmartCalculator({ siteId, stickyTop }:
+  { siteId?: string; stickyTop?: number }) {
   const { message } = App.useApp()
   const [code, setCode] = useState<string | undefined>()
   const [sqm, setSqm] = useState<number | null>(100)
@@ -132,7 +133,7 @@ export default function SmartCalculator({ siteId }: { siteId?: string }) {
           )}
           <Table<CalcLine> size="small" rowKey={(r) => `${r.sap_code}-${r.component}`}
             columns={columns} dataSource={result.lines} pagination={false}
-            sticky scroll={{ x: 'max-content' }}
+            sticky={{ offsetHeader: stickyTop ?? 64 }} scroll={{ x: 'max-content' }}
             expandable={{
               expandedRowRender: (r) => (
                 <Typography.Text type="secondary">{r.explanation}</Typography.Text>

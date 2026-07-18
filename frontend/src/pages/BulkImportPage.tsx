@@ -164,7 +164,7 @@ export default function BulkImportPage() {
               <Typography.Title level={5} style={{ marginTop: 16 }}>
                 Rejected rows ({result.rejects.length})
               </Typography.Title>
-              <Table
+              <Table sticky={{ offsetHeader: 64 }}
                 size="small"
                 rowKey={(_, i) => String(i)}
                 dataSource={result.rejects}

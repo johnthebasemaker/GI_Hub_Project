@@ -90,7 +90,7 @@ export default function LowStockPage() {
         </Button>
       </Space>
 
-      <Table
+      <Table sticky={{ offsetHeader: 64 }}
         size="small"
         loading={isFetching}
         columns={columns}

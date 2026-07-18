@@ -230,7 +230,7 @@ function PendingKind({ kind, siteId }: { kind: string; siteId?: string }) {
           🤖 AI consumption analysis is shown under each issue below — review it before approving.
         </Typography.Text>
       )}
-      <Table
+      <Table sticky={{ offsetHeader: 64 }}
         size="small"
         loading={isFetching}
         columns={columns}
@@ -304,7 +304,7 @@ export default function ApprovalsPage() {
           style={{ marginBottom: 12 }}
           title={`Pre-flight: ${deficits.length} material(s) would go NEGATIVE if all pending issues were approved`}
           description={
-            <Table
+            <Table sticky={{ offsetHeader: 64 }}
               size="small"
               pagination={false}
               rowKey={(r) => `${r.SAP_Code}·${r.Site_ID}`}

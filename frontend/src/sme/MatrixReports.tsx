@@ -201,7 +201,7 @@ export function SystemCodeReport({ siteId }: { siteId?: string }) {
   return (
     <div>
       <Card size="small" style={{ marginBottom: 12 }}>
-        <Table size="small" rowKey="code" columns={summaryCols} dataSource={summary}
+        <Table sticky={{ offsetHeader: 64 }} size="small" rowKey="code" columns={summaryCols} dataSource={summary}
           pagination={false} scroll={{ x: 'max-content' }} />
       </Card>
       <Collapse size="small" items={summary.map((s) => ({
@@ -219,7 +219,7 @@ export function SystemCodeReport({ siteId }: { siteId?: string }) {
           </span>
         ),
         children: (
-          <Table size="small" rowKey={(u) => `${u.tag}|${u.code}`} columns={eqCols}
+          <Table sticky={{ offsetHeader: 64 }} size="small" rowKey={(u) => `${u.tag}|${u.code}`} columns={eqCols}
             dataSource={units.filter((u) => u.code === s.code)
               .sort((a, b) => (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0))}
             pagination={false} scroll={{ x: 'max-content' }} />

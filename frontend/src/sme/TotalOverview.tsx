@@ -221,7 +221,7 @@ export default function TotalOverview({ siteId }: { siteId?: string }) {
             <ScopedExport exportKey="production-log" siteId={siteId} />
           </Space>
         )}>
-        <Table<OverviewRow> virtual size="small" rowKey="key" columns={cols}
+        <Table<OverviewRow> sticky={{ offsetHeader: 64 }} virtual size="small" rowKey="key" columns={cols}
           dataSource={filtered} pagination={false}
           scroll={{ x: 1600, y: 520 }}
           onRow={(r) => ({ style: { background: fcBg(r.pct) } })} />
@@ -261,7 +261,7 @@ export default function TotalOverview({ siteId }: { siteId?: string }) {
             </Space>
           ),
           children: (
-            <Table size="small" rowKey="mat" pagination={false} scroll={{ x: 'max-content' }}
+            <Table sticky={{ offsetHeader: 64 }} size="small" rowKey="mat" pagination={false} scroll={{ x: 'max-content' }}
               columns={[
                 { title: 'Material', dataIndex: 'mat', key: 'm', width: 130 },
                 { title: 'Name', dataIndex: 'name', key: 'n', ellipsis: true },

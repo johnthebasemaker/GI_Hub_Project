@@ -83,7 +83,7 @@ export default function PendingUsersPage() {
         Pending self-service registrations. Approving creates the login account (you can
         override the role and bind a warehouse); the applicant's password is carried over.
       </Typography.Paragraph>
-      <Table
+      <Table sticky={{ offsetHeader: 64 }}
         size="small"
         loading={isFetching}
         columns={columns}

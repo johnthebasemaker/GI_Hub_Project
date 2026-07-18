@@ -111,7 +111,7 @@ export default function ProcurementView({ model, units, materials }: {
                       <Chip label="Coverage SQM" value={nf(cs.canSqm, 1)} />
                       <Chip label="SQM Deficit" value={nf(cs.shortSqm, 1)} />
                     </div>
-                    <Table<BalanceRow> size="small" rowKey="Material_Code"
+                    <Table<BalanceRow> sticky={{ offsetHeader: 64 }} size="small" rowKey="Material_Code"
                       columns={balanceCols} pagination={false}
                       scroll={{ x: 'max-content' }}
                       dataSource={[...bal.rows].sort((a, b) => a.Coverage_Pct - b.Coverage_Pct)}

@@ -87,7 +87,7 @@ export default function AskDataCard() {
       )}
       {res?.ok && !res.metric && (
         res.rows.length ? (
-          <Table size="small" style={{ marginTop: 12 }}
+          <Table sticky={{ offsetHeader: 64 }} size="small" style={{ marginTop: 12 }}
             dataSource={res.rows.map((r, i) => ({ __k: i, ...Object.fromEntries(res.columns.map((c, j) => [c, r[j]])) }))}
             columns={res.columns.map((c) => ({
               title: c.replace(/_/g, ' '), dataIndex: c, key: c, ellipsis: true,

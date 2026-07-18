@@ -6223,6 +6223,22 @@ async def test_sme_sk_upgrades():
               r.status_code == 404 and r2.status_code == 422,
               f"{r.status_code}/{r2.status_code}")
 
+        # ── report column scoping (2026-07-18 polish) ───────────────────────
+        r = await ac.get("/reports/stock", headers=H(hod_t),
+                         params={"format": "csv"})
+        head = r.text.splitlines()[0] if r.status_code == 200 and r.text else ""
+        check("an: Current Stock report is stock-scoped (no ledger totals)",
+              r.status_code == 200 and "Current_Stock" in head
+              and "Total_Received" not in head and "Total_Consumed" not in head,
+              f"{r.status_code} head={head[:120]}")
+        r = await ac.get("/reports/consumption", headers=H(hod_t),
+                         params={"format": "csv", "site_id": "CNCEC"})
+        head = r.text.splitlines()[0] if r.status_code == 200 and r.text else ""
+        check("an: Consumption report carries the Material description",
+              r.status_code == 200 and "Material" in head
+              and "Total_Consumed" in head,
+              f"{r.status_code} head={head[:120]}")
+
         async with SessionLocal() as s:  # cleanup
             await s.execute(_sqt("DELETE FROM receipts WHERE \"SAP_Code\" LIKE 'SVCN-%'"))
             await s.execute(_sqt("DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SVCN-%'"))

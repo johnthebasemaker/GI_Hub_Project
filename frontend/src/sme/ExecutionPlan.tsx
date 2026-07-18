@@ -145,7 +145,7 @@ function ExecMain({ model, siteId }: { model: SmeModel; siteId?: string }) {
         {critLines.length === 0 ? (
           <Alert type="success" showIcon title="No shortages — fully covered ✅" />
         ) : (
-          <Table size="small" rowKey={(r) => `${r.Lining_System_Code}|${r.Material_Code}`}
+          <Table sticky={{ offsetHeader: 64 }} size="small" rowKey={(r) => `${r.Lining_System_Code}|${r.Material_Code}`}
             columns={shortageCols} dataSource={critLines} pagination={false}
             scroll={{ x: 'max-content' }} />
         )}
@@ -168,7 +168,7 @@ function ExecMain({ model, siteId }: { model: SmeModel; siteId?: string }) {
             {ls.length === 0 ? (
               <Alert type="success" showIcon title="No shortages — fully covered ✅" />
             ) : (
-              <Table size="small" rowKey={(r) => `${r.Lining_System_Code}|${r.Material_Code}`}
+              <Table sticky={{ offsetHeader: 64 }} size="small" rowKey={(r) => `${r.Lining_System_Code}|${r.Material_Code}`}
                 columns={shortageCols} dataSource={ls} pagination={false}
                 scroll={{ x: 'max-content' }} />
             )}
@@ -292,7 +292,7 @@ function ProgressList({ model, snap, siteId }: { model: SmeModel; snap: SmeSnaps
             production detail sheets), server-rendered */}
         <ScopedExport exportKey="progress-list" siteId={siteId} />
       </Space>
-      <Table size="small" rowKey="key" columns={cols} dataSource={filtered}
+      <Table sticky={{ offsetHeader: 64 }} size="small" rowKey="key" columns={cols} dataSource={filtered}
         pagination={{ pageSize: 15, showTotal: (t) => `${t} scopes` }}
         scroll={{ x: 'max-content' }} />
 
@@ -310,7 +310,7 @@ function ProgressList({ model, snap, siteId }: { model: SmeModel; snap: SmeSnaps
                   <div style={{ ...mono, fontSize: '0.75rem', fontWeight: 700, marginBottom: 4 }}>
                     {date} — {nf(d.sqm, 2)} SQM done
                   </div>
-                  <Table size="small" rowKey="Material_Code" pagination={false}
+                  <Table sticky={{ offsetHeader: 64 }} size="small" rowKey="Material_Code" pagination={false}
                     scroll={{ x: 'max-content' }}
                     columns={[
                       { title: 'Material', dataIndex: 'Material_Code', key: 'm' },
@@ -476,7 +476,7 @@ function ConsumptionComparison({ model, siteId }: { model: SmeModel; siteId?: st
             Tag: r.Tag, Material: r.Material, Variance: r.Variance,
           }))} /></Col>
       </Row>
-      <Table size="small" rowKey="key" columns={cols} dataSource={filtered}
+      <Table sticky={{ offsetHeader: 64 }} size="small" rowKey="key" columns={cols} dataSource={filtered}
         pagination={{ pageSize: 15, showTotal: (t) => `${t} rows` }}
         scroll={{ x: 'max-content' }}
         onRow={(r) => ({ style: { background: varBg(r.Variance_Pct) } })} />

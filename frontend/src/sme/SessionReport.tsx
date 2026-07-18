@@ -179,7 +179,7 @@ export default function SessionReport({ siteId }: { siteId?: string }) {
             </BarChart>
           </ResponsiveContainer>
         )}
-        <Table<WeightedProcurementRow> size="small" rowKey="Material_Code" columns={combinedCols}
+        <Table<WeightedProcurementRow> sticky={{ offsetHeader: 64 }} size="small" rowKey="Material_Code" columns={combinedCols}
           dataSource={combined} pagination={{ pageSize: 15, showTotal: (t) => `${t} materials` }}
           scroll={{ x: 'max-content' }} style={{ marginTop: 8 }} />
         <div style={{
