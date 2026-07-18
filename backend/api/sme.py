@@ -985,3 +985,84 @@ async def sme_export_rows(body: RowsExportBody,
     return StreamingResponse(io.BytesIO(data), media_type=media,
                              headers={"Content-Disposition":
                                       f'attachment; filename="{stem}.{fmt}"'})
+
+
+# ─── Smart Calculator (2026-07-18) ───────────────────────────────────────────
+# "System Code + target SQM → segregated material list with explanations."
+# Pure recipe math (demand = For_1_SQM × SQM — the CNCEC prediction project's
+# model) enriched with live ERP stock through the SAP join, so the answer is
+# both the requirement AND whether the store can cover it.
+
+@router.get("/calculator", summary="Smart Calculator — materials for a target SQM")
+async def smart_calculator(code: str, sqm: float,
+                           user: dict = Depends(require_level(2)),
+                           session: AsyncSession = Depends(get_session)):
+    if sqm <= 0 or sqm != sqm or sqm > 1_000_000:
+        raise HTTPException(422, "sqm must be a positive number")
+    code = code.strip()
+    r = sme_recipe_t.c
+    recipes = (await session.execute(
+        select(r["SAP_Code"], r["Material_Code"], r["Material_Name"],
+               r["Material_Description"], r["UOM"], r["For_1_SQM"],
+               r["Package_Size"], r["Lining_System_Name"], r["Lining_System"],
+               r["Substrate"], r["Lining_Thickness"])
+        .where(func.trim(r["Lining_System_Code"]) == code)
+        .order_by(r["id"]))).mappings().all()
+    if not recipes:
+        raise HTTPException(404, f"no recipe lines for system code {code!r}")
+
+    saps = sorted({str(x["SAP_Code"]).strip() for x in recipes if x["SAP_Code"]})
+    stock: dict[str, float] = {}
+    if saps:
+        stock = {row.sap: float(row.stock or 0) for row in (await session.execute(
+            text('''SELECT TRIM(i."SAP_Code") AS sap,
+                 COALESCE((SELECT SUM(x."Quantity") FROM receipts x
+                           WHERE TRIM(x."SAP_Code")=TRIM(i."SAP_Code")),0)
+               - COALESCE((SELECT SUM(x."Quantity") FROM consumption x
+                           WHERE TRIM(x."SAP_Code")=TRIM(i."SAP_Code")),0)
+               - COALESCE((SELECT SUM(x."Quantity") FROM returns x
+                           WHERE TRIM(x."SAP_Code")=TRIM(i."SAP_Code")),0) AS stock
+                 FROM inventory i WHERE TRIM(i."SAP_Code") = ANY(:saps)'''),
+            {"saps": saps})).all()}
+
+    lines, shortfall_lines = [], 0
+    for x in recipes:
+        per = float(x["For_1_SQM"] or 0)
+        required = sme_engine.round_n(per * sqm, 4)
+        sap = str(x["SAP_Code"] or "").strip() or None
+        uom = (x["UOM"] or "").strip()
+        try:
+            pkg = float(str(x["Package_Size"]).strip())
+        except (TypeError, ValueError):
+            pkg = None
+        packages = (int(-(-required // pkg)) if pkg and pkg > 0 and required > 0
+                    else None)
+        available = stock.get(sap) if sap else None
+        short = (sme_engine.round_n(max(required - available, 0.0), 4)
+                 if available is not None else None)
+        if short:
+            shortfall_lines += 1
+        expl = f"{per:g} {uom or 'unit'}/SQM × {sqm:g} SQM = {required:g} {uom}".strip()
+        if packages:
+            expl += f" → {packages} × {pkg:g} {uom} pack(s)"
+        if available is not None:
+            expl += (f" · in stock: {available:g}"
+                     + (f" (short {short:g})" if short else " ✓"))
+        lines.append({
+            "sap_code": sap, "material_code": x["Material_Code"],
+            "component": (x["Material_Description"] or "").strip(),
+            "material_name": (x["Material_Name"] or "").strip(),
+            "uom": uom, "for_1_sqm": per, "required_qty": required,
+            "package_size": pkg, "packages_needed": packages,
+            "available_stock": available, "shortfall_qty": short,
+            "explanation": expl})
+    first = recipes[0]
+    return {"code": code,
+            "short_name": (first["Lining_System_Name"] or "").strip(),
+            "lining_system": (first["Lining_System"] or "").strip(),
+            "substrate": (first["Substrate"] or "").strip(),
+            "thickness": (first["Lining_Thickness"] or "").strip(),
+            "target_sqm": sqm,
+            "lines": lines,
+            "totals": {"line_count": len(lines),
+                       "shortfall_lines": shortfall_lines}}

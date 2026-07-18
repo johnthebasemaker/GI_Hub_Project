@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react'
 import {
-  App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Popconfirm, Row,
+  Alert, App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Popconfirm, Row,
   Select, Space, Table, Tag, Typography,
 } from 'antd'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../api/client'
 import type { ColumnsType } from 'antd/es/table'
 import { BarcodeOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
@@ -71,12 +73,44 @@ export default function IssuePage() {
   // Category narrows the material picker (search stays available inside it).
   const { data: categories } = useCategories()
   const [category, setCategory] = useState<string | undefined>(undefined)
+
+  // ── Surface-Shields workflow (2026-07-18) ────────────────────────────────
+  // Lining materials are issued PER SYSTEM: the SK picks a System Code first,
+  // which filters the picker to that recipe's SAPs (sme_recipe.SAP_Code) and
+  // shows the site's Done vs Pending SQM for the system.
+  const SURFACE_SHIELDS = 'Surface Shields'
+  const [liningCode, setLiningCode] = useState<string | undefined>()
+  const lining = useQuery({
+    queryKey: ['/entry/lining-systems', watchSite],
+    queryFn: async () => (await api.get('/entry/lining-systems',
+      { params: watchSite ? { site_id: watchSite } : {} })).data as {
+        systems: { code: string; short_name: string; substrate: string
+          lining_system: string; saps: string[]
+          sqm: { equipment_count: number; original_sqm: number
+            done_sqm: number; pending_sqm: number } }[]
+        sap_index: Record<string, string[]>
+      },
+  })
+  const liningSystem = useMemo(
+    () => lining.data?.systems.find((s) => s.code === liningCode),
+    [lining.data, liningCode])
+  const isShieldContext = category === SURFACE_SHIELDS
+  const shieldSapOf = useMemo(() => {
+    const set = new Set<string>()
+    for (const r of (inventory.data?.items ?? []) as ApiRow[]) {
+      if (String(r.Category ?? '').trim() === SURFACE_SHIELDS) set.add(String(r.SAP_Code))
+    }
+    return set
+  }, [inventory.data])
+
   const itemOptions = useMemo(() => (inventory.data?.items ?? [])
     .filter((r: ApiRow) => !category || String(r.Category ?? '').trim() === category)
+    .filter((r: ApiRow) => !(isShieldContext && liningSystem)
+      || liningSystem.saps.includes(String(r.SAP_Code)))
     .map((r: ApiRow) => ({
       value: String(r.SAP_Code),
       label: `${r.SAP_Code} — ${r.Equipment_Description ?? ''}`,
-    })), [inventory.data, category])
+    })), [inventory.data, category, isShieldContext, liningSystem])
   const labelFor = (sap: string) => itemOptions.find((o) => o.value === sap)?.label ?? sap
 
   // Barcode/QR pick: decoded text → SAP code → select it in the form.
@@ -122,8 +156,19 @@ export default function IssuePage() {
   // Add the current form to the batch (or update the line being edited).
   const addToBatch = async () => {
     const v = await form.validateFields()
+    // Surface-Shields gate: a lining material can only be issued against a
+    // selected System Code (the code travels in Remarks for the HOD).
+    if (shieldSapOf.has(String(v.SAP_Code)) && !liningCode) {
+      setCategory(SURFACE_SHIELDS)
+      message.error('This is a Surface Shields material — select its Lining '
+        + 'System Code first (the picker filters to that recipe).')
+      return
+    }
     // Smart defaults: remember the routine fields for the next session.
     saveDefaults('issue', { Site_ID: v.Site_ID, Work_Type: v.Work_Type ?? '', Issued_By: v.Issued_By ?? '' })
+    const lsNote = liningCode && shieldSapOf.has(String(v.SAP_Code))
+      ? `LS ${liningCode}${liningSystem ? ` (${liningSystem.short_name})` : ''}`
+      : null
     const payload: StagedRow = {
       _uid: editingUid ?? `r${++_seq}`,
       _label: labelFor(v.SAP_Code),
@@ -138,7 +183,7 @@ export default function IssuePage() {
       Tank_No: v.Tank_No || null,
       Serial_No: v.Serial_No || null,
       Lot_Number: v.Lot_Number || null,
-      Remarks: v.Remarks || null,
+      Remarks: [v.Remarks, lsNote].filter(Boolean).join(' · ') || null,
       wbs: v.wbs || null,
       // Parity B1 — a manual lot pick is a FEFO override; the reason travels
       // to the HOD (allow-and-log ruling: never blocks).
@@ -247,6 +292,44 @@ export default function IssuePage() {
               </Form.Item>
             </Col>
           </Row>
+
+          {(isShieldContext || (watchSap && shieldSapOf.has(String(watchSap)))) && (
+            <div style={{ marginBottom: 12 }}>
+              <Space wrap align="center">
+                <Typography.Text strong>Lining System:</Typography.Text>
+                <Select showSearch allowClear style={{ minWidth: 320 }}
+                  placeholder="Select the system code FIRST"
+                  loading={lining.isFetching} value={liningCode}
+                  onChange={(v) => { setLiningCode(v); form.resetFields(['SAP_Code']) }}
+                  optionFilterProp="label"
+                  options={(lining.data?.systems ?? [])
+                    .filter((s) => s.saps.length > 0)
+                    .map((s) => ({
+                      value: s.code,
+                      label: `${s.code} — ${s.short_name} (${s.substrate || '?'})`,
+                    }))} />
+                {liningSystem && (
+                  <>
+                    <Tag color="green">
+                      Done {liningSystem.sqm.done_sqm} SQM
+                    </Tag>
+                    <Tag color={liningSystem.sqm.pending_sqm > 0 ? 'orange' : 'default'}>
+                      Pending {liningSystem.sqm.pending_sqm} SQM
+                    </Tag>
+                    <Typography.Text type="secondary">
+                      of {liningSystem.sqm.original_sqm} SQM ·{' '}
+                      {liningSystem.sqm.equipment_count} unit(s)
+                    </Typography.Text>
+                  </>
+                )}
+              </Space>
+              {!liningCode && (
+                <Alert type="info" showIcon style={{ marginTop: 8 }}
+                  title="Surface Shields materials are issued per lining system —
+                    pick the System Code to filter the materials to its recipe." />
+              )}
+            </div>
+          )}
 
           {/* Current stock + 30-day trend for the picked material (advisory). */}
           <ItemSnapshot sap={watchSap} site={watchSite} />

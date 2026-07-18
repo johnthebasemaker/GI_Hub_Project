@@ -15,6 +15,7 @@ import MasterData from '../sme/MasterData'
 import { ScenarioProvider } from '../sme/ScenarioContext'
 import SessionBuilder from '../sme/SessionBuilder'
 import SessionReport from '../sme/SessionReport'
+import SmartCalculator from '../sme/SmartCalculator'
 import SmeDashboard from '../sme/SmeDashboard'
 import { useAuth } from '../auth/AuthContext'
 
@@ -215,6 +216,8 @@ function SmePageBody({ siteId, setSiteId, sites }: {
             ),
           },
           { key: 'demand', label: 'Demand Matrix', children: <DemandMatrix siteId={siteId} /> },
+          { key: 'calculator', label: '🧮 Smart Calculator',
+            children: <SmartCalculator siteId={siteId} /> },
           ...(canEditMasters ? [{
             key: 'master', label: '🗄️ Master Data',
             children: <MasterData siteId={siteId} />,

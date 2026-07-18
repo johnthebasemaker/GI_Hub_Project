@@ -830,3 +830,85 @@ async def mark_returned(rid: int,
         except Exception:  # noqa: BLE001 — notifications are best-effort
             await session.rollback()
     return {"returned": True, "id": rid}
+
+
+# ─── Surface-Shields issue workflow (2026-07-18) ─────────────────────────────
+# The SK must pick a lining SYSTEM before issuing a Surface Shields item: the
+# system's recipe (joined by sme_recipe.SAP_Code — alembic b3f2a9c47d18)
+# filters the material picker, and Done vs Pending SQM for the site is shown
+# alongside. Read-only helper; enforcement lives in the Issue form and the
+# recipes are the CNCEC RL/BL prediction project's demand model
+# (demand = For_1_SQM × SQM, joined on Lining_System_Code).
+
+@router.get("/lining-systems",
+            summary="Lining systems: recipe SAPs + site SQM progress")
+async def lining_systems(site_id: Optional[str] = None,
+                         user: dict = Depends(get_current_user),
+                         session: AsyncSession = Depends(get_session)):
+    from .sme_engine import syscode_sort_key
+    from .services.ledger import _MD
+    rec_t = _MD.tables["sme_recipe"]
+    rows = (await session.execute(
+        select(rec_t.c["Lining_System_Code"], rec_t.c["Lining_System_Name"],
+               rec_t.c["Substrate"], rec_t.c["Lining_System"],
+               rec_t.c["SAP_Code"], rec_t.c["Material_Code"],
+               rec_t.c["Material_Name"], rec_t.c["Material_Description"],
+               rec_t.c["UOM"], rec_t.c["For_1_SQM"])
+        .order_by(rec_t.c["id"]))).mappings().all()
+
+    site = resolve_site_param(user, site_id)
+    sqm_sql = '''
+        SELECT TRIM(e."Lining_System_Code") AS code,
+               COUNT(*) AS units,
+               SUM(COALESCE(p."Original_SQM", e."Surface_Area_SQM", 0)) AS original,
+               SUM(COALESCE(p."Done_SQM", 0) + COALESCE(p."Done_SQM_staged", 0)) AS done
+        FROM sme_equipment e
+        LEFT JOIN sme_sqm_progress p
+          ON p."Site_ID" = e."Site_ID"
+         AND p."Equipment_Tag_No" = e."Equipment_Tag_No"
+         AND p."Lining_System_Code" = e."Lining_System_Code"
+        {w} GROUP BY 1'''
+    if site is not None:
+        sqm_rows = (await session.execute(
+            text(sqm_sql.format(w='WHERE e."Site_ID" = :site')),
+            {"site": site})).all()
+    else:
+        sqm_rows = (await session.execute(text(sqm_sql.format(w="")))).all()
+    sqm = {r.code: {"equipment_count": int(r.units),
+                    "original_sqm": round(float(r.original or 0), 2),
+                    "done_sqm": round(float(r.done or 0), 2),
+                    "pending_sqm": round(max(float(r.original or 0)
+                                             - float(r.done or 0), 0.0), 2)}
+           for r in sqm_rows}
+
+    systems: dict[str, dict] = {}
+    sap_index: dict[str, list[str]] = {}
+    for r in rows:
+        code = str(r["Lining_System_Code"] or "").strip()
+        if not code:
+            continue
+        s = systems.setdefault(code, {
+            "code": code,
+            "short_name": (r["Lining_System_Name"] or "").strip(),
+            "substrate": (r["Substrate"] or "").strip(),
+            "lining_system": (r["Lining_System"] or "").strip(),
+            "materials": [], "saps": []})
+        sap = str(r["SAP_Code"] or "").strip() or None
+        s["materials"].append({
+            "sap": sap, "material_code": r["Material_Code"],
+            "name": (r["Material_Name"] or "").strip(),
+            "description": (r["Material_Description"] or "").strip(),
+            "uom": (r["UOM"] or "").strip(),
+            "for_1_sqm": float(r["For_1_SQM"] or 0)})
+        if sap:
+            if sap not in s["saps"]:
+                s["saps"].append(sap)
+            codes = sap_index.setdefault(sap, [])
+            if code not in codes:
+                codes.append(code)
+    for code, s in systems.items():
+        s["sqm"] = sqm.get(code, {"equipment_count": 0, "original_sqm": 0.0,
+                                  "done_sqm": 0.0, "pending_sqm": 0.0})
+    ordered = [systems[c] for c in sorted(systems, key=syscode_sort_key)]
+    return {"systems": ordered, "sap_index": sap_index,
+            "site": site if site is not None else "all"}

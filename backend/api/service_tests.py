@@ -6133,6 +6133,107 @@ async def test_ai_phase2_upgrades():
             await s.commit()
 
 
+async def test_sme_sk_upgrades():
+    """Suite AN — SK Surface-Shields workflow helper + SME Smart Calculator."""
+    from sqlalchemy import text as _sqt
+
+    async def _scalar(sql: str, **params):
+        async with SessionLocal() as s:
+            return (await s.execute(_sqt(sql), params)).scalar()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.91"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", json={"username": u, "password": p},
+                              headers=_ip)
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        worker_t = await token("worker", "floor2026")
+        hod_t = await token("hod", "hod2026")
+
+        async with SessionLocal() as s:
+            await s.execute(_sqt(
+                'INSERT INTO inventory ("SAP_Code", "Equipment_Description", '
+                '"Category", "UOM", "Site_ID") VALUES '
+                "('SVCN-1', 'SVCN Primer', 'Surface Shields', 'KG', 'CNCEC'), "
+                "('SVCN-2', 'SVCN Mortar', 'Surface Shields', 'KG', 'CNCEC')"))
+            await s.execute(_sqt(
+                'INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID") '
+                "VALUES ('2026-07-01 00:00:00', 'SVCN-1', 150, 'CNCEC')"))
+            await s.execute(_sqt(
+                'INSERT INTO sme_recipe ("Lining_System_Code", "Material_Code", '
+                '"SAP_Code", "Material_Name", "Material_Description", "UOM", '
+                '"For_1_SQM", "Package_Size", "Lining_System_Name", "Substrate") VALUES '
+                "('9908', 'SVCN-M1', 'SVCN-1', 'SVCN Primer', 'Primer', 'KG', "
+                " 2.5, '25', 'SVCN30', 'Steel'), "
+                "('9908', 'SVCN-M2', 'SVCN-2', 'SVCN Mortar', 'Mortar', 'KG', "
+                " 0.4, NULL, 'SVCN30', 'Steel')"))
+            await s.execute(_sqt(
+                'INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", '
+                '"Lining_System_Code", "Surface_Area_SQM") VALUES '
+                "('CNCEC', 'SVCN-T1', '9908', 60)"))
+            await s.execute(_sqt(
+                'INSERT INTO sme_sqm_progress ("Site_ID", "Equipment_Tag_No", '
+                '"Lining_System_Code", "Original_SQM", "Done_SQM") VALUES '
+                "('CNCEC', 'SVCN-T1', '9908', 60, 24)"))
+            await s.commit()
+
+        r = await ac.get("/entry/lining-systems", headers=H(worker_t))
+        j = r.json() if r.status_code == 200 else {}
+        sys9908 = next((s for s in j.get("systems", []) if s["code"] == "9908"), None)
+        check("an: SK reads lining systems — recipe SAPs + Done/Pending SQM",
+              r.status_code == 200 and sys9908 is not None
+              and sys9908["saps"] == ["SVCN-1", "SVCN-2"]
+              and sys9908["sqm"]["done_sqm"] == 24
+              and sys9908["sqm"]["pending_sqm"] == 36
+              and sys9908["short_name"] == "SVCN30",
+              f"{r.status_code} {sys9908}")
+        check("an: sap_index reverses SAP → system codes",
+              (j.get("sap_index", {}).get("SVCN-1") or []) == ["9908"],
+              f"{j.get('sap_index', {}).get('SVCN-1')}")
+
+        r = await ac.get("/sme/calculator", headers=H(worker_t),
+                         params={"code": "9908", "sqm": 40})
+        check("an: calculator is HOD+ (SK level 0 → 403)",
+              r.status_code == 403, f"got {r.status_code}")
+        r = await ac.get("/sme/calculator", headers=H(hod_t),
+                         params={"code": "9908", "sqm": 40})
+        j = r.json() if r.status_code == 200 else {}
+        lines = j.get("lines", [])
+        l1 = next((x for x in lines if x["sap_code"] == "SVCN-1"), {})
+        l2 = next((x for x in lines if x["sap_code"] == "SVCN-2"), {})
+        check("an: calculator — demand math, pack counts, live stock coverage",
+              r.status_code == 200 and len(lines) == 2
+              and l1.get("required_qty") == 100 and l1.get("packages_needed") == 4
+              and l1.get("available_stock") == 150 and not l1.get("shortfall_qty")
+              and l2.get("required_qty") == 16 and l2.get("shortfall_qty") == 16
+              and j.get("totals", {}).get("shortfall_lines") == 1
+              and "2.5 KG/SQM × 40 SQM = 100 KG" in l1.get("explanation", ""),
+              f"{r.status_code} l1={l1} l2={l2}")
+        r = await ac.get("/sme/calculator", headers=H(hod_t),
+                         params={"code": "nope-999", "sqm": 40})
+        r2 = await ac.get("/sme/calculator", headers=H(hod_t),
+                          params={"code": "9908", "sqm": 0})
+        check("an: calculator guards — unknown code 404, non-positive sqm 422",
+              r.status_code == 404 and r2.status_code == 422,
+              f"{r.status_code}/{r2.status_code}")
+
+        async with SessionLocal() as s:  # cleanup
+            await s.execute(_sqt("DELETE FROM receipts WHERE \"SAP_Code\" LIKE 'SVCN-%'"))
+            await s.execute(_sqt("DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SVCN-%'"))
+            await s.execute(_sqt("DELETE FROM sme_recipe WHERE \"Material_Code\" LIKE 'SVCN-%'"))
+            await s.execute(_sqt(
+                "DELETE FROM sme_sqm_progress WHERE \"Equipment_Tag_No\" LIKE 'SVCN%'"))
+            await s.execute(_sqt(
+                "DELETE FROM sme_equipment WHERE \"Equipment_Tag_No\" LIKE 'SVCN%'"))
+            await s.commit()
+
+
 async def _relax_entry_gates() -> None:
     """Parity A1 — require_entry_documents defaults ON in production. Switch
     it OFF for the functional suites (they submit entries without documents);
@@ -6231,6 +6332,8 @@ async def main() -> int:
     await test_qr_returnables_parity()
     print("\n AM. Handwritten-OCR spec stages + ask-data deep filters")
     await test_ai_phase2_upgrades()
+    print("\n AN. Surface-Shields issue workflow + Smart Calculator")
+    await test_sme_sk_upgrades()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "
