@@ -24,7 +24,7 @@ off (users are being pointed at the React app):
 | `frontend/` | New stack | React + Vite + AntD SPA; SME TS engine twin in `src/sme/engine.ts` |
 | `deploy/` | New stack deploy | `docker-compose.prod.yml`, `Dockerfile.api`/`Dockerfile.web`, nginx, certbot, backup + v2 pipeline scripts — see `docs/DEPLOY.md` |
 | `tests/e2e/` | New stack | Playwright suite (39) — global-setup loads its throwaway DB via `tools/migration/cutover_migrate.py` |
-| `tools/` | Bridge (retiring) | `dual_ci.py` (mirror reload; imports `legacy/database.py` by design), `migrate_sqlite_to_postgres.py` (core copier), `parity_check.py` (SQLite-views ↔ PG-SQL oracle, 5/5), `pg_smoke.py`, `migration/cutover_migrate.py` + `migration/README.md` (**the production cutover runbook**). These retire once the legacy app is switched off |
+| `tools/` | Bridge + ops | `dual_ci.py` (mirror reload; imports `legacy/database.py` by design), `migrate_sqlite_to_postgres.py` (core copier), `parity_check.py` (SQLite-views ↔ PG-SQL oracle — ⚠️ fails vs the LIVE mirror by design since the Excel injection), `pg_smoke.py`, `migration/cutover_migrate.py` + `migration/README.md` (**the production cutover runbook**), **`excel_sync.py`** (header-name-driven workbook sync; `--kinds`, `--sme-reseed`) + **`excel_sync_reconcile.py`** (post-sync ledger reconciliation), **`export_docs_pdf.py`** (manual/SOP → `docs/export/` PDFs). The bridge pieces retire once the legacy app is switched off; the Excel-sync + PDF tools are permanent ops |
 | `data-archive/` | Archive | Root-level artifacts moved at Phase B: seed xlsx files, sample PO pdf, `IMG_2397.JPG`, `gi_database.*.bak`, `PyWhatKit_DB.txt`, `demo_seed.db` |
 | `gi_database.db` | **Shared bridge — root by design** | The legacy SQLite system of record AND the source for `tools/dual_ci.py` / `parity_check.py` / the final production `cutover_migrate.py` load. Deliberately NOT moved (and never staged — it is live, constantly-modified data) |
 | `reports_archive/` | Shared runtime | Deliberately the same directory both stacks' report archives use |
@@ -32,8 +32,9 @@ off (users are being pointed at the React app):
 | `deletion.html` · `privacy_policy_whatsapp.html` · `terms.html` | Shared | Meta/WhatsApp app compliance pages (registered by URL) — do not move |
 | `requirements.txt` | Shared | The one venv both Python stacks use; pulls in `backend/requirements.txt` |
 | `run_api.sh` | New stack | Local backend launcher (`:8000`) |
-| `.github/workflows/postgres-dual-ci.yml` | Shared | One workflow gating BOTH apps: `legacy/bug_check.py` + `tools/dual_ci.py` + `tools/parity_check.py` + `backend.api.service_tests` + frontend build |
-| `docs/` · `handoff.md` | Shared docs | New-stack brain (`ARCHITECTURE.md`) + status/migration log · SME Canon + legacy handoff |
+| `.github/workflows/` | Shared | `postgres-dual-ci.yml` gates BOTH apps: `legacy/bug_check.py` + `tools/dual_ci.py` + `tools/parity_check.py` + **gi_ai_ro role provisioning** + `backend.api.service_tests` (750) + frontend build. `deploy.yml` (v1, **manual-only** — server not provisioned) · `deploy-v2.yml` (manual cutover pipeline, gated) |
+| `CNCEC_Inventory.xlsx` etc. (root `*.xlsx`) | Operator data | The four live tracking workbooks `tools/excel_sync.py` reads — **gitignored, never committed** (archived snapshots live in `data-archive/`) |
+| `docs/` · `handoff.md` | Shared docs | New-stack brain (`ARCHITECTURE.md`) + status/migration log · role-based v2 manual (`docs/USER_MANUAL.md`) + ops PDFs (`docs/export/`) · handwritten-OCR spec (`docs/features/handwritten-ocr/`) · SME Canon + legacy handoff |
 
 ## Rules of engagement (the short version)
 
@@ -46,9 +47,12 @@ off (users are being pointed at the React app):
    — Master Data CRUD lives in `backend/api/sme_master.py` (exact-lock
    {hod, admin}, audited). The rest of the Canon holds: explicit-PK ordering,
    `sme_inventory_seed` never mingles with ERP `inventory`.
-4. Keep local PG == SQLite while legacy still runs (reset with
-   `tools/dual_ci.py`); verify with `tools/parity_check.py` (5/5). Re-run
-   `backend/scripts/create_ai_readonly_role.sql` after every reload.
+4. **PostgreSQL is AHEAD of the frozen SQLite** (Excel injection). After any
+   `dual_ci`/cutover reload: re-run `backend/scripts/create_ai_readonly_role.sql`
+   AND the Excel sync chain (`tools/excel_sync.py --commit` →
+   `excel_sync_reconcile.py --commit` → SME `--sme-reseed` — exact recipe in
+   ARCHITECTURE §1). `tools/parity_check.py` is only meaningful on CI or a
+   freshly-reloaded mirror.
 5. Two deployment surfaces until the legacy switch-off — legacy =
    `legacy/docker-compose.yml`, new stack = `deploy/`. Don't mix them.
 6. **SME engine parity contract:** `frontend/src/sme/engine.ts` and

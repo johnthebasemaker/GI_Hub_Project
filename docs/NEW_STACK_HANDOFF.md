@@ -33,7 +33,9 @@ original ten slices**; since 2026-07-05 four more full programs landed on `main`
   Location/matrix reports, Execution Plan (3 sub-views), virtualized Total
   Overview. **S6 (Master Data CRUD) deferred to cutover by locked ruling.**
 
-Gates (current): **service_tests 418/0 · bug_check 599/0 · parity_check 5/5 ·
+Gates (2026-07-18 FINAL): **service_tests 750/0 (suites A…AO) · Playwright
+39/39 · bug_check 599/0 · build+tsc ✅ · alembic head c7d4e8f19a25** —
+(historical line below kept as written): ~~service_tests 418/0 · bug_check 599/0 · parity_check 5/5 ·~~
 parity:sme 509 · frontend build ✅ · alembic clean.** (352 at freeze → +66 across
 freeze-lift suites H/I/J/K/L/M.) The deploy kit (`deploy/` + [`docs/DEPLOY.md`](DEPLOY.md))
 still has **NOT been run against any server** — the v2 pipeline is built and
@@ -103,7 +105,7 @@ DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
   .venv/bin/python backend/api/parity_check.py --source gi_database.db  # 5 derived views PASS
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
   JWT_SECRET=ci-only-service-test-secret-key-32bytes-min \
-  .venv/bin/python -m backend.api.service_tests                 # 418/0 (suites A–M: services + auth/role + JWT + registration + site scoping + refresh + SLA + AI intel + bulk entry + reschedule + force-close + manual PO)
+  .venv/bin/python -m backend.api.service_tests                 # 750/0 (suites A…AO — see ARCHITECTURE.md §8)
 npm run build --prefix frontend                                 # tsc + vite green
 ```
 

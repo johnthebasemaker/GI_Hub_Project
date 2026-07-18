@@ -7,6 +7,9 @@
 > highest-value tests and must always pass.
 >
 > **Last full sweep:** 2026-07-12 night shift (visual, isolated `gihub_e2e` DB).
+> **Automated gates (2026-07-18 final):** service_tests **750/0** (suites
+> A…AO) · Playwright **39/39** · legacy bug_check 599/0 · build+tsc ·
+> alembic single head `c7d4e8f19a25`. §14 lists the 2026-07-18 feature rows.
 
 ---
 
@@ -221,6 +224,20 @@ Also verify: scoped HOD asking `?site_id=<other>` → 403; single foreign row �
 - Every destructive action has a confirm; every failure shows a toast with a human message (never raw JSON/500).
 - Empty states everywhere (fresh site with no data).
 - Downloads: correct filename + extension + non-zero size (xlsx `PK`, pdf `%PDF-`).
+
+## 14. 2026-07-18 pre-deploy batch (covered by suites AJ…AO)
+
+| Area | Check | Automated by |
+|---|---|---|
+| Bulk Excel Import (`/bulk-import`, HOD/admin) | dry-run shows summary/warnings/rejects; Commit disabled until a dry-run; SME kinds hidden below admin where applicable; reordered/extra workbook columns still map (warning names ignored columns) | AJ |
+| SME SAP identity | recipe lines with the same Material_Code but different variant SAPs stay separate; repeated (code, mat, SAP) coat lines sum; materials seed records the variant-SAP list | AJ |
+| Ask-data deep filters | "surface shield category items" → bound-ILIKE filter + message label; material family ("furan…") resolves via the SME SAP join; scoped users stay in the template lane | AM |
+| Handwritten OCR | ⚡ Read → Validate (handwritten spec) → flags ([?]/⚠️/🚨), substitutions shown, blocked rows excluded; TSV export = 17 columns; struck-through counted not shown | AM |
+| Surface-Shields issue flow | SK picking a shield item without a Lining System is refused; system select filters the picker to recipe SAPs; Done/Pending SQM tags render; `LS <code>` lands in Remarks | AN |
+| Smart Calculator (SME tab, level ≥2) | code+SQM → per-component required qty, pack counts, live stock ✓/short tags, explanation rows; SK → 403; bad code 404 / sqm ≤0 422 | AN |
+| Report scoping | Current Stock report has NO ledger totals; Consumption/Daily/Receipts/WBS/Burn-Rate carry the Material description | AN |
+| Sticky headers + smart decimals | long tables keep their header pinned under the app header (SME under its band); whole quantities render `5` not `5.00` | visual §13 |
+| Bug Tracking Engine | submit w/ title+severity; admin triage (severity/rollback/safety/analysis) persists + notifies; 📋 Prompt copies a self-contained prompt (report+gates+rollback); `.md` digest downloads; prompt endpoint admin-only | AO |
 
 ---
 

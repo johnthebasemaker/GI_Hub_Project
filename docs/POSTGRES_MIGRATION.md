@@ -163,6 +163,16 @@ even then the pre-cutover `.db` is a full snapshot.
 
 ## 7. Progress Ledger (single source of truth)
 
+> ✅ **PROGRAM COMPLETE (2026-07-18).** This ledger tracked the original
+> legacy-portability phases and is **closed as historical record**: the
+> strategy pivoted (2026-07-04, FRONTEND_GO approved) from porting the
+> Streamlit monolith to building the FastAPI+React stack on PostgreSQL —
+> which is now FEATURE-COMPLETE (see §8 Run Log for every slice;
+> `PROJECT_STATUS.md` for the final state). The legacy app stays frozen on
+> SQLite under `legacy/` until switch-off; the remaining `PRAGMA`/rowid
+> counts below are legacy-only and intentionally not being converted.
+> Only the Hetzner deployment remains (`tools/migration/README.md`).
+
 > ### 🤖 Coordination protocol — READ BEFORE ANY MIGRATION WORK
 > **Two workers touch this migration:** the *interactive Claude Code session* (a
 > human + Claude in this repo) and the *scheduled routine* (`GI-Hub autonomous`,
@@ -231,6 +241,12 @@ even then the pre-cutover `.db` is a full snapshot.
 ---
 
 ## 8. Run Log
+
+### 2026-07-18 (BRAIN RESET · docs finalization) · actor=interactive · branch=`main` · 🧠 Full documentation refresh + ops PDF handoff
+- **Context reset prep:** the operator ran the deferred SME reseed (verified: 41 recipes, codes 1–10, all SAP-mapped, 85 equipment, 22 seeds) and confirmed **750/0** — the system is FEATURE-COMPLETE; chat history is being cleared before the Hetzner deployment.
+- **Brain docs finalized:** `PROJECT_STATUS.md` rewritten as the final-state doc (gates table, compressed history, deployment checklist, operator TODOs, gotchas incl. the (code, material, SAP) recipe identity); `ARCHITECTURE.md` §§1/2/5/7/8/9 updated (sync mechanics + `--sme-reseed`/`--kinds`, new modules incl. `bulk_import`/`handwritten`/calculator/Bug-Tracking, UI polish, AI layer 4 = the handwritten pipeline, gates 750/A…AO, CI fixes); `automatic_test.md` +§14 (the 2026-07-18 feature rows ↔ suites AJ…AO); `REPO_MAP.md` (tools split bridge-vs-permanent-ops, workflows row, gitignored root xlsx, PG-ahead rule 4); §7 ledger **closed as historical** (program superseded by the shipped new stack); `tools/migration/README.md` (post-load chain now includes the SME reseed; parity_check explicitly NOT a production smoke gate); `NEW_STACK_HANDOFF.md` + `handoff.md` migration-status pointers finalized (sme_recipe UNIQUE triple noted in the Canon).
+- **Manuals:** `docs/USER_MANUAL.md` → **v2.1** (Surface-Shields system-first issuing §3.2, Smart Calculator §4.5, handwritten-spec validation + TSV §3.5, deep ask-data search §2.3, sticky-headers/smart-decimals + feedback bullets §1.4, Bug-Tracking triage/prompt §8, SAP-aware import rules + header-name matching §9). Root `SOP.md` gained a v2 pointer note (procedures unchanged); root `USER_MANUAL.md` stays byte-frozen (runtime-parsed by `ai/manual_qa.py` + pinned by bug_check — repoint post-deploy).
+- **Ops PDFs:** new permanent `tools/export_docs_pdf.py` (fpdf2 markdown renderer — headings/tables/screenshots/code, latin-1 transliteration, soft-broken long tokens) → **`docs/export/GI-Hub-User-Manual-v2.pdf` (1.6 MB, screenshots embedded) + `docs/export/GI-Hub-SOP.pdf`** — regenerate + recommit whenever the markdown changes.
 
 ### 2026-07-18 (PRE-DEPLOY batch · Phase 5) · actor=interactive · branch=`main` · 🚦 CI failures diagnosed & fixed · 🐛 Bug Tracking Engine
 - **GitHub Actions diagnosis (reproduced locally — gh CLI unauthenticated, so the CI steps were replayed against a throwaway PG):**

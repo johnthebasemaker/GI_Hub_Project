@@ -37,18 +37,27 @@ Exit code `0` only when every blocking check passes.
 5. **Manual follow-ups** (the script reminds you):
    - `psql … -f scripts/create_ai_readonly_role.sql` (re-run after ANY reload —
      the REVOKEs are wiped by a wipe-load),
-   - **⚠️ 2026-07-13 Excel data injection** — the CNCEC workbook data
-     (inventory 306→436 + full ledger backfill + SME master refresh) lives
-     ONLY in PostgreSQL, never in `gi_database.db`. After the load, re-run it
-     against the target (needs the four workbooks from the operator):
+   - **⚠️ Excel data injection (2026-07-13 + 2026-07-18)** — the CNCEC
+     workbook data (inventory 306→442 + full ledger backfill + the
+     SAP-mapped, RENUMBERED SME masters) lives ONLY in PostgreSQL, never in
+     `gi_database.db`. After the load, re-run the FULL chain against the
+     target (needs the operator's four workbooks; the tools default to
+     reading them from the repo root):
 
      ```bash
      DATABASE_URL=… .venv/bin/python tools/excel_sync.py \
-         --dir <dir-with-the-4-xlsx> --site CNCEC --commit
-     DATABASE_URL=… .venv/bin/python tools/excel_sync_reconcile.py \
-         --workbook <dir>/CNCEC_Inventory.xlsx --commit
+         --site CNCEC --commit                       # inventory + ledger (+ SME upserts)
+     DATABASE_URL=… .venv/bin/python tools/excel_sync_reconcile.py --commit
+     DATABASE_URL=… .venv/bin/python tools/excel_sync.py \
+         --site CNCEC --kinds sme-equipment,sme-recipes,sme-materials \
+         --sme-reseed --commit                       # SME trio: wholesale replace
      ```
-     and confirm the closing line reads `STOCK VERIFICATION: 423/423`.
+     The reseed is REQUIRED: the fresh load restores the legacy SQLite's
+     OLD system-code numbering — the workbooks carry the renumbered codes
+     (1–10) and the exact recipe SAP joins. It aborts if recorded
+     `Done_SQM` would be lost (override: `--force-drop-progress` after
+     reading the printout). Confirm the closing line reads
+     **`STOCK VERIFICATION: 429/429`** (or the current workbook row count).
    - `VACUUM ANALYZE;`,
    - confirm `deploy/.env` secrets on the server (`JWT_SECRET`, `WHATSAPP_*`,
      `SMTP_*`, `EMAIL_LOGISTICS_TO`).
@@ -56,8 +65,11 @@ Exit code `0` only when every blocking check passes.
    stack, and run the smoke gates against production:
 
    ```bash
-   DATABASE_URL=… JWT_SECRET=… .venv/bin/python -m backend.api.service_tests
-   DATABASE_URL=… JWT_SECRET=… .venv/bin/python -m backend.api.parity_check
+   DATABASE_URL=… JWT_SECRET=… .venv/bin/python -m backend.api.service_tests   # expect 750/0
+   # NOTE: tools/parity_check.py is NOT a production smoke gate — it compares
+   # against the frozen SQLite and fails BY DESIGN once the Excel injection
+   # is applied. The stock-verification line from excel_sync.py is the
+   # production data oracle instead.
    ```
 
 7. **Re-verify any time** without reloading:

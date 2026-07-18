@@ -1,7 +1,7 @@
 # GI Hub — User Manual (React / FastAPI stack)
 
-> **Version 2.0 · 2026-07-13 (cutover day).** This manual covers the NEW web
-> application (React + FastAPI + PostgreSQL) that replaced the Streamlit app.
+> **Version 2.1 · 2026-07-18 (pre-deploy final).** This manual covers the NEW
+> web application (React + FastAPI + PostgreSQL) that replaced the Streamlit app.
 > It is organised by role — read §1–§2 first (everyone), then your role's
 > chapter. The legacy manual for the retired Streamlit app remains at the
 > repository root (`USER_MANUAL.md`) for historical reference.
@@ -76,6 +76,12 @@ online-only.
 - **WhatsApp commands** (send to the company number): `STOCK <SAP>` returns
   the live stock of an item at your site; `RESET PASSWORD` issues a temporary
   credential and signs out all your sessions.
+- **Tables**: column headers stay **frozen at the top** while you scroll long
+  lists, and quantities show clean numbers — `5`, not `5.00` (real fractions
+  keep their decimals).
+- **Feedback** (everyone): file a 🐞 bug or ✨ feature request from the
+  Feedback page — give it a short title and pick how urgent it is. You are
+  notified when an admin responds; track yours in "My reports".
 
 ---
 
@@ -117,7 +123,11 @@ was received on DN 15610?"*. Common questions are answered instantly by
 built-in templates (site-scoped automatically — an HOD only ever sees their
 own site, whatever they type); unscoped roles (Logistics/Admin) additionally
 get AI-generated SQL for free-form questions, run on a read-only database
-login. The executed SQL is always shown for transparency.
+login. The executed SQL is always shown for transparency. The templates
+search DEEP: *"current stock for surface shield category items"* filters to
+exactly that category, and naming a material family (*"furan materials"*,
+*"remafix"*) finds the items through both the ERP descriptions and the SME
+recipe names — the answer line shows which filters were applied.
 
 ### 2.4 The Hub Assistant
 The floating 🤖 button opens a chat assistant that knows the user manual and
@@ -152,6 +162,18 @@ issuing a different lot asks for a short override reason and alerts the HOD
 (allowed, logged, never blocked). Over-issue beyond current stock is also
 allow-and-log. `Issued To`, `Work Type`, `Tank No` feed the reports.
 
+**Surface Shields items (lining materials) work system-first.** When your
+category filter (or picked item) is Surface Shields, a **Lining System**
+selector appears — pick the System Code FIRST:
+1. the material picker narrows to exactly that recipe's SAP codes;
+2. the system's progress shows live — **Done SQM**, **Pending SQM**, total
+   and unit count for your site;
+3. the batch line records the system automatically (`LS <code>` in Remarks)
+   so the HOD sees which lining system consumed the material.
+Trying to add a Surface Shields material *without* a selected system is
+refused with a hint — this is deliberate: lining consumption is only
+meaningful against a system.
+
 ### 3.3 Return / Adjust / Count sheet
 Returns follow §2.1's source-receipt rules. Adjust stages a correction with a
 reason; the Count sheet lets you enter counted quantities and stages the
@@ -173,6 +195,15 @@ variances in one go.
 - **OCR Import**: photograph a full hand-written log → review the recognised
   grid (green = matched automatically, orange = pick from candidates) → stage
   everything to HOD in one click.
+  **Validate (handwritten spec)** runs the full daily-consumption-form
+  rulebook over the grid: known handwriting fixes ("Yloues"→"Gloves"…),
+  ditto-mark (`"`) resolution, quantity rules (`2+3` sums; a blank quantity
+  next to a product means 1), the approved substitution list for
+  out-of-stock items, and a whole-batch stock simulation — rows that would
+  drive stock negative are **blocked** with a 🚨 marker ([?] = check,
+  ⚠️ = heads-up). **TSV export** then downloads the legacy 17-column
+  tab-separated file for the old Excel/VBA sheet (blocked rows are never
+  exported). Struck-through rows on the paper are counted but never staged.
 - **Incoming deliveries**: warehouse shipments to your site appear here —
   **Receive** stages the pending receipt for HOD approval.
 - **SK requests**: supervisors' material requests (SMRs) land here — adjust
@@ -227,6 +258,15 @@ derived from ERP movements), SQM Progress, and the Location/Type dropdowns.
 The estimator and the **Lining Coverage** page (live ledger stock vs
 remaining SQM, with depletion forecasts) recompute immediately after any
 master-data change.
+
+**🧮 Smart Calculator** (HOD/Admin, same SME page): pick a lining system and
+type a target SQM — you get the fully segregated component list from the
+recipes: per-SQM factor, **exact required quantity**, pack counts (from the
+package size), and **live stock coverage** per line (green ✓ or a red
+"short N" tag), each with a plain-language explanation row like
+`2.5 KG/SQM × 40 SQM = 100 KG → 4 × 25 KG pack(s) · in stock: 150 ✓`.
+Use it to sanity-check a job before issuing or raising a PR. Recipes are
+SAP-exact since 2026-07-18 — PU systems list Comp-A/B/C/D lines separately.
 
 ### 4.6 Bulk Excel Import (HOD kinds)
 
@@ -300,7 +340,16 @@ Everything above (via "All areas") plus:
     (blocks non-admin logins), thresholds.
   - *WhatsApp / Email consoles*: outbox status + retry.
   - *Lots*: quarantine ⇄ release → dispose (terminal).
-  - *Sites, Sessions (revoke one/all), Backup (pg_dump), Oversight, Feedback.*
+  - *Sites, Sessions (revoke one/all), Backup (pg_dump), Oversight.*
+  - *Feedback — the Bug Tracking Engine*: every user-filed report arrives
+    with its severity. **Triage** captures the analysis, the **safety
+    constraints** (what must not break) and a **rollback plan** BEFORE any
+    change is attempted; the submitter is notified on every status change.
+    **📋 Prompt** copies a self-contained implementation brief (the report +
+    your triage + the project's mandatory test gates) ready to paste into a
+    maintainer's coding session — the portal itself never changes code, so
+    filing and triaging reports can never destabilise the system. *Export
+    open reports* downloads a Markdown digest for batch analysis.
 - **Bulk Excel Import (admin kinds)**: the full CNCEC inventory workbook —
   the **Inventory master** sheet (upsert on SAP; categories are canonicalised
   so the MTC gate keeps matching) and the **Ledger backfill** (Receipt /
@@ -329,8 +378,12 @@ the commit applies exactly the previewed plan, and every commit is audited.
 | Inventory master (admin) | `Inventory` | `SAP CODE` | Upsert of master fields (description, UOM, category, opening stock, minimum). Aggregate columns (Receipt/…/Current Stock) are ignored — stock is always ledger-derived. "Surface Shield" is canonicalised to "Surface Shields". A Material_Code already owned by another SAP is only reassigned when that owner is re-mapped in the same file; otherwise the row imports without it (warning). |
 | Ledger backfill (admin) | `Receipt Log`, `Consumption Log`, `Return Log` | date + SAP + qty + DN/ref | Append-only reconcile: exact rows are matched (never duplicated); the same day+SAP+DN with a different quantity is treated as a workbook correction and updated; rows for unknown SAPs are rejected; database rows missing from the workbook are reported but never deleted. |
 | SME Equipment (HOD) | `Data Input` | site + tag + code | Area-split rows are summed per (tag, code); tag-less civil areas use their Name as identity; non-numeric lining codes are skipped; re-imports re-baseline Original-SQM but preserve Done-SQM. |
-| SME Recipes (HOD) | first sheet | code + material | Comma-separated material cells become one line per material; repeated (code, material) lines: first wins. |
-| SME Materials (HOD) | first sheet | `Material_Code` | Multiple PO lines per code are aggregated (quantities summed, latest document date wins). |
+| SME Recipes (HOD) | first sheet | code + material + **SAP** | With the `SAP_Code` column (2026-07-18 layout) a line's identity is (code, material, SAP) — PU component lines (Comp-A/B/C/D) sharing one material stay separate, and a repeated identity is a deliberate coat line whose For-1-SQM values **sum**. Legacy files without the SAP column keep the old first-wins rule. Comma-separated material cells still split into one line per material. |
+| SME Materials (HOD) | first sheet | `Material_Code` | Multiple PO lines per code are aggregated (quantities summed, latest document date wins); with the `SAP_Code` column the distinct variant SAPs are recorded per material. |
+
+Columns are matched **by header name** — reordering or adding columns in a
+workbook is safe; anything unrecognised is listed in a dry-run warning
+instead of being silently dropped.
 
 ---
 
