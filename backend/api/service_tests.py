@@ -4664,24 +4664,46 @@ async def test_lining_coverage():
               len(live_rows) >= 1 and d["source"]["live"] >= 1,
               f"live={d.get('source')}")
         if live_rows:
+            # 2026-07-18 pooling rule: the material's SAP pool = its site
+            # inventory SAPs ∪ the variant SAPs sme_recipe records for that
+            # Material_Code, whitespace-normalized ("1043 - 2" ≡ "1043-2").
             probe = live_rows[0]
             async with SessionLocal() as ses:
                 truth = (await ses.execute(_sqt('''
-                    SELECT COALESCE(SUM(x.q), 0) FROM (
-                      SELECT (SELECT COALESCE(SUM(r."Quantity"),0) FROM receipts r
-                              WHERE TRIM(r."SAP_Code") = TRIM(i."SAP_Code")
-                                AND COALESCE(r."Site_ID",'HQ') = :st)
-                           - (SELECT COALESCE(SUM(c."Quantity"),0) FROM consumption c
-                              WHERE TRIM(c."SAP_Code") = TRIM(i."SAP_Code")
-                                AND COALESCE(c."Site_ID",'HQ') = :st)
-                           - (SELECT COALESCE(SUM(rt."Quantity"),0) FROM returns rt
-                              WHERE TRIM(rt."SAP_Code") = TRIM(i."SAP_Code")
-                                AND COALESCE(rt."Site_ID",'HQ') = :st) AS q
+                    WITH inv_map AS (
+                      SELECT REPLACE(TRIM(i."SAP_Code"), ' ', '') AS sap
                       FROM inventory i
                       WHERE TRIM(i."Material_Code") = :mc
-                        AND COALESCE(i."Site_ID",'HQ') = :st) x'''),
+                        AND COALESCE(i."Site_ID",'HQ') = :st
+                    ),
+                    map AS (
+                      SELECT sap FROM inv_map
+                      UNION
+                      SELECT REPLACE(TRIM(r."SAP_Code"), ' ', '')
+                      FROM sme_recipe r
+                      WHERE r."SAP_Code" IS NOT NULL
+                        AND TRIM(r."Material_Code") = :mc
+                        AND EXISTS (SELECT 1 FROM inv_map)
+                    ),
+                    led AS (
+                      SELECT sap, SUM(q) AS stock FROM (
+                        SELECT REPLACE(TRIM("SAP_Code"), ' ', '') AS sap,
+                               COALESCE("Quantity",0) AS q FROM receipts
+                        WHERE COALESCE("Site_ID",'HQ') = :st
+                        UNION ALL
+                        SELECT REPLACE(TRIM("SAP_Code"), ' ', ''),
+                               -COALESCE("Quantity",0) FROM consumption
+                        WHERE COALESCE("Site_ID",'HQ') = :st
+                        UNION ALL
+                        SELECT REPLACE(TRIM("SAP_Code"), ' ', ''),
+                               -COALESCE("Quantity",0) FROM returns
+                        WHERE COALESCE("Site_ID",'HQ') = :st
+                      ) t GROUP BY sap
+                    )
+                    SELECT COALESCE(SUM(l.stock), 0)
+                    FROM map m LEFT JOIN led l ON l.sap = m.sap'''),
                     {"mc": probe["material_code"], "st": hod_site})).scalar_one()
-            check("lining: live_stock equals the ledger truth",
+            check("lining: live_stock equals the variant-pooled ledger truth",
                   abs(float(probe["live_stock"]) - float(truth)) < 1e-6,
                   f'{probe["material_code"]}: api={probe["live_stock"]} db={truth}')
 
@@ -6157,22 +6179,31 @@ async def test_sme_sk_upgrades():
         hod_t = await token("hod", "hod2026")
 
         async with SessionLocal() as s:
+            # 'SVCN - 3' (embedded spaces) deliberately mirrors the real ERP's
+            # "1043 - 2"-style rows: the calculator must whitespace-normalize
+            # SAPs and pool stock per Material_Code across variant SAPs.
             await s.execute(_sqt(
                 'INSERT INTO inventory ("SAP_Code", "Equipment_Description", '
                 '"Category", "UOM", "Site_ID") VALUES '
                 "('SVCN-1', 'SVCN Primer', 'Surface Shields', 'KG', 'CNCEC'), "
-                "('SVCN-2', 'SVCN Mortar', 'Surface Shields', 'KG', 'CNCEC')"))
+                "('SVCN-2', 'SVCN Mortar A', 'Surface Shields', 'KG', 'CNCEC'), "
+                "('SVCN - 3', 'SVCN Mortar B', 'Surface Shields', 'KG', 'CNCEC')"))
             await s.execute(_sqt(
                 'INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID") '
-                "VALUES ('2026-07-01 00:00:00', 'SVCN-1', 150, 'CNCEC')"))
+                "VALUES ('2026-07-01 00:00:00', 'SVCN-1', 150, 'CNCEC'), "
+                "('2026-07-01 00:00:00', 'SVCN - 3', 10, 'CNCEC')"))
             await s.execute(_sqt(
                 'INSERT INTO sme_recipe ("Lining_System_Code", "Material_Code", '
                 '"SAP_Code", "Material_Name", "Material_Description", "UOM", '
                 '"For_1_SQM", "Package_Size", "Lining_System_Name", "Substrate") VALUES '
                 "('9908', 'SVCN-M1', 'SVCN-1', 'SVCN Primer', 'Primer', 'KG', "
                 " 2.5, '25', 'SVCN30', 'Steel'), "
-                "('9908', 'SVCN-M2', 'SVCN-2', 'SVCN Mortar', 'Mortar', 'KG', "
-                " 0.4, NULL, 'SVCN30', 'Steel')"))
+                "('9908', 'SVCN-M2', 'SVCN-2', 'SVCN Mortar', 'Mortar - Comp-A', 'KG', "
+                " 0.4, NULL, 'SVCN30', 'Steel'), "
+                "('9908', 'SVCN-M2', 'SVCN-3', 'SVCN Mortar', 'Mortar - Comp-B', 'KG', "
+                " 0.1, NULL, 'SVCN30', 'Steel'), "
+                "('9909', 'SVCN-M1', 'SVCN-1', 'SVCN Primer', 'Primer', 'KG', "
+                " 1.0, '25', 'SVCN40', 'Steel')"))
             await s.execute(_sqt(
                 'INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", '
                 '"Lining_System_Code", "Surface_Area_SQM") VALUES '
@@ -6188,40 +6219,91 @@ async def test_sme_sk_upgrades():
         sys9908 = next((s for s in j.get("systems", []) if s["code"] == "9908"), None)
         check("an: SK reads lining systems — recipe SAPs + Done/Pending SQM",
               r.status_code == 200 and sys9908 is not None
-              and sys9908["saps"] == ["SVCN-1", "SVCN-2"]
+              and sys9908["saps"] == ["SVCN-1", "SVCN-2", "SVCN-3"]
               and sys9908["sqm"]["done_sqm"] == 24
               and sys9908["sqm"]["pending_sqm"] == 36
               and sys9908["short_name"] == "SVCN30",
               f"{r.status_code} {sys9908}")
         check("an: sap_index reverses SAP → system codes",
-              (j.get("sap_index", {}).get("SVCN-1") or []) == ["9908"],
+              (j.get("sap_index", {}).get("SVCN-1") or []) == ["9908", "9909"],
               f"{j.get('sap_index', {}).get('SVCN-1')}")
 
         r = await ac.get("/sme/calculator", headers=H(worker_t),
                          params={"code": "9908", "sqm": 40})
         check("an: calculator is HOD+ (SK level 0 → 403)",
               r.status_code == 403, f"got {r.status_code}")
+
+        # single system via the legacy `code` param — new payload shape;
+        # M2's stock must POOL SVCN-2 (0) + the whitespace-variant
+        # 'SVCN - 3' receipt (10) because both share Material_Code SVCN-M2
         r = await ac.get("/sme/calculator", headers=H(hod_t),
                          params={"code": "9908", "sqm": 40})
         j = r.json() if r.status_code == 200 else {}
-        lines = j.get("lines", [])
+        sysb = (j.get("systems") or [{}])[0]
+        lines = sysb.get("lines", [])
         l1 = next((x for x in lines if x["sap_code"] == "SVCN-1"), {})
         l2 = next((x for x in lines if x["sap_code"] == "SVCN-2"), {})
-        check("an: calculator — demand math, pack counts, live stock coverage",
-              r.status_code == 200 and len(lines) == 2
+        l3 = next((x for x in lines if x["sap_code"] == "SVCN-3"), {})
+        check("an: calculator — demand math, pack counts, material-pooled stock",
+              r.status_code == 200 and len(lines) == 3
+              and j.get("codes") == ["9908"] and j.get("mode") == "global"
               and l1.get("required_qty") == 100 and l1.get("packages_needed") == 4
               and l1.get("available_stock") == 150 and not l1.get("shortfall_qty")
-              and l2.get("required_qty") == 16 and l2.get("shortfall_qty") == 16
-              and j.get("totals", {}).get("shortfall_lines") == 1
+              and l2.get("required_qty") == 16
+              and l2.get("available_stock") == 10 and l2.get("pooled_saps") == 2
+              and l2.get("shortfall_qty") == 6
+              and l3.get("required_qty") == 4
+              and l3.get("available_stock") == 10 and not l3.get("shortfall_qty")
+              and sysb.get("totals", {}).get("shortfall_lines") == 1
               and "2.5 KG/SQM × 40 SQM = 100 KG" in l1.get("explanation", ""),
-              f"{r.status_code} l1={l1} l2={l2}")
+              f"{r.status_code} l1={l1} l2={l2} l3={l3}")
+        check("an: calculator hides nothing the UI needs — material_code on "
+              "every line, SAP kept as internal id",
+              all(x.get("material_code", "").startswith("SVCN-M") for x in lines),
+              f"{[x.get('material_code') for x in lines]}")
+
+        # multi-system, one global SQM — shared Primer line aggregates across
+        # 9908 (2.5/SQM) + 9909 (1.0/SQM): 100 + 40 = 140 → 6 × 25 packs
         r = await ac.get("/sme/calculator", headers=H(hod_t),
-                         params={"code": "nope-999", "sqm": 40})
+                         params={"codes": "9908,9909", "sqm": 40})
+        j = r.json() if r.status_code == 200 else {}
+        agg = {(x["material_code"], x["sap_code"]): x
+               for x in j.get("aggregate", {}).get("lines", [])}
+        a1 = agg.get(("SVCN-M1", "SVCN-1"), {})
+        check("an: calculator multi-select — cross-system material aggregation",
+              r.status_code == 200 and len(j.get("systems", [])) == 2
+              and j.get("target_total_sqm") == 80
+              and a1.get("required_qty") == 140 and a1.get("packages_needed") == 6
+              and a1.get("systems") == ["9908", "9909"]
+              and a1.get("available_stock") == 150 and not a1.get("shortfall_qty")
+              and j.get("aggregate", {}).get("totals", {}).get("line_count") == 3
+              and j.get("aggregate", {}).get("totals", {}).get("shortfall_lines") == 1,
+              f"{r.status_code} a1={a1} totals={j.get('aggregate', {}).get('totals')}")
+
+        # per-system SQM figures via `sqms`
+        r = await ac.get("/sme/calculator", headers=H(hod_t),
+                         params={"codes": "9908,9909", "sqms": "40,10"})
+        j = r.json() if r.status_code == 200 else {}
+        agg = {(x["material_code"], x["sap_code"]): x
+               for x in j.get("aggregate", {}).get("lines", [])}
+        a1 = agg.get(("SVCN-M1", "SVCN-1"), {})
+        check("an: calculator per-system SQM — sqms pairs with codes",
+              r.status_code == 200 and j.get("mode") == "per_system"
+              and j.get("target_total_sqm") == 50
+              and a1.get("required_qty") == 110,
+              f"{r.status_code} a1={a1}")
+
+        r = await ac.get("/sme/calculator", headers=H(hod_t),
+                         params={"codes": "9908,nope-999", "sqm": 40})
         r2 = await ac.get("/sme/calculator", headers=H(hod_t),
                           params={"code": "9908", "sqm": 0})
-        check("an: calculator guards — unknown code 404, non-positive sqm 422",
-              r.status_code == 404 and r2.status_code == 422,
-              f"{r.status_code}/{r2.status_code}")
+        r3 = await ac.get("/sme/calculator", headers=H(hod_t),
+                          params={"codes": "9908,9909", "sqms": "40"})
+        check("an: calculator guards — unknown code 404, non-positive sqm 422, "
+              "sqms/codes length mismatch 422",
+              r.status_code == 404 and r2.status_code == 422
+              and r3.status_code == 422,
+              f"{r.status_code}/{r2.status_code}/{r3.status_code}")
 
         # ── report column scoping (2026-07-18 polish) ───────────────────────
         r = await ac.get("/reports/stock", headers=H(hod_t),
@@ -6239,9 +6321,9 @@ async def test_sme_sk_upgrades():
               and "Total_Consumed" in head,
               f"{r.status_code} head={head[:120]}")
 
-        async with SessionLocal() as s:  # cleanup
-            await s.execute(_sqt("DELETE FROM receipts WHERE \"SAP_Code\" LIKE 'SVCN-%'"))
-            await s.execute(_sqt("DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SVCN-%'"))
+        async with SessionLocal() as s:  # cleanup ('SVCN %' catches 'SVCN - 3')
+            await s.execute(_sqt("DELETE FROM receipts WHERE \"SAP_Code\" LIKE 'SVCN%'"))
+            await s.execute(_sqt("DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SVCN%'"))
             await s.execute(_sqt("DELETE FROM sme_recipe WHERE \"Material_Code\" LIKE 'SVCN-%'"))
             await s.execute(_sqt(
                 "DELETE FROM sme_sqm_progress WHERE \"Equipment_Tag_No\" LIKE 'SVCN%'"))

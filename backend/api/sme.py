@@ -987,49 +987,120 @@ async def sme_export_rows(body: RowsExportBody,
                                       f'attachment; filename="{stem}.{fmt}"'})
 
 
-# ─── Smart Calculator (2026-07-18) ───────────────────────────────────────────
-# "System Code + target SQM → segregated material list with explanations."
+# ─── Smart Calculator (2026-07-18 · multi-system + material-pooled stock) ────
+# "System codes + target SQM(s) → segregated material list with explanations."
 # Pure recipe math (demand = For_1_SQM × SQM — the CNCEC prediction project's
-# model) enriched with live ERP stock through the SAP join, so the answer is
-# both the requirement AND whether the store can cover it.
+# model) enriched with live ERP stock. Availability is pooled per
+# Material_Code: one material code can carry several variant SAP codes (the
+# Excel-injection identity rule), so the ledger is summed over EVERY variant
+# SAP sharing the line's Material_Code — SAP strings are whitespace-normalized
+# on both sides because the ERP carries entries like "1043 - 2". The SAP code
+# stays in the payload as an internal id; the UI displays the Material Code.
+# NOTE: component lines sharing one Material_Code (PU Comp-A/B/C/D) keep their
+# own demand rows but read the SAME pooled stock figure.
 
-@router.get("/calculator", summary="Smart Calculator — materials for a target SQM")
-async def smart_calculator(code: str, sqm: float,
+_CALC_POOL_SQL = text('''
+    WITH mats AS (
+        SELECT DISTINCT TRIM("Material_Code") AS mat,
+               REPLACE(TRIM("SAP_Code"), ' ', '') AS sap
+        FROM sme_recipe
+        WHERE TRIM("Material_Code") = ANY(:mats) AND "SAP_Code" IS NOT NULL
+    ),
+    inv AS (
+        SELECT DISTINCT REPLACE(TRIM("SAP_Code"), ' ', '') AS sap FROM inventory
+    ),
+    led AS (
+        SELECT sap, SUM(q) AS stock FROM (
+            SELECT REPLACE(TRIM("SAP_Code"), ' ', '') AS sap,
+                   COALESCE("Quantity", 0) AS q FROM receipts
+            UNION ALL
+            SELECT REPLACE(TRIM("SAP_Code"), ' ', ''), -COALESCE("Quantity", 0)
+            FROM consumption
+            UNION ALL
+            SELECT REPLACE(TRIM("SAP_Code"), ' ', ''), -COALESCE("Quantity", 0)
+            FROM returns
+        ) t GROUP BY sap
+    )
+    SELECT m.mat,
+           SUM(CASE WHEN i.sap IS NOT NULL THEN COALESCE(l.stock, 0) END) AS stock,
+           COUNT(i.sap) AS known_saps,
+           COUNT(*)     AS pool_saps
+    FROM mats m
+    LEFT JOIN inv i ON i.sap = m.sap
+    LEFT JOIN led l ON l.sap = m.sap
+    GROUP BY m.mat''')
+
+
+@router.get("/calculator", summary="Smart Calculator — materials for target "
+            "SQM across one or more lining systems")
+async def smart_calculator(code: Optional[str] = None,
+                           sqm: Optional[float] = None,
+                           codes: Optional[str] = None,
+                           sqms: Optional[str] = None,
                            user: dict = Depends(require_level(2)),
                            session: AsyncSession = Depends(get_session)):
-    if sqm <= 0 or sqm != sqm or sqm > 1_000_000:
-        raise HTTPException(422, "sqm must be a positive number")
-    code = code.strip()
+    # -- parse system codes: multi via `codes` (comma-sep), legacy single via
+    #    `code`. SQM targets: one global `sqm` for all, or per-code `sqms`.
+    raw_codes = [c.strip() for c in (codes.split(",") if codes else [code or ""])]
+    raw_codes = [c for c in raw_codes if c]
+    if not raw_codes:
+        raise HTTPException(422, "provide a system code (code=) or codes=")
+    if len(raw_codes) > 25:
+        raise HTTPException(422, "at most 25 system codes per calculation")
+    if sqms is not None and sqms.strip():
+        try:
+            raw_targets = [float(x) for x in sqms.split(",")]
+        except ValueError:
+            raise HTTPException(422, "sqms must be comma-separated numbers")
+        if len(raw_targets) != len(raw_codes):
+            raise HTTPException(422,
+                                "sqms must carry exactly one value per system code")
+        mode = "per_system"
+    else:
+        if sqm is None:
+            raise HTTPException(422, "sqm must be a positive number")
+        raw_targets = [sqm] * len(raw_codes)
+        mode = "global"
+    pairs: list[tuple[str, float]] = []
+    for c, t in zip(raw_codes, raw_targets):          # dedupe, first wins
+        if t <= 0 or t != t or t > 1_000_000:
+            raise HTTPException(422, "sqm must be a positive number")
+        if all(c != pc for pc, _ in pairs):
+            pairs.append((c, t))
+
     r = sme_recipe_t.c
-    recipes = (await session.execute(
-        select(r["SAP_Code"], r["Material_Code"], r["Material_Name"],
+    rows = (await session.execute(
+        select(func.trim(r["Lining_System_Code"]).label("sys_code"),
+               r["SAP_Code"], r["Material_Code"], r["Material_Name"],
                r["Material_Description"], r["UOM"], r["For_1_SQM"],
                r["Package_Size"], r["Lining_System_Name"], r["Lining_System"],
                r["Substrate"], r["Lining_Thickness"])
-        .where(func.trim(r["Lining_System_Code"]) == code)
+        .where(func.trim(r["Lining_System_Code"]).in_([c for c, _ in pairs]))
         .order_by(r["id"]))).mappings().all()
-    if not recipes:
-        raise HTTPException(404, f"no recipe lines for system code {code!r}")
+    by_code: dict[str, list] = {}
+    for x in rows:
+        by_code.setdefault(x["sys_code"], []).append(x)
+    unknown = [c for c, _ in pairs if c not in by_code]
+    if unknown:
+        raise HTTPException(404, "no recipe lines for system code(s) "
+                            + ", ".join(repr(c) for c in unknown))
 
-    saps = sorted({str(x["SAP_Code"]).strip() for x in recipes if x["SAP_Code"]})
-    stock: dict[str, float] = {}
-    if saps:
-        stock = {row.sap: float(row.stock or 0) for row in (await session.execute(
-            text('''SELECT TRIM(i."SAP_Code") AS sap,
-                 COALESCE((SELECT SUM(x."Quantity") FROM receipts x
-                           WHERE TRIM(x."SAP_Code")=TRIM(i."SAP_Code")),0)
-               - COALESCE((SELECT SUM(x."Quantity") FROM consumption x
-                           WHERE TRIM(x."SAP_Code")=TRIM(i."SAP_Code")),0)
-               - COALESCE((SELECT SUM(x."Quantity") FROM returns x
-                           WHERE TRIM(x."SAP_Code")=TRIM(i."SAP_Code")),0) AS stock
-                 FROM inventory i WHERE TRIM(i."SAP_Code") = ANY(:saps)'''),
-            {"saps": saps})).all()}
+    # -- material-pooled live stock: Σ ledger over every variant SAP that
+    #    shares each line's Material_Code (whitespace-normalized match) --
+    mats = sorted({str(x["Material_Code"]).strip() for x in rows
+                   if x["Material_Code"] and str(x["Material_Code"]).strip()})
+    pool: dict[str, dict] = {}
+    if mats:
+        pool = {p.mat: {"stock": (float(p.stock) if p.stock is not None else None),
+                        "saps": int(p.pool_saps)}
+                for p in (await session.execute(_CALC_POOL_SQL,
+                                                {"mats": mats})).all()}
 
-    lines, shortfall_lines = [], 0
-    for x in recipes:
+    def _mk_line(x, target: float) -> dict:
         per = float(x["For_1_SQM"] or 0)
-        required = sme_engine.round_n(per * sqm, 4)
+        required = sme_engine.round_n(per * target, 4)
         sap = str(x["SAP_Code"] or "").strip() or None
+        mat = str(x["Material_Code"] or "").strip() or None
         uom = (x["UOM"] or "").strip()
         try:
             pkg = float(str(x["Package_Size"]).strip())
@@ -1037,32 +1108,88 @@ async def smart_calculator(code: str, sqm: float,
             pkg = None
         packages = (int(-(-required // pkg)) if pkg and pkg > 0 and required > 0
                     else None)
-        available = stock.get(sap) if sap else None
+        p = pool.get(mat) if mat else None
+        available = p["stock"] if p else None
+        pooled = p["saps"] if p else 0
         short = (sme_engine.round_n(max(required - available, 0.0), 4)
                  if available is not None else None)
-        if short:
-            shortfall_lines += 1
-        expl = f"{per:g} {uom or 'unit'}/SQM × {sqm:g} SQM = {required:g} {uom}".strip()
+        expl = f"{per:g} {uom or 'unit'}/SQM × {target:g} SQM = {required:g} {uom}".strip()
         if packages:
             expl += f" → {packages} × {pkg:g} {uom} pack(s)"
         if available is not None:
-            expl += (f" · in stock: {available:g}"
-                     + (f" (short {short:g})" if short else " ✓"))
-        lines.append({
-            "sap_code": sap, "material_code": x["Material_Code"],
-            "component": (x["Material_Description"] or "").strip(),
-            "material_name": (x["Material_Name"] or "").strip(),
-            "uom": uom, "for_1_sqm": per, "required_qty": required,
-            "package_size": pkg, "packages_needed": packages,
-            "available_stock": available, "shortfall_qty": short,
-            "explanation": expl})
-    first = recipes[0]
-    return {"code": code,
+            expl += f" · in stock: {available:g}"
+            if pooled > 1:
+                expl += f" (Σ {pooled} SAP variants)"
+            expl += f" (short {short:g})" if short else " ✓"
+        return {"sap_code": sap, "material_code": mat,
+                "component": (x["Material_Description"] or "").strip(),
+                "material_name": (x["Material_Name"] or "").strip(),
+                "uom": uom, "for_1_sqm": per, "required_qty": required,
+                "package_size": pkg, "packages_needed": packages,
+                "available_stock": available, "pooled_saps": pooled,
+                "shortfall_qty": short, "explanation": expl}
+
+    systems: list[dict] = []
+    agg: dict[tuple, dict] = {}
+    for c, target in pairs:
+        recipes = by_code[c]
+        lines = [_mk_line(x, target) for x in recipes]
+        shortfall_lines = sum(1 for ln in lines if ln["shortfall_qty"])
+        first = recipes[0]
+        systems.append({
+            "code": c,
             "short_name": (first["Lining_System_Name"] or "").strip(),
             "lining_system": (first["Lining_System"] or "").strip(),
             "substrate": (first["Substrate"] or "").strip(),
             "thickness": (first["Lining_Thickness"] or "").strip(),
-            "target_sqm": sqm,
+            "target_sqm": target,
             "lines": lines,
             "totals": {"line_count": len(lines),
-                       "shortfall_lines": shortfall_lines}}
+                       "shortfall_lines": shortfall_lines}})
+        for ln in lines:                    # cross-system material aggregation
+            key = (ln["material_code"], ln["sap_code"], ln["component"])
+            a = agg.setdefault(key, {
+                "material_code": ln["material_code"], "sap_code": ln["sap_code"],
+                "component": ln["component"],
+                "material_name": ln["material_name"], "uom": ln["uom"],
+                "required_qty": 0.0, "package_size": ln["package_size"],
+                "packages_needed": None,
+                "available_stock": ln["available_stock"],
+                "pooled_saps": ln["pooled_saps"],
+                "shortfall_qty": None, "systems": [], "explanation": ""})
+            a["required_qty"] = sme_engine.round_n(
+                a["required_qty"] + ln["required_qty"], 4)
+            if a["package_size"] is None:
+                a["package_size"] = ln["package_size"]
+            if c not in a["systems"]:
+                a["systems"].append(c)
+
+    agg_lines, agg_short = [], 0
+    for a in agg.values():
+        req, pkg, avail = a["required_qty"], a["package_size"], a["available_stock"]
+        a["packages_needed"] = (int(-(-req // pkg))
+                                if pkg and pkg > 0 and req > 0 else None)
+        a["shortfall_qty"] = (sme_engine.round_n(max(req - avail, 0.0), 4)
+                              if avail is not None else None)
+        if a["shortfall_qty"]:
+            agg_short += 1
+        uom = a["uom"]
+        expl = (f"Σ over {len(a['systems'])} system(s) "
+                f"[{', '.join(a['systems'])}]: {req:g} {uom}".strip())
+        if a["packages_needed"]:
+            expl += f" → {a['packages_needed']} × {pkg:g} {uom} pack(s)"
+        if avail is not None:
+            expl += f" · in stock: {avail:g}"
+            if a["pooled_saps"] > 1:
+                expl += f" (Σ {a['pooled_saps']} SAP variants)"
+            expl += (f" (short {a['shortfall_qty']:g})"
+                     if a["shortfall_qty"] else " ✓")
+        a["explanation"] = expl
+        agg_lines.append(a)
+
+    return {"codes": [c for c, _ in pairs], "mode": mode,
+            "target_total_sqm": sme_engine.round_n(sum(t for _, t in pairs), 4),
+            "systems": systems,
+            "aggregate": {"lines": agg_lines,
+                          "totals": {"line_count": len(agg_lines),
+                                     "shortfall_lines": agg_short}}}

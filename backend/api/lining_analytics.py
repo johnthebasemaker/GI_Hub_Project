@@ -75,27 +75,56 @@ def material_family(material_name: str | None, from_systems: set[str]) -> str:
 
 async def _live_stock_by_material(session: AsyncSession, site: Optional[str]) -> dict[str, dict]:
     """Live ledger stock + 90-day burn per GI Material_Code (site-filtered).
-    inventory maps SAP_Code → Material_Code; the ledgers are summed per SAP
-    and folded onto the material code."""
+
+    The material set is driven by the site's inventory rows that carry a
+    Material_Code, but each material's SAP POOL is widened with the variant
+    SAPs recorded in sme_recipe for that Material_Code (2026-07-18 rule: one
+    material code ↔ several variant SAPs; only the base SAP carries the
+    Material_Code in the ERP master, so an inventory-only join under-counts).
+    SAP strings are whitespace-normalized on both sides ("1043 - 2")."""
     site_w = "AND COALESCE(i.\"Site_ID\",'HQ') = :site" if site else ""
-    ledger_site = "AND COALESCE(x.\"Site_ID\",'HQ') = :site" if site else ""
+    ledger_site = "WHERE COALESCE(\"Site_ID\",'HQ') = :site" if site else ""
     params: dict = {"site": site} if site else {}
     params["burn_from"] = (_dt.date.today() - _dt.timedelta(days=90)).isoformat()
     rows = (await session.execute(text(f'''
-        SELECT TRIM(i."Material_Code") AS material_code,
-               SUM(COALESCE((SELECT SUM(x."Quantity") FROM receipts x
-                             WHERE TRIM(x."SAP_Code") = TRIM(i."SAP_Code") {ledger_site}), 0)
-                 - COALESCE((SELECT SUM(x."Quantity") FROM consumption x
-                             WHERE TRIM(x."SAP_Code") = TRIM(i."SAP_Code") {ledger_site}), 0)
-                 - COALESCE((SELECT SUM(x."Quantity") FROM returns x
-                             WHERE TRIM(x."SAP_Code") = TRIM(i."SAP_Code") {ledger_site}), 0)
-               ) AS live_stock,
-               SUM(COALESCE((SELECT SUM(x."Quantity") FROM consumption x
-                             WHERE TRIM(x."SAP_Code") = TRIM(i."SAP_Code")
-                               AND x."Date" >= :burn_from {ledger_site}), 0)) AS burn_90d
-        FROM inventory i
-        WHERE i."Material_Code" IS NOT NULL AND TRIM(i."Material_Code") <> '' {site_w}
-        GROUP BY TRIM(i."Material_Code")'''), params)).mappings().all()
+        WITH inv_map AS (
+            SELECT TRIM(i."Material_Code") AS mat,
+                   REPLACE(TRIM(i."SAP_Code"), ' ', '') AS sap
+            FROM inventory i
+            WHERE i."Material_Code" IS NOT NULL
+              AND TRIM(i."Material_Code") <> '' {site_w}
+        ),
+        map AS (
+            SELECT mat, sap FROM inv_map
+            UNION
+            SELECT TRIM(r."Material_Code"),
+                   REPLACE(TRIM(r."SAP_Code"), ' ', '')
+            FROM sme_recipe r
+            WHERE r."SAP_Code" IS NOT NULL
+              AND TRIM(r."Material_Code") IN (SELECT mat FROM inv_map)
+        ),
+        led AS (
+            SELECT sap, SUM(q) AS stock, SUM(burn) AS burn_90d FROM (
+                SELECT REPLACE(TRIM("SAP_Code"), ' ', '') AS sap,
+                       COALESCE("Quantity", 0) AS q, 0::float AS burn
+                FROM receipts {ledger_site}
+                UNION ALL
+                SELECT REPLACE(TRIM("SAP_Code"), ' ', ''),
+                       -COALESCE("Quantity", 0),
+                       CASE WHEN "Date" >= :burn_from
+                            THEN COALESCE("Quantity", 0) ELSE 0 END
+                FROM consumption {ledger_site}
+                UNION ALL
+                SELECT REPLACE(TRIM("SAP_Code"), ' ', ''),
+                       -COALESCE("Quantity", 0), 0::float
+                FROM returns {ledger_site}
+            ) t GROUP BY sap
+        )
+        SELECT m.mat AS material_code,
+               SUM(COALESCE(l.stock, 0))    AS live_stock,
+               SUM(COALESCE(l.burn_90d, 0)) AS burn_90d
+        FROM map m LEFT JOIN led l ON l.sap = m.sap
+        GROUP BY m.mat'''), params)).mappings().all()
     return {r["material_code"]: {"live_stock": float(r["live_stock"] or 0),
                                  "burn_90d": float(r["burn_90d"] or 0)} for r in rows}
 
