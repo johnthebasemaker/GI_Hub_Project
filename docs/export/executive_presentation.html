@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GI Hub 2.0 — Executive Briefing</title>
+<style>
+  /* ─── GI Hub corporate scheme: deep navy + gold (matches the product UI) ── */
+  :root {
+    --bg: #0a192f;            /* page surface */
+    --card: #112240;          /* raised card */
+    --card-2: #0e1e38;
+    --line: #22385c;
+    --ink: #e6f1ff;           /* primary text */
+    --ink-2: #a8b2d1;         /* secondary text */
+    --ink-3: #8892b0;         /* muted text */
+    --gold: #e3b341;          /* brand accent */
+    --gold-soft: rgba(227, 179, 65, .12);
+    --good: #4cc38a;
+    --warn: #e8894a;
+    --bad:  #e5534b;
+    --radius: 14px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { height: 100vh; overflow-y: scroll; scroll-snap-type: y mandatory; }
+  section.slide {
+    min-height: 100vh; scroll-snap-align: start; scroll-snap-stop: always;
+    display: flex; flex-direction: column; justify-content: center;
+    padding: 6vh 8vw; position: relative; overflow: hidden;
+  }
+  /* subtle brand wash per slide */
+  section.slide::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(1100px 500px at 85% -10%, rgba(227,179,65,.05), transparent 60%),
+      radial-gradient(900px 500px at -10% 110%, rgba(76,120,255,.05), transparent 60%);
+  }
+  .kicker {
+    color: var(--gold); font-size: clamp(12px, 1.1vw, 15px); font-weight: 700;
+    letter-spacing: .22em; text-transform: uppercase; margin-bottom: 14px;
+  }
+  h1 { font-size: clamp(34px, 5vw, 64px); line-height: 1.08; letter-spacing: -.02em; }
+  h2 { font-size: clamp(26px, 3.2vw, 44px); line-height: 1.12; letter-spacing: -.015em; margin-bottom: 10px; }
+  p.lede { color: var(--ink-2); font-size: clamp(15px, 1.45vw, 20px); line-height: 1.55; max-width: 62ch; }
+  .sub { color: var(--ink-3); font-size: clamp(13px, 1.1vw, 16px); line-height: 1.5; }
+
+  /* reveal animation */
+  .fx { opacity: 0; transform: translateY(22px); transition: opacity .7s ease, transform .7s ease; }
+  .fx.d1 { transition-delay: .08s } .fx.d2 { transition-delay: .16s }
+  .fx.d3 { transition-delay: .24s } .fx.d4 { transition-delay: .32s }
+  .fx.d5 { transition-delay: .40s }
+  section.on .fx { opacity: 1; transform: none; }
+
+  /* layout helpers */
+  .grid { display: grid; gap: 18px; margin-top: 34px; }
+  .g2 { grid-template-columns: 1fr 1fr; }
+  .g3 { grid-template-columns: repeat(3, 1fr); }
+  .g4 { grid-template-columns: repeat(4, 1fr); }
+  @media (max-width: 900px) { .g2, .g3, .g4 { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 26px 26px 24px;
+  }
+  .card h3 { font-size: clamp(17px, 1.6vw, 22px); margin-bottom: 8px; }
+  .card p { color: var(--ink-2); font-size: clamp(13.5px, 1.15vw, 16px); line-height: 1.55; }
+  .card .tag {
+    display: inline-block; font-size: 11.5px; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--gold); background: var(--gold-soft);
+    border-radius: 999px; padding: 4px 11px; margin-bottom: 12px;
+  }
+  .icon { font-size: 26px; margin-bottom: 12px; display: block; }
+
+  /* stat tiles */
+  .stat { text-align: left; }
+  .stat .n { font-size: clamp(34px, 3.6vw, 52px); font-weight: 800; letter-spacing: -.02em;
+             font-variant-numeric: tabular-nums; }
+  .stat .n em { font-style: normal; color: var(--gold); }
+  .stat .l { color: var(--ink-2); font-size: clamp(12.5px, 1.05vw, 15px); margin-top: 6px; line-height: 1.45; }
+
+  /* before / after compare */
+  .cmp { border-radius: var(--radius); overflow: hidden; border: 1px solid var(--line); }
+  .cmp header { padding: 14px 22px; font-weight: 700; font-size: clamp(14px, 1.3vw, 18px);
+                display: flex; align-items: center; gap: 10px; }
+  .cmp.old header { background: rgba(229, 83, 75, .10); color: #f0a9a5; }
+  .cmp.new header { background: rgba(76, 195, 138, .10); color: #93dcb8; }
+  .cmp ul { list-style: none; padding: 8px 22px 18px; }
+  .cmp li { padding: 9px 0; border-bottom: 1px dashed var(--line); color: var(--ink-2);
+            font-size: clamp(13.5px, 1.15vw, 16.5px); line-height: 1.5; display: flex; gap: 10px; }
+  .cmp li:last-child { border-bottom: none; }
+  .cmp li b { color: var(--ink); font-weight: 650; }
+  .cmp li .m { flex: none; }
+
+  /* checklist */
+  ul.checks { list-style: none; margin-top: 26px; }
+  ul.checks li { display: flex; gap: 14px; padding: 12px 0; border-bottom: 1px dashed var(--line);
+                 color: var(--ink-2); font-size: clamp(14px, 1.3vw, 18px); line-height: 1.55; }
+  ul.checks li:last-child { border-bottom: none; }
+  ul.checks li b { color: var(--ink); }
+  ul.checks .m { flex: none; width: 28px; text-align: center; }
+
+  /* tables */
+  table { width: 100%; border-collapse: collapse; margin-top: 26px;
+          background: var(--card); border-radius: var(--radius); overflow: hidden; }
+  th, td { text-align: left; padding: 13px 18px; font-size: clamp(13px, 1.15vw, 16px);
+           border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--gold); font-size: clamp(11.5px, 1vw, 13.5px); letter-spacing: .12em;
+       text-transform: uppercase; background: var(--card-2); }
+  table { table-layout: fixed; }
+  td { color: var(--ink-2); line-height: 1.5; }
+  td b, td strong { color: var(--ink); }
+  tr:last-child td { border-bottom: none; }
+  td.num { font-variant-numeric: tabular-nums; }
+
+  .note {
+    margin-top: 18px; padding: 14px 18px; border-left: 3px solid var(--gold);
+    background: var(--gold-soft); border-radius: 0 10px 10px 0;
+    color: var(--ink-2); font-size: clamp(12.5px, 1.05vw, 15px); line-height: 1.55; max-width: 90ch;
+  }
+  .pill-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+  .pill { border: 1px solid var(--line); background: var(--card); color: var(--ink-2);
+          border-radius: 999px; padding: 8px 16px; font-size: clamp(12px, 1vw, 14.5px); }
+  .pill b { color: var(--gold); }
+
+  /* roadmap steps */
+  .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 32px; }
+  @media (max-width: 900px) { .steps { grid-template-columns: 1fr; } }
+  .step { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+          padding: 20px; position: relative; }
+  .step .no { width: 30px; height: 30px; border-radius: 50%; background: var(--gold-soft);
+              color: var(--gold); font-weight: 800; display: flex; align-items: center;
+              justify-content: center; margin-bottom: 12px; font-size: 14px; }
+  .step.done .no { background: rgba(76,195,138,.15); color: var(--good); }
+  .step h4 { font-size: clamp(14px, 1.3vw, 17px); margin-bottom: 6px; }
+  .step p { color: var(--ink-3); font-size: clamp(12px, 1.02vw, 14px); line-height: 1.5; }
+  .step .state { position: absolute; top: 18px; right: 16px; font-size: 11px; font-weight: 700;
+                 letter-spacing: .1em; text-transform: uppercase; }
+  .step.done .state { color: var(--good); }
+  .step.next .state { color: var(--gold); }
+
+  /* nav dots */
+  nav.dots { position: fixed; right: 22px; top: 50%; transform: translateY(-50%);
+             display: flex; flex-direction: column; gap: 10px; z-index: 10; }
+  nav.dots a { width: 9px; height: 9px; border-radius: 50%; background: var(--line);
+               display: block; transition: all .25s; }
+  nav.dots a.on { background: var(--gold); transform: scale(1.35); }
+  .counter { position: fixed; left: 26px; bottom: 22px; color: var(--ink-3);
+             font-size: 12.5px; letter-spacing: .12em; z-index: 10;
+             font-variant-numeric: tabular-nums; }
+  .hint { position: fixed; right: 26px; bottom: 22px; color: var(--ink-3); font-size: 12.5px; z-index: 10; }
+  .brand { position: fixed; left: 26px; top: 22px; z-index: 10; font-weight: 800;
+           letter-spacing: .02em; font-size: 15px; }
+  .brand small { color: var(--gold); }
+
+  /* Small screens: slides can grow taller than the viewport — relax snapping
+     so inner content stays reachable, and clear the fixed chrome. */
+  @media (max-width: 900px) {
+    main { scroll-snap-type: y proximity; }
+    section.slide { padding: 9vh 7vw; }
+    .brand, .hint { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .fx { opacity: 1 !important; transform: none !important; transition: none !important; }
+  }
+
+  @media print {
+    main { height: auto; overflow: visible; }
+    section.slide { min-height: auto; page-break-after: always; padding: 40px; }
+    nav.dots, .counter, .hint, .brand { display: none; }
+    .fx { opacity: 1 !important; transform: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="brand">GI&nbsp;Hub&nbsp;<small>2.0</small></div>
+<nav class="dots" id="dots"></nav>
+<div class="counter" id="counter">01 / 13</div>
+<div class="hint">Use ↑ ↓ arrow keys or scroll</div>
+
+<main id="deck">
+
+<!-- 1 ─ TITLE -->
+<section class="slide" id="s1">
+  <div class="kicker fx">Executive Briefing · July 2026</div>
+  <h1 class="fx d1">GI&nbsp;Hub&nbsp;2.0<br><span style="color:var(--gold)">Warehouse &amp; Inventory,<br>Modernized.</span></h1>
+  <p class="lede fx d2" style="margin-top:22px">
+    From a fragile, single-user internal tool to an enterprise-grade platform —
+    built in-house, fully tested, and ready for company-wide rollout.
+  </p>
+  <div class="pill-row fx d3">
+    <span class="pill"><b>0</b>&nbsp; software licence fees — 100% open-source stack</span>
+    <span class="pill"><b>1,391</b>&nbsp; automated tests guarding every release</span>
+    <span class="pill"><b>24/7</b>&nbsp; WhatsApp-connected operations</span>
+  </div>
+</section>
+
+<!-- 2 ─ WHY WE UPGRADED -->
+<section class="slide" id="s2">
+  <div class="kicker fx">1 · The Transformation</div>
+  <h2 class="fx">Why we upgraded</h2>
+  <p class="lede fx d1">The legacy tool served us well as a start, but it was built on
+    technology meant for prototypes — and the business had outgrown it.</p>
+  <div class="grid g2">
+    <div class="cmp old fx d2">
+      <header>⛔&nbsp; Before — Legacy system</header>
+      <ul>
+        <li><span class="m">🐌</span><span><b>Lagging screens</b> — every click reloaded the whole page; busy hours felt frozen.</span></li>
+        <li><span class="m">🔒</span><span><b>Database locking</b> — one person saving could block everyone else (single-file database).</span></li>
+        <li><span class="m">👤</span><span><b>Weak multi-user support</b> — effectively one heavy user at a time.</span></li>
+        <li><span class="m">📄</span><span><b>Manual follow-ups</b> — reports and reminders depended on people remembering.</span></li>
+      </ul>
+    </div>
+    <div class="cmp new fx d3">
+      <header>✅&nbsp; Now — GI Hub 2.0</header>
+      <ul>
+        <li><span class="m">⚡</span><span><b>Instant response</b> — modern app that updates only what changed on screen.</span></li>
+        <li><span class="m">🗄️</span><span><b>True concurrency</b> — an enterprise database designed for many simultaneous writers.</span></li>
+        <li><span class="m">👥</span><span><b>Whole teams at once</b> — store keepers, supervisors, HODs and logistics work in parallel.</span></li>
+        <li><span class="m">🤖</span><span><b>Automation built-in</b> — approvals, alerts and executive reports happen on their own.</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- 3 ─ TECH STACK -->
+<section class="slide" id="s3">
+  <div class="kicker fx">2 · The Technology</div>
+  <h2 class="fx">What powers it</h2>
+  <p class="lede fx d1">Three proven, industry-standard building blocks — the same class of
+    technology used by banks and global logistics companies. All open-source: no licence costs, ever.</p>
+  <div class="grid g3">
+    <div class="card fx d2">
+      <span class="icon">🖥️</span>
+      <span class="tag">Frontend</span>
+      <h3>React 19 + Vite</h3>
+      <p>A lightning-fast web app that installs like a mobile app (PWA) on phones,
+         tablets and PCs — and keeps working when warehouse Wi-Fi drops.</p>
+    </div>
+    <div class="card fx d3">
+      <span class="icon">⚙️</span>
+      <span class="tag">Backend</span>
+      <h3>FastAPI (Python)</h3>
+      <p>A high-concurrency service layer that handles many users at once,
+         enforces every business rule, and logs every action for audit.</p>
+    </div>
+    <div class="card fx d4">
+      <span class="icon">🗄️</span>
+      <span class="tag">Database</span>
+      <h3>PostgreSQL 16</h3>
+      <p>The world's leading open-source enterprise database — bank-grade data
+         integrity, zero locking issues, decades of proven reliability.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 4 ─ PROVEN QUALITY -->
+<section class="slide" id="s4">
+  <div class="kicker fx">Quality You Can Audit</div>
+  <h2 class="fx">Not "we think it works" — <span style="color:var(--gold)">we prove it, on every change</span></h2>
+  <p class="lede fx d1">Every release must pass an automated test wall before it can ship.
+    A change that breaks anything is rejected by the machine — not caught by a user.</p>
+  <div class="grid g4">
+    <div class="card stat fx d2"><div class="n"><em>753</em></div>
+      <div class="l">automated backend checks — every rule, role and workflow exercised end-to-end</div></div>
+    <div class="card stat fx d3"><div class="n"><em>39</em></div>
+      <div class="l">full browser simulations — a robot literally clicks through the app like a user</div></div>
+    <div class="card stat fx d4"><div class="n"><em>599</em></div>
+      <div class="l">regression guards still protecting the legacy system until switch-off</div></div>
+    <div class="card stat fx d5"><div class="n"><em>429/429</em></div>
+      <div class="l">stock lines verified line-by-line against the operations workbook — 100% match</div></div>
+  </div>
+</section>
+
+<!-- 5 ─ SPEED + OFFLINE -->
+<section class="slide" id="s5">
+  <div class="kicker fx">3 · Business Value</div>
+  <h2 class="fx">Built for the warehouse floor</h2>
+  <div class="grid g2">
+    <div class="card fx d1">
+      <span class="icon">⚡</span>
+      <h3>Speed &amp; reliability</h3>
+      <p>Inventory screens respond instantly and the stock ledger updates in real time —
+         receipts, issues and returns are reflected the moment they are approved.
+         No more waiting, no more "the system is stuck".</p>
+    </div>
+    <div class="card fx d2">
+      <span class="icon">📶</span>
+      <h3>Offline resilience</h3>
+      <p>If Wi-Fi drops mid-shift, store keepers keep working. Entries queue safely
+         on the device and submit themselves the moment the connection returns —
+         with a clear on-screen badge showing what is pending. Nothing is lost.</p>
+    </div>
+    <div class="card fx d3">
+      <span class="icon">📷</span>
+      <h3>Evidence on every entry</h3>
+      <p>Delivery notes, MTCs and supporting documents are photographed at the point
+         of entry and attached to the transaction — reviewers see the paper trail
+         inside the approval screen.</p>
+    </div>
+    <div class="card fx d4">
+      <span class="icon">🔁</span>
+      <h3>Guided workflows</h3>
+      <p>Purchase requests, approvals, delivery scheduling and two-stage receiving all
+         follow enforced steps with full audit history — the process cannot be skipped,
+         only completed.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 6 ─ SMART CALCULATOR -->
+<section class="slide" id="s6">
+  <div class="kicker fx">3 · Business Value</div>
+  <h2 class="fx">SME Smart Calculator 🧮</h2>
+  <p class="lede fx d1">Ask "what do we need to line these surfaces?" and get the answer in seconds —
+     for one lining system or several at once.</p>
+  <ul class="checks">
+    <li class="fx d2"><span class="m">📐</span><span><b>Automated material prediction</b> — enter the target surface area(s);
+      the engine computes every component quantity and pack count from the engineering recipes.</span></li>
+    <li class="fx d3"><span class="m">🧩</span><span><b>Multi-system planning</b> — select several lining systems with one shared
+      or individual per-system areas; requirements aggregate into a single, clean procurement list.</span></li>
+    <li class="fx d4"><span class="m">📦</span><span><b>Pooled live stock across variant SAP codes</b> — one material can exist
+      under several SAP codes in the ERP; the calculator sums stock across <b>all</b> of them, eliminating
+      the false shortages that used to trigger unnecessary purchases.</span></li>
+    <li class="fx d5"><span class="m">🚦</span><span><b>Instant shortfall flags</b> — every line shows covered ✓ or short (with
+      the exact quantity), so purchasing decisions are made on facts, not guesses.</span></li>
+  </ul>
+</section>
+
+<!-- 7 ─ AI -->
+<section class="slide" id="s7">
+  <div class="kicker fx">3 · Business Value</div>
+  <h2 class="fx">AI that works for us — <span style="color:var(--gold)">safely</span></h2>
+  <div class="grid g3">
+    <div class="card fx d1">
+      <span class="icon">✍️</span>
+      <h3>Handwritten OCR</h3>
+      <p>Handwritten consumption forms and delivery notes are photographed and converted
+         to structured entries — with deterministic validation rules, stock simulation and
+         human review before anything is posted.</p>
+    </div>
+    <div class="card fx d2">
+      <span class="icon">💬</span>
+      <h3>"Ask Your Data"</h3>
+      <p>Managers ask plain-language questions — <i>"current stock of furan materials?"</i>,
+         <i>"top suppliers this quarter?"</i> — and get live answers from the real ledger.</p>
+    </div>
+    <div class="card fx d3">
+      <span class="icon">🏠</span>
+      <h3>On-premise AI, zero fees</h3>
+      <p>The AI models run on our own hardware. No data leaves the company, and there are
+         no per-question cloud AI charges — usage is free at any volume.</p>
+    </div>
+  </div>
+  <div class="note fx d4"><b>Guardrail:</b> the AI connects through a dedicated <b>read-only</b> database
+    account. It is technically impossible for the AI to modify, delete or corrupt business data —
+    it can only look.</div>
+</section>
+
+<!-- 8 ─ REPORTING & WHATSAPP -->
+<section class="slide" id="s8">
+  <div class="kicker fx">3 · Business Value</div>
+  <h2 class="fx">Reporting &amp; notifications that run themselves</h2>
+  <ul class="checks">
+    <li class="fx d1"><span class="m">📊</span><span><b>Friday executive summary</b> — every week the system generates a
+      management PDF (stock position, consumption, procurement status) and delivers it automatically.</span></li>
+    <li class="fx d2"><span class="m">🔗</span><span><b>Secure self-expiring links</b> — the report link sent by WhatsApp is
+      tokenized and dies after 72 hours; forwarded links go stale by design.</span></li>
+    <li class="fx d3"><span class="m">📱</span><span><b>WhatsApp on every significant action</b> — approvals needed, status
+      updates, critical stock alerts — via Meta-approved message templates, plus an in-app notification bell.</span></li>
+    <li class="fx d4"><span class="m">🌙</span><span><b>Evening digest</b> — non-urgent notices batch into one tidy 16:00
+      summary instead of interrupting the day.</span></li>
+    <li class="fx d5"><span class="m">↩️</span><span><b>Two-way commands</b> — authorized staff can WhatsApp
+      <i>"STOCK &lt;code&gt;"</i> and get a live answer back; password resets can be triggered the same way.</span></li>
+  </ul>
+</section>
+
+<!-- 9 ─ SECURITY -->
+<section class="slide" id="s9">
+  <div class="kicker fx">4 · Enterprise Security</div>
+  <h2 class="fx">Defense in depth</h2>
+  <p class="lede fx d1">Security is layered — an attacker would need to break several independent
+    walls, and staff only ever see what their role allows.</p>
+  <div class="grid g2">
+    <div class="card fx d2">
+      <span class="icon">🛡️</span>
+      <h3>Cloudflare Tunnel + Access wall</h3>
+      <p>The server has <b>zero open public ports</b> — it dials out to Cloudflare's network,
+         and every visitor must pass a corporate sign-in wall <i>before</i> even reaching our
+         login page. Encrypted end-to-end.</p>
+    </div>
+    <div class="card fx d3">
+      <span class="icon">🎭</span>
+      <h3>Strict role-based access</h3>
+      <p>Store Keeper, Supervisor, HOD, Logistics, Admin — each role sees only its own
+         screens and its own site. Every menu, page and API call is locked to an explicit
+         permission list; SME master data is editable by HOD/Admin only.</p>
+    </div>
+    <div class="card fx d4">
+      <span class="icon">🔑</span>
+      <h3>Hardened messaging &amp; OTP</h3>
+      <p>Phone changes require a <b>dual OTP</b> (old number authorizes, new number confirms).
+         OTPs are rate-limited to 3/hour per phone <i>and</i> per source address; inbound WhatsApp
+         webhooks are cryptographically signed, and repeat forgery attempts earn an automatic IP ban.</p>
+    </div>
+    <div class="card fx d5">
+      <span class="icon">🤖</span>
+      <h3>Immutable AI boundary</h3>
+      <p>AI features use a separate read-only database identity. Short-lived login tokens rotate
+         automatically, stolen-token reuse revokes all of a user's sessions, and every sensitive
+         action lands in a permanent audit log.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 10 ─ DEPLOYMENT STATUS -->
+<section class="slide" id="s10">
+  <div class="kicker fx">5 · Deployment Roadmap</div>
+  <h2 class="fx">Where we are — and the one step left</h2>
+  <p class="lede fx d1">The platform is <b>feature-complete and fully tested</b>. It currently runs
+    as a secured pilot from an office machine through the encrypted tunnel. The final step —
+    moving it onto a dedicated production server — is prepared, scripted and rehearsed,
+    but <b>not yet executed</b>.</p>
+  <div class="steps">
+    <div class="step done fx d2"><div class="no">✓</div><span class="state">Done</span>
+      <h4>Build &amp; parity</h4><p>All legacy features rebuilt and extended; dual-engine
+      calculations proven identical; 100% data verification.</p></div>
+    <div class="step done fx d3"><div class="no">✓</div><span class="state">Done</span>
+      <h4>Messaging live</h4><p>Meta business templates approved and live; WhatsApp
+      notifications, OTP and inbound commands operational.</p></div>
+    <div class="step done fx d4"><div class="no">✓</div><span class="state">Done</span>
+      <h4>Cutover rehearsed</h4><p>The one-shot data migration script is written, verified
+      in strict mode, and documented in a step-by-step runbook.</p></div>
+    <div class="step next fx d5"><div class="no">4</div><span class="state">Next</span>
+      <h4>Production server</h4><p>Provision the server (cloud or company hardware),
+      run the runbook, point users at the new address. Estimated: ~1 working day.</p></div>
+  </div>
+  <div class="note fx d5"><b>Why this design is efficient &amp; secure:</b> the production kit is
+    containerized (identical, repeatable installs), fronted by Nginx with TLS, reached only through the
+    Cloudflare Tunnel (no exposed ports, free DDoS shielding), with nightly database backups and the same
+    753-check test wall run against production before users are switched over.</div>
+</section>
+
+<!-- 11 ─ HOSTING OPTIONS & COST -->
+<section class="slide" id="s11">
+  <div class="kicker fx">5 · Deployment Roadmap</div>
+  <h2 class="fx">Hosting options &amp; running cost</h2>
+  <p class="lede fx d1">Two good options — same software, same security model either way.
+    Figures are July-2026 estimates for budgeting, not quotations.</p>
+  <table class="fx d2">
+    <thead><tr><th style="width:24%"></th><th>Option A — Hetzner Cloud (recommended)</th><th>Option B — Company server (on-premise)</th></tr></thead>
+    <tbody>
+      <tr><td><b>Hosting</b></td>
+          <td class="num"><b>≈ €35–40 / month</b> (~SAR 145–165) — dedicated 16 GB cloud server, backups included</td>
+          <td class="num"><b>SAR 0 / month</b> — uses existing company hardware (+ minor power/UPS cost)</td></tr>
+      <tr><td><b>Up-front</b></td>
+          <td>None — provisioned in minutes</td>
+          <td>None if a suitable server exists; ~SAR 4,000–8,000 if new hardware is purchased</td></tr>
+      <tr><td><b>Reliability</b></td>
+          <td>Datacenter power, cooling, redundant network, snapshot backups</td>
+          <td>Depends on office power/internet; IT must own uptime &amp; backups</td></tr>
+      <tr><td><b>Security</b></td>
+          <td colspan="2">Identical for both — Cloudflare Tunnel (free plan) means no open ports and the same Access sign-in wall</td></tr>
+      <tr><td><b>Maintenance</b></td>
+          <td colspan="2">≈ 2–4 hours/month either way (updates, backup checks) — automatable; no licence renewals, ever</td></tr>
+      <tr><td><b>Other fixed</b></td>
+          <td colspan="2">Domain ≈ SAR 50/year · Cloudflare free tier SAR 0 · software licences SAR 0 (fully open-source)</td></tr>
+    </tbody>
+  </table>
+  <div class="note fx d3"><b>Bottom line:</b> full production hosting costs roughly
+    <b>SAR 150–170 per month</b> in the cloud, or near-zero on company hardware. The trade-off is
+    purely operational: the cloud option removes hardware failure, power and uptime risk from our IT team.</div>
+</section>
+
+<!-- 12 ─ MESSAGING COST -->
+<section class="slide" id="s12">
+  <div class="kicker fx">5 · Deployment Roadmap</div>
+  <h2 class="fx">WhatsApp messaging — what Meta charges a registered company</h2>
+  <p class="lede fx d1">Our company is registered on the Meta Business Platform and our message
+    templates are already approved. Registration and verification are <b>free</b> — Meta charges
+    only per business-initiated template message, priced by country.</p>
+  <table class="fx d2">
+    <thead><tr><th>Item</th><th>Cost (approx., Saudi Arabia rates)</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><b>Company registration &amp; verification</b></td><td class="num"><b>Free</b></td>
+          <td>One-time Meta Business verification — already completed</td></tr>
+      <tr><td><b>Platform / licence fee</b></td><td class="num"><b>SAR 0 / month</b></td>
+          <td>No subscription — pay only for messages sent</td></tr>
+      <tr><td><b>Utility notifications</b> (approvals, status, alerts)</td><td class="num">≈ $0.01–0.02 / message</td>
+          <td>The bulk of our traffic</td></tr>
+      <tr><td><b>Authentication (OTP)</b></td><td class="num">≈ $0.02 / message</td>
+          <td>Only on phone changes / resets — low volume</td></tr>
+      <tr><td><b>Staff replies &amp; commands</b></td><td class="num"><b>Free</b></td>
+          <td>Replies inside the 24-hour service window (e.g. "STOCK" queries) cost nothing</td></tr>
+      <tr><td><b>Realistic monthly total</b></td><td class="num"><b>≈ SAR 75–150 / month</b></td>
+          <td>At ~1,500–2,500 notifications/month across all sites</td></tr>
+    </tbody>
+  </table>
+  <div class="note fx d3"><b>Note:</b> Meta prices per template message and per destination country, and
+    updates its rate card periodically — the figures above are current approximations for budgeting;
+    the exact rate card should be confirmed at go-live. The in-app notification bell is always free and
+    duplicates every WhatsApp alert, so messaging volume can be tuned down at any time.</div>
+</section>
+
+<!-- 13 ─ SUMMARY -->
+<section class="slide" id="s13">
+  <div class="kicker fx">Summary &amp; Recommendation</div>
+  <h2 class="fx">Enterprise capability at a <span style="color:var(--gold)">coffee-budget</span> running cost</h2>
+  <div class="grid g3">
+    <div class="card stat fx d1"><div class="n"><em>≈ SAR 300</em><span style="font-size:.45em;color:var(--ink-3)"> /mo</span></div>
+      <div class="l">total estimated running cost on cloud hosting <i>including</i> WhatsApp messaging — less on company hardware</div></div>
+    <div class="card stat fx d2"><div class="n"><em>1 day</em></div>
+      <div class="l">of prepared, scripted work to complete the production deployment</div></div>
+    <div class="card stat fx d3"><div class="n"><em>0</em></div>
+      <div class="l">licence fees, cloud-AI charges or vendor lock-in — the company owns the entire system</div></div>
+  </div>
+  <ul class="checks" style="margin-top:30px">
+    <li class="fx d3"><span class="m">1️⃣</span><span><b>Approve the hosting choice</b> — Hetzner cloud (recommended) or a company server.</span></li>
+    <li class="fx d4"><span class="m">2️⃣</span><span><b>Schedule the cutover day</b> — legacy writes freeze, data migrates with 100% verification, users switch the same day.</span></li>
+    <li class="fx d5"><span class="m">3️⃣</span><span><b>Retire the legacy system</b> — after a short parallel-running comfort period.</span></li>
+  </ul>
+  <p class="sub fx d5" style="margin-top:26px">GI Hub 2.0 · Executive Briefing · July 2026 — prepared for the management team.</p>
+</section>
+
+</main>
+
+<script>
+  const slides = [...document.querySelectorAll('section.slide')];
+  const dots = document.getElementById('dots');
+  const counter = document.getElementById('counter');
+  const deck = document.getElementById('deck');
+
+  slides.forEach((s, i) => {
+    const a = document.createElement('a');
+    a.href = '#' + s.id; a.title = 'Slide ' + (i + 1);
+    dots.appendChild(a);
+  });
+  const dotEls = [...dots.children];
+
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (e.isIntersecting) {
+        e.target.classList.add('on');
+        const i = slides.indexOf(e.target);
+        dotEls.forEach((d, j) => d.classList.toggle('on', j === i));
+        counter.textContent = String(i + 1).padStart(2, '0') + ' / ' + slides.length;
+      }
+    });
+  }, { root: deck, threshold: 0.55 });
+  slides.forEach((s) => io.observe(s));
+
+  function current() {
+    return Math.round(deck.scrollTop / window.innerHeight);
+  }
+  function go(i) {
+    i = Math.max(0, Math.min(slides.length - 1, i));
+    slides[i].scrollIntoView({ behavior: 'smooth' });
+  }
+  addEventListener('keydown', (e) => {
+    if (['ArrowDown', 'PageDown', ' '].includes(e.key)) { e.preventDefault(); go(current() + 1); }
+    if (['ArrowUp', 'PageUp'].includes(e.key))          { e.preventDefault(); go(current() - 1); }
+    if (e.key === 'Home') { e.preventDefault(); go(0); }
+    if (e.key === 'End')  { e.preventDefault(); go(slides.length - 1); }
+  });
+</script>
+</body>
+</html>
