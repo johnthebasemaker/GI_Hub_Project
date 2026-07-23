@@ -15,6 +15,7 @@ import CommandPalette from './CommandPalette'
 import HubAssistant from './HubAssistant'
 import NotificationBell from './NotificationBell'
 import OfflineSyncBadge from './OfflineSyncBadge'
+import SyncControls from './SyncControls'
 import ProfileModal from './ProfileModal'
 import RateLimitToast from './RateLimitToast'
 
@@ -194,6 +195,7 @@ export default function AppLayout() {
                 icon={mode === 'dark' ? <SunOutlined /> : <MoonOutlined />} onClick={toggle} />
             </Tooltip>
             <RateLimitToast />
+            <SyncControls />
             <OfflineSyncBadge />
             <NotificationBell />
             {user && (

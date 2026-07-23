@@ -80,6 +80,20 @@ export async function enqueue(path: string, body: unknown, headers: Record<strin
   await emitCount()
 }
 
+// --- user-configurable auto-sync cadence ("Outlook-style" Send/Receive) -----
+// The header SyncControls UI writes the cap; the boot timer re-arms on change.
+const SYNC_INTERVAL_KEY = 'gi_sync_interval_min'
+
+export function getSyncIntervalMin(): number {
+  const n = Number(localStorage.getItem(SYNC_INTERVAL_KEY))
+  return Number.isFinite(n) && n >= 1 && n <= 120 ? Math.round(n) : 1
+}
+
+export function setSyncIntervalMin(min: number): void {
+  localStorage.setItem(SYNC_INTERVAL_KEY, String(Math.min(120, Math.max(1, Math.round(min)))))
+  window.dispatchEvent(new Event('gi-sync-interval'))
+}
+
 let flushing = false
 
 /** Replay everything queued, oldest first. Safe to call any time. */
@@ -137,9 +151,17 @@ export async function postWithOfflineFallback<T>(
 
 export function initOfflineQueue() {
   window.addEventListener('online', () => void flushQueue())
-  window.setInterval(() => {
-    if (navigator.onLine) void queueCount().then((n) => n && void flushQueue())
-  }, 60_000)
+  // Auto-sync timer honours the user's Sync Settings cap (default 1 min) and
+  // re-arms itself whenever SyncControls changes the setting.
+  let timer = 0
+  const arm = () => {
+    window.clearInterval(timer)
+    timer = window.setInterval(() => {
+      if (navigator.onLine) void queueCount().then((n) => n && void flushQueue())
+    }, getSyncIntervalMin() * 60_000)
+  }
+  window.addEventListener('gi-sync-interval', arm)
+  arm()
   void emitCount()
   if (navigator.onLine) void flushQueue()
   // exposed for the Playwright offline spec + console debugging

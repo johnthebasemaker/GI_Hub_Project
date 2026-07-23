@@ -15,7 +15,20 @@ import { initOfflineQueue } from './offline/queue'
 
 // Phase B — PWA: SW registration (no-op in dev; auto-updates in prod builds)
 // + the offline mutation queue's boot flush / online listener / badge events.
-registerSW({ immediate: true })
+// STRICT OTA (native-apps program): don't wait for a navigation to notice a
+// new deployment — poll the service worker every 15 min and on every
+// tab-refocus; registerType 'autoUpdate' then swaps + reloads automatically.
+registerSW({
+  immediate: true,
+  onRegisteredSW(_url, reg) {
+    if (!reg) return
+    const check = () => void reg.update().catch(() => undefined)
+    window.setInterval(check, 15 * 60 * 1000)
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') check()
+    })
+  },
+})
 initOfflineQueue()
 
 const queryClient = new QueryClient({
