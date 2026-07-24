@@ -42,7 +42,22 @@ The site is an installable Progressive Web App:
 - **iPhone/Safari:** Share □↑ → *Add to Home Screen*.
 
 The installed app opens full-screen, keeps you signed in, and caches the
-read pages for offline viewing.
+read pages for offline viewing. Updates are automatic: the app checks for a
+new version every 15 minutes and whenever you return to it — you never need
+to reinstall.
+
+**Native apps (Android / iOS / Windows / macOS).** Downloadable installers
+become available once the production server is live, at these links:
+
+- Android: [gi.giinventory.com/downloads/gi-hub.apk](https://gi.giinventory.com/downloads/gi-hub.apk)
+- Windows: [gi.giinventory.com/downloads/GI-Hub-Setup.exe](https://gi.giinventory.com/downloads/GI-Hub-Setup.exe)
+- macOS: [gi.giinventory.com/downloads/GI-Hub.dmg](https://gi.giinventory.com/downloads/GI-Hub.dmg)
+- iPhone/iPad: distributed via TestFlight invitation (ask an admin).
+
+Until then (and for IT staff building them): the exact local build commands
+for every platform are in [`docs/NATIVE_APPS.md`](NATIVE_APPS.md) —
+`npx cap add android && npm run cap:sync && ./gradlew assembleDebug` produces
+the Android APK in a few minutes.
 
 ### 1.3 Working offline (Store Keepers)
 Read pages (stock, records, notifications) show the **last good copy** when
@@ -55,6 +70,13 @@ rows the server rejects are dropped and reported, so one bad row never
 blocks the rest. Approvals, admin and auth actions deliberately stay
 online-only.
 
+**Send / Receive (🔄, header).** Works like Outlook's Send/Receive button:
+one tap **sends** everything waiting in your offline queue to the server and
+then **receives** the latest data for every open screen. Use it any time you
+want to be certain you're looking at the current database state. The small
+gear next to it opens **Sync settings**, where you choose how often the app
+auto-syncs the queue on its own (1–120 minutes; default every minute).
+
 ### 1.4 Common chrome
 
 ![HOD dashboard](screenshots/v2/dashboard-hod.png)
@@ -65,6 +87,13 @@ online-only.
   right page. Significant events are ALSO WhatsApp'd to the concerned person.
 - **⌘K / Ctrl-K**: command palette — fuzzy-search every page your role can
   open and jump to it.
+- **📷 Scan (header QR button)**: point the camera at any material's QR
+  sticker or barcode (or type the SAP code) and a **Material Dashboard**
+  opens instantly: current stock plus a 30-day received-vs-consumed trend
+  chart. What you see follows your role — Store Keepers, Supervisors,
+  Warehouse and HODs see **their own site's** stock and history; Admins and
+  Logistics see the **global** picture across all sites (the chip in the
+  title says which view you're in).
 - **Theme toggle**: dark ⇄ light, remembered per device.
 - **Profile → phone number**: self-service change with a dual WhatsApp OTP —
   a code to your OLD number authorises the change, a second code to the NEW
@@ -244,6 +273,16 @@ Records → Purchase Requests.
   date filters, inline image/PDF preview, download.
 - **WBS config** (Site config): add/close the WBS numbers that gate entries
   (§2.1).
+- **Printing QR material stickers (HOD/Admin).** On the Documents page,
+  the *Label sheets* card has a **Material stickers** button: pick your
+  site, optionally specific materials and copies-per-label, and download a
+  ready-to-print A4 PDF — 12 stickers per page (2 × 6), each with the
+  material name, its QR code, the SAP number, the MAT number and the
+  category, exactly like the CNCEC rack-sticker sheets. Print, cut along
+  the grid lines, and fix each sticker to its rack/bin. Anyone can then
+  scan it with the header 📷 button (§1.4) to see live stock and the
+  30-day trend for that material. (The *Bin labels* button remains for the
+  QR-only 3 × 4 layout.)
 
 ### 4.5 SME Material Estimator
 

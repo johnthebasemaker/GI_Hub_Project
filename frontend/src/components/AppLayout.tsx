@@ -2,7 +2,7 @@ import { Suspense, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Alert, Badge, Button, ConfigProvider, Layout, Menu, Skeleton, Space, Switch, Tooltip, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { AppstoreOutlined, LogoutOutlined, MoonOutlined, SearchOutlined, SunOutlined, UserOutlined } from '@ant-design/icons'
+import { AppstoreOutlined, LogoutOutlined, MoonOutlined, QrcodeOutlined, SearchOutlined, SunOutlined, UserOutlined } from '@ant-design/icons'
 import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useHealth, useOverdueActions, useWorkQueues } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -13,6 +13,9 @@ import { useThemeMode } from '../theme/ThemeContext'
 import { siderTheme } from '../theme/themes'
 import CommandPalette from './CommandPalette'
 import HubAssistant from './HubAssistant'
+import MaterialCardModal from './MaterialCardModal'
+import QrScanner from './QrScanner'
+import { BARCODE_FORMATS } from '../lib/barcode'
 import NotificationBell from './NotificationBell'
 import OfflineSyncBadge from './OfflineSyncBadge'
 import SyncControls from './SyncControls'
@@ -114,6 +117,11 @@ export default function AppLayout() {
   // Red SLA badge — polled only for admins (endpoint is level-4).
   const { data: overdue } = useOverdueActions(level >= 4)
   const [profileOpen, setProfileOpen] = useState(false)
+  // Global QR scan → Material Dashboard (QR ecosystem): scanner decodes a
+  // rack/bin sticker (payload = SAP code), the modal shows role-scoped stock
+  // + the 30-day receive/consume trend.
+  const [scanOpen, setScanOpen] = useState(false)
+  const [scanSap, setScanSap] = useState<string | null>(null)
 
   // Collapsible sidebar groups — the role's primary group opens by default
   // (progressive disclosure); the choice persists, and the active group is
@@ -184,6 +192,10 @@ export default function AppLayout() {
               <Button type="text" aria-label="Open command palette" icon={<SearchOutlined />}
                 onClick={() => window.dispatchEvent(new Event('gi-open-command-palette'))} />
             </Tooltip>
+            <Tooltip title="Scan a material QR / barcode — opens its stock dashboard">
+              <Button type="text" aria-label="Scan material QR" icon={<QrcodeOutlined />}
+                onClick={() => setScanOpen(true)} />
+            </Tooltip>
             <span className="gi-health">
               <span className={`gi-health-dot ${health ? 'ok' : 'err'}`} />
               <Typography.Text type="secondary" className="gi-health-label" style={{ fontSize: 12 }}>
@@ -230,6 +242,15 @@ export default function AppLayout() {
       </Layout>
       <CommandPalette />
       <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
+      <QrScanner open={scanOpen} title="Scan a material QR / barcode"
+        formats={BARCODE_FORMATS} manualPlaceholder="…or type the SAP code"
+        onClose={() => setScanOpen(false)}
+        onDecode={(text) => {
+          setScanOpen(false)
+          // Labels encode the raw SAP code; tolerate "SAP:1385"-style payloads.
+          setScanSap(text.trim().replace(/^SAP[:\s]+/i, ''))
+        }} />
+      <MaterialCardModal sap={scanSap} open={!!scanSap} onClose={() => setScanSap(null)} />
     </Layout>
   )
 }

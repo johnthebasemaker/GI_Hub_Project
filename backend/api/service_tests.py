@@ -6347,6 +6347,102 @@ async def test_sme_sk_upgrades():
             await s.commit()
 
 
+async def test_material_card():
+    """Suite AP — GET /stock/material-card (the QR scan-to-dashboard modal):
+    scoped roles read ONLY their site's ledger, admin reads globally, the
+    30-day series buckets by day, and SAP matching is whitespace-normalized."""
+    import datetime as _dt
+
+    from sqlalchemy import text as _sqt
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.93"}
+
+        async def token(u, p):
+            r = await ac.post("/auth/login", json={"username": u, "password": p},
+                              headers=_ip)
+            return r.json().get("access_token")
+
+        def H(t):
+            return {"Authorization": f"Bearer {t}"}
+
+        worker_t = await token("worker", "floor2026")
+        hod_t = await token("hod", "hod2026")
+        admin_t = await token("admin", "admin2026")
+
+        today = _dt.date.today()
+        d_in = f"{(today - _dt.timedelta(days=2)).isoformat()} 08:00:00"
+        d_out = f"{(today - _dt.timedelta(days=1)).isoformat()} 09:00:00"
+        d_old = f"{(today - _dt.timedelta(days=45)).isoformat()} 09:00:00"
+        async with SessionLocal() as s:
+            # inventory row stored WITH an embedded space — the endpoint must
+            # still resolve the clean scanned payload 'SVCP-1'
+            await s.execute(_sqt(
+                'INSERT INTO inventory ("SAP_Code", "Equipment_Description", '
+                '"Material_Code", "Category", "UOM", "Site_ID") VALUES '
+                "('SVCP - 1', 'SVCP Scan Probe', 'GI-SVCP-01', 'Safety', 'PCS', 'CNCEC')"))
+            await s.execute(_sqt(
+                'INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES '
+                f"('{d_in}', 'SVCP - 1', 100, 'CNCEC'), "
+                f"('{d_in}', 'SVCP - 1', 50, 'OTHERSITE'), "
+                f"('{d_old}', 'SVCP - 1', 7, 'CNCEC')"))
+            await s.execute(_sqt(
+                'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES '
+                f"('{d_out}', 'SVCP - 1', 30, 'CNCEC')"))
+            await s.commit()
+
+        r = await ac.get("/stock/material-card", headers=H(hod_t),
+                         params={"sap": "SVCP-1"})
+        j = r.json() if r.status_code == 200 else {}
+        recv = {x["date"]: x for x in j.get("series", [])}
+        day_in = d_in[:10]
+        check("ap: HOD is site-pinned — stock & 30d series exclude other sites",
+              r.status_code == 200 and j.get("scope") == "CNCEC"
+              and j.get("current_stock") == 77          # 100+7−30, no OTHERSITE
+              and len(j.get("series", [])) == 30
+              and recv.get(day_in, {}).get("received") == 100   # 45d-old receipt out of window
+              and j.get("totals", {}).get("received_30d") == 100
+              and j.get("totals", {}).get("consumed_30d") == 30,
+              f"{r.status_code} scope={j.get('scope')} stock={j.get('current_stock')} "
+              f"tot={j.get('totals')}")
+        check("ap: whitespace-normalized SAP match + card identity fields",
+              j.get("sap_code") == "SVCP - 1" and j.get("material_code") == "GI-SVCP-01"
+              and j.get("category") == "Safety",
+              f"{j.get('sap_code')}/{j.get('material_code')}")
+
+        r = await ac.get("/stock/material-card", headers=H(admin_t),
+                         params={"sap": "SVCP-1"})
+        j = r.json() if r.status_code == 200 else {}
+        check("ap: admin reads the GLOBAL picture (all sites, scope=null)",
+              r.status_code == 200 and j.get("scope") is None
+              and j.get("current_stock") == 127         # +50 OTHERSITE
+              and j.get("totals", {}).get("received_30d") == 150,
+              f"{r.status_code} scope={j.get('scope')} stock={j.get('current_stock')}")
+
+        r = await ac.get("/stock/material-card", headers=H(worker_t),
+                         params={"sap": "SVCP-1"})
+        j = r.json() if r.status_code == 200 else {}
+        check("ap: store keeper may scan (200) and is site-pinned too",
+              r.status_code == 200 and j.get("scope") == "CNCEC"
+              and j.get("current_stock") == 77,
+              f"{r.status_code} scope={j.get('scope')} stock={j.get('current_stock')}")
+
+        r = await ac.get("/stock/material-card", headers=H(hod_t),
+                         params={"sap": "NO-SUCH-SAP-999"})
+        r2 = await ac.get("/stock/material-card", headers=H(hod_t),
+                          params={"sap": "   "})
+        check("ap: unknown SAP → 404, blank → 422",
+              r.status_code == 404 and r2.status_code == 422,
+              f"{r.status_code}/{r2.status_code}")
+
+        async with SessionLocal() as s:  # cleanup
+            await s.execute(_sqt("DELETE FROM receipts WHERE \"SAP_Code\" LIKE 'SVCP%'"))
+            await s.execute(_sqt("DELETE FROM consumption WHERE \"SAP_Code\" LIKE 'SVCP%'"))
+            await s.execute(_sqt("DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SVCP%'"))
+            await s.commit()
+
+
 async def test_bug_tracking_engine():
     """Suite AO — Bug Tracking Engine: severity/triage fields + the
     implementation-prompt export (the coding-agent automation bridge)."""
@@ -6528,6 +6624,8 @@ async def main() -> int:
     await test_sme_sk_upgrades()
     print("\n AO. Bug Tracking Engine (triage fields + prompt export)")
     await test_bug_tracking_engine()
+    print("\n AP. scan-to-dashboard material card (role-scoped stock + 30d trend)")
+    await test_material_card()
     await engine.dispose()
 
     print(f"\n== SERVICE TESTS: {'✅ PASS' if not FAILED else '❌ FAIL'} "

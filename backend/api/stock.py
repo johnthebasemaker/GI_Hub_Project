@@ -282,3 +282,76 @@ async def stock_expiring(limit: int = Query(200, ge=1, le=5000), offset: int = Q
     return await _paged(session, "expiring", site_id=site_id, limit=limit, offset=offset,
                         extra_where=extra_where, extra_params=extra_params,
                         q=q, category=category)
+
+
+# --- scan-to-dashboard material card (QR ecosystem, 2026-07-24) ----------------
+@router.get("/material-card",
+            summary="One material's stock + 30-day receipt/consumption trend "
+                    "(role-scoped: site-pinned for level <3, global for admin)")
+async def material_card(sap: str = Query(..., max_length=80),
+                        user: dict = Depends(get_current_user),
+                        session: AsyncSession = Depends(get_session)):
+    """Backs the QR-scan Material Dashboard modal. Scoping is the standard
+    rule: site_scope() pins SK / supervisor / warehouse / HOD to their own
+    site's ledger rows; admin & logistics see the global picture. SAP codes
+    are whitespace-normalized on both sides (ERP rows like "1043 - 2")."""
+    norm = sap.strip().replace(" ", "")
+    if not norm:
+        raise HTTPException(422, "sap must not be blank")
+    scope = site_scope(user)
+    if scope == "":
+        raise HTTPException(403, "no site is assigned to your account")
+
+    inv = (await session.execute(text('''
+        SELECT "SAP_Code", "Equipment_Description", "Material_Code",
+               "Category", "UOM", "Site_ID"
+        FROM inventory WHERE REPLACE(TRIM("SAP_Code"), ' ', '') = :sap
+        LIMIT 1'''), {"sap": norm})).mappings().first()
+    if inv is None:
+        raise HTTPException(404, f"no inventory item with SAP code {sap!r}")
+
+    site_w = "AND COALESCE(\"Site_ID\",'HQ') = :site" if scope else ""
+    params: dict = {"sap": norm}
+    if scope:
+        params["site"] = scope
+
+    stock = (await session.execute(text(f'''
+        SELECT COALESCE((SELECT SUM("Quantity") FROM receipts
+                         WHERE REPLACE(TRIM("SAP_Code"),' ','') = :sap {site_w}), 0)
+             - COALESCE((SELECT SUM("Quantity") FROM consumption
+                         WHERE REPLACE(TRIM("SAP_Code"),' ','') = :sap {site_w}), 0)
+             - COALESCE((SELECT SUM("Quantity") FROM returns
+                         WHERE REPLACE(TRIM("SAP_Code"),' ','') = :sap {site_w}), 0)
+        '''), params)).scalar() or 0
+
+    import datetime as _dt
+    days = [( _dt.date.today() - _dt.timedelta(days=i)).isoformat()
+            for i in range(29, -1, -1)]
+    params["from"] = days[0]
+    rows = (await session.execute(text(f'''
+        SELECT substr("Date", 1, 10) AS d, 'r' AS k, SUM("Quantity") AS q
+        FROM receipts
+        WHERE REPLACE(TRIM("SAP_Code"),' ','') = :sap
+          AND "Date" >= :from {site_w} GROUP BY 1
+        UNION ALL
+        SELECT substr("Date", 1, 10), 'c', SUM("Quantity")
+        FROM consumption
+        WHERE REPLACE(TRIM("SAP_Code"),' ','') = :sap
+          AND "Date" >= :from {site_w} GROUP BY 1'''), params)).all()
+    by_day: dict[str, dict] = {d: {"date": d, "received": 0.0, "consumed": 0.0}
+                               for d in days}
+    for d, k, q in rows:
+        if d in by_day:
+            by_day[d]["received" if k == "r" else "consumed"] += float(q or 0)
+    series = list(by_day.values())
+    return {"sap_code": str(inv["SAP_Code"]).strip(),
+            "description": (inv["Equipment_Description"] or "").strip(),
+            "material_code": (inv["Material_Code"] or "").strip() or None,
+            "category": (inv["Category"] or "").strip(),
+            "uom": (inv["UOM"] or "").strip(),
+            "scope": scope or None,
+            "current_stock": float(stock),
+            "series": series,
+            "totals": {
+                "received_30d": round(sum(x["received"] for x in series), 4),
+                "consumed_30d": round(sum(x["consumed"] for x in series), 4)}}
