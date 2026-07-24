@@ -5967,6 +5967,21 @@ async def test_qr_returnables_parity():
               r.status_code == 200 and r.content[:5] == b"%PDF-",
               f"{r.status_code} {r.content[:5]!r}")
 
+        # material rack stickers (CNCEC reference layout, 2×6, hod/admin only)
+        r = await ac.get("/documents/material-stickers", headers=H(hod_t),
+                         params={"sap_codes": ",".join([sap] * 2)})
+        check("al: material-sticker sheet (2×6) downloads as a PDF for HOD",
+              r.status_code == 200 and r.content[:5] == b"%PDF-",
+              f"{r.status_code} {r.content[:5]!r}")
+        r = await ac.get("/documents/material-stickers", headers=H(worker_t))
+        check("al: material stickers are hod/admin-locked (SK → 403)",
+              r.status_code == 403, f"got {r.status_code}")
+        r = await ac.get("/documents/material-stickers", headers=H(hod_t),
+                         params={"category": "no-such-category-xyz"})
+        check("al: sticker category filter yields a valid (empty) sheet",
+              r.status_code == 200 and r.content[:5] == b"%PDF-",
+              f"{r.status_code} {r.content[:5]!r}")
+
         # loan with Smart-Scan provenance → cv_* audit columns land
         r = await ac.post("/entry/returnables", headers=H(worker_t), json={
             "material_name": "SVCL torque wrench", "borrower_name": "SVCL Borrower",

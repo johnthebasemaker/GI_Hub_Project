@@ -22,7 +22,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import LargeBinary, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import get_current_user, require_level, resolve_site_param, site_scope
+from .auth import (get_current_user, require_level, require_roles,
+                   resolve_site_param, site_scope)
 from .db import get_session
 from .reports import _FORMATS, _latin
 from .services.ledger import _MD
@@ -54,12 +55,13 @@ def _qr_png(data: str, box: int = 8):
 
 
 def _grid_pdf(title: str, cells: list, draw_cell, *, cols: int = 3,
-              rows_per_page: int = 4) -> bytes:
+              rows_per_page: int = 4, header: bool = True) -> bytes:
     """A4 portrait grid of `cells`, `draw_cell(pdf, x, y, w, h, item)` per cell.
-    Shared by the bin-label and employee-badge sheets."""
+    Shared by the bin-label / employee-badge / material-sticker sheets.
+    header=False → full-bleed grid (the CNCEC sticker-sheet layout)."""
     from fpdf import FPDF
     PAGE_W, PAGE_H = 210, 297
-    MARGIN, HEADER_H = 8, 14
+    MARGIN, HEADER_H = 8, (14 if header else 0)
     MARGIN_T = MARGIN + HEADER_H
     CELL_W = (PAGE_W - 2 * MARGIN) / cols
     CELL_H = (PAGE_H - MARGIN_T - MARGIN) / rows_per_page
@@ -85,7 +87,8 @@ def _grid_pdf(title: str, cells: list, draw_cell, *, cols: int = 3,
 
     if not cells:
         pdf.add_page()
-        _header()
+        if header:
+            _header()
         pdf.set_xy(MARGIN, MARGIN_T + 10)
         pdf.set_font("helvetica", "", 11)
         pdf.cell(0, 8, "No items to print for this selection.")
@@ -94,7 +97,8 @@ def _grid_pdf(title: str, cells: list, draw_cell, *, cols: int = 3,
     for idx, item in enumerate(cells):
         if idx % per_page == 0:
             pdf.add_page()
-            _header()
+            if header:
+                _header()
         p = idx % per_page
         cx = MARGIN + (p % cols) * CELL_W
         cy = MARGIN_T + (p // cols) * CELL_H
@@ -136,6 +140,121 @@ def _draw_badge(pdf, cx, cy, cw, ch, item):
     pdf.set_text_color(110, 110, 110)
     pdf.set_xy(cx + 1, qr_y + qr_size + 7)
     pdf.cell(cw - 2, 4, _latin(str(item.get("Department", "") or ""))[:32], align="C")
+
+
+def _wrap_lines(pdf, text: str, width: float, max_lines: int) -> list[str]:
+    """Word-wrap `text` to `width` mm at the CURRENT font; hard-truncate to
+    `max_lines` with an ellipsis on overflow (long single words are split)."""
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        cand = f"{cur} {w}".strip()
+        if pdf.get_string_width(cand) <= width:
+            cur = cand
+            continue
+        if cur:
+            lines.append(cur)
+        while pdf.get_string_width(w) > width and len(w) > 1:  # unbreakable word
+            cut = len(w)
+            while cut > 1 and pdf.get_string_width(w[:cut]) > width:
+                cut -= 1
+            lines.append(w[:cut])
+            w = w[cut:]
+        cur = w
+    if cur:
+        lines.append(cur)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        while lines and pdf.get_string_width(lines[-1] + "...") > width and len(lines[-1]) > 1:
+            lines[-1] = lines[-1][:-1]
+        lines[-1] = (lines[-1] if lines else "") + "..."
+    return lines or [""]
+
+
+def _draw_material_sticker(pdf, cx, cy, cw, ch, item):
+    """One CNCEC-style rack sticker (the operator's reference sheet layout):
+    big wrapped material name top-left · QR top-right · rule · `SAP:` +
+    `MAT:` lines bottom-left · category bottom-right in small gray."""
+    pad = 3.0
+    sap = str(item.get("SAP_Code", "") or "").strip()
+    mat = str(item.get("Material_Code", "") or "").strip() or "N/A"
+    cat = str(item.get("Category", "") or "").strip()
+    name = _latin(str(item.get("Equipment_Description", "") or sap).strip())
+
+    qr_size = min(27.0, ch - 2 * pad)
+    pdf.image(_qr_png(sap, box=6), x=cx + cw - pad - qr_size, y=cy + pad,
+              w=qr_size, h=qr_size)
+
+    name_w = cw - qr_size - 3 * pad
+    size = 17
+    for size in (17, 15, 13, 11):
+        pdf.set_font("helvetica", "", size)
+        if len(_wrap_lines(pdf, name, name_w, 99)) <= 2:
+            break
+    lines = _wrap_lines(pdf, name, name_w, 2)
+    line_h = size * 0.42
+    pdf.set_text_color(25, 25, 25)
+    y = cy + pad + 1.5
+    for ln in lines:
+        pdf.set_xy(cx + pad, y)
+        pdf.cell(name_w, line_h, ln)
+        y += line_h
+
+    rule_y = cy + ch - 13.5
+    pdf.set_line_width(0.2)
+    pdf.set_draw_color(160, 160, 160)
+    pdf.line(cx + pad, rule_y, cx + pad + name_w, rule_y)
+
+    pdf.set_font("helvetica", "", 10)
+    pdf.set_text_color(25, 25, 25)
+    pdf.set_xy(cx + pad, rule_y + 1.2)
+    pdf.cell(name_w, 4.6, f"SAP: {sap}")
+    pdf.set_font("helvetica", "", 8.5)
+    pdf.set_xy(cx + pad, rule_y + 6.2)
+    pdf.cell(name_w, 4, _latin(f"MAT: {mat}"))
+
+    if cat:
+        pdf.set_font("helvetica", "", 6.5)
+        pdf.set_text_color(150, 150, 150)
+        pdf.set_xy(cx + cw - pad - 45, cy + ch - pad - 2.6)
+        pdf.cell(45, 3, _latin(cat)[:32], align="R")
+
+
+# --- material rack stickers (CNCEC reference-sheet layout, 2×6) ----------------
+@router.get("/material-stickers",
+            summary="Printable QR material-sticker sheet (2×6 rack labels — "
+                    "name + QR + SAP + MAT + category)")
+async def material_stickers(site_id: Optional[str] = None,
+                            sap_codes: Optional[str] = Query(
+                                None, description="comma-separated SAP codes; repeats "
+                                "print copies; blank = all at the site"),
+                            category: Optional[str] = Query(
+                                None, description="filter to one inventory Category"),
+                            user: dict = Depends(require_roles("hod", "admin")),
+                            session: AsyncSession = Depends(get_session)):
+    site_id = resolve_site_param(user, site_id)
+    if site_id == "":
+        raise HTTPException(403, "no site is assigned to your account")
+    inv = _MD.tables["inventory"]
+    stmt = select(inv.c["SAP_Code"], inv.c["Equipment_Description"],
+                  inv.c["Material_Code"], inv.c["Category"])
+    if site_id:
+        stmt = stmt.where(inv.c["Site_ID"] == site_id)
+    if category:
+        from sqlalchemy import func as _f
+        stmt = stmt.where(_f.lower(inv.c["Category"]) == category.strip().lower())
+    if sap_codes:
+        # repeats = copies, order preserved — same contract as /qr-labels
+        wanted = [s.strip() for s in sap_codes.split(",") if s.strip()]
+        stmt = stmt.where(inv.c["SAP_Code"].in_(set(wanted)))
+        by_code = {m["SAP_Code"]: dict(m) for m in
+                   (await session.execute(stmt)).mappings().all()}
+        rows = [by_code[c] for c in wanted if c in by_code][:600]
+    else:
+        rows = [dict(m) for m in (await session.execute(
+            stmt.order_by(inv.c["SAP_Code"]).limit(600))).mappings().all()]
+    data = _grid_pdf("Material Stickers", rows, _draw_material_sticker,
+                     cols=2, rows_per_page=6, header=False)
+    return _pdf_response(data, "material-stickers.pdf")
 
 
 # --- QR bin labels ------------------------------------------------------------

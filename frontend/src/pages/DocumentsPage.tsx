@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { App, Button, Card, Col, InputNumber, Row, Select, Space, Typography } from 'antd'
 import {
-  FileExcelOutlined, FilePdfOutlined, FileTextOutlined, IdcardOutlined, QrcodeOutlined,
+  FileExcelOutlined, FilePdfOutlined, FileTextOutlined, IdcardOutlined, QrcodeOutlined, TagsOutlined,
 } from '@ant-design/icons'
 import { downloadDocument, useList, useSites } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
@@ -126,6 +126,18 @@ export default function DocumentsPage() {
                   onClick={() => go('badges', '/documents/employee-badges', siteParam, 'employee-badges.pdf')}>
                   Employee badges
                 </Button>
+                {(user?.role === 'hod' || user?.role === 'admin') && (
+                  <Button icon={<TagsOutlined />} loading={busy === 'stickers'}
+                    onClick={() => go('stickers', '/documents/material-stickers', {
+                      ...siteParam,
+                      ...(labelSaps.length ? {
+                        sap_codes: labelSaps
+                          .flatMap((s) => Array(labelCopies).fill(s)).join(','),
+                      } : {}),
+                    }, 'material-stickers.pdf')}>
+                    Material stickers
+                  </Button>
+                )}
               </Space>
               <div style={{ marginTop: 12 }}>
                 <Typography.Text type="secondary">Single badge (PNG):</Typography.Text>
