@@ -38,6 +38,7 @@ from . import client as aic
 from . import handwritten as hw
 from . import jobs as ai_jobs
 from . import manual_qa
+from . import tutorials as ai_tutorials
 from . import ocr
 from . import pdf_extract
 from . import trace as ai_trace
@@ -73,8 +74,13 @@ async def ai_health(user: dict = Depends(get_current_user),
         return {"ok": False, "enabled": False,
                 "message": "AI features are switched off in Settings."}
     ok, msg = await manual_qa.health()
+    # The tutorial index is reported rather than assumed: before the Hetzner
+    # cutover puts the renders in object storage (ruling Q3) a production box
+    # has no manifests at all, and "no deep links appeared" should be a visible
+    # state rather than a mystery.
     return {"ok": ok, "enabled": True, "message": msg,
-            "model": aic.MODEL_CHAT}
+            "model": aic.MODEL_CHAT,
+            "tutorials": ai_tutorials.stats()}
 
 
 class AskIn(BaseModel):
@@ -142,6 +148,22 @@ async def assistant(body: AskIn = Body(...),
                 async for chunk in manual_qa.answer_manual_question(
                         body.question, role, username, trace_id=tid):
                     yield _sse({"token": chunk})
+                # ⚠️ PHASE 12f — AFTER the answer, never instead of it, and it
+                # can never break it. The deep link is computed from the
+                # QUESTION and the ROLE alone: no model, no clock, no database,
+                # so a cached answer (P11-7) still gets one and the same
+                # question always returns the same second. If anything here
+                # raises, the turn ends exactly as it did before the feature
+                # existed — P11-3's rule, that an add-on must never convert a
+                # diagnostic into an outage.
+                try:
+                    hit = ai_tutorials.match(body.question, role)
+                except Exception:  # noqa: BLE001
+                    hit = None
+                if hit:
+                    req.attrs(tutorial=hit["tutorial_id"],
+                              tutorial_beat=hit["beat"])
+                    yield _sse({"tutorial": hit})
                 yield _sse({"done": True})
             finally:
                 aic.GEN_SEMAPHORE.release()

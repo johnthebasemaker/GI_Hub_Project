@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Alert, App, Button, Card, Empty, Progress, Segmented, Space, Table, Tabs, Tag, Typography,
 } from 'antd'
@@ -6,6 +6,7 @@ import { CheckCircleTwoTone, ClockCircleOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 
 /**
  * Training & Onboarding (Phase 10 Track 5).
@@ -27,10 +28,15 @@ const LANG_LABEL: Record<string, string> = {
   en: 'English', ta: 'தமிழ் (Tamil)', 'ta-Latn': 'Tanglish', ar: 'العربية (Arabic)',
 }
 
-function ModuleCard({ m, onChanged }: { m: Module; onChanged: () => void }) {
+function ModuleCard({ m, onChanged, seekTo, wantLang }:
+  { m: Module; onChanged: () => void; seekTo?: number; wantLang?: string }) {
   const { message } = App.useApp()
-  const [lang, setLang] = useState(m.assets[0]?.language ?? 'en')
+  const [lang, setLang] = useState(
+    m.assets.find((a) => a.language === wantLang)?.language
+    ?? m.assets[0]?.language ?? 'en')
   const [busy, setBusy] = useState(false)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const seeked = useRef(false)
   const asset = m.assets.find((a) => a.language === lang)
   const dur = asset?.duration_s ?? 0
   const pct = dur ? Math.min(100, Math.round((m.watched_seconds / dur) * 100)) : 0
@@ -46,6 +52,31 @@ function ModuleCard({ m, onChanged }: { m: Module; onChanged: () => void }) {
       message.error(x?.response?.data?.detail ?? 'Could not record that')
     } finally { setBusy(false) }
   }
+
+  // ⚠️ PHASE 12f — SEEK ONCE, AND ONLY TOWARDS A FRAME THAT EXISTS. The Hub
+  // Assistant links here with `?t=` when its answer matches a recorded step, so
+  // the viewer lands on the second where that step is on screen rather than at
+  // the start of a ninety-second video.
+  //
+  // `seeked` latches: without it every re-render (and there is one per progress
+  // beacon) would drag the playhead back to the deep-link position while the
+  // person is trying to watch. Clamped 1s inside the duration because seeking
+  // to or past the end fires `ended` on some browsers, which would beacon a
+  // completion the viewer never earned — and this module's whole purpose is a
+  // compliance record somebody might produce as evidence.
+  useEffect(() => {
+    const el = videoRef.current
+    if (!el || seeked.current || seekTo == null || !Number.isFinite(seekTo)) return
+    const apply = () => {
+      if (seeked.current) return
+      const cap = el.duration && Number.isFinite(el.duration) ? el.duration - 1 : seekTo
+      el.currentTime = Math.max(0, Math.min(seekTo, cap))
+      seeked.current = true
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+    if (el.readyState >= 1) apply()
+    else el.addEventListener('loadedmetadata', apply, { once: true })
+  }, [seekTo, asset?.storage_uri])
 
   // Progress is reported by the player as it plays. Sent on pause/ended rather
   // than on a timer: a beacon every second is a write per second per viewer,
@@ -86,6 +117,7 @@ function ModuleCard({ m, onChanged }: { m: Module; onChanged: () => void }) {
           )}
           {asset && (
             <video
+              ref={videoRef}
               key={asset.storage_uri}
               src={asset.storage_uri}
               controls
@@ -189,6 +221,16 @@ export default function TrainingPage() {
   })
   const modules: Module[] = data?.modules ?? []
   const isHod = (user?.level ?? 0) >= 2
+  // Deep link from the Hub Assistant: /training?module=…&lang=…&t=…
+  // ⚠️ READ, NEVER TRUSTED. The URL selects which card scrolls into view and
+  // where its playhead starts; it grants nothing. The module list is still the
+  // role-filtered one the server returned, so a hand-edited `module=` for a
+  // module this role has no business seeing simply matches no card.
+  const [sp] = useSearchParams()
+  const wantModule = sp.get('module') ?? undefined
+  const wantLang = sp.get('lang') ?? undefined
+  const tRaw = Number(sp.get('t'))
+  const wantT = Number.isFinite(tRaw) && tRaw >= 0 ? tRaw : undefined
   const refresh = () => { void qc.invalidateQueries({ queryKey: ['/training/modules'] }) }
 
   const mine = (
@@ -196,7 +238,11 @@ export default function TrainingPage() {
       {!isLoading && modules.length === 0 && (
         <Empty description="No training modules apply to your role yet" />
       )}
-      {modules.map((m) => <ModuleCard key={m.module_key} m={m} onChanged={refresh} />)}
+      {modules.map((m) => (
+        <ModuleCard key={m.module_key} m={m} onChanged={refresh}
+          seekTo={m.module_key === wantModule ? wantT : undefined}
+          wantLang={m.module_key === wantModule ? wantLang : undefined} />
+      ))}
     </>
   )
 

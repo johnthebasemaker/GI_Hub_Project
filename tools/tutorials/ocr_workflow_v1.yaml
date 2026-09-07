@@ -35,6 +35,15 @@ routes:
   - /execution
   - /training
 
+# ⚠️ WHO MAY BE OFFERED THIS AS A DEEP LINK (P12-6), and it is not the same
+# as who it was RECORDED as. `training_modules.required_roles` for this
+# module is 'supervisor,store_keeper': the store keeper verifies the
+# quantities the supervisor photographed, so they need to understand the
+# form too. Every role listed here must be able to open every route above —
+# the lint checks that, because a link to a page the viewer cannot open is
+# worse than no link.
+audience: [supervisor, store_keeper]
+
 manual_sections: [21, 24]
 
 redaction:

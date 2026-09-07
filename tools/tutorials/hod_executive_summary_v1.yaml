@@ -34,6 +34,11 @@ avatar:
 routes:
   - /hod/executive-summary
 
+# ⚠️ Deep-link audience (P12-6). The auditor can open this page read-only,
+# but the narration says "your own site" and "before a meeting" — it is
+# written for the person who owns the numbers, not the person checking them.
+audience: [hod]
+
 manual_sections: [2, 6, 24]
 
 redaction:
@@ -98,9 +103,9 @@ narration:
       change anything from here.
   - beat: range
     say: >-
-      Set the period before you read anything. It opens on today, which is
-      almost never the question being asked. Last seven days and This month
-      are one click, and every figure below moves with it.
+      Set the date range before you read anything. It opens on today, which
+      is almost never the question being asked. Last seven days and This
+      month are one click, and every figure below moves with it.
   - beat: kpis
     say: >-
       The strip across the top is the ledger for the period. Material

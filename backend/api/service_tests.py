@@ -19706,6 +19706,187 @@ async def test_ocr_workflow():
 
 
 
+# --- Suite CX: slice 12f — the assistant points at the frame ------------------
+async def test_tutorial_deeplinks():
+    """Suite CX — Phase 12 slice 12f: deep links into pre-rendered tutorials.
+
+    ⚠️ THE FENCE IS THE POINT, AND IT IS THE SAME FENCE. `tutorials.match()`
+    reuses `manual_index.Index.search(allowed=…)`, which filters candidates
+    BEFORE BM25 ranks them — rule 9's shape, reused rather than reimplemented.
+    So the checks that matter here are the ones that prove a role cannot reach a
+    tutorial outside its audience by ASKING WELL. Half of this suite is that.
+
+    ⚠️ AND THE SECOND THING IT PROVES IS THAT THE FEATURE CAN BE ABSENT. Until
+    the Hetzner cutover puts the renders in object storage (ruling Q3), a
+    production box has no manifests at all. A missing directory must yield no
+    links and no error, because an assistant that 500s because a video is
+    missing is a worse product than one that never had the feature.
+
+    Everything runs against manifests this suite writes into a temp directory —
+    it never reads `docs/tutorials/out/`, whose contents depend on whether
+    somebody has run a render on this machine.
+    """
+    import json as _json
+    import pathlib as _pl
+    import tempfile as _tf
+    from .ai import tutorials as _t
+
+    def _manifest(tid, title, audience, beats, module_key=None, lang="en"):
+        return {
+            "tutorial_id": tid, "title": title, "subtitle": f"{tid} subtitle",
+            "hub_role": audience[0] if audience else "store_keeper",
+            "audience": audience, "language": lang,
+            "training_module_key": module_key or tid,
+            "video": {"duration_s": 90.0},
+            "beats": beats,
+        }
+
+    RETURN_BEATS = [
+        {"id": "open", "start_s": 1.0, "note": "Return Stock",
+         "text": "This is Return Stock, and this is where you stage a return."},
+        {"id": "source", "start_s": 61.2, "note": "Which receipt is returned",
+         "text": "Say which receipt the material came from. The system shows "
+                 "that receipt locked, with its delivery note and its lot."},
+    ]
+    EXEC_BEATS = [
+        {"id": "open", "start_s": 2.0, "note": "Executive Summary",
+         "text": "This is the Executive Summary, a read-only view of your site."},
+        {"id": "floor", "start_s": 88.5, "note": "The valuation floor",
+         "text": "A material with no unit cost is not counted as worth nothing. "
+                 "It is reported as not valued and the total is a floor."},
+    ]
+
+    tmp = _tf.mkdtemp(prefix="gi_tut_")
+    (_pl.Path(tmp) / "sk.manifest.json").write_text(_json.dumps(
+        _manifest("sk_stage_return_v1", "Staging a return", ["store_keeper"],
+                  RETURN_BEATS)), encoding="utf-8")
+    (_pl.Path(tmp) / "hod.manifest.json").write_text(_json.dumps(
+        _manifest("hod_executive_summary_v1", "Reading the Executive Summary",
+                  ["hod"], EXEC_BEATS)), encoding="utf-8")
+    # No `audience` at all — the fail-closed default is the recorded role.
+    legacy = _manifest("legacy_v1", "An older render", ["supervisor"],
+                       [{"id": "open", "start_s": 3.0, "note": "QR code",
+                         "text": "Photograph the whole page including the QR "
+                                 "code, which tells us which form this is."}])
+    legacy.pop("audience")
+    (_pl.Path(tmp) / "legacy.manifest.json").write_text(
+        _json.dumps(legacy), encoding="utf-8")
+
+    original = _t.TUTORIAL_DIR
+    try:
+        _t.TUTORIAL_DIR = _pl.Path(tmp)
+        _t._CACHE["key"] = None
+
+        st = _t.stats()
+        check("CX-01 the index loads every manifest in the directory and "
+              "reports what it holds — an empty index is a visible state, not "
+              "a mystery about why no links appear",
+              st["indexed"] and st["tutorials"] == 3 and st["beats"] == 5,
+              f"{st}")
+
+        hit = _t.match("how do I stage a return", "store_keeper")
+        check("CX-02 a store keeper asking about returns is pointed at the "
+              "return tutorial",
+              bool(hit) and hit["tutorial_id"] == "sk_stage_return_v1",
+              f"{hit}")
+
+        # ── THE FENCE ───────────────────────────────────────────────────────
+        check("CX-03 ⚠️ an HOD asking the STORE KEEPER's question gets NOTHING "
+              "— the audience filter runs before the score, so no phrasing "
+              "reaches a tutorial the role may not watch",
+              _t.match("how do I stage a return", "hod") is None,
+              f"{_t.match('how do I stage a return', 'hod')}")
+        # ⚠️ THIS ONE FOUND A REAL DEFECT AND IS WORTH READING TWICE.
+        # `manual_index._tokens` expands SYNONYMS: "valuation" becomes
+        # "stock value board brief not valued". So this question shares the
+        # single accidental token "stock" with "This is Return Stock" — and
+        # with the 2.4x heading boost that alone scored 4.95, over the original
+        # floor of 4.0. The fence was never breached (the HOD tutorial stayed
+        # unreachable), but a Store Keeper was handed a confidently wrong link
+        # into their OWN tutorial. Raising the floor would have killed CX-15
+        # too; requiring two shared tokens kills only the coincidence.
+        check("CX-04 ⚠️ a question about another role's topic yields NO link "
+              "at all — not the closest thing in this role's own audience. "
+              "One word in common is a coincidence; two is a topic",
+              _t.match("reading the executive summary valuation floor",
+                       "store_keeper") is None,
+              f"{_t.match('reading the executive summary valuation floor', 'store_keeper')}")
+        check("CX-05 a role with no tutorials at all gets None rather than the "
+              "closest match — fail closed, like every other access decision",
+              _t.match("how do I stage a return", "logistics") is None, "")
+        check("CX-06 admin sees every tutorial, matching canAccess's admin "
+              "shadow rather than inventing a second rule",
+              (_t.match("how do I stage a return", "admin") or {})
+              .get("tutorial_id") == "sk_stage_return_v1", "")
+        check("CX-07 ⚠️ a manifest with NO `audience` falls back to the role it "
+              "was RECORDED as, never to everyone — an old file cannot widen "
+              "an audience by omission",
+              _t.match("photograph the QR code", "supervisor") is not None
+              and _t.match("photograph the QR code", "store_keeper") is None,
+              "")
+
+        # ── the link itself ─────────────────────────────────────────────────
+        deep = _t.match("which receipt do I pick when returning material",
+                        "store_keeper")
+        check("CX-08 the link points at the BEAT, not at the start of the "
+              "video — this is the whole feature, and it is only possible "
+              "because beats.json stamps a millisecond per UI step",
+              bool(deep) and deep["beat"] == "source" and deep["t"] > 60,
+              f"{deep}")
+        check("CX-09 the URL carries a module key, a language and a number of "
+              "seconds — no content, no token. It is a bookmark, not a grant",
+              bool(deep) and deep["url"].startswith("/training?module=")
+              and "&t=" in deep["url"] and "token" not in deep["url"],
+              f"{deep and deep['url']}")
+
+        # ── determinism and the floor ───────────────────────────────────────
+        a = _t.match("which receipt do I pick when returning material",
+                     "store_keeper")
+        b = _t.match("which receipt do I pick when returning material",
+                     "store_keeper")
+        check("CX-10 the same question from the same role returns the same "
+              "second every time — no model, no clock. A person shown a "
+              "different timestamp on Tuesday concludes the link is random",
+              a == b, f"{a} vs {b}")
+        check("CX-11 ⚠️ an unrelated question gets NO link. BM25 always ranks "
+              "something first, and 'the closest of three videos' is not 'a "
+              "video about this' — a confidently wrong link costs more than a "
+              "missing one",
+              _t.match("what is the weather in Jubail", "store_keeper") is None,
+              "")
+        check("CX-12 an empty question is refused before anything is scored",
+              _t.match("   ", "store_keeper") is None, "")
+
+        # ⚠️ THE NEGATIVE CONTROL FOR CX-04's FIX, and it matters more than the
+        # fix: a floor set high enough to kill the coincidence also killed this,
+        # a short honest question scoring 4.59 against the beat that exists to
+        # answer it. The overlap rule separates them; a bigger number does not.
+        hod_floor = _t.match("what does not valued mean", "hod")
+        check("CX-15 ⚠️ a SHORT honest question still gets its link. The guard "
+              "that stops a coincidence must not also stop a low-scoring real "
+              "hit — that is the difference between a rule and a threshold",
+              bool(hod_floor) and hod_floor["beat"] == "floor",
+              f"{hod_floor}")
+
+        # ── absence is a supported state ────────────────────────────────────
+        _t.TUTORIAL_DIR = _pl.Path(tmp) / "does-not-exist"
+        _t._CACHE["key"] = None
+        check("CX-13 ⚠️ with NO manifests — which is every production box until "
+              "the renders reach object storage — matching returns None and "
+              "raises nothing. The assistant answers exactly as it did before "
+              "the feature existed",
+              _t.match("how do I stage a return", "store_keeper") is None
+              and _t.stats()["present"] is False, f"{_t.stats()}")
+    finally:
+        # ⚠️ RESTORED, and `ci_preflight.sh` is the reason this is not optional:
+        # a module-level patch left in place is one of the five things
+        # `harness_hygiene.py` fails the build over.
+        _t.TUTORIAL_DIR = original
+        _t._CACHE["key"] = None
+        import shutil as _sh
+        _sh.rmtree(tmp, ignore_errors=True)
+
+
 # --- Suite CS: slice 10b — the daily claim, valuation, and the soft gate ------
 async def test_slice_10b_ecosystem():
     """Suite CS — Phase 10 slice 10b. Tracks 2, 3 and 5.
@@ -22593,6 +22774,10 @@ async def main() -> int:
           "every question and thrown away, and the queue that must never cost "
           "the request it is measuring")
     await test_ai_tracing()
+    print("\n CX. The assistant points at the frame — a deep link into the "
+          "second a step happens, behind the same fence rule 9 uses, and a "
+          "feature that is allowed to be absent")
+    await test_tutorial_deeplinks()
     print("\n BW. The suite's own isolation — 1,400+ checks commit through the "
           "real app, so WHICH database they reach is itself a gate")
     await test_database_isolation()
