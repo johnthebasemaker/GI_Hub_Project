@@ -51,7 +51,8 @@ diagnostic; nothing recorded that way may be published.
 | `playwright.config.ts` | One worker, serial, long timeouts, no retries. |
 | `stack.ts` / `stack-teardown.ts` | Wrap the E2E lifecycle; honour `GI_VIDEO_REUSE_STACK`. |
 | `harness/record.ts` | Beats, the synthetic cursor, the redaction hook, the scripted AI lane, the recording context. |
-| `sample_tutorial.spec.ts` | The one tutorial the prototype ships: Store Keeper → Hub Assistant. |
+| `tutorial.spec.ts` | **The ONE recorder for the whole catalogue.** It performs whatever `steps:` the tracked YAML declares. It replaced the prototype's hand-written `sample_tutorial.spec.ts`: ruling Q2 puts ~60 clips in the catalogue, and sixty bespoke spec files would be sixty places for the harness to drift — invisibly, because a tutorial recorded through a slightly different helper still produces a video, just a worse one. |
+| `harness/steps.ts` | The step vocabulary: `goto`, `click`, `type`, `press`, `hover`, `scroll`, `expect_visible`, `expect_hidden`. Deliberately small, and every verb is one a viewer can SEE — no `evaluate`, no `waitForResponse`, no branch. A tutorial that needs a branch is two tutorials. An unknown verb is **refused, never skipped**. |
 
 ## The rule-14 lint has two halves, and the second one is the oracle
 

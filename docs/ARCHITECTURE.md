@@ -8,14 +8,16 @@
 > Available-vs-Ordered + reverse SQM + COMPONENT IDENTITY; global table
 > tools)**; **updated 2026-08-13 (workflow polish + test isolation)** at gates
 > **updated 2026-09-03 (Phase 9 paper-first OCR + Phase 10 security, analytics
-> and training — see §7a–§7d)** at gates
-> `service_tests 2188/0 (suites A…CS, own throwaway DB) · Playwright 125/125 ·
-> AI guardrail Tier 1 24/24 (0 leaks) · parity:sme 1,313 · ui-math 33/0 ·
-> bug_check 599/0 · nav 50 routes · build+tsc ✅ ·
-> alembic single head e7f2a4c916b8`.
-> **The Hetzner deployment is PAUSED by decision** — next phase is Feature
-> Fine-Tuning and UI Polish. Locked rules + baselines in one page:
-> [`PROJECT_HANDOVER.md`](../PROJECT_HANDOVER.md).
+> and training — see §7a–§7d)**; **updated 2026-09-05 (Phase 11 tracing,
+> guards, gateway, eval gates — §7e–§7i)**; **updated 2026-09-07 (Phase 12
+> automated role tutorials and the assistant's deep links — see §7j and
+> §7k)** at gates
+> `ci_preflight 10 controls · service_tests 2,328/0 (suites A…CX, own throwaway
+> DB) · Playwright 128/128 · AI evals Tier 1 147/147 (0 leaks), recall 1.000 /
+> precision 0.994 · parity:sme 1,313 · ui-math 33/0 · bug_check 599/0/0 ·
+> nav 51 routes · build+tsc ✅ · alembic single head a1c9e64b3d70`.
+> **The Hetzner deployment is PAUSED by decision.** Locked rules + baselines in
+> one page: [`PROJECT_HANDOVER.md`](../PROJECT_HANDOVER.md).
 
 ---
 
@@ -118,10 +120,12 @@ four copies of everything it sends. `services/dailyjob.py` is that claim and all
 three daily loops now take it — see §7d for the bug it closed.
 
 `models.py` (repo `backend/models.py`) is the single schema contract; alembic
-migrations in `backend/alembic/versions` (single head **`e7f2a4c916b8`** =
-slice 10b: execution `Shift` + `daily_job_runs` + the training registry; before
-it `d5b8c3f92a41` = `rate_buckets`, `c4a7e2b81f36` = ai_jobs worker heartbeat,
-`b8d3f1a72c94` = ai_jobs indexes + payload purge). Modules:
+migrations in `backend/alembic/versions` (single head **`a1c9e64b3d70`** = 11e
+`ai_answer_cache`; before it `f8a3c05d1b27` = `ai_traces`, `e7f2a4c916b8` =
+slice 10b's execution `Shift` + `daily_job_runs` + the training registry,
+`d5b8c3f92a41` = `rate_buckets`, `c4a7e2b81f36` = ai_jobs worker heartbeat,
+`b8d3f1a72c94` = ai_jobs indexes + payload purge). ⚠️ **Phase 12 added no
+migration at all** — it fills tables slice 10b created. Modules:
 
 | Module | Owns |
 |---|---|
@@ -137,7 +141,7 @@ it `d5b8c3f92a41` = `rate_buckets`, `c4a7e2b81f36` = ai_jobs worker heartbeat,
 | `requests.py` | supervisor SMRs (worker must be an active employee at the site) → SK approve → HOD issue queue |
 | `sme.py` + `sme_engine.py` | SME read layer + planning engine — **dual TS/Python engines with golden parity; change BOTH or neither** (frontend twin: `frontend/src/sme/engine.ts`). **2026-07-30 COMPONENT IDENTITY:** every pool/total/shortfall/report row keys on `Material_Key` = `mat_key(Material_Code, SAP_Code)`; `sap_norm()` strips whitespace. **2026-08-05 SUBSET RULE:** the workbook's `Ordered_Qty` is the TOTAL procured and `Available_Qty` the arrived part OF it, so tier 2 = `max(ordered − available, 0)` (`Alloc_Pending` / `pool_pending_init`) and `Allocated_Qty` = `max(available, ordered)` — the additive reading understated the buy list by 22,951 units. Suite BC. **2026-08-04 SCOPE-WIDE BOTTLENECK:** every scope-level coverage KPI is `Σ buildable m² ÷ Σ remaining m²` (`session.ts scopeBottleneckCoverage`, shared by the Session and Location reports), never a quantity average — gated by `npm run test:ui-math`. **2026-08-03 STRICT TIER SEGREGATION:** readiness reads `Alloc_Available` ONLY (`Status`, `Completion_Pct`, `SQM_Achievable_Now`, `Coverage_Now_Pct`, `Fulfillment_Pct`); `Alloc_Ordered` feeds only the `*_With_Ordered_*` twins + the net buy list; `Allocated_Qty` is a conservation field and never a coverage numerator. **2026-08-02 STRICT DECOUPLING:** the estimator is a separate pool from the ERP warehouse — `available_qty` **is** `Initial_Available_Qty`, `ordered_qty` **is** `Initial_Ordered_Qty`, both from `sme_inventory_seed`; `receipts`/`consumption`/`returns`/`inventory` are never read, and the 2026-07-28 on-order netting `max(Initial_Ordered_Qty − Σreceipts, 0)` is GONE with them (it only ever undid receipts flowing into availability). Suite BA. **2026-07-28 two-tier allocation:** `Allocated_Qty = Alloc_Available + Alloc_Ordered`, `Shortfall_Available_Qty` (physical → feasibility) vs `Shortfall_Qty` (net → buy list), plus reverse-SQM `build_sqm_rollup`/`build_sqm_by_code` where a unit's achievable area is its SCARCEST component's rate. **`GET /sme/calculator?code&sqm`** (2026-07-18, level ≥2): recipe demand math `For_1_SQM × SQM` per component line, pack counts from Package_Size, **SME seed stock per COMPONENT `(Material_Code, SAP_Code)`** — 2026-08-04 overturned the last Material_Code pooling here too (was the ERP ledger until the 2026-08-02 decoupling); `sap_norm()` matches the SQL's `REPLACE(TRIM(...))` on both sides + per-line shortfall + human explanation strings — the 🧮 Smart Calculator tab's backend |
 | `sme_master.py` | **Phase S6 (cutover day): Master Data CRUD** — `/sme/master/*` equipment/recipes/materials-seed/progress/settings, exact-lock {hod, admin}, HOD site-pinned, every write audited; equipment create seeds `sme_sqm_progress`, delete cascades it; materials write `sme_inventory_seed` ONLY (Canon Rule 2) |
-| `ai/` | Hub Assistant SSE, OCR lanes, PDF extract, `/ai/nl-search` (unscoped, Ollama→safety gate→`gi_ai_ro` read-only PG login), **`/ai/query` two-lane chat-with-your-data** (below), **`ai/handwritten.py`** — the handwritten-consumption-form spec implementation (below §7) |
+| `ai/` | Hub Assistant SSE, OCR lanes, PDF extract, `/ai/nl-search` (unscoped, Ollama→safety gate→`gi_ai_ro` read-only PG login), **`/ai/query` two-lane chat-with-your-data** (below), **`ai/handwritten.py`** — the handwritten-consumption-form spec implementation (below §7), and **`ai/tutorials.py`** — the Phase 12f deep-link matcher (§7k): one BM25 chunk per recorded BEAT, the role fence built from each script's `audience` and applied BEFORE scoring (P12-6). Read-only, deterministic, and allowed to be absent |
 | `notifications.py` + `services/notifications.py` | in-app bell (`app_notifications`) + unified `dispatch()` (bell ALWAYS + best-effort WhatsApp; `X-Delivery-Preference: evening` stages into `pending_summary_notifications` for the 16:00 digest; critical always immediate) |
 | `services/whatsapp.py` | Meta Cloud API v2 outbox (`whatsapp_outbox`), approved templates `gi_action_required/gi_status_update/gi_critical_alert/gi_otp_code/gi_evening_summary` (lang **`en`**), friendly #131030 sandbox handling |
 | `webhook.py` | inbound Meta webhook (`/whatsapp/webhook` + `/api/v1/…`): verify-token handshake, **X-Hub-Signature-256 HMAC**, STOCK/RESET PASSWORD commands, session-text replies |
@@ -148,8 +152,8 @@ it `d5b8c3f92a41` = `rate_buckets`, `c4a7e2b81f36` = ai_jobs worker heartbeat,
 | `qc.py` | the `qc` role, dual scoping (`qc_scope`), accounts + admin-decided transfers, the `qc_inspections` ledger and the one decide endpoint. **2026-08-13:** the list/fetch are decorated with the material NAME (from `inventory."Equipment_Description"`) and the certificate's number/filename, and `GET /qc/inspections/{id}/certificate` streams the MTC **through the inspection**, inheriting its scoping rather than re-deriving it. A rejection mints `return_no` = `QCR-YYYYMMDD-<id>` |
 | `health_monitor.py` | the 07:00 Morning Briefing: **ten** probes, each individually guarded, silent on a clean run but always audited, body forced to ONE line (Meta rejects a newline in a template parameter). **2026-08-13:** `probe_missing_mtc` + `dispatch_missing_mtc` — uncertified Surface Shields, grouped by PLACE and routed by location (warehouse → logistics/warehouse_user/qc; site → store_keeper/hod/qc/logistics) because the briefing's own admin+HOD audience cannot fix it. **Slice 10b:** `probe_day_shift_mtc` + `dispatch_day_shift_mtc` — uncertified material staged for TODAY'S day shift, which unlike the standing sweep has a deadline measured in hours. Channels chosen by WHO is asked: in-app+WhatsApp to colleagues, EMAIL to Logistics only, and a WhatsApp **DRAFT** for anyone outside the company. Rides the same 07:00 `dailyjob` claim |
 | `testdb.py` | **the throwaway database the service tests run against (2026-08-13, rule 15).** Provisions `gihub_svctest` from `gi_database.db` via the production cutover script and rewrites `DATABASE_URL` before `db.py` is imported; refuses to run if source and target are the same name. `_apply_fixtures` carries the state a cutover-built database lacks (the AI read-only role, the `employees` site backfill, the nine PPE SAPs, the entry-doc switch) |
-| `service_tests.py` | the **2,188-check** gate (suites A…CS), see §8 |
-| `training.py` | **Track 5 (slice 10b):** the training hub and the SOFT gate. `/training/modules`, `/training/gate/{feature}` (⚠️ `allowed` is unconditionally true — it reports, it never refuses), `/training/progress` (monotonic), `/training/acknowledge` (refused below 90% watched), `/training/defer` (the "Watch later" record), `/training/compliance` (HOD; driven from `users`, not from the compliance table), and the admin asset/version endpoints. See §7d |
+| `service_tests.py` | the **2,328-check** gate (suites A…CX), see §8 |
+| `training.py` | **Track 5 (slice 10b):** the training hub and the SOFT gate. `/training/modules`, `/training/gate/{feature}` (⚠️ `allowed` is unconditionally true — it reports, it never refuses), `/training/progress` (monotonic), `/training/acknowledge` (refused below 90% watched), `/training/defer` (the "Watch later" record), `/training/compliance` (HOD; driven from `users`, not from the compliance table), and the admin asset/version endpoints. See §7d. ⚠️ Phase 12 is what FILLS it: `storage_uri` and the long-empty `captions_uri` are written by `POST /training/assets` from the artefacts `tools/generate_tutorial.py` produces (§7j), and the page honours `?module&lang&t` so the assistant can deep-link a step (§7k) |
 
 ## 3. Database facts that bite
 
@@ -1111,6 +1115,128 @@ Listing the compliance table shows only people who have engaged — so somebody
 who has never opened the module, the one most worth knowing about, would be
 invisible. The absence is the finding.
 
+### 7j. Phase 12 — the tutorial pipeline (two passes, then one filtergraph)
+
+A role tutorial is a **screencast of the real UI** with a **narrating avatar**
+composited over it. Nothing here runs in the request path; it is an offline
+producer whose output lands in the training hub slice 10b already built
+(§7d). Owned by `tools/generate_tutorial.py` + `tests/video_gen/`.
+
+```
+tools/tutorials/<id>.yaml          ← the ONLY thing that may leave the machine
+   │
+   ├─▶ [egress guard]  assert_text_only()      P12-1 provenance whitelist
+   │        └─▶ HeyGen payload ─▶ avatar audio ─┐
+   │                        (durations MEASURED) │      ◀── PASS A
+   ▼                                             ▼
+ shot list + per-beat HOLDS ─▶ Playwright ─▶ screencast.webm + beats.json
+        (tests/video_gen/tutorial.spec.ts, gihub_tutorial_pw :8011/:5184)
+                                                 │      ◀── PASS B
+                                                 ▼
+                       ffmpeg: freeze-pad → scale → avatar → captions
+                                                 │
+                                                 ▼
+                    <id>.mp4 + <id>.vtt + <id>.manifest.json
+```
+
+⚠️ **PASS A COMES FIRST, AND THAT ORDERING IS THE DESIGN.** A Playwright-driven
+UI is far faster than a person explaining it. Built the other way round — record
+first, narrate second — the first run overran **all six** of its beats: 40.2 s
+of speech over a 19.6 s recording, the worst by 5.15 s. So the audio is rendered
+and measured first and each UI step is held for the length of its own line.
+With a real HeyGen key the ordering is unchanged: the avatar is requested
+**before the browser opens**, because its timing is what the screencast is cut
+to. This is the single thing most likely to be undone by someone "simplifying"
+the script into a linear flow.
+
+**Pass B** records against the SYNTHETIC dataset (P12-0), built by
+`tools/make_tutorial_db.py` — the real classification structure with every
+name, description, SAP code, quantity and date invented, on a pinned `ANCHOR`
+so the numbers on screen cannot drift between renders (P12-5). It reuses the
+E2E suite's own lifecycle on its own database and ports (P12-4), and
+`stack.ts` **refuses to build on an occupied port** — a stale uvicorn answers a
+health poll instantly, and three tutorials were once recorded through servers
+nobody knew were running.
+
+**The composite** is one filtergraph: `split → trim → tpad=stop_mode=clone →
+concat` (the freeze-padding), then a lanczos scale to 1920×1080, the avatar
+through `alphamerge`, the watermark, and one caption overlay per beat gated on
+`enable=between(t,…)`.
+
+⚠️ **Freeze-padding is what makes one screencast serve four languages.** Every
+beat already ends on a static hold, so extending it duplicates identical frames
+— invisible. `beats.json` supplies the segment boundaries, so a language cut is
+an ffmpeg pass rather than a second recording: the browser runs **once per
+tutorial, not once per language**. Measured: 8.86 s padded into one beat,
+47.72 s → 56.58 s, mean per-channel frame difference **0.12/255** inside the pad
+against **1.5/255** across the boundary.
+
+⚠️ **Three measured facts about this machine that shaped the code**, two of
+which fail silently:
+
+* Homebrew's ffmpeg 8.1.2 has **no `drawtext`** (built without libfreetype), so
+  every caption is a Pillow RGBA PNG composited with `overlay`.
+* It **silently discards video alpha** — `-pix_fmt yuva420p` with `libvpx-vp9`
+  exits 0, warns about nothing and writes `yuv420p`. Rule 16 in a new domain:
+  an exit code is not a result, so the `pix_fmt` is read back and an
+  `alphamerge` mask path takes over (which is also the branch a green-screen
+  delivery would use).
+* Playwright's `recordVideo.size` **does not scale the page** — a 1536×864
+  viewport in a 1920×1080 canvas is drawn 1:1 at the top-left, leaving black
+  over exactly 20% of each axis. The two are pinned equal; the upscale happens
+  once, in ffmpeg.
+
+**The scripts are data, and they are linted before a browser starts:** the
+rule-14 route lint (every role in `audience:` must be able to open every
+declared route, checked against a model of `canAccessPath` **and** against the
+paths the browser actually landed on), the rule-9 manual fence (`manual_sections:`
+against `manual_qa.allowed_sections()` itself), and the redaction lint (a
+replacement that contains the thing it replaces cannot terminate — `hod` →
+`demo.hod` produced `demo.demo.hod` until the renderer stalled).
+
+### 7k. Phase 12f — the assistant answers, and points at the frame
+
+`backend/api/ai/tutorials.py`. When a Hub Assistant answer matches a recorded
+step, the SSE stream emits one extra frame after the tokens:
+
+```json
+{"tutorial": {"module_key": "sk_stage_return_v1", "language": "en",
+              "beat": "source", "t": 61.2,
+              "url": "/training?module=sk_stage_return_v1&lang=en&t=61.2"}}
+```
+
+The UI renders a **Watch it** button; `/training` reads `?module&lang&t` and
+seeks that card's player once, clamped a second inside the duration (seeking to
+the end fires `ended` on some browsers, which would beacon a completion the
+viewer never earned into a compliance record).
+
+⚠️ **P12-6 — the fence runs before the score, and it is THE SAME FENCE.** The
+matcher reuses `manual_index.Index.search(allowed=…)` — rule 9's machinery —
+with one `Chunk` per BEAT (`chapter` = the beat's index, `heading` = its note,
+`text` = its narration line) and `allowed` built from each script's declared
+`audience`. A tutorial a role may not watch is never a candidate.
+
+**Two floors, and the second one is the real guard.** BM25 always ranks
+something first, and "the closest of four videos" is not "a video about this".
+A candidate must clear `MIN_SCORE = 4.0` **and** share at least
+`MIN_TOKEN_OVERLAP = 2` distinct tokens with the beat it won on.
+
+> ⚠️ The overlap rule exists because a score cannot tell a coincidence from a
+> weak match. `manual_index._tokens` expands SYNONYMS — "valuation" becomes
+> "stock value board brief not valued" — so a Store Keeper asking about the
+> executive summary's valuation floor shared the single accidental token
+> "stock" with *"This is Return Stock"*, and the 2.4× heading boost scored it
+> 4.95 over a floor of 4.0. Raising the floor to 6.0 killed the coincidence AND
+> a real hit (an HOD asking *"what does not valued mean"* scores 4.59 against
+> the beat that exists to answer it). One word in common is a coincidence; two
+> is a topic. Suite CX-04 is the trap, CX-15 the control.
+
+**It is allowed to be absent.** Until the renders reach object storage, a
+production box has no manifests: the matcher returns `None`, raises nothing, and
+`/ai/health` reports `tutorials: {present, tutorials, beats, indexed}` so an
+empty index is a visible state rather than a mystery. Deterministic throughout —
+no model, no clock — so the same question returns the same second every time.
+
 ## 8. Testing — the gates
 
 > 🔄 **2026-08-13 — the service tests run against their OWN database.**
@@ -1130,7 +1256,7 @@ invisible. The absence is the finding.
 bash bin/ci_preflight.sh
 ```
 ```bash
-# 1. service tests (2,309 checks, suites A…CW) — CI mirror, own throwaway DB
+# 1. service tests (2,328 checks, suites A…CX) — CI mirror, own throwaway DB
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
 JWT_SECRET=ci-only-service-test-secret-key-32bytes-min \
 .venv/bin/python -u -m backend.api.service_tests
@@ -1146,7 +1272,7 @@ JWT_SECRET=ci-only-service-test-secret-key-32bytes-min \
 npm run build --prefix frontend && cd frontend && npx tsc --noEmit
 
 # 4. headless E2E (Playwright — builds/destroys its own gihub_e2e_pw stack)
-cd tests/e2e && npm test        # 125 tests, ~55 s
+cd tests/e2e && npm test        # 128 tests, ~55 s
 
 # 5. AI eval — the DETERMINISTIC half gates: Tier 1 (147 cases, what the model
 #    was SHOWN) plus contextual RECALL and PRECISION at >= 0.85. No model
@@ -1163,7 +1289,14 @@ bash bin/ai_eval_tier2.sh --record # move the baseline, deliberately
 # 6. nav manifest — every routable page must declare who may open it (51 routes)
 npm run test:nav --prefix frontend
 
-# 7. alembic single head
+# 7. 🎬 tutorial scripts — NOT A GATE (Phase 12). `--dry-run` lints every
+#    script without opening a browser: the rule-14 route lint (every role in
+#    `audience:` may open every declared route), the rule-9 manual fence
+#    (`manual_sections:` vs manual_qa.allowed_sections()) and the redaction
+#    lint. A tutorial that renders badly is one to re-render, not a red build.
+.venv/bin/python tools/generate_tutorial.py --all --dry-run
+
+# 8. alembic single head
 .venv/bin/python -c "from alembic.config import Config; from alembic.script import ScriptDirectory; c=Config('backend/alembic.ini'); c.set_main_option('script_location','backend/alembic'); print(ScriptDirectory.from_config(c).get_heads())"
 ```
 Test-compat switches: service_tests sets `require_entry_documents='0'` first

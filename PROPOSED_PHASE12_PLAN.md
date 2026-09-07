@@ -1,10 +1,14 @@
 # PROPOSED PHASE 12 PLAN — Automated Role-Based Video Tutorials
 
 > **Status: APPROVED. Q1–Q5 and Q11 answered by the operator 2026-09-06 and
-> now LOCKED (§9). Slices 12a and 12b are built.** No application code is
-> changed.
-> Branch `chore/phase12-prototype` → `feat/phase12-tutorial-dataset` →
-> `feat/phase12-recorder`, written 2026-09-06 against `main` @ `2e95f9d`,
+> now LOCKED (§9). ALL FIVE SLICES ARE MERGED — 12a, 12b, 12c and 12f;
+> only 12d (HeyGen, needs a key) and 12e (object storage, waits for Hetzner)
+> remain.** ⚠️ **Q7 was answered on 2026-09-06: narration egress is SIGNED
+> OFF**, so 12d waits on a key rather than on a decision. No application code
+> was changed by this plan itself.
+> Branches `chore/phase12-prototype` → `feat/phase12-tutorial-dataset` →
+> `feat/phase12-recorder` → `feat/phase12-scripts` →
+> `feat/phase12-deeplinks`, written 2026-09-06 against `main` @ `2e95f9d`,
 > after reading `PROJECT_HANDOVER.md`, `SESSION_HANDOVER.md`, `.claude/RULES.md`,
 > `docs/ARCHITECTURE.md`, `REPO_MAP.md`, `USER_MANUAL.md` (§ index),
 > `tests/e2e/**`, `backend/api/training.py` and the slice-10b migration.
@@ -37,7 +41,7 @@
 | [6](#6-scaling-to-the-whole-catalogue) | Scaling | One screencast per tutorial, N language cuts by **freeze-padding at beat boundaries**. The avatar is cached by narration hash, so a UI change costs **zero** HeyGen credits |
 | [7](#7-sequencing--six-slices) | Sequencing | 6 slices. **12a is blocking and is not the video work** |
 | [8](#8-risks-and-what-i-am-not-confident-about) | Risks | The HeyGen path is unverified; `say` is macOS-only; beat `t0` is asserted, not proved |
-| [9](#9-clarifying-questions) | **Questions** | 14 questions, **5 blocking**. Q1 (the dataset), Q4 (what a re-render does to compliance) and Q7 (does narration text leaving the network need sign-off) change the shape of the work |
+| [9](#9-clarifying-questions) | **Questions** | 14 questions. **All the blocking ones are answered and locked** — Q1 (the dataset), Q2, Q3, Q4 (what a re-render does to compliance), Q5, Q11, and Q7 (narration egress, signed off 2026-09-06) |
 
 ---
 
@@ -536,10 +540,10 @@ before it is safe to publish.
 |---|---|---|---|
 | **12a** ✅ | `feat/phase12-tutorial-dataset` | **`tools/make_tutorial_db.py`** — 306 items across the eleven real categories, 90 receipts, 140 consumption rows, 90 dated lots, 14 invented employees on a reserved badge block, the fourteen real lining systems, and the rule-1c tier fixture. Deterministic (pinned `ANCHOR`). Plus `--dataset {tutorial,e2e}` on the recorder, its own database and its own two ports. | ⚠️ **WAS BLOCKING — DONE.** |
 | **12b** ✅ | `feat/phase12-recorder` | `scripts/` → `tools/` (Q11). Manifest (P12-5) with `script_sha256` + git SHA + dataset version. **WebVTT** into the existing `captions_uri`. **Freeze-padding** in the composite. A batch runner with `--dry-run`. The **rule-14 route lint**. | — |
-| **12c** | `feat/phase12-scripts` | The catalogue: one YAML per role × process. **The largest slice and it is writing, not coding** — the source is `USER_MANUAL.md`, which is already role-fenced by rule 9's allowlists. | — |
-| **12d** | `feat/phase12-heygen` | Live HeyGen: submit, poll, download, retry, the credit budget, and a real 200 against the unverified path. **Needs a key.** | Needs Q7 + a key |
+| **12c** ✅ | `feat/phase12-scripts` | A **declarative** recorder (`steps:` in the YAML — ~60 bespoke spec files would be 60 places for the harness to drift) plus the first four tutorials, narrated from role-fenced manual chapters and checked against `manual_qa.allowed_sections()` itself. **The rest of the catalogue is now a YAML file each.** | — |
+| **12d** | `feat/phase12-heygen` | Live HeyGen: submit, poll, download, retry, the credit budget, and a real 200 against the unverified path. **Needs a key.** | ✅ Q7 signed off — needs only the key |
 | **12e** | `feat/phase12-publish` | Publishing: object storage, `POST /training/assets`, the version-bump policy (Q4), and a **human review step** — §5.1 is the argument for it. | Needs Q3, Q4 |
-| **12f** | `feat/phase12-deeplinks` | The assistant returns a text answer **plus a deep link into the pre-rendered tutorial at the right beat** (§2.2). Small, and it is the feature the brief actually wanted. | — |
+| **12f** ✅ | `feat/phase12-deeplinks` | The assistant returns a text answer **plus a deep link into the pre-rendered tutorial at the right beat** (§2.2) — the feature the brief actually wanted. Behind the same fence rule 9 uses (**P12-6**), with a two-token overlap rule the floor alone could not provide. Suite **CX** (15). | — |
 
 **Two guardrails on the whole phase:**
 
@@ -599,7 +603,7 @@ ageing is a versioned decision somebody makes and drift is one nobody notices.
 | # | Question | My recommendation |
 |---|---|---|
 | **Q6** | Who writes the narration — extracted from `USER_MANUAL.md`, or fresh? | Extracted and then edited for the ear. The manual is already role-fenced and already the AI corpus; fresh prose creates a fourth thing to keep in step with it. |
-| **Q7** | Does narration text leaving the network need written sign-off? | Yes, once, on the same footing as P11-9's two switches for vision. **Blocking 12d only.** And note §3.4: the pipeline works with zero egress if the answer is no. |
+| ~~**Q7**~~ ✅ | ~~Does narration text leaving the network need written sign-off?~~ | **ANSWERED 2026-09-06 — signed off.** Reviewed narration text is approved to leave the network for the HeyGen API once a live key is configured. 12d now waits on the key, not on a decision. §3.4 stands as the fallback: the pipeline still works with zero egress. |
 | **Q8** | Stock HeyGen avatar, or a likeness of a real GI person? | Stock. A likeness is a consent question, a leaver question, and a re-record every time that person leaves. |
 | **Q12** | Do tutorials cover the LEGACY Streamlit app? | No. It is feature-frozen and being switched off; a tutorial is a reason to keep using it. |
 | **Q13** | Do site users watch on phones? | If yes, add a 9:16 cut — a second composite pass over the same screencast, not a second recording. |

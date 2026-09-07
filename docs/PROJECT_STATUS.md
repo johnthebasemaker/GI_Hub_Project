@@ -1,4 +1,4 @@
-# PROJECT STATUS — resume here (updated 2026-09-03 · Phase 10 COMPLETE · deployment PAUSED)
+# PROJECT STATUS — resume here (updated 2026-09-07 · Phase 12 COMPLETE · deployment PAUSED)
 
 > 🔄 **2026-08-13 — the backend suite runs against its OWN database.**
 > `gihub_svctest`, rebuilt from `gi_database.db` before the engine is created,
@@ -26,12 +26,70 @@ Legacy/SME rules: [`handoff.md`](../handoff.md) (SME Canon).
 
 ---
 
+## 0d. Phase 12 — COMPLETE (2026-09-06 → 2026-09-07)
+
+**Automated Role-Based Video Tutorials.** Five branches, all merged (PRs
+#73–#76). Baselines now **service tests 2,328 / 0** (suites A…CX) · **E2E 128**
+· legacy 599/0/0 · nav 51 · **AI evals Tier 1 147/147, 0 leaks** · alembic head
+unchanged at **`a1c9e64b3d70`** — Phase 12 added **no migration**, because it
+fills the training tables slice 10b already created.
+
+A tutorial is a **Playwright screencast of the real UI** plus a **narrating
+avatar**, composited locally into an MP4 with a WebVTT sidecar and a manifest.
+Full architecture in [`ARCHITECTURE.md`](ARCHITECTURE.md) §7j (the pipeline)
+and §7k (the assistant's deep links); the seven locked **P12-x** rulings are in
+`PROJECT_HANDOVER.md`.
+
+> ⚠️ **THE FINDING THAT REFRAMED THE PHASE.** The brief asked how to stop
+> proprietary data reaching HeyGen's API. That is the easy half —
+> `assert_text_only()` closes it by refusing any free-text field that is not
+> character-for-character a reviewed line from the tracked script. **The hard
+> half is that the MP4 is the sensitive artefact**, and it is sensitive whether
+> or not it ever touches a cloud: `tests/e2e/global-setup.ts` loads its
+> throwaway database from the REAL `gi_database.db`, so the prototype's first
+> frame carried real employee names, real material descriptions, real SAP codes
+> and real quantities — into a file people forward. Hence **P12-0**: a tutorial
+> is recorded against SYNTHETIC data, or it is not published.
+
+**What shipped**
+
+| Slice | What |
+|---|---|
+| prototype | The pipeline end to end, minus one HTTP call. Egress guard, two-pass timing, ffmpeg composite |
+| **12a** | `tools/make_tutorial_db.py` — real classification structure, every name/description/SAP/quantity/date invented, deterministic on a pinned `ANCHOR`. Its own database `gihub_tutorial_pw` on :8011/:5184 with **no file under `tests/e2e/` edited** |
+| **12b** | The manifest (P12-5), **WebVTT** into the `captions_uri` column empty since 10b, freeze-padding, the batch runner, the rule-14 route lint |
+| **12c** | The **declarative** recorder (`steps:` in the YAML) and the first four tutorials, narrated from role-fenced manual chapters |
+| **12f** | The assistant answers **and** deep-links to the second the step is on screen. Suite **CX** (15 checks) |
+
+**Four tutorials rendered** (1920×1080, worst narration overrun +0.00 s):
+`ocr_workflow_v1` 1:31 · `sk_stage_return_v1` 1:31 · `hod_executive_summary_v1`
+1:53 · `store_keeper_hub_assistant` 0:47.
+
+### 0d-i. ⚠️ What is deliberately NOT done, and why it blocks nothing
+
+* **The HeyGen submit/poll/download half.** `heygen_live()` is written from the
+  published v2 contract and marked **UNVERIFIED** in the source — no key has
+  ever been used against this repository — and the poll half is deliberately
+  unwritten, because guessing at a job-status shape produces code that looks
+  finished and is not. Narration egress is **signed off by the operator
+  (2026-09-06)**; it needs a key, not a decision.
+* **Object storage for the renders.** `docs/tutorials/out/` is gitignored and
+  local. This is coupled to the Hetzner cutover (operator ruling Q3).
+  ⚠️ **Consequence worth knowing on a fresh box:** with no manifests, the
+  assistant's deep links simply never appear. That is a supported state, not a
+  fault — `GET /ai/health` reports `tutorials: {present, tutorials, beats,
+  indexed}` so an empty index is visible rather than a mystery, and suite CX-13
+  pins the behaviour.
+* **The rest of the ~60-clip catalogue** (operator ruling Q2). The recorder is
+  declarative, so a new tutorial is a YAML file, not a spec file.
+
 ## 0c. Phase 10 — COMPLETE (2026-09-02 → 2026-09-03)
 
 **Enterprise Security, Automated Analytics & Ecosystem Integration.** Three
-branches, all merged. Baselines now **service tests 2,188 / 0** (suites A…CS) ·
-**E2E 125** · legacy 599 · nav 50 · **AI guardrail Tier 1 24/24, 0 leaks** ·
-alembic head **`e7f2a4c916b8`**.
+branches, all merged. Baselines **as at the end of Phase 10** were
+**service tests 2,188 / 0** (suites A…CS) · **E2E 125** · legacy 599 · nav 50 ·
+**AI guardrail Tier 1 24/24, 0 leaks** · alembic head **`e7f2a4c916b8`**.
+*(Current numbers are in §1; this line is what this phase left behind.)*
 
 > ⚠️ **The phase as briefed would have rebuilt shipped code.** The planning pass
 > (`PROPOSED_PHASE10_PLAN.md`) found 2FA already complete, the MTC chase sweep
@@ -63,7 +121,7 @@ looking for them:**
 
 📌 **Open, not a regression:** the AI assistant's Tier 2 generation score is
 **64%** against a 95% target (was 43% before the anti-confabulation prompt
-rule). Tier 1 is 24/24 with zero leaks on the same run, so nothing forbidden
+rule). Tier 1 passes with zero leaks on the same run, so nothing forbidden
 reaches the model — the gap is an 8B model preferring to answer rather than
 refuse. The lever is a larger chat model, not more prompt text. The threshold
 was deliberately not lowered.
@@ -111,7 +169,8 @@ quietly.
 ## 0. Current state in one paragraph
 
 **The GI Hub v2 stack (React 19 + FastAPI + PostgreSQL 16) is
-FEATURE-COMPLETE and deployment-ready.** Everything through the 2026-07-18
+FEATURE-COMPLETE and deployment-ready.** *(Current through **Phase 12**,
+2026-09-07 — role video tutorials and the assistant's deep links; see §0d.)* Everything through the 2026-07-18
 five-phase pre-deploy batch is shipped and green: the full legacy parity
 program, Man-Hours, the Intelligence layer (AI-0…AI-5), the SME rebuild
 S1–S6 + Smart Calculator, native WhatsApp/email/notifications (inbound
@@ -147,12 +206,12 @@ kit: `docs/DEPLOY.md` + `deploy/`), plus one Cloudflare dashboard action for
 the native apps (§3.6). Locked rules + baselines:
 [`PROJECT_HANDOVER.md`](../PROJECT_HANDOVER.md).
 
-## 1. Gates (all green locally — 2026-09-03)
+## 1. Gates (all green locally — 2026-09-07)
 
 | Gate | Result | Command |
 |---|---|---|
 | **Harness hygiene (runs FIRST in CI)** | ✅ clean · 10 negative controls | `bash bin/ci_preflight.sh` |
-| Backend service tests | **2309/0** (suites A…CW, **own throwaway DB**) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
+| Backend service tests | **2328/0** (suites A…CX, **own throwaway DB**) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
 | Playwright E2E | **128/128** (~50 s, own throwaway DB) | `cd tests/e2e && npm test` |
 | **AI guardrail — Tier 1** | **147/147, 0 leaks** (also runs inside suite CQ) | `.venv/bin/python -m tests.ai_eval.runner` |
 | **AI retrieval — recall / precision** | **1.000 / 0.994** (HARD GATE ≥ 0.85) | same command |
@@ -163,7 +222,8 @@ the native apps (§3.6). Locked rules + baselines:
 | SME engine parity | **1,313 comparisons** | `npm run parity:sme --prefix frontend` |
 | SME UI math | **33/0** | `npm run test:ui-math --prefix frontend` |
 | Navigation route coverage | **51 routes, all claimed** | `npm run test:nav --prefix frontend` |
-| Alembic | single head **`a1c9e64b3d70`** (11e: `ai_answer_cache`; 11c added `ai_traces` `f8a3c05d1b27`) | see ARCHITECTURE §8 |
+| Alembic | single head **`a1c9e64b3d70`** (11e: `ai_answer_cache`; 11c added `ai_traces` `f8a3c05d1b27`). ⚠️ **Phase 12 added NO migration** — it fills tables slice 10b already created | see ARCHITECTURE §8 |
+| 🎬 Tutorial scripts | **NOT A GATE, by design.** `--dry-run` lints every script (rule-14 routes, rule-9 manual fence, redaction) without opening a browser | `.venv/bin/python tools/generate_tutorial.py --all --dry-run` |
 | Derived-view parity | **5/5** ⚠️ fresh cutover / CI only | `DATABASE_URL=… .venv/bin/python tools/parity_check.py` |
 | Release pipeline | desktop ✅ (dmg/exe/msi on v0.1.0–v1.0.1) · Android fixed (JDK 21) — next tag should attach the `.apk` | `git tag vX.Y.Z && git push origin vX.Y.Z` |
 
@@ -271,6 +331,16 @@ real PostgreSQL 16.
 
 ## 2. What shipped (compressed — full history in POSTGRES_MIGRATION.md §8)
 
+- **Phase 12 — Automated Role-Based Video Tutorials (2026-09-06 → 09-07).**
+  Five branches, plan in `PROPOSED_PHASE12_PLAN.md`, seven `P12-x` rulings in
+  `PROJECT_HANDOVER.md`, architecture in `ARCHITECTURE.md` §7j/§7k. Full
+  write-up in **§0d** above. In one line: a tutorial is a Playwright screencast
+  of the real UI plus a narrating avatar, composited **locally**, recorded
+  against a **synthetic** database, narrated from **role-fenced** manual
+  chapters, and deep-linked from the assistant to the second the step happens.
+  ⚠️ The finding that reframed it: the API boundary was the easy half — **the
+  MP4 is the sensitive artefact**, and it is sensitive whether or not it ever
+  touches a cloud.
 - **Phase 11 — Enterprise AI Engineering, Observability & Security Gateways
   (2026-09-02 → 09-05).** Six slices, plan in `PROPOSED_PHASE11_PLAN.md`,
   twelve `P11-x` rulings + **rule 16** in `PROJECT_HANDOVER.md`.

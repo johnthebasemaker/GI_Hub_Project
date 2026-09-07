@@ -5,7 +5,7 @@ Fully self-contained: one command builds an isolated stack (throwaway Postgres
 DB loaded with the **real** legacy data via the production cutover script, a
 hermetic FastAPI on **:8010** with WhatsApp/SMTP/scheduler disabled, and a Vite
 dev server on **:5183** proxying to it), runs every spec headlessly, then tears
-it all down. **125 specs, ~55 s.** A developer's normal `:8000` / `:5173` / `gihub` stack is never
+it all down. **128 specs, ~55 s.** A developer's normal `:8000` / `:5173` / `gihub` stack is never
 touched.
 
 ## Run it

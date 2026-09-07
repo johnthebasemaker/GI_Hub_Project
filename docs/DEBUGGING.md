@@ -27,9 +27,9 @@ Flags: `--json` for scripts/CI, `--api` / `--web` for non-default ports.
 
 ## 1. The standard gates (run before every commit)
 
-Current baselines (2026-09-03): **service_tests 2188/0 (suites A…CS) ·
-Playwright 125/125 · AI guardrail Tier 1 24/24 · parity:sme 1,313 ·
-bug_check 599/0 · nav 50 · alembic head `e7f2a4c916b8`.**
+Current baselines (2026-09-07): **service_tests 2328/0 (suites A…CX) ·
+Playwright 128/128 · AI evals Tier 1 147/147 · parity:sme 1,313 ·
+ui-math 33/0 · bug_check 599/0/0 · nav 51 · alembic head `a1c9e64b3d70`.**
 `tools/parity_check.py` is meaningful only on CI or a freshly-cutover DB.
 
 ```bash

@@ -2,9 +2,9 @@
 
 > Loaded on demand from [`CLAUDE.md`](../CLAUDE.md) line 2.
 > [`PROJECT_HANDOVER.md`](../PROJECT_HANDOVER.md) is the authority and carries all
-> fifteen rules plus the ten Phase 10 rulings; this file restates the five that
-> are broken most often, in the imperative, because each one is a real bug whose
-> symptom appeared a long way from its cause.
+> sixteen rules plus the Phase 10, 11 and 12 rulings; this file restates the
+> handful that are broken most often, in the imperative, because each one is a
+> real bug whose symptom appeared a long way from its cause.
 >
 > **None of these are style preferences.** Every one of them was tried the other
 > way and broke something measurable, and the measurement is quoted so nobody has
@@ -214,6 +214,54 @@ agent is most likely to undo:
 
 ---
 
+## The seven Phase 12 rulings (P12-0 … P12-6)
+
+Full text in `PROJECT_HANDOVER.md` → *Phase 12 rulings, LOCKED*. Phase 12
+produces **role video tutorials**: a Playwright screencast of the real UI plus a
+HeyGen avatar, composited locally into the training hub slice 10b built.
+
+⚠️ **P12-0 is the one to read, and it is not about the API.**
+
+> **A tutorial is recorded against SYNTHETIC data
+> (`tools/make_tutorial_db.py`), or it is not published.**
+
+The brief asked how to stop proprietary data reaching HeyGen. That is the easy
+half and one function closes it. The hard half is that **the MP4 is the
+sensitive artefact** — a file people forward, put on a phone and send to a
+contractor — and it is sensitive whether or not it ever touches a cloud.
+`tests/e2e/global-setup.ts` loads its throwaway database from the REAL
+`gi_database.db`, so the prototype's first frame carried real employee names,
+real material descriptions, real SAP codes and real quantities.
+**The redaction hook is a SECOND LINE, not the boundary** — it only masks what
+somebody thought to name.
+
+| | Do not |
+|---|---|
+| **P12-1** | Replace the payload's provenance whitelist with a scrubber. A scrubber asks "does this look dangerous?"; the whitelist asks "did a person approve this exact sentence in a diff?" and is complete on day one. It refused its own first payload. |
+| **P12-2** | Send the SCREENCAST anywhere. The avatar comes back as a clip and ffmpeg composites LOCALLY. This rules out HeyGen's *video translate* and *avatar from a screen recording* — those are not integrations, they are the exact egress this design prevents. |
+| **P12-3** | Let the real model answer during a recording. It answers differently every render, so a re-render would silently change what the video TEACHES — and this model invents UI no chapter describes when it is unsure. |
+| **P12-4** | Give the recorder its own stack builder. It reuses the E2E lifecycle on its own database and ports; a second builder is a second place for rule 15 to be got wrong, quietly. |
+| **P12-5** | Drop `script_sha256` from the manifest, or make the dataset non-deterministic. Ruling Q4 bumps a compliance version from that hash; a dataset built from `date.today()` would move every number on screen while the hash said nothing changed (P10-6). |
+| **P12-6** | Re-implement the deep-link role filter. It reuses `Index.search(allowed=…)` — rule 9's own fence, applied BEFORE the score. And a manifest with no `audience` falls back to the recorded role, never to everyone. |
+
+⚠️ **And the matcher's second floor is a RULE, not a threshold.** A candidate
+must clear `MIN_SCORE` **and** share **two distinct tokens** with the beat it
+won on. `manual_index._tokens` expands synonyms, so one accidental word on a
+2.4× boosted heading scored 4.95 over a floor of 4.0 — and raising the floor to
+kill it also killed a real hit scoring 4.59. One word in common is a
+coincidence; two is a topic.
+
+⚠️ **Three things about the video toolchain that FAIL SILENTLY on this
+machine**, all of them rule 16 in a new domain:
+
+* Homebrew's ffmpeg 8.1.2 has **no `drawtext`** — captions are Pillow PNGs.
+* It **discards video alpha without a warning**: `-pix_fmt yuva420p` exits 0
+  and writes `yuv420p`. The `pix_fmt` is read back; an exit code is not a result.
+* Playwright's `recordVideo.size` **does not scale the page** — a smaller
+  viewport is drawn 1:1 at the top-left with black over the rest.
+
+---
+
 ## Rulings that look like oversights and are not
 
 Full list in `PROJECT_HANDOVER.md` → *Phase 10 rulings, LOCKED*. The four an
@@ -257,7 +305,7 @@ Run these before saying anything is done. Baselines as of 2026-09-03.
 bash bin/ci_preflight.sh
 ```
 ```bash
-# Backend service tests — 2,188 checks, suites A…CS, its OWN throwaway DB (rule 15)
+# Backend service tests — 2,328 checks, suites A…CX, its OWN throwaway DB (rule 15)
 GI_DOTENV=0 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
 JWT_SECRET=ci-only-service-test-secret-key-32bytes-min \
 .venv/bin/python -u -m backend.api.service_tests
@@ -272,7 +320,7 @@ npm run test:ui-math --prefix frontend
 npm run test:nav --prefix frontend
 ```
 ```bash
-# AI guardrail audit — Tier 1 (24/24, 0 leaks) is the hard gate and also runs
+# AI guardrail audit — Tier 1 (147/147, 0 leaks) is the hard gate and also runs
 # inside suite CQ. Tier 2 needs a live model, is stochastic, and NEVER gates.
 .venv/bin/python -m tests.ai_eval.runner
 .venv/bin/python -m tests.ai_eval.runner --tier2 --json scorecard.json
@@ -293,7 +341,7 @@ DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib .venv/bin/python legacy/bug_check.p
 npm run build --prefix frontend
 ```
 ```bash
-# Headless E2E — 125 specs, ~55 s, builds and destroys its own gihub_e2e_pw stack
+# Headless E2E — 128 specs, ~55 s, builds and destroys its own gihub_e2e_pw stack
 cd tests/e2e && npm test
 ```
 ```bash
