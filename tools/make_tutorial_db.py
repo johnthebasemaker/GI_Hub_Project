@@ -114,7 +114,7 @@ DEFAULT_OUT = _ROOT / "tutorial_fixture.db"
 # ⚠️ Bump when the generated CONTENT changes. The recorder records it in every
 # manifest, so "why do the numbers differ from last quarter's video?" is a
 # question with an answer.
-DATASET_VERSION = 1
+DATASET_VERSION = 2
 SEED = 20260906
 
 # ⚠️ EVERY DATE IS COMPUTED FROM THIS CONSTANT, NOT FROM THE CLOCK, and the
@@ -375,6 +375,33 @@ def build(out_path: pathlib.Path, today: _dt.date) -> dict:
                        rng.choice(["Surplus to job", "Wrong item issued",
                                    "Damaged packaging"]), "synthetic"))
 
+        # ── the one material the tutorials NAME ─────────────────────────────
+        # ⚠️ EVERY OTHER ROW HERE IS RANDOM WITHIN A SEED, WHICH IS FINE FOR
+        # SCENERY AND USELESS FOR A SCRIPT. The Return Stock tutorial types a
+        # material into a picker that only offers things RECEIVED IN THE LAST 30
+        # DAYS at this site, so it needs one row it can rely on by name — and
+        # relying on `movers[7]` would make a narration line depend on a shuffle.
+        # Dated three days before the anchor so it is inside the window with
+        # room to spare.
+        c.execute("INSERT OR IGNORE INTO inventory "
+                  '("SAP_Code","Material_Code","Equipment_Description",'
+                  '"Category","UOM","Minimum_Qty","Unit_Cost","Opening_Stock",'
+                  '"Site_ID") VALUES (?,?,?,?,?,?,?,?,?)',
+                  ("899001", "MAT-899001", "Tutorial Demo Gasket Set",
+                   "R/L Consumables", "Set", 10, 42.5, 0, SITE))
+        recent = today - _dt.timedelta(days=3)
+        c.execute('INSERT INTO receipts ("Date","SAP_Code","Quantity","Site_ID",'
+                  '"Supplier","Lot_Number","Expiry_Date","Received_by",'
+                  '"DN_Number") VALUES (?,?,?,?,?,?,?,?,?)',
+                  (_iso(recent), "899001", 60.0, SITE, VENDORS[0][1],
+                   "LOT-TUT-001", _iso(today + _dt.timedelta(days=400)),
+                   "worker", "DN-TUT-001"))
+        c.execute('INSERT INTO lots ("Lot_Number","SAP_Code","Site_ID",'
+                  '"Received_Date","Expiry_Date","Supplier","Status") '
+                  "VALUES (?,?,?,?,?,?,?)",
+                  ("LOT-TUT-001", "899001", SITE, _iso(recent),
+                   _iso(today + _dt.timedelta(days=400)), VENDORS[0][1], "open"))
+
         # ── SME masters ─────────────────────────────────────────────────────
         # ⚠️ NO `SAP_Code` ON `sme_recipe` OR `sme_inventory_seed`. The FROZEN
         # legacy tables predate that column; rule 1's `(Material_Code, SAP_Code)`
@@ -492,6 +519,14 @@ def _self_check(database) -> dict:
             if not n:
                 raise RuntimeError(f"tutorial fixture has no {label} — a "
                                    f"dashboard panel would render empty")
+        named = conn.execute(
+            'SELECT COUNT(*) FROM receipts WHERE "SAP_Code" = \'899001\''
+        ).fetchone()[0]
+        if not named:
+            raise RuntimeError(
+                "the named tutorial material 899001 has no receipt — the Return "
+                "Stock tutorial's picker would be empty and the recording would "
+                "still succeed")
         counts["priced"] = costed
         counts["uncosted"] = uncosted
         counts["minimums"] = minimums

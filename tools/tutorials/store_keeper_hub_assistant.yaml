@@ -49,6 +49,13 @@ avatar:
 routes:
   - /
 
+# ── where the narration came from (rule 9) ──────────────────────────────────
+# ⚠️ CHECKED AGAINST `manual_qa.allowed_sections()` — the fence itself, not a
+# copy of it. A tutorial narrated from a chapter its role cannot open teaches
+# that role a screen it will never see, and the only symptom is a confused
+# person. §3 is the sidebar and common elements; §12 is the FAQ index.
+manual_sections: [3, 12]
+
 # ── what the assistant is scripted to say ON SCREEN ─────────────────────────
 # Reviewed here rather than sampled from the model at render time. See P12-3
 # in the plan: an 8B model answers the same question differently every render,
@@ -78,6 +85,43 @@ redaction:
   # every frame.
   replace:
     worker: demo.user
+
+# ── the UI steps ────────────────────────────────────────────────────────────
+# Vocabulary: tests/video_gen/harness/steps.ts. A step carrying `beat:` is a
+# narration point and is stamped the moment it completes; one without is
+# stagecraft. The runner refuses a verb it does not know rather than skipping it.
+steps:
+  - do: goto
+    path: /
+    beat: title
+    note: Store Keeper dashboard, signed in
+  - do: click
+    selector: '[aria-label="Open Hub Assistant"]'
+  - do: expect_visible
+    selector: text=Hub Assistant
+    beat: open_assistant
+    note: The assistant opens from any page
+  - do: type
+    selector: '.ant-card input[placeholder="Ask the manual…"]'
+    text: How do I stage a return?
+    beat: question
+    note: Asked in the store keeper's own words
+  - do: click
+    selector: '[aria-label="Send"]'
+  - do: expect_visible
+    selector: text=Thinking…
+    beat: thinking
+    note: The question goes to the LOCAL model
+  - do: expect_visible
+    selector: text=Open Entry
+    beat: answer
+    note: Answered from the Store Keeper chapters only
+  - do: click
+    selector: '.ant-card [aria-label="Close"]'
+  - do: expect_hidden
+    selector: '.ant-card input[placeholder="Ask the manual…"]'
+    beat: close
+    note: Back to work
 
 # ── the narration ───────────────────────────────────────────────────────────
 # One entry per beat id stamped by tests/video_gen/sample_tutorial.spec.ts.

@@ -1,0 +1,116 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GI Hub — role tutorial script.  Store Keeper · Staging a return.
+#
+# The Hub Assistant answers this question in text (it is the question that
+# tutorial asks). This is the same answer with the screen attached, and it is
+# the tutorial slice 12f deep-links into at the `source` beat.
+#
+# Narration is lifted from §13.10 — inside a store keeper's allowlist.
+#
+# ⚠️ IT STOPS SHORT OF POSTING, ON PURPOSE. The last step hovers "Post return"
+# and the narration says what pressing it does. A tutorial that files a real
+# return leaves a pending row in whatever database it ran against, and the next
+# recording of any HOD tutorial would then open on a queue containing a return
+# nobody made. Teaching the button is not the same as pressing it.
+# ─────────────────────────────────────────────────────────────────────────────
+
+tutorial_id: sk_stage_return_v1
+title: Staging a return
+subtitle: Store Keeper · the source receipt is the point
+
+role: sk
+hub_role: store_keeper
+language: en
+
+training_module_key: sk_stage_return_v1
+
+avatar:
+  avatar_id: PLACEHOLDER_AVATAR_ID
+  voice_id: PLACEHOLDER_VOICE_ID
+  background: transparent
+  ratio: "1:1"
+  # The form runs down the LEFT of this page, so the head sits bottom right.
+  corner: bottom-right
+
+routes:
+  - /entry/return
+
+manual_sections: [13]
+
+redaction:
+  mask:
+    - .ant-table-tbody
+  replace:
+    worker: demo.user
+
+steps:
+  - do: goto
+    path: /entry/return
+    settle: 700
+    beat: open
+    note: Return Stock
+  - do: expect_visible
+    selector: text=Returns are made against a receipt from the last 30 days
+    beat: window
+    note: The 30-day window, stated on the page
+  - do: expect_visible
+    selector: text=Returning material QC rejected?
+    beat: qc
+    note: The shortcut for QC-rejected material
+  - do: type
+    # ⚠️ BY LABEL, NOT BY PLACEHOLDER. Ant Design's Select renders its
+    # placeholder as a sibling <span>, so the inner input carries no
+    # placeholder attribute and a selector built on one matches nothing.
+    selector: label=Material (SAP Code)
+    text: Tutorial Demo Gasket
+    settle: 900
+    beat: material
+    note: Pick the material being sent back
+  - do: press
+    key: Enter
+    settle: 900
+  - do: hover
+    selector: text=Source receipt
+    beat: source
+    note: Which receipt is being returned
+  - do: hover
+    selector: text=Post return
+    beat: post
+    note: Staged for the HOD, not committed
+
+narration:
+  - beat: open
+    say: >-
+      This is Return Stock. It handles real returns of material to the
+      warehouse — not returnable tools, which have their own tab.
+  - beat: window
+    say: >-
+      Read the line under the title. A return is made against a receipt from
+      the last thirty days at your site, and the quantity is capped at what
+      that receipt brought in. To go back further you tick the override
+      window and write a justification, and that routes to your Head of
+      Department as an explicit override request.
+  - beat: qc
+    say: >-
+      If Quality rejected the material, start here instead. Paste the Return
+      Number from the rejection and the form fills itself in — the material,
+      the site, the lot, the quantity rejected and the inspector's own reason.
+      You may return less than was rejected. You cannot return more, and a
+      Return Number can only be used once.
+  - beat: material
+    say: >-
+      Otherwise, pick the material yourself. The list only offers things
+      received at your site inside the window, so a material you cannot see
+      here is usually a material you cannot return here.
+  - beat: source
+    say: >-
+      Then say which receipt it came from. This is the field that matters
+      most. The system shows you that receipt locked — its date, its delivery
+      note, its lot and the quantity it brought in — and everything you enter
+      is measured against it.
+  - beat: post
+    say: >-
+      Post return stages it. It does not move stock. It lands in your Head of
+      Department's Returns tab, and only their approval writes the row that
+      reduces stock and opens the logistics email. If they reject it, you see
+      that in your request history.

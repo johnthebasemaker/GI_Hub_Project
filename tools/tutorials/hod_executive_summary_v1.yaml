@@ -1,0 +1,134 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GI Hub — role tutorial script.  HOD · Reading the Executive Summary.
+#
+# Narration is lifted from §6 (the HOD portal), §2 (who may open this) and
+# §24.3 (the valuation download that sits beside it) — all three inside an
+# HOD's manual allowlist.
+#
+# ⚠️ THE POINT OF THE LAST BEAT IS RULING P10-4, and it is the reason this
+# tutorial exists rather than a generic dashboard tour. Every `Unit_Cost` on the
+# live master is zero, so a naive sum reports SAR 0.00 for a site holding
+# hundreds of units — arithmetically correct and a lie a board would act on.
+# The report counts those as "Not Valued (N items)" and labels the total a
+# FLOOR. An HOD who quotes the figure without knowing that is the failure this
+# ninety seconds is trying to prevent.
+# ─────────────────────────────────────────────────────────────────────────────
+
+tutorial_id: hod_executive_summary_v1
+title: Reading the Executive Summary
+subtitle: Head of Department · and the number that refuses to lie
+
+role: hod
+hub_role: hod
+language: en
+
+training_module_key: hod_executive_summary_v1
+
+avatar:
+  avatar_id: PLACEHOLDER_AVATAR_ID
+  voice_id: PLACEHOLDER_VOICE_ID
+  background: transparent
+  ratio: "1:1"
+  corner: bottom-left
+
+routes:
+  - /hod/executive-summary
+
+manual_sections: [2, 6, 24]
+
+redaction:
+  mask:
+    - .ant-table-tbody
+  # ⚠️ NO `replace:` HERE. `hod` is the account name AND a fragment of ordinary
+  # English — whole-word matching stops `method` becoming `metdemo.head`, but
+  # the header's "Head of Department · hod" is a role label, not a person. See
+  # the 12a ruling on the five harness account names.
+  replace: {}
+
+steps:
+  - do: goto
+    path: /hod/executive-summary
+    settle: 1400
+    beat: open
+    note: The HOD Executive Summary
+  # ⚠️ THE RANGE IS SET BEFORE ANYTHING IS READ OUT, and not only for the
+  # narration's sake. The page opens on TODAY, so a tutorial that skipped this
+  # would spend ninety seconds explaining six panels that all read zero — and
+  # a viewer's reasonable conclusion would be that the page does not work.
+  - do: click
+    selector: .ant-picker
+  - do: click
+    selector: text=Last 7 days
+    settle: 1600
+    beat: range
+    note: Pick the period first
+  - do: expect_visible
+    selector: text=Receipts (qty)
+    beat: kpis
+    note: The ledger, in one strip
+  - do: scroll
+    selector: text=Material consumption (issues)
+  - do: expect_visible
+    selector: text=Material consumption (issues)
+    beat: detail
+    note: Every headline number opens into its rows
+  - do: scroll
+    selector: text=Purchase requests
+  - do: expect_visible
+    selector: text=Purchase requests
+    beat: procurement
+    note: What is on order, and what is in flight
+  - do: scroll
+    selector: text=Download PDF
+  - do: hover
+    selector: text=Download PDF
+    beat: pdf
+    note: Server-rendered, not a printed web page
+  - do: hover
+    selector: text=Download Excel
+    beat: floor
+    note: And the one number that must be read carefully
+
+narration:
+  - beat: open
+    say: >-
+      This is the Executive Summary. It is a read-only view of your own site
+      over a date range you choose, and it is the page to open before a
+      meeting rather than after one. Auditors can see it too. Nobody can
+      change anything from here.
+  - beat: range
+    say: >-
+      Set the period before you read anything. It opens on today, which is
+      almost never the question being asked. Last seven days and This month
+      are one click, and every figure below moves with it.
+  - beat: kpis
+    say: >-
+      The strip across the top is the ledger for the period. Material
+      received, material issued, material returned, square metres completed,
+      man-hours booked, and how many of your people were present. Each one
+      carries the number of entries behind it, so a large figure made of two
+      entries looks different from the same figure made of two hundred.
+  - beat: detail
+    say: >-
+      Underneath, every headline opens into the rows it was built from. If a
+      consumption figure looks wrong, the material that made it wrong is on
+      this page — you do not have to go and run a report to find out.
+  - beat: procurement
+    say: >-
+      Further down is the procurement position. Purchase requests, purchase
+      orders, delivery notes in flight and the deliveries expected inside the
+      window. This is the part that answers "is the material coming", which is
+      usually the question being asked when somebody calls a meeting.
+  - beat: pdf
+    say: >-
+      Download PDF gives you the full paginated report, rendered by the
+      server. It is a real document, not a printed screen, so the tables
+      break across pages properly and it looks the same on every machine.
+  - beat: floor
+    say: >-
+      And one thing to know before you quote a stock value anywhere. A
+      material with no unit cost on the master is not counted as worth
+      nothing. It is reported separately as not valued, with a count, and the
+      total is labelled a floor. Read it that way. A total that quietly
+      treated missing prices as zero would be arithmetically correct and
+      completely misleading.
