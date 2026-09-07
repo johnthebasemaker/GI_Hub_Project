@@ -1,0 +1,116 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GI Hub — role tutorial script.  Supervisor · Filing consumption from paper.
+#
+# ⚠️ THIS IS TUTORIAL #1 OF THE CATALOGUE, AND NOT BY ALPHABET. `ocr_workflow_v1`
+# is the ONLY training module in the system that currently GATES a feature
+# (`gates_feature = 'ocr_upload'`, seeded by slice 10b), and its player says
+# "Not published yet" to every supervisor who opens it today. It is the one
+# place where the absence of a video is already visible to a user.
+#
+# Narration is lifted from §21.12.1 and §24.2 — both inside a supervisor's
+# manual allowlist. See `manual_sections:` below; the fence is checked against
+# `manual_qa.allowed_sections()` itself.
+# ─────────────────────────────────────────────────────────────────────────────
+
+tutorial_id: ocr_workflow_v1
+title: Filing consumption from paper
+subtitle: Supervisor · the form, the photograph, the two rules
+
+role: supervisor
+hub_role: supervisor
+language: en
+
+training_module_key: ocr_workflow_v1
+
+avatar:
+  avatar_id: PLACEHOLDER_AVATAR_ID
+  voice_id: PLACEHOLDER_VOICE_ID
+  background: transparent
+  ratio: "1:1"
+  # The Execution page's content runs down the LEFT, and the training gate
+  # panel opens centre-right — so the head sits bottom right here.
+  corner: bottom-right
+
+routes:
+  - /execution
+  - /training
+
+manual_sections: [21, 24]
+
+redaction:
+  mask:
+    - .ant-table-tbody
+  # ⚠️ NO `replace:` HERE, DELIBERATELY. The account name is `supervisor`, and
+  # so is the English word — it appears in the page's own first sentence ("The
+  # supervisor fills a printed form in the field"). Replacing it would rewrite
+  # the instructions the tutorial exists to read out. The 12a ruling already
+  # covers this: the five harness account names are role-shaped, not people.
+  replace: {}
+
+steps:
+  - do: goto
+    path: /execution
+    settle: 600
+    beat: open
+    note: Execution — where a filled form becomes an entry
+  - do: expect_visible
+    selector: text=supervisor fills a printed form in the field
+    beat: order
+    note: The order changed — paper first, store keeper second
+  - do: scroll
+    selector: text=Upload a filled form
+  - do: expect_visible
+    selector: text=Upload a filled form
+    beat: upload
+    note: The upload card
+  - do: expect_visible
+    selector: text=whole page including the QR code
+    beat: qr
+    note: Rule one — the whole page, QR included
+  - do: expect_visible
+    selector: text=blank rather than guessed
+    beat: blanks
+    note: Rule two — an uncertain box is left empty
+  - do: goto
+    path: /training
+    settle: 900
+    beat: training
+    note: The soft gate, and why it never blocks
+
+narration:
+  - beat: open
+    say: >-
+      This is the Execution page. It is where a form you filled in by hand,
+      out in the plant, becomes an entry in the system.
+  - beat: order
+    say: >-
+      Read the order on this page carefully, because it changed. You fill a
+      printed form in the field. The store keeper verifies your quantities
+      next — not the Head of Department. Their corrections show to the Head of
+      Department in red, and you are told before it is approved.
+  - beat: upload
+    say: >-
+      Print a form for the lining system you are working on. It lists every
+      material for that system, so nobody has to write a material name by
+      hand — that is the one thing the reader is genuinely bad at. Fill in the
+      date, the equipment and the area at the top, and a quantity and a lot
+      number on every row.
+  - beat: qr
+    say: >-
+      Then photograph the whole page, including the QR code, and upload it.
+      The code is how the system knows which form this is. Each printed sheet
+      is used once, and a sheet printed before its system's materials changed
+      will be refused.
+  - beat: blanks
+    say: >-
+      Check every figure afterwards. Where the handwriting was not certain,
+      the box is left empty rather than guessed, and those rows are marked. An
+      empty box is the system telling you it does not know — not telling you
+      the number was zero.
+  - beat: training
+    say: >-
+      One last thing. The first time you press upload without having completed
+      this tutorial, a panel offers you Watch now or Watch later and continue.
+      Nothing is ever blocked. You are standing in a plant holding a filled
+      form, and a video must not stop you filing it — but the deferral is
+      counted, and your Head of Department sees the count next to your name.

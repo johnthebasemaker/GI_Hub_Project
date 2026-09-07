@@ -40,10 +40,13 @@ export interface ShotList {
   tutorial_id: string
   role: string
   language: string
+  /** The UI steps to perform, in order. See harness/steps.ts. */
+  steps: unknown[]
   /** What the assistant is scripted to answer. Rendered ON SCREEN, so it is
-   *  reviewed in the diff like any other user-visible string. */
-  assistant_question: string
-  assistant_answer: string
+   *  reviewed in the diff like any other user-visible string. Absent on the
+   *  tutorials that never open the assistant — most of them. */
+  assistant_question?: string
+  assistant_answer?: string
   /** ms the stub waits before answering, so "Thinking…" is actually visible. */
   assistant_think_ms: number
   /**
@@ -68,6 +71,7 @@ const DEFAULT_SHOTLIST: ShotList = {
   tutorial_id: 'store_keeper_hub_assistant',
   role: 'sk',
   language: 'en',
+  steps: [],
   assistant_question: 'How do I stage a return?',
   assistant_answer:
     'Open Entry → Returnables and choose the material you are sending back.\n\n'
@@ -221,7 +225,24 @@ export async function installTutorialChrome(
         const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
         for (let n = walk.nextNode(); n; n = walk.nextNode()) {
           let v = n.nodeValue ?? ''
-          for (const [from, to] of pairs) if (v.includes(from)) v = v.split(from).join(to)
+          for (const [from, to] of pairs) {
+            // ⚠️ WHOLE WORDS ONLY. A raw substring replace turns `hod` inside
+            // `method` into `metdemo.head`, and the tutorial then teaches a
+            // page that has never existed. The key is escaped and bounded.
+            // ⚠️ SKIP A NODE THAT ALREADY CARRIES THE REPLACEMENT. Writing a
+            // text node is itself a mutation, so this observer re-enters on
+            // its own output — and if the replacement CONTAINS the search
+            // string the rewrite never reaches a fixed point. `hod` →
+            // `demo.hod` produced `demo.demo.hod`, then `demo.demo.demo.hod`,
+            // pegging the renderer until the recording timed out four minutes
+            // later reporting only that a heading was not visible. The lint in
+            // tools/generate_tutorial.py refuses that mapping outright; this is
+            // the second line, because the loop is the expensive failure.
+            if (v.includes(to)) continue
+            const rx = new RegExp(`\\b${from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g')
+            if (!rx.test(v)) continue
+            v = v.replace(new RegExp(rx.source, 'g'), to)
+          }
           if (v !== n.nodeValue) n.nodeValue = v
         }
       }
@@ -290,6 +311,7 @@ export async function glideClick(page: Page, selector: string): Promise<void> {
  * replaces the transport, and the answer text comes from the tracked YAML.
  */
 export async function scriptAssistant(page: Page, shot: ShotList): Promise<void> {
+  if (!shot.assistant_answer) return
   await page.route('**/ai/health', (route) => route.fulfill({
     status: 200, contentType: 'application/json',
     body: JSON.stringify({ ok: true, enabled: true, model: 'llama3.1:8b',
@@ -299,7 +321,7 @@ export async function scriptAssistant(page: Page, shot: ShotList): Promise<void>
   await page.route('**/ai/assistant', async (route) => {
     // The pause is the point: it is what makes "Thinking…" appear on camera.
     await new Promise((r) => setTimeout(r, shot.assistant_think_ms))
-    const frames = chunk(shot.assistant_answer)
+    const frames = chunk(shot.assistant_answer ?? '')
       .map((tok) => `data: ${JSON.stringify({ token: tok })}\n\n`)
       .join('')
     await route.fulfill({

@@ -239,6 +239,69 @@ def route_lint(doc: dict, access: dict) -> list[str]:
     return problems
 
 
+def redaction_lint(doc: dict) -> list[str]:
+    """
+    Refuse a replacement that contains the thing it replaces.
+
+    ⚠️ FOUND BY THE FIRST SCRIPT THAT NEEDED ONE. The redaction hook rewrites
+    text nodes on every DOM mutation, and writing a text node IS a mutation, so
+    it re-enters on its own output. That is fine while the mapping reaches a
+    fixed point — `worker` → `demo.user` does, because `demo.user` contains no
+    `worker`. `hod` → `demo.hod` does not: the observer produced `demo.demo.hod`,
+    then `demo.demo.demo.hod`, and kept going until the renderer stalled. The
+    recording failed four minutes later reporting only that a heading was not
+    visible, which points at the page, not at the mask.
+    """
+    bad = []
+    for src, dst in (doc.get("redaction") or {}).get("replace", {}).items():
+        if str(src) in str(dst):
+            bad.append(f"REFUSED  redaction {src!r} → {dst!r}: the replacement "
+                       f"contains the thing it replaces, so the in-page rewrite "
+                       f"never terminates")
+    return bad
+
+
+def manual_fence_lint(doc: dict) -> list[str]:
+    """
+    Every chapter a script says it was written from must be one the role is
+    ALLOWED to read.
+
+    ⚠️ IT ASKS RULE 9's OWN FUNCTION. `manual_qa.allowed_sections()` is the
+    security boundary — the fence that runs BEFORE BM25 scores anything — and
+    it imports cleanly with no database. Re-stating the allowlist here would
+    create a second, weaker copy of the one thing P11-4 says must not acquire
+    one, and the copy is always what rots.
+
+    The failure it prevents is specific and quiet: a tutorial narrated from a
+    chapter its role cannot open teaches that role a screen it will never see,
+    and the only symptom is a confused person. §13 is shared by the Store
+    Keeper and the HOD; §6 is the HOD's alone; §14 and §15 are deliberately
+    isolated from each other.
+    """
+    sections = doc.get("manual_sections") or []
+    if not sections:
+        return ["no `manual_sections:` — say which chapters the narration came "
+                "from so the fence can be checked"]
+    try:
+        # ⚠️ The repo root, not the CWD. Run as `python tools/generate_tutorial.py`
+        # sys.path[0] is `tools/`, so `backend` is not importable and the lint
+        # would report "could not import the fence" forever — which is honest
+        # and useless.
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        os.environ.setdefault("GI_DOTENV", "0")
+        from backend.api.ai.manual_qa import allowed_sections
+    except Exception as e:  # noqa: BLE001
+        return [f"could not import the fence ({e}) — reported, not assumed"]
+    allowed = allowed_sections(doc["hub_role"])
+    bad = [n for n in sections if int(n) not in allowed]
+    if bad:
+        return [f"FENCED   §{n} is not in {doc['hub_role']}'s allowlist "
+                f"({', '.join('§' + str(x) for x in sorted(allowed))})"
+                for n in bad]
+    return []
+
+
 def check_visited(doc: dict, beats: dict) -> list[str]:
     """
     The ORACLE. `canAccessPath` fails closed by redirecting, so a role that
@@ -258,7 +321,7 @@ def check_visited(doc: dict, beats: dict) -> list[str]:
 # 1. the script
 # ══════════════════════════════════════════════════════════════════════════
 REQUIRED = ("tutorial_id", "title", "role", "hub_role", "language",
-            "assistant_question", "assistant_answer", "narration")
+            "steps", "narration")
 
 
 def load_script(path: pathlib.Path) -> dict:
@@ -269,6 +332,26 @@ def load_script(path: pathlib.Path) -> dict:
     for i, line in enumerate(doc["narration"]):
         if not line.get("beat") or not line.get("say"):
             sys.exit(f"FATAL: narration[{i}] needs both `beat:` and `say:`")
+
+    # ⚠️ EVERY NARRATION LINE MUST NAME A BEAT SOME STEP ACTUALLY STAMPS, and
+    # every beat must have a line. Either half alone is silent: a line whose
+    # beat is never stamped is simply dropped from the timeline, and a beat with
+    # no line is a hold with nothing to say in it. Both produce a video that
+    # looks finished.
+    step_beats = [st.get("beat") for st in doc["steps"] if st.get("beat")]
+    said = [l["beat"] for l in doc["narration"]]
+    orphan_lines = [b for b in said if b not in step_beats]
+    orphan_beats = [b for b in step_beats if b not in said]
+    if orphan_lines:
+        sys.exit(f"FATAL: narration names beat(s) no step stamps: "
+                 f"{', '.join(orphan_lines)}")
+    if orphan_beats:
+        sys.exit(f"FATAL: step(s) stamp beat(s) nothing narrates: "
+                 f"{', '.join(orphan_beats)}")
+    if said != step_beats:
+        sys.exit(f"FATAL: narration order {said} does not match the step order "
+                 f"{step_beats} — the compositor places lines at MEASURED beat "
+                 f"times, so a reordered script would narrate the wrong screen")
     return doc
 
 
@@ -284,8 +367,9 @@ def shot_list(doc: dict, holds: dict[str, int], think_ms: int) -> dict:
         "tutorial_id": doc["tutorial_id"],
         "role": doc["role"],
         "language": doc["language"],
-        "assistant_question": doc["assistant_question"],
-        "assistant_answer": doc["assistant_answer"].strip(),
+        "steps": doc["steps"],
+        "assistant_question": doc.get("assistant_question"),
+        "assistant_answer": (doc.get("assistant_answer") or "").strip() or None,
         "assistant_think_ms": think_ms,
         # ⚠️ THE WHOLE POINT OF PASS A. Each beat is held for as long as its
         # narration actually takes, measured from the rendered audio. See the
@@ -355,7 +439,8 @@ def ensure_node_modules() -> None:
 
 
 def record(shot: dict, work: pathlib.Path, reuse_stack: bool,
-           dataset_env: dict[str, str]) -> tuple[pathlib.Path, dict]:
+           dataset_env: dict[str, str],
+           keep_stack: bool = False) -> tuple[pathlib.Path, dict]:
     ensure_node_modules()
     work.mkdir(parents=True, exist_ok=True)
     shot_path = work / "shotlist.json"
@@ -364,13 +449,22 @@ def record(shot: dict, work: pathlib.Path, reuse_stack: bool,
     env = {**os.environ, **dataset_env,
            "GI_TUTORIAL_SHOTLIST": str(shot_path),
            "GI_TUTORIAL_OUT": str(work)}
+    # ⚠️ TWO INDEPENDENT FLAGS. See tests/video_gen/stack.ts: one flag was not
+    # enough, and the bug only appeared once there were two scripts to batch.
     if reuse_stack:
         env["GI_VIDEO_REUSE_STACK"] = "1"
+    if keep_stack:
+        env["GI_VIDEO_KEEP_STACK"] = "1"
 
     t0 = time.time()
-    subprocess.run(
+    # ⚠️ NOT `check=True`. A failed recording is one tutorial to fix, not a
+    # reason to abandon the other fifty-nine and leave the shared stack up —
+    # which is exactly what the first four-script batch did.
+    rc = subprocess.run(
         ["npx", "playwright", "test", "-c", "../video_gen/playwright.config.ts"],
-        cwd=E2E, env=env, check=True)
+        cwd=E2E, env=env, check=False).returncode
+    if rc:
+        raise RecordingFailed(f"playwright exited {rc} — see the error above")
     print(f"      playwright finished in {time.time() - t0:.1f}s")
 
     beats = json.loads((work / "beats.json").read_text(encoding="utf-8"))
@@ -382,6 +476,10 @@ def record(shot: dict, work: pathlib.Path, reuse_stack: bool,
 # ══════════════════════════════════════════════════════════════════════════
 class EgressRefused(RuntimeError):
     pass
+
+
+class RecordingFailed(RuntimeError):
+    """One tutorial's browser run failed. The batch carries on to the rest."""
 
 
 # Shapes that mean "this came out of the database, not out of the script".
@@ -1001,17 +1099,20 @@ def render(a, script_path: pathlib.Path, access: dict) -> int:
     print(f"    dataset {a.dataset} (v{dataset_version()})")
 
     # ── 1. rule 14, before a browser exists ──────────────────────────────
-    print("\n[1/6] rule-14 route lint")
-    problems = route_lint(doc, access)
+    print("\n[1/6] rule-14 route lint · rule-9 manual fence")
+    problems = (route_lint(doc, access) + manual_fence_lint(doc)
+                + redaction_lint(doc))
     for line in problems:
         print(f"      {line}")
-    if any(x.startswith("REFUSED") or x.startswith("nav_access") for x in problems):
+    if any(x.startswith(("REFUSED", "FENCED", "nav_access")) for x in problems):
         print("\n🛑 REFUSED (rule 14) — a tutorial must never show a page its "
               "role cannot open.")
         return 3
     if not problems:
-        print(f"      ✅ {len(doc.get('routes') or [])} declared route(s) are all "
-              f"open to {doc['hub_role']}")
+        print(f"      ✅ {len(doc.get('routes') or [])} declared route(s) open to "
+              f"{doc['hub_role']}; narration cites "
+              f"{', '.join('§' + str(n) for n in doc.get('manual_sections') or [])}"
+              f" — all inside its manual allowlist")
 
     # ── 2. the egress boundary ───────────────────────────────────────────
     print("\n[2/6] HeyGen payload — the only thing that would leave this machine")
@@ -1061,8 +1162,12 @@ def render(a, script_path: pathlib.Path, access: dict) -> int:
         print(f"\n[4/6] pass B — recording against "
               f"{db.get('E2E_DB', 'gihub_e2e_pw')} on "
               f":{db.get('E2E_API_PORT', '8010')}/:{db.get('E2E_WEB_PORT', '5183')}")
-        screencast, beats = record(shot, work, a.reuse_stack,
-                                   _dataset_env(a.dataset))
+        try:
+            screencast, beats = record(shot, work, a.reuse_stack,
+                                       _dataset_env(a.dataset), a.keep_stack)
+        except RecordingFailed as e:
+            print(f"\n🛑 RECORDING FAILED — {e}")
+            return 7
 
     raw_total = probe_seconds(screencast)
     last_beat = max(b["t_ms"] for b in beats["beats"]) / 1000.0
@@ -1200,8 +1305,9 @@ def batch(a, access: dict) -> int:
             print(f"  ❌ {sp.name}: {e}")
             blocked += 1
             continue
-        problems = route_lint(doc, access)
-        refused = [x for x in problems if x.startswith("REFUSED")]
+        problems = (route_lint(doc, access) + manual_fence_lint(doc)
+                    + redaction_lint(doc))
+        refused = [x for x in problems if x.startswith(("REFUSED", "FENCED"))]
         reason = why_render(doc, sp, a.out, a.force, a.stale)
         mark = "RENDER" if reason else "skip  "
         if refused:
@@ -1221,17 +1327,54 @@ def batch(a, access: dict) -> int:
         print("  --dry-run: nothing was recorded, built, sent or encoded.\n")
         return 1 if blocked else 0
 
+    # ⚠️ THE STACK IS RAISED ONCE AND DROPPED ONCE. `cutover_migrate.py --wipe`
+    # plus uvicorn plus Vite is ~28 s; paying it per video would be most of a
+    # sixty-clip batch. The first render raises it and every render KEEPS it;
+    # the `finally` drops it exactly once, including when a render throws — a
+    # batch that leaks a database and two ports is a batch that breaks the next
+    # person's E2E run, and they would have no idea why.
     failed = 0
-    for sp, _doc, _reason in plan:
-        rc = render(a, sp, access)
-        if rc:
-            failed += 1
-            print(f"  ❌ {sp.name} failed with exit {rc}")
-        # Every render after the first reuses the stack it raised.
-        a.reuse_stack = True
+    kept = False
+    try:
+        for sp, _doc, _reason in plan:
+            a.keep_stack = True
+            rc = render(a, sp, access)
+            kept = not a.skip_record
+            a.reuse_stack = True
+            if rc:
+                failed += 1
+                print(f"  ❌ {sp.name} failed with exit {rc}")
+    finally:
+        if kept:
+            teardown_stack(a)
     print(f"\n═══ BATCH DONE — {len(plan) - failed} rendered, {failed} failed, "
           f"{blocked} blocked ═══\n")
     return 1 if (failed or blocked) else 0
+
+
+def teardown_stack(a) -> None:
+    """
+    Drop the stack the batch kept up — through Playwright's OWN teardown, not a
+    copy of it.
+
+    ⚠️ The trick is the two flags pulling in opposite directions: REUSE=1 makes
+    `stack.ts` skip global-setup, KEEP unset makes it run global-teardown, and
+    a grep that matches no test means nothing is recorded in between. Writing a
+    Python kill-the-pids-and-drop-the-database function instead would be a
+    second teardown to keep in step with the first, and the one that rots is
+    always the copy.
+    """
+    print("\n[batch] dropping the shared stack …")
+    env = {**os.environ, **DATASET_ENV.get(a.dataset, {}),
+           "GI_VIDEO_REUSE_STACK": "1"}
+    env.pop("GI_VIDEO_KEEP_STACK", None)
+    # Output is captured: the grep matches nothing, so Playwright prints
+    # "Error: No tests found" and exits 1. That is the mechanism working, and
+    # printing it in the middle of a batch log makes a clean run look broken.
+    subprocess.run(
+        ["npx", "playwright", "test", "-c", "../video_gen/playwright.config.ts",
+         "--grep", "__no_test_matches_this__"],
+        cwd=E2E, env=env, check=False, capture_output=True, text=True)
 
 
 def main() -> int:
@@ -1252,6 +1395,8 @@ def main() -> int:
                     help="re-composite from the last screencast (no browser)")
     ap.add_argument("--reuse-stack", action="store_true",
                     help="attach to an already-running stack")
+    ap.add_argument("--keep-stack", action="store_true",
+                    help="leave the stack up after this render")
     ap.add_argument("--dataset", choices=("tutorial", "e2e"), default="tutorial",
                     help="tutorial = the synthetic dataset (P12-0, the only one "
                          "a published video may use); e2e = the gate's clone of "
@@ -1262,6 +1407,10 @@ def main() -> int:
     ap.add_argument("--live", action="store_true",
                     help="actually call HeyGen (needs HEYGEN_API_KEY; UNVERIFIED)")
     a = ap.parse_args()
+    # A relative --script is resolved before anything tries to make it relative
+    # to the repo root again.
+    a.script = a.script.resolve()
+    a.out = a.out.resolve()
 
     a.out.mkdir(parents=True, exist_ok=True)
     access = nav_access()
@@ -1269,14 +1418,15 @@ def main() -> int:
         return batch(a, access)
     if a.dry_run:
         doc = load_script(a.script)
-        problems = route_lint(doc, access)
+        problems = (route_lint(doc, access) + manual_fence_lint(doc)
+                    + redaction_lint(doc))
         reason = why_render(doc, a.script, a.out, a.force, a.stale)
         print(f"  {'RENDER' if reason else 'skip  '}  {a.script.name}  "
               f"{reason or 'up to date'}")
         for x in problems:
             print(f"          ⚠️  {x}")
         print("  --dry-run: nothing was recorded, built, sent or encoded.\n")
-        return 1 if any(x.startswith("REFUSED") for x in problems) else 0
+        return 1 if any(x.startswith(("REFUSED", "FENCED")) for x in problems) else 0
     return render(a, a.script, access)
 
 

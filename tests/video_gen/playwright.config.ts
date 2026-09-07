@@ -24,7 +24,7 @@ export default defineConfig({
   // the storage states. Duplicating that file here would give us a second
   // login fixture to keep in step with the first.
   testDir: path.resolve(__dirname, '..'),
-  timeout: 300_000,          // a tutorial holds on frames; it is not a gate
+  timeout: 240_000,          // a tutorial holds on frames; it is not a gate
   expect: { timeout: 15_000 },
   fullyParallel: false,
   workers: 1,
@@ -35,6 +35,13 @@ export default defineConfig({
   globalTeardown: path.resolve(__dirname, 'stack-teardown.ts'),
   use: {
     baseURL: WEB_URL,
+    // ⚠️ PLAYWRIGHT'S `actionTimeout` DEFAULTS TO ZERO, WHICH MEANS NO TIMEOUT.
+    // A `scrollIntoViewIfNeeded` or `hover` on a selector that does not exist
+    // therefore waits until the whole TEST times out — the first bad selector
+    // in this catalogue burned the full 300 s and reported only "Test timeout
+    // exceeded", naming neither the step nor the selector. Bounded, it fails in
+    // twenty seconds and says which locator it was waiting for.
+    actionTimeout: 20_000,
     trace: 'off',
     screenshot: 'off',
     // ⚠️ NOT `video: 'on'`. The spec creates its own context so it owns t0 —
