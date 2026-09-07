@@ -3351,13 +3351,16 @@ regression, not a new normal.**
 
 | Gate | Baseline | Command |
 |---|---|---|
-| Backend service tests | **2188 / 0** (suites A…CS) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
-| Legacy regression | **599 / 0** | `.venv/bin/python legacy/bug_check.py` |
-| Playwright E2E | **125 / 125** | `cd tests/e2e && npm test` |
-| **AI guardrail — Tier 1** | **24 / 24, 0 leaks** | `.venv/bin/python -m tests.ai_eval.runner` |
+| **Harness hygiene — runs FIRST** | **10 controls, 0 failed** | `bash bin/ci_preflight.sh` |
+| Backend service tests | **2,328 / 0** (suites A…CX) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
+| Legacy regression | **599 / 0 / 0** ⚠️ `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` on macOS, or the QR check SKIPS | `.venv/bin/python legacy/bug_check.py` |
+| Playwright E2E | **128 / 128** | `cd tests/e2e && npm test` |
+| **AI evals — Tier 1** | **147 / 147, 0 leaks** · recall **1.000** / precision **0.994** | `.venv/bin/python -m tests.ai_eval.runner` |
+| AI eval grid freshness | **current, 72 verified cases** | `.venv/bin/python tools/gen_eval_grid.py --check` |
 | SME TS↔PY parity | **1,313 comparisons** | `npm run parity:sme --prefix frontend` |
 | SME UI math | **33 / 0** | `npm run test:ui-math --prefix frontend` |
-| Navigation route coverage | **50 routes, all claimed** | `npm run test:nav --prefix frontend` |
+| Navigation route coverage | **51 routes, all claimed** | `npm run test:nav --prefix frontend` |
+| 🎬 Tutorial scripts | **NOT A GATE** (Phase 12) — lints without a browser | `.venv/bin/python tools/generate_tutorial.py --all --dry-run` |
 | Frontend build | clean | `npm run build --prefix frontend` |
 | Manual PDFs | **0 overlapping text pairs** | `.venv/bin/python build_manual_pdf.py --role all` |
 

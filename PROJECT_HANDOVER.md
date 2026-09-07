@@ -1,12 +1,29 @@
 # PROJECT HANDOVER — the authority on what is locked
 
-> **Updated 2026-09-05** by Phase 11 (Enterprise AI Engineering, Observability
-> & Security Gateways). Six slices, all merged: **11a** the CI fix + harness
-> auditor + `CLAUDE.md`; **11b** the OCR timer, the ditto fix and the cloud
-> seam; **11c** request tracing (`ai_traces`); **11d** the input/output guards;
-> **11e** the model gateway + answer cache; **11f** the eval gates.
+> **Updated 2026-09-07** by Phase 12 (Automated Role-Based Video Tutorials).
+> Five slices, all merged: **12-prototype** the pipeline; **12a** the synthetic
+> dataset; **12b** the manifest, WebVTT and freeze-padding; **12c** the
+> declarative recorder and the first four tutorials; **12f** the assistant's
+> deep links into a pre-rendered tutorial.
 >
-> ⚠️ **New this phase and binding: twelve `P11-x` rulings (below) and RULE 16 —
+> ⚠️ **New this phase and binding: seven `P12-x` rulings (below).** The one that
+> reframed the phase is **P12-0** — *a tutorial is recorded against SYNTHETIC
+> data, or it is not published*. The brief asked how to stop proprietary data
+> reaching HeyGen's API; that is the easy half and one function closes it. The
+> hard half is that the MP4 is the sensitive artefact, and it is sensitive
+> whether or not it ever touches a cloud.
+>
+> ⚠️ **Still open, and deliberately so:** the HeyGen submit/poll/download half
+> (needs a key — narration egress is signed off, 2026-09-06) and object storage
+> for the renders (waits for the Hetzner cutover). Neither blocks anything.
+>
+> *(Previously updated 2026-09-05 by Phase 11 — Enterprise AI Engineering,
+> Observability & Security Gateways. Six slices, all merged: **11a** the CI fix
+> + harness auditor + `CLAUDE.md`; **11b** the OCR timer, the ditto fix and the
+> cloud seam; **11c** request tracing (`ai_traces`); **11d** the input/output
+> guards; **11e** the model gateway + answer cache; **11f** the eval gates.)*
+>
+> Still binding from Phase 11: **twelve `P11-x` rulings (below) and RULE 16 —
 > the harness is audited, and a SKIP is not a PASS.** Rule 16 exists because a
 > check reported `2/2` for an assertion that had never executed on any machine,
 > and because one line of `bug_check.py` broke CI for 30 consecutive runs.
@@ -118,6 +135,43 @@ would undo it.
 | **P11-10** | ⚠️ **`num_ctx` stays in `client.vision_num_ctx()` and is NOT a routing policy.** | This is why LiteLLM was rejected. It is a computation over the image THIS request carries; getting it wrong does not truncate, it ABORTS the Ollama runner (`ggml_abort`) and takes every queued job with it. A library's Ollama adapter passes its own options dict, which hands that decision to a default and re-opens the bug silently. Portkey was rejected harder: a Node daemon in the request path is P10-1's objection, enlarged. |
 | **P11-11** | **Eval gates are split by DETERMINISM, not by name.** Contextual Recall/Precision gate at ≥0.85; Faithfulness, Answer Relevance and Safety are trended and open a bug row. | The brief asked for an 0.85 CI gate; P10-7 forbids gating a stochastic metric. Retrieval metrics are a pure function of BM25 over a fixed corpus and can carry the floor honestly. The 800-character truncation that hid §2's access matrix from every non-admin role was a retrieval regression that survived a phase — this gate fails the commit that causes it. |
 | **P11-12** | **`tests/ai_eval/cases/grid.yaml` is GENERATED, never hand-edited**, and `baseline.json` is only moved by `--record`. | A hand-written expectation drifts into fiction: slice 11d asserted §2 would answer "how do I add a user" because its title sounds like it would (it contains none of that vocabulary). And BM25's `idf` is corpus-wide, so a new chapter perturbs every role's ranking. A self-updating baseline ratchets in whichever direction the model drifts, so a slow decline becomes the new normal and the alarm never fires. |
+
+### Phase 12 rulings, LOCKED (2026-09-06/07)
+
+Numbered P12-x and referenced by that name in the code. Phase 12 produces
+**role tutorials**: a Playwright screencast of the real UI, a HeyGen avatar
+narrating a script, composited locally into an MP4 that lands in the training
+hub Phase 10 already built (`training_modules` / `training_assets` /
+`training_compliance`, slice 10b).
+
+⚠️ **P12-0 reframed the phase and is the one to read first.** The brief asked
+how to stop proprietary data reaching HeyGen's API. That is the easy half, and
+`assert_text_only()` closes it in one function. The hard half is that the
+**MP4 is the sensitive artefact** — a file people forward, put on a phone and
+send to a contractor — and it is sensitive whether or not it ever touches a
+cloud.
+
+| # | Ruling | Why it is not an oversight |
+|---|---|---|
+| **P12-0** | ⚠️ **A tutorial is recorded against SYNTHETIC data, or it is not published.** `tools/make_tutorial_db.py`, never `gi_database.db` and never its E2E clone. | `tests/e2e/global-setup.ts` loads its throwaway database from the REAL `gi_database.db` via `cutover_migrate.py`. That is correct for a test suite whose rows never leave the machine and wrong for a video. The prototype's first frame carried real employee names, real material descriptions, real SAP codes and real quantities. **Redaction is not the answer**: the in-page mask only hides what somebody thought to name, and it is a second line. Operator ruling Q1 sets the split — keep the real STRUCTURE (the 11 categories, the 14 lining systems, roles, UOMs), invent every name, description, SAP code, quantity, price and date. `--collision-check` proves the invented names absent from a real register (opt-in, read-only, never a default). |
+| **P12-1** | **The HeyGen payload is a PROVENANCE WHITELIST, not a scrubber.** Every free-text field must be character-for-character a reviewed `say:` line from the tracked YAML. | A scrubber asks "does this look dangerous?" and is only as good as the last incident. A whitelist asks "did a person approve this exact sentence in a diff?" and is complete on day one. Same shape as rule 9: the fence runs BEFORE the thing it protects. ⚠️ It works — it refused its own first payload, because the builder and the whitelist were separate functions. They are one function now, so a new field cannot be added without naming its source. |
+| **P12-2** | **The screencast NEVER leaves the machine.** The avatar comes back as a clip and ffmpeg composites LOCALLY. | This is the architecture in one sentence, and it rules out the HeyGen features that will be tempting later — *video translate*, *avatar from a screen recording*, anything that takes an upload. Those are not integrations; they are the exact egress this design exists to prevent. |
+| **P12-3** | **The assistant's on-screen answer in a recording is SCRIPTED, not sampled.** The model is never called while recording. | Three reasons, ascending: a tutorial is re-rendered whenever the UI moves, and an 8B model answers differently every time, so a re-render would silently change what the video TEACHES; the answer is user-visible copy, and scripted it is reviewed in a diff while sampled it is reviewed by nobody; and `docs/PROJECT_STATUS.md` §1a already records what this model does when unsure — *it invents UI no chapter describes*. ⚠️ This does not weaken rule 9: nothing reaches the fence, because nothing reaches the model. |
+| **P12-4** | **Recording is a test-shaped activity and obeys RULE 15.** It reuses the E2E suite's `global-setup`, `auth.setup.ts`, `harness/env.ts` and `node_modules`, on its own database `gihub_tutorial_pw` at :8011/:5184. | A second stack builder is a second place for rule 15 to be got wrong, and this one would be got wrong quietly — a tutorial recorded against `gihub` looks identical to one recorded against a clone. Reuse makes it structurally impossible instead of a thing to remember. The four environment variables (`GI_DB_FILE`, `E2E_DB`, `E2E_API_PORT`, `E2E_WEB_PORT`) that redirect it are ones `env.ts` already read, so **no file under `tests/e2e/` was edited**. |
+| **P12-5** | **Every render writes a MANIFEST**: `script_sha256`, payload hash, dataset name + version, git SHA and dirty flag, declared vs actually-visited routes, video hash, and every beat with its measured narration length. | Operator ruling Q4 bumps a module's `training_modules.version` when the NARRATION or the process changes and **not** for a cosmetic re-render — so something must answer "did the script change?" a year later without re-deriving it from a script that has since changed again. That is `script_sha256`, and the batch runner decides what to re-render from the same number. ⚠️ Its consequence is that **the dataset is deterministic**: a fixture built from `date.today()` would move every number on screen daily while the hash said nothing had changed, and the compliance record would point at a video nobody has seen (P10-6). Every date comes from a pinned `ANCHOR`; it ages on purpose, because ageing is a versioned decision somebody makes and drift is one nobody notices. |
+| **P12-6** | **The deep-link matcher's ROLE FENCE runs BEFORE the score, and it is the SAME fence.** `tutorials.match()` reuses `manual_index.Index.search(allowed=…)` with `allowed` built from each script's declared `audience`. | Re-implementing an access decision would be a second copy of the one thing P11-4 says must not acquire one. A tutorial a role may not watch is never a candidate, so no phrasing reaches it. A manifest with no `audience` falls back to the role it was RECORDED as, **never to everyone** — an old file cannot widen an audience by omission. And the link grants nothing: `/training` is nav-guarded, the module list is still the server's role-filtered one, and the URL carries a module key, a language and a number of seconds. |
+
+⚠️ **And one thing about the matcher that a threshold cannot fix.**
+`manual_index._tokens` expands SYNONYMS — "valuation" becomes
+"stock value board brief not valued" — so a Store Keeper asking about the
+executive summary's valuation floor shared the single accidental token "stock"
+with "This is Return Stock", and the 2.4× heading boost scored it 4.95 over a
+floor of 4.0. Raising the floor killed the coincidence **and** a real hit (an
+HOD asking "what does not valued mean" scores 4.59 against the beat that exists
+to answer it). So a candidate must also share **at least two distinct tokens**
+with the beat it won on: one word in common is a coincidence, two is a topic.
+Suite CX-04 is the trap and CX-15 is the control that stops the fix becoming a
+bigger number.
 
 ### 16. THE HARNESS IS AUDITED, AND A SKIP IS NOT A PASS
 
@@ -1798,17 +1852,20 @@ of them is a regression, not a new normal.
 
 | Gate | Result | Command |
 |---|---|---|
-| Backend service tests | **2188 / 0** (suites A…CS, **own throwaway DB**) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
-| Playwright E2E | **125 / 125** (~55 s, own throwaway DB) | `cd tests/e2e && npm test` |
-| **AI guardrail — Tier 1** | **24 / 24, 0 leaks** — deterministic; also runs inside suite CQ | `.venv/bin/python -m tests.ai_eval.runner` |
-| AI guardrail — Tier 2 | 📌 **scored, NEVER a gate** (ruling P10-7). security **64%** vs a 95% target · false-refusal 0%. Stochastic, needs a live model | `… --tier2 --json scorecard.json` |
+| **Harness hygiene** — runs FIRST | **10 controls, 0 failed** (~1 s, no services). Rule 16 | `bash bin/ci_preflight.sh` |
+| Backend service tests | **2,328 / 0** (suites A…CX, **own throwaway DB**) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
+| Playwright E2E | **128 / 128** (~55 s, own throwaway DB) | `cd tests/e2e && npm test` |
+| **AI evals — Tier 1** | **147 / 147, 0 leaks** · retrieval recall **1.000** / precision **0.994** (floor 0.85). Deterministic; also runs inside suite CQ | `.venv/bin/python -m tests.ai_eval.runner` |
+| AI eval grid | **generated, 72 verified cases** — `--check` fails if the manual moved (P11-12) | `.venv/bin/python tools/gen_eval_grid.py --check` |
+| AI evals — Tier 2 | 📌 **scored, NEVER a gate** (ruling P10-7). security **64%** vs a 95% target · false-refusal 0%. Stochastic, needs a live model. A KNOWN MODEL CONSTRAINT, not a backlog item | `… --tier2 --json scorecard.json` |
 | SME TS↔PY parity | **1,313 comparisons** | `npm run parity:sme --prefix frontend` |
 | **SME UI math** (session.ts + insights.ts) | **33 / 0** | `npm run test:ui-math --prefix frontend` |
-| Legacy regression | **599 / 0** | `.venv/bin/python legacy/bug_check.py` |
-| Navigation route coverage | **50 routes, all claimed** | `npm run test:nav --prefix frontend` |
+| Legacy regression | **599 / 0 / 0** ⚠️ needs `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` on macOS or the QR check SKIPS (rule 16) | `.venv/bin/python legacy/bug_check.py` |
+| Navigation route coverage | **51 routes, all claimed** | `npm run test:nav --prefix frontend` |
 | ~~Derived-view parity~~ | ❌ **RETIRED as a gate 2026-08-05** — see below | `tools/parity_check.py` |
 | Frontend | `tsc -b` + `npm run build` + `oxlint` ✅ | `npm run build --prefix frontend` |
-| Alembic | single head **`e7f2a4c916b8`** (slice 10b: execution `Shift` + `daily_job_runs` + the training registry) | see ARCHITECTURE §8 |
+| Alembic | single head **`a1c9e64b3d70`** | see ARCHITECTURE §8 |
+| 🎬 Tutorial renders | **NOT A GATE, by design** (Phase 12). A tutorial that renders badly is one to re-render, not a red build. `--dry-run` lints scripts without a browser | `.venv/bin/python tools/generate_tutorial.py --all --dry-run` |
 | **Manual PDFs** | **0 overlapping text pairs**, all 8 booklets | `.venv/bin/python build_manual_pdf.py --role all` |
 | `gi_database.db` | sha256 `00652932…ba038` **unchanged** | `shasum -a 256 gi_database.db` |
 
@@ -1854,6 +1911,7 @@ recovery commands live in [`deploy/cloudflared/README.md`](deploy/cloudflared/RE
 
 | PR | Commit | What |
 |---|---|---|
+| #73-#76 | `feat/phase12-*` | **Phase 12 — Automated role-based video tutorials (2026-09-06/07).** A tutorial is a Playwright screencast of the real UI + a HeyGen avatar, composited locally into an MP4 for the training hub slice 10b already built. Seven **P12-x** rulings, above. **12a** `tools/make_tutorial_db.py` — the synthetic dataset (real structure, invented everything else; deterministic on a pinned `ANCHOR`), its own database `gihub_tutorial_pw` on :8011/:5184 with **no file under `tests/e2e/` edited**. **12b** the manifest (`script_sha256` is what ruling Q4 keys a compliance version bump on), WebVTT into the `captions_uri` column empty since 10b, and **freeze-padding** inside the composite filtergraph — which is what makes one screencast serve four languages. **12c** a **declarative** recorder (`steps:` in the YAML, one executor, because ~60 bespoke spec files would be 60 places for the harness to drift) plus four tutorials narrated from role-fenced manual chapters, checked against `manual_qa.allowed_sections()` itself. **12f** the assistant answers in text **and** deep-links into the second the step is on screen, behind the same fence rule 9 uses. Suite **CX** (15) |
 | — | `feat/workflow-polish-and-test-isolation` | **Test isolation + four workflow refinements (2026-08-13).** The backend suite stopped writing to the live database (**rule 15**), which immediately exposed two schema defects — see below. **Procurement:** `po_list` now returns the assignment, so the grid replaces `Assign` with the warehouse it went to, and `assign_po` refuses a re-route while treating a repeat of the same warehouse as idempotent. **Shipping:** `ship_dn` demands the number on the PHYSICAL delivery note plus a scan of it (alembic `b4f21c8ea9d7`), surfaced in all five portals through one `DN_DOC_COLUMNS` / `DeliveryDocLink` pair. **Quality:** the inspection queue shows the material NAME and an openable certificate (scoping inherited from the inspection, not re-derived); a rejection mints a **Return No** the SK pastes into Return Stock to fill the form, capped, DN-mandatory regardless of the entry-document switch, and single-use (alembic `c7a93e5d2b18`). **Returns:** the 30-day source-receipt window was measured on the vendor's delivery date rather than on when the row entered the ledger, so goods received that morning were missing from the dropdown — `receipts.posted_at` fixes it without a backfill. **Health:** a ninth Morning Briefing probe for uncertified Surface Shields, routed by location to the people who can act. Suites **BW** (7) + **BX** (21) |
 | #36 | `9f8be2e` | **QSEP slices 1-3 — Quality Control.** The `qc` role at level 1 with **dual scoping** (a site OR a warehouse, never both, and neither means it sees NOTHING); `/qc/accounts` creation by HOD/Warehouse/Logistics inside their own scope; QC site transfers as a REQUEST an **Admin** decides. MTC logic extracted to `services/quality.py`, mandatory at **DN creation**. The `qc_inspections` ledger, and the hard issuance block at **both** `stage_consumption` and `approve_smr` |
 | #37 | `d481a37` | **QSEP slices 4-5 — PPE and Employees.** PPE via **Option A (Integrated)**: the *standard* Issue form grows `employee_id_number` + `safety_doc_id` when a PPE item is picked, and one transaction does the stock consumption AND the distribution. Mandatory `early_reason` when replacing unexpired gear. `employee_movements`, HOD immediate transfers, and PPE history keyed on the globally-unique `ID_Number` so it **carries over on transfer**. 15-day forecast netting stock and open POs, with employee names |

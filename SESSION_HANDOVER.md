@@ -1,5 +1,98 @@
 # SESSION HANDOVER — read this first, then `PROJECT_HANDOVER.md`
 
+> ## 🆕 PHASE 12 SHIPPED (2026-09-06 → 09-07) — read this block first
+>
+> Five slices, all merged to `main` (PRs #73–#76). **Nothing is mid-flight.**
+> Every gate is green. The plan, with the generation-strategy argument and the
+> operator's locked answers, is
+> [`PROPOSED_PHASE12_PLAN.md`](PROPOSED_PHASE12_PLAN.md).
+>
+> **Automated role-based video tutorials.** A tutorial is a Playwright
+> screencast of the real UI plus a narrating avatar, composited locally into an
+> MP4 + WebVTT + manifest, for the training hub slice 10b already built.
+>
+> | Slice | Branch | What it did |
+> |---|---|---|
+> | **prototype** | `chore/phase12-prototype` | The pipeline end to end, minus one HTTP call |
+> | **12a** | `feat/phase12-tutorial-dataset` | `tools/make_tutorial_db.py` — the SYNTHETIC dataset, its own DB `gihub_tutorial_pw` on :8011/:5184 |
+> | **12b** | `feat/phase12-recorder` | The manifest, WebVTT, freeze-padding, the batch runner, the rule-14 route lint |
+> | **12c** | `feat/phase12-scripts` | A **declarative** recorder (`steps:` in YAML) + the first four tutorials |
+> | **12f** | `feat/phase12-deeplinks` | The assistant answers **and** deep-links to the second the step is on screen. Suite **CX** |
+>
+> ### ⚠️ The five things that will bite you first
+>
+> **1. P12-0 — A TUTORIAL IS RECORDED AGAINST SYNTHETIC DATA, OR IT IS NOT
+> PUBLISHED.** `tests/e2e/global-setup.ts` loads its throwaway database from
+> the REAL `gi_database.db`. Correct for a test suite whose rows never leave
+> the machine; wrong for a video, which is a file people forward. The
+> prototype's first frame carried real employee names, real material
+> descriptions and real SAP codes. **The redaction hook is a second line, not
+> the boundary** — it only masks what somebody thought to name.
+>
+> **2. The renders are GITIGNORED and the feature is allowed to be absent.**
+> `docs/tutorials/out/` is local until the Hetzner cutover (ruling Q3). On a
+> box with no manifests the assistant's deep links simply never appear, and
+> that is a supported state: `GET /ai/health` reports
+> `tutorials: {present, tutorials, beats, indexed}`. Suite CX-13 pins it.
+>
+> **3. Pass A runs BEFORE the browser, and it is not an implementation detail.**
+> The narration is rendered and MEASURED first, then each UI step is held for
+> the length of its own line. Built the other way round the first run overran
+> all six beats — 40.2 s of speech over a 19.6 s recording. With a real HeyGen
+> key the ordering is unchanged.
+>
+> **4. Adding a tutorial is a YAML file, not a spec file.** `tutorial.spec.ts`
+> is the one recorder; the steps live in `tools/tutorials/*.yaml` next to the
+> narration they illustrate. `--dry-run` lints a script (routes, manual fence,
+> redaction) without opening a browser.
+>
+> **5. Two floors guard the deep-link matcher, and the second is the real one.**
+> A candidate must clear `MIN_SCORE = 4.0` **and** share **two** distinct
+> tokens with the beat it won on. `manual_index._tokens` expands synonyms, so
+> one accidental word on a boosted heading scored 4.95 — raising the floor
+> instead would have killed a real hit scoring 4.59.
+>
+> ### What to read for what
+>
+> | Topic | Read |
+> |---|---|
+> | The seven `P12-x` rulings | `PROJECT_HANDOVER.md` → *Phase 12 rulings, LOCKED* |
+> | The pipeline and the deep links | `docs/ARCHITECTURE.md` §7j · §7k |
+> | Why pre-render beat on-demand generation | `PROPOSED_PHASE12_PLAN.md` §2 |
+> | What a USER sees | `USER_MANUAL.md` §24.2.3 |
+> | How to test it by hand | `MANUAL_TESTING_GUIDE.md` §14ab (TC-DL-01…06) |
+> | The recorder's own contract | `tests/video_gen/README.md` |
+>
+> ### Gates, as of 2026-09-07
+>
+> ```
+> bash bin/ci_preflight.sh                                  ✅ 10 controls
+> GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests  2328 / 0  (A…CX)
+> .venv/bin/python -m tests.ai_eval.runner                   Tier 1 147/147 · recall 1.000 · precision 0.994
+> .venv/bin/python tools/gen_eval_grid.py --check            72 verified cases
+> DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib \
+>   .venv/bin/python legacy/bug_check.py                     599 / 0 / 0
+> cd tests/e2e && npm test                                   128 / 128
+> npm run test:nav --prefix frontend                         51 routes
+> npm run parity:sme --prefix frontend                       1313 comparisons
+> npm run test:ui-math --prefix frontend                     33 / 0
+> alembic single head                                        a1c9e64b3d70  (Phase 12 added NO migration)
+> ```
+>
+> ### Still open after Phase 12
+>
+> * **HeyGen submit/poll/download** — needs a key. Narration egress is signed
+>   off (2026-09-06); `heygen_live()` is marked UNVERIFIED and the poll half is
+>   deliberately unwritten.
+> * **Object storage for the renders** — coupled to the Hetzner cutover.
+> * **The rest of the ~60-clip catalogue** (ruling Q2). Four are done.
+> * Everything listed under Phase 11 below is **still open and unchanged**.
+>
+> *(Everything below this block predates Phase 12 and is still accurate about
+> what it describes.)*
+>
+> ---
+
 > ## 🆕 PHASE 11 SHIPPED (2026-09-02 → 09-05) — read this block, then §1 below
 >
 > Six slices, all merged to `main`. **Nothing is mid-flight.** Every gate is
@@ -52,7 +145,7 @@
 >
 > ```
 > bash bin/ci_preflight.sh                                  ✅ 10 controls
-> GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests  2309 / 0
+> GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests  2309 / 0   ← Phase 11; now 2328 (A…CX)
 > .venv/bin/python -m tests.ai_eval.runner                   Tier 1 147/147 · recall 1.000 · precision 0.994
 > DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib \
 >   .venv/bin/python legacy/bug_check.py                     599 / 0 / 0
@@ -612,15 +705,18 @@ A change that lowers any of these is a regression, not a new normal.
 
 | Gate | Baseline | Command |
 |---|---|---|
-| Backend service tests | **2188 / 0** (suites A…CS, **own throwaway DB**) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
-| Playwright E2E | **125 / 125** | `cd tests/e2e && npm test` |
-| **AI guardrail — Tier 1** | **24 / 24, 0 leaks** (also inside suite CQ) | `.venv/bin/python -m tests.ai_eval.runner` |
+| Backend service tests | **2,328 / 0** (suites A…CX, **own throwaway DB**) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
+| Playwright E2E | **128 / 128** | `cd tests/e2e && npm test` |
+| **AI evals — Tier 1** | **147 / 147, 0 leaks** · recall **1.000** / precision **0.994** (floor 0.85). Also inside suite CQ | `.venv/bin/python -m tests.ai_eval.runner` |
+| AI eval grid freshness | **current, 72 verified cases** (P11-12: generated, never hand-edited) | `.venv/bin/python tools/gen_eval_grid.py --check` |
+| **Harness hygiene — runs FIRST** | **10 controls, 0 failed** (rule 16) | `bash bin/ci_preflight.sh` |
 | SME UI math | **33 / 0** | `npm run test:ui-math --prefix frontend` |
 | SME TS↔PY parity | **1,313 comparisons** | `npm run parity:sme --prefix frontend` |
-| Legacy regression | **599 / 0** | `.venv/bin/python legacy/bug_check.py` |
-| Navigation route coverage | **50 routes, all claimed** | `npm run test:nav --prefix frontend` |
+| Legacy regression | **599 / 0 / 0** ⚠️ needs `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` on macOS, else the QR check SKIPS — and a SKIP is not a PASS | `.venv/bin/python legacy/bug_check.py` |
+| Navigation route coverage | **51 routes, all claimed** | `npm run test:nav --prefix frontend` |
 | Frontend | `tsc -b` + build + `oxlint` clean | `npm run build --prefix frontend` |
-| Alembic | single head **`e7f2a4c916b8`** | `cd backend && alembic heads` |
+| Alembic | single head **`a1c9e64b3d70`** | `cd backend && alembic heads` |
+| 🎬 Tutorial scripts | **NOT A GATE, by design** (Phase 12) — a video that renders badly is one to re-render, not a red build. `--dry-run` lints every script without a browser | `.venv/bin/python tools/generate_tutorial.py --all --dry-run` |
 | **Manual PDFs** | **0 overlapping text pairs** × 8 booklets | `.venv/bin/python build_manual_pdf.py --role all` |
 | `gi_database.db` | sha256 `00652932…ba038` **unchanged** | `shasum -a 256 gi_database.db` |
 
