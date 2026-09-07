@@ -35,6 +35,10 @@ avatar:
 routes:
   - /entry/return
 
+# ⚠️ Deep-link audience (P12-6). Staging a return is the store keeper's job
+# and nobody else's; the HOD's half of §13.10 is a different tutorial.
+audience: [store_keeper]
+
 manual_sections: [13]
 
 redaction:
@@ -81,8 +85,9 @@ steps:
 narration:
   - beat: open
     say: >-
-      This is Return Stock. It handles real returns of material to the
-      warehouse — not returnable tools, which have their own tab.
+      This is Return Stock, and this is where you stage a return — material
+      going back to the warehouse. Not returnable tools; those have their own
+      tab.
   - beat: window
     say: >-
       Read the line under the title. A return is made against a receipt from

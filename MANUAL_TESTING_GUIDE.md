@@ -3132,6 +3132,53 @@ is consulted after the guards, so it can never be a way around one.
 "chat with your data" card the same question twice after a receipt is posted;
 the number must change. Only the manual assistant caches.
 
+## 14ab. Tutorial deep links — "Watch it" (Phase 12 · 12f)
+
+**What it is for.** The assistant answers in text, as it always has, and — when
+one of the published tutorials shows that exact step — offers a button that
+opens the video **wound to the second the step happens**.
+
+**Setup.** Deep links only appear where the rendered manifests are readable.
+Locally that is `docs/tutorials/out/`, produced by
+`.venv/bin/python tools/generate_tutorial.py --all`. `GET /ai/health` reports
+`tutorials: {present, tutorials, beats, indexed}` — check that first; an empty
+index is why no buttons appear, and it is meant to be visible rather than a
+mystery.
+
+**TC-DL-01** — Sign in as the **store keeper**, open the Hub Assistant and ask
+*"which receipt do I pick when returning material"*. The answer appears, and
+under it a **Watch it** button naming *Staging a return* with a timestamp
+around **1:01**. Press it: 🎓 Training opens, that card scrolls into view, and
+the player starts about a minute in — not at zero.
+
+**TC-DL-02** — ⚠️ **The one that matters.** Sign in as the **HOD** and ask the
+*same* question. You get an answer; **no button appears at all**. The audience
+filter runs before anything is ranked, so no phrasing reaches a tutorial the
+role may not watch. Try to make it appear by naming the video exactly — it
+still must not.
+
+**TC-DL-03** — Ask the store keeper *"what is the weather in Jubail"*. No
+button. Then ask *"reading the executive summary valuation floor"* — still no
+button, even though that is an HOD topic and the store keeper has a video of
+their own. **A link to the nearest video is worse than no link.**
+
+**TC-DL-04** — Ask the same question twice. Identical timestamp both times.
+Nothing here consults a model or a clock; a link that moved between Monday and
+Tuesday would teach people to distrust it.
+
+**TC-DL-05** — Edit the URL by hand: `/training?module=<a module your role has
+no business seeing>&t=30`. Nothing happens — the page still lists only the
+modules the server returned for your role. The link selects a card; it does not
+create one.
+
+**TC-DL-06** — ⚠️ **Prove it can be absent.** Rename `docs/tutorials/out/`,
+restart the backend and ask a question that normally offers a link. The answer
+is unchanged and **no error appears anywhere**. Every production box is in this
+state until the renders reach object storage, and an assistant that broke
+because a video was missing would be worse than one that never had the feature.
+
+Backend coverage: **suite CX** in `backend/api/service_tests.py`.
+
 ## 14aa. The AI evaluation gates (Phase 11 · 11f)
 
 Developer-facing. Nothing here is a screen; it is what CI refuses to merge.

@@ -100,7 +100,7 @@ DATASET_ENV = {
 # stale. The batch runner re-renders anything whose manifest carries an older
 # one — which is how a pipeline fix reaches sixty videos without a person
 # remembering which of them it touched.
-PIPELINE_VERSION = 2
+PIPELINE_VERSION = 3
 
 FPS = 30
 CANVAS = (1920, 1080)
@@ -221,7 +221,11 @@ def route_lint(doc: dict, access: dict) -> list[str]:
     if not access.get("sane"):
         return ["nav_access_dump found almost nothing — the manifest has moved, "
                 "and this lint would have passed for the wrong reason"]
-    role = doc["hub_role"]
+    # ⚠️ EVERY ROLE IN THE AUDIENCE, NOT JUST THE ONE IT WAS RECORDED AS. Slice
+    # 12f offers a tutorial as a deep link to everyone in `audience:`, and a
+    # link into a page the viewer cannot open is worse than no link — they
+    # click it, the guard redirects, and they conclude the assistant is broken.
+    roles = list(dict.fromkeys([doc["hub_role"], *(doc.get("audience") or [])]))
     known = access["routes"]
     publics = access["publics"]
     for route in doc.get("routes") or []:
@@ -233,9 +237,12 @@ def route_lint(doc: dict, access: dict) -> list[str]:
                 f".map() and the dumper cannot resolve it "
                 f"({len(access['unresolved'])} such group(s)). Reported, never "
                 f"passed; the record-time check settles it")
-        elif role not in known[route]:
-            problems.append(f"REFUSED  {route} — {role} may not open it "
-                            f"(allowed: {', '.join(known[route]) or 'nobody'})")
+        else:
+            for role in roles:
+                if role not in known[route]:
+                    problems.append(
+                        f"REFUSED  {route} — {role} may not open it "
+                        f"(allowed: {', '.join(known[route]) or 'nobody'})")
     return problems
 
 
@@ -1024,6 +1031,7 @@ def write_manifest(doc: dict, script_path: pathlib.Path, payload: dict,
     able to break the thing it observes, and a batch job has no home in the
     database yet.
     """
+    notes = {b["id"]: b.get("note", "") for b in beats.get("beats", [])}
     manifest = {
         "pipeline_version": PIPELINE_VERSION,
         "generated_at": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -1031,6 +1039,10 @@ def write_manifest(doc: dict, script_path: pathlib.Path, payload: dict,
         "title": doc["title"],
         "role": doc["role"],
         "hub_role": doc["hub_role"],
+        # ⚠️ WHO THE DEEP-LINK MATCHER MAY OFFER THIS TO (P12-6). Defaults to
+        # the recorded role — narrow, never "everyone" — so a manifest written
+        # before this field existed cannot widen an audience by omission.
+        "audience": list(doc.get("audience") or [doc["hub_role"]]),
         "language": doc["language"],
         "training_module_key": doc.get("training_module_key"),
         # ── the Q4 key ──────────────────────────────────────────────────────
@@ -1066,8 +1078,15 @@ def write_manifest(doc: dict, script_path: pathlib.Path, payload: dict,
             "avatar_alpha": alpha,
         },
         "captions": {"path": str(captions.relative_to(ROOT)), "format": "WebVTT"},
+        # ⚠️ THE STEP'S `note:` TRAVELS WITH THE BEAT, and it is not decoration.
+        # 12f ranks a question against these beats, and every beat in one
+        # tutorial shares a title and a subtitle — so the only thing that can
+        # tell "the 30-day window" apart from "the shortcut for QC-rejected
+        # material" is the note. Without it BM25 sees four paragraphs that all
+        # say "return" and picks whichever says it most.
         "beats": [{"id": c["beat"], "start_s": round(c["start"], 3),
-                   "narration_s": round(c["dur"], 3), "text": c["text"]}
+                   "narration_s": round(c["dur"], 3),
+                   "note": notes.get(c["beat"], ""), "text": c["text"]}
                   for c in placed],
     }
     dest.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",

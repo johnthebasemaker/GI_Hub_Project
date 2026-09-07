@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Card, Input, Space, Tooltip, Typography } from 'antd'
-import { CloseOutlined, RobotOutlined, SendOutlined } from '@ant-design/icons'
+import { CloseOutlined, PlayCircleOutlined, RobotOutlined, SendOutlined } from '@ant-design/icons'
+import { Link } from 'react-router-dom'
 import { apiBase, api, getAuthToken } from '../api/client'
 
 interface Msg { who: 'user' | 'ai'; text: string }
+/** Phase 12f — a pre-rendered tutorial, and the second the step is on screen. */
+interface TutorialHit {
+  tutorial_id: string; module_key: string | null; language: string
+  title: string; beat: string; note?: string; t: number; url: string
+}
 interface AiHealth { ok: boolean; enabled: boolean; message: string }
 
 // Floating Hub Assistant — role-gated Q&A over the user manual, streamed over
@@ -14,6 +20,7 @@ export default function HubAssistant() {
   const [open, setOpen] = useState(false)
   const [health, setHealth] = useState<AiHealth | null>(null)
   const [msgs, setMsgs] = useState<Msg[]>([])
+  const [tutorial, setTutorial] = useState<TutorialHit | null>(null)
   const [q, setQ] = useState('')
   const [busy, setBusy] = useState(false)
   const [queued, setQueued] = useState(false)
@@ -42,6 +49,7 @@ export default function HubAssistant() {
     setQ('')
     setBusy(true)
     setQueued(false)
+    setTutorial(null)
     setMsgs((m) => [...m, { who: 'user', text: question }, { who: 'ai', text: '' }])
     const ctrl = new AbortController()
     abortRef.current = ctrl
@@ -74,6 +82,7 @@ export default function HubAssistant() {
             const ev = JSON.parse(line.slice(6))
             if (ev.status === 'queued') setQueued(true)
             if (ev.token) { setQueued(false); appendToLast(ev.token) }
+            if (ev.tutorial) setTutorial(ev.tutorial as TutorialHit)
             if (ev.error) appendToLast(ev.error)
           } catch { /* ignore malformed frame */ }
         }
@@ -139,6 +148,28 @@ export default function HubAssistant() {
           </div>
         ))}
       </div>
+      {/* ⚠️ PHASE 12f — SHOWN ONLY WHEN THE ANSWER HAS ONE, AND NEVER INSTEAD OF
+          THE ANSWER. The text is what the person asked for; this is the same
+          step with a picture, at the second it happens. It is a plain link into
+          the training player, which is nav-guarded and role-filtered exactly as
+          before — the deep link carries a module key, a language and a number
+          of seconds, and grants nothing. */}
+      {tutorial && (
+        <Link to={tutorial.url} onClick={() => setOpen(false)}
+          style={{ display: 'block', marginBottom: 8 }}>
+          <Button size="small" icon={<PlayCircleOutlined />} block
+            style={{ textAlign: 'left', height: 'auto', padding: '6px 10px',
+                     whiteSpace: 'normal' }}>
+            <Typography.Text style={{ fontSize: 12 }}>
+              Watch it: <b>{tutorial.title}</b>
+              {tutorial.note ? ` — ${tutorial.note}` : ''}
+              {' '}<Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                (from {fmt(tutorial.t)})
+              </Typography.Text>
+            </Typography.Text>
+          </Button>
+        </Link>
+      )}
       <Space.Compact style={{ width: '100%' }}>
         <Input
           placeholder="Ask the manual…" value={q} disabled={busy || (health ? !health.ok : false)}
@@ -149,4 +180,10 @@ export default function HubAssistant() {
       </Space.Compact>
     </Card>
   )
+}
+
+/** `m:ss`, because "from 61.2 seconds" is a number nobody converts in their head. */
+function fmt(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }

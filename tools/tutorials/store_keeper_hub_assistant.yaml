@@ -54,6 +54,11 @@ routes:
 # copy of it. A tutorial narrated from a chapter its role cannot open teaches
 # that role a screen it will never see, and the only symptom is a confused
 # person. §3 is the sidebar and common elements; §12 is the FAQ index.
+# ⚠️ Deep-link audience (P12-6). Every role has the Hub Assistant, but this
+# is recorded as a Store Keeper and its answer is a Store Keeper's answer.
+# Widening it is a script decision, not a default.
+audience: [store_keeper]
+
 manual_sections: [3, 12]
 
 # ── what the assistant is scripted to say ON SCREEN ─────────────────────────

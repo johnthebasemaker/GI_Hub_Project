@@ -5603,7 +5603,34 @@ having completed the OCR tutorial, a panel appears offering two choices.
 Printing a **blank** form is never gated at all — the tutorial is about filling
 one in, so it has no business standing between you and a sheet of paper.
 
-### 24.2.3 For HODs — the compliance tab
+### 24.2.3 "Watch it" — the assistant sends you to the right second
+
+When you ask the **Hub Assistant** a question and one of the published
+tutorials shows that exact step, a small **Watch it** button appears under the
+answer. It carries the tutorial's name and a timestamp.
+
+Pressing it opens 🎓 Training with that video already wound to the second where
+the step is on screen. You do not have to scrub through ninety seconds looking
+for it.
+
+Three things worth knowing:
+
+- **You still get the written answer.** The button is never instead of it. If
+  you are standing at a counter with somebody waiting, read the answer; the
+  video is there for later.
+- **You are only ever offered a tutorial your role may watch.** A Store Keeper
+  is not shown a Head of Department's walk-through, however the question is
+  phrased — the same rule that decides which chapters of this manual the
+  assistant may answer from decides which videos it may point at.
+- **Sometimes there is no button, and that is deliberate.** If nothing matches
+  your question closely enough, nothing is offered. A link to the nearest video
+  is worse than no link, because you would spend ninety seconds discovering it
+  was the wrong one.
+
+If the videos have not been published on your system yet, no buttons appear
+anywhere and the assistant behaves exactly as it always has.
+
+### 24.2.4 For HODs — the compliance tab
 
 An HOD or Admin opening 🎓 Training sees a second tab, **Team compliance**.
 
@@ -5614,7 +5641,7 @@ rather than being absent from the list. That absence is the thing worth seeing.
 Each person shows Not started / Started / Acknowledged, and how many times they
 have deferred.
 
-### 24.2.4 When a tutorial is re-recorded
+### 24.2.5 When a tutorial is re-recorded
 
 If the workflow changes and your administrator publishes a new version,
 **everybody must watch and acknowledge it again**. Your old acknowledgement is
