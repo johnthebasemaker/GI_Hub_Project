@@ -187,6 +187,50 @@ def _cv():
                  "or type the entry in by hand.") from e
 
 
+def _detectors(cv2) -> list:
+    """The QR detectors to try, best first.
+
+    ⚠️ THE ARUCO DETECTOR IS NOT AN OPTIMISATION — IT IS THE FIX FOR A MEASURED
+    1 % OF PRINTED FORMS (2026-09-10, Phase 13a).
+
+    `cv2.QRCodeDetector` — the only detector this function used until now —
+    **cannot decode a version-4 symbol at error-correction level Q**, which is
+    exactly what `consumption_form._qr_png` emits for a payload of the length a
+    form id happens to produce. Measured over 400 freshly-minted forms: 4 of
+    them, 1.0 %, were undecodable. The failure is STRUCTURAL, not a resolution
+    problem — the existing 2× upscale below does not rescue them, and neither
+    does rendering the symbol at 410 px instead of 246. Every one of those same
+    symbols decodes first time with `QRCodeDetectorAruco`, and every one is a
+    perfectly valid QR (`pyzbar` reads them all).
+
+    ⚠️ IT WAS ALWAYS BROKEN AND BULK PRINTING IS WHAT REVEALED IT. At one sheet
+    per download a 1 % failure is a supervisor being told, once in a hundred
+    trips, that their photo had no QR on it — indistinguishable from a bad
+    photograph, and blamed on the camera. Printing fifty at once turned it into
+    a page that failed on every attempt while its forty-nine neighbours worked.
+
+    ⚠️ AND THE FIX BELONGS IN THE READER, NOT THE ENCODER. Changing what is
+    printed would repair only paper printed after the change; every sheet
+    already in the plant would stay unreadable. Reading better repairs the
+    entire backlog, including the run somebody printed this morning.
+
+    Ordered best-first and applied in order rather than replacing the old one:
+    the legacy detector is what every historical form was verified against, and
+    `QRCodeDetectorAruco` arrived in OpenCV 4.7 — a box with an older build
+    still has to work. A build with neither is impossible (the class is only
+    absent, never broken), and an absent one is skipped rather than raising.
+    """
+    out = []
+    aruco = getattr(cv2, "QRCodeDetectorAruco", None)
+    if aruco is not None:
+        try:
+            out.append(("aruco", aruco()))
+        except Exception:                   # noqa: BLE001 — an old build; fall through
+            pass
+    out.append(("legacy", cv2.QRCodeDetector()))
+    return out
+
+
 def decode_qr(image_bytes: bytes) -> dict:
     """The four things the model must never have to read.
 
@@ -199,15 +243,27 @@ def decode_qr(image_bytes: bytes) -> dict:
     arr = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
     if arr is None:
         raise HTTPException(422, "that file could not be read as an image.")
-    payload, points, _ = cv2.QRCodeDetector().detectAndDecode(arr)
+
+    dets = _detectors(cv2)
+    payload, points = "", None
+    for _name, det in dets:
+        payload, points, _ = det.detectAndDecode(arr)
+        if payload:
+            break
     if not payload:
         # Second pass on a bigger image: a QR photographed from far away can be
-        # under the detector's minimum module size at native resolution.
+        # under the detector's minimum module size at native resolution. Both
+        # detectors get the larger image too — the two failure modes are
+        # independent, so a symbol can be both far away AND a version the
+        # legacy detector cannot read.
         h, w = arr.shape[:2]
         if max(h, w) < 2400:
             big = cv2.resize(arr, None, fx=2.0, fy=2.0,
                              interpolation=cv2.INTER_CUBIC)
-            payload, points, _ = cv2.QRCodeDetector().detectAndDecode(big)
+            for _name, det in dets:
+                payload, points, _ = det.detectAndDecode(big)
+                if payload:
+                    break
             if points is not None:
                 points = points / 2.0
     if not payload:

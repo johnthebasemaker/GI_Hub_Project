@@ -326,9 +326,19 @@ export function useGeneratedForms(status?: string) {
 // ⚠️ EVERY DOWNLOAD REGISTERS A NEW FORM, so the generated list is stale the
 // moment this resolves. Two prints are two physical sheets — see the endpoint's
 // docstring for why that is deliberate rather than a caching bug.
-export async function downloadConsumptionForm(code: string, esc?: string) {
+//
+// ⚠️ `copies` IS FORMS, NOT SHEETS OF A4 (Phase 13a). A form of more than 18
+// materials has always spanned several pages under one QR; asking for 50 forms
+// of a 40-line recipe produces 150 sheets, and the card says so before the
+// button is pressed. Each form carries its OWN QR — which is the whole reason
+// the feature exists, because the photocopier it replaces duplicated one.
+export async function downloadConsumptionForm(code: string, esc?: string,
+                                              copies = 1) {
+  const params: Record<string, string | number> = {}
+  if (esc) params.esc = esc
+  if (copies > 1) params.copies = copies
   await downloadDocument('/execution/forms/' + encodeURIComponent(code),
-    esc ? { esc } : {}, `consumption-${code}.pdf`)
+    params, `consumption-${code}.pdf`)
 }
 
 // Parity A1 — is the supporting-document gate on? (drives the required marks)

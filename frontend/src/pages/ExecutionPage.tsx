@@ -928,19 +928,34 @@ export function HodApprovalQueueTab() {
 }
 
 /**
- * Print a blank consumption form (Phase 9c).
+ * Print blank consumption forms (Phase 9c; bulk added in Phase 13a).
  *
  * ⚠️ EVERY DOWNLOAD IS A NEW SHEET. Two prints are two physical pieces of
  * paper, each with its own QR, because the upload side has to tell a RE-PRINT
  * from a RE-PHOTOGRAPH — one identity for both would make duplicate detection
  * impossible to get right. The card says so, because "download it again" is
  * otherwise the obvious thing to do with a form you have mislaid.
+ *
+ * ⚠️ AND THAT IS WHY BULK PRINTING EXISTS. Needing fifty sheets, people
+ * printed one and PHOTOCOPIED it — which duplicates the QR, and slice 9d maps
+ * handwriting to materials positionally off exactly that identity. Fifty
+ * identical QRs means the intake cannot tell one tank's page from another's.
+ * Asking for fifty forms here mints fifty identities instead.
+ *
+ * ⚠️ THE NUMBER IS FORMS, NOT SHEETS OF A4, and the difference is visible
+ * rather than explained: a form of more than 18 materials spans several pages
+ * under one QR, so the helper line under the box multiplies it out live.
+ * Somebody who wanted 50 pieces of paper and typed 50 needs to see "= 150 A4
+ * sheets" BEFORE they press print, not after the printer has started.
  */
+const ROWS_PER_FORM_PAGE = 18   // mirrors consumption_form.ROWS_PER_PAGE
+
 function FormPrintCard() {
   const { message } = App.useApp()
   const { data: systems, isLoading } = useFormSystems()
   const [code, setCode] = useState<string | undefined>()
   const [esc, setEsc] = useState<string | undefined>()
+  const [copies, setCopies] = useState<number>(1)
   const [busy, setBusy] = useState(false)
 
   const picked = (systems ?? []).find((x) => x.Lining_System_Code === code)
@@ -948,12 +963,22 @@ function FormPrintCard() {
     ? (esc ? undefined : picked.materials)
     : undefined
 
+  // Pages per form, from the same 18-rows-per-page the renderer uses. Unknown
+  // when a sub-activity is selected — the server filters the recipe down and
+  // the picker does not know by how much — so the helper says "forms" alone
+  // rather than guessing a sheet count that would be wrong.
+  const pagesPerForm = rows ? Math.max(1, Math.ceil(rows / ROWS_PER_FORM_PAGE)) : null
+  const totalSheets = pagesPerForm == null ? null : pagesPerForm * copies
+
   const go = async () => {
     if (!code) return
     setBusy(true)
     try {
-      await downloadConsumptionForm(code, esc)
-      message.success('Form downloaded — each download is a new numbered sheet')
+      await downloadConsumptionForm(code, esc, copies)
+      message.success(copies > 1
+        ? `${copies} forms downloaded — every one is a separate numbered sheet `
+          + 'with its own QR code'
+        : 'Form downloaded — each download is a new numbered sheet')
     } catch (e) {
       message.error(errMsg(e))
     } finally {
@@ -979,6 +1004,16 @@ function FormPrintCard() {
           onChange={(v) => setEsc(v)}
           options={(picked?.sub_activities ?? []).map((x) => ({
             value: x, label: x }))} />
+        {/* ⚠️ FORMS, NOT PAGES. The label is the whole guard against somebody
+            typing the number of pieces of paper they want. The live line
+            underneath multiplies it out so the two numbers are never confused
+            silently. */}
+        <Space direction="vertical" size={0}>
+          <InputNumber
+            style={{ width: 150 }} min={1} max={200} precision={0}
+            value={copies} onChange={(v) => setCopies(Math.max(1, Math.min(200, Number(v) || 1)))}
+            addonBefore="Forms" aria-label="How many forms?" />
+        </Space>
         <Button type="primary" icon={<DownloadOutlined />} loading={busy}
           disabled={!code} onClick={go}>Download</Button>
         {rows != null && (
@@ -987,6 +1022,26 @@ function FormPrintCard() {
           </Typography.Text>
         )}
       </Space>
+      {code && (
+        <Typography.Paragraph style={{ marginBottom: 0, marginTop: 8, fontSize: 12 }}>
+          {totalSheets == null
+            ? <Typography.Text type="secondary">
+                {copies} form{copies === 1 ? '' : 's'}, each a separate numbered
+                sheet with its own QR code.
+              </Typography.Text>
+            : <Typography.Text type={copies > 1 ? undefined : 'secondary'}>
+                <strong>{copies} form{copies === 1 ? '' : 's'} × {pagesPerForm} page
+                {pagesPerForm === 1 ? '' : 's'} = {totalSheets} A4 sheet
+                {totalSheets === 1 ? '' : 's'}</strong>
+                {pagesPerForm! > 1 && (
+                  <Typography.Text type="secondary">
+                    {' '}— this recipe has more than {ROWS_PER_FORM_PAGE} materials,
+                    so one form spans {pagesPerForm} pages under a single QR code.
+                  </Typography.Text>
+                )}
+              </Typography.Text>}
+        </Typography.Paragraph>
+      )}
       <Typography.Paragraph type="secondary"
         style={{ marginBottom: 0, marginTop: 10, fontSize: 12 }}>
         The form prints every material for the system, so nobody writes a
@@ -994,8 +1049,12 @@ function FormPrintCard() {
         sub-activity and the sheet&rsquo;s own number. Fill in the date, equipment and area at the top, then a
         quantity and a lot number on each row, and photograph the whole
         page including the QR.
-        {' '}<strong>Each download is a separate numbered sheet</strong> —
+        {' '}<strong>Every form is a separate numbered sheet</strong> —
         printing again gives you new paper, not another copy of the same form.
+        {' '}<strong>Never photocopy one.</strong> A copy repeats the QR code,
+        and the reader identifies a sheet by it — two sheets with one code
+        cannot be told apart on the way back in. Print the number you need here
+        instead.
       </Typography.Paragraph>
     </Card>
   )

@@ -426,11 +426,17 @@ async def forms_generated(status: Optional[str] = Query(None,
 
 
 @router.get("/forms/{system_code}",
-            summary="Generate and download a printable consumption form")
+            summary="Generate and download printable consumption forms")
 async def form_download(system_code: str,
                         esc: Optional[str] = Query(
                             None, description="One sub-activity; omit for every "
                                               "material on the system"),
+                        copies: int = Query(
+                            1, ge=1, le=CF.MAX_COPIES,
+                            description="How many FORMS to print. Each one is a "
+                                        "separate numbered sheet with its own QR "
+                                        "code — a form longer than 18 materials "
+                                        "still spans several A4 pages."),
                         site_id: Optional[str] = Query(None),
                         user: dict = Depends(require_roles(*_FORM_ROLES)),
                         session: AsyncSession = Depends(get_session)):
@@ -441,27 +447,58 @@ async def form_download(system_code: str,
     one paper twice — the alternative is a duplicate-detection rule that cannot
     distinguish a re-print from a re-photograph.
 
+    ⚠️ AND `copies` IS COUNTED IN FORMS, NOT IN SHEETS OF A4 (Phase 13a, ruling
+    Q13-1). A form is what the QR identifies, what the fingerprint pins the row
+    order of, and what the intake consumes; a 40-material recipe has always
+    printed as three A4 pages under ONE identity. Counting the user's number in
+    sheets would make it mean something the system has no concept of, so the UI
+    asks for forms and shows the resulting sheet count beside the box.
+
     It stays a GET so a browser can open it in a new tab and the native shells
     can hand it to the OS viewer; the audit row records who printed what.
     """
     site = _write_site(user, site_id)
+    # ⚠️ BEFORE THE TRANSACTION, because `check_bucket_shared` COMMITS — calling
+    # it inside `session.begin()` would end the transaction the registry rows
+    # are supposed to be atomic within. It also fails open on storage trouble,
+    # which is the right direction for a print: nobody should be unable to
+    # print paper because a counter table is unwell.
+    #
+    # Only a bulk run is throttled. A double-click on a single download costs
+    # one spare sheet; a double-click on `copies=200` costs 400 registry rows.
+    if copies > 1:
+        from .ratelimit import check_bucket_shared
+        await check_bucket_shared(
+            session, f"formprint:{user['username']}", 3, 60,
+            "that is three bulk print runs in a minute — wait a moment. Each "
+            "run registers every sheet it prints, and a run nobody collects "
+            "leaves those sheets showing as outstanding.")
     async with session.begin():
         pdf, row = await CF.generate(session, site_id=site,
                                      code=system_code.strip(),
                                      esc=(esc or "").strip() or None,
-                                     username=user["username"], role=user["role"])
+                                     username=user["username"], role=user["role"],
+                                     copies=copies)
     fname = (f"consumption-{row['Lining_System_Code']}"
              + (f"-{row['Execution_Sub_Activity_Code']}"
                 if row["Execution_Sub_Activity_Code"] else "")
-             + f"-{row['Form_UUID']}.pdf")
+             + (f"-x{copies}-{row['Batch_UUID']}" if copies > 1
+                else f"-{row['Form_UUID']}")
+             + ".pdf")
     return StreamingResponse(
         io.BytesIO(pdf), media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{fname}"',
-                 # The UI needs the id it just created without parsing the PDF,
-                 # so the registry row rides back on the headers.
+                 # The UI needs the ids it just created without parsing the PDF,
+                 # so the registry row rides back on the headers. `X-Form-UUID`
+                 # keeps naming the FIRST sheet, so a pre-13a caller reading it
+                 # still gets a real form id rather than a batch id it cannot
+                 # look up.
                  "X-Form-UUID": row["Form_UUID"],
                  "X-Form-Rows": str(row["Row_Count"]),
-                 "Access-Control-Expose-Headers": "X-Form-UUID, X-Form-Rows"})
+                 "X-Form-Batch": row["Batch_UUID"],
+                 "X-Form-Count": str(row["Batch_Size"]),
+                 "Access-Control-Expose-Headers":
+                     "X-Form-UUID, X-Form-Rows, X-Form-Batch, X-Form-Count"})
 
 
 # ── the OCR lane (Phase 9d) ──────────────────────────────────────────────────

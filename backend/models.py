@@ -1199,9 +1199,34 @@ class SmeConsumptionForm(Base):
     created_by = Column(Text)
     created_by_role = Column(Text)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+
+    # ── Phase 13a: one print run of many forms ──────────────────────────────
+    # ⚠️ A BATCH IS NOT A FORM. Fifty forms printed in one go are fifty rows
+    # here, fifty `Form_UUID`s and fifty QR codes — because that is the whole
+    # point of the feature: a photocopied form duplicates its QR, and slice 9d
+    # maps handwriting POSITIONALLY off a sheet identity it has to be able to
+    # tell apart. What `Batch_UUID` adds is the ability to answer "where did
+    # the fifty sheets I printed on Tuesday go", which fifty unrelated rows
+    # cannot.
+    #
+    # Every row WRITTEN FROM PHASE 13 ON gets all three, including a single
+    # download — a lone form is a batch of one. The alternative is a nullable
+    # special case that every reader has to COALESCE around, and the first
+    # reader to forget reports a single print as an orphan.
+    #
+    # ⚠️ `Batch_UUID` IS STILL NULL ON EVERY PRE-PHASE-13 ROW, and it is left
+    # that way on purpose. Those forms were printed one at a time and there is
+    # no batch they belonged to; back-filling a synthetic one would let a
+    # report claim a print run that never happened. `Batch_Seq`/`Batch_Size`
+    # DO back-fill to 1, because "a batch of one" is exactly what they were.
+    Batch_UUID = Column(Text)
+    Batch_Seq = Column(Integer, nullable=False, server_default=text("1"))
+    Batch_Size = Column(Integer, nullable=False, server_default=text("1"))
     __table_args__ = (
         UniqueConstraint("Form_UUID", name="uq_consumption_form_uuid"),
         Index("ix_consumption_form_site_status", "Site_ID", "status"),
+        # The registry's own question: show me that print run, in sheet order.
+        Index("ix_consumption_form_batch", "Batch_UUID", "Batch_Seq"),
     )
 
 

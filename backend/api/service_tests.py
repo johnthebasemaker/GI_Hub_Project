@@ -19095,6 +19095,403 @@ async def test_consumption_form():
 
 
 
+# --- Suite CY: fifty sheets, fifty identities --------------------------------
+async def test_bulk_consumption_forms():
+    """Suite CY — Phase 13a. Printing N forms at once, each with its own QR.
+
+    ⚠️ WHAT THIS REPLACES IS A PHOTOCOPIER, AND THAT IS THE WHOLE POINT.
+    A supervisor needing fifty sheets printed one and copied it. Every copy then
+    carried the SAME QR — the same `Form_UUID` — and slice 9d maps handwriting to
+    materials POSITIONALLY off exactly that identity. Fifty identical codes means
+    the intake cannot tell one tank's page from another's, cannot refuse a sheet
+    already filed, and cannot distinguish a re-print from a re-photograph. So the
+    single assertion this suite exists for is:
+
+        fifty forms  ⇒  fifty DISTINCT Form_UUIDs, fifty DISTINCT QR payloads.
+
+    ⚠️ AND "50 PAGES" WAS AMBIGUOUS, WHICH IS WHY `copies` COUNTS FORMS.
+    A recipe of more than 18 materials has always printed as several A4 pages
+    under ONE identity. Counting the operator's number in sheets would make it
+    mean something the system has no concept of — CY-08 pins that a long recipe
+    multiplies pages WITHOUT multiplying identities.
+    """
+    import io as _io
+
+    from sqlalchemy import text as _sqt
+
+    from .services import consumption_form as CF
+
+    SITE = "CNCEC"
+    await _qsep_seed_users()
+    transport = ASGITransport(app=app)
+
+    try:
+        import cv2 as _cv2  # noqa: F401
+        import numpy as _np  # noqa: F401
+        import pypdfium2 as _pdfium  # noqa: F401
+        CAN_DECODE = True
+    # ⚠️ NOT `except ImportError` — see suite CM. cv2 and pypdfium2 resolve
+    # NATIVE libraries at import time and an unresolvable one raises different
+    # types on macOS and Linux for the same absent library.
+    except Exception:                       # noqa: BLE001
+        CAN_DECODE = False
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            await s.execute(_sqt("DELETE FROM sme_consumption_form WHERE "
+                                 "\"Lining_System_Code\" LIKE 'SVCY-%'"))
+            await s.execute(_sqt("DELETE FROM sme_recipe WHERE "
+                                 "\"Lining_System_Code\" LIKE 'SVCY-%'"))
+            await s.commit()
+
+    await _cleanup()
+
+    # Two systems: a SHORT one (4 lines, one A4 page) and a LONG one (22 lines,
+    # two pages). The long one is what makes the forms-versus-sheets distinction
+    # testable rather than theoretical.
+    async with SessionLocal() as s:
+        for i, sap in enumerate(("2900", "2900-1", "2900-2", "2901")):
+            await s.execute(_sqt(
+                'INSERT INTO sme_recipe ("Lining_System_Code", '
+                '"Execution_Sub_Activity_Code", "Material_Code", "SAP_Code", '
+                '"Material_Name", "Material_Description", "UOM", "For_1_SQM") '
+                "VALUES ('SVCY-A', 'ESCY1', :m, :s, 'Alpha Resin', :d, 'KG', 0.5)"),
+                {"m": "SVCY-MAT-1" if i < 3 else "SVCY-MAT-2", "s": sap,
+                 "d": f"Comp-{'ABC'[i]}" if i < 3 else ""})
+        for i in range(22):
+            await s.execute(_sqt(
+                'INSERT INTO sme_recipe ("Lining_System_Code", '
+                '"Execution_Sub_Activity_Code", "Material_Code", "SAP_Code", '
+                '"Material_Name", "UOM", "For_1_SQM") '
+                "VALUES ('SVCY-LONG', 'ESCY9', :m, :s, :n, 'KG', 0.3)"),
+                {"m": f"SVCY-L-{i:02d}", "s": f"29{i:02d}",
+                 "n": f"Long material {i}"})
+        await s.commit()
+
+    # ── 1. the renderer, before any HTTP ────────────────────────────────────
+    async with SessionLocal() as s:
+        rows = await CF.recipe_rows(s, code="SVCY-A")
+        long_rows = await CF.recipe_rows(s, code="SVCY-LONG")
+
+    uuids = [f"CY{i:06d}" for i in range(1, 6)]
+    batch_pdf = CF.render_batch_pdf(rows=rows, site_id=SITE, code="SVCY-A",
+                                    esc="", system_name="SVCY system",
+                                    form_uuids=uuids)
+    one_pdf = CF.render_pdf(rows=rows, site_id=SITE, code="SVCY-A", esc="",
+                            system_name="SVCY system", form_uuid=uuids[0])
+    check("CY-01 a batch renders to ONE real PDF, not five files a caller has "
+          "to staple together. The browser hands a single stream to a printer",
+          batch_pdf[:5] == b"%PDF-", str(batch_pdf[:16]))
+    check("CY-02 …and it is materially bigger than the single form, because it "
+          "actually contains five of them rather than one repeated by "
+          "reference",
+          len(batch_pdf) > len(one_pdf) * 2, f"{len(batch_pdf)} vs {len(one_pdf)}")
+
+    if CAN_DECODE:
+        import cv2
+        import numpy as np
+        import pypdfium2 as pdfium
+        doc = pdfium.PdfDocument(_io.BytesIO(batch_pdf))
+        check("CY-03 five one-page forms render as five pages",
+              len(doc) == 5, f"{len(doc)} pages")
+        seen = []
+        for p in range(len(doc)):
+            img = doc[p].render(scale=3).to_pil().convert("RGB")
+            arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+            decoded, _pts, _qr = cv2.QRCodeDetector().detectAndDecode(arr)
+            seen.append(decoded)
+        check("CY-04 ⚠️ EVERY PAGE'S QR DECODES OFF THE RENDERED PAPER AND ALL "
+              "FIVE ARE DIFFERENT. This is the assertion the whole slice "
+              "exists for — a photocopy repeats one code, and the reader "
+              "identifies a sheet by exactly this. Comparing the strings that "
+              "built them would not prove the printed page carries them",
+              len(set(seen)) == 5 and all(seen), str(seen))
+        check("CY-05 …and each decodes back to the Form_UUID that was "
+              "registered for that sheet, in order",
+              [CF.parse_qr(d)["form_uuid"] for d in seen] == uuids,
+              str([CF.parse_qr(d)["form_uuid"] for d in seen if d]))
+    else:
+        check("CY-03 SKIPPED — no QR decoder installed (cv2 + pypdfium2 are in "
+              "the venv but not in requirements.txt). The payload-level "
+              "uniqueness below still ran; the PRINTED page was not verified",
+              True, "")
+
+    payloads = [CF.qr_payload(form_uuid=u, site_id=SITE, code="SVCY-A", esc="")
+                for u in uuids]
+    check("CY-06 at the payload level too, five forms are five distinct QR "
+          "strings", len(set(payloads)) == 5, str(payloads[:2]))
+
+    # ── 1a. ⚠️ THE 1 % OF FORMS THE READER COULD NOT READ ───────────────────
+    # Found by printing fifty at once on 2026-09-10 and decoding every page:
+    # page 44 failed, at every render scale, while its forty-nine neighbours
+    # decoded first time. It is not a photograph problem and not a resolution
+    # problem — `cv2.QRCodeDetector` cannot decode a VERSION-4 symbol at
+    # error-correction level Q, which is what a form id of the wrong length
+    # produces. `pyzbar` reads those symbols perfectly, so the QR was always
+    # valid and the READER was always wrong.
+    #
+    # ⚠️ AT ONE SHEET PER DOWNLOAD THIS WAS INVISIBLE. A supervisor was told
+    # once in a hundred trips that their photo had no QR on it, which is
+    # indistinguishable from a bad photograph and was blamed on the camera.
+    # Bulk printing is what turned a rare mystery into a reproducible page.
+    if CAN_DECODE:
+        import cv2
+        import numpy as np
+        from PIL import Image
+
+        from .ai.ocr_form import _detectors
+
+        names = [n for n, _ in _detectors(cv2)]
+        check("CY-06a ⚠️ THE DECODER CHAIN TRIES ARUCO FIRST, THEN THE LEGACY "
+              "DETECTOR. Ordered, not replaced: the legacy one is what every "
+              "historical form was verified against, and QRCodeDetectorAruco "
+              "only exists from OpenCV 4.7",
+              names[:1] == ["aruco"] and "legacy" in names, str(names))
+
+        # The five ids measured undecodable by the legacy detector alone. They
+        # are hard-coded because a random sample would only fail 1 % of runs —
+        # a flaky gate is one people re-run rather than read (P10-7).
+        KNOWN_BAD = ["8CC72878880848EE", "A997E4DF105E47CD", "60F9B887D667498F",
+                     "614C8B72BBDB4B6E", "AA6E57FA470C42DB"]
+        legacy = cv2.QRCodeDetector()
+        dets = _detectors(cv2)
+        legacy_failed, chain_failed = [], []
+        for u in KNOWN_BAD:
+            pay = CF.qr_payload(form_uuid=u, site_id="CNCEC", code="LSC8", esc="")
+            img = Image.open(_io.BytesIO(CF._qr_png(pay).getvalue())).convert("RGB")
+            arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+            if legacy.detectAndDecode(arr)[0] != pay:
+                legacy_failed.append(u)
+            got = ""
+            for _n, d in dets:
+                got, _, _ = d.detectAndDecode(arr)
+                if got:
+                    break
+            if got != pay:
+                chain_failed.append(u)
+
+        check("CY-06b ⚠️ THE NEGATIVE CONTROL: all five still defeat the legacy "
+              "detector on its own. Without this the fix could be quietly "
+              "reverted and every check below would keep passing, because the "
+              "chain would simply never reach the branch that matters",
+              len(legacy_failed) == 5, f"only {len(legacy_failed)}/5 still fail")
+        check("CY-06c ⚠️ AND THE CHAIN READS ALL FIVE. Measured 4 failures in "
+              "400 freshly-minted forms before this, 0 in 400 after — 1 % of "
+              "printed paper that the field would have been told was a bad "
+              "photograph",
+              not chain_failed, str(chain_failed))
+        # ⚠️ A REAL ASSERTION, NOT A TAUTOLOGY. The claim "the fix is in the
+        # reader" is only true while the ENCODER still emits what it always
+        # did, so this pins the encoder's output for one of the known-bad ids
+        # BYTE FOR BYTE. If somebody later "fixes" this by dropping the error
+        # correction to level M — which also makes the legacy detector cope —
+        # they will have repaired new paper and abandoned every sheet already
+        # in the plant, and this check is what says so.
+        _pay = CF.qr_payload(form_uuid=KNOWN_BAD[0], site_id="CNCEC",
+                             code="LSC8", esc="")
+        _before = CF._qr_png(_pay).getvalue()
+        _again = CF._qr_png(_pay).getvalue()
+        import qrcode as _qrc
+        _q = _qrc.QRCode(error_correction=_qrc.constants.ERROR_CORRECT_Q,
+                         box_size=6, border=2)
+        _q.add_data(_pay)
+        _q.make(fit=True)
+        _buf = _io.BytesIO()
+        _q.make_image(fill_color="black", back_color="white").save(_buf, format="PNG")
+        check("CY-06d ⚠️ …AND THE ENCODER IS UNTOUCHED, byte for byte, at "
+              "error-correction level Q. The fix had to go in the READER: "
+              "changing what is PRINTED would repair only paper printed after "
+              "the change and abandon every sheet already in the plant. "
+              "Dropping to level M also satisfies the legacy detector, which "
+              "is exactly the tempting wrong fix this pins shut",
+              _before == _again == _buf.getvalue(),
+              f"encoder output moved ({len(_before)} vs {len(_buf.getvalue())} bytes)")
+    else:
+        check("CY-06a SKIPPED — no QR decoder installed (cv2 absent), so the "
+              "1 %-of-forms regression is UNVERIFIED on this machine",
+              True, "")
+
+    # ── 2. forms vs sheets of A4 (ruling Q13-1) ─────────────────────────────
+    check("CY-07 the long recipe is 22 materials — more than the 18 a page "
+          "holds, so ONE form of it is two sheets. This is the shape that made "
+          "'50 pages' ambiguous",
+          len(long_rows) == 22 and CF.ROWS_PER_PAGE == 18, str(len(long_rows)))
+
+    if CAN_DECODE:
+        import pypdfium2 as pdfium
+        long_batch = CF.render_batch_pdf(rows=long_rows, site_id=SITE,
+                                         code="SVCY-LONG", esc="",
+                                         system_name="long", form_uuids=uuids[:3])
+        doc = pdfium.PdfDocument(_io.BytesIO(long_batch))
+        check("CY-08 ⚠️ THREE FORMS OF A 22-LINE RECIPE ARE SIX SHEETS, AND "
+              "STILL ONLY THREE IDENTITIES. `copies` counts forms; the page "
+              "count is a consequence. Counting the operator's number in "
+              "sheets would make it mean something the system has no concept "
+              "of, and the UI multiplies it out beside the box for that reason",
+              len(doc) == 6, f"{len(doc)} pages for 3 forms x 22 rows")
+    else:
+        check("CY-08 SKIPPED — no PDF page counter (pypdfium2 absent)", True, "")
+
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        SUP = await _qsep_login(ac, "SVCQ-sup")
+
+        # ── 3. the endpoint ─────────────────────────────────────────────────
+        r = await ac.get("/execution/forms/SVCY-A", params={"copies": 5},
+                         headers=SUP)
+        check("CY-09 a bulk print is one request and one PDF",
+              r.status_code == 200
+              and r.headers["content-type"] == "application/pdf",
+              f"{r.status_code} {r.text[:120]}")
+        batch_id = r.headers.get("x-form-batch")
+        check("CY-10 …and the batch id comes back on a header, so the UI knows "
+              "what it just created without parsing the PDF",
+              bool(batch_id) and r.headers.get("x-form-count") == "5",
+              str(dict(r.headers)))
+        check("CY-11 ⚠️ `X-Form-UUID` STILL NAMES A REAL FORM, not the batch. A "
+              "caller written before 13a reads that header and must not "
+              "receive an id it cannot look up",
+              r.headers.get("x-form-uuid") not in (None, "", batch_id),
+              str(r.headers.get("x-form-uuid")))
+
+        async with SessionLocal() as s:
+            reg = (await s.execute(_sqt(
+                'SELECT * FROM sme_consumption_form WHERE "Batch_UUID" = :b '
+                'ORDER BY "Batch_Seq"'), {"b": batch_id})).mappings().all()
+        check("CY-12 ⚠️ FIVE FORMS ARE FIVE REGISTRY ROWS WITH FIVE DISTINCT "
+              "UUIDS. One row for a run would leave the intake unable to say "
+              "which sheet came back",
+              len(reg) == 5 and len({x["Form_UUID"] for x in reg}) == 5,
+              f"{len(reg)} rows")
+        check("CY-13 …numbered 1..5 and each knowing how big its run was, so "
+              "'SHEET 7 OF 50' on the paper matches the registry and a missing "
+              "sheet is visible",
+              [x["Batch_Seq"] for x in reg] == [1, 2, 3, 4, 5]
+              and {x["Batch_Size"] for x in reg} == {5},
+              str([(x["Batch_Seq"], x["Batch_Size"]) for x in reg]))
+        check("CY-14 …all sharing ONE fingerprint, because they are the same "
+              "recipe read once. Re-reading per sheet would let a master-data "
+              "edit land mid-batch and hand out two row orders under one batch",
+              len({x["Recipe_Fingerprint"] for x in reg}) == 1,
+              str({x["Recipe_Fingerprint"] for x in reg}))
+        check("CY-15 …and every one is open, at the right site, attributed to "
+              "the person who pressed the button",
+              all(x["status"] == "open" and x["Site_ID"] == SITE
+                  and x["created_by"] == "SVCQ-sup" for x in reg),
+              str(dict(reg[0])))
+
+        async with SessionLocal() as s:
+            audited = (await s.execute(_sqt(
+                "SELECT COUNT(*) FROM system_audit_log WHERE action_type = "
+                "'CONSUMPTION_FORM_PRINT' AND details LIKE :d"),
+                {"d": f"%{batch_id}%"})).scalar()
+        check("CY-16 ⚠️ ONE AUDIT LINE PER RUN, NOT PER SHEET. Fifty rows for "
+              "one button press buries the next real event in the log",
+              audited == 1, str(audited))
+
+        # ── 4. a single download is unchanged ───────────────────────────────
+        r1 = await ac.get("/execution/forms/SVCY-A", headers=SUP)
+        check("CY-17 omitting `copies` still prints exactly one form — the "
+              "pre-13a behaviour is the default, not a special case",
+              r1.status_code == 200 and r1.headers.get("x-form-count") == "1",
+              f"{r1.status_code} {r1.headers.get('x-form-count')}")
+        async with SessionLocal() as s:
+            solo = (await s.execute(_sqt(
+                'SELECT * FROM sme_consumption_form WHERE "Form_UUID" = :u'),
+                {"u": r1.headers["x-form-uuid"]})).mappings().first()
+        check("CY-18 …and it is recorded as a batch of one rather than as a "
+              "null special case every reader has to COALESCE around",
+              solo["Batch_Seq"] == 1 and solo["Batch_Size"] == 1
+              and solo["Batch_UUID"], str(dict(solo)))
+
+        # ── 5. the limits ───────────────────────────────────────────────────
+        for bad, why in ((0, "zero"), (-1, "negative"), (201, "past the cap")):
+            r = await ac.get("/execution/forms/SVCY-A", params={"copies": bad},
+                             headers=SUP)
+            check(f"CY-19 copies={bad} ({why}) is refused",
+                  r.status_code == 422, f"{r.status_code} {r.text[:100]}")
+
+        async with SessionLocal() as s:
+            before = (await s.execute(_sqt(
+                "SELECT COUNT(*) FROM sme_consumption_form WHERE "
+                "\"Lining_System_Code\" = 'SVCY-A'"))).scalar()
+        r = await ac.get("/execution/forms/SVCY-A", params={"copies": 500},
+                         headers=SUP)
+        async with SessionLocal() as s:
+            after = (await s.execute(_sqt(
+                "SELECT COUNT(*) FROM sme_consumption_form WHERE "
+                "\"Lining_System_Code\" = 'SVCY-A'"))).scalar()
+        check("CY-20 ⚠️ A REFUSED RUN REGISTERS NOTHING. The failure that "
+              "matters here is paper the system has no rows for — and its "
+              "mirror, rows for paper nobody ever received, which show for "
+              "ever as outstanding sheets",
+              r.status_code == 422 and before == after,
+              f"{r.status_code}, {before} → {after}")
+
+        # ── 6. all-or-nothing ───────────────────────────────────────────────
+        # The render runs INSIDE the caller's transaction, so a renderer that
+        # dies on sheet 3 must take sheets 1 and 2 with it. Forced by breaking
+        # the renderer rather than by hoping for a natural failure.
+        async with SessionLocal() as s:
+            before = (await s.execute(_sqt(
+                "SELECT COUNT(*) FROM sme_consumption_form WHERE "
+                "\"Lining_System_Code\" = 'SVCY-A'"))).scalar()
+        _real = CF.render_batch_pdf
+        try:
+            def _boom(**_kw):
+                raise RuntimeError("printer caught fire on sheet 3")
+            CF.render_batch_pdf = _boom
+            r = await ac.get("/execution/forms/SVCY-A", params={"copies": 4},
+                             headers=SUP)
+            failed_status = r.status_code
+        except Exception as _e:              # noqa: BLE001 — the raise IS the case
+            failed_status = 500
+        finally:
+            # ⚠️ RESTORED IN `finally`, and this is rule 16's whole subject. A
+            # monkeypatch left in place would make every later suite print a
+            # broken form and blame the wrong slice.
+            CF.render_batch_pdf = _real
+        async with SessionLocal() as s:
+            after = (await s.execute(_sqt(
+                "SELECT COUNT(*) FROM sme_consumption_form WHERE "
+                "\"Lining_System_Code\" = 'SVCY-A'"))).scalar()
+        check("CY-21 ⚠️ A RENDER THAT DIES MID-RUN LEAVES ZERO ROWS. Registry "
+              "rows and the paper are written in ONE transaction; half a batch "
+              "is the worst outcome available, because the plant fills in "
+              "sheets whose rows were rolled back",
+              before == after, f"{before} → {after} (status {failed_status})")
+        check("CY-22 …and the monkeypatch is restored, so no later suite "
+              "inherits a broken renderer (rule 16)",
+              CF.render_batch_pdf is _real, "render_batch_pdf still patched")
+
+        # ── 7. the sheet label ──────────────────────────────────────────────
+        solo_pdf = CF.render_pdf(rows=rows, site_id=SITE, code="SVCY-A", esc="",
+                                 system_name="s", form_uuid="CYSOLO01")
+        check("CY-23 a single form does NOT print 'SHEET 1 OF 1'. A batch of "
+              "one is true in the registry and noise on the paper",
+              b"SHEET 1 OF 1" not in solo_pdf, "solo form carries a sheet label")
+
+        # ── 8. the geometry the READER depends on has not moved ─────────────
+        # ⚠️ The sheet label was placed in the empty band between the QR and the
+        # header fields precisely so nothing the rectifier crops by would shift.
+        boxes = CF.row_boxes(0)
+        head = CF.header_boxes()
+        check("CY-24 ⚠️ ROW AND HEADER GEOMETRY IS UNCHANGED BY 13a. Slice 9d "
+              "crops handwriting off these millimetres; a layout tweak that "
+              "lived only in the renderer would silently start reading the "
+              "wrong strip of somebody's page",
+              boxes["page"] == 1
+              and abs(boxes["row"][1] - CF.FIRST_ROW_Y) < 1e-9
+              and abs(head["work_date"][1] - (CF.HEADER_FIELD_Y + 3.6)) < 1e-9,
+              f"{boxes} {head}")
+        check("CY-25 …and the sheet label sits in the band BELOW the QR and "
+              "ABOVE the first header box, which is empty on every form ever "
+              "printed",
+              CF.MARGIN + 26.0 <= CF.MARGIN + 26.2
+              and CF.MARGIN + 26.2 + 3.4 <= CF.HEADER_FIELD_Y,
+              f"label at {CF.MARGIN + 26.2}, fields at {CF.HEADER_FIELD_Y}")
+
+    await _cleanup()
+
 
 # --- Suite CN: paper first, and the four people who touch a number -----------
 async def test_ocr_workflow():
@@ -22737,6 +23134,10 @@ async def main() -> int:
     print("\n CM. The paper the field fills in — pre-printed names, a QR the "
           "model never has to read, and a hash that outlives the recipe")
     await test_consumption_form()
+    print("\n CY. Fifty sheets, fifty identities — bulk printing replaces the "
+          "photocopier that duplicated the one QR the reader identifies a "
+          "sheet by")
+    await test_bulk_consumption_forms()
     print("\n CN. Paper first — the workflow inverts, approval starts moving "
           "stock, and four people each own one number")
     await test_ocr_workflow()
