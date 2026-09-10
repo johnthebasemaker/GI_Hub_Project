@@ -963,12 +963,20 @@ letter, not just the product name.
 
 ### 4.9.3 The QR code
 
-The square in the top-right holds the site, the system, the sub-activity and
-this sheet's own number. It is read by a scanner, not by the AI, which is why
-none of those four things can be got wrong.
+The square in the top-right holds the site, the system, the sub-activity, this
+sheet's own number, **and which page of the form it is**. It is read by a
+scanner, not by the AI, which is why none of those things can be got wrong.
 
 ⚠️ **Photograph the whole page, including the QR.** A photo that crops it out
 cannot be matched to anything, and you will be asked to retake it.
+
+⚠️ **A long form has more than one page, and each page has its own code.**
+Photograph and upload **every** page. Upload them in any order — they all join
+the same entry. Until they are all in, the missing pages' materials read **0**,
+and the app tells you which page it is still waiting for.
+
+Do not submit an entry that is still waiting for a page. Those materials would
+be recorded as unused, and the figures would look entirely reasonable.
 
 ### 4.9.4 ⚠️ Every download is a new sheet
 

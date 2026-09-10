@@ -194,14 +194,24 @@ def _detectors(cv2) -> list:
     1 % OF PRINTED FORMS (2026-09-10, Phase 13a).
 
     `cv2.QRCodeDetector` — the only detector this function used until now —
-    **cannot decode a version-4 symbol at error-correction level Q**, which is
-    exactly what `consumption_form._qr_png` emits for a payload of the length a
-    form id happens to produce. Measured over 400 freshly-minted forms: 4 of
-    them, 1.0 %, were undecodable. The failure is STRUCTURAL, not a resolution
-    problem — the existing 2× upscale below does not rescue them, and neither
-    does rendering the symbol at 410 px instead of 246. Every one of those same
-    symbols decodes first time with `QRCodeDetectorAruco`, and every one is a
-    perfectly valid QR (`pyzbar` reads them all).
+    silently fails on about **1 % of the symbols a consumption form carries**.
+    Measured over 400 freshly-minted forms per payload version:
+
+        GIF1 (33 chars)   4/400  = 1.0 %   undecodable
+        GIF2 (37 chars)   3/400  = 0.8 %   undecodable
+
+    ⚠️ AND IT IS DATA-DEPENDENT, NOT A PROPERTY OF THE VERSION. Every one of
+    those payloads encodes to a **version-4 symbol at error-correction level
+    Q** — and so do the 397 that decode perfectly. It is the specific bit
+    pattern that defeats the detector, so there is no payload length, form id
+    format or symbol version that steers around it. That is precisely why the
+    fix has to be a better DECODER rather than a tidier encoder.
+
+    The failure is structural rather than a resolution problem: the 2× upscale
+    below does not rescue them, and neither does rendering the symbol at 410 px
+    instead of 246. Every one of those same symbols decodes first time with
+    `QRCodeDetectorAruco`, and every one is a perfectly valid QR — `pyzbar`
+    reads all of them.
 
     ⚠️ IT WAS ALWAYS BROKEN AND BULK PRINTING IS WHAT REVEALED IT. At one sheet
     per download a 1 % failure is a supervisor being told, once in a hundred

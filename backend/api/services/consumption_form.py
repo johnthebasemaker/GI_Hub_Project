@@ -95,7 +95,13 @@ recipe_t = _MD.tables["sme_recipe"]
 # The QR payload's version tag. A decoder that meets an unknown prefix should
 # say "this form was made by a newer version of the app" rather than guess at
 # the field order — so the version leads, and 9d checks it.
+# ⚠️ TWO VERSIONS ARE LIVE AT ONCE, ON PURPOSE. `GIF2` (Phase 13b) adds the
+# sheet number and the sheet count so a multi-page form can be filed a page at
+# a time; `GIF1` is every blank printed before that and is still in people's
+# pockets. New forms are always emitted as `GIF2`; `parse_qr` reads both and
+# refuses anything else rather than guessing at the field order.
 QR_PREFIX = "GIF1"
+QR_PREFIX_V2 = "GIF2"
 QR_SEP = "|"
 
 # A4 portrait, millimetres.
@@ -125,15 +131,36 @@ FIDUCIAL = 6.0
 FIDUCIAL_INSET = 4.0
 
 
-def qr_payload(*, form_uuid: str, site_id: str, code: str, esc: str) -> str:
-    """`GIF1|<site>|<system>|<sub-activity>|<uuid>` — see the module docstring.
+def qr_payload(*, form_uuid: str, site_id: str, code: str, esc: str,
+               sheet_seq: int = 1, sheet_of: int = 1) -> str:
+    """`GIF2|<site>|<system>|<sub-activity>|<uuid>|<sheet>|<of>`.
 
     Deliberately NOT JSON: a QR's capacity is the constraint that matters on a
     printed page, and braces and quotes buy nothing a decoder cannot get from
-    four separators. `esc` may be empty (a whole-system form) and the field is
-    still present, so the payload always has exactly five parts.
+    six separators. `esc` may be empty (a whole-system form) and the field is
+    still present, so the payload always has exactly seven parts.
+
+    ⚠️ WHY THE VERSION MOVED FROM `GIF1` TO `GIF2` (Phase 13b, ruling Q13-2).
+    A form of more than 18 materials prints as several A4 pages, and until now
+    every one of those pages carried the SAME payload. The reader identifies a
+    sheet by that payload, so it could not tell page 2 from page 1: the second
+    photograph of a three-page form was refused as "already filed", and a
+    supervisor who photographed only page 2 got an entry with page 1's rows
+    silently zeroed. Adding the sheet number is what makes a multi-page form
+    filable a page at a time.
+
+    ⚠️ THE FORM IDENTITY DID NOT CHANGE. All pages of one form still carry ONE
+    `form_uuid` — they are one sheet of paper's worth of work in the registry,
+    one fingerprint, one entry. `sheet_seq` says WHICH PAGE of it this is; it
+    is not a second identity, and `parse_qr` is where the two are kept apart.
+
+    ⚠️ AND `GIF1` PAPER STILL WORKS. `parse_qr` accepts both, because the
+    version tag exists exactly so a decoder can say "this is older" rather than
+    guess at the field order — and because a plant can hold months of printed
+    blanks. See `parse_qr`.
     """
-    parts = [QR_PREFIX, site_id, code, esc or "", form_uuid]
+    parts = [QR_PREFIX_V2, site_id, code, esc or "", form_uuid,
+             str(int(sheet_seq)), str(int(sheet_of))]
     for p in parts:
         if QR_SEP in str(p):
             raise HTTPException(
@@ -144,14 +171,89 @@ def qr_payload(*, form_uuid: str, site_id: str, code: str, esc: str) -> str:
 
 def parse_qr(payload: str) -> dict:
     """The decoder half, written here beside the encoder so the two cannot
-    drift. Slice 9d calls this on every upload."""
+    drift. Slice 9d calls this on every upload.
+
+    ⚠️ TWO VERSIONS, AND BOTH ARE LIVE PAPER.
+
+    * `GIF2` (Phase 13b) — seven fields, the last two being the sheet number
+      and the sheet count.
+    * `GIF1` (Phase 9c) — five fields, no sheet number. Read as **sheet 1 of
+      1**, which is what it always meant: one QR for the whole form.
+
+    A plant holds months of printed blanks, so refusing `GIF1` on the day
+    `GIF2` shipped would have invalidated every sheet already in somebody's
+    pocket for no gain. The version tag exists precisely so a decoder can say
+    "this is an older form" instead of guessing at the field order — an
+    unknown prefix is still refused rather than parsed hopefully.
+
+    ⚠️ A `GIF1` SHEET READ AS 1-OF-1 IS NOT A LIE — it is what the paper says.
+    An old multi-page form genuinely carries no way to tell its pages apart,
+    which is the defect 13b fixes; the intake treats such a form exactly as it
+    did before, refusing the second photograph. Reading a missing field as
+    "sheet 1 of many" would be the guess, and would file page 2's quantities
+    against page 1's materials.
+    """
     parts = str(payload or "").split(QR_SEP)
-    if len(parts) != 5 or parts[0] != QR_PREFIX:
-        raise HTTPException(
-            422, "this QR code is not a GI consumption form (expected a "
-                 f"{QR_PREFIX} payload with five fields)")
-    return {"site_id": parts[1], "lining_system_code": parts[2],
-            "esc": parts[3], "form_uuid": parts[4]}
+    if len(parts) == 7 and parts[0] == QR_PREFIX_V2:
+        try:
+            seq, of = int(parts[5]), int(parts[6])
+        except ValueError:
+            raise HTTPException(
+                422, f"this {QR_PREFIX_V2} code carries a sheet number that is "
+                     f"not a number ({parts[5]!r} of {parts[6]!r})") from None
+        if seq < 1 or of < 1 or seq > of:
+            raise HTTPException(
+                422, f"this {QR_PREFIX_V2} code says it is sheet {seq} of {of}, "
+                     f"which cannot be right. Print a fresh form.")
+        return {"site_id": parts[1], "lining_system_code": parts[2],
+                "esc": parts[3], "form_uuid": parts[4],
+                "sheet_seq": seq, "sheet_of": of, "qr_version": QR_PREFIX_V2}
+    if len(parts) == 5 and parts[0] == QR_PREFIX:
+        return {"site_id": parts[1], "lining_system_code": parts[2],
+                "esc": parts[3], "form_uuid": parts[4],
+                "sheet_seq": 1, "sheet_of": 1, "qr_version": QR_PREFIX}
+    raise HTTPException(
+        422, "this QR code is not a GI consumption form (expected a "
+             f"{QR_PREFIX_V2} payload with seven fields, or a {QR_PREFIX} one "
+             f"with five)")
+
+
+def page_count(n_rows: int) -> int:
+    """How many A4 sheets a form of `n_rows` materials actually prints on.
+
+    ⚠️ IT IS NOT ALWAYS `ceil(n / 18)`. The "filled in by / signature" block is
+    laid out after the last row, and when the last page has no room left for it
+    the block moves to a page of its own. Slice 9c's renderer already did that
+    — and then labelled the extra page **"page 4 of 3"**, because the count and
+    the layout were computed in two places.
+
+    ⚠️ THAT COSMETIC BUG BECAME A REAL ONE IN 13b. `sheet_of` travels inside
+    the QR now, and `parse_qr` refuses a payload claiming to be sheet 4 of 3 —
+    correctly, because a sheet numbered past the end of its own form is exactly
+    the corruption that check exists to catch. So the count has one home, here,
+    and the renderer asks it rather than deriving a second answer.
+    """
+    n_rows = max(0, int(n_rows))
+    pages = max(1, (n_rows + ROWS_PER_PAGE - 1) // ROWS_PER_PAGE)
+    on_last = n_rows - (pages - 1) * ROWS_PER_PAGE
+    y = FIRST_ROW_Y + on_last * ROW_H + 6.0
+    # Mirrors the renderer's own test, and is the only copy of these numbers.
+    return pages + 1 if y + 20.0 > PAGE_H - MARGIN - 8 else pages
+
+
+def sheet_row_span(sheet_seq: int) -> tuple[int, int]:
+    """The 1-based PRINTED row numbers that live on sheet `sheet_seq`.
+
+    ⚠️ THE ROW NUMBERS ON A FORM RUN STRAIGHT THROUGH ITS PAGES — page 2 of a
+    36-material form is numbered 19 to 36, not 1 to 18 again. That is what lets
+    `_match_rows` stay positional across a multi-page form: the model reads the
+    number PRINTED at the left of each row, so a quantity from page 2 already
+    knows it is row 23. This function is the range check on top of that, so a
+    model that hallucinates row 5 while looking at page 2 is dropped rather
+    than believed.
+    """
+    lo = (int(sheet_seq) - 1) * ROWS_PER_PAGE + 1
+    return lo, lo + ROWS_PER_PAGE - 1
 
 
 async def recipe_rows(session: AsyncSession, *, code: str,
@@ -296,9 +398,21 @@ def _draw_form(pdf, *, rows: list[dict], site_id: str, code: str, esc: str,
 
     # Column geometry, shared by the header band and every row.
 
-    payload = qr_payload(form_uuid=form_uuid, site_id=site_id, code=code, esc=esc)
-    qr_buf = _qr_png(payload)
-    pages = max(1, (len(rows) + ROWS_PER_PAGE - 1) // ROWS_PER_PAGE)
+    # ⚠️ ONE COUNT, ASKED FOR — never re-derived. It includes the signature
+    # page when the last row leaves no room for the block, which is why the
+    # old inline `ceil(n / 18)` printed "page 4 of 3" on those forms.
+    pages = page_count(len(rows))
+
+    # ⚠️ ONE QR PER PAGE, NOT ONE PER FORM (Phase 13b). All pages share the
+    # `form_uuid` — they are one form — but each carries its own sheet number,
+    # so the reader can tell page 2 from page 1. Before this, every page of a
+    # 36-material form was byte-identical to the reader: photographing the
+    # second one was refused as "already filed", and photographing ONLY the
+    # second one produced an entry with page 1's eighteen rows silently zeroed.
+    qr_bufs = [_qr_png(qr_payload(form_uuid=form_uuid, site_id=site_id,
+                                  code=code, esc=esc, sheet_seq=p,
+                                  sheet_of=pages))
+               for p in range(1, pages + 1)]
 
     def _fiducials() -> None:
         """Four solid corner squares, at known page coordinates.
@@ -322,8 +436,11 @@ def _draw_form(pdf, *, rows: list[dict], site_id: str, code: str, esc: str,
         pdf.add_page()
         _fiducials()
         qr_size = 26.0
-        pdf.image(qr_buf, x=PAGE_W - MARGIN - qr_size, y=MARGIN, w=qr_size,
-                  h=qr_size)
+        # ⚠️ THIS PAGE'S OWN QR. Indexed rather than shared: the sheet number
+        # inside it is the only thing that tells the reader which page of the
+        # form it is looking at.
+        pdf.image(qr_bufs[min(page_no, len(qr_bufs)) - 1],
+                  x=PAGE_W - MARGIN - qr_size, y=MARGIN, w=qr_size, h=qr_size)
 
         pdf.set_xy(MARGIN, MARGIN)
         pdf.set_font("helvetica", "B", 14)
@@ -463,7 +580,9 @@ def _draw_form(pdf, *, rows: list[dict], site_id: str, code: str, esc: str,
     y += 6.0
     if y + 20.0 > PAGE_H - MARGIN - 8:
         _footer(pdf, form_uuid, generated_on, len(rows), batch_seq, batch_size)
-        y = _page_header(pages + 1)
+        # `page_count` already reserved this page — see its docstring for the
+        # "page 4 of 3" it used to print here.
+        y = _page_header(pages)
     half = (inner - 6.0) / 2
     _field(pdf, MARGIN, y, half, "Filled in by (name)")
     _field(pdf, MARGIN + half + 6.0, y, half, "Signature")

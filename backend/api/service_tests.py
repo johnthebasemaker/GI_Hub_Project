@@ -18854,16 +18854,20 @@ async def test_consumption_form():
     p = CF.qr_payload(form_uuid="ABC123", site_id=SITE, code="SVCM-A", esc="ESCM1")
     check("CM-01 the QR payload leads with a VERSION tag, so a decoder meeting "
           "an unknown one can say 'newer app' instead of guessing at the field "
-          "order", p.startswith("GIF1|"), p)
+          "order. ⚠️ New forms are GIF2 since 13b — GIF1 is still READ (suite "
+          "CY-28) because a plant holds months of printed blanks",
+          p.startswith("GIF2|"), p)
     check("CM-02 …and carries exactly the four things the model must not have "
           "to read: site, system, sub-activity, form identity",
-          CF.parse_qr(p) == {"site_id": SITE, "lining_system_code": "SVCM-A",
-                             "esc": "ESCM1", "form_uuid": "ABC123"}, str(CF.parse_qr(p)))
+          {k: CF.parse_qr(p)[k] for k in
+           ("site_id", "lining_system_code", "esc", "form_uuid")}
+          == {"site_id": SITE, "lining_system_code": "SVCM-A",
+              "esc": "ESCM1", "form_uuid": "ABC123"}, str(CF.parse_qr(p)))
     empty = CF.parse_qr(CF.qr_payload(form_uuid="X", site_id=SITE,
                                       code="SVCM-A", esc=""))
-    check("CM-03 a whole-system form still has five fields with an EMPTY "
-          "sub-activity — a payload whose shape changes with the content is one "
-          "the decoder has to guess at",
+    check("CM-03 a whole-system form still carries the sub-activity field, "
+          "EMPTY — a payload whose shape changes with the content is one the "
+          "decoder has to guess at",
           empty["esc"] == "" and empty["form_uuid"] == "X", str(empty))
     try:
         CF.qr_payload(form_uuid="X", site_id="A|B", code="C", esc="")
@@ -18874,7 +18878,8 @@ async def test_consumption_form():
           "Encoded anyway it would silently shift every field after it, and the "
           "failure would surface as a wrong site on somebody's consumption",
           sep_ok, "the separator was not rejected")
-    for bad in ("", "nonsense", "GIF9|a|b|c|d", "GIF1|too|few"):
+    for bad in ("", "nonsense", "GIF9|a|b|c|d", "GIF1|too|few",
+                "GIF2|a|b|c|d|e"):
         try:
             CF.parse_qr(bad)
             ok = False
@@ -19115,11 +19120,14 @@ async def test_bulk_consumption_forms():
     mean something the system has no concept of — CY-08 pins that a long recipe
     multiplies pages WITHOUT multiplying identities.
     """
+    import datetime as _dt
     import io as _io
 
+    from fastapi import HTTPException
     from sqlalchemy import text as _sqt
 
     from .services import consumption_form as CF
+    from .services import form_intake as _FI
 
     SITE = "CNCEC"
     await _qsep_seed_users()
@@ -19248,37 +19256,60 @@ async def test_bulk_consumption_forms():
               "only exists from OpenCV 4.7",
               names[:1] == ["aruco"] and "legacy" in names, str(names))
 
-        # The five ids measured undecodable by the legacy detector alone. They
-        # are hard-coded because a random sample would only fail 1 % of runs —
-        # a flaky gate is one people re-run rather than read (P10-7).
-        KNOWN_BAD = ["8CC72878880848EE", "A997E4DF105E47CD", "60F9B887D667498F",
-                     "614C8B72BBDB4B6E", "AA6E57FA470C42DB"]
+        # ⚠️ THE EXACT PAYLOAD STRINGS THAT WERE MEASURED, NOT REBUILT FROM AN
+        # ID. `qr_payload` moved from GIF1 to GIF2 in 13b, and rebuilding these
+        # through it silently re-measured a DIFFERENT symbol — which is how
+        # this control briefly reported "0/5 still fail" and would have
+        # certified the bug fixed while it was untouched. Literals are what a
+        # regression test of a specific bit pattern has to hold.
+        #
+        # Both payload versions are represented, because the defect survived
+        # the version bump: 4/400 on GIF1, 3/400 on GIF2. Hard-coded rather
+        # than sampled because a random draw would only fail 1 % of runs, and a
+        # flaky gate is one people re-run rather than read (P10-7).
+        KNOWN_BAD = [
+            "GIF1|CNCEC|LSC8||8CC72878880848EE",
+            "GIF1|CNCEC|LSC8||A997E4DF105E47CD",
+            "GIF1|CNCEC|LSC8||60F9B887D667498F",
+            "GIF1|CNCEC|LSC8||614C8B72BBDB4B6E",
+            "GIF1|CNCEC|LSC8||AA6E57FA470C42DB",
+            "GIF2|CNCEC|LSC8||84E92640BC924170|2|3",
+            "GIF2|CNCEC|LSC8||F8813DA2F5C74E29|2|3",
+            "GIF2|CNCEC|LSC8||E30A6B915C154E36|2|3",
+        ]
         legacy = cv2.QRCodeDetector()
         dets = _detectors(cv2)
         legacy_failed, chain_failed = [], []
-        for u in KNOWN_BAD:
-            pay = CF.qr_payload(form_uuid=u, site_id="CNCEC", code="LSC8", esc="")
+        for pay in KNOWN_BAD:
             img = Image.open(_io.BytesIO(CF._qr_png(pay).getvalue())).convert("RGB")
             arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
             if legacy.detectAndDecode(arr)[0] != pay:
-                legacy_failed.append(u)
+                legacy_failed.append(pay)
             got = ""
             for _n, d in dets:
                 got, _, _ = d.detectAndDecode(arr)
                 if got:
                     break
             if got != pay:
-                chain_failed.append(u)
+                chain_failed.append(pay)
 
-        check("CY-06b ⚠️ THE NEGATIVE CONTROL: all five still defeat the legacy "
-              "detector on its own. Without this the fix could be quietly "
-              "reverted and every check below would keep passing, because the "
-              "chain would simply never reach the branch that matters",
-              len(legacy_failed) == 5, f"only {len(legacy_failed)}/5 still fail")
-        check("CY-06c ⚠️ AND THE CHAIN READS ALL FIVE. Measured 4 failures in "
-              "400 freshly-minted forms before this, 0 in 400 after — 1 % of "
-              "printed paper that the field would have been told was a bad "
-              "photograph",
+        check("CY-06b ⚠️ THE NEGATIVE CONTROL: all eight still defeat the "
+              "legacy detector on its own. Without this the fix could be "
+              "quietly reverted and every check below would keep passing, "
+              "because the chain would never reach the branch that matters. "
+              "It has already earned its place — rebuilding these payloads "
+              "through `qr_payload` after the GIF2 bump silently measured "
+              "DIFFERENT symbols and reported 0/5, certifying a bug that was "
+              "still there",
+              len(legacy_failed) == len(KNOWN_BAD),
+              f"only {len(legacy_failed)}/{len(KNOWN_BAD)} still fail")
+        check("CY-06c ⚠️ AND THE CHAIN READS ALL EIGHT. Measured over 400 "
+              "freshly-minted forms per payload version: GIF1 4/400 = 1.0 %, "
+              "GIF2 3/400 = 0.8 %, and 0/400 after. That is printed paper the "
+              "field would have been told was a bad photograph. ⚠️ It is "
+              "DATA-DEPENDENT, not a property of the symbol version — all of "
+              "these and all 397 that decode fine are version 4 at level Q, "
+              "so no payload shape steers around it",
               not chain_failed, str(chain_failed))
         # ⚠️ A REAL ASSERTION, NOT A TAUTOLOGY. The claim "the fix is in the
         # reader" is only true while the ENCODER still emits what it always
@@ -19287,8 +19318,7 @@ async def test_bulk_consumption_forms():
         # correction to level M — which also makes the legacy detector cope —
         # they will have repaired new paper and abandoned every sheet already
         # in the plant, and this check is what says so.
-        _pay = CF.qr_payload(form_uuid=KNOWN_BAD[0], site_id="CNCEC",
-                             code="LSC8", esc="")
+        _pay = KNOWN_BAD[0]
         _before = CF._qr_png(_pay).getvalue()
         _again = CF._qr_png(_pay).getvalue()
         import qrcode as _qrc
@@ -19489,6 +19519,305 @@ async def test_bulk_consumption_forms():
               CF.MARGIN + 26.0 <= CF.MARGIN + 26.2
               and CF.MARGIN + 26.2 + 3.4 <= CF.HEADER_FIELD_Y,
               f"label at {CF.MARGIN + 26.2}, fields at {CF.HEADER_FIELD_Y}")
+
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # PHASE 13b — the sheet number, and the multi-page form that could not be
+    # filed at all.
+    # ═══════════════════════════════════════════════════════════════════════
+    #
+    # ⚠️ A FORM OF MORE THAN 18 MATERIALS PRINTS ON SEVERAL A4 PAGES, and until
+    # 13b every one of those pages carried the SAME QR payload. The reader
+    # identifies a sheet by that payload, so it could not tell page 2 from page
+    # 1. Two consequences, and the second is the worse one:
+    #
+    #   * photographing page 2 after page 1 was refused as "already filed" —
+    #     true of the FORM and false of the PAGE — leaving no way at all to
+    #     record rows 19 to 36; and
+    #   * photographing ONLY page 2 opened a draft with page 1's eighteen rows
+    #     silently ZEROED, reporting eighteen materials as unused, on a page
+    #     that looks entirely plausible on the way to an approval.
+
+    # ── 9. the payload, both versions ───────────────────────────────────────
+    v2 = CF.qr_payload(form_uuid="CYV2TEST", site_id=SITE, code="SVCY-LONG",
+                       esc="", sheet_seq=2, sheet_of=3)
+    check("CY-26 a form now emits a GIF2 payload with seven fields — the five "
+          "it always had, plus which page this is and how many there are",
+          v2 == "GIF2|CNCEC|SVCY-LONG||CYV2TEST|2|3", v2)
+    p2 = CF.parse_qr(v2)
+    check("CY-27 …and it parses back to the same seven, with the form identity "
+          "UNCHANGED. All pages of one form share one Form_UUID — the sheet "
+          "number says which page, it is not a second identity",
+          p2["form_uuid"] == "CYV2TEST" and p2["sheet_seq"] == 2
+          and p2["sheet_of"] == 3 and p2["qr_version"] == "GIF2", str(p2))
+
+    old = "GIF1|CNCEC|SVCY-LONG||CYV1TEST"
+    p1 = CF.parse_qr(old)
+    check("CY-28 ⚠️ EVERY GIF1 SHEET ALREADY PRINTED STILL WORKS. A plant holds "
+          "months of blanks; refusing them on the day GIF2 shipped would have "
+          "invalidated every form in somebody's pocket for no gain",
+          p1["form_uuid"] == "CYV1TEST" and p1["qr_version"] == "GIF1", str(p1))
+    check("CY-29 …read as SHEET 1 OF 1, which is what the paper actually says. "
+          "Reading a missing field as 'sheet 1 of many' would be the guess, "
+          "and it would file page 2's quantities against page 1's materials",
+          p1["sheet_seq"] == 1 and p1["sheet_of"] == 1, str(p1))
+
+    for bad, why in (("GIF2|s|c||u|4|3", "sheet 4 of 3 — past its own end"),
+                     ("GIF2|s|c||u|0|3", "sheet 0"),
+                     ("GIF2|s|c||u|x|3", "a sheet number that is not a number"),
+                     ("GIF3|s|c||u|1|1", "a version this app does not know"),
+                     ("GIF2|s|c||u|1", "six fields, not seven")):
+        try:
+            CF.parse_qr(bad)
+            ok = False
+        except HTTPException:
+            ok = True
+        check(f"CY-30 {why} is refused rather than parsed hopefully", ok, bad)
+
+    # ── 10. the page count, and the 'page 4 of 3' it used to print ──────────
+    check("CY-31 ⚠️ THE PAGE BOUNDARY IS 16 MATERIALS, NOT 18. Eighteen rows "
+          "FIT — and then the signature block does not, so the block takes a "
+          "sheet of its own. `ceil(n/18)` is simply the wrong answer for every "
+          "form of 17 to 18 materials, and it was the renderer's own inline "
+          "arithmetic. Measured against the layout, never assumed from the "
+          "row limit",
+          CF.page_count(16) == 1 and CF.page_count(17) == 2
+          and CF.page_count(34) == 2 and CF.page_count(35) == 3,
+          f"16→{CF.page_count(16)} 17→{CF.page_count(17)} "
+          f"34→{CF.page_count(34)} 35→{CF.page_count(35)}")
+    check("CY-32 ⚠️ AND THE SIGNATURE BLOCK CAN CLAIM A PAGE OF ITS OWN. The "
+          "count is not always ceil(n/18) — when the last row leaves no room "
+          "the block moves to its own sheet, which the renderer already did "
+          "while LABELLING it 'page 4 of 3', because the count and the layout "
+          "were computed in two places",
+          all(CF.page_count(n) >= (n + 17) // 18 for n in range(1, 60))
+          and any(CF.page_count(n) > (n + 17) // 18 for n in range(1, 60)),
+          str([(n, CF.page_count(n), (n + 17) // 18) for n in (16, 17, 34, 35)]))
+    check("CY-33 ⚠️ …AND THAT COSMETIC BUG WOULD NOW BE A REAL ONE, because "
+          "sheet_of travels inside the QR and parse_qr refuses a payload "
+          "claiming to be sheet 4 of 3. Every page of every form size parses",
+          all(CF.parse_qr(CF.qr_payload(
+                  form_uuid="X", site_id="S", code="C", esc="",
+                  sheet_seq=p, sheet_of=CF.page_count(n)))["sheet_seq"] == p
+              for n in (1, 18, 19, 36, 37, 54)
+              for p in range(1, CF.page_count(n) + 1)),
+          "a page number outside its own form's count")
+
+    # ── 11. the pages of one form carry DIFFERENT QRs ───────────────────────
+    if CAN_DECODE:
+        import cv2
+        import numpy as np
+        import pypdfium2 as pdfium
+
+        from .ai.ocr_form import _detectors
+
+        long_pdf = CF.render_pdf(rows=long_rows, site_id=SITE,
+                                 code="SVCY-LONG", esc="", system_name="long",
+                                 form_uuid="CYLONG01")
+        doc = pdfium.PdfDocument(_io.BytesIO(long_pdf))
+        dets = _detectors(cv2)
+        seen = []
+        for pg in range(len(doc)):
+            img = doc[pg].render(scale=3).to_pil().convert("RGB")
+            arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+            d = ""
+            for _n, det in dets:
+                d, _, _ = det.detectAndDecode(arr)
+                if d:
+                    break
+            seen.append(d)
+        parsed = [CF.parse_qr(d) for d in seen if d]
+        check("CY-34 ⚠️ ONE FORM, TWO PAGES, TWO DIFFERENT QR CODES ON THE "
+              "PRINTED PAPER. This is what the reader was missing: before it, "
+              "every page of a 22-material form was byte-identical to the "
+              "decoder",
+              len(seen) == 2 and len(set(seen)) == 2 and all(seen), str(seen))
+        check("CY-35 …and both name the SAME form. The sheet number is not a "
+              "second identity — one form, one fingerprint, one entry",
+              len({p["form_uuid"] for p in parsed}) == 1
+              and parsed[0]["form_uuid"] == "CYLONG01",
+              str([p["form_uuid"] for p in parsed]))
+        check("CY-36 …numbered 1 and 2, each saying the form has 2 pages, so a "
+              "supervisor holding one page knows another exists",
+              [p["sheet_seq"] for p in parsed] == [1, 2]
+              and {p["sheet_of"] for p in parsed} == {2},
+              str([(p["sheet_seq"], p["sheet_of"]) for p in parsed]))
+    else:
+        check("CY-34 SKIPPED — no QR decoder installed, so the per-page codes "
+              "on the PRINTED page were not verified", True, "")
+
+    # ── 12. the row span, and the hallucination it stops ────────────────────
+    check("CY-37 page 1 owns printed rows 1-18 and page 2 owns 19-36. The "
+          "numbers run STRAIGHT THROUGH the pages, which is what keeps the "
+          "positional mapping working across a multi-page form",
+          CF.sheet_row_span(1) == (1, 18) and CF.sheet_row_span(2) == (19, 36),
+          f"{CF.sheet_row_span(1)} {CF.sheet_row_span(2)}")
+
+    fake_recipe = [{"Material_Code": f"M{i}", "SAP_Code": f"S{i}", "UOM": "KG"}
+                   for i in range(22)]
+    spanned = _FI._match_rows(
+        [{"row": 3, "quantity": 5.0, "qty_text": "5"},
+         {"row": 20, "quantity": 7.0, "qty_text": "7"}],
+        fake_recipe, sheet_seq=2, sheet_of=2)
+    check("CY-38 ⚠️ A SHEET MAY ONLY FILL ITS OWN ROWS. A model looking at page "
+          "2 that reports 'row 3' is describing something it cannot see — "
+          "believing it would file page 2's third quantity against page 1's "
+          "third material. Dropped, exactly as an out-of-range row already was",
+          spanned[2]["Actual_Qty"] == 0.0 and spanned[19]["Actual_Qty"] == 7.0,
+          f"row3={spanned[2]['Actual_Qty']} row20={spanned[19]['Actual_Qty']}")
+    unspanned = _FI._match_rows(
+        [{"row": 3, "quantity": 5.0, "qty_text": "5"}], fake_recipe,
+        sheet_seq=1, sheet_of=1)
+    check("CY-39 …and a single-page form is unrestricted, so nothing about a "
+          "GIF1 sheet's behaviour changed",
+          unspanned[2]["Actual_Qty"] == 5.0, str(unspanned[2]))
+
+
+    # ── 13. the intake: a form filed one page at a time ─────────────────────
+    # ⚠️ THIS IS THE DEFECT 13b EXISTS FOR, EXERCISED END TO END. `read` dicts
+    # are built by hand rather than photographed: the camera path is suite CN's
+    # subject, and what is under test here is the SHEET arithmetic, which a
+    # real photo would only make slower to reproduce.
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        SUP = await _qsep_login(ac, "SVCQ-sup")
+
+    def _read(uuid_, seq, of, rows):
+        return {"site_id": SITE, "lining_system_code": "SVCY-LONG", "esc": "",
+                "form_uuid": uuid_, "sheet_seq": seq, "sheet_of": of,
+                "qr_version": "GIF2", "qr_points": None,
+                "work_date_text": _dt.date.today().strftime("%d/%m/%y"),
+                "equipment_text": "SVCY-T1", "area_text": "40", "area_sqm": 40,
+                "filled_by": "Ali", "rows": rows, "model": "fake-vlm"}
+
+    async with SessionLocal() as s:
+        async with s.begin():
+            _pdf, freg = await CF.generate(
+                s, site_id=SITE, code="SVCY-LONG", esc=None,
+                username="SVCQ-sup", role="supervisor")
+    fuid = freg["Form_UUID"]
+    check("CY-40 the 22-material form registers as ONE form, whose pages will "
+          "be photographed separately",
+          freg["Row_Count"] == 22 and CF.page_count(22) == 2,
+          f"{freg['Row_Count']} rows, {CF.page_count(22)} pages")
+
+    # Page 1 first: rows 1..18.
+    async with SessionLocal() as s:
+        async with s.begin():
+            first = await _FI.build_entry(
+                s, _read(fuid, 1, 2,
+                         [{"row": 1, "qty_text": "20", "quantity": 20.0,
+                           "lot_text": "LOT-A"},
+                          {"row": 18, "qty_text": "3", "quantity": 3.0,
+                           "lot_text": "LOT-B"}]),
+                site_id=SITE, username="SVCQ-sup", role="supervisor",
+                image_bytes=b"x")
+    check("CY-41 page 1 opens ONE draft with every recipe row present — the "
+          "pages nobody has sent yet sit at 0 rather than being absent",
+          first["lines"] == 22 and first["status"] == "DRAFT_SUPERVISOR",
+          str(first)[:200])
+    check("CY-42 ⚠️ …AND IT SAYS WHICH PAGE IS STILL MISSING, BY NUMBER. "
+          "Submitting now would report four materials as unused; the "
+          "supervisor is told that before they can, and told which sheet to go "
+          "and photograph",
+          any("sheet" in p.lower() and "2" in p for p in first["problems"]),
+          str(first["problems"]))
+
+    # Page 2: rows 19..22. This is the upload that used to be refused outright.
+    async with SessionLocal() as s:
+        async with s.begin():
+            second = await _FI.build_entry(
+                s, _read(fuid, 2, 2,
+                         [{"row": 19, "qty_text": "9", "quantity": 9.0,
+                           "lot_text": "LOT-C"},
+                          {"row": 22, "qty_text": "4", "quantity": 4.0,
+                           "lot_text": "LOT-D"}]),
+                site_id=SITE, username="SVCQ-sup", role="supervisor",
+                image_bytes=b"x")
+    check("CY-43 ⚠️ PAGE 2 IS ACCEPTED, WHERE IT USED TO BE REFUSED AS 'ALREADY "
+          "FILED'. That refusal was true of the FORM and false of the PAGE, and "
+          "it left a supervisor with no way at all to record rows 19 to 22",
+          second.get("merged") is True, str(second)[:220])
+    check("CY-44 …into the SAME entry. One form is one entry even when it is "
+          "two pieces of paper — a second entry per page would split one day's "
+          "consumption across two approvals and two variance comparisons, each "
+          "measured against the whole system's benchmark",
+          second["entry_id"] == first["entry_id"],
+          f"{first['entry_id']} vs {second['entry_id']}")
+    check("CY-45 …and the form now knows both pages are in",
+          second["sheets_seen"] == [1, 2], str(second.get("sheets_seen")))
+
+    async with SessionLocal() as s:
+        lines = (await s.execute(_sqt(
+            'SELECT "Row_Index","Actual_Qty","Lot_No" FROM '
+            'sme_execution_entry_material WHERE "Entry_ID" = :e '
+            'ORDER BY "Row_Index"'), {"e": first["entry_id"]})).mappings().all()
+    by_idx = {int(r["Row_Index"]): r for r in lines}
+    check("CY-46 ⚠️ BOTH PAGES' QUANTITIES SURVIVE ON ONE ENTRY. Page 2's "
+          "merge must not zero page 1 — writing the full row set rather than "
+          "just this sheet's span is the obvious wrong implementation, and it "
+          "would silently delete eighteen figures somebody had already read",
+          float(by_idx[0]["Actual_Qty"]) == 20.0
+          and float(by_idx[17]["Actual_Qty"]) == 3.0
+          and float(by_idx[18]["Actual_Qty"]) == 9.0
+          and float(by_idx[21]["Actual_Qty"]) == 4.0,
+          str([(i, float(by_idx[i]["Actual_Qty"])) for i in (0, 17, 18, 21)]))
+    check("CY-47 …lots included, each from the page it was written on",
+          by_idx[0]["Lot_No"] == "LOT-A" and by_idx[21]["Lot_No"] == "LOT-D",
+          str([by_idx[i]["Lot_No"] for i in (0, 17, 18, 21)]))
+
+    # Re-photographing a page already read is still refused.
+    try:
+        async with SessionLocal() as s:
+            async with s.begin():
+                await _FI.build_entry(
+                    s, _read(fuid, 2, 2, [{"row": 19, "qty_text": "99",
+                                           "quantity": 99.0, "lot_text": "X"}]),
+                    site_id=SITE, username="SVCQ-sup", role="supervisor",
+                    image_bytes=b"x")
+        dup_ok = False
+        dup_msg = "a second photo of page 2 was accepted"
+    except HTTPException as e:
+        dup_ok = e.status_code == 409 and "sheet 2" in str(e.detail)
+        dup_msg = f"{e.status_code} {e.detail}"
+    check("CY-48 ⚠️ AND A PAGE ALREADY READ IS STILL REFUSED, naming the SHEET "
+          "rather than the form. The guarantee the old check bought — no two "
+          "drafts racing to become two consumptions of one sheet — was always "
+          "per-page in intent and only per-form by accident",
+          dup_ok, dup_msg)
+
+    # A single-page (or GIF1) form behaves exactly as it always did.
+    async with SessionLocal() as s:
+        async with s.begin():
+            _pdf, sreg = await CF.generate(
+                s, site_id=SITE, code="SVCY-A", esc=None,
+                username="SVCQ-sup", role="supervisor")
+    one = {"site_id": SITE, "lining_system_code": "SVCY-A", "esc": "",
+           "form_uuid": sreg["Form_UUID"], "sheet_seq": 1, "sheet_of": 1,
+           "qr_version": "GIF1", "qr_points": None,
+           "work_date_text": _dt.date.today().strftime("%d/%m/%y"),
+           "equipment_text": "SVCY-T1", "area_text": "10", "area_sqm": 10,
+           "filled_by": "Ali", "model": "fake-vlm",
+           "rows": [{"row": 1, "qty_text": "1", "quantity": 1.0, "lot_text": "L"}]}
+    async with SessionLocal() as s:
+        async with s.begin():
+            await _FI.build_entry(s, one, site_id=SITE, username="SVCQ-sup",
+                                  role="supervisor", image_bytes=b"x")
+    try:
+        async with SessionLocal() as s:
+            async with s.begin():
+                await _FI.build_entry(s, one, site_id=SITE, username="SVCQ-sup",
+                                      role="supervisor", image_bytes=b"x")
+        old_ok = False
+        old_msg = "a GIF1 form was filed twice"
+    except HTTPException as e:
+        old_ok = e.status_code == 409 and "already been filed" in str(e.detail)
+        old_msg = f"{e.status_code} {str(e.detail)[:90]}"
+    check("CY-49 ⚠️ A GIF1 SHEET STILL REFUSES ITS SECOND PHOTOGRAPH, word for "
+          "word as before. An old multi-page form genuinely carries no way to "
+          "tell its pages apart — that is the defect, and softening the "
+          "refusal for paper that cannot say which page it is would file page "
+          "2's quantities against page 1's materials",
+          old_ok, old_msg)
 
     await _cleanup()
 
