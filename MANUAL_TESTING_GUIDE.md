@@ -3286,6 +3286,67 @@ because a video was missing would be worse than one that never had the feature.
 
 Backend coverage: **suite CX** in `backend/api/service_tests.py`.
 
+### 14ab.1 ⚠️ …and the video that was never actually there (Phase 13c/13d)
+
+**WHAT WAS WRONG, BECAUSE IT WAS NOT THE LINK.** Everything in 14ab worked
+exactly as designed and landed on nothing:
+
+- **three of the four recorded tutorials had no training module at all**, so
+  the URL named a card the page could not contain — it rendered, obeyed the
+  URL, and nothing scrolled into view;
+- **no asset row existed for any module**, so every card on every box said
+  "Not published yet" — truthfully, which is why nobody looked; and
+- **nothing in the backend served a byte range**, so even a published video
+  could not be seeked to — and "start at 1:01" is the whole promise.
+
+**Setup.** Render the tutorials, then publish them in one command:
+
+```bash
+.venv/bin/python tools/generate_tutorial.py --publish --all --api-token $GI_API_TOKEN
+```
+
+⚠️ Every field comes from the manifest the renderer wrote, including the
+measured duration the 90%-watched bar divides by. Do not type one in.
+
+**TC-DL-07** — repeat **TC-DL-01**. The video now **plays**, wound to about
+1:01, and the card is **on its own at the top** under a note saying where it
+starts. The rest of your training is behind **"Show my other training"**.
+
+**TC-DL-08** — it starts **muted**. Turn the sound on with the player's own
+controls. Browsers block autoplay with sound and block it *silently*, so a page
+that tried would sit there looking exactly like the bug above.
+
+**TC-DL-09** — **drag the scrubber.** It seeks instantly, without re-fetching
+the whole file. That is the byte range; before this slice the video would have
+had to download in full before the first frame.
+
+**TC-DL-10** — ⚠️ **the fence over the bytes.** As a **store keeper**, open
+`/api/training/media/hod_executive_summary_v1/en.mp4` directly in a new tab.
+**Refused.** The list is filtered and the deep link grants nothing — but a raw
+media URL would be a second door if it did not re-check.
+
+**TC-DL-11** — deep-link to a module your role does not cover. The page says
+**"That tutorial is not one of yours"** at the **top**, above your own modules.
+Under it the list is ordinary; without the message it would look like the link
+had simply failed.
+
+**TC-DL-12** — on a box with no rendered videos, deep-link to a real module.
+The card says the step **has** a video and it is **not on this server** — not
+the generic "Not published yet". The assistant promised a video; the page owes
+an explanation. Every production box is in this state until the renders reach
+object storage.
+
+⚠️ **A note for whoever debugs this next.** The route streams perfectly under
+`curl` and could not play at all in a page, because a `<video>` element sends
+no Authorization header — the player showed a black box and no error. The page
+now fetches a short-lived ticket scoped to one tutorial and puts that in the
+URL. If playback ever breaks again, check the browser console before the
+server: `networkState: 3` means the element never got a source, which a server
+log will not tell you.
+
+Backend coverage: **suite CZ**; browser coverage:
+`tests/e2e/specs/training-deeplink.spec.ts`.
+
 ## 14aa. The AI evaluation gates (Phase 11 · 11f)
 
 Developer-facing. Nothing here is a screen; it is what CI refuses to merge.

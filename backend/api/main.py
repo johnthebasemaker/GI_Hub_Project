@@ -47,6 +47,7 @@ from .hod import router as hod_router  # noqa: E402
 from .logistics import router as logistics_router  # noqa: E402
 from .manhours import router as manhours_router  # noqa: E402
 from .execution import router as execution_router
+from .training import media_router as training_media_router
 from .training import router as training_router
 from .ai.router import router as ai_router  # noqa: E402
 from .notifications import router as notifications_router  # noqa: E402
@@ -433,6 +434,14 @@ app.include_router(execution_router)
 # guards: reads are any authenticated user (everybody has training), the HOD
 # dashboard is level 2, publishing an asset is admin.
 app.include_router(training_router, dependencies=_auth)
+# ⚠️ NO BLANKET `_auth` ON THIS ONE, DELIBERATELY, AND IT IS NOT A GAP. A
+# `<video src>` cannot send an Authorization header, so the media route accepts
+# a short-lived, single-tutorial TICKET in its query string instead — and the
+# router-level dependency would refuse the request before the endpoint could
+# look at it. `training._media_viewer` is that route's own guard: it verifies a
+# signature (ticket or bearer) or raises 401, and the role fence runs after it.
+# Suite CZ pins both halves.
+app.include_router(training_media_router)
 
 # Intelligence layer — /ai/health + the Hub Assistant SSE stream (self-guarded,
 # any authenticated user; role-gated context inside manual_qa).

@@ -20613,6 +20613,309 @@ async def test_tutorial_deeplinks():
         _sh.rmtree(tmp, ignore_errors=True)
 
 
+# --- Suite CZ: the bytes behind the "Watch it" button ------------------------
+async def test_training_media():
+    """Suite CZ — Phase 13c. The video the deep link lands on.
+
+    ⚠️ THE DEEP LINK WAS NEVER BROKEN, AND THAT WAS THE PROBLEM. Phase 12f's
+    matcher returns a URL, the assistant renders "Watch it", `/training` reads
+    `?module&lang&t` and seeks a real `<video>`. What did not exist was anything
+    to play:
+
+      * three of the four recorded tutorials had NO `training_modules` row, so
+        the URL named a card the page could not contain — it rendered, obeyed
+        the URL, and nothing scrolled into view;
+      * no `training_assets` row existed for any module, by slice 10b's own
+        deliberate decision (a URI pointing at nothing renders a broken
+        player); and
+      * NOTHING IN THE BACKEND SERVED A BYTE RANGE. The only place the words
+        appeared was the comment on `POST /training/assets` explaining why an
+        asset is a URI and not a BLOB — because a BLOB could not serve Range,
+        so the viewer could not seek. A `<video>` that cannot seek is one the
+        deep link cannot use, since the whole promise of "Watch it" is landing
+        on the second where the step happens.
+
+    So this suite is mostly about `206`, and about the fence that has to run
+    over the bytes as well as over the list.
+    """
+    import os as _os
+    import pathlib as _pl
+    import tempfile as _tf
+
+    from sqlalchemy import text as _sqt
+
+    await _qsep_seed_users()
+    transport = ASGITransport(app=app)
+
+    from . import training as _TR
+
+    tmp = _tf.mkdtemp(prefix="gi-cz-media-")
+    root = _pl.Path(tmp)
+    # 300 KB of deterministic bytes standing in for an MP4. The route streams a
+    # file; what it streams is not its business, and a real 9 MB render would
+    # make this suite slower without testing anything more.
+    BLOB = bytes((i * 7 + 3) % 251 for i in range(300_000))
+    (root / "sk_stage_return_v1").mkdir(parents=True, exist_ok=True)
+    (root / "sk_stage_return_v1" / "en.mp4").write_bytes(BLOB)
+    (root / "sk_stage_return_v1" / "en.vtt").write_text(
+        "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nthe source receipt\n",
+        encoding="utf-8")
+    # The flat layout the renderer actually writes today, alongside the nested
+    # one an object store will use — both are accepted so the move is a URI
+    # prefix change and nothing else.
+    (root / "hod_executive_summary_v1.mp4").write_bytes(BLOB[:120_000])
+
+    saved_env = _os.environ.get("GI_TUTORIAL_DIR")
+    _os.environ["GI_TUTORIAL_DIR"] = str(root)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            SK = await _qsep_login(ac, "SVCQ-sk")
+            H = await _qsep_login(ac, "SVCQ-hod")
+
+            # ── 1. the module rows that did not exist ───────────────────────
+            async with SessionLocal() as s:
+                keys = {r[0] for r in (await s.execute(_sqt(
+                    "SELECT module_key FROM training_modules"))).all()}
+            check("CZ-01 ⚠️ ALL FOUR RECORDED TUTORIALS NOW HAVE A MODULE ROW. "
+                  "Three of them had none, so the assistant's deep link named "
+                  "a card the page could not contain — it rendered, obeyed the "
+                  "URL, and nothing at all scrolled into view",
+                  {"ocr_workflow_v1", "sk_stage_return_v1", "hub_assistant_v1",
+                   "hod_executive_summary_v1"} <= keys, str(sorted(keys)))
+            check("CZ-02 ⚠️ …INCLUDING `ocr_workflow_v1`, WHICH SLICE 10b MEANT "
+                  "TO SEED AND DID NOT. Its migration defines `data_upgrade()` "
+                  "and never calls it, so the row existed only on boxes built "
+                  "by the cutover script — which replays data steps — and on no "
+                  "box that got here by `alembic upgrade`. It hid because the "
+                  "gate is SOFT: a missing gate and a working one look the same",
+                  "ocr_workflow_v1" in keys, str(sorted(keys)))
+
+            # ── 2. Range, which is the reason this route exists ─────────────
+            r = await ac.get("/training/media/sk_stage_return_v1/en.mp4",
+                             headers=SK)
+            check("CZ-03 the whole file streams when nothing is asked for",
+                  r.status_code == 200 and len(r.content) == len(BLOB)
+                  and r.headers.get("accept-ranges") == "bytes",
+                  f"{r.status_code} {len(r.content)} {dict(r.headers)}")
+
+            r = await ac.get("/training/media/sk_stage_return_v1/en.mp4",
+                             headers={**SK, "Range": "bytes=1000-2000"})
+            check("CZ-04 ⚠️ A BYTE RANGE COMES BACK AS 206 WITH THE RIGHT "
+                  "BYTES. This is the whole reason the route exists — nothing "
+                  "in the backend served a range before it, and a player that "
+                  "cannot seek cannot honour a link whose entire promise is "
+                  "'start at 61.2 seconds'",
+                  r.status_code == 206 and r.content == BLOB[1000:2001]
+                  and r.headers.get("content-range")
+                  == f"bytes 1000-2000/{len(BLOB)}",
+                  f"{r.status_code} {len(r.content)} "
+                  f"{r.headers.get('content-range')}")
+
+            r = await ac.get("/training/media/sk_stage_return_v1/en.mp4",
+                             headers={**SK, "Range": "bytes=299000-"})
+            check("CZ-05 an open-ended range runs to the end of the file — the "
+                  "form a browser sends when somebody drags the scrubber",
+                  r.status_code == 206 and r.content == BLOB[299000:],
+                  f"{r.status_code} {len(r.content)}")
+
+            r = await ac.get("/training/media/sk_stage_return_v1/en.mp4",
+                             headers={**SK, "Range": "bytes=-500"})
+            check("CZ-06 …and a suffix range returns the LAST n bytes, which is "
+                  "how a player finds an MP4's trailing index",
+                  r.status_code == 206 and r.content == BLOB[-500:],
+                  f"{r.status_code} {len(r.content)}")
+
+            for bad in ("bytes=9999999-", "bytes=abc", "bytes=50-10",
+                        "bytes=0-10,20-30", "kilobytes=0-10"):
+                r = await ac.get("/training/media/sk_stage_return_v1/en.mp4",
+                                 headers={**SK, "Range": bad})
+                check(f"CZ-07 a range this route does not implement ({bad!r}) "
+                      f"falls back to the whole file rather than answering 206 "
+                      f"with something it did not really do",
+                      r.status_code == 200 and len(r.content) == len(BLOB),
+                      f"{r.status_code} {len(r.content)}")
+
+            # ── 3. the fence, over the BYTES ────────────────────────────────
+            r = await ac.get("/training/media/hod_executive_summary_v1/en.mp4",
+                             headers=SK)
+            check("CZ-08 ⚠️ A STORE KEEPER CANNOT FETCH THE HOD TUTORIAL'S "
+                  "BYTES. The module list is server-filtered and the deep link "
+                  "grants nothing — but a raw media URL would be a SECOND DOOR "
+                  "if it did not re-check, and a second copy of an access "
+                  "decision is the thing P11-4 warns about",
+                  r.status_code == 403, f"{r.status_code} {r.text[:120]}")
+            r = await ac.get("/training/media/hod_executive_summary_v1/en.mp4",
+                             headers=H)
+            check("CZ-09 …and the HOD can, because the fence is the module's "
+                  "own `required_roles`, CALLED rather than copied",
+                  r.status_code == 200 and len(r.content) == 120_000,
+                  f"{r.status_code} {len(r.content)}")
+
+            # ── 4. absence is a supported state, not an error ───────────────
+            r = await ac.get("/training/media/sk_stage_return_v1/ta.mp4",
+                             headers=SK)
+            check("CZ-10 ⚠️ A LANGUAGE THAT HAS NOT BEEN RENDERED IS A 404 "
+                  "THAT SAYS SO, not a zero-byte 200. A player handed an empty "
+                  "200 shows a black box and no error, which is the exact "
+                  "failure this whole slice was raised to remove",
+                  r.status_code == 404 and "rendered" in r.text,
+                  f"{r.status_code} {r.text[:140]}")
+            r = await ac.get("/training/media/no_such_module/en.mp4", headers=SK)
+            check("CZ-11 an unknown module is a 404, before any path is built",
+                  r.status_code == 404, f"{r.status_code} {r.text[:100]}")
+            r = await ac.get("/training/media/sk_stage_return_v1/en.exe",
+                             headers=SK)
+            check("CZ-12 a media type this route does not serve is refused — "
+                  "the extension chooses from a fixed map, it is never a file "
+                  "suffix taken from the request",
+                  r.status_code == 404, f"{r.status_code} {r.text[:100]}")
+            r = await ac.get("/training/media/sk_stage_return_v1/xx.mp4",
+                             headers=SK)
+            check("CZ-13 …and so is a language outside the declared set",
+                  r.status_code == 404, f"{r.status_code} {r.text[:100]}")
+
+            # ⚠️ THE PATH IS DERIVED, SO THERE IS NO TRAVERSAL TO DEFEND
+            # AGAINST. Both segments are validated against a module row and a
+            # fixed language list before anything touches a filesystem, so a
+            # `..` reaches the router as an unknown module rather than as a
+            # path. Asserted anyway, because "it cannot happen" is the claim
+            # most worth a test.
+            r = await ac.get("/training/media/..%2F..%2Fetc/en.mp4", headers=SK)
+            check("CZ-14 ⚠️ A TRAVERSAL ATTEMPT IS AN UNKNOWN MODULE, NOT A "
+                  "FILE. Nothing from the request reaches the filesystem as a "
+                  "path segment — the name is built from a row this endpoint "
+                  "already looked up",
+                  r.status_code in (400, 404), f"{r.status_code} {r.text[:100]}")
+
+            # ── 5. the captions ────────────────────────────────────────────
+            r = await ac.get("/training/media/sk_stage_return_v1/en.vtt",
+                             headers=SK)
+            check("CZ-15 captions come from the same route and the same fence, "
+                  "as WebVTT — the `<track>` element needs the media type to "
+                  "be right or it silently renders nothing",
+                  r.status_code == 200 and r.text.startswith("WEBVTT")
+                  and "text/vtt" in r.headers.get("content-type", ""),
+                  f"{r.status_code} {r.headers.get('content-type')}")
+
+            # ── 6. publishing makes the card playable ──────────────────────
+            A = await _qsep_login(ac, "SVCQ-admin")
+            r = await ac.post("/training/assets", headers=A, json={
+                "module_key": "sk_stage_return_v1", "language": "en",
+                "storage_uri": "/training/media/sk_stage_return_v1/en.mp4",
+                "captions_uri": "/training/media/sk_stage_return_v1/en.vtt",
+                "duration_s": 90})
+            check("CZ-16 an admin publishes the asset row that turns 'not "
+                  "published yet' into a player",
+                  r.status_code == 201, f"{r.status_code} {r.text[:140]}")
+            r = await ac.get("/training/modules", headers=SK)
+            mods = {m["module_key"]: m for m in r.json()["modules"]}
+            check("CZ-17 ⚠️ AND THE STORE KEEPER'S CARD IS NOW `published`, "
+                  "with the URI and the duration the 90%-watched bar divides "
+                  "by. Before this slice every card on every box said 'not "
+                  "published yet' — truthfully, which is why nobody looked",
+                  mods.get("sk_stage_return_v1", {}).get("published") is True
+                  and mods["sk_stage_return_v1"]["assets"][0]["duration_s"] == 90,
+                  str(mods.get("sk_stage_return_v1", {}).get("assets")))
+            check("CZ-18 …and the HOD tutorial is NOT in a store keeper's list "
+                  "at all, so the fence over the list and the fence over the "
+                  "bytes agree",
+                  "hod_executive_summary_v1" not in mods, str(sorted(mods)))
+
+            # ── 7. the ticket, because a <video> cannot send a header ───────
+            # ⚠️ THIS IS THE DEFECT THAT ONLY A BROWSER FOUND. The route above
+            # streams perfectly under curl and could not play at all in a page:
+            # a `<video src>` issues its own plain GET with no hook to attach a
+            # bearer token to, so every request was a 401 and the element
+            # reported `networkState: 3` (NETWORK_NO_SOURCE) — a black box, no
+            # error, indistinguishable from the very bug this slice fixes.
+            #
+            # Fetching the file as a blob would have kept the header and
+            # DESTROYED Range: the whole video downloads before the first frame
+            # and seeking to the second the assistant pointed at is the entire
+            # feature. So the credential moves into the URL — as a ticket
+            # scoped to ONE user, ONE module and ONE language, for ten minutes.
+            r = await ac.get("/training/media-ticket/sk_stage_return_v1/en",
+                             headers=SK)
+            check("CZ-19 a store keeper can mint a ticket for their own "
+                  "tutorial", r.status_code == 200 and r.json().get("ticket"),
+                  f"{r.status_code} {r.text[:120]}")
+            tkt = r.json()["ticket"]
+
+            r = await ac.get("/training/media-ticket/hod_executive_summary_v1/en",
+                             headers=SK)
+            check("CZ-20 ⚠️ …AND CANNOT MINT ONE FOR THE HOD'S. The fence runs "
+                  "at the mint as well as at the spend, so a store keeper never "
+                  "holds a credential for a tutorial they may not watch",
+                  r.status_code == 403, f"{r.status_code} {r.text[:120]}")
+
+            r = await ac.get(f"/training/media/sk_stage_return_v1/en.mp4"
+                             f"?ticket={tkt}")
+            check("CZ-21 ⚠️ THE TICKET PLAYS THE VIDEO WITH NO AUTHORIZATION "
+                  "HEADER AT ALL — which is the only thing a `<video>` element "
+                  "can do",
+                  r.status_code == 200 and len(r.content) == len(BLOB),
+                  f"{r.status_code} {len(r.content)}")
+            r = await ac.get(f"/training/media/sk_stage_return_v1/en.mp4"
+                             f"?ticket={tkt}", headers={"Range": "bytes=10-99"})
+            check("CZ-22 …and it still seeks. A credential in the URL that cost "
+                  "us Range would have been the wrong trade",
+                  r.status_code == 206 and r.content == BLOB[10:100],
+                  f"{r.status_code} {len(r.content)}")
+
+            r = await ac.get(f"/training/media/hod_executive_summary_v1/en.mp4"
+                             f"?ticket={tkt}")
+            check("CZ-23 ⚠️ A TICKET NAMES ONE TUTORIAL AND ONLY THAT ONE. "
+                  "Refused on the module it was issued for, BEFORE the row is "
+                  "looked up — so a scope confusion can never reach code that "
+                  "only checks what it was handed",
+                  r.status_code == 403, f"{r.status_code} {r.text[:120]}")
+
+            r = await ac.get("/training/media/sk_stage_return_v1/en.mp4"
+                             "?ticket=not.a.token")
+            check("CZ-24 a forged ticket is refused — it is a signed JWT in a "
+                  "purpose-built scope, not an opaque string somebody could "
+                  "guess the shape of",
+                  r.status_code == 401, f"{r.status_code} {r.text[:120]}")
+
+            # ⚠️ AND THE SESSION TOKEN IS NOT A MEDIA TICKET. Both are JWTs
+            # signed with the same key; only the `scope` claim separates them.
+            # `_decode` checks it, so an ordinary access token pasted into the
+            # query string buys nothing — which is what keeps this from being a
+            # way to put a full-session credential in a URL.
+            sess = SK["Authorization"].split(" ", 1)[1]
+            r = await ac.get(f"/training/media/sk_stage_return_v1/en.mp4"
+                             f"?ticket={sess}")
+            check("CZ-25 ⚠️ A SESSION TOKEN IS NOT ACCEPTED AS A TICKET. The "
+                  "scope claim is what separates them, and it is checked — "
+                  "otherwise this route would be a way to move a full-session "
+                  "credential into a URL, where it lands in logs and history",
+                  r.status_code == 401, f"{r.status_code} {r.text[:120]}")
+
+            r = await ac.get("/training/media/sk_stage_return_v1/en.mp4")
+            check("CZ-26 ⚠️ AND NO CREDENTIAL AT ALL IS 401. This is the ONE "
+                  "route in the training router mounted WITHOUT the blanket "
+                  "`Depends(get_current_user)` — it has to be, because the "
+                  "credential arrives in the query string — so its own guard "
+                  "is the whole guard and must fail closed on its own",
+                  r.status_code == 401, f"{r.status_code} {r.text[:120]}")
+
+    finally:
+        # ⚠️ RESTORED, INCLUDING THE 'IT WAS UNSET' CASE (rule 16). Leaving
+        # GI_TUTORIAL_DIR pointed at a temp directory would make the deep-link
+        # matcher in every later suite read an empty index and blame Phase 12.
+        if saved_env is None:
+            _os.environ.pop("GI_TUTORIAL_DIR", None)
+        else:
+            _os.environ["GI_TUTORIAL_DIR"] = saved_env
+        import shutil as _sh
+        _sh.rmtree(tmp, ignore_errors=True)
+        async with SessionLocal() as s:
+            await s.execute(_sqt(
+                "DELETE FROM training_assets WHERE module_id IN (SELECT id "
+                "FROM training_modules WHERE module_key = 'sk_stage_return_v1')"))
+            await s.commit()
+
+
 # --- Suite CS: slice 10b — the daily claim, valuation, and the soft gate ------
 async def test_slice_10b_ecosystem():
     """Suite CS — Phase 10 slice 10b. Tracks 2, 3 and 5.
@@ -23508,6 +23811,10 @@ async def main() -> int:
           "second a step happens, behind the same fence rule 9 uses, and a "
           "feature that is allowed to be absent")
     await test_tutorial_deeplinks()
+    print("\n CZ. The bytes behind the Watch-it button — a byte range nothing "
+          "in the backend had ever served, and the fence applied over the file "
+          "as well as over the list")
+    await test_training_media()
     print("\n BW. The suite's own isolation — 1,400+ checks commit through the "
           "real app, so WHICH database they reach is itself a gate")
     await test_database_isolation()
