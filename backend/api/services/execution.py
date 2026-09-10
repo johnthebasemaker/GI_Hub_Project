@@ -646,25 +646,43 @@ async def post_progress(session: AsyncSession, entry_id: int) -> dict:
                                           updated_at=_now()))
         return {"posted": "surface_prep", "sqm": sqm}
 
-    # Lining work — the ordinary progress ledger. Only ever INCREMENTED here;
-    # Original_SQM belongs to the equipment master and is not ours to set.
+    # Lining work — the ordinary progress ledger.
+    await credit_done_sqm(session, site_id=row["Site_ID"],
+                          tag=row["Equipment_Tag_No"], code=code, sqm=sqm)
+    return {"posted": "lining", "sqm": sqm}
+
+
+async def credit_done_sqm(session: AsyncSession, *, site_id: str, tag: str,
+                          code: str, sqm: float) -> None:
+    """Add `sqm` to one (site, tag, system)'s completed area. ONE writer.
+
+    ⚠️ EXTRACTED IN PHASE 13g BECAUSE THERE ARE NOW TWO CALLERS, AND TWO COPIES
+    OF AN INCREMENT IS HOW A VESSEL GETS CREDITED TWICE. `post_progress` credits
+    an approved execution entry's area; `sme_link.decide` credits an approved
+    Surface Shield attribution's. Those two paths are disjoint ONLY because
+    `SME_EXEC`-sourced consumption never reaches the attribution queue — and
+    that disjointness is an invariant to test, not a fact to assume (suite DB).
+
+    ⚠️ ONLY EVER INCREMENTED HERE. `Original_SQM` belongs to the equipment
+    master and is not ours to set: a progress row created by this function
+    carries 0, and the master supplies the denominator.
+    """
     existing = (await session.execute(select(sqm_progress_t).where(
-        sqm_progress_t.c["Site_ID"] == row["Site_ID"],
-        sqm_progress_t.c["Equipment_Tag_No"] == row["Equipment_Tag_No"],
+        sqm_progress_t.c["Site_ID"] == site_id,
+        sqm_progress_t.c["Equipment_Tag_No"] == tag,
         sqm_progress_t.c["Lining_System_Code"] == code))).mappings().first()
     if existing is None:
         await session.execute(insert(sqm_progress_t).values(
-            Site_ID=row["Site_ID"], Equipment_Tag_No=row["Equipment_Tag_No"],
-            Lining_System_Code=code, Original_SQM=0.0, Done_SQM=sqm,
+            Site_ID=site_id, Equipment_Tag_No=tag,
+            Lining_System_Code=code, Original_SQM=0.0, Done_SQM=float(sqm),
             updated_at=_now()))
     else:
         await session.execute(update(sqm_progress_t).where(
-            sqm_progress_t.c["Site_ID"] == row["Site_ID"],
-            sqm_progress_t.c["Equipment_Tag_No"] == row["Equipment_Tag_No"],
+            sqm_progress_t.c["Site_ID"] == site_id,
+            sqm_progress_t.c["Equipment_Tag_No"] == tag,
             sqm_progress_t.c["Lining_System_Code"] == code
-        ).values(Done_SQM=float(existing["Done_SQM"] or 0) + sqm,
+        ).values(Done_SQM=float(existing["Done_SQM"] or 0) + float(sqm),
                  updated_at=_now()))
-    return {"posted": "lining", "sqm": sqm}
 
 
 # ─── QSEP: the certificate gate, now with a way past it ──────────────────────

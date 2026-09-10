@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared SME engine parity fixture (Phase S1). Consumed by BOTH backend/api/service_tests.py (Python engine) and frontend/scripts/sme_parity.mjs (TypeScript engine); each side must reproduce sme_parity_golden.json exactly. Edge cases pinned: duplicate (tag,code) rows summed; Done_SQM_staged folded into done; remaining clipped at 0 (TK-A/102); progress fallback to Surface_Area_SQM (TK-C); zero-demand tag (TK-D); material missing from inventory (M5 -> pool 0); stock-only material ignored (M4); negative pool passthrough (M6, legacy min() behavior); non-numeric system code sorted after numeric ones (X9); suggestion-engine tie stability. 2026-07-28 two-tier ruling: materials carry ordered_qty so the gate exercises tier-2 fill of a hard physical block (M3, which must STAY 'Blocked by Shortages' because feasibility judges physical stock only). 2026-08-02 STRICT DECOUPLING: the ERP ledger no longer reaches the SME model, so the effective-ordered netting (ordered - received) is GONE and the on-order pool is Initial_Ordered_Qty verbatim. The received_qty values are DELIBERATELY LEFT IN THIS FIXTURE as poison pills -- M1 carries 40, M2 15, M6 25 -- so the golden proves both engines IGNORE the field rather than merely proving it is absent from the payload. If a future change re-reads received_qty, M1's ordered pool moves 100 -> 60 and this gate fails on both sides at once. 2026-07-30 COMPONENT IDENTITY ruling: every material now carries a SAP_Code and the pool is keyed (Material_Code, SAP_Code). System code 8 on TK-E is a four-component PU system where ALL FOUR recipe rows share Material_Code M7 and the SAME generic recipe name -- exactly like For_1_SQM.xlsx -- and are separated only by variant SAP (77 / 77-1 / 77-2 / 77-3). Component C is the bottleneck (20/1.0 = 20 SQM of the 100 remaining) while A, B and D could each support far more; under the old Material_Code pooling the four lines shared one 130-unit bucket drained in recipe order, D got nothing and achievable collapsed to 0. C's stock row also writes its SAP DIRTY as '77 - 2', pinning the whitespace normalization, and its component-specific stock names ('PU MF 300 (3MM) A'..'D') pin the ruling that the stock master's name beats the recipe's generic one.",
+  "_comment": "Shared SME engine parity fixture (Phase S1). Consumed by BOTH backend/api/service_tests.py (Python engine) and frontend/scripts/sme_parity.mjs (TypeScript engine); each side must reproduce sme_parity_golden.json exactly. Edge cases pinned: duplicate (tag,code) rows summed; Done_SQM_staged folded into done; remaining clipped at 0 (TK-A/102); progress fallback to Surface_Area_SQM (TK-C); zero-demand tag (TK-D); material missing from inventory (M5 -> pool 0); stock-only material ignored (M4); negative pool passthrough (M6, legacy min() behavior); non-numeric system code sorted after numeric ones (X9); suggestion-engine tie stability. 2026-07-28 two-tier ruling: materials carry ordered_qty so the gate exercises tier-2 fill of a hard physical block (M3, which must STAY 'Blocked by Shortages' because feasibility judges physical stock only). 2026-08-02 STRICT DECOUPLING: the ERP ledger no longer reaches the SME model, so the effective-ordered netting (ordered - received) is GONE and the on-order pool is Initial_Ordered_Qty verbatim. The received_qty values are DELIBERATELY LEFT IN THIS FIXTURE as poison pills -- M1 carries 40, M2 15, M6 25 -- so the golden proves both engines IGNORE the field rather than merely proving it is absent from the payload. If a future change re-reads received_qty, M1's ordered pool moves 100 -> 60 and this gate fails on both sides at once. 2026-07-30 COMPONENT IDENTITY ruling: every material now carries a SAP_Code and the pool is keyed (Material_Code, SAP_Code). System code 8 on TK-E is a four-component PU system where ALL FOUR recipe rows share Material_Code M7 and the SAME generic recipe name -- exactly like For_1_SQM.xlsx -- and are separated only by variant SAP (77 / 77-1 / 77-2 / 77-3). Component C is the bottleneck (20/1.0 = 20 SQM of the 100 remaining) while A, B and D could each support far more; under the old Material_Code pooling the four lines shared one 130-unit bucket drained in recipe order, D got nothing and achievable collapsed to 0. C's stock row also writes its SAP DIRTY as '77 - 2', pinning the whitespace normalization, and its component-specific stock names ('PU MF 300 (3MM) A'..'D') pin the ruling that the stock master's name beats the recipe's generic one. 2026-09-10 PHASE 13g RESOLUTION B (ruling Q13-5): materials carry consumed_qty -- M1|S1 37.5, M2|S2 4.0, M6|S6 0.0 -- and these are the MIRROR IMAGE of the received_qty poison pills. received_qty is here to prove both engines IGNORE it; consumed_qty is here to prove both engines CARRY it, identically, into Consumed_Qty on every line, and use it in NO arithmetic whatever. It is an OBSERVATION reported beside the plan: HOD-approved physical draw of that component, read from sme_consumption_log (an SME-owned table, never the ERP ledger) and only from rows a person signed for. M6|S6 carries 0.0 rather than being omitted so the golden distinguishes 'nothing drawn' from 'not reported' -- a component with no attribution at all reads 0 too, and both engines must agree on that. If a future change lets consumed_qty reach an allocation, a pool or a ratio, M1's numbers move and this gate fails on both sides at once. Nothing may colour Consumed_Qty as coverage and nothing may SUM it down a cascade: it is per COMPONENT, so a total containing it multiplies by the number of units that draw it (rule 1b, the Allocated_Qty scar -- 9,118 sqm, 21.5% of the programme).",
   "model": {
     "equipment": [
       {
@@ -193,7 +193,8 @@
         "available_qty": 100,
         "ordered_qty": 100,
         "received_qty": 40,
-        "sap_code": "S1"
+        "sap_code": "S1",
+        "consumed_qty": 37.5
       },
       {
         "material_code": "M2",
@@ -202,7 +203,8 @@
         "available_qty": 20,
         "ordered_qty": 40,
         "received_qty": 15,
-        "sap_code": "S2"
+        "sap_code": "S2",
+        "consumed_qty": 4.0
       },
       {
         "material_code": "M3",
@@ -227,7 +229,8 @@
         "available_qty": -5,
         "ordered_qty": 10,
         "received_qty": 25,
-        "sap_code": "S6"
+        "sap_code": "S6",
+        "consumed_qty": 0.0
       },
       {
         "material_code": "M7",

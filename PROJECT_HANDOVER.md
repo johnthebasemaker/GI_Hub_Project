@@ -251,6 +251,7 @@ only real discriminator.
 ### 1a. The SME estimator is STRICTLY DECOUPLED from the ERP ledger
 
 *Locked 2026-08-02. Supersedes the 2026-07-28 effective-ordered netting (ruling Q2a).*
+*⚠️ **AMENDED 2026-09-10 by ruling Q13-5** — one observation column, and nothing else. See §1a-ii.*
 
 The estimator and the warehouse are **two separate pools of data, calculated
 completely separately**. An ERP receipt, issue or return is a warehouse event and
@@ -262,10 +263,12 @@ must not move a single SME number.
   `Initial_Ordered_Qty`. No derivation, no join.
 * `receipts` / `consumption` / `returns` / `inventory` are **never named** by
   `SQL_SME_MATERIALS` or by `_CALC_POOL_SQL` (Smart Calculator). Suite BA greps for
-  them, and — more to the point — posts real movement against an SME material's own
-  SAP and requires **every SME read to come back byte-identical**.
+  them, greps for `sme_consumption_log` too, and — more to the point — posts real
+  movement against an SME material's own SAP and requires **every SME read to come
+  back byte-identical**.
 * The snapshot the browser engine consumes carries **no `received_qty` /
-  `consumed_qty`** field at all.
+  `consumed_qty`-derived quantity** — see §1a-ii for the one field it does carry
+  and why that is not the same thing.
 
 **What this overturns.** The two places the ledger used to leak in were
 `SQL_SME_MATERIALS` (`available = seed + Σreceipts − Σconsumption`, joined through
@@ -285,6 +288,81 @@ absent from the payload.
 
 Decoupled is not frozen — editing `sme_inventory_seed` (what the Excel sync writes)
 still moves every SME number at once. Suite BA pins that too.
+
+### 1a-ii. ⚠️ THE ONE AMENDMENT: `Consumed_Qty` is an OBSERVATION
+
+*Ruling Q13-5, locked 2026-09-10 (Phase 13, Track 3). Option B of four.*
+
+The operator asked that Surface Shield material consumed in the general Inventory
+"reflect in the SME quantity as consumed". That sentence had four possible
+readings, differing by roughly the whole readiness surface of the Estimator. The
+ruling picked the narrowest that satisfies it:
+
+> **The estimator gains a `Consumed_Qty` column, for visibility. It must NOT
+> alter the core estimator readiness logic and must NOT touch `Allocated_Qty`.**
+
+So rule 1a above stands, word for word, with one field added beside it.
+
+**Why this does not re-open the coupling.** Three properties, each tested:
+
+1. **It reads an SME-OWNED table, never the ERP ledger.** The source is
+   `sme_consumption_log` via `services/sme_link.SQL_SME_CONSUMED` — a *separate*
+   query, deliberately not a join into `SQL_SME_MATERIALS`. That query still names
+   only `sme_inventory_seed`, so suite BA's source guard is untouched and still
+   catches a future join at review.
+2. **It counts only HOD-APPROVED rows** (`status = 'committed'`). The estimator
+   therefore never sees raw warehouse movement — only a draw somebody attributed
+   to a system, an equipment tag and an area, and a second person signed for.
+   **This is what keeps suite BA's byte-identical probe green**: posting an ERP
+   consumption moves nothing here until a human acts twice.
+3. **Readiness is byte-identical with and without it.** Suite DB-19 builds the
+   model twice — with `consumed_qty` and with the key removed — and requires the
+   output identical in every field but that one. `Status`, `Completion_Pct`,
+   `SQM_Achievable_Now`, `Coverage_Now_Pct`, `Fulfillment_Pct`, `Allocated_Qty`,
+   the pools, the shortfalls and the buy list do not move.
+
+⚠️ **IT IS AN OBSERVATION FIELD, IN THE SAME CATEGORY AS `Allocated_Qty`
+(rule 1b).** Nothing may colour it as coverage, nothing may divide by it, and no
+KPI may name it. `Allocated_Qty` is the scar this warning is written from: six
+presentation layers made it green because it looked like progress, and that
+overstated buildable area by **9,118 m², 21.5 % of the programme**.
+
+⚠️ **AND IT IS PER COMPONENT, NOT PER LINE.** The same component is drawn for many
+units, so it rides on each cascade line as a LABEL — exactly like `Material_Name`.
+**A report that SUMS it down a cascade multiplies it by the number of units that
+draw it.** Suites DB-22/DB-23 assert that no total, procurement row, SQM rollup or
+feasibility row contains it.
+
+**The parity fixture carries `consumed_qty` as the MIRROR IMAGE of the poison
+pills** — M1|S1 37.5, M2|S2 4.0, M6|S6 0.0. `received_qty` is there to prove both
+engines *ignore* a field; `consumed_qty` is there to prove both engines *carry* one
+identically and use it in no arithmetic. M6|S6 is an explicit `0.0` rather than
+omitted, so the golden pins that "nothing drawn" and "not reported" read the same.
+
+### 1a-iii. ⚠️ `SME_EXEC` — the exclusion that stops the loop closing
+
+*Phase 13e. One predicate, one home: `services/sme_link.EXCLUDE_SELF_SQL`.*
+
+`execution.post_stock` is the ONLY writer for lining consumption (ruling Q1-b) and
+stamps its `consumption` rows `Source_Ref = 'SME_EXEC:<entry>:<line>'`. Those rows
+are **already attributed**: the printed form carried a system code, an equipment
+tag and an area, and `post_progress` has already credited that area to the tag.
+
+If the Track 3 sweep saw them, a supervisor would be asked to re-type an area the
+form recorded — and answering would credit the same drum against the same tag a
+second time, inflating `Done_SQM` and every completion figure derived from it.
+
+* The predicate excludes them from the queue **and** from the write (suite DA-35).
+  A queue is a list and never a control: an id typed by hand must not get through.
+* ⚠️ **A NULL `Source_Ref` must PASS the filter.** Most ledger rows have none, and
+  `NOT LIKE` alone evaluates NULL to NULL — which is not TRUE — so a bare
+  `NOT LIKE` would silently drop every unstamped row and leave the queue holding
+  only the rows that named themselves. The `IS NULL` arm is not redundant (DA-09).
+* ⚠️ **`sme_sqm_progress.Done_SQM` therefore has TWO writers and ONE function.**
+  `post_progress` credits an execution entry's area; `sme_link.decide` credits an
+  approved attribution's. Both call `execution.credit_done_sqm`. They are disjoint
+  only *because* of the exclusion — which is an invariant to test, not a fact to
+  assume (DB-12).
 
 ### 1b. STRICT TIER SEGREGATION — a purchase order is never readiness
 

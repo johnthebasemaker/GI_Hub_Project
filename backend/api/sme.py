@@ -487,6 +487,36 @@ async def _snapshot_rows(session: AsyncSession, site_id: str | None) -> dict:
                      text(SQL_SME_MATERIALS
                           + ' ORDER BY s."Material_Code", s."SAP_Code"')))]
 
+    # ── Phase 13g: `consumed_qty`, an OBSERVATION beside the plan ───────────
+    # ⚠️ A SECOND QUERY, DELIBERATELY, AND NOT A JOIN INTO `SQL_SME_MATERIALS`.
+    #
+    # That query is a QUANTITY query and rule 1a's mechanism is that it names
+    # only `sme_inventory_seed`. Suite BA greps it — for ERP table names AND
+    # for `sme_consumption_log` — precisely so a future join is caught at
+    # review rather than in a stock report. Merging the observation into it
+    # would trip that guard, and rightly: the guard is not the rule, but it is
+    # how the rule is kept.
+    #
+    # ⚠️ SO `available_qty` IS STILL `Initial_Available_Qty`, FULL STOP. Nothing
+    # here nets, subtracts or compares. The consumed figure is attached beside
+    # it under its own key and the engines carry it as metadata (ruling Q13-5,
+    # Option B).
+    #
+    # ⚠️ AND IT COUNTS ONLY HOD-APPROVED ROWS. `sme_consumption_log` is an
+    # SME-owned table and this reads only `status = 'committed'`, so the
+    # estimator never sees raw warehouse movement — only a draw somebody
+    # attributed and a second person signed for. That is what keeps suite BA's
+    # byte-identical probe green: posting an ERP consumption moves nothing here.
+    from .services.sme_link import consumed_by_component
+
+    consumed = {c["Material_Key"]: c["consumed_qty"]
+                for c in await consumed_by_component(session, site_id)}
+    if consumed:
+        for m in materials:
+            key = sme_engine.mat_key(m["material_code"], m["sap_code"])
+            if key in consumed:
+                m["consumed_qty"] = consumed[key]
+
     s = sme_sqm_t
     # Legacy load_all() folds Done_SQM_staged into done; keep both raw here and
     # let the engine fold (guard: the mirror schema may predate the R18 column).

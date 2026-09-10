@@ -37,6 +37,7 @@ import {
   CameraOutlined, DownloadOutlined, PlusOutlined, PrinterOutlined,
   UploadOutlined,
 } from '@ant-design/icons'
+import SmeLinkCard from './SmeLinkCard'
 import SystemCode from '../sme/SystemCode'
 import {
   Alert, App, Button, Card, Col, Descriptions, Divider, Form, Input, InputNumber,
@@ -1315,6 +1316,12 @@ export default function ExecutionPage() {
         the material, so nothing before it moves a figure or a quantity.
       </Typography.Paragraph>
       <FormPrintCard />
+      {/* ⚠️ TRACK 3 (Phase 13). Surface Shield material issued from the general
+          Inventory records that a drum left the shelf and nothing about what it
+          covered. This is where that is said — and it belongs to the same three
+          roles as the rest of this page, because the person who knows the area
+          is the SUPERVISOR, who can never open /sme. */}
+      {(isSup || isHod || isSk) && <SmeLinkCard />}
       {(isSup || isHod || isSk) && (
         <OcrUploadCard onDraft={(id) => {
           // Land the supervisor straight on the draft they just created —
