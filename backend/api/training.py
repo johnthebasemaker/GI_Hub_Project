@@ -36,7 +36,8 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -329,6 +330,255 @@ async def compliance_dashboard(module_key: Optional[str] = Query(None),
             "deferrals": sum(r["deferrals"] for r in rows),
         })
     return {"modules": out}
+
+
+# ── the bytes (Phase 13c) ───────────────────────────────────────────────────
+# ⚠️ RULING Q5.3 SAYS AN ASSET IS A URI, NOT AN UPLOAD, and this is what that
+# URI can point at. A `LargeBinary` column would put a 200-600 MB tutorial set
+# into every nightly `pg_dump` for ever AND could not serve HTTP Range — so the
+# viewer could not seek. A `<video>` element that cannot seek is one the
+# assistant's deep link cannot use, because the whole promise of "Watch it" is
+# landing on the second where the step happens.
+#
+# ⚠️ SO THIS ROUTE'S REASON FOR EXISTING IS `206`, NOT CONVENIENCE. Nothing in
+# the backend served a byte range before it; the only place the words appeared
+# was the comment above explaining why the column is a URI.
+
+_MEDIA_KINDS = {"mp4": ("video/mp4", ".mp4"),
+                "vtt": ("text/vtt; charset=utf-8", ".vtt")}
+# One chunk per Range request. 1 MiB is a compromise measured against nothing in
+# particular and chosen for a reason that is: it is small enough that a seek is
+# answered promptly on plant Wi-Fi and large enough that a 9 MB tutorial is not
+# 9,000 round trips.
+_MEDIA_CHUNK = 1024 * 1024
+
+
+def _media_dir():
+    """Where the rendered tutorials live.
+
+    Shares `GI_TUTORIAL_DIR` with the deep-link matcher deliberately: the
+    manifest that says a beat happens at 61.2 s and the MP4 that has a frame
+    there are the same render, and two settings pointing at different
+    directories is a way to serve one tutorial's timings over another's video.
+    """
+    import os
+    import pathlib as _pl
+    root = _pl.Path(__file__).resolve().parents[2]
+    return _pl.Path(os.environ.get("GI_TUTORIAL_DIR")
+                    or (root / "docs" / "tutorials" / "out"))
+
+
+def _parse_range(header: str, size: int):
+    """`bytes=start-end` → (start, end) inclusive, or None.
+
+    Only the single-range form. A multipart range response is a different
+    content type and no `<video>` element asks for one; answering a request we
+    do not really implement with a 206 would be worse than ignoring the header
+    and sending 200, which is what returning None does.
+    """
+    raw = str(header or "").strip()
+    if not raw.lower().startswith("bytes=") or "," in raw:
+        return None
+    spec = raw[6:].strip()
+    try:
+        if spec.startswith("-"):                 # last N bytes
+            n = int(spec[1:])
+            if n <= 0:
+                return None
+            return max(0, size - n), size - 1
+        start_s, _, end_s = spec.partition("-")
+        start = int(start_s)
+        end = int(end_s) if end_s else size - 1
+    except ValueError:
+        return None
+    if start < 0 or start >= size or end < start:
+        return None
+    return start, min(end, size - 1)
+
+
+# ⚠️ A `<video src>` CANNOT SEND AN AUTHORIZATION HEADER, and that is the whole
+# reason this ticket exists (found 2026-09-10 by watching a player report
+# `networkState: 3` — NETWORK_NO_SOURCE — against a route that curl streamed
+# perfectly). The element issues its own plain GET; there is no hook to attach a
+# bearer token to, and the response was a 401 the page had no way to show.
+#
+# THREE OPTIONS WERE WEIGHED, and two of them break something:
+#
+#   * fetch the file with the axios client and play a blob URL — keeps the
+#     fence untouched and DESTROYS Range. The whole 9 MB downloads before the
+#     first frame, and seeking to 61.2 s is exactly what the deep link is for.
+#   * put the session JWT in the query string — a full-session credential in a
+#     URL, which lands in server logs, browser history and any Referer. No.
+#   * a PURPOSE-SCOPED, SHORT-LIVED ticket, which is what this is.
+#
+# The ticket names ONE module, ONE language and ONE user, expires in ten
+# minutes, and grants nothing else anywhere in the system. It is minted by an
+# endpoint that is itself behind the ordinary session and behind the SAME role
+# fence, so a store keeper cannot obtain a ticket for an HOD tutorial and the
+# media route re-checks the fence anyway when the ticket is spent.
+#
+# Same shape as the weekly-exec report link this codebase already ships — an
+# unguessable capability in a URL, scoped to one artefact and one short window —
+# except stateless, because a row per playback is a table that only grows.
+_MEDIA_TICKET_TTL = _dt.timedelta(minutes=10)
+_MEDIA_SCOPE = "training-media"
+
+
+@router.get("/training/media-ticket/{module_key}/{language}",
+            summary="A short-lived ticket a <video> element can carry in its URL")
+async def media_ticket(module_key: str, language: str,
+                       user: dict = Depends(get_current_user),
+                       session: AsyncSession = Depends(get_session)):
+    """Mint the ticket, behind the ordinary session and the ordinary fence."""
+    from .auth import _make_token
+
+    if language not in LANGUAGES:
+        raise HTTPException(404, f"language must be one of {list(LANGUAGES)}")
+    mod = await _module_by_key(session, module_key)
+    if mod is None or not mod.get("active"):
+        raise HTTPException(404, f"no training module {module_key!r}")
+    req = _roles_of(mod)
+    if req and user["role"] not in req and user["role"] != "admin":
+        raise HTTPException(
+            403, "this tutorial is not for your role. If you think it should "
+                 "be, ask an administrator to add your role to the module.")
+    return {"ticket": _make_token(
+        user["username"], user["role"], user.get("site_id") or "",
+        _MEDIA_TICKET_TTL, scope=_MEDIA_SCOPE,
+        extra={"mk": module_key, "lang": language}),
+        "expires_in": int(_MEDIA_TICKET_TTL.total_seconds())}
+
+
+def _media_viewer(request: Request, ticket: Optional[str]) -> dict:
+    """Who is asking — from a ticket if there is one, else the bearer header.
+
+    ⚠️ THE TICKET IS AN ALTERNATIVE CREDENTIAL, NOT A BYPASS. It carries a
+    username and a role, and everything downstream applies the same fence to
+    them that it applies to a session. A ticket for another module is refused
+    by the caller, so a scope confusion cannot become a wider grant by reaching
+    code that only checks the module it was handed.
+
+    ⚠️ AND A REQUEST WITH NEITHER IS 401 HERE. This route is the ONE route in
+    the training router that is not behind the blanket `Depends(get_current_user)`
+    — it cannot be, because the credential arrives in the query string — so
+    this function IS its guard and has to fail closed on its own. There is no
+    path through it that returns a viewer without having verified a signature.
+    """
+    from .auth import _decode
+
+    if ticket:
+        p = _decode(ticket, _MEDIA_SCOPE)
+        return {"username": p.get("sub") or "", "role": p.get("role") or "",
+                "site_id": p.get("site_id") or "",
+                "_ticket_for": (p.get("mk"), p.get("lang"))}
+    auth = request.headers.get("authorization") or ""
+    if not auth.lower().startswith("bearer "):
+        raise HTTPException(401, "not authenticated")
+    p = _decode(auth.split(" ", 1)[1].strip(), "access")
+    return {"username": p.get("sub") or "", "role": p.get("role") or "",
+            "site_id": p.get("site_id") or "", "_ticket_for": None}
+
+
+# ⚠️ ITS OWN ROUTER, AND THIS IS THE ONLY REASON FOR IT. `main.py` mounts the
+# training router with a blanket `dependencies=[Depends(get_current_user)]`,
+# which is the right shape and fails closed — but it runs BEFORE the endpoint
+# and refuses a request whose credential is in the query string, which a
+# `<video>` element has no way to avoid. So this one route is mounted without
+# the blanket guard and carries its own, in `_media_viewer`, which fails closed
+# identically. Every other training route keeps the blanket one.
+media_router = APIRouter(tags=["training"])
+
+
+@media_router.get("/training/media/{module_key}/{language}.{ext}",
+                  summary="Stream a published tutorial's video or captions")
+async def training_media(module_key: str, language: str, ext: str,
+                         request: Request,
+                         ticket: Optional[str] = Query(
+                             None, description="A media ticket from "
+                                               "/training/media-ticket — a "
+                                               "<video> element cannot send an "
+                                               "Authorization header"),
+                         session: AsyncSession = Depends(get_session)):
+    """The video itself, with `Range` support so the player can seek.
+
+    ⚠️ THE ROLE FENCE IS APPLIED HERE TOO, AND IT IS THE SAME FENCE. The module
+    list is server-filtered and the deep link grants nothing — but a raw media
+    URL would be a second door if it did not re-check, and a second door is
+    exactly what P11-4 warns about. `_roles_of` is CALLED, not copied: a second
+    implementation of an access decision is the thing that drifts.
+
+    ⚠️ AND THE PATH IS DERIVED, NEVER TAKEN. The filename is built from the
+    module key and language this endpoint already validated; nothing from the
+    request reaches the filesystem as a path segment, so there is no traversal
+    to defend against rather than a defence to get right.
+
+    ⚠️ A MISSING FILE IS A 404, NOT AN ERROR. On a box where the renders have
+    not landed the training page shows its "not published on this server" state
+    and the assistant's deep links never appear at all — the same absent-feature
+    contract suite CX-13 already pins for the matcher. Phase 13 must not turn a
+    supported state into a broken one.
+    """
+    if ext not in _MEDIA_KINDS:
+        raise HTTPException(404, "no such media type")
+    if language not in LANGUAGES:
+        raise HTTPException(404, f"language must be one of {list(LANGUAGES)}")
+    user = _media_viewer(request, ticket)
+    want = user.get("_ticket_for")
+    if want is not None and want != (module_key, language):
+        # A ticket names one module and one language. Refused HERE so a scope
+        # confusion can never reach code that only checks what it was handed.
+        raise HTTPException(
+            403, "this ticket was issued for a different tutorial.")
+    mod = await _module_by_key(session, module_key)
+    if mod is None or not mod.get("active"):
+        raise HTTPException(404, f"no training module {module_key!r}")
+    req = _roles_of(mod)
+    if req and user["role"] not in req and user["role"] != "admin":
+        raise HTTPException(
+            403, "this tutorial is not for your role. If you think it should "
+                 "be, ask an administrator to add your role to the module.")
+
+    mime, suffix = _MEDIA_KINDS[ext]
+    # `<module_key>/<language>.<ext>` is the layout an object store will use
+    # later; on disk the renders are flat, named by tutorial id. Both are tried
+    # so moving to object storage changes a URI prefix and nothing else.
+    base = _media_dir()
+    candidates = [base / module_key / f"{language}{suffix}",
+                  base / f"{module_key}{suffix}"]
+    path = next((p for p in candidates if p.is_file()), None)
+    if path is None:
+        raise HTTPException(
+            404, f"the {language} {ext} for {module_key} has not been rendered "
+                 f"on this server yet.")
+
+    size = path.stat().st_size
+    rng = _parse_range(request.headers.get("range", ""), size)
+    common = {"Accept-Ranges": "bytes",
+              # A tutorial is immutable for a given module VERSION; a new
+              # narration bumps the version (ruling Q4) rather than replacing
+              # bytes under a cached URL.
+              "Cache-Control": "private, max-age=3600"}
+
+    def _stream(start: int, end: int):
+        with open(path, "rb") as fh:
+            fh.seek(start)
+            left = end - start + 1
+            while left > 0:
+                chunk = fh.read(min(_MEDIA_CHUNK, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+                yield chunk
+
+    if rng is None:
+        return StreamingResponse(_stream(0, size - 1), media_type=mime,
+                                 headers={**common, "Content-Length": str(size)})
+    start, end = rng
+    return StreamingResponse(
+        _stream(start, end), status_code=206, media_type=mime,
+        headers={**common,
+                 "Content-Range": f"bytes {start}-{end}/{size}",
+                 "Content-Length": str(end - start + 1)})
 
 
 # ── admin: publish an asset, bump a version ─────────────────────────────────

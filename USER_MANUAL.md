@@ -5647,6 +5647,23 @@ Pressing it opens 🎓 Training with that video already wound to the second wher
 the step is on screen. You do not have to scrub through ninety seconds looking
 for it.
 
+**What you see when you arrive:** the tutorial you were sent to, on its own, at
+the top of the page, with a note saying which second it starts at. Your other
+modules are folded away behind **"Show my other training"** — the one you asked
+about is not buried in a list.
+
+**It starts playing with the sound off.** Turn the sound on with the player's
+own controls. Browsers refuse to auto-start a video with sound, and refuse it
+silently, so a page that tried would simply sit there looking broken.
+
+If the tutorial has not been published on your system, the page says so **in
+those terms** — that the step exists and the recording is not on this server —
+rather than the general "not published yet". The assistant promised you a
+video; the page owes you an explanation of where it went.
+
+If the link names a tutorial your role does not cover, the page says that too,
+at the top, and shows your own modules underneath.
+
 Three things worth knowing:
 
 - **You still get the written answer.** The button is never instead of it. If

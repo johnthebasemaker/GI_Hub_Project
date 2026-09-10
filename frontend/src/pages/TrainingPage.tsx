@@ -28,8 +28,9 @@ const LANG_LABEL: Record<string, string> = {
   en: 'English', ta: 'தமிழ் (Tamil)', 'ta-Latn': 'Tanglish', ar: 'العربية (Arabic)',
 }
 
-function ModuleCard({ m, onChanged, seekTo, wantLang }:
-  { m: Module; onChanged: () => void; seekTo?: number; wantLang?: string }) {
+function ModuleCard({ m, onChanged, seekTo, wantLang, focused }:
+  { m: Module; onChanged: () => void; seekTo?: number; wantLang?: string
+    focused?: boolean }) {
   const { message } = App.useApp()
   const [lang, setLang] = useState(
     m.assets.find((a) => a.language === wantLang)?.language
@@ -40,6 +41,36 @@ function ModuleCard({ m, onChanged, seekTo, wantLang }:
   const asset = m.assets.find((a) => a.language === lang)
   const dur = asset?.duration_s ?? 0
   const pct = dur ? Math.min(100, Math.round((m.watched_seconds / dur) * 100)) : 0
+
+  // ⚠️ A `<video>` ELEMENT CANNOT SEND THE BEARER TOKEN. It issues its own
+  // plain GET with no hook to attach a header to, so a media URL behind the
+  // ordinary session answered 401 and the player reported `networkState: 3`
+  // (NETWORK_NO_SOURCE) — a black box, no error, indistinguishable from the
+  // very bug this slice exists to fix.
+  //
+  // So the page asks for a short-lived, single-tutorial ticket and puts THAT
+  // in the URL. Fetching the file as a blob instead would have kept the
+  // headers and destroyed Range: the whole video would download before the
+  // first frame, and seeking to the second the assistant pointed at is the
+  // entire feature.
+  const [ticket, setTicket] = useState<string | null>(null)
+  useEffect(() => {
+    if (!asset) return
+    let live = true
+    setTicket(null)
+    api.get<{ ticket: string }>(
+      `/training/media-ticket/${encodeURIComponent(m.module_key)}/${encodeURIComponent(lang)}`)
+      .then((r) => { if (live) setTicket(r.data.ticket) })
+      .catch(() => { /* the card renders unplayable rather than throwing */ })
+    return () => { live = false }
+  }, [m.module_key, lang, asset?.storage_uri])
+
+  const withTicket = (uri?: string) => {
+    if (!uri || !ticket) return undefined
+    return uri + (uri.includes('?') ? '&' : '?') + 'ticket=' + encodeURIComponent(ticket)
+  }
+  const videoSrc = withTicket(asset?.storage_uri)
+  const capSrc = withTicket(asset?.captions_uri)
 
   const ack = async () => {
     setBusy(true)
@@ -76,7 +107,7 @@ function ModuleCard({ m, onChanged, seekTo, wantLang }:
     }
     if (el.readyState >= 1) apply()
     else el.addEventListener('loadedmetadata', apply, { once: true })
-  }, [seekTo, asset?.storage_uri])
+  }, [seekTo, videoSrc])
 
   // Progress is reported by the player as it plays. Sent on pause/ended rather
   // than on a timer: a beacon every second is a write per second per viewer,
@@ -102,8 +133,17 @@ function ModuleCard({ m, onChanged, seekTo, wantLang }:
       {!m.published ? (
         <Alert
           type="info" showIcon
-          message="Not published yet"
-          description="The videos for this module have not been uploaded. There is nothing to watch and nothing to acknowledge — your administrator will publish them."
+          message={focused ? 'This step has a video, but not on this server' : 'Not published yet'}
+          description={focused
+            /* ⚠️ THE ASSISTANT PROMISED A VIDEO, SO THE PAGE MUST EXPLAIN THE
+               GAP (Phase 13d). The generic line reads as "nothing to see
+               here", which is exactly wrong after somebody has clicked a
+               button labelled "Watch it" — it makes a truthful, supported
+               state look like a broken link. The renders are local until the
+               Hetzner cutover (P12 ruling Q3), so an empty box is expected
+               and is a thing to say plainly. */
+            ? 'The assistant matched your question to a step in this tutorial, but the recording has not been published on this server yet. The written answer above is complete on its own — your administrator publishes the videos.'
+            : 'The videos for this module have not been uploaded. There is nothing to watch and nothing to acknowledge — your administrator will publish them.'}
         />
       ) : (
         <>
@@ -115,19 +155,35 @@ function ModuleCard({ m, onChanged, seekTo, wantLang }:
               options={m.assets.map((a) => ({ label: LANG_LABEL[a.language] ?? a.language, value: a.language }))}
             />
           )}
-          {asset && (
+          {asset && !videoSrc && (
+            <Alert type="info" showIcon message="Preparing the player…"
+              description="Fetching a short-lived viewing ticket for this tutorial." />
+          )}
+          {asset && videoSrc && (
             <video
               ref={videoRef}
-              key={asset.storage_uri}
-              src={asset.storage_uri}
+              key={videoSrc}
+              src={videoSrc}
               controls
               width="100%"
+              /* ⚠️ MUTED, AND ONLY WHEN THE ASSISTANT SENT THEM (Phase 13d).
+                 Autoplay with sound is blocked by every browser and blocked
+                 SILENTLY — the page would look identical and simply not play,
+                 which is indistinguishable from the bug this slice fixes.
+                 Muted autoplay is the only form that behaves the same on
+                 every device, and the controls are right there to unmute.
+                 Never on the ordinary list: a page that starts talking
+                 because somebody opened Training is a page people close. */
+              muted={focused || undefined}
+              autoPlay={focused || undefined}
+              playsInline
+              preload={focused ? 'auto' : 'metadata'}
               style={{ maxHeight: 420, background: '#000', borderRadius: 6 }}
               onPause={(e) => beacon((e.target as HTMLVideoElement).currentTime)}
               onEnded={(e) => beacon((e.target as HTMLVideoElement).currentTime)}
             >
-              {asset.captions_uri && (
-                <track kind="captions" src={asset.captions_uri} srcLang={asset.language} default />
+              {capSrc && (
+                <track kind="captions" src={capSrc} srcLang={asset.language} default />
               )}
             </video>
           )}
@@ -233,12 +289,54 @@ export default function TrainingPage() {
   const wantT = Number.isFinite(tRaw) && tRaw >= 0 ? tRaw : undefined
   const refresh = () => { void qc.invalidateQueries({ queryKey: ['/training/modules'] }) }
 
+  // ⚠️ FOCUSED MODE (Phase 13d). Arriving from the assistant's "Watch it", the
+  // matched card is rendered FIRST AND ALONE, with everything else folded away.
+  // Before this the card merely scrolled into view inside a list — and on a
+  // phone that reads as "it went to the Training page and nothing happened",
+  // which is exactly the complaint this slice answers.
+  //
+  // ⚠️ IT SELECTS, IT DOES NOT GRANT. The module list is still the server's
+  // role-filtered one, so a hand-edited `module=` naming a module this role has
+  // no business seeing simply matches nothing and the page renders normally.
+  const [showRest, setShowRest] = useState(false)
+  const focus = wantModule ? modules.find((m) => m.module_key === wantModule) : undefined
+  const rest = focus ? modules.filter((m) => m.module_key !== focus.module_key) : modules
+
   const mine = (
     <>
       {!isLoading && modules.length === 0 && (
         <Empty description="No training modules apply to your role yet" />
       )}
-      {modules.map((m) => (
+      {wantModule && !focus && !isLoading && (
+        /* The URL named a module, and the role-filtered list has no such card.
+           Said plainly rather than rendering an ordinary list and leaving the
+           person to wonder whether the link worked. */
+        <Alert
+          type="warning" showIcon style={{ marginBottom: 12 }}
+          message="That tutorial is not one of yours"
+          description="The link named a training module that does not apply to your role, so there is nothing here to play. Your own modules are below."
+        />
+      )}
+      {focus && (
+        <>
+          <Alert
+            type="info" showIcon style={{ marginBottom: 12 }}
+            message="Sent here by the Hub Assistant"
+            description={wantT != null
+              ? `Starting at ${Math.floor(wantT / 60)}:${String(Math.round(wantT % 60)).padStart(2, '0')}, where this step is on screen. It plays muted — turn the sound on with the player's controls.`
+              : 'This is the tutorial that covers your question.'}
+          />
+          <ModuleCard key={focus.module_key} m={focus} onChanged={refresh}
+            seekTo={wantT} wantLang={wantLang} focused />
+          {rest.length > 0 && !showRest && (
+            <Button type="link" style={{ paddingLeft: 0 }}
+              onClick={() => setShowRest(true)}>
+              Show my other training ({rest.length})
+            </Button>
+          )}
+        </>
+      )}
+      {(!focus || showRest) && rest.map((m) => (
         <ModuleCard key={m.module_key} m={m} onChanged={refresh}
           seekTo={m.module_key === wantModule ? wantT : undefined}
           wantLang={m.module_key === wantModule ? wantLang : undefined} />

@@ -149,6 +149,23 @@ def upgrade() -> None:
     op.create_index("ix_training_compliance_user", "training_compliance",
                     ["username"], unique=False)
 
+    # ⚠️ ADDED 2026-09-10 (Phase 13c). This call was MISSING, so the module row
+    # below existed only on databases built by `cutover_migrate.py` — which
+    # replays every migration's data step — and on no box that reached this
+    # revision through an ordinary `alembic upgrade`. This machine's own mirror
+    # was one of those, discovered while seeding the Phase 12 modules beside it.
+    #
+    # It hid because the gate is SOFT: `training.gate()` finds no module,
+    # reports no interstitial, and the upload proceeds. A missing gate and a
+    # working gate look identical from outside.
+    #
+    # `verify_data_migration_contract()` could not see it either — it greps
+    # `upgrade()` for DML, and until this line there was none here to find.
+    # ⚠️ Adding the call does NOT repair a box that has already run this
+    # revision; alembic never re-runs one. Migration `d4f61b8e35ca` re-seeds
+    # the row idempotently for exactly that reason.
+    data_upgrade(op.get_bind())
+
 
 def data_upgrade(conn) -> None:
     """Seed the one module slice 10b ships with.

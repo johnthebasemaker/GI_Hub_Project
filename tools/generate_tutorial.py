@@ -1262,14 +1262,113 @@ def render(a, script_path: pathlib.Path, access: dict) -> int:
     print(f"   {vtt.relative_to(ROOT)} · {manifest.relative_to(ROOT)}")
     print(f"   script_sha256 {sha256_file(script_path)[:16]}…  (ruling Q4: the "
           f"version bumps when THIS changes)")
+    # ⚠️ ONE COMMAND, NOT FOUR FIELDS TO RETYPE (Phase 13c). This used to print
+    # a curl-shaped instruction and leave somebody to copy `duration_s` out of
+    # it by hand — a number the 90%-watched bar divides by, so a value typed
+    # from memory makes "watched" mean a different length than the video has,
+    # inside a compliance record somebody may produce as evidence.
     print("\n   To publish it into the training hub Phase 10 already built:")
-    print(f"     POST /training/assets  {{\"module_key\": "
-          f"\"{doc.get('training_module_key', '?')}\", \"language\": "
-          f"\"{doc['language']}\", \"storage_uri\": \"<object-store URL>\", "
-          f"\"captions_uri\": \"<…>.vtt\", \"duration_s\": {int(total_s)}}}")
+    print(f"     .venv/bin/python tools/generate_tutorial.py --publish "
+          f"--script {script_path.relative_to(ROOT)} --api-token $GI_API_TOKEN")
     print("   (admin-only; the player says \"not published yet\" until a row "
           "exists)\n")
     return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 7b. publishing (Phase 13c)
+# ══════════════════════════════════════════════════════════════════════════
+def publish_manifests(out: pathlib.Path, base_url: str, token: str,
+                      only: str | None = None,
+                      media_base: str = "/api") -> int:
+    """POST every rendered manifest to `/training/assets`.
+
+    ⚠️ A PUBLISH A HUMAN RETYPES IS A PUBLISH THAT DRIFTS FROM THE RENDER.
+    This script used to PRINT a curl-shaped instruction and leave somebody to
+    copy four fields out of it, one of which — `duration_s` — the acknowledge
+    bar divides by. A duration typed from memory makes "90% watched" mean a
+    different number of seconds than the video actually has, and the compliance
+    record is the artefact somebody may one day produce as evidence.
+
+    So every field comes from the manifest the renderer has just written:
+    the module key it declared, its language, and the MEASURED duration.
+
+    ⚠️ AND `storage_uri` POINTS AT THIS APP, NOT AT A FILE PATH. The media
+    route serves the bytes with Range support so the player can seek, which is
+    what the assistant's deep link depends on. When object storage arrives the
+    prefix changes here and nothing else does — that is the whole reason the
+    route accepts both layouts on disk.
+
+    ⚠️ `media_base` IS NOT `base_url`, AND CONFLATING THEM BREAKS PLAYBACK.
+    `base_url` is where THIS TOOL talks to the API, from a shell, and is
+    naturally an absolute `http://127.0.0.1:8000`. `media_base` is what a
+    BROWSER will put in a `<video src>`, and the SPA reaches the API through a
+    same-origin `/api` prefix — Vite proxies it in dev, nginx in production.
+    Publishing the absolute one produced a cross-origin request the browser
+    refused outright (`ERR_BLOCKED_BY_ORB`, "Domains, protocols and ports must
+    match"), with the player showing a black box and no error. Found by opening
+    the page; curl could not have seen it, because curl has no origin.
+
+    So the default is the relative `/api`. An absolute one is still accepted,
+    for the day the renders live in object storage on a host of their own.
+    """
+    import urllib.error
+    import urllib.request
+
+    manifests = sorted(out.glob("*.manifest.json"))
+    if only:
+        manifests = [m for m in manifests if m.stem.split(".")[0] == only]
+    if not manifests:
+        print(f"  ⚠️  nothing to publish in {out}")
+        return 1
+
+    base = base_url.rstrip("/")
+    mbase = media_base.rstrip("/")
+    failed = 0
+    for path in manifests:
+        try:
+            m = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:                  # noqa: BLE001
+            print(f"  ❌  {path.name}: unreadable manifest ({e})")
+            failed += 1
+            continue
+        key = m.get("training_module_key")
+        if not key:
+            # ⚠️ SKIPPED LOUDLY, NOT SILENTLY. A tutorial with no module key
+            # has nowhere in the training hub to go, and that is a thing to
+            # fix in the script rather than a row to invent a key for.
+            print(f"  ⚠️  {path.name}: no training_module_key — skipped")
+            failed += 1
+            continue
+        lang = m.get("language", "en")
+        dur = int(float((m.get("video") or {}).get("duration_s") or 0))
+        if dur < 1:
+            print(f"  ❌  {path.name}: the manifest records no duration, so "
+                  f"the 90%-watched bar would have nothing to divide by")
+            failed += 1
+            continue
+        body = json.dumps({
+            "module_key": key, "language": lang,
+            "storage_uri": f"{mbase}/training/media/{key}/{lang}.mp4",
+            "captions_uri": f"{mbase}/training/media/{key}/{lang}.vtt",
+            "duration_s": dur,
+        }).encode()
+        req = urllib.request.Request(
+            f"{base}/training/assets", data=body, method="POST",
+            headers={"content-type": "application/json",
+                     "authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                r.read()
+            print(f"  ✅  {key} · {lang} · {hms(dur)} published")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors="replace")[:200]
+            print(f"  ❌  {key}: HTTP {e.code} {detail}")
+            failed += 1
+        except Exception as e:                  # noqa: BLE001
+            print(f"  ❌  {key}: {e}")
+            failed += 1
+    return 1 if failed else 0
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1425,6 +1524,20 @@ def main() -> int:
                     help="do not print the full HeyGen payload")
     ap.add_argument("--live", action="store_true",
                     help="actually call HeyGen (needs HEYGEN_API_KEY; UNVERIFIED)")
+    ap.add_argument("--publish", action="store_true",
+                    help="POST every rendered manifest to /training/assets so "
+                         "the training hub can play it. Needs --api-token; the "
+                         "duration comes from the manifest, never from a human")
+    ap.add_argument("--api-base", default="http://127.0.0.1:8000",
+                    help="with --publish: the API to publish into")
+    ap.add_argument("--api-token", default=None,
+                    help="with --publish: an admin bearer token "
+                         "(or $GI_API_TOKEN)")
+    ap.add_argument("--media-base", default="/api",
+                    help="with --publish: the prefix a BROWSER will use to "
+                         "fetch the video. Defaults to the SPA's same-origin "
+                         "/api — an absolute URL here is cross-origin and the "
+                         "browser refuses it outright")
     a = ap.parse_args()
     # A relative --script is resolved before anything tries to make it relative
     # to the repo root again.
@@ -1432,6 +1545,18 @@ def main() -> int:
     a.out = a.out.resolve()
 
     a.out.mkdir(parents=True, exist_ok=True)
+
+    # ⚠️ PUBLISHING IS NOT RENDERING, so it never opens a browser, never builds
+    # a stack and never needs a dataset. It reads what is already on disk.
+    if a.publish:
+        token = a.api_token or os.environ.get("GI_API_TOKEN") or ""
+        if not token:
+            print("  ❌  --publish needs an admin bearer token "
+                  "(--api-token or $GI_API_TOKEN)")
+            return 2
+        only = None if a.all else load_script(a.script).get("tutorial_id")
+        return publish_manifests(a.out, a.api_base, token, only, a.media_base)
+
     access = nav_access()
     if a.all:
         return batch(a, access)
