@@ -501,6 +501,92 @@ async def form_download(system_code: str,
                      "X-Form-UUID, X-Form-Rows, X-Form-Batch, X-Form-Count"})
 
 
+# ── Track 3: Inventory ⇄ SME Surface Shield consumption (Phase 13e) ──────────
+# ⚠️ MOUNTED HERE, NOT UNDER `/sme`, AND THAT IS A RULE-14 DECISION.
+# `/sme` is exact-locked to {hod, auditor} — the Estimator belongs to the people
+# who PLAN work and to the role that reads everything. But the person who knows
+# how many square metres a drum covered is the SUPERVISOR who applied it, and
+# they can never open `/sme`. Mounting the intake there would hand the feature
+# to everybody except its user, which is the same mistake the printed form
+# avoided by not living under `/mh`.
+#
+# `/execution` already belongs to exactly the three roles this workflow needs.
+# The HOD-only half (13g) narrows itself per endpoint rather than widening the
+# router — narrowing a page means narrowing its endpoints in the same commit,
+# and a menu is not a control.
+_LINK_ROLES = ("store_keeper", "supervisor", "hod")
+
+
+@router.get("/sme-link/queue",
+            summary="Surface Shield consumption with no SQM or system code yet")
+async def sme_link_queue(site_id: Optional[str] = Query(None),
+                         limit: int = Query(100, ge=1, le=500),
+                         offset: int = Query(0, ge=0),
+                         user: dict = Depends(require_roles(*_LINK_ROLES)),
+                         session: AsyncSession = Depends(get_session)):
+    """⚠️ A LEDGER SWEEP, NOT AN INBOX (ruling Q13-6).
+
+    Every Surface Shield consumption row lacking an attribution appears here,
+    oldest first, WHATEVER route it entered the ledger by — a historical row, a
+    bulk Excel/Postgres sync, or an ordinary store-keeper issue. Built as a
+    trigger this would hold only what arrived after it was switched on, which
+    is exactly the set the operator asked the feature to reach beyond: 1,674
+    live consumption rows already carry no attribution at all.
+
+    ⚠️ AND AN SME EXECUTION ENTRY'S OWN POSTINGS ARE EXCLUDED. `post_stock`
+    writes `consumption` rows stamped `SME_EXEC:<entry>:<line>`; those already
+    carry a system code, an equipment tag and an area from the paper form, and
+    `post_progress` has already credited that area. Sweeping them would ask a
+    supervisor to re-type what the form recorded and then credit the same drum
+    against the same tag twice. The predicate lives in ONE place —
+    `services/sme_link.EXCLUDE_SELF_SQL`.
+
+    Read-only. Slice 13e writes nothing at all, deliberately: the self-feeding
+    loop is the highest-severity risk in this phase and it is cheapest to catch
+    against a read.
+    """
+    from .services import sme_link as SL
+
+    site = resolve_site_param(user, site_id)
+    return await SL.sweep(session, site_id=site, limit=limit, offset=offset)
+
+
+@router.get("/sme-link/system-codes",
+            summary="Lining systems whose recipe lists this component")
+async def sme_link_system_codes(sap: str = Query(..., min_length=1),
+                                user: dict = Depends(require_roles(*_LINK_ROLES)),
+                                session: AsyncSession = Depends(get_session)):
+    """What the queue's system-code dropdown offers when nothing was inferred.
+
+    ⚠️ IT ASKS RATHER THAN GUESSES. A guessed system code measures the draw
+    against the WRONG benchmark, and that is worse than a blank: a blank is
+    visibly unfinished, a wrong benchmark looks finished. Keyed on the
+    component's own SAP (rule 1), because one material code can be four
+    physical components belonging to different coats at different rates.
+    """
+    from .services import sme_link as SL
+
+    return {"items": await SL.system_codes_for_sap(session, sap)}
+
+
+@router.get("/sme-link/equipment",
+            summary="Equipment tags carrying this lining system code")
+async def sme_link_equipment(code: str = Query(..., min_length=1),
+                             site_id: Optional[str] = Query(None),
+                             user: dict = Depends(require_roles(*_LINK_ROLES)),
+                             session: AsyncSession = Depends(get_session)):
+    """The operator's "dropdown filtered to the selected System Code", read-only.
+
+    The write path re-checks the pair rather than trusting this list: a
+    dropdown is a convenience and is never a control.
+    """
+    from .services import sme_link as SL
+
+    site = resolve_site_param(user, site_id)
+    return {"items": await SL.equipment_for_system(session, site_id=site,
+                                                   code=code)}
+
+
 # ── the OCR lane (Phase 9d) ──────────────────────────────────────────────────
 # ⚠️ A JOB, NOT AN INLINE AWAIT. Vision OCR takes 5–120 s on a 7B model with a
 # cold start — longer than proxy timeouts and far longer than a supervisor

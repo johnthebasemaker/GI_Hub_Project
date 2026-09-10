@@ -921,6 +921,22 @@ class SmeTankAlias(Base):
 
 
 class SmeConsumptionLog(Base):
+    """Observed physical draw of Surface Shield material, attributed to work.
+
+    ⚠️ PHASE 13e WIDENED WHAT LANDS HERE. Until now these rows arrived only
+    from a workbook sync. From 13e the LIVE ERP ledger is swept too: every
+    Surface Shield `consumption` row that has no attribution appears in a queue
+    for a human to resolve, whatever route it entered the ledger by — a
+    historical row, a bulk Excel/Postgres import, an ordinary store-keeper
+    issue, or an OCR paper upload.
+
+    ⚠️ IT IS STILL AN OBSERVATION, NOT A DEDUCTION (rule 1a, amended not
+    overturned). Nothing here reduces `sme_inventory_seed`. Ruling Q13-5 is
+    Option B: the estimator gains a `Consumed_Qty` column for VISIBILITY and
+    its readiness maths — `Status`, `Completion_Pct`, `SQM_Achievable_Now`,
+    `Coverage_Now_Pct`, `Fulfillment_Pct`, `Allocated_Qty` — is byte-identical
+    across any consumption.
+    """
     __tablename__ = "sme_consumption_log"
     id = Column(Integer, primary_key=True, autoincrement=True)
     batch_id = Column(Text, nullable=False)
@@ -941,6 +957,63 @@ class SmeConsumptionLog(Base):
     rejected_at = Column(DateTime)
     rejected_reason = Column(Text)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+
+    # ── Phase 13e: component identity, and the ledger row this attributes ────
+    # ⚠️ RULE 1. The component key is `(Material_Code, SAP_Code)` and NEVER
+    # `Material_Code` alone. This table had only the material code, which was
+    # survivable while its rows came from a workbook that named nothing
+    # finer — and is not survivable now that they attribute ERP `consumption`
+    # rows, which are keyed on SAP. Pooling by code alone once INVERTED a
+    # shortfall across the four Cumicrete PU components: A and B reported fully
+    # covered while both were 10 short, D reported 10 short while holding three
+    # times what it needed. `Material_Name + UOM` is not a discriminator —
+    # all four PU rows share a name, and the UOM disagrees on 25 of 32 pairs.
+    #
+    # Whitespace-normalised on write, like every other SAP in the system: the
+    # ERP writes "1043 - 2" for "1043-2".
+    SAP_Code = Column(Text, nullable=False, server_default=text("''"))
+
+    # Which `consumption` row this attributes. NULL on every workbook-sourced
+    # row, which is the honest reading: those state a Tank No. and a quantity
+    # and are not traceable to a single ledger line.
+    #
+    # ⚠️ IT IS ALSO WHAT MAKES THE SWEEP A QUERY RATHER THAN A TRIGGER. The
+    # queue is `consumption` LEFT JOINed to this column and filtered to the
+    # misses, so a row imported by a workbook sync next month and a row posted
+    # in 2026-06 arrive in the same list. A trigger would only ever fire on
+    # rows created after it existed — precisely the set the operator asked to
+    # EXCLUDE from, not restrict the feature to.
+    Consumption_ID = Column(Integer)
+
+    # ⚠️ SNAPSHOTTED AT ASSIGNMENT, NEVER RE-JOINED (13f). The recipe rate this
+    # row's variance was measured against. `sme_recipe.For_1_SQM` is editable
+    # by an HOD, and a variance report that re-derived its benchmark would
+    # silently rewrite history the first time somebody corrected a rate — last
+    # quarter's 12 % overrun becoming 4 % with no edit to the row and nothing
+    # to point at. Same reasoning as `sme_execution_entry.Bench_*`.
+    Bench_For_1_SQM = Column(Float)
+
+    # ⚠️ A PRESENTATION FLAG, STORED (13f, ruling Q13-8). ±10 % does NOT gate
+    # approval — every Surface Shield consumption goes to the HOD regardless of
+    # variance. It sets PRIORITY. Stored rather than computed at read time so
+    # that moving the tolerance re-sorts the queue and reopens nothing already
+    # decided.
+    Priority_Flag = Column(Text)
+    Variance_Tolerance_Pct = Column(Float)
+
+    # ── the HOD decision (13g) ─────────────────────────────────────────────
+    hod_username = Column(Text)
+    hod_decided_at = Column(DateTime)
+    HOD_Edit_Justification = Column(Text)
+    hod_edited = Column(Boolean, nullable=False, server_default=text("false"))
+    # What the field originally reported, kept when an HOD corrects it. Without
+    # it the audit trail says a number changed but not from what.
+    Original_SQM_Completed = Column(Float)
+    __table_args__ = (
+        # The sweep's own question: is this ledger row already attributed?
+        Index("ix_sme_cons_log_consumption", "Consumption_ID"),
+        Index("ix_sme_cons_log_site_status", "Site_ID", "status"),
+    )
 
 class SmeEquipment(Base):
     __tablename__ = "sme_equipment"
