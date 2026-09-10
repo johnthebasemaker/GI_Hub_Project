@@ -21239,6 +21239,206 @@ async def test_sme_inventory_link_read():
               snap_before == snap_after,
               "the model snapshot moved when an ERP consumption was posted")
 
+        # ═══════════════════════════════════════════════════════════════════
+        # PHASE 13f — the intake, the snapshotted benchmark, and the ±10 %
+        # ═══════════════════════════════════════════════════════════════════
+        #
+        # ⚠️ ±10 % SETS PRIORITY, NOT APPROVAL (ruling Q13-8). Every Surface
+        # Shield consumption goes to the HOD regardless of variance. DA-30 and
+        # DA-33 are the two halves of that: nothing auto-commits, and the flag
+        # only decides what the HOD sees first.
+
+        # SVDA-9 (Beta Mortar) at 1.5/m², 30 units drawn.
+        #   30 m² → expected 45   → −33.3 %  → HIGH
+        #   20 m² → expected 30   →   0.0 %  → NORMAL
+        r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+            "consumption_id": ids["issue"], "code": "SVDA-LS1",
+            "tag": "SVDA-TANK-A", "sqm": 20, "site_id": SITE})
+        a = r.json()
+        check("DA-23 the field attributes a draw to a system, a tag and an area",
+              r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+        check("DA-24 the benchmark is the COMPONENT's own rate, and the "
+              "expectation is rate x area — 1.5 x 20 = 30 against 30 drawn",
+              a["Bench_For_1_SQM"] == 1.5 and a["Expected_Qty"] == 30.0
+              and a["Variance_Pct"] == 0.0, str(a))
+        check("DA-25 ⚠️ …AND IT IS SNAPSHOTTED ON THE ROW, NEVER RE-JOINED. An "
+              "HOD may correct a recipe rate next quarter, and a variance that "
+              "re-derived its benchmark would turn last quarter's overrun into "
+              "compliance with no edit to the row and nothing to point at",
+              a["Bench_For_1_SQM"] is not None, str(a.get("Bench_For_1_SQM")))
+        check("DA-26 ⚠️ IT LANDS AT `staged`, NEVER SETTLED. There is no "
+              "auto-commit band: every row needs a decision, and a 0 % "
+              "variance is not an exemption from one",
+              a["status"] == "staged", str(a["status"]))
+        check("DA-27 an on-target row is NORMAL priority",
+              a["Priority_Flag"] == "NORMAL", str(a["Priority_Flag"]))
+
+        # ⚠️ THE SNAPSHOT, PROVED BY MOVING THE MASTER DATA UNDER IT.
+        async with SessionLocal() as s:
+            await s.execute(_sqt('UPDATE sme_recipe SET "For_1_SQM" = 99.0 '
+                                 "WHERE \"SAP_Code\" = 'SVDA-9'"))
+            await s.commit()
+        r = await ac.get("/execution/sme-link/assigned",
+                         params={"site_id": SITE}, headers=H)
+        mine = next(i for i in r.json()["items"]
+                    if i["Consumption_ID"] == ids["issue"])
+        check("DA-28 ⚠️⚠️ MOVING THE RECIPE RATE FROM 1.5 TO 99 DOES NOT TOUCH "
+              "A ROW ALREADY FILED. Its benchmark, its expectation and its "
+              "variance are what they were measured against — history is not "
+              "rewritten by a correction made afterwards",
+              float(mine["Bench_For_1_SQM"]) == 1.5
+              and float(mine["Expected_Qty"]) == 30.0
+              and float(mine["Variance_Pct"]) == 0.0, str(mine)[:220])
+        async with SessionLocal() as s:
+            await s.execute(_sqt('UPDATE sme_recipe SET "For_1_SQM" = 1.5 '
+                                 "WHERE \"SAP_Code\" = 'SVDA-9'"))
+            await s.commit()
+
+        # A row well outside the band.
+        r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+            "consumption_id": ids["hist"], "code": "SVDA-LS1",
+            "tag": "SVDA-TANK-B", "sqm": 200, "site_id": SITE})
+        b = r.json()
+        check("DA-29 a draw far off benchmark is flagged HIGH — 40 units "
+              "against an expected 100 is -60 %, outside +/-10 %",
+              r.status_code == 201 and b["Priority_Flag"] == "HIGH"
+              and round(b["Variance_Pct"], 1) == -60.0, str(b)[:200])
+        check("DA-30 ⚠️ …AND IT IS STILL `staged`, EXACTLY LIKE THE COMPLIANT "
+              "ONE. The band decides what the HOD sees FIRST, never whether a "
+              "decision is needed. Auto-committing inside it was the "
+              "recommendation the operator overruled — the stock has already "
+              "left the shelf, and an auto-committed attribution is one nobody "
+              "ever looks at",
+              b["status"] == "staged", str(b["status"]))
+
+        r = await ac.get("/execution/sme-link/assigned",
+                         params={"site_id": SITE}, headers=H)
+        got = r.json()
+        flags = [i["Priority_Flag"] for i in got["items"]]
+        check("DA-31 the queue sorts HIGH PRIORITY FIRST — which is what makes "
+              "a queue holding every row readable rather than ignored",
+              flags[0] == "HIGH", str(flags))
+        check("DA-32 …and reports how many need looking at first, beside the "
+              "band they were measured against",
+              got["high_priority"] == 1 and got["tolerance_pct"] == 10.0,
+              str({k: got[k] for k in ("high_priority", "tolerance_pct")}))
+
+        # ⚠️ MOVING THE TOLERANCE RE-SORTS; IT REOPENS NOTHING.
+        async with SessionLocal() as s:
+            await s.execute(_sqt(
+                "INSERT INTO app_settings (key, value) VALUES "
+                "('sme_variance_tolerance_pct', '80') "
+                "ON CONFLICT (key) DO UPDATE SET value = '80'"))
+            await s.commit()
+        r = await ac.get("/execution/sme-link/assigned",
+                         params={"site_id": SITE}, headers=H)
+        after = next(i for i in r.json()["items"]
+                     if i["Consumption_ID"] == ids["hist"])
+        check("DA-33 ⚠️⚠️ WIDENING THE BAND TO 80 % DOES NOT RECLASSIFY A ROW "
+              "ALREADY FILED. The flag was computed and STORED at submission "
+              "beside the tolerance it was measured against; recomputed on "
+              "read, a row approved at 12 % would silently become compliant "
+              "the day somebody tuned the number",
+              after["Priority_Flag"] == "HIGH"
+              and float(after["Variance_Tolerance_Pct"]) == 10.0,
+              str({k: after[k] for k in ("Priority_Flag", "Variance_Tolerance_Pct")}))
+        async with SessionLocal() as s:
+            await s.execute(_sqt("DELETE FROM app_settings WHERE key = "
+                                 "'sme_variance_tolerance_pct'"))
+            await s.commit()
+
+        # ── the refusals ────────────────────────────────────────────────────
+        r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+            "consumption_id": ids["issue"], "code": "SVDA-LS1",
+            "tag": "SVDA-TANK-A", "sqm": 5, "site_id": SITE})
+        check("DA-34 a consumption already attributed cannot be attributed "
+              "twice — the ledger row is the identity, and two attributions "
+              "would credit one drum against two areas",
+              r.status_code == 409, f"{r.status_code} {r.text[:140]}")
+
+        r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+            "consumption_id": ids["exec"], "code": "SVDA-LS1",
+            "tag": "SVDA-TANK-B", "sqm": 10, "site_id": SITE})
+        check("DA-35 ⚠️⚠️ THE `SME_EXEC` EXCLUSION IS ENFORCED ON THE WRITE TOO, "
+              "not only in the queue. A queue is a list and never a control: "
+              "an id typed by hand, or held over from a stale page, must not "
+              "be able to credit an execution entry's own posting a second "
+              "time against the same tag",
+              r.status_code == 409 and "execution entry" in r.text,
+              f"{r.status_code} {r.text[:160]}")
+
+        r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+            "consumption_id": ids["bulk"], "code": "SVDA-LS1",
+            "tag": "SVDA-TANK-Z", "sqm": 10, "site_id": SITE})
+        check("DA-36 an equipment tag that does not carry the chosen system is "
+              "refused — TANK-Z is LS2. The dropdown filters, and the server "
+              "re-checks: a dropdown is a convenience and never a control",
+              r.status_code == 422 and "does not carry" in r.text,
+              f"{r.status_code} {r.text[:160]}")
+
+        r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+            "consumption_id": ids["ppe"], "code": "SVDA-LS1",
+            "tag": "SVDA-TANK-A", "sqm": 10, "site_id": SITE})
+        check("DA-37 a non-Surface-Shield draw has no square metres to record "
+              "and is refused with that reason",
+              r.status_code == 422, f"{r.status_code} {r.text[:140]}")
+
+        for bad_sqm in (0, -5):
+            r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+                "consumption_id": ids["bulk"], "code": "SVDA-LS1",
+                "tag": "SVDA-TANK-A", "sqm": bad_sqm, "site_id": SITE})
+            check(f"DA-38 an area of {bad_sqm} is refused — if none was "
+                  f"covered, the material was not applied and the draw needs a "
+                  f"different explanation",
+                  r.status_code == 422, f"{r.status_code} {r.text[:120]}")
+
+        # ── the NULL variance, which is HIGH ────────────────────────────────
+        # Comp-B is in SVDA-LS1's recipe; SVDA-LS2's recipe does not list it.
+        # Attributing it to LS2 has no benchmark at all.
+        async with SessionLocal() as s:
+            orphan = (await s.execute(_ins_consumption(None, None, None), {
+                "d": "2026-09-02", "s": "SVDA-1-1", "q": 5.0, "site": SITE,
+                "tank": "SVDA-TANK-Z", "sr": None, "rem": None})).scalar_one()
+            await s.commit()
+        r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+            "consumption_id": orphan, "code": "SVDA-LS2",
+            "tag": "SVDA-TANK-Z", "sqm": 10, "site_id": SITE})
+        o = r.json()
+        check("DA-39 a component with no recipe line in the chosen system has "
+              "a NULL variance, never a 0 % one — 'we cannot compute this' is "
+              "not 'exactly on target'",
+              r.status_code == 201 and o["Expected_Qty"] is None
+              and o["Variance_Pct"] is None, str(o)[:200])
+        check("DA-40 ⚠️ …AND A NULL VARIANCE SORTS AS **HIGH**. Treating it as "
+              "0 % would file the rows nobody understands at the BOTTOM of the "
+              "queue, under every row that is merely slightly off — the same "
+              "error ruling P10-4 refused when it declined to value un-costed "
+              "stock at zero",
+              o["Priority_Flag"] == "HIGH", str(o["Priority_Flag"]))
+
+        # ── the classifier, in isolation ────────────────────────────────────
+        check("DA-41 the band is inclusive at its edge — exactly 10 % is "
+              "NORMAL, and a hair past it is HIGH. A threshold whose boundary "
+              "nobody wrote down is one two readers implement differently",
+              SL.classify(10.0, 10.0) == "NORMAL"
+              and SL.classify(-10.0, 10.0) == "NORMAL"
+              and SL.classify(10.01, 10.0) == "HIGH"
+              and SL.classify(None, 10.0) == "HIGH",
+              "the boundary moved")
+        check("DA-42 a malformed tolerance setting falls back to the "
+              "documented 10 rather than refusing the field's work — the same "
+              "fail-open direction `controlled_category` takes",
+              SL.DEFAULT_TOLERANCE_PCT == 10.0, str(SL.DEFAULT_TOLERANCE_PCT))
+
+        # ── ⚠️ RULE 1a AGAIN, AFTER REAL WRITES ─────────────────────────────
+        snap_now = (await ac.get("/sme/model-snapshot", headers=H)).json()
+        check("DA-43 ⚠️⚠️ AND THE ESTIMATOR IS STILL BYTE-IDENTICAL AFTER FOUR "
+              "ATTRIBUTIONS. 13f writes attribution rows and moves NOTHING in "
+              "the SME: `sme_inventory_seed` is not read, not written and not "
+              "netted. Rule 1a stands (ruling Q13-5, Option B)",
+              snap_now == snap_before,
+              "the model snapshot moved when consumption was attributed")
+
         # ── site scoping ────────────────────────────────────────────────────
         r = await ac.get("/execution/sme-link/queue", headers=SK)
         check("DA-21 a site-pinned role sees only its own site's rows — the "

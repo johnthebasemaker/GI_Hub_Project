@@ -3347,6 +3347,104 @@ log will not tell you.
 Backend coverage: **suite CZ**; browser coverage:
 `tests/e2e/specs/training-deeplink.spec.ts`.
 
+## 14ac. Inventory ⇄ SME Surface Shield consumption (Phase 13 · Track 3)
+
+**What it is for.** A Surface Shield material issued from the general Inventory
+tells the ledger a drum left the shelf and nothing about **what it covered**.
+This is the attribution: which system, which vessel, how many square metres —
+and how that compares to the recipe.
+
+⚠️ **Rule 1a is AMENDED, not overturned (ruling Q13-5, Option B).** The
+estimator gains a `Consumed_Qty` column for visibility and its readiness maths
+does not move. Any test below that appears to change a completion figure is a
+failure, not a feature.
+
+### 14ac.1 The queue is a ledger sweep
+
+**TC-SME-01** — open the queue as a **Supervisor**. It lists unattributed
+Surface Shield consumption **oldest first**, and it reaches back: rows from
+months ago and rows brought in by an Excel import are both there. It is not an
+inbox that starts today.
+
+**TC-SME-02** — ⚠️ **the one that matters.** File a consumption form through
+the OCR path and approve it. Its consumption rows **must not appear** in this
+queue. They already carry a system code, a tag and an area from the paper, and
+`post_progress` has already credited that area. Sweeping them would ask a
+supervisor to re-type what the form recorded and then credit the same drum
+against the same vessel twice.
+
+**TC-SME-03** — issue a **PPE** item. It does not appear. The classifier is the
+inventory **Category**, the same exact match the MTC gate uses.
+
+**TC-SME-04** — a row whose Remarks carry `LS <code>` (which the Issue form
+writes) arrives with that system code **pre-selected**. A row with no such note
+arrives with **nothing** selected, and offers only the systems whose recipe
+contains that material. It asks; it does not guess.
+
+### 14ac.2 The three questions
+
+**TC-SME-05** — as a **Store Keeper**, issue a Surface Shields material. Pick
+the system code, then the **Equipment / tank** box beside it — it lists only
+equipment carrying that system. Leave it blank and the issue still works: an SK
+who does not know the destination must not be made to invent one.
+
+**TC-SME-06** — you are **never** asked for the area at issue time. The drum
+leaves before it is applied.
+
+**TC-SME-07** — in the queue, pick a system code, then an equipment tag. The
+tag list is filtered to that system. Now choose a tag belonging to a
+*different* system by editing the request by hand: **refused**. A dropdown is a
+convenience; the server re-checks.
+
+**TC-SME-08** — submit an area of `0`. Refused with the reason: if nothing was
+covered, the material was not applied and the draw needs a different
+explanation.
+
+### 14ac.3 The benchmark, and what must never move it
+
+**TC-SME-09** — submit an area and check the figures: expected = recipe rate ×
+area, and the variance against what was drawn.
+
+**TC-SME-10** — ⚠️ **now change the recipe rate** in Master Data and re-open the
+filed row. **Every figure is unchanged.** The benchmark is snapshotted at
+submission; a variance that re-derived it would turn last quarter's overrun
+into compliance with no edit to the row and nothing to point at.
+
+**TC-SME-11** — ⚠️ **rule 1, the four-component trap.** Attribute a draw of a
+multi-part system's **Comp-C** (one material code, several SAP codes). The
+benchmark must be **Comp-C's own rate**, not the sum of A+B+C+D. Getting this
+wrong measures a single component's draw against the whole system's total.
+
+**TC-SME-12** — attribute a material to a system whose recipe does not list it.
+The variance is **blank**, never `0%`, and the row is **High Priority**.
+
+### 14ac.4 ⚠️ Every row goes to the HOD; ±10% sets the order
+
+**TC-SME-13** — submit a row bang on benchmark. It is **still** `staged` and
+still needs the HOD. There is no band inside which a row files itself.
+
+**TC-SME-14** — submit a row 60% off. Also `staged`, and flagged **High
+Priority**, at the top of the queue.
+
+**TC-SME-15** — ⚠️ **change the tolerance** (admin setting
+`sme_variance_tolerance_pct`) to 80 and re-open the 60% row. **It is still High
+Priority.** The flag was stored at submission beside the band it was measured
+against; recomputed on read, a row approved at 12% would silently become
+compliant the day somebody tuned the number.
+
+### 14ac.5 ⚠️ The estimator must not move
+
+**TC-SME-16** — note the Material Estimator's figures. Issue a large Surface
+Shield quantity, attribute it, and approve it. **Every readiness figure is
+identical** — Status, Completion %, SQM Achievable Now, Coverage Now %,
+Fulfillment % and Allocated Qty. Only `Consumed_Qty` moves.
+
+If any other figure moved, rule 1a has been broken and the change must be
+reverted rather than explained.
+
+Backend coverage: **suite DA** (sweep + intake) and **suite DB** (approval) in
+`backend/api/service_tests.py`.
+
 ## 14aa. The AI evaluation gates (Phase 11 · 11f)
 
 Developer-facing. Nothing here is a screen; it is what CI refuses to merge.

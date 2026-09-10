@@ -117,6 +117,19 @@ export default function IssuePage() {
         sap_index: Record<string, string[]>
       },
   })
+  const [liningTag, setLiningTag] = useState<string | undefined>()
+  // The equipment carrying the chosen system code, at this site — the same
+  // list the 13f queue offers, from the same endpoint, so the two can never
+  // disagree about which tanks a system applies to.
+  const liningEquipment = useQuery({
+    queryKey: ['/execution/sme-link/equipment', liningCode, watchSite],
+    enabled: !!liningCode,
+    staleTime: 300_000,
+    queryFn: async () => (await api.get<{ items: { tag: string; name?: string }[] }>(
+      '/execution/sme-link/equipment',
+      { params: { code: liningCode, ...(watchSite ? { site_id: watchSite } : {}) } })
+    ).data.items,
+  })
   const liningSystem = useMemo(
     () => lining.data?.systems.find((s) => s.code === liningCode),
     [lining.data, liningCode])
@@ -205,6 +218,9 @@ export default function IssuePage() {
     }
     // Smart defaults: remember the routine fields for the next session.
     saveDefaults('issue', { Site_ID: v.Site_ID, Work_Type: v.Work_Type ?? '', Issued_By: v.Issued_By ?? '' })
+    // ⚠️ THE `LS <code>` SUFFIX IS READ BACK BY THE 13f QUEUE, so its shape is
+    // a contract now rather than a note for a human. `sme_link.hint_system_code`
+    // parses the token after "LS "; keep the code first and unpunctuated.
     const lsNote = liningCode && shieldSapOf.has(String(v.SAP_Code))
       ? `LS ${liningCode}${liningSystem ? ` (${liningSystem.short_name})` : ''}`
       : null
@@ -219,7 +235,11 @@ export default function IssuePage() {
       Issued_To: v.Issued_To || null,
       Issued_By: v.Issued_By || null,
       PR_Number: v.PR_Number || null,
-      Tank_No: v.Tank_No || null,
+      // The SK's chosen vessel wins over the free-text Tank No. box when they
+      // picked one from the filtered list — it is a real equipment tag rather
+      // than whatever somebody typed, and the queue can act on it.
+      Tank_No: (shieldSapOf.has(String(v.SAP_Code)) && liningTag)
+        ? liningTag : (v.Tank_No || null),
       Serial_No: v.Serial_No || null,
       Lot_Number: v.Lot_Number || null,
       Remarks: [v.Remarks, lsNote].filter(Boolean).join(' · ') || null,
@@ -351,7 +371,7 @@ export default function IssuePage() {
                 <Select showSearch allowClear style={{ minWidth: 320 }}
                   placeholder="Select the system code FIRST"
                   loading={lining.isFetching} value={liningCode}
-                  onChange={(v) => { setLiningCode(v); form.resetFields(['SAP_Code']) }}
+                  onChange={(v) => { setLiningCode(v); setLiningTag(undefined); form.resetFields(['SAP_Code']) }}
                   optionFilterProp="label"
                   options={(lining.data?.systems ?? [])
                     .filter((s) => s.saps.length > 0)
@@ -359,6 +379,28 @@ export default function IssuePage() {
                       value: s.code,
                       label: `${s.code} — ${s.short_name} (${s.substrate || '?'})`,
                     }))} />
+                {/* ⚠️ PHASE 13f — THE TAG, AT THE MOMENT THE SK KNOWS IT.
+                    The store keeper knows which vessel the drum is walking to;
+                    they do NOT know how many square metres it will cover,
+                    because the drum leaves before the area is applied. That is
+                    the same reasoning that made Phase 9d paper-first. So the
+                    Issue form captures what an SK can actually answer, and the
+                    field supplies the area later, in the queue.
+
+                    Optional on purpose: an SK who genuinely does not know the
+                    destination leaves it blank rather than inventing one, and
+                    the queue asks. A required box gets a wrong answer. */}
+                {liningSystem && (
+                  <Select showSearch allowClear style={{ minWidth: 240 }}
+                    placeholder="Equipment / tank (optional)"
+                    value={liningTag} onChange={setLiningTag}
+                    loading={liningEquipment.isFetching}
+                    optionFilterProp="label"
+                    options={(liningEquipment.data ?? []).map((e) => ({
+                      value: e.tag,
+                      label: `${e.tag}${e.name && e.name !== e.tag ? ` — ${e.name}` : ''}`,
+                    }))} />
+                )}
                 {liningSystem && (
                   <>
                     <Tag color="green">
