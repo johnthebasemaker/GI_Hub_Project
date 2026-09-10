@@ -1222,6 +1222,18 @@ class SmeConsumptionForm(Base):
     Batch_UUID = Column(Text)
     Batch_Seq = Column(Integer, nullable=False, server_default=text("1"))
     Batch_Size = Column(Integer, nullable=False, server_default=text("1"))
+
+    # ── Phase 13b: which PAGES of this form have been photographed ──────────
+    # ⚠️ DO NOT CONFUSE THIS WITH `Batch_Seq`. `Batch_Seq` is which FORM of a
+    # print run this is (sheet 7 of 50 forms); `Sheets_Seen` is which A4 PAGES
+    # of THIS form have come back in (a 36-material recipe prints on two, and
+    # they are photographed separately).
+    #
+    # A comma-separated list of printed page numbers rather than a count,
+    # because "sheets 1 and 3 are in, 2 is missing" is what a supervisor
+    # standing in a plant needs told. A count of 2 out of 3 does not say which
+    # page to go and photograph.
+    Sheets_Seen = Column(Text)
     __table_args__ = (
         UniqueConstraint("Form_UUID", name="uq_consumption_form_uuid"),
         Index("ix_consumption_form_site_status", "Site_ID", "status"),

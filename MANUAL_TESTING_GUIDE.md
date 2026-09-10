@@ -2452,11 +2452,54 @@ qualifier. The description appears only where it disambiguates.
 ### 14p.4 The QR code
 
 **TC-FORM-10** — scan the QR with any phone scanner. It reads
-`GIF1|<site>|<system>|<sub-activity>|<form id>` — five fields, always five, with
-an empty sub-activity on a whole-system form.
+`GIF2|<site>|<system>|<sub-activity>|<form id>|<page>|<of>` — seven fields,
+always seven, with an empty sub-activity on a whole-system form.
 
 **TC-FORM-11** — the form id in the QR matches the one printed in the footer and
 in the filename. Three places, one number.
+
+### 14p.4a ⚠️ A form of more than 16 materials, filed one page at a time
+
+*Phase 13b.*
+
+**THE DEFECT THIS FIXES.** A long recipe prints on several A4 pages, and until
+now every one of those pages carried the **same** QR. The reader identifies a
+sheet by that code, so it could not tell page 2 from page 1. Photographing page
+2 after page 1 was refused as *"already filed"* — true of the form and false of
+the page — and there was **no way at all** to record rows 19 onwards.
+Photographing only page 2 was worse: it opened a draft with page 1's eighteen
+rows silently set to **0**, reporting eighteen materials as unused, on a page
+that looks perfectly plausible on the way to an approval.
+
+**TC-FORM-11a** — print a system with **more than 16** materials. Scan the QR
+on each page. **Different codes, same form id, numbered `|1|2` and `|2|2`.**
+
+**TC-FORM-11b** — photograph page 1 and upload it. A draft opens with **every**
+row present, and a message names **which page is still missing**.
+
+**TC-FORM-11c** — photograph page 2 and upload it. **It is accepted**, merged
+into the **same** entry, and page 1's quantities are **still there**. Check a
+row from each page.
+
+**TC-FORM-11d** — upload page 2 again. Refused, naming **sheet 2** rather than
+the form.
+
+**TC-FORM-11e** — take an **old `GIF1` form** if you have one and upload it
+twice. The second is refused exactly as it always was. An old multi-page form
+carries no way to tell its pages apart — that is the defect, and accepting a
+second page from paper that cannot say which page it is would file page 2's
+quantities against page 1's materials.
+
+**TC-FORM-11f** — upload page 2 of a form whose entry has already been
+**submitted**. Refused with the reason: a page cannot be added to an entry a
+store keeper is already checking, because they would end up signing for
+eighteen numbers they never saw.
+
+⚠️ **A note on page counts.** The boundary is **16 materials, not 18**. Eighteen
+rows fit on a page and then the signature block does not, so it takes a sheet
+of its own. The old `page X of Y` label got this wrong and printed *"page 4 of
+3"*; that was cosmetic until the page number moved into the QR, where a sheet
+numbered past the end of its own form is now correctly refused.
 
 ### 14p.5 What the form does and does not pre-fill
 
