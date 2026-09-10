@@ -1026,6 +1026,94 @@ It is not being awkward. The app matches your handwriting to materials by row
 against the wrong materials — and the numbers would look perfectly reasonable.
 Changing a material's **rate** is fine and does not invalidate printed paper.
 
+## 4.9a Surface Shield material issued from the store — where its area is recorded
+
+*Phase 13.*
+
+**The gap this closes.** When a Surface Shield material is issued from the
+general Inventory, the ledger records that a drum left the shelf. It does not
+record **what that drum covered** — which system, which vessel, how many square
+metres. So the estimator could not see it and nobody could compare it against
+the recipe.
+
+Every such issue now appears in a queue until somebody says what it was for.
+
+### 4.9a.1 What the Store Keeper does
+
+Nothing new, and one optional extra.
+
+You already pick the **Lining System Code** before issuing a Surface Shields
+material — that has not changed. Beside it there is now an **Equipment / tank**
+box, filtered to the equipment that system actually applies to.
+
+⚠️ **Leave it blank if you do not know.** You are handing over a drum; where it
+ends up is often decided in the plant. A guess here becomes a wrong attribution
+later, and the queue will simply ask. A blank is not a failure.
+
+⚠️ **You are never asked for the area.** You cannot know it — the drum leaves
+before it is applied. That question belongs to the person who applied it.
+
+### 4.9a.2 What the field does — the queue
+
+**Where:** Execution Entries → the Surface Shield consumption queue. Store
+Keeper, Supervisor and HOD.
+
+The queue lists every Surface Shield consumption with no area recorded against
+it, **oldest first**. For each one you supply three things:
+
+| | |
+|---|---|
+| **System Code** | Pre-selected when the store keeper already chose one. Otherwise pick from the list — it offers only the systems whose recipe actually contains that material. |
+| **Equipment / tank** | Filtered to the equipment carrying the system code you picked. |
+| **Area covered (m²)** | What that material actually covered. |
+
+⚠️ **The system code is asked, never guessed.** If the app cannot tell which
+system a draw was for, it offers you the candidates rather than choosing one.
+A guessed code compares the draw against the **wrong** benchmark — and a wrong
+benchmark looks finished, where a blank looks unfinished. Unfinished is safer.
+
+⚠️ **The queue reaches back.** It is not an inbox that starts today: it holds
+**every** unattributed Surface Shield consumption, including issues from months
+ago and rows brought in by an Excel import. Expect it to be long the first time
+you open it, and work oldest first.
+
+⚠️ **Consumption filed from a printed form is NOT in this queue, and must not
+be.** A photographed consumption form already recorded its system, its
+equipment and its area, and the area has already been credited. Adding it here
+would count the same drum against the same vessel twice.
+
+### 4.9a.3 What happens to the numbers
+
+Nothing is deducted. The stock left the shelf when it was issued; this records
+**what it was for**, not that it went.
+
+Each submission is compared against the recipe: `rate × area` is what the
+system expected, and the difference is the variance. Every row then goes to the
+**HOD** — see §4.9a.4.
+
+> ⚠️ **Your estimator figures do not move.** Readiness, completion, achievable
+> area and the buy list are calculated from the Material Estimator's own
+> workbook figures and are untouched by any of this. What you gain is
+> visibility of what was actually drawn, beside the plan.
+
+### 4.9a.4 ⚠️ Every row goes to the HOD — the ±10% band decides the order
+
+**Every** Surface Shield consumption is reviewed, whatever the variance. There
+is no band inside which a row files itself.
+
+What the **±10%** tolerance does is set **priority**. A draw more than 10% above
+or below the benchmark is flagged **High Priority** and sits at the top of the
+HOD's queue; the rest follow, oldest first.
+
+⚠️ **A variance that cannot be calculated is High Priority too.** If the recipe
+has no line for that material in that system, there is no benchmark to compare
+against — and "we cannot work this out" is exactly the thing worth looking at.
+It is not treated as zero.
+
+An admin can change the band. Doing so re-orders the queue and **changes
+nothing about rows already filed** — each one keeps the reading it was measured
+against at the time.
+
 ## 4.10 Filing a consumption form
 
 **Where:** Execution Entries (`/execution`).

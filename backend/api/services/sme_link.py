@@ -80,11 +80,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import text
+from fastapi import HTTPException
+from sqlalchemy import func, insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..sme_engine import mat_key, sap_norm
-from .ledger import _MD
+from .ledger import _MD, write_audit
 
 log_t = _MD.tables["sme_consumption_log"]
 recipe_t = _MD.tables["sme_recipe"]
@@ -345,3 +346,274 @@ async def recipe_rate(session: AsyncSession, *, code: str, material_code: str,
     '''), {"code": code.strip(), "mat": material_code,
            "sap": sap_norm(sap_code)})).scalar()
     return None if rows is None else float(rows)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Phase 13f — the intake: who the draw was for, and how it compares
+# ══════════════════════════════════════════════════════════════════════════
+
+DEFAULT_TOLERANCE_PCT = 10.0
+PRIORITY_HIGH = "HIGH"
+PRIORITY_NORMAL = "NORMAL"
+
+
+async def tolerance_pct(session: AsyncSession) -> float:
+    """The variance band, in percent. Admin-editable, default 10 (Q13-8).
+
+    ⚠️ IT SETS PRIORITY, NOT APPROVAL. Every Surface Shield consumption goes to
+    the HOD regardless of variance; outside this band the row is rendered as
+    **High Priority** at the top of the queue. So moving it re-sorts a list and
+    can never gate, un-gate or reopen anything.
+
+    A setting rather than a constant, matching `mtc_required_category`: tuning
+    a threshold is an admin action, not a deploy. Read once per submission and
+    STORED on the row, so a later change cannot rewrite what a settled row
+    said (see `classify`).
+    """
+    v = (await session.execute(text(
+        "SELECT value FROM app_settings WHERE key = 'sme_variance_tolerance_pct'"
+    ))).scalar()
+    try:
+        pct = float(str(v).strip()) if v is not None else DEFAULT_TOLERANCE_PCT
+    except (TypeError, ValueError):
+        # A typo in a settings row must not stop the field filing work. Fall
+        # back to the documented default and carry on — the same fail-open
+        # direction `controlled_category` takes, for the same reason.
+        return DEFAULT_TOLERANCE_PCT
+    return pct if pct > 0 else DEFAULT_TOLERANCE_PCT
+
+
+def variance_pct(actual: float, expected: Optional[float]) -> Optional[float]:
+    """100 x (actual - expected) / expected, or None.
+
+    ⚠️ NONE, NEVER ZERO, AGAINST A ZERO OR ABSENT EXPECTATION. A benchmark of
+    zero means the recipe does not list this component for this system, which
+    is a thing an HOD must look at — not a row that happens to be exactly on
+    target. Publishing a divide-by-zero dressed as 0 % would file the
+    least-understood rows among the most compliant ones.
+    """
+    if expected is None or expected == 0:
+        return None
+    return round(100.0 * (float(actual) - float(expected)) / float(expected), 4)
+
+
+def classify(var_pct: Optional[float], tol_pct: float) -> str:
+    """HIGH or NORMAL — the priority the queue sorts on.
+
+    ⚠️ A NULL VARIANCE IS **HIGH**, NOT LOW. "We cannot compute this" is
+    precisely the state worth an HOD's attention, and treating it as 0 % would
+    file the rows nobody understands at the bottom of the list, under every row
+    that is merely slightly off. The same reasoning as ruling P10-4's refusal
+    to value un-costed stock at zero: arithmetically tidy, and a lie somebody
+    would act on.
+    """
+    if var_pct is None:
+        return PRIORITY_HIGH
+    return PRIORITY_HIGH if abs(var_pct) > tol_pct else PRIORITY_NORMAL
+
+
+async def _resolve_material_code(session: AsyncSession, sap: str) -> str:
+    """The component's material code — from the RECIPE first (rule 1).
+
+    ⚠️ `inventory."Material_Code"` IS UNIQUELY CONSTRAINED, so a multi-part
+    system stores the code on the FIRST variant SAP and NULL on the rest
+    (measured: SAP 1041 carries GI-8005765, 1041-1/-2/-3 carry nothing).
+    Reading it off `inventory` alone keys three components in four on
+    `(None, sap)`, matching no recipe line and pricing against no benchmark.
+    """
+    mat = (await session.execute(text(
+        'SELECT MIN(r."Material_Code") FROM sme_recipe r '
+        "WHERE REPLACE(TRIM(r.\"SAP_Code\"), ' ', '') = :sap"
+    ), {"sap": sap})).scalar()
+    if mat:
+        return str(mat)
+    mat = (await session.execute(text(
+        'SELECT "Material_Code" FROM inventory '
+        "WHERE REPLACE(TRIM(\"SAP_Code\"), ' ', '') = :sap LIMIT 1"
+    ), {"sap": sap})).scalar()
+    return str(mat or "")
+
+
+async def assign(session: AsyncSession, *, consumption_id: int, code: str,
+                 tag: str, sqm: float, work_date: Optional[str],
+                 notes: Optional[str], username: str,
+                 site_id: Optional[str]) -> dict:
+    """Attribute one ledger row to a system, an equipment tag and an area.
+
+    ⚠️ THIS IS AN ATTRIBUTION, NOT A DEDUCTION. The stock left the shelf when
+    the store keeper issued it; nothing here moves a quantity, and nothing here
+    touches `sme_inventory_seed`. Rule 1a stands — the estimator's readiness
+    maths does not move (ruling Q13-5, Option B).
+
+    ⚠️ AND THE BENCHMARK IS SNAPSHOTTED HERE, NEVER RE-JOINED LATER. An HOD may
+    correct a recipe rate next quarter; a variance that re-derived its
+    benchmark would turn last quarter's 12 % overrun into 4 % with no edit to
+    the row and nothing to point at. Same rule, same reason, as
+    `sme_execution_entry.Bench_*`.
+    """
+    from . import quality
+
+    row = (await session.execute(text(
+        'SELECT c."id", c."SAP_Code", c."Quantity", c."Site_ID", c."Date", '
+        '       c."Source_Ref", c."Lot_Number", i."Category" '
+        'FROM consumption c '
+        'JOIN inventory i '
+        "  ON REPLACE(TRIM(i.\"SAP_Code\"), ' ', '') "
+        "   = REPLACE(TRIM(c.\"SAP_Code\"), ' ', '') "
+        'WHERE c."id" = :cid'
+    ), {"cid": consumption_id})).mappings().first()
+    if row is None:
+        raise HTTPException(404, f"consumption row {consumption_id} not found")
+    if site_id is not None and row["Site_ID"] != site_id:
+        raise HTTPException(
+            404, f"that consumption was posted at {row['Site_ID']}, not "
+                 f"{site_id}. Consumption is attributed at the site the "
+                 f"material left.")
+
+    category = await quality.controlled_category(session)
+    if str(row["Category"] or "").strip().lower() != category.strip().lower():
+        raise HTTPException(
+            422, f"{row['SAP_Code']} is not in the {category} category, so it "
+                 f"is not lining material and has no square metres to record.")
+
+    # ⚠️ THE SAME EXCLUSION, ENFORCED ON THE WRITE. The queue already hides
+    # these, but a queue is a list and never a control: an id typed by hand, or
+    # held over from a stale page, must not be able to attribute an execution
+    # entry's own posting a second time.
+    if is_self_posted(row["Source_Ref"]):
+        raise HTTPException(
+            409, "that consumption was posted by an execution entry, which "
+                 "already recorded its system, its equipment and its area from "
+                 "the printed form. Attributing it again would credit the same "
+                 "material against the same tag twice.")
+
+    dup = (await session.execute(
+        select(log_t.c["id"]).where(log_t.c["Consumption_ID"] == consumption_id)
+    )).scalar()
+    if dup:
+        raise HTTPException(
+            409, f"that consumption has already been attributed (row {dup}).")
+
+    code = (code or "").strip()
+    tag = (tag or "").strip()
+    if not code or not tag:
+        raise HTTPException(422, "a system code and an equipment tag are both "
+                                 "required — the area belongs to one piece of "
+                                 "equipment doing one system.")
+    sqm = float(sqm or 0)
+    if sqm <= 0:
+        raise HTTPException(
+            422, "the area covered must be greater than zero. If none was "
+                 "covered, this material was not applied and the draw needs a "
+                 "different explanation.")
+
+    # ⚠️ THE PAIR IS RE-CHECKED, NOT TRUSTED. `/sme-link/equipment` filters the
+    # dropdown to the tags carrying this code — and a dropdown is a
+    # convenience. An area posted against a tag that does not carry the system
+    # credits progress to a vessel nobody is lining that way.
+    pair = (await session.execute(
+        select(func.count()).select_from(equipment_t)
+        .where(equipment_t.c["Site_ID"] == row["Site_ID"],
+               equipment_t.c["Equipment_Tag_No"] == tag,
+               equipment_t.c["Lining_System_Code"] == code))).scalar_one()
+    if not pair:
+        raise HTTPException(
+            422, f"{tag} does not carry system code {code} at "
+                 f"{row['Site_ID']}. Pick a tag from the list — it is filtered "
+                 f"to the equipment that system actually applies to.")
+
+    sap = sap_norm(row["SAP_Code"])
+    material_code = await _resolve_material_code(session, sap)
+    rate = await recipe_rate(session, code=code, material_code=material_code,
+                             sap_code=sap)
+    actual = float(row["Quantity"] or 0)
+    expected = None if rate is None else round(rate * sqm, 4)
+    var = variance_pct(actual, expected)
+    tol = await tolerance_pct(session)
+    flag = classify(var, tol)
+
+    new_id = (await session.execute(insert(log_t).values(
+        batch_id=f"SWEEP:{consumption_id}",
+        Site_ID=row["Site_ID"],
+        entry_date=(work_date or row["Date"] or ""),
+        entered_by=username,
+        Equipment_Tag_No=tag,
+        Lining_System_Code=code,
+        Material_Code=material_code,
+        SAP_Code=sap,
+        Consumption_ID=consumption_id,
+        SQM_Completed=sqm,
+        Expected_Qty=expected or 0.0,
+        Actual_Qty=actual,
+        Variance_Pct=var,
+        Bench_For_1_SQM=rate,
+        Priority_Flag=flag,
+        Variance_Tolerance_Pct=tol,
+        notes=notes,
+        # ⚠️ `staged`, NOT `committed`. EVERY row goes to the HOD regardless of
+        # variance (ruling Q13-8) — there is no auto-commit band, so nothing
+        # here may write a settled status.
+        status="staged",
+    ).returning(log_t.c["id"]))).scalar_one()
+
+    await write_audit(session, username, "SME_LINK_ASSIGN",
+                      "sme_consumption_log",
+                      f"id={new_id} consumption={consumption_id} -> {tag}/{code} "
+                      f"sqm={sqm:g} actual={actual:g} "
+                      f"expected={'?' if expected is None else format(expected, 'g')} "
+                      f"var={'n/a' if var is None else format(var, '.2f') + '%'} "
+                      f"[{flag} @ +/-{tol:g}%]")
+    return {"id": new_id, "Consumption_ID": consumption_id,
+            "Lining_System_Code": code, "Equipment_Tag_No": tag,
+            "Material_Code": material_code, "SAP_Code": sap,
+            "SQM_Completed": sqm, "Actual_Qty": actual,
+            "Expected_Qty": expected, "Variance_Pct": var,
+            "Bench_For_1_SQM": rate, "Priority_Flag": flag,
+            "Variance_Tolerance_Pct": tol, "status": "staged"}
+
+
+async def assigned(session: AsyncSession, *, site_id: Optional[str],
+                   status: Optional[str] = None, limit: int = 200) -> dict:
+    """Attributed rows — HIGH PRIORITY FIRST, then oldest first.
+
+    ⚠️ THE SORT IS THE WHOLE ANSWER TO "A QUEUE HOLDING EVERY ROW IS A QUEUE
+    NOBODY READS" (ruling Q13-8). The operator overruled auto-committing inside
+    the band, and was right to: the stock has already left the shelf, this is
+    the material the MTC gate exists for, and an auto-committed attribution is
+    one nobody ever looks at. Sorting by priority solves the volume problem
+    auto-commit was solving, without the cost.
+
+    ⚠️ AND THE FLAG IS READ, NOT RECOMPUTED. `Priority_Flag` was stored at
+    submission beside the tolerance it was measured against, so moving the
+    tolerance re-sorts new rows and cannot change the character of one already
+    decided. Recomputing here would make a row approved at 12 % silently become
+    compliant the day somebody tuned the number.
+    """
+    params: dict = {"limit": int(limit)}
+    where = ["1=1"]
+    if site_id is not None:
+        where.append('l."Site_ID" = :site')
+        params["site"] = site_id
+    if status:
+        where.append('l."status" = :status')
+        params["status"] = status
+    rows = (await session.execute(text(
+        'SELECT l.*, c."Date" AS ledger_date, c."Tank_No" AS ledger_tank '
+        'FROM sme_consumption_log l '
+        'LEFT JOIN consumption c ON c."id" = l."Consumption_ID" '
+        'WHERE ' + " AND ".join(where) + ' '
+        # HIGH sorts before NORMAL because a CASE puts it there explicitly —
+        # not because 'HIGH' < 'NORMAL' alphabetically, which is true today and
+        # is an accident nobody should build on.
+        "ORDER BY CASE WHEN l.\"Priority_Flag\" = 'HIGH' THEN 0 ELSE 1 END, "
+        '         l."entry_date" ASC, l."id" ASC '
+        'LIMIT :limit'), params)).mappings().all()
+    items = [dict(r) for r in rows]
+    for i in items:
+        for k in ("created_at", "committed_at", "rejected_at", "hod_decided_at"):
+            if i.get(k) is not None:
+                i[k] = str(i[k])
+    return {"items": items,
+            "high_priority": sum(1 for i in items
+                                 if i.get("Priority_Flag") == PRIORITY_HIGH),
+            "tolerance_pct": await tolerance_pct(session)}

@@ -129,7 +129,19 @@ _EDITABLE_SETTINGS = {"maintenance_mode", "low_stock_days", "burn_alert_days",
                       #
                       # ⚠️ `mfa_enforced_from` ABSENT MEANS WARN-ONLY. Deleting
                       # the row relaxes the gate; it can never lock anybody out.
-                      "mfa_required_roles", "mfa_enforced_from"}
+                      "mfa_required_roles", "mfa_enforced_from",
+                      # Phase 13f (ruling Q13-8) — the Surface Shield
+                      # consumption variance band, in percent, default 10.
+                      #
+                      # ⚠️ IT SETS PRIORITY, NOT APPROVAL. EVERY Surface Shield
+                      # consumption goes to the HOD regardless of variance;
+                      # outside this band the row is flagged High Priority and
+                      # rendered at the top of the queue. So changing it
+                      # re-sorts a queue and can never gate, un-gate or reopen
+                      # anything — which is exactly why it is safe to leave an
+                      # admin editable, and why the reading is STORED on each
+                      # row at submission rather than recomputed on read.
+                      "sme_variance_tolerance_pct"}
 
 
 class SettingIn(BaseModel):

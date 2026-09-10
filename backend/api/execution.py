@@ -587,6 +587,85 @@ async def sme_link_equipment(code: str = Query(..., min_length=1),
                                                    code=code)}
 
 
+class SmeLinkAssignIn(BaseModel):
+    consumption_id: int
+    code: str = Field(min_length=1, max_length=64)
+    tag: str = Field(min_length=1, max_length=128)
+    sqm: float = Field(gt=0)
+    work_date: Optional[str] = None
+    notes: Optional[str] = None
+    site_id: Optional[str] = None
+
+
+@router.post("/sme-link/assign", status_code=201,
+             summary="Attribute one consumption to a system, a tag and an area")
+async def sme_link_assign(body: SmeLinkAssignIn = Body(...),
+                          user: dict = Depends(require_roles(*_LINK_ROLES)),
+                          session: AsyncSession = Depends(get_session)):
+    """The three questions the operator asked for, answered by the field.
+
+    System code (with its date), the square metres that material covered, and
+    an equipment tag from the list filtered to that system code.
+
+    ⚠️ IT IS AN ATTRIBUTION, NOT A DEDUCTION. The stock left the shelf when the
+    store keeper issued it. Nothing here moves a quantity and nothing here
+    touches `sme_inventory_seed` — rule 1a stands, and ruling Q13-5 is Option B.
+
+    ⚠️ AND IT LANDS AT `staged`, NEVER SETTLED. Every Surface Shield
+    consumption goes to the HOD regardless of variance (ruling Q13-8): there is
+    no auto-commit band, and the ±10 % tolerance decides PRIORITY, not whether
+    a decision is needed.
+
+    ⚠️ THE SUPERVISOR IS THE AUTHOR HERE, WHICH IS WHY THIS IS NOT UNDER `/sme`.
+    A store keeper genuinely does not know the area when the drum leaves the
+    store — that is the same reasoning that made Phase 9d paper-first. The SK
+    supplies the system code at issue (it already travels as an `LS <code>`
+    Remarks suffix); the field supplies the area, here.
+    """
+    from .services import sme_link as SL
+
+    site = resolve_site_param(user, body.site_id)
+    async with session.begin():
+        out = await SL.assign(
+            session, consumption_id=body.consumption_id, code=body.code,
+            tag=body.tag, sqm=body.sqm, work_date=body.work_date,
+            notes=body.notes, username=user["username"], site_id=site)
+    return out
+
+
+@router.get("/sme-link/assigned",
+            summary="Attributed rows, High Priority first")
+async def sme_link_assigned(status: Optional[str] = Query(
+                                None, pattern="^(staged|committed|rejected)$"),
+                            site_id: Optional[str] = Query(None),
+                            limit: int = Query(200, ge=1, le=500),
+                            user: dict = Depends(require_roles(*_LINK_ROLES)),
+                            session: AsyncSession = Depends(get_session)):
+    """What has been attributed and what it compares to.
+
+    ⚠️ HIGH PRIORITY FIRST, THEN OLDEST FIRST (ruling Q13-8). The tolerance
+    does not decide whether a row needs a decision — every one does — it
+    decides which the HOD is shown first. That is what makes a queue holding
+    every row readable rather than ignored.
+    """
+    from .services import sme_link as SL
+
+    site = resolve_site_param(user, site_id)
+    return await SL.assigned(session, site_id=site, status=status, limit=limit)
+
+
+@router.get("/sme-link/tolerance",
+            summary="The variance band, and what it does and does not do")
+async def sme_link_tolerance(user: dict = Depends(require_roles(*_LINK_ROLES)),
+                             session: AsyncSession = Depends(get_session)):
+    from .services import sme_link as SL
+
+    return {"tolerance_pct": await SL.tolerance_pct(session),
+            "note": "Sets PRIORITY, never approval. Every Surface Shield "
+                    "consumption goes to the HOD regardless of variance; "
+                    "outside this band the row is flagged High Priority."}
+
+
 # ── the OCR lane (Phase 9d) ──────────────────────────────────────────────────
 # ⚠️ A JOB, NOT AN INLINE AWAIT. Vision OCR takes 5–120 s on a 7B model with a
 # cold start — longer than proxy timeouts and far longer than a supervisor
