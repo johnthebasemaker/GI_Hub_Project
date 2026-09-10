@@ -81,7 +81,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import func, insert, select, text
+from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..sme_engine import mat_key, sap_norm
@@ -617,3 +617,236 @@ async def assigned(session: AsyncSession, *, site_id: Optional[str],
             "high_priority": sum(1 for i in items
                                  if i.get("Priority_Flag") == PRIORITY_HIGH),
             "tolerance_pct": await tolerance_pct(session)}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Phase 13g — the HOD decides, and the area reaches the progress ledger
+# ══════════════════════════════════════════════════════════════════════════
+
+# ⚠️ THE EDITABLE SURFACE, STATED AS DATA (ruling Q13-7). Three things, and the
+# quantity is not one of them.
+#
+# Unlike an execution entry — where APPROVAL is what deducts stock — the drum
+# here left the shelf when the store keeper issued it. So this approval settles
+# the ATTRIBUTION and the EXPLANATION, never the deduction. An HOD who wants to
+# correct the physical quantity is correcting a POSTED LEDGER ROW, and that goes
+# through the stock-adjustment path, where it is an event with its own audit
+# line — not a silent UPDATE that leaves the ledger and the store disagreeing.
+EDITABLE = ("SQM_Completed", "Lining_System_Code", "Equipment_Tag_No", "notes")
+
+# ⚠️ REFUSED, NOT IGNORED. An ignored field is a silent data loss: an HOD who
+# typed a correction into a box that discarded it will believe it was applied,
+# and the number they were correcting stays wrong with their name against the
+# approval. Named explicitly so the refusal can say what to do instead.
+REFUSED = ("Actual_Qty", "Quantity", "quantity", "Expected_Qty", "Variance_Pct",
+           "Bench_For_1_SQM", "Priority_Flag", "SAP_Code", "Material_Code",
+           "Consumption_ID")
+
+
+async def decide(session: AsyncSession, *, log_id: int, approve: bool,
+                 edits: Optional[dict], justification: str,
+                 reject_reason: str, username: str,
+                 site_id: Optional[str]) -> dict:
+    """Approve (optionally correcting the ATTRIBUTION) or reject.
+
+    ⚠️ APPROVAL IS WHAT CREDITS THE AREA. Until an HOD approves, the row is an
+    unreviewed claim and `sme_sqm_progress.Done_SQM` has not moved. The credit
+    goes through `execution.credit_done_sqm` — the SAME function
+    `post_progress` uses — because two copies of an increment is how a vessel
+    gets credited twice.
+
+    ⚠️ AND `Consumed_Qty` COUNTS ONLY COMMITTED ROWS. A staged attribution is
+    somebody's claim; the estimator's observation column reports what has been
+    REVIEWED. That is the same rule the whole codebase runs on — approval is
+    what makes a figure count — and it is why rule 1a's amendment is narrow:
+    the estimator never sees raw ledger movement, only an attribution a person
+    signed for.
+    """
+    from . import execution as X
+
+    row = (await session.execute(
+        select(log_t).where(log_t.c["id"] == log_id))).mappings().first()
+    if row is None:
+        raise HTTPException(404, f"attribution {log_id} not found")
+    if site_id is not None and row["Site_ID"] != site_id:
+        raise HTTPException(404, f"attribution {log_id} not found")
+    if row["status"] != "staged":
+        raise HTTPException(
+            409, f"attribution {log_id} is already {row['status']} — a "
+                 f"decision is taken once. Raise a stock adjustment if the "
+                 f"physical figure is wrong.")
+
+    edits = dict(edits or {})
+    bad = [k for k in edits if k in REFUSED]
+    if bad:
+        raise HTTPException(
+            422, f"{', '.join(sorted(bad))} cannot be edited here. The material "
+                 f"left the shelf when it was issued, so this approval settles "
+                 f"the area and the explanation, not the quantity. A physical "
+                 f"correction is a stock adjustment, which is a ledger event "
+                 f"with its own audit line.")
+    unknown = [k for k in edits if k not in EDITABLE]
+    if unknown:
+        raise HTTPException(
+            422, f"{', '.join(sorted(unknown))} is not something this screen "
+                 f"edits. Editable: {', '.join(EDITABLE)}.")
+
+    if not approve:
+        reason = (reject_reason or "").strip()
+        if not reason:
+            raise HTTPException(
+                422, "a rejection needs a reason — the person who filed this "
+                     "has to know what to do differently.")
+        await session.execute(update(log_t).where(log_t.c["id"] == log_id).values(
+            status="rejected", rejected_at=func.now(), rejected_reason=reason,
+            hod_username=username, hod_decided_at=func.now()))
+        await write_audit(session, username, "SME_LINK_REJECT",
+                          "sme_consumption_log", f"id={log_id} — {reason[:160]}")
+        return {"id": log_id, "status": "rejected", "reason": reason}
+
+    vals: dict = {}
+    edited = False
+    if edits:
+        # ⚠️ MANDATORY THE MOMENT ANY NUMBER MOVES. An approval that silently
+        # rewrote the figures would leave the person who filed them answering
+        # for numbers they never entered — the same rule, and the same reason,
+        # as `sme_execution_entry.HOD_Edit_Justification`.
+        if not (justification or "").strip():
+            raise HTTPException(
+                422, "changing a filed figure needs a written reason. The "
+                     "person who reported it will be answering for what is "
+                     "recorded here.")
+        edited = True
+        vals["HOD_Edit_Justification"] = justification.strip()
+        vals["hod_edited"] = True
+
+    code = str(edits.get("Lining_System_Code") or row["Lining_System_Code"]).strip()
+    tag = str(edits.get("Equipment_Tag_No") or row["Equipment_Tag_No"]).strip()
+    sqm = float(edits.get("SQM_Completed", row["SQM_Completed"]) or 0)
+    if sqm <= 0:
+        raise HTTPException(
+            422, "the area covered must be greater than zero. Reject the row "
+                 "instead if the material was not applied.")
+    if "notes" in edits:
+        vals["notes"] = edits["notes"]
+
+    # The pair is re-checked on the HOD's edit too — an HOD moving a row to a
+    # different system may pick a tag that does not carry it.
+    pair = (await session.execute(
+        select(func.count()).select_from(equipment_t)
+        .where(equipment_t.c["Site_ID"] == row["Site_ID"],
+               equipment_t.c["Equipment_Tag_No"] == tag,
+               equipment_t.c["Lining_System_Code"] == code))).scalar_one()
+    if not pair:
+        raise HTTPException(
+            422, f"{tag} does not carry system code {code} at "
+                 f"{row['Site_ID']}.")
+
+    # ⚠️ THE BENCHMARK IS RE-SNAPSHOTTED ONLY WHEN THE ATTRIBUTION MOVED, and
+    # then it is re-read for the NEW component/system pair — which is a
+    # different benchmark, not a refresh of the old one. An unedited row keeps
+    # the rate it was measured against when it was filed.
+    rate = row["Bench_For_1_SQM"]
+    if edited and (code != row["Lining_System_Code"]
+                   or float(sqm) != float(row["SQM_Completed"] or 0)):
+        if code != row["Lining_System_Code"]:
+            rate = await recipe_rate(session, code=code,
+                                     material_code=row["Material_Code"],
+                                     sap_code=row["SAP_Code"])
+        expected = None if rate is None else round(float(rate) * sqm, 4)
+        var = variance_pct(float(row["Actual_Qty"] or 0), expected)
+        tol = float(row["Variance_Tolerance_Pct"] or DEFAULT_TOLERANCE_PCT)
+        vals.update({"Bench_For_1_SQM": rate,
+                     "Expected_Qty": expected or 0.0,
+                     "Variance_Pct": var,
+                     # ⚠️ RE-CLASSIFIED AGAINST THE ROW'S OWN STORED TOLERANCE,
+                     # never against today's setting. The row is being corrected,
+                     # not re-measured against a band that has since moved.
+                     "Priority_Flag": classify(var, tol)})
+
+    if edited:
+        vals["Original_SQM_Completed"] = float(row["SQM_Completed"] or 0)
+    vals.update({"Lining_System_Code": code, "Equipment_Tag_No": tag,
+                 "SQM_Completed": sqm, "status": "committed",
+                 "committed_at": func.now(), "hod_username": username,
+                 "hod_decided_at": func.now()})
+    await session.execute(update(log_t).where(log_t.c["id"] == log_id).values(**vals))
+
+    # ⚠️ AND THE AREA REACHES THE PROGRESS LEDGER, THROUGH THE SAME FUNCTION
+    # `post_progress` USES. Two copies of this increment is how one vessel gets
+    # credited twice; suite DB asserts the two paths stay disjoint.
+    await X.credit_done_sqm(session, site_id=row["Site_ID"], tag=tag,
+                            code=code, sqm=sqm)
+
+    await write_audit(session, username, "SME_LINK_APPROVE",
+                      "sme_consumption_log",
+                      f"id={log_id} {tag}/{code} sqm={sqm:g}"
+                      + (f" (was {float(row['SQM_Completed'] or 0):g}; "
+                         f"{justification.strip()[:120]})" if edited else ""))
+    return {"id": log_id, "status": "committed", "Lining_System_Code": code,
+            "Equipment_Tag_No": tag, "SQM_Completed": sqm,
+            "hod_edited": edited, "Done_SQM_credited": sqm}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⚠️ RESOLUTION B — `Consumed_Qty`, an OBSERVATION and nothing more
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Ruling Q13-5: the estimator gains a consumed column FOR VISIBILITY. It must
+# not alter readiness logic and must not touch `Allocated_Qty`.
+#
+# ⚠️ IT READS `sme_consumption_log`, WHICH IS AN SME-OWNED TABLE — NOT THE ERP
+# LEDGER. That distinction is the whole reason rule 1a survives this. Suite BA
+# guards `SQL_SME_MATERIALS` and `_CALC_POOL_SQL` — the two QUANTITY queries —
+# against naming an ERP table and against reading this one; neither is touched.
+# `available_qty` is still `Initial_Available_Qty`, full stop.
+#
+# ⚠️ AND IT COUNTS ONLY **COMMITTED** ROWS. A staged attribution is somebody's
+# claim; this reports what an HOD has reviewed. So the estimator never sees raw
+# warehouse movement — only a draw a person attributed and a second person
+# signed for. Posting a consumption moves NOTHING here until that happens,
+# which is what keeps suite BA's byte-identical probe green.
+#
+# ⚠️ IT IS AN OBSERVATION FIELD, IN THE SAME CATEGORY AS `Allocated_Qty`
+# (rule 1b). Nothing may colour it as coverage, nothing may divide by it, and
+# no KPI may name it. `Allocated_Qty` was already made green by six
+# presentation layers that each thought they were being helpful, and that
+# overstated buildable area by 9,118 m² — 21.5 % of the programme.
+#
+# ⚠️ AND IT IS PER COMPONENT, NOT PER LINE. The same component is drawn for
+# many units, so a report that SUMS `Consumed_Qty` down a cascade multiplies it
+# by the number of units. It is metadata carried onto each line, exactly like
+# `Material_Name` — suite DB asserts no total contains it.
+SQL_SME_CONSUMED = '''
+SELECT l."Material_Code" AS material_code,
+       l."SAP_Code"      AS sap_code,
+       SUM(l."Actual_Qty") AS consumed_qty,
+       SUM(l."SQM_Completed") AS consumed_sqm,
+       COUNT(*)          AS rows_committed
+FROM sme_consumption_log l
+WHERE l."status" = 'committed'
+GROUP BY 1, 2
+'''
+
+
+async def consumed_by_component(session: AsyncSession,
+                                site_id: Optional[str] = None) -> list[dict]:
+    """Observed, HOD-approved draw per `(Material_Code, SAP_Code)`.
+
+    Keyed on the component (rule 1), because one material code can be four
+    physical drums and reporting their sum against any one of them is the
+    pooling error that inverted a shortfall.
+    """
+    sql = SQL_SME_CONSUMED
+    params: dict = {}
+    if site_id is not None:
+        sql = sql.replace("WHERE l.\"status\" = 'committed'",
+                          "WHERE l.\"status\" = 'committed' AND l.\"Site_ID\" = :site")
+        params["site"] = site_id
+    rows = (await session.execute(text(sql), params)).mappings().all()
+    return [{"material_code": r["material_code"],
+             "sap_code": sap_norm(r["sap_code"]),
+             "Material_Key": mat_key(r["material_code"], r["sap_code"]),
+             "consumed_qty": float(r["consumed_qty"] or 0),
+             "consumed_sqm": float(r["consumed_sqm"] or 0),
+             "rows_committed": int(r["rows_committed"] or 0)} for r in rows]

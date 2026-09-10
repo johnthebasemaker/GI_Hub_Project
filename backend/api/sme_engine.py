@@ -267,10 +267,31 @@ def build_model(equipment: list[dict], recipes: list[dict],
         # has an EMPTY pipeline rather than a negative one.
         pending = _num(m.get("ordered_qty")) - available
         pool_pending_init[mat] = pending if pending > 0.0 else 0.0
+        # ⚠️ PHASE 13g — `Consumed_Qty` IS AN OBSERVATION, AND IT SITS IN THE
+        # METADATA ON PURPOSE (ruling Q13-5, Option B).
+        #
+        # It is HOD-approved physical draw of this component, reported BESIDE
+        # the plan. It takes no part in any allocation: it is not spent, not
+        # netted off `pool_init`, not compared, and it does not appear in a
+        # single arithmetic expression below this line. `available_qty` is
+        # still `Initial_Available_Qty`, full stop, and rule 1a survives
+        # because the number comes from `sme_consumption_log` — an SME-owned
+        # table — and only from rows a person signed for.
+        #
+        # ⚠️ IT IS PER COMPONENT, NOT PER LINE. The same component is drawn for
+        # many units, so a report that SUMS this down a cascade multiplies it
+        # by the number of units that use it. It rides on each line exactly as
+        # `Material_Name` does — as a label, never as a quantity to add up.
+        #
+        # ⚠️ AND NOTHING MAY COLOUR IT AS COVERAGE (rule 1b). `Allocated_Qty`
+        # is the scar: six presentation layers made it green because it looked
+        # like progress, and that overstated buildable area by 9,118 m²,
+        # 21.5 % of the programme. This field has the identical shape.
         mat_meta[mat] = {"Material_Code": _s(m.get("material_code")),
                          "SAP_Code": sap_norm(m.get("sap_code")),
                          "Material_Name": _s(m.get("material_name")),
-                         "UOM": _s(m.get("uom"))}
+                         "UOM": _s(m.get("uom")),
+                         "Consumed_Qty": _num(m.get("consumed_qty"))}
 
     return {"units": units, "codes_by_tag": codes_by_tag,
             "recipes_by_code": recipes_by_code, "pool_init": pool_init,
@@ -349,6 +370,10 @@ def cascade_allocate(model: dict, order: list[str]) -> list[dict]:
                     # the fallback for a SAP with no stock row.
                     "Material_Name": meta.get("Material_Name") or r["Material_Name"],
                     "UOM": r["UOM"],
+                    # ⚠️ OBSERVATION, NOT ALLOCATION. Carried from `mat_meta`
+                    # unchanged; see `build_model`. It appears in no total, no
+                    # ratio and no status below.
+                    "Consumed_Qty": _num(meta.get("Consumed_Qty")),
                     "For_1_SQM": r["For_1_SQM"],
                     "Demand_Qty": d4,
                     "Alloc_Available": a4,

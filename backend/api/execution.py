@@ -666,6 +666,48 @@ async def sme_link_tolerance(user: dict = Depends(require_roles(*_LINK_ROLES)),
                     "outside this band the row is flagged High Priority."}
 
 
+class SmeLinkDecideIn(BaseModel):
+    approve: bool
+    edits: Optional[dict] = None
+    justification: str = ""
+    reject_reason: str = ""
+    site_id: Optional[str] = None
+
+
+@router.post("/sme-link/{log_id}/decide",
+             summary="HOD: approve an attribution (optionally correcting it), "
+                     "or reject it")
+async def sme_link_decide(log_id: int, body: SmeLinkDecideIn = Body(...),
+                          user: dict = Depends(require_roles("hod")),
+                          session: AsyncSession = Depends(get_session)):
+    """⚠️ EXACT-LOCKED TO THE HOD, and narrowed per endpoint rather than by
+    widening or splitting the router — the read half of this workflow belongs
+    to three roles and the decision belongs to one.
+
+    ⚠️ THE EDITABLE SURFACE IS THREE THINGS AND THE QUANTITY IS NOT ONE OF THEM
+    (ruling Q13-7). Unlike an execution entry — where approval is what deducts
+    stock — the drum here left the shelf when the store keeper issued it. So
+    this settles the ATTRIBUTION and the EXPLANATION, never the deduction. A
+    quantity field is REFUSED, not ignored: an ignored field is a silent data
+    loss, and an HOD who typed a correction into a box that discarded it will
+    believe it was applied.
+
+    ⚠️ AND APPROVAL IS WHAT CREDITS THE AREA, through the same
+    `execution.credit_done_sqm` that `post_progress` uses. Two copies of that
+    increment is how one vessel gets credited twice.
+    """
+    from .services import sme_link as SL
+
+    site = resolve_site_param(user, body.site_id)
+    async with session.begin():
+        out = await SL.decide(
+            session, log_id=log_id, approve=body.approve, edits=body.edits,
+            justification=body.justification,
+            reject_reason=body.reject_reason,
+            username=user["username"], site_id=site)
+    return out
+
+
 # ── the OCR lane (Phase 9d) ──────────────────────────────────────────────────
 # ⚠️ A JOB, NOT AN INLINE AWAIT. Vision OCR takes 5–120 s on a 7B model with a
 # cold start — longer than proxy timeouts and far longer than a supervisor

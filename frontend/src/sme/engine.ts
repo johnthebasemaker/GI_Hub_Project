@@ -63,6 +63,13 @@ export interface SnapshotMaterial {
   sap_code?: string | null
   material_name?: string | null
   uom?: string | null
+  /**
+   * ⚠️ PHASE 13g — HOD-APPROVED PHYSICAL DRAW OF THIS COMPONENT. An
+   * OBSERVATION reported BESIDE the plan (ruling Q13-5, Option B). It takes no
+   * part in any allocation: not spent, not netted off `available_qty`, not
+   * compared. `available_qty` is still `Initial_Available_Qty`, full stop.
+   */
+  consumed_qty?: number | string | null
   available_qty?: number | string | null
   ordered_qty?: number | string | null
   // 2026-08-02 STRICT DECOUPLING: there is deliberately NO received_qty here.
@@ -96,6 +103,9 @@ export interface AllocationLine {
   Material_Key: string
   Material_Name: string
   UOM: string
+  /** ⚠️ OBSERVATION, NOT ALLOCATION — see `matMeta`. Per COMPONENT: never sum
+   *  this down a cascade, or it multiplies by the number of units. */
+  Consumed_Qty: number
   For_1_SQM: number
   Demand_Qty: number
   Alloc_Available: number
@@ -231,7 +241,8 @@ export interface SmeModel {
   /** Keyed by matKey() — one pool per COMPONENT, not per Material_Code. */
   poolInit: Map<string, number>
   poolPendingInit: Map<string, number>
-  matMeta: Map<string, { Material_Code: string; SAP_Code: string; Material_Name: string; UOM: string }>
+  matMeta: Map<string, { Material_Code: string; SAP_Code: string; Material_Name: string;
+                         UOM: string; Consumed_Qty: number }>
   tagMeta: Map<string, { Name: string; Location: string; Type: string; Substrate: string }>
   defaultOrder: string[]
 }
@@ -389,9 +400,26 @@ export function buildModel(
     // Clamped at zero so a fully-delivered material has an EMPTY pipeline.
     const pending = num(m.ordered_qty) - available
     poolPendingInit.set(mat, pending > 0 ? pending : 0)
+    // ⚠️ PHASE 13g — `Consumed_Qty` IS AN OBSERVATION, AND IT SITS IN THE
+    // METADATA ON PURPOSE (ruling Q13-5, Option B). Mirrors sme_engine.py.
+    //
+    // HOD-approved physical draw of this component, reported BESIDE the plan.
+    // It takes no part in any allocation: not spent, not netted off `poolInit`,
+    // not compared, and it appears in no arithmetic below this line. Rule 1a
+    // survives because the number comes from `sme_consumption_log` — an
+    // SME-owned table — and only from rows a person signed for.
+    //
+    // ⚠️ PER COMPONENT, NOT PER LINE. The same component is drawn for many
+    // units, so a report that SUMS this down a cascade multiplies it by the
+    // number of units. It rides on each line exactly as `Material_Name` does.
+    //
+    // ⚠️ AND NOTHING MAY COLOUR IT AS COVERAGE (rule 1b). `Allocated_Qty` is
+    // the scar: six presentation layers made it green because it looked like
+    // progress, overstating buildable area by 9,118 m².
     matMeta.set(mat, {
       Material_Code: s(m.material_code), SAP_Code: sapNorm(m.sap_code),
       Material_Name: s(m.material_name), UOM: s(m.uom),
+      Consumed_Qty: num(m.consumed_qty),
     })
   }
 
@@ -448,6 +476,9 @@ export function cascadeAllocate(model: SmeModel, order: string[]): AllocationLin
           // fallback for a SAP with no stock row. (Mirrors sme_engine.py.)
           Material_Name: meta?.Material_Name || r.Material_Name,
           UOM: r.UOM,
+          // ⚠️ OBSERVATION, NOT ALLOCATION. Carried from `matMeta` unchanged;
+          // it appears in no total, no ratio and no status below.
+          Consumed_Qty: num(meta?.Consumed_Qty),
           For_1_SQM: r.For_1_SQM,
           Demand_Qty: d4,
           Alloc_Available: a4,

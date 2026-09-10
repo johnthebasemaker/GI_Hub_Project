@@ -21463,6 +21463,329 @@ async def _rate(SL, code, mat, sap):
                                     sap_code=sap)
 
 
+# --- Suite DB: the HOD decides, and the observation column -------------------
+async def test_sme_inventory_link_approval():
+    """Suite DB — Phase 13g. Approval, the progress credit, and Resolution B.
+
+    ⚠️ THE ENGINE HALF IS THE ONE THAT MATTERS, AND IT IS DB-20..DB-23.
+    Ruling Q13-5 is Option B: `Consumed_Qty` is an OBSERVATION reported beside
+    the plan. It must not alter readiness logic and must not touch
+    `Allocated_Qty`. That is stated as a test rather than an intention, by
+    building the model TWICE — once with the field and once without — and
+    requiring every other value byte-identical.
+
+    ⚠️ AND THE PROGRESS CREDIT HAS ONE WRITER. `post_progress` credits an
+    approved execution entry's area; `sme_link.decide` credits an approved
+    attribution's. They are disjoint only because `SME_EXEC` consumption never
+    reaches the queue — an invariant to TEST, not to assume (DB-12).
+    """
+    import copy
+    import json as _json
+    from pathlib import Path
+
+    from sqlalchemy import text as _sqt
+
+    from . import sme_engine as E
+    from .services import execution as _XEXEC
+    from .services import sme_link as SL
+
+    SITE = "CNCEC"
+    await _qsep_seed_users()
+    transport = ASGITransport(app=app)
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            await s.execute(_sqt("DELETE FROM sme_consumption_log WHERE "
+                                 "batch_id LIKE 'SWEEP:%' AND "
+                                 "\"Material_Code\" LIKE 'SVDB-%'"))
+            await s.execute(_sqt("DELETE FROM consumption WHERE "
+                                 "\"SAP_Code\" LIKE 'SVDB-%'"))
+            await s.execute(_sqt("DELETE FROM inventory WHERE "
+                                 "\"SAP_Code\" LIKE 'SVDB-%'"))
+            await s.execute(_sqt("DELETE FROM sme_recipe WHERE "
+                                 "\"Lining_System_Code\" LIKE 'SVDB-%'"))
+            await s.execute(_sqt("DELETE FROM sme_equipment WHERE "
+                                 "\"Equipment_Tag_No\" LIKE 'SVDB-%'"))
+            await s.execute(_sqt("DELETE FROM sme_sqm_progress WHERE "
+                                 "\"Equipment_Tag_No\" LIKE 'SVDB-%'"))
+            await s.commit()
+
+    await _cleanup()
+
+    async with SessionLocal() as s:
+        await s.execute(_sqt(
+            'INSERT INTO inventory ("SAP_Code", "Material_Code", '
+            '"Equipment_Description", "Category", "UOM", "Site_ID") VALUES '
+            "('SVDB-1', 'SVDB-MAT-1', 'DB Resin', 'Surface Shields', 'KG', :site)"),
+            {"site": SITE})
+        await s.execute(_sqt(
+            'INSERT INTO sme_recipe ("Lining_System_Code", '
+            '"Execution_Sub_Activity_Code", "Material_Code", "SAP_Code", '
+            '"Material_Name", "UOM", "For_1_SQM", "Lining_System_Name") VALUES '
+            "('SVDB-LS1', 'ESDB1', 'SVDB-MAT-1', 'SVDB-1', 'DB Resin', 'KG', "
+            "2.0, 'DB system')"))
+        for tag in ("SVDB-TANK-A", "SVDB-TANK-B"):
+            await s.execute(_sqt(
+                'INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", '
+                '"Lining_System_Code", "Name", "Surface_Area_SQM") '
+                'VALUES (:site, :t, \'SVDB-LS1\', :t, 400)'),
+                {"site": SITE, "t": tag})
+        await s.commit()
+
+    async def _mk(qty, date="2026-08-01"):
+        async with SessionLocal() as s:
+            cid = (await s.execute(_sqt(
+                'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", '
+                '"Site_ID", "Tank_No") VALUES (:d, \'SVDB-1\', :q, :site, '
+                "'SVDB-TANK-A') RETURNING id"),
+                {"d": date, "q": qty, "site": SITE})).scalar_one()
+            await s.commit()
+        return cid
+
+    async def _done_sqm(tag="SVDB-TANK-A"):
+        async with SessionLocal() as s:
+            return (await s.execute(_sqt(
+                'SELECT COALESCE("Done_SQM", 0) FROM sme_sqm_progress WHERE '
+                '"Site_ID" = :site AND "Equipment_Tag_No" = :t AND '
+                '"Lining_System_Code" = \'SVDB-LS1\''),
+                {"site": SITE, "t": tag})).scalar() or 0.0
+
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        SUP = await _qsep_login(ac, "SVCQ-sup")
+        SK = await _qsep_login(ac, "SVCQ-sk")
+        H = await _qsep_login(ac, "SVCQ-hod")
+
+        cid = await _mk(100.0)
+        a = (await ac.post("/execution/sme-link/assign", headers=SUP, json={
+            "consumption_id": cid, "code": "SVDB-LS1", "tag": "SVDB-TANK-A",
+            "sqm": 50, "site_id": SITE})).json()
+
+        before_sqm = await _done_sqm()
+        check("DB-01 an attribution does NOT credit the progress ledger. Until "
+              "an HOD approves it, it is an unreviewed claim — the same rule "
+              "the whole workflow runs on: approval is what makes a figure "
+              "count",
+              before_sqm == 0.0, str(before_sqm))
+
+        # ── who may decide ──────────────────────────────────────────────────
+        for who, hdr in (("supervisor", SUP), ("store keeper", SK)):
+            r = await ac.post(f"/execution/sme-link/{a['id']}/decide",
+                              headers=hdr, json={"approve": True})
+            check(f"DB-02 a {who} cannot approve — the READ half of this "
+                  f"workflow belongs to three roles and the DECISION belongs "
+                  f"to one, narrowed per endpoint rather than by splitting the "
+                  f"router",
+                  r.status_code == 403, f"{r.status_code} {r.text[:100]}")
+
+        # ── ⚠️ THE QUANTITY IS NOT EDITABLE, AND IT IS REFUSED ──────────────
+        for field in ("Actual_Qty", "Quantity", "Expected_Qty", "Variance_Pct",
+                      "Bench_For_1_SQM", "Priority_Flag", "SAP_Code"):
+            r = await ac.post(f"/execution/sme-link/{a['id']}/decide",
+                              headers=H, json={
+                                  "approve": True, "edits": {field: 1},
+                                  "justification": "trying it on"})
+            check(f"DB-03 ⚠️ AN EDIT TO `{field}` IS **REFUSED**, NOT IGNORED. "
+                  f"The material left the shelf when it was issued, so this "
+                  f"approval settles the area and the explanation, never the "
+                  f"quantity. And an IGNORED field is a silent data loss: an "
+                  f"HOD who typed a correction into a box that discarded it "
+                  f"believes it was applied",
+                  r.status_code == 422 and "stock adjustment" in r.text,
+                  f"{r.status_code} {r.text[:150]}")
+
+        r = await ac.post(f"/execution/sme-link/{a['id']}/decide", headers=H,
+                          json={"approve": True, "edits": {"SQM_Completed": 60}})
+        check("DB-04 changing a filed figure with NO written reason is refused "
+              "— the person who reported it will be answering for what is "
+              "recorded",
+              r.status_code == 422, f"{r.status_code} {r.text[:140]}")
+
+        r = await ac.post(f"/execution/sme-link/{a['id']}/decide", headers=H,
+                          json={"approve": True,
+                                "edits": {"SQM_Completed": 40},
+                                "justification": "measured on site, 40 not 50"})
+        d = r.json()
+        check("DB-05 an HOD may correct the AREA, with a reason",
+              r.status_code == 200 and d["SQM_Completed"] == 40.0
+              and d["hod_edited"] is True, f"{r.status_code} {str(d)[:170]}")
+
+        async with SessionLocal() as s:
+            row = (await s.execute(_sqt(
+                'SELECT * FROM sme_consumption_log WHERE id = :i'),
+                {"i": a["id"]})).mappings().first()
+        check("DB-06 …and what the field ORIGINALLY reported is kept. Without "
+              "it the audit trail says a number changed but not from what",
+              float(row["Original_SQM_Completed"]) == 50.0,
+              str(row["Original_SQM_Completed"]))
+        check("DB-07 …with the justification and the decider recorded on the "
+              "row, not only in the log",
+              row["hod_edited"] and row["hod_username"] == "SVCQ-hod"
+              and "measured on site" in (row["HOD_Edit_Justification"] or ""),
+              str(dict(row))[:200])
+        check("DB-08 ⚠️ AND THE VARIANCE IS RE-MEASURED AGAINST THE ROW'S OWN "
+              "STORED TOLERANCE, not against today's setting. The row is being "
+              "CORRECTED, not re-judged against a band that has since moved — "
+              "100 drawn against 2.0 x 40 = 80 is +25 %, HIGH at ±10 %",
+              round(float(row["Expected_Qty"]), 2) == 80.0
+              and round(float(row["Variance_Pct"]), 1) == 25.0
+              and row["Priority_Flag"] == "HIGH", str(dict(row))[:240])
+
+        # ── the progress credit ─────────────────────────────────────────────
+        after_sqm = await _done_sqm()
+        check("DB-09 ⚠️ APPROVAL CREDITS THE AREA TO THE EQUIPMENT TAG — the "
+              "operator's requirement, and the HOD's corrected 40 rather than "
+              "the field's 50",
+              after_sqm == 40.0, f"{before_sqm} → {after_sqm}")
+        check("DB-10 …through the SAME `credit_done_sqm` that `post_progress` "
+              "uses. Two copies of that increment is how one vessel gets "
+              "credited twice",
+              hasattr(_XEXEC, "credit_done_sqm"),
+              "post_progress and the attribution path do not share a writer")
+
+        r = await ac.post(f"/execution/sme-link/{a['id']}/decide", headers=H,
+                          json={"approve": True})
+        check("DB-11 a decision is taken ONCE — a second approval is refused "
+              "rather than crediting the area again",
+              r.status_code == 409, f"{r.status_code} {r.text[:140]}")
+
+        # ── ⚠️ THE TWO PROGRESS WRITERS STAY DISJOINT ───────────────────────
+        async with SessionLocal() as s:
+            exec_cid = (await s.execute(_sqt(
+                'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", '
+                '"Site_ID", "Tank_No", "Source_Ref") VALUES '
+                "('2026-08-02', 'SVDB-1', 20, :site, 'SVDB-TANK-B', "
+                "'SME_EXEC:1234:5678') RETURNING id"), {"site": SITE})).scalar_one()
+            await s.commit()
+        q = (await ac.get("/execution/sme-link/queue",
+                          params={"site_id": SITE, "limit": 500},
+                          headers=SUP)).json()
+        r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+            "consumption_id": exec_cid, "code": "SVDB-LS1",
+            "tag": "SVDB-TANK-B", "sqm": 10, "site_id": SITE})
+        check("DB-12 ⚠️⚠️ THE TWO PROGRESS WRITERS ARE DISJOINT, AND THAT IS "
+              "TESTED RATHER THAN ASSUMED. An execution entry's own posting is "
+              "invisible to the queue AND refused by the write, so its area is "
+              "credited once by `post_progress` and can never be credited a "
+              "second time here",
+              exec_cid not in {i["consumption_id"] for i in q["items"]}
+              and r.status_code == 409,
+              f"in queue: {exec_cid in {i['consumption_id'] for i in q['items']}}, "
+              f"write: {r.status_code}")
+        check("DB-13 …and TANK-B's progress is untouched by the attempt",
+              (await _done_sqm("SVDB-TANK-B")) == 0.0,
+              str(await _done_sqm("SVDB-TANK-B")))
+
+        # ── rejection ───────────────────────────────────────────────────────
+        cid2 = await _mk(5.0, "2026-08-03")
+        a2 = (await ac.post("/execution/sme-link/assign", headers=SUP, json={
+            "consumption_id": cid2, "code": "SVDB-LS1", "tag": "SVDB-TANK-B",
+            "sqm": 10, "site_id": SITE})).json()
+        r = await ac.post(f"/execution/sme-link/{a2['id']}/decide", headers=H,
+                          json={"approve": False})
+        check("DB-14 a rejection with no reason is refused — the person who "
+              "filed it has to know what to do differently",
+              r.status_code == 422, f"{r.status_code} {r.text[:120]}")
+        r = await ac.post(f"/execution/sme-link/{a2['id']}/decide", headers=H,
+                          json={"approve": False,
+                                "reject_reason": "wrong tank — this was TANK-A"})
+        check("DB-15 …and a rejection with one is recorded",
+              r.status_code == 200 and r.json()["status"] == "rejected",
+              f"{r.status_code} {r.text[:140]}")
+        check("DB-16 ⚠️ A REJECTED ROW CREDITS NO AREA. Approval is the only "
+              "thing that moves the progress ledger",
+              (await _done_sqm("SVDB-TANK-B")) == 0.0,
+              str(await _done_sqm("SVDB-TANK-B")))
+
+        # ── the observation column, end to end ──────────────────────────────
+        obs = await _consumed(SL, SITE)
+        check("DB-17 ⚠️ `Consumed_Qty` COUNTS ONLY **COMMITTED** ROWS. A staged "
+              "attribution is somebody's claim; the estimator reports what an "
+              "HOD has REVIEWED — so it never sees raw warehouse movement, "
+              "only a draw a person attributed and a second person signed for. "
+              "The approved 100 counts; the rejected 5 does not",
+              obs.get("SVDB-MAT-1|SVDB-1") == 100.0, str(obs))
+        check("DB-18 …keyed on the COMPONENT (rule 1), because one material "
+              "code can be four physical drums and reporting their sum against "
+              "any one of them is the pooling that inverted a shortfall",
+              "SVDB-MAT-1|SVDB-1" in obs, str(sorted(obs)))
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # ⚠️ RESOLUTION B, PROVED AGAINST THE ENGINE ITSELF
+    # ═══════════════════════════════════════════════════════════════════════
+    here = Path(__file__).parent
+    fx = _json.loads((here / "sme_parity_fixture.json").read_text())
+    m = fx["model"]
+    with_c = E.build_model(m["equipment"], m["recipes"], m["materials"],
+                           m["progress"])
+    stripped = copy.deepcopy(m["materials"])
+    for mat in stripped:
+        mat.pop("consumed_qty", None)
+    without_c = E.build_model(m["equipment"], m["recipes"], stripped,
+                              m["progress"])
+
+    def _strip(obj):
+        if isinstance(obj, dict):
+            return {k: _strip(v) for k, v in obj.items() if k != "Consumed_Qty"}
+        if isinstance(obj, list):
+            return [_strip(x) for x in obj]
+        return obj
+
+    order = fx["cases"][0]["order"]
+    got_a = {**E.run_plan(with_c, order), **E.run_suggestion_engine(with_c, order)}
+    got_b = {**E.run_plan(without_c, order),
+             **E.run_suggestion_engine(without_c, order)}
+    check("DB-19 ⚠️⚠️ RESOLUTION B, AS BYTES: building the model WITH "
+          "`consumed_qty` and WITHOUT it produces output identical in every "
+          "field except `Consumed_Qty` itself. Readiness, Allocated_Qty, the "
+          "pools, the shortfalls, the statuses and the buy list are untouched "
+          "— 'we did not mean to change readiness' is not a property a future "
+          "reader can check, so it is checked here",
+          _strip(got_a) == _strip(got_b), _sme_deep_diff(_strip(got_a), _strip(got_b)))
+
+    lines = got_a["lines"]
+    m1 = [ln for ln in lines if ln["Material_Key"] == "M1|S1"]
+    check("DB-20 …and the field IS carried, per component, onto every line "
+          "that draws it — the fixture's 37.5 for M1|S1",
+          m1 and all(ln["Consumed_Qty"] == 37.5 for ln in m1),
+          str([(ln["Equipment_Tag_No"], ln["Consumed_Qty"]) for ln in m1]))
+    check("DB-21 ⚠️ A COMPONENT WITH NO ATTRIBUTION READS 0, NOT ABSENT. The "
+          "fixture pins M6|S6 at an explicit 0.0 so 'nothing drawn' and 'not "
+          "reported' agree — two engines that disagreed about which is which "
+          "would diverge on the first unattributed material",
+          all("Consumed_Qty" in ln for ln in lines)
+          and all(isinstance(ln["Consumed_Qty"], (int, float)) for ln in lines),
+          "a line is missing Consumed_Qty")
+
+    # ⚠️ AND NOTHING SUMS IT. Per COMPONENT, so a total containing it would
+    # multiply by the number of units drawing that component.
+    # Every derived surface the engine emits, not just one of them — a field
+    # that leaked into `procurement` while `totals` stayed clean would be just
+    # as wrong and half as visible.
+    totals = (list(got_a["totals"]) + list(got_a["procurement"])
+              + list(got_a["sqm_by_code"]) + list(got_a["sqm_units"]))
+    check("DB-22 ⚠️⚠️ NO TOTAL CONTAINS `Consumed_Qty`. It is per COMPONENT and "
+          "rides on each line as a LABEL — a report that summed it down a "
+          "cascade would multiply it by the number of units that draw it. This "
+          "is `Allocated_Qty`'s exact shape, and six presentation layers "
+          "coloured that one green and overstated buildable area by 9,118 m²",
+          all("Consumed_Qty" not in t for t in totals),
+          str([t for t in totals if "Consumed_Qty" in t][:1]))
+    feas = got_a["feasibility"]
+    check("DB-23 …and no feasibility row names it either. Nothing may colour "
+          "it as coverage, nothing may divide by it, and no KPI may report it "
+          "(rule 1b)",
+          all("Consumed_Qty" not in f for f in feas),
+          str([f for f in feas if "Consumed_Qty" in f][:1]))
+
+    await _cleanup()
+
+
+async def _consumed(SL, site):
+    async with SessionLocal() as s:
+        return {c["Material_Key"]: c["consumed_qty"]
+                for c in await SL.consumed_by_component(s, site)}
+
+
 # --- Suite CS: slice 10b — the daily claim, valuation, and the soft gate ------
 async def test_slice_10b_ecosystem():
     """Suite CS — Phase 10 slice 10b. Tracks 2, 3 and 5.
@@ -24365,6 +24688,10 @@ async def main() -> int:
     print("\n DA. The ledger sweep — four sources in one list, and the "
           "exclusion that stops an execution entry feeding itself")
     await test_sme_inventory_link_read()
+    print("\n DB. The HOD decides — the area reaches the progress ledger "
+          "through ONE writer, and Consumed_Qty is an observation that moves "
+          "no readiness figure")
+    await test_sme_inventory_link_approval()
     print("\n BW. The suite's own isolation — 1,400+ checks commit through the "
           "real app, so WHICH database they reach is itself a gate")
     await test_database_isolation()

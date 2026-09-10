@@ -96,8 +96,38 @@ had this right; six presentation layers did not, and overstated buildable area b
 ### ⚠️ The standing one: both engines change together
 
 `backend/api/sme_engine.py` and `frontend/src/sme/engine.ts` are line-for-line
-mirrors, proven equal by `npm run parity:sme` (1,313 comparisons). **Any numeric
+mirrors, proven equal by `npm run parity:sme` (1,334 comparisons). **Any numeric
 change edits BOTH and regenerates the golden, in ONE commit.**
+
+### ⚠️ Rule 1a was AMENDED on 2026-09-10, by exactly one column
+
+Ruling Q13-5 (Phase 13, Track 3) adds **`Consumed_Qty`** to both engines: HOD-
+approved physical draw of a component, reported **beside** the plan. Full text in
+`PROJECT_HANDOVER.md` §1a-ii. The three things that keep the rule intact:
+
+* it reads **`sme_consumption_log`** — an SME-owned table — through a **separate**
+  query, never a join into `SQL_SME_MATERIALS`, so suite BA's source guard still
+  catches a future coupling at review;
+* it counts only **`status = 'committed'`** rows, so the estimator never sees raw
+  warehouse movement — only a draw one person attributed and another signed for.
+  That is why BA's byte-identical probe stays green;
+* **readiness is byte-identical with and without it** — DB-19 builds the model
+  twice and requires every other field equal.
+
+⚠️ **It is an OBSERVATION, in `Allocated_Qty`'s exact category (rule 1b).** Nothing
+may colour it as coverage, nothing may divide by it, no KPI may name it — and it is
+**per COMPONENT**, so **summing it down a cascade multiplies it** by the number of
+units that draw the component. DB-22/DB-23 pin that no total contains it.
+
+### ⚠️ And `SME_EXEC` is the predicate that stops a loop closing
+
+`execution.post_stock` stamps its consumption rows `SME_EXEC:<entry>:<line>`, and
+those rows are ALREADY attributed — `post_progress` has credited their area. The
+Track 3 sweep excludes them from the queue **and** from the write, from **one**
+home (`services/sme_link.EXCLUDE_SELF_SQL`). Seeing them would credit the same drum
+against the same tag twice, and it would read as ordinary double work rather than
+as a bug. ⚠️ A NULL `Source_Ref` must PASS that filter — `NOT LIKE` alone evaluates
+NULL to NULL, silently dropping every unstamped row.
 
 **And rule 1 sits underneath all of it:** the component key is
 `(Material_Code, SAP_Code)` — `mat_key()` / `Material_Key`. Never pool by
