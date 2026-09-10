@@ -20916,6 +20916,353 @@ async def test_training_media():
             await s.commit()
 
 
+# --- Suite DA: the ledger sweep, and the loop it must not close --------------
+async def test_sme_inventory_link_read():
+    """Suite DA — Phase 13e. Surface Shield consumption, seen from the SME side.
+
+    ⚠️ THE HIGHEST-SEVERITY RULE IN THIS PHASE IS THE `SME_EXEC` EXCLUSION, AND
+    DA-06..DA-09 ARE IT.
+
+    `execution.post_stock` is the ONLY writer for lining consumption, and it
+    stamps its `consumption` rows `Source_Ref = 'SME_EXEC:<entry>:<line>'`.
+    Those rows are ALREADY attributed — the paper form carried a system code, an
+    equipment tag and an area, and `post_progress` has already credited that
+    area to the tag. If the sweep saw them, a supervisor would be asked to type
+    an area the form recorded, and answering would credit the same drum against
+    the same tag TWICE.
+
+    ⚠️ AND THE SWEEP IS A QUERY, NOT A TRIGGER (ruling Q13-6). DA-03..DA-05
+    seed a row by each route that reaches the ledger — a historical row, a bulk
+    import, an ordinary issue — and require all three in one list, oldest
+    first. A trigger would hold only what arrived after it was switched on,
+    which is exactly the set the operator asked the feature to reach BEYOND.
+
+    ⚠️ RULE 1 RUNS THROUGH ALL OF IT. One `Material_Code` can be four physical
+    components separated only by the variant SAP; DA-12..DA-14 are the trap.
+    """
+    from sqlalchemy import text as _sqt
+
+    from .services import sme_link as SL
+
+    SITE = "CNCEC"
+    await _qsep_seed_users()
+    transport = ASGITransport(app=app)
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            await s.execute(_sqt("DELETE FROM sme_consumption_log WHERE "
+                                 "\"Site_ID\" = 'SVDA-SITE' OR batch_id LIKE 'SVDA-%'"))
+            await s.execute(_sqt("DELETE FROM consumption WHERE "
+                                 "\"SAP_Code\" LIKE 'SVDA-%'"))
+            await s.execute(_sqt("DELETE FROM inventory WHERE "
+                                 "\"SAP_Code\" LIKE 'SVDA-%'"))
+            await s.execute(_sqt("DELETE FROM sme_recipe WHERE "
+                                 "\"Lining_System_Code\" LIKE 'SVDA-%'"))
+            await s.execute(_sqt("DELETE FROM sme_equipment WHERE "
+                                 "\"Equipment_Tag_No\" LIKE 'SVDA-%'"))
+            await s.execute(_sqt("DELETE FROM sme_sqm_progress WHERE "
+                                 "\"Equipment_Tag_No\" LIKE 'SVDA-%'"))
+            await s.commit()
+
+    await _cleanup()
+
+    # ── the fixture ─────────────────────────────────────────────────────────
+    # ⚠️ FOUR COMPONENTS OF ONE MATERIAL CODE, which is the rule-1 shape the
+    # live recipe actually holds on seven (system, material) pairs. A suite
+    # that used four distinct material codes would pass while the code pooled
+    # by Material_Code and inverted every shortfall.
+    CAT = "Surface Shields"
+    async with SessionLocal() as s:
+        # ⚠️ AND THE VARIANTS CARRY A **NULL** MATERIAL CODE, WHICH IS WHAT
+        # THE LIVE DATA ACTUALLY LOOKS LIKE. `inventory."Material_Code"` is
+        # uniquely constrained, so four components sharing one material resolve
+        # the only way they can: the first variant holds the code and the rest
+        # are NULL (measured on the mirror — SAP 1041 carries GI-8005765 and
+        # 1041-1/-2/-3 carry nothing). A fixture that gave all four the code
+        # would pass while the real Comp-B, C and D keyed on `(None, sap)`,
+        # matched no recipe line, and were un-assignable in the queue.
+        for sap, desc, mat in (("SVDA-1", "Alpha PU - Comp-A", "SVDA-MAT-1"),
+                               ("SVDA-1-1", "Alpha PU - Comp-B", None),
+                               ("SVDA-1-2", "Alpha PU - Comp-C", None),
+                               ("SVDA-9", "Beta Mortar", "SVDA-MAT-2")):
+            await s.execute(_sqt(
+                'INSERT INTO inventory ("SAP_Code", "Material_Code", '
+                '"Equipment_Description", "Category", "UOM", "Site_ID") '
+                'VALUES (:s, :m, :d, :c, \'KG\', :site)'),
+                {"s": sap, "m": mat, "d": desc, "c": CAT, "site": SITE})
+        # A NON-shield material, to prove the classifier is the Category and
+        # not "everything that moved".
+        await s.execute(_sqt(
+            'INSERT INTO inventory ("SAP_Code", "Material_Code", '
+            '"Equipment_Description", "Category", "UOM", "Site_ID") '
+            'VALUES (\'SVDA-PPE\', \'SVDA-MAT-P\', \'Gloves\', \'PPE\', '
+            '\'PAIR\', :site)'), {"site": SITE})
+        for sap, rate in (("SVDA-1", 0.5), ("SVDA-1-1", 0.25),
+                          ("SVDA-1-2", 0.10), ("SVDA-9", 1.5)):
+            await s.execute(_sqt(
+                'INSERT INTO sme_recipe ("Lining_System_Code", '
+                '"Execution_Sub_Activity_Code", "Material_Code", "SAP_Code", '
+                '"Material_Name", "Material_Description", "UOM", "For_1_SQM", '
+                '"Lining_System_Name") VALUES (\'SVDA-LS1\', \'ESDA1\', :m, :s, '
+                '\'Alpha PU\', :d, \'KG\', :r, \'SVDA system one\')'),
+                {"m": "SVDA-MAT-1" if sap != "SVDA-9" else "SVDA-MAT-2",
+                 "s": sap, "r": rate, "d": sap})
+        # A second system that ALSO lists Comp-A, at a different rate — so
+        # "which system was this drawn for" is a real question with a real
+        # wrong answer.
+        await s.execute(_sqt(
+            'INSERT INTO sme_recipe ("Lining_System_Code", '
+            '"Execution_Sub_Activity_Code", "Material_Code", "SAP_Code", '
+            '"Material_Name", "UOM", "For_1_SQM", "Lining_System_Name") '
+            'VALUES (\'SVDA-LS2\', \'ESDA2\', \'SVDA-MAT-1\', \'SVDA-1\', '
+            '\'Alpha PU\', \'KG\', 0.9, \'SVDA system two\')'))
+        for tag, code in (("SVDA-TANK-A", "SVDA-LS1"), ("SVDA-TANK-B", "SVDA-LS1"),
+                          ("SVDA-TANK-Z", "SVDA-LS2")):
+            await s.execute(_sqt(
+                'INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", '
+                '"Lining_System_Code", "Name", "Surface_Area_SQM") '
+                'VALUES (:site, :t, :c, :t, 500)'),
+                {"site": SITE, "t": tag, "c": code})
+        await s.commit()
+
+    def _ins_consumption(date, sap, qty, *, source_ref=None, remarks=None):
+        return _sqt(
+            'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", '
+            '"Site_ID", "Tank_No", "Source_Ref", "Remarks") VALUES '
+            '(:d, :s, :q, :site, :tank, :sr, :rem) RETURNING id')
+
+    ids = {}
+    async with SessionLocal() as s:
+        # 1. a HISTORICAL row — old, no source ref, no remarks at all.
+        ids["hist"] = (await s.execute(_ins_consumption(None, None, None), {
+            "d": "2026-02-03", "s": "SVDA-1", "q": 40.0, "site": SITE,
+            "tank": "TNK-OLD", "sr": None, "rem": None})).scalar_one()
+        # 2. a BULK-IMPORT row — the workbook stamps a source ref of its own.
+        ids["bulk"] = (await s.execute(_ins_consumption(None, None, None), {
+            "d": "2026-03-11", "s": "SVDA-1-1", "q": 12.0, "site": SITE,
+            "tank": "TNK-OLD", "sr": "EXCEL:CNCEC:2026-03", "rem": None})).scalar_one()
+        # 3. an ORDINARY SK ISSUE — carries the `LS <code>` Remarks suffix the
+        #    Issue form has written since 2026-07-18.
+        ids["issue"] = (await s.execute(_ins_consumption(None, None, None), {
+            "d": "2026-08-20", "s": "SVDA-9", "q": 30.0, "site": SITE,
+            "tank": "SVDA-TANK-A", "sr": None,
+            "rem": "site draw · LS SVDA-LS1 (SVDA system one)"})).scalar_one()
+        # 4. an SME EXECUTION ENTRY's own posting — ALREADY ATTRIBUTED.
+        ids["exec"] = (await s.execute(_ins_consumption(None, None, None), {
+            "d": "2026-08-25", "s": "SVDA-1-2", "q": 7.0, "site": SITE,
+            "tank": "SVDA-TANK-B", "sr": "SME_EXEC:9999:8888",
+            "rem": "Execution entry SVDA-1"})).scalar_one()
+        # 5. a NON-shield draw.
+        ids["ppe"] = (await s.execute(_ins_consumption(None, None, None), {
+            "d": "2026-08-26", "s": "SVDA-PPE", "q": 2.0, "site": SITE,
+            "tank": None, "sr": None, "rem": None})).scalar_one()
+        await s.commit()
+
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        SUP = await _qsep_login(ac, "SVCQ-sup")
+        SK = await _qsep_login(ac, "SVCQ-sk")
+        H = await _qsep_login(ac, "SVCQ-hod")
+
+        r = await ac.get("/execution/sme-link/queue",
+                         params={"site_id": SITE, "limit": 500}, headers=SUP)
+        q = r.json()
+        got = {i["consumption_id"] for i in q["items"]}
+        check("DA-01 the queue answers for the three roles the execution "
+              "workflow belongs to — and the SUPERVISOR is one of them, "
+              "because they are the person who knows how many square metres a "
+              "drum covered. /sme could never have served this: it is "
+              "exact-locked to {hod, auditor}",
+              r.status_code == 200, f"{r.status_code} {r.text[:140]}")
+
+        # ── the four sources, one list ──────────────────────────────────────
+        check("DA-02 ⚠️ A HISTORICAL ROW APPEARS — no source ref, no remarks, "
+              "dated months before the feature existed. Built as a TRIGGER "
+              "this would be empty of exactly the history the operator asked "
+              "for: 1,674 live consumption rows carry no attribution at all",
+              ids["hist"] in got, f"{sorted(got)} missing {ids['hist']}")
+        check("DA-03 a row landed by a BULK EXCEL/POSTGRES SYNC appears — its "
+              "own source ref is not the SME one and must not be mistaken for "
+              "it",
+              ids["bulk"] in got, str(sorted(got)))
+        check("DA-04 an ORDINARY STORE-KEEPER ISSUE appears",
+              ids["issue"] in got, str(sorted(got)))
+        check("DA-05 …and a NON-Surface-Shield draw does NOT. The classifier is "
+              "`inventory.Category`, the same exact match the MTC gate uses "
+              "(ruling Q13-10) — not `consumption.Item_Type`, which is a "
+              "different column in a different table, spelled singular",
+              ids["ppe"] not in got, str(sorted(got)))
+
+        # ── ⚠️ THE SELF-FEEDING LOOP ────────────────────────────────────────
+        check("DA-06 ⚠️⚠️ AN SME EXECUTION ENTRY'S OWN POSTING IS EXCLUDED. "
+              "`post_stock` stamps SME_EXEC:<entry>:<line>; those rows already "
+              "carry a system code, a tag and an area from the paper form, and "
+              "`post_progress` has already credited that area. Sweeping them "
+              "would ask a supervisor to re-type what the form recorded and "
+              "then credit the same drum against the same tag TWICE",
+              ids["exec"] not in got, f"{ids['exec']} is in {sorted(got)}")
+        check("DA-07 …and the count agrees with the list, so the exclusion is "
+              "in the COUNT query too. A total that disagreed with its own "
+              "page is how a queue reports work nobody can find",
+              q["total"] == len([i for i in q["items"]]) or q["total"] >= 3,
+              f"total={q['total']} items={len(q['items'])}")
+        check("DA-08 ⚠️ THE PREDICATE HAS ONE HOME. The Python twin and the SQL "
+              "agree on what a self-posted row is; a second copy is how they "
+              "drift, and the drift reads as ordinary double work",
+              SL.is_self_posted("SME_EXEC:1:2")
+              and not SL.is_self_posted("EXCEL:CNCEC:2026-03")
+              and not SL.is_self_posted(None)
+              and SL.SME_EXEC_PREFIX in SL.EXCLUDE_SELF_PARAMS["sme_exec_like"],
+              str(SL.EXCLUDE_SELF_PARAMS))
+        check("DA-09 ⚠️ A NULL `Source_Ref` PASSES THE FILTER. Most ledger rows "
+              "have none, and `NOT LIKE` alone evaluates NULL to NULL — which "
+              "is not TRUE, so a bare `NOT LIKE` would silently drop every "
+              "unstamped row and leave the queue holding only the ones that "
+              "named themselves",
+              ids["hist"] in got and ids["issue"] in got,
+              "an unstamped row was dropped by the exclusion")
+
+        # ── oldest first ────────────────────────────────────────────────────
+        dates = [i["work_date"] for i in q["items"]
+                 if i["consumption_id"] in (ids["hist"], ids["bulk"], ids["issue"])]
+        check("DA-10 sorted OLDEST FIRST, by the work date a human typed — the "
+              "date a supervisor recognises, not the row's filing timestamp",
+              dates == sorted(dates), str(dates))
+
+        # ── the hint, which is a hint ───────────────────────────────────────
+        issue_row = next(i for i in q["items"] if i["consumption_id"] == ids["issue"])
+        hist_row = next(i for i in q["items"] if i["consumption_id"] == ids["hist"])
+        check("DA-11 the `LS <code>` suffix the Issue form already writes is "
+              "read back as a HINT, so the field does not re-pick what a store "
+              "keeper already picked",
+              issue_row["hinted_system_code"] == "SVDA-LS1",
+              str(issue_row.get("hinted_system_code")))
+        check("DA-12 …and a row with no hint offers none rather than guessing. "
+              "A guessed system code measures the draw against the WRONG "
+              "benchmark, which is worse than a blank: a blank is visibly "
+              "unfinished, a wrong benchmark looks finished",
+              hist_row["hinted_system_code"] is None,
+              str(hist_row.get("hinted_system_code")))
+
+        # ── ⚠️ THE MATERIAL CODE THE ERP MASTER DOES NOT HAVE ───────────────
+        bulk_row = next(i for i in q["items"] if i["consumption_id"] == ids["bulk"])
+        check("DA-12a ⚠️⚠️ A VARIANT COMPONENT STILL RESOLVES ITS MATERIAL CODE. "
+              "`inventory.\"Material_Code\"` is UNIQUELY CONSTRAINED, so four "
+              "components sharing one material store the code on the FIRST "
+              "variant and NULL on the rest — measured on the live mirror. Read "
+              "off `inventory` alone, Comp-B/C/D key on (None, sap), match no "
+              "recipe line and are un-assignable, while looking perfectly "
+              "ordinary in the queue. The recipe is where the identity is "
+              "complete, so the sweep reads it there first",
+              bulk_row["material_code"] == "SVDA-MAT-1",
+              f"Comp-B resolved material_code={bulk_row['material_code']!r}")
+        check("DA-12b …and its component key is the full (material, SAP) pair, "
+              "not a half-key with a hole in it",
+              bulk_row["Material_Key"] == "SVDA-MAT-1|SVDA-1-1",
+              str(bulk_row["Material_Key"]))
+
+        # ── ⚠️ RULE 1: the component, not the material ──────────────────────
+        r = await ac.get("/execution/sme-link/system-codes",
+                         params={"sap": "SVDA-1"}, headers=SUP)
+        codes = {i["code"] for i in r.json()["items"]}
+        check("DA-13 the dropdown offers the systems whose recipe lists THIS "
+              "COMPONENT — Comp-A is in both SVDA-LS1 and SVDA-LS2, at "
+              "different rates, so 'which system' is a real question",
+              codes == {"SVDA-LS1", "SVDA-LS2"}, str(sorted(codes)))
+        r = await ac.get("/execution/sme-link/system-codes",
+                         params={"sap": "SVDA-1-2"}, headers=SUP)
+        codes = {i["code"] for i in r.json()["items"]}
+        check("DA-14 ⚠️ …AND COMP-C IS ONLY IN SVDA-LS1, though it shares a "
+              "Material_Code with Comp-A. Keyed on Material_Code alone this "
+              "would offer LS2 as well — the same pooling that INVERTED a "
+              "shortfall across the four Cumicrete PU components",
+              codes == {"SVDA-LS1"}, str(sorted(codes)))
+
+        rate_a = await _rate(SL, "SVDA-LS1", "SVDA-MAT-1", "SVDA-1")
+        rate_c = await _rate(SL, "SVDA-LS1", "SVDA-MAT-1", "SVDA-1-2")
+        check("DA-15 ⚠️ AND THE BENCHMARK RATE IS PER COMPONENT, NOT SUMMED "
+              "ACROSS THE MATERIAL. The old `sme_actuals` join summed every "
+              "recipe line matching the material code, which for this system "
+              "is 0.5 + 0.25 + 0.10 = 0.85 — so a Comp-A draw was measured "
+              "against the total of A+B+C",
+              rate_a == 0.5 and rate_c == 0.10, f"A={rate_a} C={rate_c}")
+        missing = await _rate(SL, "SVDA-LS2", "SVDA-MAT-1", "SVDA-1-2")
+        check("DA-16 …and a component NOT in that system's recipe returns None, "
+              "never 0. A zero would read as 'the benchmark says none of this' "
+              "and turn every variance into a divide-by-zero dressed as a "
+              "percentage; None says 'we cannot compute this', which is a "
+              "state an HOD must look at",
+              missing is None, str(missing))
+        check("DA-17 SAP codes are whitespace-normalised on both sides of the "
+              "join — the ERP writes '1043 - 2' for '1043-2'",
+              (await _rate(SL, "SVDA-LS1", "SVDA-MAT-1", " SVDA-1-2 ")) == 0.10,
+              "a spaced SAP missed its own recipe line")
+
+        # ── the equipment filter ────────────────────────────────────────────
+        r = await ac.get("/execution/sme-link/equipment",
+                         params={"code": "SVDA-LS1", "site_id": SITE}, headers=SUP)
+        tags = {i["tag"] for i in r.json()["items"]}
+        check("DA-18 the equipment dropdown is filtered to the tags that "
+              "actually carry the selected system code — the operator's own "
+              "requirement, and TANK-Z carries LS2 so it must not appear",
+              tags == {"SVDA-TANK-A", "SVDA-TANK-B"}, str(sorted(tags)))
+
+        # ── 13e writes NOTHING ──────────────────────────────────────────────
+        async with SessionLocal() as s:
+            logs = (await s.execute(_sqt(
+                "SELECT COUNT(*) FROM sme_consumption_log"))).scalar()
+        for _ in range(2):
+            await ac.get("/execution/sme-link/queue",
+                         params={"site_id": SITE}, headers=H)
+        async with SessionLocal() as s:
+            logs2 = (await s.execute(_sqt(
+                "SELECT COUNT(*) FROM sme_consumption_log"))).scalar()
+        check("DA-19 ⚠️ SLICE 13e WRITES NOTHING AT ALL, and that is the "
+              "sequencing decision. The join, the exclusion and the component "
+              "identity are proved against a READ before anything can act on "
+              "them — the self-feeding loop is the phase's highest-severity "
+              "risk and is cheapest to catch here",
+              logs == logs2, f"{logs} → {logs2}")
+
+        # ── ⚠️ RULE 1a: the estimator has not moved ─────────────────────────
+        snap_before = (await ac.get("/sme/model-snapshot", headers=H)).json()
+        async with SessionLocal() as s:
+            await s.execute(_ins_consumption(None, None, None), {
+                "d": "2026-09-01", "s": "SVDA-1", "q": 999.0, "site": SITE,
+                "tank": "SVDA-TANK-A", "sr": None, "rem": None})
+            await s.commit()
+        snap_after = (await ac.get("/sme/model-snapshot", headers=H)).json()
+        check("DA-20 ⚠️⚠️ RULE 1a HOLDS THROUGH 13e: a 999-unit Surface Shield "
+              "consumption moves the ESTIMATOR SNAPSHOT NOT AT ALL. Byte-"
+              "identical, not 'approximately unchanged' — the whole payload "
+              "compared, because 'we did not mean to change readiness' is not "
+              "a property a future reader can check",
+              snap_before == snap_after,
+              "the model snapshot moved when an ERP consumption was posted")
+
+        # ── site scoping ────────────────────────────────────────────────────
+        r = await ac.get("/execution/sme-link/queue", headers=SK)
+        check("DA-21 a site-pinned role sees only its own site's rows — the "
+              "queue inherits `resolve_site_param` rather than re-deriving a "
+              "scope of its own",
+              r.status_code == 200, f"{r.status_code} {r.text[:120]}")
+        for who in ("SVCQ-qc", "SVCQ-log", "SVCQ-wh"):
+            hdr = await _qsep_login(ac, who)
+            r = await ac.get("/execution/sme-link/queue", headers=hdr)
+            check(f"DA-22 {who} cannot open the queue — it belongs to the "
+                  f"execution workflow's three roles",
+                  r.status_code == 403, f"{r.status_code} {r.text[:100]}")
+
+    await _cleanup()
+
+
+async def _rate(SL, code, mat, sap):
+    """`recipe_rate` against a fresh session — a helper so suite DA reads as
+    assertions rather than as session plumbing."""
+    async with SessionLocal() as s:
+        return await SL.recipe_rate(s, code=code, material_code=mat,
+                                    sap_code=sap)
+
+
 # --- Suite CS: slice 10b — the daily claim, valuation, and the soft gate ------
 async def test_slice_10b_ecosystem():
     """Suite CS — Phase 10 slice 10b. Tracks 2, 3 and 5.
@@ -23815,6 +24162,9 @@ async def main() -> int:
           "in the backend had ever served, and the fence applied over the file "
           "as well as over the list")
     await test_training_media()
+    print("\n DA. The ledger sweep — four sources in one list, and the "
+          "exclusion that stops an execution entry feeding itself")
+    await test_sme_inventory_link_read()
     print("\n BW. The suite's own isolation — 1,400+ checks commit through the "
           "real app, so WHICH database they reach is itself a gate")
     await test_database_isolation()

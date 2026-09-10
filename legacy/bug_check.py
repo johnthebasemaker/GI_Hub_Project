@@ -1676,7 +1676,50 @@ def check_models_schema_parity() -> None:
                # copied off the vendor's paperwork. The return form's 30-day
                # window means the former and had been measuring the latter.
                # NULL on every pre-migration row on purpose — see the revision.
-               ("receipts", "posted_at")}
+               ("receipts", "posted_at"),
+               # 2026-09-10 Phase 13 Track 3 (alembic e5a72c94f16d): the
+               # Inventory⇄SME bridge. `sme_consumption_log` stops being a
+               # workbook side-note and becomes the attribution record for LIVE
+               # Surface Shield consumption. New-stack only, and each column
+               # earns its place:
+               #
+               #  · `SAP_Code` is RULE 1. The component key is
+               #    (Material_Code, SAP_Code) and never the material alone;
+               #    this table carried only the material, which was survivable
+               #    while its rows came from a workbook naming nothing finer
+               #    and is not survivable now they attribute ERP `consumption`
+               #    rows, which are keyed on SAP. Pooling by material alone was
+               #    measured to INVERT a shortfall across the four Cumicrete PU
+               #    components.
+               #  · `Consumption_ID` is what makes the queue a SWEEP (a query
+               #    over the whole ledger) rather than a trigger, which would
+               #    hold only rows created after it existed — exactly the set
+               #    ruling Q13-6 asked the feature to reach beyond.
+               #  · `Bench_For_1_SQM` is SNAPSHOTTED, never re-joined: an HOD
+               #    may correct a recipe rate, and a variance that re-derived
+               #    its benchmark would rewrite history silently.
+               #  · `Priority_Flag` / `Variance_Tolerance_Pct` store the ±10 %
+               #    reading at submission (ruling Q13-8). The tolerance sets
+               #    PRIORITY, never approval — every row goes to the HOD —
+               #    and storing it means tuning the number re-sorts the queue
+               #    instead of reopening settled rows.
+               #  · the `hod_*` set plus `Original_SQM_Completed` are the
+               #    decision and what the field originally reported, kept so
+               #    the audit trail says what a number changed FROM.
+               #
+               # The frozen legacy portal has none of this: its consumption log
+               # is a workbook import with no ledger, no benchmark and no
+               # approval step to record.
+               ("sme_consumption_log", "SAP_Code"),
+               ("sme_consumption_log", "Consumption_ID"),
+               ("sme_consumption_log", "Bench_For_1_SQM"),
+               ("sme_consumption_log", "Priority_Flag"),
+               ("sme_consumption_log", "Variance_Tolerance_Pct"),
+               ("sme_consumption_log", "hod_username"),
+               ("sme_consumption_log", "hod_decided_at"),
+               ("sme_consumption_log", "HOD_Edit_Justification"),
+               ("sme_consumption_log", "hod_edited"),
+               ("sme_consumption_log", "Original_SQM_Completed")}
     extra = model_only - allowed
     assert not extra, f"unexpected model-only columns (update models.py or DB): {extra}"
 
