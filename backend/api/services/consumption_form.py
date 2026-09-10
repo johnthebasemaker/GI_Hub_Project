@@ -257,22 +257,41 @@ def _field(pdf, x: float, y: float, w: float, label: str, *,
     pdf.rect(x, y + 3.6, w, h)
 
 
-def render_pdf(*, rows: list[dict], site_id: str, code: str, esc: str,
-               system_name: str, form_uuid: str,
-               generated_on: Optional[_dt.date] = None) -> bytes:
-    """The form itself. One A4 page per 18 materials.
+def _new_pdf():
+    """An empty A4 document with this module's page settings.
+
+    ⚠️ ONE CONSTRUCTOR, because Phase 13a draws MANY forms into ONE document
+    and a second set of `set_margins` / `set_auto_page_break` calls is a second
+    place for the page geometry to drift from `row_boxes()`. The reader crops
+    handwriting off these numbers.
+    """
+    from fpdf import FPDF
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=False)
+    pdf.set_margins(MARGIN, MARGIN, MARGIN)
+    return pdf
+
+
+def _draw_form(pdf, *, rows: list[dict], site_id: str, code: str, esc: str,
+               system_name: str, form_uuid: str, generated_on: _dt.date,
+               batch_seq: int = 1, batch_size: int = 1) -> None:
+    """Draw ONE form — all of its A4 pages — into an existing document.
 
     ⚠️ NO WRITE-IN ROWS (ruling Q9). Supervisors use only recipe-defined
     materials — they may write 0, but they never introduce an outside one — so
     a blank row would be an invitation to write a name the system cannot map
     and 9d cannot resolve. Its absence is the rule made physical.
-    """
-    from fpdf import FPDF
 
-    generated_on = generated_on or _dt.date.today()
-    pdf = FPDF(orientation="P", unit="mm", format="A4")
-    pdf.set_auto_page_break(auto=False)
-    pdf.set_margins(MARGIN, MARGIN, MARGIN)
+    ⚠️ PHASE 13a SPLIT THIS OUT OF `render_pdf` AND CHANGED NO GEOMETRY. Fifty
+    forms in one download are fifty calls to this function against one `pdf`,
+    each with its own `form_uuid` and therefore its own QR. Every constant the
+    rectifier uses — `FIRST_ROW_Y`, `ROW_H`, `HEADER_FIELD_Y`, the fiducials —
+    is untouched, and the only new ink is a sheet label drawn in the empty band
+    between the QR and the header fields. A layout tweak here silently starts
+    cropping the wrong strip of somebody's handwriting, so the sheet label was
+    placed where nothing had to move.
+    """
     inner = PAGE_W - 2 * MARGIN
 
     # Column geometry, shared by the header band and every row.
@@ -323,6 +342,23 @@ def render_pdf(*, rows: list[dict], site_id: str, code: str, esc: str,
         pdf.set_font("helvetica", "", 8)
         pdf.cell(inner - 30, 4, _txt(f"Site {site_id}"), new_x="LMARGIN",
                  new_y="NEXT")
+
+        # ── "SHEET 7 OF 50" (Phase 13a) ───────────────────────────────────
+        # ⚠️ FOR THE HUMAN SORTING THE PILE, NOT FOR THE MACHINE. The QR is
+        # what identifies this sheet to slice 9d; this label is what lets a
+        # supervisor holding fifty pieces of paper see that number 23 is
+        # missing. Printed only for a real batch — a single download is a
+        # batch of one and saying so on the page would be noise.
+        #
+        # Drawn in the band between the QR (which ends at MARGIN + 26) and
+        # HEADER_FIELD_Y (MARGIN + 30). Nothing else occupies it, so no box
+        # the rectifier knows about moves by a millimetre.
+        if batch_size > 1:
+            pdf.set_font("helvetica", "B", 8)
+            pdf.set_text_color(10, 25, 47)
+            pdf.set_xy(MARGIN, MARGIN + 26.2)
+            pdf.cell(inner, 3.4, f"SHEET {batch_seq} OF {batch_size}",
+                     align="R")
 
         # ── the fields a human fills in ────────────────────────────────────
         # ⚠️ THREE header fields, not four. The Lot/Batch is a per-row COLUMN —
@@ -426,13 +462,53 @@ def render_pdf(*, rows: list[dict], site_id: str, code: str, esc: str,
     # record anybody there would accept.
     y += 6.0
     if y + 20.0 > PAGE_H - MARGIN - 8:
-        _footer(pdf, form_uuid, generated_on, len(rows))
+        _footer(pdf, form_uuid, generated_on, len(rows), batch_seq, batch_size)
         y = _page_header(pages + 1)
     half = (inner - 6.0) / 2
     _field(pdf, MARGIN, y, half, "Filled in by (name)")
     _field(pdf, MARGIN + half + 6.0, y, half, "Signature")
 
-    _footer(pdf, form_uuid, generated_on, len(rows))
+    _footer(pdf, form_uuid, generated_on, len(rows), batch_seq, batch_size)
+
+
+def render_pdf(*, rows: list[dict], site_id: str, code: str, esc: str,
+               system_name: str, form_uuid: str,
+               generated_on: Optional[_dt.date] = None,
+               batch_seq: int = 1, batch_size: int = 1) -> bytes:
+    """One form, as a standalone PDF. One A4 page per 18 materials."""
+    pdf = _new_pdf()
+    _draw_form(pdf, rows=rows, site_id=site_id, code=code, esc=esc,
+               system_name=system_name, form_uuid=form_uuid,
+               generated_on=generated_on or _dt.date.today(),
+               batch_seq=batch_seq, batch_size=batch_size)
+    return bytes(pdf.output())
+
+
+def render_batch_pdf(*, rows: list[dict], site_id: str, code: str, esc: str,
+                     system_name: str, form_uuids: list[str],
+                     generated_on: Optional[_dt.date] = None) -> bytes:
+    """N forms in ONE document, each with its own `Form_UUID` and its own QR.
+
+    ⚠️ THE UUIDS ARE THE DELIVERABLE. A supervisor who needs fifty sheets used
+    to print one and photocopy it, which duplicated the QR — and slice 9d maps
+    handwriting to materials POSITIONALLY off that identity, so fifty identical
+    QRs meant the intake could not tell one tank's page from another's, nor a
+    re-print from a re-photograph. This function is the answer to that, and the
+    invariant worth testing is simply `len(set(form_uuids)) == len(form_uuids)`.
+
+    ⚠️ ONE DOCUMENT, NOT N DOCUMENTS MERGED. fpdf2 cannot merge, and pulling in
+    a merge library to concatenate pages it just wrote would be a dependency
+    bought for nothing — the pages are drawn straight into one `FPDF`. It also
+    keeps the output a single stream the browser can hand to a printer, which
+    is what the operator actually asked for.
+    """
+    generated_on = generated_on or _dt.date.today()
+    pdf = _new_pdf()
+    n = len(form_uuids)
+    for seq, form_uuid in enumerate(form_uuids, start=1):
+        _draw_form(pdf, rows=rows, site_id=site_id, code=code, esc=esc,
+                   system_name=system_name, form_uuid=form_uuid,
+                   generated_on=generated_on, batch_seq=seq, batch_size=n)
     return bytes(pdf.output())
 
 
@@ -451,7 +527,8 @@ def _fit(pdf, text: str, width: float) -> str:
     return t + "..."
 
 
-def _footer(pdf, form_uuid: str, generated_on: _dt.date, n: int) -> None:
+def _footer(pdf, form_uuid: str, generated_on: _dt.date, n: int,
+            batch_seq: int = 1, batch_size: int = 1) -> None:
     """The generation date and the form id, in words as well as in the QR.
 
     ⚠️ THIS IS NOT THE WORK DATE. It says when the blank was printed, so a
@@ -459,11 +536,12 @@ def _footer(pdf, form_uuid: str, generated_on: _dt.date, n: int) -> None:
     the empty box at the top, and pre-filling it would be wrong on every form
     used the day after it was printed — see the module docstring.
     """
+    sheet = f"   ·   sheet {batch_seq} of {batch_size}" if batch_size > 1 else ""
     pdf.set_font("helvetica", "", 6.5)
     pdf.set_text_color(150, 150, 150)
     pdf.set_xy(MARGIN, PAGE_H - MARGIN - 4)
     pdf.cell(PAGE_W - 2 * MARGIN, 3.5, _txt(
-        f"Form {form_uuid}   ·   {n} material line(s)   ·   blank printed "
+        f"Form {form_uuid}{sheet}   ·   {n} material line(s)   ·   blank printed "
         f"{generated_on.isoformat()} — write the WORK date in the box above   "
         f"·   photograph the whole page, including the QR code"))
 
@@ -518,15 +596,45 @@ def header_boxes() -> dict:
     }
 
 
-async def generate(session: AsyncSession, *, site_id: str, code: str,
-                   esc: Optional[str], username: str, role: str) -> tuple[bytes, dict]:
-    """Register a form, then render it. Returns `(pdf_bytes, registry_row)`.
+# ⚠️ THE CEILING IS A DELIVERY CONSTRAINT, NOT A ROUND NUMBER. 200 forms of a
+# 40-line recipe is 600 A4 pages, each carrying its own QR bitmap — tens of
+# megabytes over plant Wi-Fi. A download that dies at 80 % leaves the registry
+# holding 200 rows for paper nobody ever received, and every one of them then
+# shows as an outstanding sheet in `/execution/forms/generated`. The cap is
+# where the failure stops being recoverable by pressing the button again.
+MAX_COPIES = 200
 
-    ⚠️ REGISTERED BEFORE IT IS RENDERED, and the row is what the QR points at.
-    A PDF that reached somebody's printer without a row would be paper the
+
+async def generate(session: AsyncSession, *, site_id: str, code: str,
+                   esc: Optional[str], username: str, role: str,
+                   copies: int = 1) -> tuple[bytes, dict]:
+    """Register `copies` forms, then render them into ONE PDF.
+
+    Returns `(pdf_bytes, registry_row)` where the row describes the FIRST form
+    and carries the batch fields, so a caller that only ever printed one sheet
+    sees exactly what it saw before Phase 13a.
+
+    ⚠️ REGISTERED BEFORE THEY ARE RENDERED, and the rows are what the QRs point
+    at. A PDF that reached somebody's printer without rows would be paper the
     system cannot recognise on the way back in — and the failure would surface
     in slice 9d as an unreadable upload, a long way from the cause.
+
+    ⚠️ AND ALL OF IT IS ONE TRANSACTION, which is the caller's (`session.begin()`
+    in the router). Fifty half-registered sheets is the worst outcome available
+    here: the paper exists, the plant fills it in, and the intake refuses the
+    ones whose rows were rolled back. Because the render runs INSIDE that
+    transaction, a renderer that raises on sheet 37 takes all 37 rows with it.
+
+    ⚠️ EVERY FORM GETS ITS OWN `Form_UUID`, WHICH IS THE ENTIRE FEATURE. The
+    thing this replaces is a photocopier, and a photocopy duplicates the QR.
     """
+    if copies < 1 or copies > MAX_COPIES:
+        raise HTTPException(
+            422, f"forms must be between 1 and {MAX_COPIES} — {copies} is "
+                 f"outside that. Print in runs rather than one very large "
+                 f"download: a transfer that fails halfway leaves paper the "
+                 f"system has no rows for.")
+
     rows = await recipe_rows(session, code=code, esc=esc)
     if not rows:
         raise HTTPException(
@@ -539,25 +647,44 @@ async def generate(session: AsyncSession, *, site_id: str, code: str,
         select(recipe_t.c["Lining_System_Name"])
         .where(recipe_t.c["Lining_System_Code"] == code).limit(1))).scalar() or code
 
-    form_uuid = uuid.uuid4().hex[:16].upper()
+    # One fingerprint for the whole run: these are the same recipe rows, in the
+    # same order, read once. Re-reading per sheet would let a master-data edit
+    # land mid-batch and hand out two different row orders under one batch id.
     fp = fingerprint(rows)
-    new_id = (await session.execute(insert(form_t).values(
-        Form_UUID=form_uuid, Site_ID=site_id, Lining_System_Code=code,
-        Execution_Sub_Activity_Code=(esc or ""), Recipe_Fingerprint=fp,
-        Row_Count=len(rows), status="open", created_by=username,
-        created_by_role=role).returning(form_t.c["id"]))).scalar_one()
+    batch_uuid = uuid.uuid4().hex[:16].upper()
+    form_uuids = [uuid.uuid4().hex[:16].upper() for _ in range(copies)]
 
-    pdf = render_pdf(rows=rows, site_id=site_id, code=code, esc=(esc or ""),
-                     system_name=str(sysname), form_uuid=form_uuid)
+    ids: list[int] = []
+    for seq, form_uuid in enumerate(form_uuids, start=1):
+        ids.append((await session.execute(insert(form_t).values(
+            Form_UUID=form_uuid, Site_ID=site_id, Lining_System_Code=code,
+            Execution_Sub_Activity_Code=(esc or ""), Recipe_Fingerprint=fp,
+            Row_Count=len(rows), status="open", created_by=username,
+            created_by_role=role, Batch_UUID=batch_uuid, Batch_Seq=seq,
+            Batch_Size=copies).returning(form_t.c["id"]))).scalar_one())
+
+    if copies == 1:
+        pdf = render_pdf(rows=rows, site_id=site_id, code=code, esc=(esc or ""),
+                         system_name=str(sysname), form_uuid=form_uuids[0])
+    else:
+        pdf = render_batch_pdf(rows=rows, site_id=site_id, code=code,
+                               esc=(esc or ""), system_name=str(sysname),
+                               form_uuids=form_uuids)
+
+    # One audit line per RUN, naming the batch and the count — not one line per
+    # sheet. Fifty audit rows for one button press buries the next real event.
     await write_audit(session, username, "CONSUMPTION_FORM_PRINT",
                       "sme_consumption_form",
-                      f"{form_uuid} {code}{'/' + esc if esc else ''} @{site_id} "
-                      f"{len(rows)} rows")
-    return pdf, {"id": new_id, "Form_UUID": form_uuid, "Site_ID": site_id,
+                      f"{batch_uuid} x{copies} {code}"
+                      f"{'/' + esc if esc else ''} @{site_id} "
+                      f"{len(rows)} rows · first {form_uuids[0]}")
+    return pdf, {"id": ids[0], "Form_UUID": form_uuids[0], "Site_ID": site_id,
                  "Lining_System_Code": code,
                  "Execution_Sub_Activity_Code": esc or "",
                  "Recipe_Fingerprint": fp, "Row_Count": len(rows),
-                 "status": "open"}
+                 "status": "open", "Batch_UUID": batch_uuid,
+                 "Batch_Size": copies, "Form_UUIDs": form_uuids,
+                 "ids": ids}
 
 
 async def available_systems(session: AsyncSession) -> list[dict]:

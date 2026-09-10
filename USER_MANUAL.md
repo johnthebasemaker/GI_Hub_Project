@@ -981,7 +981,33 @@ the paper. If you print a spare, it is a genuinely separate form.
 
 An HOD can see every form printed and not yet filed, and who printed it.
 
-### 4.9.5 If the materials change after you print
+### 4.9.5 Printing several at once — and ⚠️ never photocopying one
+
+Set **Forms** to the number you need and press Download. You get **one PDF
+containing that many forms**, each with its **own** number and its **own** QR
+code, and each printed **SHEET 3 OF 50** at the top so you can sort the pile
+and see if one is missing.
+
+⚠️ **Never photocopy a form.** This is the most important sentence on this
+page. A photocopy repeats the QR code, and the QR code is how the app knows
+*which sheet* it is looking at. Two sheets carrying one code cannot be told
+apart: the second one you send in will either be refused as already filed, or
+worse, filed against the first one's tank. If you need fifty, print fifty here.
+
+⚠️ **The number is FORMS, not pieces of paper.** A system with more than 18
+materials prints as several pages — that is still **one** form, with **one** QR
+across its pages. The line under the box does the arithmetic for you and
+changes as you type:
+
+> 50 forms × 2 pages = 100 A4 sheets
+
+Check that line before you send it to a printer.
+
+You can print up to **200** forms in one go. Above that, print in runs: a
+download that fails halfway leaves the app holding records for paper that never
+reached you, and those show as outstanding sheets until somebody clears them.
+
+### 4.9.6 If the materials change after you print
 
 If someone edits the system's recipe after your form was printed — adds a
 material, reorders them, changes a code — the app will **refuse the photo** and

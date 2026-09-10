@@ -2370,6 +2370,70 @@ duplicate detection impossible to get right.
 (`GET /execution/forms/generated?status=open`). Both downloads are there, with
 who printed them and when. This is the question asked when paper goes missing.
 
+### 14p.2a ⚠️ Printing fifty at once, and why the photocopier was the bug
+
+*Phase 13a.*
+
+**THE FAILURE THIS REPLACES.** A supervisor needing fifty sheets used to
+download one and **photocopy it**. Every copy then carried the *same* QR — the
+same form id — and slice 9d maps handwriting to materials **positionally off
+exactly that identity**. Fifty identical codes means the reader cannot tell one
+tank's page from another's, cannot refuse a sheet already filed, and cannot
+distinguish a re-print from a re-photograph. Bulk printing mints fifty
+identities instead of duplicating one.
+
+**TC-FORM-06a** — pick a system, set **Forms** to `5`, download. **One PDF
+arrives containing five forms.** Scan the QR on each page: **all five codes are
+different.** If any two match, stop — that is the defect this feature exists to
+remove.
+
+**TC-FORM-06b** — the filename for a run is
+`consumption-<system>-x5-<BATCHID>.pdf`, not a form id. A single download is
+still `consumption-<system>-<FORMID>.pdf`.
+
+**TC-FORM-06c** — each page prints **SHEET n OF 5** at the top right, under the
+QR. That is for the human sorting the pile; the QR is what the machine reads.
+Fan the sheets out and a missing number is visible.
+
+**TC-FORM-06d** — as an HOD, open the printed log. **Five rows, five form ids,
+one batch id, numbered 1–5.** The question "where did the fifty sheets I
+printed on Tuesday go?" is answerable because of the batch id.
+
+**TC-FORM-06e** — ⚠️ **THE NUMBER IS FORMS, NOT SHEETS OF PAPER.** Pick a
+system with **more than 18 materials** (LSC8-shaped). The line under the box
+reads `50 forms × 2 pages = 100 A4 sheets` and updates as you type. A form
+longer than 18 materials has always spanned several pages under **one** QR;
+somebody who wanted fifty pieces of paper must see the multiplication before
+the printer starts, not after.
+
+**TC-FORM-06f** — type `9999` in the Forms box. It clamps to **200**. Type `0`;
+it clamps to **1**. Then try the API directly with `?copies=500` — it is
+refused with 422 **and registers nothing**. The UI clamp is the friendly half;
+the endpoint is the boundary.
+
+**TC-FORM-06g** — press Download three times quickly on a bulk run. The fourth
+is refused for a minute. A double-click on `copies=200` would otherwise be 400
+registry rows, every one of them showing for ever as an outstanding sheet.
+
+**TC-FORM-06h** — ⚠️ **THE 1 % OF FORMS THE READER COULD NOT READ.** Print 50,
+photograph a handful, upload them. **Every one must be recognised.**
+
+This is here because printing fifty at once is what *found* a defect that had
+been live since Phase 9c. `cv2.QRCodeDetector` — the decoder the upload path
+used — **cannot read a version-4 QR at error-correction level Q**, which is
+what a form id of the wrong length happens to produce. Measured over 400
+freshly-minted forms: **4 of them, 1.0 %, were undecodable**, at every
+resolution, from a pristine file, before any camera was involved. The codes
+were valid the whole time — a second decoder read all four.
+
+At one sheet per download that was invisible: a supervisor was told, roughly
+once in a hundred trips, that their photo had no QR on it, which is
+indistinguishable from a bad photograph and was blamed on the camera. The fix
+adds a second detector ahead of the old one, and it is deliberately in the
+**reader**, so **paper already printed is repaired too**. Suite CY-06a…d pins
+it, including a negative control that the old detector still fails on those
+five ids — otherwise the fix could be reverted with every check still green.
+
 ### 14p.3 ⚠️ Four rows that look the same
 
 **TC-FORM-07** — print **LSC8**. It lists `GI-8005765` four times — the same
