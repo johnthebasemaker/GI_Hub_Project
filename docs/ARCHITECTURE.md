@@ -158,6 +158,15 @@ migration at all** — it fills tables slice 10b created. Modules:
 ## 3. Database facts that bite
 
 - Mixed-case column names are real (`"SAP_Code"`, `"Site_ID"`) — always quote.
+- ⚠️ **Ledger ROW identity (2026-09-16) is a provenance label, never the
+  movement.** The Excel sync writes `Source_Ref = XLSX:<site>:<kind>:<day>:<sap>:
+  <ref-hash>:<n>` and upserts on a PARTIAL unique index over that label only.
+  (Date, SAP, Tank No.) is shared by 2,785 of 4,394 real consumption rows, so it
+  can never be unique. `DO UPDATE` keeps the row id, which keeps Phase 13
+  attributions linked; an edit that changes Date/SAP/Quantity/Tank sends the
+  attribution back to the queue (`sme_link.SOURCE_FP_SQL`). App rows
+  (`SME_EXEC:`, `SMR:`, adjustments) are never relabelled. See
+  PROJECT_HANDOVER §3a.
 - Ledger identity: **stock = Σreceipts − Σconsumption − Σreturns** per SAP/site
   (`v_live_stock`, `v_site_stock` views). Dates are ISO **text**.
 - The 3 rowid-ledger tables keep `id := sqlite rowid` through migration so

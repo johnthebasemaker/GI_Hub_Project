@@ -105,7 +105,9 @@ function AssignModal({ row, onClose }: { row: Row | null; onClose: () => void })
         notes: v.notes ?? null, site_id: site || null,
       })).data,
     onSuccess: () => {
-      message.success('Recorded — it now goes to the HOD for approval')
+      message.success(edited
+        ? 'Re-assigned — the HOD has been notified'
+        : 'Recorded — it now goes to the HOD for approval')
       void qc.invalidateQueries({ queryKey: ['/execution/sme-link/queue'] })
       void qc.invalidateQueries({ queryKey: ['/execution/sme-link/assigned'] })
       onClose()
@@ -115,13 +117,23 @@ function AssignModal({ row, onClose }: { row: Row | null; onClose: () => void })
 
   // The store keeper's `LS <code>` note, read back so the field does not
   // re-pick what somebody already picked. A hint, never an assignment.
-  const hint = s(row?.hinted_system_code) || undefined
+  // ⚠️ An EDITED row starts from its previous answer instead: the field is
+  // confirming or correcting work already done, not starting from nothing.
+  const edited = s(row?.reason) === 'edited'
+  const hint = (edited ? s(row?.prev_code) : s(row?.hinted_system_code)) || undefined
 
   return (
     <Modal open={!!row} onCancel={onClose} title="What did this material cover?"
       okText="Record" confirmLoading={save.isPending}
       afterOpenChange={(o) => {
-        if (o) { setCode(hint); form.setFieldsValue({ code: hint, tag: undefined, sqm: undefined }) }
+        if (o) {
+          setCode(hint)
+          form.setFieldsValue({
+            code: hint,
+            tag: edited ? s(row?.prev_tag) || undefined : undefined,
+            sqm: edited ? n(row?.prev_sqm) ?? undefined : undefined,
+          })
+        }
       }}
       onOk={() => form.validateFields().then((v) => save.mutate(v))}>
       {row && (
@@ -132,6 +144,25 @@ function AssignModal({ row, onClose }: { row: Row | null; onClose: () => void })
             {s(row.work_date)}
             {s(row.tank_no) ? ` · noted against ${s(row.tank_no)}` : ''}
           </Typography.Paragraph>
+          {/* ⚠️ THE EDIT, SHOWN AS AN EDIT. The operator asked for this to be
+              highlighted, and the reason is practical: the field is being asked
+              a question they already answered, and the only way that is not
+              confusing is to show them what changed in the workbook. */}
+          {edited && (
+            <Alert type="warning" showIcon style={{ marginBottom: 12 }}
+              title="Edited in Excel since this was assigned"
+              description={<>
+                The workbook now says <strong><Qty value={row.quantity} unit={s(row.uom)} /></strong>
+                {' '}where it was assigned against <strong><Qty value={row.prev_qty} unit={s(row.uom)} /></strong>.
+                {' '}The previous answer is filled in below — confirm it or correct it.
+                {s(row.log_status) === 'committed'
+                  ? ' The approved figures keep counting until the HOD approves these.'
+                  : ''}
+                {s(row.last_revision_rejected_reason)
+                  ? <> The HOD rejected the last re-assignment: <em>{s(row.last_revision_rejected_reason)}</em></>
+                  : null}
+              </>} />
+          )}
           {/* ⚠️ STATED PLAINLY, because "recording consumption" sounds like it
               deducts something and this does not. */}
           <Alert type="info" showIcon style={{ marginBottom: 12 }}
@@ -291,26 +322,115 @@ function DecideModal({ row, onClose }: { row: Row | null; onClose: () => void })
   )
 }
 
+/**
+ * The HOD's decision on a re-assignment of APPROVED consumption.
+ *
+ * ⚠️ APPROVAL UPDATES THE ORIGINAL ENTRY — the operator's requirement — and
+ * moves its area credit by the difference. Rejection leaves the approved
+ * figures standing and sends the row back to the field with the reason.
+ */
+function RevisionModal({ row, onClose }: { row: Row | null; onClose: () => void }) {
+  const { message } = App.useApp()
+  const qc = useQueryClient()
+  const [reason, setReason] = useState('')
+
+  const decide = useMutation({
+    mutationFn: async (approve: boolean) =>
+      (await api.post(`/execution/sme-link/revisions/${Number(row?.id)}/decide`, {
+        approve, reject_reason: approve ? '' : reason,
+        site_id: s(row?.Site_ID) || null,
+      })).data,
+    onSuccess: (_d, approve) => {
+      message.success(approve
+        ? 'Approved — the original entry now carries the new figures'
+        : 'Rejected — it is back with the field')
+      void qc.invalidateQueries({ queryKey: ['/execution/sme-link/assigned'] })
+      void qc.invalidateQueries({ queryKey: ['/execution/sme-link/queue'] })
+      onClose()
+    },
+    onError: (e) => message.error(errMsg(e)),
+  })
+
+  return (
+    <Modal open={!!row} onCancel={onClose} title="Approve a re-assignment"
+      afterOpenChange={(o) => { if (o) setReason('') }}
+      footer={[
+        <Button key="c" onClick={onClose}>Cancel</Button>,
+        <Button key="r" danger loading={decide.isPending}
+          onClick={() => {
+            if (!reason.trim()) {
+              message.error('A rejection needs a reason — the field has to know what to do differently.')
+              return
+            }
+            decide.mutate(false)
+          }}>Reject</Button>,
+        <Button key="a" type="primary" loading={decide.isPending}
+          disabled={!!row?.stale} onClick={() => decide.mutate(true)}>
+          Approve
+        </Button>,
+      ]}>
+      {row && (
+        <>
+          {row.stale ? (
+            <Alert type="error" showIcon style={{ marginBottom: 12 }}
+              title="The workbook changed again after this was re-assigned"
+              description="These figures are already out of date, so they cannot be approved. The row is back in the field's queue." />
+          ) : null}
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Typography.Text type="secondary">Approved — still counting</Typography.Text>
+            <Typography.Text>
+              {s(row.Prev_Equipment_Tag_No)} · {s(row.Prev_Lining_System_Code)} ·{' '}
+              <Qty value={row.Prev_SQM_Completed} unit="m²" /> · drawn <Qty value={row.Prev_Actual_Qty} />
+            </Typography.Text>
+            <Typography.Text type="secondary">Re-assigned against the edited workbook</Typography.Text>
+            <Typography.Text strong>
+              {s(row.Equipment_Tag_No)} · {s(row.Lining_System_Code)} ·{' '}
+              <Qty value={row.SQM_Completed} unit="m²" /> · drawn <Qty value={row.Actual_Qty} />
+              {' '}<VarTag value={row.Variance_Pct} flag={row.Priority_Flag} />
+            </Typography.Text>
+          </Space>
+          <Alert type="info" showIcon style={{ marginTop: 12, marginBottom: 12 }}
+            title="Approving updates the original entry"
+            description="The approved area is taken back off the equipment it was credited to and the new area credited, so progress moves by the difference only." />
+          <Input.TextArea rows={2} maxLength={500} value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Reason — required to reject" />
+        </>
+      )}
+    </Modal>
+  )
+}
+
 export default function SmeLinkCard() {
   const { user } = useAuth()
   const isHod = user?.role === 'hod' || user?.role === 'admin'
   const [assignRow, setAssignRow] = useState<Row | null>(null)
   const [decideRow, setDecideRow] = useState<Row | null>(null)
+  const [revisionRow, setRevisionRow] = useState<Row | null>(null)
 
   const queue = useQuery({
     queryKey: ['/execution/sme-link/queue'],
-    queryFn: async () => (await api.get<{ items: Row[]; total: number }>(
+    queryFn: async () => (await api.get<{ items: Row[]; total: number; edited: number }>(
       '/execution/sme-link/queue', { params: { limit: 200 } })).data,
   })
   const assigned = useQuery({
     queryKey: ['/execution/sme-link/assigned'],
     queryFn: async () => (await api.get<{ items: Row[]; high_priority: number
-      tolerance_pct: number }>(
+      tolerance_pct: number; revisions: Row[] }>(
       '/execution/sme-link/assigned', { params: { status: 'staged' } })).data,
   })
 
   const queueCols: ColumnsType<Row> = [
-    { title: 'Date', dataIndex: 'work_date', width: 110 },
+    { title: 'Date', dataIndex: 'work_date', width: 110,
+      render: (v, r: Row) => (
+        <Space direction="vertical" size={0}>
+          <span>{s(v).slice(0, 10)}</span>
+          {s(r.reason) === 'edited' && (
+            <Tooltip title="This consumption was already assigned, then its figures were changed in the Excel workbook. It needs assigning again against the new figures.">
+              <Tag color="orange" style={{ marginInlineEnd: 0 }}>Edited in Excel</Tag>
+            </Tooltip>
+          )}
+        </Space>) },
     { title: 'Material', key: 'm', width: 260,
       render: (_: unknown, r: Row) => (
         <Space direction="vertical" size={0}>
@@ -319,8 +439,16 @@ export default function SmeLinkCard() {
             SAP {s(r.sap_code)}{r.material_code ? ` · ${s(r.material_code)}` : ''}
           </Typography.Text>
         </Space>) },
-    { title: 'Drawn', key: 'q', width: 110, align: 'right',
-      render: (_: unknown, r: Row) => <Qty value={r.quantity} unit={s(r.uom)} /> },
+    { title: 'Drawn', key: 'q', width: 140, align: 'right',
+      render: (_: unknown, r: Row) => (s(r.reason) === 'edited'
+        && n(r.prev_qty) !== n(r.quantity)
+        ? <Space direction="vertical" size={0} style={{ alignItems: 'flex-end' }}>
+            <strong><Qty value={r.quantity} unit={s(r.uom)} /></strong>
+            <Typography.Text type="secondary" delete style={{ fontSize: 11 }}>
+              <Qty value={r.prev_qty} unit={s(r.uom)} />
+            </Typography.Text>
+          </Space>
+        : <Qty value={r.quantity} unit={s(r.uom)} />) },
     { title: 'Noted against', dataIndex: 'tank_no', width: 160,
       render: (v) => s(v) || <Typography.Text type="secondary">—</Typography.Text> },
     { title: 'System', key: 'ls', width: 150,
@@ -332,8 +460,38 @@ export default function SmeLinkCard() {
     { title: '', key: 'a', fixed: 'right', width: 120,
       render: (_: unknown, r: Row) => (
         <Button size="small" type="primary" onClick={() => setAssignRow(r)}>
-          Record area
+          {s(r.reason) === 'edited' ? 'Re-assign' : 'Record area'}
         </Button>) },
+  ]
+
+  // ⚠️ BEFORE AND AFTER, SIDE BY SIDE. A revision replaces figures that already
+  // count; an HOD approving one needs to see what it replaces, not just what it
+  // says.
+  const revisionCols: ColumnsType<Row> = [
+    { title: 'Priority', key: 'p', width: 130,
+      render: (_: unknown, r: Row) => <PriorityTag flag={r.Priority_Flag} /> },
+    { title: 'Date', dataIndex: 'entry_date', width: 110 },
+    { title: 'Approved (still counting)', key: 'prev', width: 250,
+      render: (_: unknown, r: Row) => (
+        <Typography.Text type="secondary">
+          {s(r.Prev_Equipment_Tag_No)} · {s(r.Prev_Lining_System_Code)} ·{' '}
+          <Qty value={r.Prev_SQM_Completed} unit="m²" /> · drawn <Qty value={r.Prev_Actual_Qty} />
+        </Typography.Text>) },
+    { title: 'Re-assigned against the edit', key: 'now', width: 270,
+      render: (_: unknown, r: Row) => (
+        <span>
+          {s(r.Equipment_Tag_No)} · {s(r.Lining_System_Code)} ·{' '}
+          <Qty value={r.SQM_Completed} unit="m²" /> · drawn <strong><Qty value={r.Actual_Qty} /></strong>
+          {r.stale ? <Tag color="orange" style={{ marginInlineStart: 6 }}>edited again</Tag> : null}
+        </span>) },
+    { title: 'Variance', key: 'v', width: 120, align: 'right',
+      render: (_: unknown, r: Row) =>
+        <VarTag value={r.Variance_Pct} flag={r.Priority_Flag} /> },
+    { title: 'Filed by', dataIndex: 'submitted_by', width: 120 },
+    { title: '', key: 'a', fixed: 'right', width: 110,
+      render: (_: unknown, r: Row) => (isHod
+        ? <Button size="small" type="primary" onClick={() => setRevisionRow(r)}>Review</Button>
+        : <Typography.Text type="secondary">with the HOD</Typography.Text>) },
   ]
 
   const assignedCols: ColumnsType<Row> = [
@@ -380,6 +538,11 @@ export default function SmeLinkCard() {
                   {' '}Recording an area moves no stock: the material left the
                   store when it was issued.
                 </Typography.Paragraph>
+                {(queue.data?.edited ?? 0) > 0 && (
+                  <Alert type="warning" showIcon style={{ marginBottom: 8 }}
+                    title={`${queue.data?.edited} row(s) marked Edited in Excel`}
+                    description="These were already assigned, then their quantity, date or tank changed in the workbook. Re-assign them against the new figures — the previous answer is filled in for you. A workbook push that changes nothing does not send a row back." />
+                )}
                 <Table size="small" loading={queue.isFetching} columns={queueCols}
                   dataSource={queue.data?.items ?? []}
                   rowKey={(r) => String(r.consumption_id)}
@@ -390,7 +553,8 @@ export default function SmeLinkCard() {
           },
           {
             key: 'staged',
-            label: `Awaiting the HOD (${assigned.data?.items?.length ?? 0})`,
+            label: `Awaiting the HOD (${(assigned.data?.items?.length ?? 0)
+              + (assigned.data?.revisions?.length ?? 0)})`,
             children: (
               <>
                 <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
@@ -405,12 +569,30 @@ export default function SmeLinkCard() {
                   columns={assignedCols} dataSource={assigned.data?.items ?? []}
                   rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
                   pagination={{ pageSize: 10, showTotal: (t) => `${t} awaiting` }} />
+                {(assigned.data?.revisions?.length ?? 0) > 0 && (
+                  <>
+                    <Typography.Title level={5} style={{ marginTop: 16 }}>
+                      Approved, then edited in Excel
+                    </Typography.Title>
+                    <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+                      These were already approved when the workbook changed. The
+                      approved figures keep counting until you approve the new
+                      ones; approving <strong>updates the original entry</strong>
+                      {' '}and moves its area credit by the difference.
+                    </Typography.Paragraph>
+                    <Table size="small" loading={assigned.isFetching}
+                      columns={revisionCols} dataSource={assigned.data?.revisions ?? []}
+                      rowKey={(r) => `rev-${String(r.id)}`} scroll={{ x: 'max-content' }}
+                      pagination={{ pageSize: 10 }} />
+                  </>
+                )}
               </>
             ),
           },
         ]} />
       <AssignModal row={assignRow} onClose={() => setAssignRow(null)} />
       <DecideModal row={decideRow} onClose={() => setDecideRow(null)} />
+      <RevisionModal row={revisionRow} onClose={() => setRevisionRow(null)} />
     </Card>
   )
 }

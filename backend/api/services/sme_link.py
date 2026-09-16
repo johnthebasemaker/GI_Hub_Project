@@ -88,6 +88,7 @@ from ..sme_engine import mat_key, sap_norm
 from .ledger import _MD, write_audit
 
 log_t = _MD.tables["sme_consumption_log"]
+rev_t = _MD.tables["sme_consumption_revision"]
 recipe_t = _MD.tables["sme_recipe"]
 equipment_t = _MD.tables["sme_equipment"]
 
@@ -116,6 +117,56 @@ def is_self_posted(source_ref: Optional[str]) -> bool:
     than writing a query. Both are here so they cannot drift.
     """
     return str(source_ref or "").startswith(SME_EXEC_PREFIX)
+
+
+# ─── what an attribution was measured against (2026-09-16) ───────────────────
+#
+# ⚠️ ONE SQL EXPRESSION, USED AT WRITE TIME AND AT READ TIME, NEVER A PYTHON
+# TWIN. The Excel sync now updates a ledger row IN PLACE when the workbook
+# edits it (its id survives, so the attribution's link survives). The link
+# surviving is exactly why the attribution needs to know the row CHANGED: a
+# variance measured against 30 units must not quietly stand beside a ledger
+# row that now says 45. A Python fingerprint would have to round a float the
+# way Postgres does; a single SQL expression cannot disagree with itself.
+#
+# The four fields are the ones an attribution depends on — when, what, how
+# much, which tank. A Remarks or Issued-To edit changes none of them, so it does
+# not send finished work back to the field: "if the new push is the same as the
+# old entry, do not ask again".
+SOURCE_FP_SQL = (
+    "md5(concat_ws('|', "
+    "left(COALESCE(c.\"Date\", ''), 10), "
+    "REPLACE(TRIM(COALESCE(c.\"SAP_Code\", '')), ' ', ''), "
+    "COALESCE(CAST(ROUND(CAST(c.\"Quantity\" AS NUMERIC), 4) AS TEXT), ''), "
+    "TRIM(COALESCE(c.\"Tank_No\", ''))))")
+
+# Is this attribution out of date with its ledger row? An attribution filed
+# before fingerprints existed has none, so for those the quantity alone is
+# compared — the only field Phase 13 already snapshotted.
+STALE_SQL = (
+    "(CASE WHEN l.\"Source_Fingerprint\" IS NOT NULL "
+    f"      THEN l.\"Source_Fingerprint\" <> {SOURCE_FP_SQL} "
+    "      ELSE ROUND(CAST(COALESCE(l.\"Actual_Qty\", 0) AS NUMERIC), 4) "
+    "        <> ROUND(CAST(COALESCE(c.\"Quantity\", 0) AS NUMERIC), 4) END)")
+
+# A staged revision already answers the edit — as long as it was filed against
+# the ledger row as it is NOW. A revision filed against an earlier edit is
+# itself stale, and the row goes back to the field.
+FRESH_REVISION_SQL = (
+    "EXISTS (SELECT 1 FROM sme_consumption_revision v "
+    "        WHERE v.\"Log_ID\" = l.\"id\" AND v.status = 'staged' "
+    f"          AND v.\"Source_Fingerprint\" = {SOURCE_FP_SQL})")
+
+# Rows that need the field: never attributed, OR attributed and then edited in
+# Excel with no up-to-date answer waiting on the HOD.
+NEEDS_FIELD_SQL = (
+    f"(l.\"id\" IS NULL OR ({STALE_SQL} AND NOT {FRESH_REVISION_SQL}))")
+
+
+async def source_fingerprint(session: AsyncSession, consumption_id: int) -> Optional[str]:
+    return (await session.execute(text(
+        f"SELECT {SOURCE_FP_SQL} FROM consumption c WHERE c.\"id\" = :cid"),
+        {"cid": consumption_id})).scalar()
 
 
 # The sweep. Every Surface Shield consumption row with no attribution row
@@ -171,7 +222,21 @@ SELECT c."id"            AS consumption_id,
        c."Source_Ref"    AS source_ref,
        i."Equipment_Description" AS material_name,
        COALESCE(m.material_code, i."Material_Code") AS material_code,
-       i."UOM"                   AS uom
+       i."UOM"                   AS uom,
+       -- ⚠️ 2026-09-16: an EDITED row carries what it was attributed as, so
+       -- the field re-answers with the old answer in front of them instead of
+       -- starting from nothing.
+       CASE WHEN l."id" IS NULL THEN 'unattributed' ELSE 'edited' END AS reason,
+       l."id"                    AS log_id,
+       l."status"                AS log_status,
+       l."Lining_System_Code"    AS prev_code,
+       l."Equipment_Tag_No"      AS prev_tag,
+       l."SQM_Completed"         AS prev_sqm,
+       l."Actual_Qty"            AS prev_qty,
+       l."Variance_Pct"          AS prev_variance_pct,
+       (SELECT v.rejected_reason FROM sme_consumption_revision v
+         WHERE v."Log_ID" = l."id" AND v.status = 'rejected'
+         ORDER BY v.id DESC LIMIT 1) AS last_revision_rejected_reason
 FROM consumption c
 JOIN inventory i
   ON REPLACE(TRIM(i."SAP_Code"), ' ', '') = REPLACE(TRIM(c."SAP_Code"), ' ', '')
@@ -180,7 +245,7 @@ LEFT JOIN ({_MAT_BY_SAP}) m
 LEFT JOIN sme_consumption_log l
   ON l."Consumption_ID" = c."id"
 WHERE LOWER(TRIM(i."Category")) = LOWER(:category)
-  AND l."id" IS NULL
+  AND {NEEDS_FIELD_SQL}
   AND {EXCLUDE_SELF_SQL}
   {{site}}
 ORDER BY c."Date" ASC, c."id" ASC
@@ -188,14 +253,15 @@ LIMIT :limit OFFSET :offset
 '''
 
 COUNT_SQL = f'''
-SELECT COUNT(*)
+SELECT COUNT(*),
+       COUNT(*) FILTER (WHERE l."id" IS NOT NULL)
 FROM consumption c
 JOIN inventory i
   ON REPLACE(TRIM(i."SAP_Code"), ' ', '') = REPLACE(TRIM(c."SAP_Code"), ' ', '')
 LEFT JOIN sme_consumption_log l
   ON l."Consumption_ID" = c."id"
 WHERE LOWER(TRIM(i."Category")) = LOWER(:category)
-  AND l."id" IS NULL
+  AND {NEEDS_FIELD_SQL}
   AND {EXCLUDE_SELF_SQL}
   {{site}}
 '''
@@ -221,10 +287,10 @@ async def sweep(session: AsyncSession, *, site_id: Optional[str],
 
     rows = (await session.execute(
         text(SWEEP_SQL.format(site=where_site)), params)).mappings().all()
-    total = (await session.execute(
+    total, edited = (await session.execute(
         text(COUNT_SQL.format(site=where_site)),
         {k: v for k, v in params.items()
-         if k not in ("limit", "offset")})).scalar_one()
+         if k not in ("limit", "offset")})).one()
 
     items = []
     for r in rows:
@@ -236,8 +302,8 @@ async def sweep(session: AsyncSession, *, site_id: Optional[str],
         # `hint_system_code`.
         d["hinted_system_code"] = hint_system_code(d.get("remarks"))
         items.append(d)
-    return {"items": items, "total": int(total), "category": category,
-            "limit": int(limit), "offset": int(offset)}
+    return {"items": items, "total": int(total), "edited": int(edited or 0),
+            "category": category, "limit": int(limit), "offset": int(offset)}
 
 
 def hint_system_code(remarks: Optional[str]) -> Optional[str]:
@@ -487,12 +553,20 @@ async def assign(session: AsyncSession, *, consumption_id: int, code: str,
                  "the printed form. Attributing it again would credit the same "
                  "material against the same tag twice.")
 
-    dup = (await session.execute(
-        select(log_t.c["id"]).where(log_t.c["Consumption_ID"] == consumption_id)
-    )).scalar()
-    if dup:
+    # ⚠️ 2026-09-16: AN EXISTING ATTRIBUTION IS REFUSED ONLY WHILE IT IS STILL
+    # TRUE. When the Excel sync has since edited this ledger row (same id, new
+    # quantity or tank), the attribution was measured against figures that no
+    # longer exist, and the field is asked again — the operator's requirement.
+    # When the sync left the row alone, the answer stands and is NOT re-asked.
+    existing = (await session.execute(text(
+        f'SELECT l.*, {STALE_SQL} AS stale FROM sme_consumption_log l '
+        f'JOIN consumption c ON c."id" = l."Consumption_ID" '
+        f'WHERE l."Consumption_ID" = :cid ORDER BY l."id" LIMIT 1'),
+        {"cid": consumption_id})).mappings().first()
+    if existing is not None and not existing["stale"]:
         raise HTTPException(
-            409, f"that consumption has already been attributed (row {dup}).")
+            409, f"that consumption has already been attributed (row "
+                 f"{existing['id']}), and its ledger row has not changed since.")
 
     code = (code or "").strip()
     tag = (tag or "").strip()
@@ -531,6 +605,14 @@ async def assign(session: AsyncSession, *, consumption_id: int, code: str,
     var = variance_pct(actual, expected)
     tol = await tolerance_pct(session)
     flag = classify(var, tol)
+    fp = await source_fingerprint(session, consumption_id)
+
+    if existing is not None:
+        return await _reassign(
+            session, existing=dict(existing), consumption_id=consumption_id,
+            code=code, tag=tag, sqm=sqm, actual=actual, expected=expected,
+            var=var, rate=rate, flag=flag, tol=tol, fp=fp, notes=notes,
+            username=username)
 
     new_id = (await session.execute(insert(log_t).values(
         batch_id=f"SWEEP:{consumption_id}",
@@ -549,6 +631,7 @@ async def assign(session: AsyncSession, *, consumption_id: int, code: str,
         Bench_For_1_SQM=rate,
         Priority_Flag=flag,
         Variance_Tolerance_Pct=tol,
+        Source_Fingerprint=fp,
         notes=notes,
         # ⚠️ `staged`, NOT `committed`. EVERY row goes to the HOD regardless of
         # variance (ruling Q13-8) — there is no auto-commit band, so nothing
@@ -675,6 +758,21 @@ async def decide(session: AsyncSession, *, log_id: int, approve: bool,
             409, f"attribution {log_id} is already {row['status']} — a "
                  f"decision is taken once. Raise a stock adjustment if the "
                  f"physical figure is wrong.")
+
+    # ⚠️ 2026-09-16: NOT AGAINST FIGURES THAT NO LONGER EXIST. If the Excel sync
+    # edited the ledger row after this was filed, its variance was measured
+    # against a quantity the ledger no longer holds. Approving it would credit
+    # an area and publish a variance for a draw that did not happen that way.
+    stale = (await session.execute(text(
+        f'SELECT {STALE_SQL} FROM sme_consumption_log l '
+        f'JOIN consumption c ON c."id" = l."Consumption_ID" WHERE l."id" = :i'),
+        {"i": log_id})).scalar()
+    if approve and stale:
+        raise HTTPException(
+            409, "the consumption behind this was EDITED in the Excel workbook "
+                 "after it was filed, so its figures are out of date. It is back "
+                 "in the field's queue marked Edited — approve it once it has "
+                 "been re-assigned against the new figures.")
 
     edits = dict(edits or {})
     bad = [k for k in edits if k in REFUSED]
@@ -850,3 +948,358 @@ async def consumed_by_component(session: AsyncSession,
              "consumed_qty": float(r["consumed_qty"] or 0),
              "consumed_sqm": float(r["consumed_sqm"] or 0),
              "rows_committed": int(r["rows_committed"] or 0)} for r in rows]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 2026-09-16 — consumption EDITED in Excel after it was attributed
+# ══════════════════════════════════════════════════════════════════════════
+#
+# The operator's requirement, in their order:
+#
+#   1. the Excel sync changes a value that was already attributed →
+#      the row comes back to the field, HIGHLIGHTED as edited;
+#   2. the field assigns system code, equipment and SQM again;
+#   3. the HOD is notified and decides;
+#   4. on approval THE OLD ENTRY IS UPDATED with the new values — not a second
+#      attribution beside it;
+#   5. a sync that pushes the same values as before asks nothing again.
+#
+# (5) is the fingerprint's job. (1)–(4) are below, and they split on whether an
+# HOD had already approved the attribution, because approval is what made its
+# figures count.
+
+async def _notify_hod(session: AsyncSession, *, site_id: str, log_id: int,
+                      title: str, body: str, username: str) -> None:
+    """Bell (and best-effort WhatsApp) to the site's HODs. Never fatal."""
+    from .notifications import dispatch
+    try:
+        await dispatch(session, event_key="sme_link_edited", title=title,
+                       body=body, recipient_role="hod", recipient_site=site_id,
+                       link_page="/execution",
+                       related_table="sme_consumption_log",
+                       related_ref=str(log_id), created_by=username)
+    except Exception:                                     # noqa: BLE001
+        # A messaging failure must never undo the field's submission — the
+        # same contract `dispatch` itself keeps for WhatsApp.
+        pass
+
+
+async def _reassign(session: AsyncSession, *, existing: dict,
+                    consumption_id: int, code: str, tag: str, sqm: float,
+                    actual: float, expected: Optional[float],
+                    var: Optional[float], rate: Optional[float], flag: str,
+                    tol: float, fp: Optional[str], notes: Optional[str],
+                    username: str) -> dict:
+    """The field's new answer for a consumption the Excel sync edited.
+
+    ⚠️ NOT YET APPROVED (staged, or rejected) → THE ATTRIBUTION IS UPDATED IN
+    PLACE and stays with the HOD. Nothing it said has counted yet, so there is
+    nothing to protect, and a second row would give the HOD two proposals for
+    one drum.
+
+    ⚠️ ALREADY APPROVED (committed) → A REVISION IS STAGED BESIDE IT. The
+    approved figures have already credited `Done_SQM` and count in
+    `Consumed_Qty`; until an HOD approves the new ones, the old ones stand —
+    approval is what makes a number count, and that does not stop being true
+    because a spreadsheet changed. `decide_revision` then updates THIS SAME
+    ROW in place and moves the progress credit by the difference.
+    """
+    log_id = int(existing["id"])
+    site = existing["Site_ID"]
+
+    if existing["status"] in ("staged", "rejected"):
+        await session.execute(update(log_t).where(log_t.c["id"] == log_id).values(
+            Equipment_Tag_No=tag, Lining_System_Code=code, SQM_Completed=sqm,
+            Expected_Qty=expected or 0.0, Actual_Qty=actual, Variance_Pct=var,
+            Bench_For_1_SQM=rate, Priority_Flag=flag,
+            Variance_Tolerance_Pct=tol, Source_Fingerprint=fp,
+            notes=(notes if notes is not None else existing.get("notes")),
+            entered_by=username, status="staged",
+            # A rejection answered a question the edit has since changed.
+            rejected_at=None, rejected_reason=None,
+            hod_username=None, hod_decided_at=None))
+        await write_audit(
+            session, username, "SME_LINK_REASSIGN", "sme_consumption_log",
+            f"id={log_id} consumption={consumption_id} edited in Excel; was "
+            f"{existing['Equipment_Tag_No']}/{existing['Lining_System_Code']} "
+            f"sqm={float(existing['SQM_Completed'] or 0):g} "
+            f"qty={float(existing['Actual_Qty'] or 0):g} → {tag}/{code} "
+            f"sqm={sqm:g} qty={actual:g} [{flag}]")
+        await _notify_hod(
+            session, site_id=site, log_id=log_id,
+            title="Edited consumption re-assigned",
+            body=f"A Surface Shield consumption changed in Excel was re-assigned "
+                 f"to {tag} / {code}, {sqm:g} m² — review it.",
+            username=username)
+        return {"id": log_id, "Consumption_ID": consumption_id,
+                "status": "staged", "revision": None, "reassigned": True,
+                "Lining_System_Code": code, "Equipment_Tag_No": tag,
+                "SQM_Completed": sqm, "Actual_Qty": actual,
+                "Expected_Qty": expected, "Variance_Pct": var,
+                "Bench_For_1_SQM": rate, "Priority_Flag": flag,
+                "Variance_Tolerance_Pct": tol}
+
+    vals = dict(
+        Log_ID=log_id, Consumption_ID=consumption_id, Site_ID=site,
+        Prev_Lining_System_Code=existing["Lining_System_Code"],
+        Prev_Equipment_Tag_No=existing["Equipment_Tag_No"],
+        Prev_SQM_Completed=existing["SQM_Completed"],
+        Prev_Actual_Qty=existing["Actual_Qty"],
+        Prev_Variance_Pct=existing["Variance_Pct"],
+        Prev_Source_Fingerprint=existing.get("Source_Fingerprint"),
+        Lining_System_Code=code, Equipment_Tag_No=tag, SQM_Completed=sqm,
+        Actual_Qty=actual, Expected_Qty=expected, Variance_Pct=var,
+        Bench_For_1_SQM=rate, Priority_Flag=flag, Variance_Tolerance_Pct=tol,
+        Source_Fingerprint=fp or "", notes=notes, submitted_by=username,
+        status="staged")
+    staged_id = (await session.execute(
+        select(rev_t.c["id"]).where(rev_t.c["Log_ID"] == log_id,
+                                    rev_t.c["status"] == "staged"))).scalar()
+    if staged_id:
+        # ONE staged revision per attribution: a resubmission replaces it.
+        await session.execute(update(rev_t).where(rev_t.c["id"] == staged_id)
+                              .values(**vals, submitted_at=func.now()))
+        rev_id = int(staged_id)
+    else:
+        rev_id = (await session.execute(insert(rev_t).values(**vals)
+                  .returning(rev_t.c["id"]))).scalar_one()
+    await write_audit(
+        session, username, "SME_LINK_REVISION", "sme_consumption_revision",
+        f"rev={rev_id} log={log_id} consumption={consumption_id} edited in "
+        f"Excel after approval; approved {existing['Equipment_Tag_No']}/"
+        f"{existing['Lining_System_Code']} sqm="
+        f"{float(existing['SQM_Completed'] or 0):g} qty="
+        f"{float(existing['Actual_Qty'] or 0):g} stands until the HOD decides "
+        f"→ proposed {tag}/{code} sqm={sqm:g} qty={actual:g} [{flag}]")
+    await _notify_hod(
+        session, site_id=site, log_id=log_id,
+        title="Approved consumption changed in Excel",
+        body=f"An approved Surface Shield attribution was edited in the workbook "
+             f"and re-assigned ({tag} / {code}, {sqm:g} m²). The approved "
+             f"figures stand until you approve the new ones.",
+        username=username)
+    return {"id": log_id, "Consumption_ID": consumption_id,
+            "status": "committed", "revision": rev_id, "reassigned": True,
+            "Lining_System_Code": code, "Equipment_Tag_No": tag,
+            "SQM_Completed": sqm, "Actual_Qty": actual,
+            "Expected_Qty": expected, "Variance_Pct": var,
+            "Bench_For_1_SQM": rate, "Priority_Flag": flag,
+            "Variance_Tolerance_Pct": tol}
+
+
+async def decide_revision(session: AsyncSession, *, rev_id: int, approve: bool,
+                          edits: Optional[dict], justification: str,
+                          reject_reason: str, username: str,
+                          site_id: Optional[str]) -> dict:
+    """HOD: approve a revision onto its attribution, or reject it.
+
+    ⚠️ APPROVAL UPDATES THE ORIGINAL ATTRIBUTION IN PLACE — the operator's
+    requirement — and moves the progress credit by the DIFFERENCE. The old
+    area is taken back off the (tag, system) it was credited to and the new
+    area credited, both through `execution.credit_done_sqm`, so a revision that
+    keeps the tag and grows 40 → 55 m² moves `Done_SQM` by exactly +15, and one
+    that moves the work to another tank moves the 40 with it.
+
+    ⚠️ REJECTION LEAVES THE APPROVED FIGURES STANDING — and the row, still out
+    of date with its ledger row, goes straight back to the field with the
+    reason attached. A rejected revision is not the end of the question; the
+    workbook still says something the attribution does not.
+
+    The quantity is refused here exactly as on `decide`: the drum left the
+    shelf when it was issued.
+    """
+    from . import execution as X
+
+    rev = (await session.execute(
+        select(rev_t).where(rev_t.c["id"] == rev_id))).mappings().first()
+    if rev is None or (site_id is not None and rev["Site_ID"] != site_id):
+        raise HTTPException(404, f"revision {rev_id} not found")
+    if rev["status"] != "staged":
+        raise HTTPException(409, f"revision {rev_id} is already {rev['status']}.")
+    log = (await session.execute(
+        select(log_t).where(log_t.c["id"] == rev["Log_ID"]))).mappings().first()
+    if log is None or log["status"] != "committed":
+        raise HTTPException(409, "the attribution this revises is no longer an "
+                                 "approved one.")
+
+    edits = dict(edits or {})
+    bad = [k for k in edits if k in REFUSED]
+    if bad:
+        raise HTTPException(
+            422, f"{', '.join(sorted(bad))} cannot be edited here. The material "
+                 f"left the shelf when it was issued, so this approval settles "
+                 f"the area and the explanation, not the quantity. A physical "
+                 f"correction is a stock adjustment.")
+    unknown = [k for k in edits if k not in EDITABLE]
+    if unknown:
+        raise HTTPException(422, f"{', '.join(sorted(unknown))} is not something "
+                                 f"this screen edits. Editable: "
+                                 f"{', '.join(EDITABLE)}.")
+
+    if not approve:
+        reason = (reject_reason or "").strip()
+        if not reason:
+            raise HTTPException(422, "a rejection needs a reason — the field has "
+                                     "to know what to do differently.")
+        await session.execute(update(rev_t).where(rev_t.c["id"] == rev_id).values(
+            status="rejected", rejected_reason=reason, hod_username=username,
+            hod_decided_at=func.now()))
+        await write_audit(session, username, "SME_LINK_REVISION_REJECT",
+                          "sme_consumption_revision",
+                          f"rev={rev_id} log={rev['Log_ID']} — {reason[:160]}")
+        return {"id": rev_id, "status": "rejected", "reason": reason}
+
+    # ⚠️ THE REVISION MUST STILL DESCRIBE THE LEDGER ROW. If the workbook was
+    # edited AGAIN after the field re-assigned, this proposal is itself stale.
+    now_fp = await source_fingerprint(session, int(rev["Consumption_ID"]))
+    if now_fp != rev["Source_Fingerprint"]:
+        raise HTTPException(
+            409, "the consumption changed in Excel again after this was "
+                 "re-assigned, so these figures are already out of date. It is "
+                 "back in the field's queue.")
+
+    edited = bool(edits)
+    if edited and not (justification or "").strip():
+        raise HTTPException(422, "changing a filed figure needs a written reason.")
+
+    code = str(edits.get("Lining_System_Code") or rev["Lining_System_Code"]).strip()
+    tag = str(edits.get("Equipment_Tag_No") or rev["Equipment_Tag_No"]).strip()
+    sqm = float(edits.get("SQM_Completed", rev["SQM_Completed"]) or 0)
+    if sqm <= 0:
+        raise HTTPException(422, "the area covered must be greater than zero. "
+                                 "Reject the revision instead if the material "
+                                 "was not applied.")
+    pair = (await session.execute(
+        select(func.count()).select_from(equipment_t)
+        .where(equipment_t.c["Site_ID"] == rev["Site_ID"],
+               equipment_t.c["Equipment_Tag_No"] == tag,
+               equipment_t.c["Lining_System_Code"] == code))).scalar_one()
+    if not pair:
+        raise HTTPException(422, f"{tag} does not carry system code {code} at "
+                                 f"{rev['Site_ID']}.")
+
+    rate, expected, var, flag = (rev["Bench_For_1_SQM"], rev["Expected_Qty"],
+                                 rev["Variance_Pct"], rev["Priority_Flag"])
+    if edited:
+        if code != rev["Lining_System_Code"]:
+            rate = await recipe_rate(session, code=code,
+                                     material_code=log["Material_Code"],
+                                     sap_code=log["SAP_Code"])
+        expected = None if rate is None else round(float(rate) * sqm, 4)
+        var = variance_pct(float(rev["Actual_Qty"] or 0), expected)
+        flag = classify(var, float(rev["Variance_Tolerance_Pct"]
+                                   or DEFAULT_TOLERANCE_PCT))
+
+    # ── move the progress credit by the difference ──────────────────────────
+    old_sqm = float(log["SQM_Completed"] or 0)
+    if old_sqm:
+        await X.credit_done_sqm(session, site_id=log["Site_ID"],
+                                tag=log["Equipment_Tag_No"],
+                                code=log["Lining_System_Code"], sqm=-old_sqm)
+    await X.credit_done_sqm(session, site_id=log["Site_ID"], tag=tag, code=code,
+                            sqm=sqm)
+
+    # ── the ORIGINAL attribution takes the new values ───────────────────────
+    await session.execute(update(log_t).where(log_t.c["id"] == log["id"]).values(
+        Lining_System_Code=code, Equipment_Tag_No=tag, SQM_Completed=sqm,
+        Actual_Qty=rev["Actual_Qty"], Expected_Qty=expected or 0.0,
+        Variance_Pct=var, Bench_For_1_SQM=rate, Priority_Flag=flag,
+        Variance_Tolerance_Pct=rev["Variance_Tolerance_Pct"],
+        Source_Fingerprint=rev["Source_Fingerprint"],
+        notes=(edits.get("notes") if "notes" in edits else
+               (rev["notes"] if rev["notes"] is not None else log["notes"])),
+        hod_username=username, hod_decided_at=func.now(),
+        committed_at=func.now(),
+        hod_edited=edited or bool(log["hod_edited"]),
+        HOD_Edit_Justification=((justification or "").strip() or
+                                log["HOD_Edit_Justification"])))
+    await session.execute(update(rev_t).where(rev_t.c["id"] == rev_id).values(
+        status="approved", hod_username=username, hod_decided_at=func.now(),
+        hod_edited=edited,
+        HOD_Edit_Justification=(justification or "").strip() or None,
+        Lining_System_Code=code, Equipment_Tag_No=tag, SQM_Completed=sqm,
+        Expected_Qty=expected, Variance_Pct=var, Bench_For_1_SQM=rate,
+        Priority_Flag=flag))
+    await write_audit(
+        session, username, "SME_LINK_REVISION_APPROVE", "sme_consumption_log",
+        f"log={log['id']} rev={rev_id}: {log['Equipment_Tag_No']}/"
+        f"{log['Lining_System_Code']} sqm={old_sqm:g} qty="
+        f"{float(log['Actual_Qty'] or 0):g} → {tag}/{code} sqm={sqm:g} qty="
+        f"{float(rev['Actual_Qty'] or 0):g}")
+    return {"id": rev_id, "log_id": int(log["id"]), "status": "approved",
+            "Lining_System_Code": code, "Equipment_Tag_No": tag,
+            "SQM_Completed": sqm, "Actual_Qty": rev["Actual_Qty"],
+            "Done_SQM_moved": {"debited": old_sqm, "credited": sqm}}
+
+
+async def staged_revisions(session: AsyncSession, *,
+                           site_id: Optional[str]) -> list[dict]:
+    """Revisions awaiting the HOD, High Priority first — with before/after."""
+    params: dict = {}
+    where = "v.status = 'staged'"
+    if site_id is not None:
+        where += ' AND v."Site_ID" = :site'
+        params["site"] = site_id
+    rows = (await session.execute(text(
+        'SELECT v.*, l."entry_date", l."Material_Code", l."SAP_Code", '
+        f'       l."entered_by", ({SOURCE_FP_SQL}) <> v."Source_Fingerprint" '
+        '         AS stale '
+        'FROM sme_consumption_revision v '
+        'JOIN sme_consumption_log l ON l."id" = v."Log_ID" '
+        'JOIN consumption c ON c."id" = v."Consumption_ID" '
+        f'WHERE {where} '
+        "ORDER BY CASE WHEN v.\"Priority_Flag\" = 'HIGH' THEN 0 ELSE 1 END, "
+        '         l."entry_date" ASC, v."id" ASC'), params)).mappings().all()
+    out = []
+    for r in rows:
+        d = dict(r)
+        for k in ("submitted_at", "hod_decided_at"):
+            if d.get(k) is not None:
+                d[k] = str(d[k])
+        out.append(d)
+    return out
+
+
+async def stale_attributions(session: AsyncSession, *,
+                             consumption_ids: list[int]) -> list[dict]:
+    """Attributions the ledger rows `consumption_ids` have just made out of date.
+
+    For the Excel sync's report and its notification. Read-only.
+    """
+    if not consumption_ids:
+        return []
+    rows = (await session.execute(text(
+        'SELECT l."id", l."Consumption_ID", l."Site_ID", l."status", '
+        '       l."Equipment_Tag_No", l."Lining_System_Code", l."Actual_Qty", '
+        '       c."Quantity" AS now_qty '
+        'FROM sme_consumption_log l '
+        'JOIN consumption c ON c."id" = l."Consumption_ID" '
+        'WHERE l."Consumption_ID" = ANY(:ids) '
+        "  AND l.\"status\" IN ('staged', 'committed') "
+        f' AND {STALE_SQL}'), {"ids": list(consumption_ids)})).mappings().all()
+    return [dict(r) for r in rows]
+
+
+async def notify_sync_edits(session: AsyncSession, *, stale: list[dict],
+                            username: str) -> int:
+    """One bell per site: 'N attributed consumption rows changed in Excel'.
+
+    One message per SYNC, not per row — a re-sync that edits forty rows is one
+    event to an HOD, and forty identical bells is how a notification stops
+    being read.
+    """
+    by_site: dict[str, list[dict]] = {}
+    for s in stale:
+        by_site.setdefault(s["Site_ID"], []).append(s)
+    for site, rows in by_site.items():
+        approved = sum(1 for r in rows if r["status"] == "committed")
+        await _notify_hod(
+            session, site_id=site, log_id=int(rows[0]["id"]),
+            title="Excel sync changed attributed consumption",
+            body=(f"{len(rows)} Surface Shield consumption row(s) that already "
+                  f"had a system code, equipment and area were edited in the "
+                  f"workbook ({approved} of them approved). They are back in the "
+                  f"field's queue marked Edited; approved figures stand until "
+                  f"you approve the re-assignment."),
+            username=username)
+    return len(by_site)

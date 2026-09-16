@@ -159,6 +159,27 @@ booklet. Regenerate PDFs with `.venv/bin/python build_manual_pdf.py --role all`.
 
 ---
 
+## The ledger sync upserts on a ROW LABEL — never make a movement unique
+
+*Locked 2026-09-16. Full text: `PROJECT_HANDOVER.md` §3a. Suite DC.*
+
+* **Never add a unique key on (Date, SAP, Tank No.)**, with or without quantity.
+  Measured: 2,785 of the real workbook's 4,394 consumption rows share one with
+  another row. Two identical drums are two movements.
+* The only unique index a ledger may carry is the PARTIAL one on
+  `(Site_ID, Source_Ref) WHERE Source_Ref LIKE 'XLSX:%'`. Suites AW and BE fail
+  on any other.
+* ⚠️ **Its `ON CONFLICT` predicate must be a SQL literal.** As a bound parameter
+  it works for five batches and fails on the sixth, when the prepared statement
+  goes generic and Postgres can no longer prove the partial index applies.
+* **Never relabel or rewrite an app-posted row** (`SME_EXEC:`, `SMR:`, stock
+  adjustments). Relabelling `SME_EXEC:` breaks the Phase 13 exclusion predicate.
+* **An in-place edit keeps the row id on purpose** — that is what keeps a Phase 13
+  attribution linked. Staleness is detected by `sme_link.SOURCE_FP_SQL`, one SQL
+  expression used at write and read time; do not add a Python twin.
+
+---
+
 ## Rule 14 — navigation access is a ROLE MATRIX, and it fails closed
 
 * A page names **the jobs that need it** (`anyRole`). `minLevel` is a seniority

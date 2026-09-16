@@ -1114,6 +1114,37 @@ An admin can change the band. Doing so re-orders the queue and **changes
 nothing about rows already filed** — each one keeps the reading it was measured
 against at the time.
 
+### 4.9a.5 ⚠️ When the Excel workbook changes a row that was already assigned
+
+The Excel sync now **updates a row in place** when you edit it in the workbook.
+It never adds a second copy of the same consumption, and it never deletes or
+detaches the system code, equipment and area already recorded against it.
+
+**If the edit changes the quantity, date or tank**, the area recorded against
+that consumption was measured against figures that no longer exist. So:
+
+1. The row comes back to the queue marked **Edited in Excel**, showing the new
+   quantity with the old one struck through.
+2. Press **Re-assign**. The previous system code, equipment and area are filled
+   in — confirm them or correct them.
+3. The HOD is notified and decides.
+4. If the HOD had **already approved** the old figures, those keep counting until
+   the new ones are approved. On approval the **original entry is updated** with
+   the new figures, and the equipment's completed area moves by the difference
+   only — it is never counted twice.
+5. If the HOD rejects the re-assignment, the approved figures stay and the row
+   returns to the queue with the HOD's reason.
+
+**If the edit changes nothing** that the assignment depends on — or you push the
+same workbook again — **nothing is asked again**. Editing Remarks, Received by or
+Prepared by never sends a row back.
+
+⚠️ **Changing a row's Date in the workbook makes it a different row.** The sync
+keeps the old one and reports it as *vanished* rather than deleting it, because
+a deleted row could take somebody's work with it. An administrator can remove
+vanished rows with the sync's `--prune-vanished` option, which only deletes rows
+nothing is attached to.
+
 ## 4.10 Filing a consumption form
 
 **Where:** Execution Entries (`/execution`).

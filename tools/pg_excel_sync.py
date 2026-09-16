@@ -78,12 +78,30 @@ Re-running with --commit is a no-op. Proven by suite AW in service_tests.
     every table has a real natural key, so ON CONFLICT DO UPDATE genuinely
     converges. The SET clause is COALESCE(excluded.col, table.col): a column
     the workbook leaves blank never erases data already in the DB.
-  * Ledger (receipts / consumption / returns) — these tables have NO unique
-    constraint; their PK is a surrogate `id` and the same (date, SAP, qty)
-    line can legitimately appear twice. ON CONFLICT is therefore impossible
-    here and is NOT faked. Idempotency comes from `plan_ledger`'s reconcile,
-    which consumes exact matches before proposing an insert. Never "fix" this
-    by adding a unique index — it would reject genuine duplicate movements.
+  * Ledger (receipts / consumption / returns) — ⚠️ REWRITTEN 2026-09-16.
+    There is still NO uniqueness on a MOVEMENT, and there must never be:
+    (Date, SAP, Tank No.) is shared by 2,785 of the real Consumption Log's
+    4,394 rows, and two identical drums are two real movements. What IS
+    unique is a per-row PROVENANCE LABEL the sync writes into `Source_Ref`:
+
+        XLSX:<site>:<kind>:<day>:<sap>:<hash of Tank No./DN No./Reason>:<n>
+
+    `<n>` is allocated once and never renumbered, so genuine duplicates are
+    `:1` and `:2`. A partial unique index on (Site_ID, Source_Ref) WHERE it
+    starts `XLSX:` makes the write a true `INSERT … ON CONFLICT DO UPDATE`:
+    a re-run converges to zero writes, and an edited quantity updates the
+    SAME row id — which is what keeps every Phase 13 attribution linked.
+
+    Each run MATCHES workbook lines to rows inside a (day, SAP, ref) group,
+    strongest evidence first (identical → same quantity → quantity edited →
+    ref edited), then writes. Rows the APP posted (`SME_EXEC:`, `SMR:`, stock
+    adjustments) may absorb an identical workbook line but are never rewritten
+    or relabelled; a disagreement is reported as a CONFLICT. A labelled row the
+    workbook no longer names is reported as VANISHED and kept, unless
+    `--prune-vanished` is given — which deletes only rows nothing references,
+    and refuses a workbook that looks truncated unless `--force-prune`.
+    Both the CLI and `POST /import/ledger` call `bulk_import.apply_ledger`;
+    there is one ledger writer. Proven by suite DC.
   * One caveat, reported at runtime: `sme_recipe`'s natural key includes
     SAP_Code, and Postgres treats NULLs as distinct in a unique constraint.
     A recipe line with no SAP_Code cannot be caught by ON CONFLICT. The plan
@@ -355,41 +373,28 @@ async def apply_master(session, kind: str, plan: dict, username: str,
 
 
 async def apply_ledger(session, plan: dict, username: str) -> dict:
-    """Append-only ledger apply. No ON CONFLICT — see the module docstring:
-    receipts/consumption/returns have no unique constraint, and adding one
-    would reject genuine same-day duplicate movements."""
-    from sqlalchemy import insert as sa_insert
-    from sqlalchemy import update as sa_update
+    """Delegates to `bulk_import.apply_ledger` — THE one ledger writer.
 
+    This file used to keep its own append-only copy beside the HTTP import's,
+    and the two differed (this one counted, that one did not). A ledger
+    written two ways is a ledger that can drift two ways, so both now call the
+    same function: stamp labels by id, then one `INSERT … ON CONFLICT
+    (Site_ID, Source_Ref) DO UPDATE` per batch. See its docstring.
+    """
     import backend.api.bulk_import as bi
-    from backend.api.services.ledger import write_audit
-
-    counts = {"inserted": 0, "corrected": 0}
-    for kind, spec in bi._LEDGER_SHEETS.items():
-        section = plan["sections"].get(kind) or {}
-        table = spec["table"]
-        for row in section.get("inserts", []):
-            await session.execute(sa_insert(table).values(**row))
-        for c in section.get("corrections", []):
-            await session.execute(sa_update(table)
-                                  .where(table.c["id"] == c["id"])
-                                  .values(Quantity=c["qty_to"]))
-        counts["inserted"] += len(section.get("inserts", []))
-        counts["corrected"] += len(section.get("corrections", []))
-        if section.get("inserts") or section.get("corrections"):
-            await write_audit(session, username, "BULK_IMPORT_LEDGER", table.name,
-                              f"pg_excel_sync: +{len(section['inserts'])} rows, "
-                              f"{len(section['corrections'])} qty corrections")
-    return counts
+    return await bi.apply_ledger(session, plan, username)
 
 
 # ─── reporting ───────────────────────────────────────────────────────────────
 def format_summary(summary) -> str:
     if isinstance(summary, dict) and "receipts" in summary:
         return "\n      ".join(
-            f"{k:12s} +{v['inserts']} new  ~{v['corrections']} corrected  "
-            f"={v['matched']} matched  0skip={v['zero_skipped']}  "
-            f"dbonly={v['db_only']}" for k, v in summary.items())
+            f"{k:12s} +{v['inserts']} new  ~{v.get('updates', 0)} edited "
+            f"(qty {v['corrections']})  ={v['matched']} unchanged  "
+            f"adopted={v.get('adopted', 0)}  relabelled={v.get('relabelled', 0)}  "
+            f"conflicts={v.get('conflicts', 0)}  vanished={v.get('vanished', 0)}  "
+            f"0skip={v['zero_skipped']}  dbonly={v['db_only']}"
+            for k, v in summary.items())
     return (f"+{summary['inserts']} new  ~{summary['updates']} changed  "
             f"={summary['unchanged']} unchanged  "
             f"rejected={summary['rejects']}")
@@ -495,6 +500,14 @@ async def main() -> int:
     ap.add_argument("--force-drop-progress", action="store_true",
                     help="let --sme-reseed drop progress rows that hold "
                          "recorded Done_SQM (otherwise the run aborts)")
+    ap.add_argument("--prune-vanished", action="store_true",
+                    help="DELETE ledger rows this sync wrote earlier that the "
+                         "workbook no longer names (a Date or SAP edit looks "
+                         "like this) — only rows nothing references; an "
+                         "attributed row is kept and reported. Off by default.")
+    ap.add_argument("--force-prune", action="store_true",
+                    help="let --prune-vanished run even when so many rows are "
+                         "missing that the workbook looks truncated")
     ap.add_argument("--user", default="pg-excel-sync",
                     help="username stamped on the audit rows")
     args = ap.parse_args()
@@ -653,6 +666,17 @@ async def main() -> int:
 
             for w in plan.get("warnings", []):
                 print(f"      ⚠ {w}")
+            if kind == "ledger":
+                for _k, _sec in plan["sections"].items():
+                    for c in _sec.get("conflicts", [])[:10]:
+                        print(f"        ✗ {_k} id {c['id']} {c['date']} SAP {c['sap']}"
+                              f" {c['ref'] or ''}: workbook {c['workbook_qty']:g}"
+                              f" vs app {c['app_qty']:g} ({c['source_ref'] or 'app row'})"
+                              f" — not changed")
+                    for v in _sec.get("vanished", [])[:10]:
+                        print(f"        · {_k} id {v['id']} {v['date']} SAP {v['sap']}"
+                              f" {v['ref'] or ''} qty {v['qty']:g} — no longer in"
+                              f" the workbook, NOT deleted")
             for rej in plan.get("rejects", [])[:10]:
                 print(f"      ✗ {rej}")
             if len(plan.get("rejects", [])) > 10:
@@ -692,7 +716,48 @@ async def main() -> int:
 
             if args.commit:
                 if kind == "ledger":
+                    if args.prune_vanished:
+                        _why = bi.prune_guard(plan)
+                        if _why and not args.force_prune:
+                            print("\n❌ --prune-vanished refused — nothing was "
+                                  "written:")
+                            for w in _why:
+                                print(f"   {w}")
+                            print("   Check the workbook is complete, or re-run "
+                                  "with --force-prune once you accept it.")
+                            await session.rollback()
+                            return 4
                     totals[kind] = await apply_ledger(session, plan, args.user)
+                    if args.prune_vanished:
+                        _pr = await bi.prune_vanished(session, plan, args.user)
+                        for _k, _r in _pr.items():
+                            print(f"      ✂ {_k}: pruned {len(_r['deleted'])} vanished "
+                                  f"row(s); kept {len(_r['kept'])} still referenced")
+                            for _kept in _r["kept"][:10]:
+                                print(f"          kept id {_kept['id']} — {_kept['reason']}")
+                        totals[kind]["pruned"] = sum(len(r["deleted"])
+                                                     for r in _pr.values())
+                    # ⚠️ 2026-09-16: an in-place edit keeps the row's id, so a
+                    # Phase 13 attribution stays linked — and is now measured
+                    # against figures the ledger no longer holds. Say which, and
+                    # tell the HODs once per site rather than once per row.
+                    from backend.api.services import sme_link as _sl
+                    _stale = await _sl.stale_attributions(
+                        session, consumption_ids=totals[kind]["updated_ids"]
+                        .get("consumption", []))
+                    if _stale:
+                        print(f"      ⚠ {len(_stale)} Surface Shield attribution(s) "
+                              f"now out of date with an edited ledger row — back "
+                              f"in the queue marked Edited:")
+                        for _s in _stale[:10]:
+                            print(f"          log {_s['id']} ({_s['status']})  "
+                                  f"consumption {_s['Consumption_ID']}  "
+                                  f"{_s['Equipment_Tag_No']}/{_s['Lining_System_Code']}  "
+                                  f"qty {_s['Actual_Qty']:g} → {_s['now_qty']:g}")
+                        await _sl.notify_sync_edits(session, stale=_stale,
+                                                    username=args.user)
+                    totals[kind]["attributions_edited"] = len(_stale)
+                    totals[kind].pop("updated_ids", None)
                     if routing is not None:
                         await bi.apply_sme_routing(session, routing, args.user)
                         totals[kind]["sme_logged"] = len(routing["log_inserts"])

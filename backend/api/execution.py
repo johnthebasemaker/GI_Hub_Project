@@ -651,7 +651,15 @@ async def sme_link_assigned(status: Optional[str] = Query(
     from .services import sme_link as SL
 
     site = resolve_site_param(user, site_id)
-    return await SL.assigned(session, site_id=site, status=status, limit=limit)
+    out = await SL.assigned(session, site_id=site, status=status, limit=limit)
+    # 2026-09-16: re-assignments of APPROVED attributions the Excel sync edited.
+    # Listed beside the attributions rather than mixed into them, because they
+    # are a different decision — "replace figures that already count" — and an
+    # HOD should see the before and the after, not just the after.
+    out["revisions"] = await SL.staged_revisions(session, site_id=site)
+    out["high_priority"] += sum(1 for r in out["revisions"]
+                                if r.get("Priority_Flag") == SL.PRIORITY_HIGH)
+    return out
 
 
 @router.get("/sme-link/tolerance",
@@ -706,6 +714,27 @@ async def sme_link_decide(log_id: int, body: SmeLinkDecideIn = Body(...),
             reject_reason=body.reject_reason,
             username=user["username"], site_id=site)
     return out
+
+
+@router.post("/sme-link/revisions/{rev_id}/decide",
+             summary="HOD: approve or reject a re-assignment of approved "
+                     "consumption the Excel sync edited")
+async def sme_link_decide_revision(rev_id: int, body: SmeLinkDecideIn = Body(...),
+                                   user: dict = Depends(require_roles("hod")),
+                                   session: AsyncSession = Depends(get_session)):
+    """⚠️ APPROVAL UPDATES THE ORIGINAL ATTRIBUTION IN PLACE and moves the
+    progress credit by the difference; rejection leaves the approved figures
+    standing and sends the row back to the field. Exact-locked to the HOD, like
+    every other decision in this workflow. The quantity is refused, not
+    ignored — the drum left the shelf when it was issued."""
+    from .services import sme_link as SL
+
+    site = resolve_site_param(user, body.site_id)
+    async with session.begin():
+        return await SL.decide_revision(
+            session, rev_id=rev_id, approve=body.approve, edits=body.edits,
+            justification=body.justification, reject_reason=body.reject_reason,
+            username=user["username"], site_id=site)
 
 
 # ── the OCR lane (Phase 9d) ──────────────────────────────────────────────────

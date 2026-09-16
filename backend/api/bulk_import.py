@@ -69,7 +69,7 @@ from datetime import date, datetime
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import delete, func, insert, literal_column, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -500,8 +500,214 @@ def _day(v) -> str:
     return str(v or "")[:10]
 
 
+# ─── the ledger's IDENTITY — a provenance label, never a movement key ─────────
+#
+# ⚠️ READ THIS BEFORE "SIMPLIFYING" IT INTO A UNIQUE KEY ON THE MOVEMENT.
+#
+# The obvious identity for a ledger line is (Date, SAP, Tank No.) and it is
+# wrong here, measured against the real CNCEC Consumption Log (4,394 rows):
+#
+#     (Date, SAP, Tank No.)        605 keys shared by 2,785 rows   (63 %)
+#     (Date, SAP, Tank No., Qty)   529 keys shared by 2,402 rows
+#
+# Two drums of one material issued to one tank on one day are two real
+# movements. A unique constraint on those columns would merge them, and an
+# `ON CONFLICT` on it would silently overwrite one drum with the other.
+#
+# So each row the sync owns carries a LABEL, allocated once and never
+# renumbered:
+#
+#     XLSX:<site>:<kind>:<day>:<sap>:<hash of Tank No./DN No./Reason>:<n>
+#
+# and a partial unique index on (Site_ID, Source_Ref) WHERE it starts `XLSX:`.
+# Genuine duplicates are `:1` and `:2` and both survive; every write is a true
+# `INSERT … ON CONFLICT DO UPDATE` on a key that really is unique.
+#
+# ⚠️ THE LABEL NAMES THE ROW; CONTENT DECIDES WHICH ROW A WORKBOOK LINE IS.
+# A label cannot be read back out of the spreadsheet — the operator's file has
+# no ID column — so each run MATCHES workbook lines to database rows inside a
+# (day, SAP, ref) group, strongest evidence first, and only then assigns them
+# their labels. See `_claim_ledger_rows` for the passes and why they are in
+# that order.
+_XLSX_PREFIX = "XLSX:"
+
+# Rows the APP wrote. They may absorb an identical workbook line — the store
+# keeper often records the same issue in both places, and inserting the
+# workbook copy would deduct the drum twice — but the sync never rewrites them
+# and never labels them. An `SME_EXEC:` row in particular is the Phase 13
+# exclusion's anchor: re-stamping it would put an execution entry's own
+# posting into the attribution queue and credit its area twice.
+_RESERVED_MARKERS = {
+    "consumption": ("Work_Type", {"SUPERVISOR_REQUEST", "STOCK_ADJUSTMENT"}),
+    "receipts": ("Supplier", {"STOCK_ADJUSTMENT"}),
+}
+
+
+def _ledger_owner(kind: str, row: dict) -> str:
+    """`xlsx` · `legacy` · `app` — who may change this ledger row."""
+    ref = _s(row.get("Source_Ref"))
+    if ref and ref.startswith(_XLSX_PREFIX):
+        return "xlsx"
+    if ref:
+        return "app"
+    marker = _RESERVED_MARKERS.get(kind)
+    if marker and str(row.get(marker[0]) or "").strip().upper() in marker[1]:
+        return "app"
+    # NULL label, no app marker: written by an earlier sync, or an ordinary
+    # store-keeper issue the workbook also records. Both are ADOPTABLE — the
+    # three-tier reconcile this replaces already treated them as one.
+    return "legacy"
+
+
+def _label_prefix(site: str, kind: str, day: str, sap: str, ref_val: str) -> str:
+    import hashlib
+    h = hashlib.sha1((ref_val or "").encode("utf-8")).hexdigest()[:8]
+    return f"{_XLSX_PREFIX}{site}:{kind}:{day}:{sap}:{h}"
+
+
+def _label_n(label: str) -> int:
+    try:
+        return int(str(label).rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def _qty(v) -> float:
+    return round(float(v or 0), 4)
+
+
+def _same_payload(db: dict, vals: dict) -> bool:
+    """Would writing `vals` change `db`? Blank workbook cells have no opinion.
+
+    ⚠️ COALESCE SEMANTICS, the same rule the master-data upserts follow: a
+    column the workbook leaves blank never erases a value already stored. So a
+    field absent from `vals` is not a difference.
+    """
+    for col, v in vals.items():
+        if col in ("Date", "SAP_Code", "Site_ID", "Source_Ref"):
+            continue
+        if col == "Quantity":
+            if _qty(db.get(col)) != _qty(v):
+                return False
+        elif (_s(db.get(col)) or None) != (_s(v) or None):
+            return False
+    return True
+
+
+def _claim_ledger_rows(kind: str, site_id: str, ref_col: str,
+                       file_rows: list[dict], db_rows: list[dict]) -> dict:
+    """Decide, for every workbook line, WHICH database row it is.
+
+    Four passes, each over every line still unclaimed, strongest evidence
+    first — so an exact twin is never stolen by a weaker match earlier in the
+    file:
+
+      1. IDENTICAL — same group, same quantity, every filled field equal.
+         Nothing to write. Preference xlsx → legacy → app.
+      2. SAME QUANTITY, OTHER FIELDS EDITED (Remarks, Work Type, Issued To…).
+         An `app` row is claimed here WITHOUT a write: the quantity agrees, so
+         it is the same movement, and the app's own fields win.
+      3. SAME GROUP, QUANTITY EDITED — the operator's everyday correction. An
+         `app` candidate becomes a CONFLICT, reported and never overwritten:
+         an execution entry's posted quantity is corrected through the entry.
+      4. RESCUE — same day and SAP, the Tank No./DN No./Reason itself edited.
+         `xlsx` rows only, equal quantity first. Without this pass a typo fix
+         in the tank column would insert a second row, deduct the drum twice,
+         and strand any attribution on the row it left behind.
+
+    Whatever is left is new (inserted) or gone from the workbook (reported,
+    never deleted — this importer does not delete).
+    """
+    from collections import defaultdict
+
+    def fgroup(fr):
+        v = fr["vals"]
+        return _label_prefix(site_id, kind, _day(v["Date"]), v["SAP_Code"],
+                             _s(v.get(ref_col)) or "")
+
+    def dgroup(r):
+        # An xlsx row belongs to the group its LABEL names, not the one its
+        # columns would compute. A tank blanked in the workbook leaves the
+        # stored tank alone (COALESCE), and grouping by column would then send
+        # the row back through the rescue pass and relabel it on every run.
+        if _ledger_owner(kind, r) == "xlsx":
+            return str(r["Source_Ref"]).rsplit(":", 1)[0]
+        return _label_prefix(site_id, kind, _day(r.get("Date")),
+                             _s(r.get("SAP_Code")) or "", _s(r.get(ref_col)) or "")
+
+    by_group: dict[str, list[dict]] = defaultdict(list)
+    by_daysap: dict[tuple, list[dict]] = defaultdict(list)
+    for r in db_rows:                         # ORDER BY id — deterministic
+        r["_owner"] = _ledger_owner(kind, r)
+        r["_group"] = dgroup(r)
+        by_group[r["_group"]].append(r)
+        by_daysap[(_day(r.get("Date")), _s(r.get("SAP_Code")) or "")].append(r)
+
+    claimed: dict[int, dict] = {}           # db id → claim
+    open_rows = [dict(fr, _group=fgroup(fr)) for fr in file_rows]
+
+    def take(fr, r, how):
+        claimed[r["id"]] = {"row": r, "file": fr, "how": how}
+        fr["_claim"] = claimed[r["id"]]
+
+    order = {"xlsx": 0, "legacy": 1, "app": 2}
+
+    def candidates(group, owners):
+        return sorted((r for r in by_group.get(group, [])
+                       if r["id"] not in claimed and r["_owner"] in owners),
+                      key=lambda r: (order[r["_owner"]], r["id"]))
+
+    # 1 — identical
+    for fr in open_rows:
+        c = [r for r in candidates(fr["_group"], ("xlsx", "legacy", "app"))
+             if _qty(r.get("Quantity")) == _qty(fr["vals"]["Quantity"])
+             and _same_payload(r, fr["vals"])]
+        if c:
+            take(fr, c[0], "unchanged")
+    # 2 — same quantity, other fields edited
+    for fr in [f for f in open_rows if "_claim" not in f]:
+        c = [r for r in candidates(fr["_group"], ("xlsx", "legacy", "app"))
+             if _qty(r.get("Quantity")) == _qty(fr["vals"]["Quantity"])]
+        if c:
+            take(fr, c[0], "app_matched" if c[0]["_owner"] == "app" else "update")
+    # 3 — quantity edited
+    for fr in [f for f in open_rows if "_claim" not in f]:
+        c = candidates(fr["_group"], ("xlsx", "legacy"))
+        if c:
+            take(fr, c[0], "update")
+            continue
+        c = candidates(fr["_group"], ("app",))
+        if c:
+            take(fr, c[0], "conflict")
+    # 4 — rescue: the ref column itself was edited (xlsx rows only)
+    for fr in [f for f in open_rows if "_claim" not in f]:
+        v = fr["vals"]
+        pool = [r for r in by_daysap.get((_day(v["Date"]), v["SAP_Code"]), [])
+                if r["id"] not in claimed and r["_owner"] == "xlsx"]
+        if not pool:
+            continue
+        pool.sort(key=lambda r: (_qty(r.get("Quantity")) != _qty(v["Quantity"]),
+                                 r["id"]))
+        take(fr, pool[0], "rescued")
+
+    return {"claimed": claimed, "open_rows": open_rows}
+
+
 async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
                       extra_saps: set[str] | None = None) -> dict:
+    """Plan a ledger sync as an UPSERT on per-row labels. Writes nothing.
+
+    Every section reports, besides what it has always reported:
+
+      upserts     every row the sync owns after this run, with its label —
+                  claimed rows AND new ones — which `apply_ledger` writes with
+                  one `INSERT … ON CONFLICT (Site_ID, Source_Ref) DO UPDATE`
+      stamps      rows that must be LABELLED before that upsert can find them:
+                  adopted `legacy` rows and rescued `xlsx` rows (by id)
+      updates     claimed rows whose filled fields differ, with before/after
+      conflicts   app-written rows the workbook disagrees with — never changed
+      vanished    labelled rows this workbook no longer names — never deleted
+    """
     known_saps = {r[0] for r in
                   (await session.execute(select(inventory_t.c["SAP_Code"]))).all()}
     known_saps |= extra_saps or set()  # dry-run chained after an inventory plan
@@ -509,7 +715,9 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
     for kind, spec in _LEDGER_SHEETS.items():
         headers, rows = _sheet_rows(data, spec["sheet"], ("sap code", "qty."),
                                     required=False)
-        section = {"inserts": [], "corrections": [], "matched": 0,
+        section = {"inserts": [], "corrections": [], "updates": [],
+                   "upserts": [], "stamps": [], "conflicts": [], "vanished": [],
+                   "matched": 0, "adopted": 0, "relabelled": 0,
                    "zero_skipped": 0, "db_only": 0}
         out["sections"][kind] = section
         if not headers:
@@ -548,53 +756,104 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
                 v = _s(row[i])
                 if v is not None:
                     vals[field] = v
-            file_rows.append(vals)
+            file_rows.append({"n": n, "vals": vals})
 
         table, ref = spec["table"], spec["ref"]
         db_rows = [dict(m) for m in (await session.execute(
-            select(table).where(table.c["Site_ID"] == site_id))).mappings().all()]
+            select(table).where(table.c["Site_ID"] == site_id)
+            .order_by(table.c["id"]))).mappings().all()]
 
-        def key(r):  # exact multiset identity
-            return (_day(r.get("Date")), r.get("SAP_Code"),
-                    round(float(r.get("Quantity") or 0), 4),
-                    _s(r.get(ref)) or "")
+        res = _claim_ledger_rows(kind, site_id, ref, file_rows, db_rows)
+        claimed, open_rows = res["claimed"], res["open_rows"]
 
-        def refkey(r):  # correction identity: same day+sap+ref, any qty
-            return (_day(r.get("Date")), r.get("SAP_Code"), _s(r.get(ref)) or "")
+        # ── labels: keep the ones rows already carry; allocate once otherwise
+        next_n: dict[str, int] = {}
+        for r in db_rows:
+            if r["_owner"] == "xlsx":
+                p = r["_group"]
+                next_n[p] = max(next_n.get(p, 0), _label_n(r["Source_Ref"]))
 
-        db_exact = Counter(key(r) for r in db_rows)
-        # tier 1 — exact matches consume DB copies
-        remaining = []
-        for fr in file_rows:
-            k = key(fr)
-            if db_exact.get(k, 0) > 0:
-                db_exact[k] -= 1
+        def allocate(prefix: str) -> str:
+            next_n[prefix] = next_n.get(prefix, 0) + 1
+            return f"{prefix}:{next_n[prefix]}"
+
+        for fr in open_rows:
+            v = fr["vals"]
+            cl = fr.get("_claim")
+            if cl is None:
+                if float(v["Quantity"]) == 0.0:
+                    section["zero_skipped"] += 1   # zero-qty history, no twin
+                    continue
+                label = allocate(fr["_group"])
+                row = dict(v, Source_Ref=label)
+                section["inserts"].append(row)
+                section["upserts"].append(row)
+                continue
+
+            db, how = cl["row"], cl["how"]
+            if how == "app_matched":
+                section["matched"] += 1
+                continue
+            if how == "conflict":
+                section["conflicts"].append({
+                    "id": db["id"], "sap": v["SAP_Code"], "date": _day(v["Date"]),
+                    "ref": _s(v.get(ref)), "workbook_qty": v["Quantity"],
+                    "app_qty": db.get("Quantity"),
+                    "source_ref": db.get("Source_Ref")})
+                continue
+
+            if db["_owner"] == "xlsx" and how != "rescued":
+                label = db["Source_Ref"]
+            else:
+                label = allocate(fr["_group"])
+                section["stamps"].append({"id": db["id"], "Source_Ref": label,
+                                          "from": db.get("Source_Ref")})
+                if how == "rescued":
+                    section["relabelled"] += 1
+                else:
+                    section["adopted"] += 1
+
+            if how == "unchanged":
                 section["matched"] += 1
             else:
-                remaining.append(fr)
-        # unmatched DB copies, grouped for the correction tier
-        db_left: dict[tuple, list[dict]] = {}
+                changes = {c: (db.get(c), v[c]) for c in v
+                           if c not in ("Date", "SAP_Code", "Site_ID")
+                           and not _same_payload(db, {c: v[c]})}
+                if changes:
+                    section["updates"].append({"id": db["id"], "label": label,
+                                               "how": how, "changes": changes})
+                    if "Quantity" in changes:
+                        section["corrections"].append(
+                            {"id": db["id"], "sap": v["SAP_Code"],
+                             "date": _day(v["Date"]),
+                             "qty_from": db.get("Quantity"),
+                             "qty_to": v["Quantity"]})
+                else:
+                    section["matched"] += 1
+            section["upserts"].append(dict(v, Source_Ref=label))
+
         for r in db_rows:
-            k = key(r)
-            if db_exact.get(k, 0) > 0:
-                db_exact[k] -= 1
-                db_left.setdefault(refkey(r), []).append(r)
-        # tier 2 — qty corrections (workbook is truth for the same day+sap+ref)
-        inserts = []
-        for fr in remaining:
-            cands = db_left.get(refkey(fr)) or []
-            if cands:
-                target = cands.pop(0)
-                section["corrections"].append(
-                    {"id": target["id"], "sap": fr["SAP_Code"],
-                     "date": _day(fr["Date"]),
-                     "qty_from": target["Quantity"], "qty_to": fr["Quantity"]})
-            elif float(fr["Quantity"]) == 0.0:
-                section["zero_skipped"] += 1  # zero-qty history line, no DB twin
+            if r["id"] in claimed:
+                continue
+            if r["_owner"] == "xlsx":
+                section["vanished"].append({
+                    "id": r["id"], "date": _day(r.get("Date")),
+                    "sap": r.get("SAP_Code"), "qty": r.get("Quantity"),
+                    "ref": _s(r.get(ref)), "Source_Ref": r["Source_Ref"]})
             else:
-                inserts.append(fr)
-        section["inserts"] = inserts
-        section["db_only"] = sum(len(v) for v in db_left.values())
+                section["db_only"] += 1
+
+        if section["conflicts"]:
+            out["warnings"].append(
+                f"{spec['sheet']}: {len(section['conflicts'])} workbook line(s) "
+                f"disagree with a row the APP posted (execution entry / request /"
+                f" adjustment) — the app's row was NOT changed; correct it at "
+                f"its source")
+        if section["vanished"]:
+            out["warnings"].append(
+                f"{spec['sheet']}: {len(section['vanished'])} row(s) this sync "
+                f"wrote earlier are no longer in the workbook — NOT deleted "
+                f"(a Date or SAP edit looks exactly like this)")
         if section["db_only"]:
             out["warnings"].append(
                 f"{spec['sheet']}: {section['db_only']} DB row(s) have no workbook "
@@ -732,44 +991,25 @@ async def plan_sme_routing(session: AsyncSession, site_id: str,
         if prior.get("status") == "mapped" and prior.get("Equipment_Tag_No"):
             resolved[norm] = prior["Equipment_Tag_No"]
 
-    # ── the log rows ──
-    batch = f"xlsx-{site_id}-{datetime.now():%Y%m%dT%H%M%S}"
-    for r in rows:
-        mat = sap_to_mat.get(r.get("SAP_Code"))
-        if not mat or mat not in seed_codes:
-            # A Surface-Shield consumable outside the estimator's recipe set —
-            # it belongs in the ERP ledger only. Counted, never silently lost.
-            out["skipped_not_sme"] += 1
-            continue
-        tag = resolved.get(alias_norm(r.get("Tank_No"))) or ""
-        if not tag:
-            out["unassigned"] += 1
-        out["log_inserts"].append({
-            "batch_id": batch, "Site_ID": site_id,
-            "entry_date": _day(r.get("Date")), "entered_by": "excel-sync",
-            # '' — not NULL: both columns are NOT NULL on this table, and ''
-            # is the codebase's existing "not scoped yet" sentinel. The
-            # `unassigned` status is what the UI filters on.
-            "Equipment_Tag_No": tag, "Lining_System_Code": "",
-            "Material_Code": mat,
-            # The workbook states a QUANTITY issued, never an area covered, so
-            # SQM_Completed stays 0 until an operator records it on the
-            # assignment screen. Expected_Qty needs a system code, so it stays
-            # 0 too — a variance against a guessed system is worse than none.
-            "SQM_Completed": 0.0, "Expected_Qty": 0.0,
-            "Actual_Qty": float(r.get("Quantity") or 0),
-            "status": "committed" if tag else "unassigned",
-            "notes": f"Tank No. {_s(r.get('Tank_No')) or '—'} · SAP "
-                     f"{r.get('SAP_Code')} · from {r.get('Date')}",
-        })
-    if out["skipped_not_sme"]:
-        out["warnings"].append(
-            f"{out['skipped_not_sme']} Surface-Shield row(s) are not estimator "
-            "materials (no sme_inventory_seed entry) — ERP ledger only")
-    if out["unassigned"]:
-        out["warnings"].append(
-            f"{out['unassigned']} Surface-Shield row(s) logged UNASSIGNED — "
-            "assign equipment + SQM in SME → Actual Consumption")
+    # ── the log rows: RETIRED 2026-09-16 ──
+    #
+    # ⚠️ THIS USED TO WRITE ONE `sme_consumption_log` ROW PER NEW SURFACE-SHIELD
+    # CONSUMPTION, AND EVERY ONE OF THEM WAS AN ORPHAN AT BIRTH. It ran at PLAN
+    # time, before the ledger row existed, so it could never carry the
+    # `Consumption_ID` Phase 13 links attributions by. Since Phase 13:
+    #
+    #   * the SAME drum also appears in the Phase 13 sweep (which matches on
+    #     `Consumption_ID`), so a supervisor was asked for it in two queues;
+    #   * `sme.SQL_SME_COMPARISON` and the Man-Hours material variance sum
+    #     `Actual_Qty` over EVERY log row, so an attributed drum counted twice;
+    #   * linking them after the insert would have been worse — Phase 13 reads
+    #     any linked row as "attributed", so a row with no system code and no
+    #     area would have vanished from the queue that asks for them.
+    #
+    # Phase 13's ledger sweep is the one attribution path now, and it already
+    # reaches every Surface Shield consumption however it arrived. The alias
+    # registry above stays: a resolved Tank No. is still useful to a human.
+    # Kept as keys, so every caller that reads them keeps working.
     return out
 
 
@@ -1248,20 +1488,182 @@ async def restore_sqm_overrides(session: AsyncSession, site_id: str,
     return diverged
 
 
-async def apply_ledger(session: AsyncSession, plan: dict, username: str) -> None:
+async def apply_ledger(session: AsyncSession, plan: dict, username: str) -> dict:
+    """Write a ledger plan. THE ONE WRITER — the HTTP import and
+    `tools/pg_excel_sync.py` both call this, where they used to keep two copies.
+
+    Two statements per section, in this order:
+
+      1. STAMP by id — label the rows the upsert must find: adopted `legacy`
+         rows (written before labels existed) and rescued rows moving group.
+         Without it the upsert would not see them and would INSERT a twin.
+      2. UPSERT — `INSERT … ON CONFLICT (Site_ID, Source_Ref) WHERE Source_Ref
+         LIKE 'XLSX:%' DO UPDATE`, for every row the sync owns.
+
+    ⚠️ `DO UPDATE` KEEPS THE ROW'S `id`. That is the Phase 13 guarantee in one
+    clause: an edited quantity is an UPDATE of the same row, so every
+    `sme_consumption_log.Consumption_ID` still points where it pointed.
+
+    ⚠️ AND IT ONLY WRITES WHAT CHANGED. The `WHERE … IS DISTINCT FROM` guard
+    means an unchanged row is not touched at all — no churn, and a re-run
+    reports zero updates because there were zero.
+
+    ⚠️ `Date` AND `SAP_Code` ARE NEVER IN THE SET CLAUSE. They are part of the
+    label; a row whose date changed is a different label, which is exactly why
+    such an edit reports as `vanished` + new rather than rewriting history.
+    """
+    counts = {"inserted": 0, "updated": 0, "stamped": 0, "unchanged": 0,
+              "updated_ids": {}}
     for kind, spec in _LEDGER_SHEETS.items():
         section = plan["sections"].get(kind) or {}
         table = spec["table"]
-        for row in section.get("inserts", []):
-            await session.execute(insert(table).values(**row))
-        for c in section.get("corrections", []):
-            await session.execute(update(table).where(table.c["id"] == c["id"])
-                                  .values(Quantity=c["qty_to"]))
-        if section.get("inserts") or section.get("corrections"):
-            await write_audit(session, username, "BULK_IMPORT_LEDGER",
+
+        for s in section.get("stamps", []):
+            await session.execute(update(table).where(table.c["id"] == s["id"])
+                                  .values(Source_Ref=s["Source_Ref"]))
+        counts["stamped"] += len(section.get("stamps", []))
+
+        rows = section.get("upserts", [])
+        payload = ["Quantity"] + [c for c in spec["cols"] if c != "Quantity"]
+        cols = ["Source_Ref", "Site_ID", "Date", "SAP_Code"] + payload
+        ins = upd = 0
+        upd_ids: list[int] = []
+        for i in range(0, len(rows), 500):
+            batch = [{c: r.get(c) for c in cols} for r in rows[i:i + 500]]
+            stmt = pg_insert(table).values(batch)
+            set_ = {c: func.coalesce(stmt.excluded[c], table.c[c])
+                    for c in payload}
+            changed = func.row(*[table.c[c] for c in payload]).is_distinct_from(
+                func.row(*[func.coalesce(stmt.excluded[c], table.c[c])
+                           for c in payload]))
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["Site_ID", "Source_Ref"],
+                # ⚠️ A LITERAL, NEVER A BOUND PARAMETER. Postgres infers a
+                # partial index for ON CONFLICT only if it can PROVE this
+                # predicate implies the index's own. With `LIKE $17` it can do
+                # that while the plan is custom and stops the moment asyncpg's
+                # prepared statement goes generic — measured: the sixth batch
+                # failed with "no unique or exclusion constraint matching the
+                # ON CONFLICT specification" after five had succeeded. The text
+                # must match the index definition in models.py exactly.
+                index_where=text(f"\"Source_Ref\" LIKE '{_XLSX_PREFIX}%'"),
+                set_=set_, where=changed,
+            ).returning(table.c["id"],
+                        # xmax is 0 on a freshly inserted tuple and non-zero on
+                        # one ON CONFLICT updated — the documented way to tell
+                        # the two apart from a single statement.
+                        (literal_column("xmax") == 0).label("inserted"))
+            for rid, was_insert in (await session.execute(stmt)).all():
+                if was_insert:
+                    ins += 1
+                else:
+                    upd += 1
+                    upd_ids.append(int(rid))
+        counts["inserted"] += ins
+        counts["updated"] += upd
+        counts["unchanged"] += len(rows) - ins - upd
+        counts["updated_ids"][kind] = upd_ids
+
+        if ins or upd or section.get("stamps"):
+            await write_audit(session, username, "BULK_IMPORT_LEDGER", table.name,
+                              f"+{ins} new, ~{upd} updated in place, "
+                              f"{len(section.get('stamps', []))} labelled "
+                              f"(adopted {section.get('adopted', 0)}, "
+                              f"relabelled {section.get('relabelled', 0)}), "
+                              f"{len(section.get('conflicts', []))} app conflicts, "
+                              f"{len(section.get('vanished', []))} vanished")
+    return counts
+
+
+# ─── --prune-vanished: the one delete this importer is allowed ────────────────
+#
+# ⚠️ OPT-IN, NARROW, AND GUARDED — operator ruling 2026-09-16. A Date or SAP
+# edit in the workbook changes a row's label, so the sync sees the old row as
+# gone and the edited line as new. By default the old row is REPORTED and kept,
+# which is safe and double-counts the drum until somebody removes it. This is
+# the somebody, on request, and it deletes only a row that nothing points at.
+#
+# "Nothing points at" is checked against every table that holds a ledger id
+# today. A vanished row that IS referenced — a Phase 13 attribution above all —
+# is kept and reported: deleting it would orphan exactly the work the operator
+# asked the sync never to orphan.
+_LEDGER_REFERENCES = {
+    "consumption": (
+        'SELECT "Consumption_ID" FROM sme_consumption_log WHERE "Consumption_ID" = ANY(:ids)',
+        'SELECT "Consumption_ID" FROM sme_consumption_revision WHERE "Consumption_ID" = ANY(:ids)',
+        'SELECT "Consumption_ID" FROM sme_execution_entry_material WHERE "Consumption_ID" = ANY(:ids)',
+        'SELECT consumption_id FROM ppe_distributions WHERE consumption_id = ANY(:ids)',
+        "SELECT CAST(SUBSTRING(posted_txn_ref FROM 3) AS INTEGER) FROM stock_adjustments "
+        "WHERE posted_txn_ref LIKE 'C:%' AND SUBSTRING(posted_txn_ref FROM 3) ~ '^[0-9]+$' "
+        "AND CAST(SUBSTRING(posted_txn_ref FROM 3) AS INTEGER) = ANY(:ids)",
+    ),
+    "receipts": (
+        "SELECT CAST(split_part(source_ref, ':', 1) AS INTEGER) FROM qc_inspections "
+        "WHERE source_type IN ('site_receipt', 'dn_receipt') "
+        "AND split_part(source_ref, ':', 1) ~ '^[0-9]+$' "
+        "AND CAST(split_part(source_ref, ':', 1) AS INTEGER) = ANY(:ids)",
+        "SELECT CAST(SUBSTRING(posted_txn_ref FROM 3) AS INTEGER) FROM stock_adjustments "
+        "WHERE posted_txn_ref LIKE 'R:%' AND SUBSTRING(posted_txn_ref FROM 3) ~ '^[0-9]+$' "
+        "AND CAST(SUBSTRING(posted_txn_ref FROM 3) AS INTEGER) = ANY(:ids)",
+    ),
+    "returns": (),
+}
+
+# ⚠️ A TRUNCATED WORKBOOK LOOKS EXACTLY LIKE A THOUSAND DATE EDITS. A filtered
+# sheet, a half-saved file or last month's copy would report most of the ledger
+# as vanished, and a prune would delete it. Above this many, the prune refuses
+# unless it is forced — the same shape as `--force-drop-progress`.
+PRUNE_MAX_ROWS = 20
+PRUNE_MAX_SHARE = 0.05
+
+
+def prune_guard(plan: dict) -> list[str]:
+    """Why a prune should refuse to run on this plan, if it should."""
+    out = []
+    for kind, sec in plan.get("sections", {}).items():
+        vanished = len(sec.get("vanished", []))
+        owned = len(sec.get("upserts", [])) + vanished
+        if vanished > PRUNE_MAX_ROWS and vanished > PRUNE_MAX_SHARE * max(owned, 1):
+            out.append(f"{kind}: {vanished} of {owned} workbook-owned row(s) are "
+                       f"missing from this file — that looks like a truncated or "
+                       f"filtered workbook, not a set of edits")
+    return out
+
+
+async def prune_vanished(session: AsyncSession, plan: dict, username: str) -> dict:
+    """Delete vanished workbook-owned rows that nothing references.
+
+    Returns `{kind: {"deleted": [ids], "kept": [{id, reason}]}}`.
+    """
+    from sqlalchemy import text as _text
+
+    out: dict = {}
+    for kind, spec in _LEDGER_SHEETS.items():
+        vanished = (plan["sections"].get(kind) or {}).get("vanished", [])
+        ids = [int(v["id"]) for v in vanished]
+        if not ids:
+            continue
+        referenced: set[int] = set()
+        for sql in _LEDGER_REFERENCES.get(kind, ()):
+            referenced |= {int(r[0]) for r in (await session.execute(
+                _text(sql), {"ids": ids})).all() if r[0] is not None}
+        deletable = [i for i in ids if i not in referenced]
+        table = spec["table"]
+        if deletable:
+            # Belt and braces: only rows STILL carrying a workbook label. A row
+            # the app re-stamped between plan and apply is not ours to delete.
+            await session.execute(delete(table).where(
+                table.c["id"].in_(deletable),
+                table.c["Source_Ref"].like(f"{_XLSX_PREFIX}%")))
+            await write_audit(session, username, "BULK_IMPORT_LEDGER_PRUNE",
                               table.name,
-                              f"+{len(section['inserts'])} rows, "
-                              f"{len(section['corrections'])} qty corrections")
+                              f"deleted {len(deletable)} vanished workbook row(s): "
+                              f"{deletable[:50]}")
+        out[kind] = {"deleted": deletable,
+                     "kept": [{"id": i, "reason": "referenced (attribution, "
+                               "execution entry, PPE issue, inspection or "
+                               "adjustment)"} for i in ids if i in referenced]}
+    return out
 
 
 # ─── SME masters ──────────────────────────────────────────────────────────────
@@ -1931,7 +2333,12 @@ def _summary(plan: dict) -> dict:
     if "sections" in plan:  # ledger
         return {k: {"inserts": len(s["inserts"]),
                     "corrections": len(s["corrections"]),
+                    "updates": len(s.get("updates", [])),
                     "matched": s["matched"], "zero_skipped": s["zero_skipped"],
+                    "adopted": s.get("adopted", 0),
+                    "relabelled": s.get("relabelled", 0),
+                    "conflicts": len(s.get("conflicts", [])),
+                    "vanished": len(s.get("vanished", [])),
                     "db_only": s["db_only"]}
                 for k, s in plan["sections"].items()}
     out = {"inserts": len(plan["inserts"]), "updates": len(plan["updates"]),
@@ -1972,8 +2379,20 @@ async def bulk_import(kind: str,
         plan = await (plan_inventory(session, data, site) if kind == "inventory"
                       else plan_ledger(session, data, site))
         if commit:
-            await (apply_inventory if kind == "inventory"
-                   else apply_ledger)(session, plan, user["username"])
+            if kind == "inventory":
+                await apply_inventory(session, plan, user["username"])
+            else:
+                written = await apply_ledger(session, plan, user["username"])
+                # ⚠️ 2026-09-16: same as the CLI — an in-place edit keeps the
+                # id, so a Phase 13 attribution stays linked and goes stale.
+                from .services import sme_link as _sl
+                _stale = await _sl.stale_attributions(
+                    session, consumption_ids=written["updated_ids"]
+                    .get("consumption", []))
+                if _stale:
+                    await _sl.notify_sync_edits(session, stale=_stale,
+                                                username=user["username"])
+                plan["attributions_edited"] = len(_stale)
             await session.commit()
     elif kind in _SME_KINDS:
         plan_fn, apply_fn, scoped = _SME_KINDS[kind]
@@ -1992,6 +2411,12 @@ async def bulk_import(kind: str,
     resp = {"kind": kind, "committed": bool(commit), "summary": _summary(plan),
             "warnings": plan.get("warnings", []),
             "rejects": plan.get("rejects", [])[:200]}
+    if "sections" in plan:
+        resp["attributions_edited"] = plan.get("attributions_edited", 0)
+        resp["conflicts"] = {k: s.get("conflicts", [])[:50]
+                             for k, s in plan["sections"].items()}
+        resp["vanished"] = {k: s.get("vanished", [])[:50]
+                            for k, s in plan["sections"].items()}
     if not commit:  # preview payload for the UI (trimmed)
         if "sections" in plan:
             resp["preview"] = {k: {"inserts": s["inserts"][:20],
