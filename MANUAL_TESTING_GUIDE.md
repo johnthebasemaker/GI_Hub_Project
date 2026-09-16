@@ -3445,6 +3445,68 @@ reverted rather than explained.
 Backend coverage: **suite DA** (sweep + intake) and **suite DB** (approval) in
 `backend/api/service_tests.py`.
 
+
+### 14ac.6 ⚠️ The Excel sync is an upsert, and assignments survive it
+
+*2026-09-16. Backend coverage: suite **DC**.*
+
+**What changed.** The ledger sync used to match workbook lines by date, SAP and
+tank, correct only the quantity, and insert anything else as a new row. It now
+labels every row it owns (`Source_Ref = XLSX:…`) and writes with
+`INSERT … ON CONFLICT DO UPDATE` on that label.
+
+⚠️ **The label is not a key on the movement.** Two identical drums issued to one
+tank on one day are two rows. Measured on the real Consumption Log, 2,785 of
+4,394 rows share their date, SAP and tank with another row.
+
+**TC-SYNC-01** — run the sync twice with the same workbook. The second run
+reports `+0 new ~0 edited` and writes nothing.
+
+**TC-SYNC-02** — note a consumption row's id, change its quantity in the
+workbook, sync. **Same id, new quantity, still one row.**
+
+**TC-SYNC-03** — ⚠️ assign that row (system code, equipment, area) and have the
+HOD approve it. Change the quantity in the workbook and sync. The assignment is
+**still attached** with the same system, equipment and area, and the
+equipment's completed area has **not** moved.
+
+**TC-SYNC-04** — the row is back in the queue marked **Edited in Excel**, new
+quantity shown with the old one struck through, previous answer pre-filled. The
+HOD has a bell saying attributed consumption changed.
+
+**TC-SYNC-05** — re-assign it with a larger area. The approved figures still
+count. The HOD approves: the **original** entry now carries the new figures,
+there is still one assignment for the drum, and completed area moved by the
+difference only.
+
+**TC-SYNC-06** — sync the same workbook again. **Nothing is asked again.**
+
+**TC-SYNC-07** — edit only Remarks and sync. The row is updated; it does
+**not** return to the queue.
+
+**TC-SYNC-08** — put two identical lines in the workbook. Two rows, on every
+run. Edit one of them; only that one changes.
+
+**TC-SYNC-09** — ⚠️ a consumption posted by an approved execution entry, also
+typed into the workbook, is **not** duplicated and **not** relabelled. Change its
+quantity in the workbook: the sync reports a **conflict** and leaves the app's
+row alone.
+
+**TC-SYNC-10** — fix a tank number in the workbook. Same row, new tank, no
+second row; the next sync writes nothing.
+
+**TC-SYNC-11** — change a row's date. The sync inserts the edited line and
+reports the old row as **vanished**, not deleted. Run with `--prune-vanished`:
+the old row is deleted **only** if nothing is attached to it; an assigned one is
+kept and listed.
+
+**TC-SYNC-12** — run `--prune-vanished` against a workbook with most rows
+removed. It **refuses** and writes nothing; `--force-prune` is required.
+
+**TC-SYNC-13** — the sync no longer creates rows on the SME → Actual
+Consumption tab. Surface Shield consumption is assigned only through the
+Execution queue, so a drum is never counted twice in the comparison reports.
+
 ## 14aa. The AI evaluation gates (Phase 11 · 11f)
 
 Developer-facing. Nothing here is a screen; it is what CI refuses to merge.

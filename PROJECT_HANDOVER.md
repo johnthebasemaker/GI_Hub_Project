@@ -481,9 +481,73 @@ today.
   rolls everything back.
 * It refuses to run against anything that is not a Postgres URL, and refuses
   outright if the URL mentions `gi_database`.
-* Ledger tables (`receipts`/`consumption`/`returns`) have **no** unique constraint
-  and must never get one — the same (date, SAP, qty) line can legitimately repeat.
-  Idempotency there comes from `plan_ledger`'s three-tier reconcile.
+* Ledger tables (`receipts`/`consumption`/`returns`) have **no** uniqueness on a
+  MOVEMENT and must never get one — the same (date, SAP, qty) line can
+  legitimately repeat.
+
+### 3a. ⚠️ The ledger sync is an UPSERT on a per-row LABEL, never on the movement
+
+*Locked 2026-09-16. Suite DC. Supersedes the three-tier reconcile.*
+
+**The requirement:** re-running the sync creates no duplicates; editing a line in
+the workbook updates that exact row; and a Phase 13 attribution (system code,
+equipment, SQM) is never overwritten, deleted or orphaned by a later sync.
+
+**⚠️ Why not a unique key on (Date, SAP, Tank No.).** Measured against the real
+Consumption Log: **605 keys shared by 2,785 of 4,394 rows** (529 / 2,402 with the
+quantity added; 36 keys / 169 of 555 Surface Shield rows). Two identical drums
+issued to one tank on one day are two movements. Uniqueness there would have
+merged ~2,180 of them and understated consumption by every one.
+
+**What is unique instead** is a provenance label in `Source_Ref`:
+
+    XLSX:<site>:<kind>:<day>:<sap>:<hash of Tank No./DN No./Reason>:<n>
+
+`<n>` is allocated once and never renumbered — genuine duplicates are `:1` and
+`:2`. A **partial** unique index `(Site_ID, Source_Ref) WHERE Source_Ref LIKE
+'XLSX:%'` on all three ledgers makes the write a true
+`INSERT … ON CONFLICT DO UPDATE`. `DO UPDATE` keeps the row's `id`, and that one
+fact is the Phase 13 guarantee: `sme_consumption_log.Consumption_ID` still points
+where it pointed. Suites AW and BE now assert that this partial label index is the
+**only** unique index a ledger may carry.
+
+* **Matching decides which row a workbook line is**, inside a (day, SAP, ref)
+  group, strongest evidence first: identical → same quantity → quantity edited →
+  ref edited (xlsx rows only). The workbook has no ID column, so a label cannot
+  be read back out of it.
+* ⚠️ **App rows are never rewritten or relabelled.** `SME_EXEC:`, `SMR:` and stock
+  adjustments may absorb an identical workbook line (so the drum is not deducted
+  twice) but a disagreement is a reported CONFLICT. Relabelling an `SME_EXEC:` row
+  would break the Phase 13 exclusion predicate.
+* **Unlabelled rows are ADOPTED by id** on the first run after the migration —
+  never re-inserted.
+* ⚠️ **The `ON CONFLICT` predicate is a SQL literal, never a bound parameter.**
+  With `LIKE $n`, Postgres proves the partial index applies only while the plan
+  is custom; the sixth batch failed once asyncpg's prepared statement went generic.
+* **A Date or SAP edit changes the label**: the old row is reported VANISHED and
+  kept. `--prune-vanished` (operator ruling) deletes only vanished rows nothing
+  references — attributions, revisions, execution-entry lines, PPE issues, QC
+  inspections, adjustments — and refuses a workbook that looks truncated
+  (> 20 rows and > 5 % missing) unless `--force-prune`.
+* **One writer.** The CLI and `POST /import/ledger` both call
+  `bulk_import.apply_ledger`; the CLI used to keep its own copy.
+
+**And what an edit does to an attribution.** `sme_consumption_log.Source_Fingerprint`
+records the ledger row an attribution was measured against (Date, SAP, Quantity,
+Tank No.), computed by ONE SQL expression, `sme_link.SOURCE_FP_SQL`. When a sync
+changes those fields the attribution goes **stale**: the row returns to the queue
+marked *Edited in Excel*, the HOD is notified once per sync, a stale staged
+attribution cannot be approved, and re-assigning an **approved** one stages a
+`sme_consumption_revision` while the approved figures keep counting. HOD approval
+updates the **original** attribution in place and moves `Done_SQM` by the
+difference. A push that leaves those four fields alone asks nothing again.
+
+⚠️ **The routing no longer writes attribution rows** (operator ruling 2026-09-16).
+`plan_sme_routing` wrote an unlinked `sme_consumption_log` row for every new
+Surface Shield consumption at plan time — before the ledger id existed — so each
+was an orphan, appeared in a second queue, and doubled `Actual_Qty` in
+`SQL_SME_COMPARISON` and the Man-Hours material variance. The Phase 13 sweep is
+the one attribution path; the tank-alias registry is kept.
 
 ### 4. The cutover protects the 86 blank-SAP legacy recipe rows
 

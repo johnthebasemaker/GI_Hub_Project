@@ -1719,7 +1719,27 @@ def check_models_schema_parity() -> None:
                ("sme_consumption_log", "hod_decided_at"),
                ("sme_consumption_log", "HOD_Edit_Justification"),
                ("sme_consumption_log", "hod_edited"),
-               ("sme_consumption_log", "Original_SQM_Completed")}
+               ("sme_consumption_log", "Original_SQM_Completed"),
+               # 2026-09-16 Excel-sync upsert (alembic f6b83d1a27c9). New-stack
+               # only — the frozen portal appends the workbook and has no
+               # attribution workflow to protect.
+               #
+               #  · `receipts.Source_Ref` / `returns.Source_Ref` join the
+               #    column `consumption` already had. The sync writes its own
+               #    PROVENANCE LABEL there (`XLSX:<site>:<kind>:<day>:<sap>:
+               #    <ref-hash>:<n>`), backed by a partial unique index, so a
+               #    re-run is a true `INSERT … ON CONFLICT DO UPDATE` and an
+               #    edited quantity updates the same row id. ⚠️ It is a label
+               #    and not a key on the MOVEMENT: (Date, SAP, Tank No.) is
+               #    shared by 2,785 of the real workbook's 4,394 consumption
+               #    rows, and uniqueness there would merge real drums.
+               #  · `sme_consumption_log.Source_Fingerprint` records the ledger
+               #    row an attribution was measured against, so an edit made in
+               #    Excel sends it back to the field instead of leaving a
+               #    variance beside a quantity the ledger no longer holds.
+               ("receipts", "Source_Ref"),
+               ("returns", "Source_Ref"),
+               ("sme_consumption_log", "Source_Fingerprint")}
     extra = model_only - allowed
     assert not extra, f"unexpected model-only columns (update models.py or DB): {extra}"
 

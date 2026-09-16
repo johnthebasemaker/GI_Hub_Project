@@ -74,11 +74,28 @@ class Consumption(Base):
     # so recategorising a material later cannot retroactively rewrite what
     # past consumption "was".
     Item_Type = Column(Text)
+    # ── 2026-09-16: the WORKBOOK-ROW LABEL (alembic f6b83d1a27c9) ────────────
+    # ⚠️ A PROVENANCE LABEL, NOT A MOVEMENT KEY — and the difference is the
+    # whole design. `XLSX:<site>:<kind>:<date>:<sap>:<ref-hash>:<n>` names ONE
+    # row the Excel sync owns, and `<n>` is allocated once and never renumbered,
+    # so two genuine same-day movements of one SAP to one tank carry `:1` and
+    # `:2` and BOTH survive. A unique key on (Date, SAP, Tank No.) instead was
+    # measured against the real Consumption Log: 605 keys shared by 2,785 of
+    # 4,394 rows — it would have collapsed ~2,180 real movements into their
+    # neighbours and understated consumption by every one of them.
+    #
+    # The partial unique index is what lets the sync write with a true
+    # `INSERT … ON CONFLICT DO UPDATE`: re-running a workbook converges, an
+    # edited quantity updates the SAME row in place (its `id`, and therefore
+    # every Phase 13 attribution keyed on it, survives), and nothing the app
+    # writes — NULL, `SME_EXEC:`, `SMR:` — is covered by it at all.
     # Hot-path indexes (alembic e7c3b95a41d2). Stock maths filters this
     # ledger by (SAP_Code, Site_ID) and every report windows it by Date;
     # with primary keys alone both were sequential scans. NON-UNIQUE by
     # rule — the same (date, SAP, quantity) line may legitimately repeat.
     __table_args__ = (
+        Index("ux_consumption_xlsx_ref", "Site_ID", "Source_Ref", unique=True,
+              postgresql_where=text("\"Source_Ref\" LIKE 'XLSX:%'")),
         Index("ix_consumption_sap_site", "SAP_Code", "Site_ID"),
         Index("ix_consumption_date", "Date"),
     )
@@ -476,11 +493,29 @@ class Receipts(Base):
     # revision docstring. A backfilled CURRENT_TIMESTAMP would have claimed all
     # 632 historical receipts were posted on migration day.
     posted_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    # ── 2026-09-16: the WORKBOOK-ROW LABEL (alembic f6b83d1a27c9) ────────────
+    # ⚠️ A PROVENANCE LABEL, NOT A MOVEMENT KEY — and the difference is the
+    # whole design. `XLSX:<site>:<kind>:<date>:<sap>:<ref-hash>:<n>` names ONE
+    # row the Excel sync owns, and `<n>` is allocated once and never renumbered,
+    # so two genuine same-day movements of one SAP to one tank carry `:1` and
+    # `:2` and BOTH survive. A unique key on (Date, SAP, Tank No.) instead was
+    # measured against the real Consumption Log: 605 keys shared by 2,785 of
+    # 4,394 rows — it would have collapsed ~2,180 real movements into their
+    # neighbours and understated consumption by every one of them.
+    #
+    # The partial unique index is what lets the sync write with a true
+    # `INSERT … ON CONFLICT DO UPDATE`: re-running a workbook converges, an
+    # edited quantity updates the SAME row in place (its `id`, and therefore
+    # every Phase 13 attribution keyed on it, survives), and nothing the app
+    # writes — NULL, `SME_EXEC:`, `SMR:` — is covered by it at all.
+    Source_Ref = Column(Text)
     # Hot-path indexes (alembic e7c3b95a41d2). Stock maths filters this
     # ledger by (SAP_Code, Site_ID) and every report windows it by Date;
     # with primary keys alone both were sequential scans. NON-UNIQUE by
     # rule — the same (date, SAP, quantity) line may legitimately repeat.
     __table_args__ = (
+        Index("ux_receipts_xlsx_ref", "Site_ID", "Source_Ref", unique=True,
+              postgresql_where=text("\"Source_Ref\" LIKE 'XLSX:%'")),
         Index("ix_receipts_sap_site", "SAP_Code", "Site_ID"),
         Index("ix_receipts_date", "Date"),
     )
@@ -535,11 +570,29 @@ class Returns(Base):
     Reason = Column(Text)
     Remarks = Column(Text)
     Site_ID = Column(Text, server_default=text("'HQ'"))
+    # ── 2026-09-16: the WORKBOOK-ROW LABEL (alembic f6b83d1a27c9) ────────────
+    # ⚠️ A PROVENANCE LABEL, NOT A MOVEMENT KEY — and the difference is the
+    # whole design. `XLSX:<site>:<kind>:<date>:<sap>:<ref-hash>:<n>` names ONE
+    # row the Excel sync owns, and `<n>` is allocated once and never renumbered,
+    # so two genuine same-day movements of one SAP to one tank carry `:1` and
+    # `:2` and BOTH survive. A unique key on (Date, SAP, Tank No.) instead was
+    # measured against the real Consumption Log: 605 keys shared by 2,785 of
+    # 4,394 rows — it would have collapsed ~2,180 real movements into their
+    # neighbours and understated consumption by every one of them.
+    #
+    # The partial unique index is what lets the sync write with a true
+    # `INSERT … ON CONFLICT DO UPDATE`: re-running a workbook converges, an
+    # edited quantity updates the SAME row in place (its `id`, and therefore
+    # every Phase 13 attribution keyed on it, survives), and nothing the app
+    # writes — NULL, `SME_EXEC:`, `SMR:` — is covered by it at all.
+    Source_Ref = Column(Text)
     # Hot-path indexes (alembic e7c3b95a41d2). Stock maths filters this
     # ledger by (SAP_Code, Site_ID) and every report windows it by Date;
     # with primary keys alone both were sequential scans. NON-UNIQUE by
     # rule — the same (date, SAP, quantity) line may legitimately repeat.
     __table_args__ = (
+        Index("ux_returns_xlsx_ref", "Site_ID", "Source_Ref", unique=True,
+              postgresql_where=text("\"Source_Ref\" LIKE 'XLSX:%'")),
         Index("ix_returns_sap_site", "SAP_Code", "Site_ID"),
         Index("ix_returns_date", "Date"),
     )
@@ -1009,10 +1062,86 @@ class SmeConsumptionLog(Base):
     # What the field originally reported, kept when an HOD corrects it. Without
     # it the audit trail says a number changed but not from what.
     Original_SQM_Completed = Column(Float)
+
+    # ── 2026-09-16: what this attribution was MEASURED AGAINST ───────────────
+    # ⚠️ A FINGERPRINT OF THE LEDGER ROW AT ASSIGNMENT — Date, SAP, Quantity,
+    # Tank No. — computed by ONE SQL expression (`sme_link.SOURCE_FP_SQL`) at
+    # write time and at read time, never by a Python twin that could round a
+    # float differently. When the Excel sync edits that row in place (its id
+    # survives, so the link survives), the fingerprints stop matching and the
+    # row returns to the queue marked EDITED rather than silently carrying a
+    # variance measured against a quantity that no longer exists. A sync that
+    # leaves those four fields alone leaves the fingerprint alone, which is
+    # exactly "if the new push is the same, do not ask again".
+    #
+    # NULL on every attribution filed before this column existed; readers fall
+    # back to comparing `Actual_Qty` with the ledger quantity for those.
+    Source_Fingerprint = Column(Text)
     __table_args__ = (
         # The sweep's own question: is this ledger row already attributed?
         Index("ix_sme_cons_log_consumption", "Consumption_ID"),
         Index("ix_sme_cons_log_site_status", "Site_ID", "status"),
+    )
+
+class SmeConsumptionRevision(Base):
+    """A re-attribution of consumption the Excel sync EDITED after an HOD had
+    already approved it.
+
+    ⚠️ WHY A SEPARATE ROW AND NOT AN OVERWRITE. An approved attribution has
+    already credited `sme_sqm_progress.Done_SQM` and already counts in
+    `Consumed_Qty`. Until an HOD approves the new figures, the approved ones are
+    the figures — "approval is what makes a number count" is the rule this
+    whole workflow runs on. So the field's new answer waits here, the approved
+    row keeps counting, and on approval the SAME `sme_consumption_log` row is
+    updated in place (the operator's requirement: the old entry takes the new
+    values) while this row keeps what it was changed FROM.
+
+    ⚠️ ONE STAGED REVISION PER ATTRIBUTION. Re-submitting updates the staged
+    row; it does not stack a second proposal behind the first.
+    """
+    __tablename__ = "sme_consumption_revision"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    Log_ID = Column(Integer, ForeignKey("sme_consumption_log.id",
+                                       ondelete="CASCADE"), nullable=False)
+    Consumption_ID = Column(Integer, nullable=False)
+    Site_ID = Column(Text, nullable=False)
+    status = Column(Text, nullable=False, server_default=text("'staged'"))
+
+    # — what the approved attribution said, frozen at submission —
+    Prev_Lining_System_Code = Column(Text)
+    Prev_Equipment_Tag_No = Column(Text)
+    Prev_SQM_Completed = Column(Float)
+    Prev_Actual_Qty = Column(Float)
+    Prev_Variance_Pct = Column(Float)
+    Prev_Source_Fingerprint = Column(Text)
+
+    # — what the field now says, against the edited ledger row —
+    Lining_System_Code = Column(Text, nullable=False)
+    Equipment_Tag_No = Column(Text, nullable=False)
+    SQM_Completed = Column(Float, nullable=False)
+    Actual_Qty = Column(Float, nullable=False)
+    Expected_Qty = Column(Float)
+    Variance_Pct = Column(Float)
+    Bench_For_1_SQM = Column(Float)
+    Priority_Flag = Column(Text)
+    Variance_Tolerance_Pct = Column(Float)
+    Source_Fingerprint = Column(Text, nullable=False)
+    notes = Column(Text)
+
+    submitted_by = Column(Text)
+    submitted_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    hod_username = Column(Text)
+    hod_decided_at = Column(DateTime)
+    HOD_Edit_Justification = Column(Text)
+    hod_edited = Column(Boolean, nullable=False, server_default=text("false"))
+    rejected_reason = Column(Text)
+    __table_args__ = (
+        Index("ix_sme_cons_rev_log", "Log_ID", "status"),
+        # ⚠️ AT MOST ONE STAGED REVISION PER ATTRIBUTION, enforced by the
+        # database: two submissions racing from two supervisors' phones must
+        # not leave the HOD two proposals for one drum.
+        Index("ux_sme_cons_rev_staged", "Log_ID", unique=True,
+              postgresql_where=text("status = 'staged'")),
     )
 
 class SmeEquipment(Base):

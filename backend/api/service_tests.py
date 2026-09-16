@@ -8363,17 +8363,27 @@ async def test_pg_excel_sync():
               f"{_t.name}", set(_cols) == _pk or set(_cols) in _uqs,
               f"{_cols} vs pk={_pk} uq={_uqs}")
 
-    # The ledger deliberately has NO unique key: the same (date, SAP, qty) line
-    # is a legitimate repeat movement. If someone ever adds one, this fails and
-    # sends them back to the module docstring before they "fix" the tool.
+    # The ledger deliberately has NO unique key on a MOVEMENT: the same
+    # (date, SAP, qty) line is a legitimate repeat. If someone ever adds one,
+    # this fails and sends them back to the module docstring.
+    #
+    # ⚠️ 2026-09-16: it DOES have one unique index, and this check now says
+    # exactly which — a PARTIAL index on the sync's per-row provenance label,
+    # which names a row and can never merge two movements. Any other unique
+    # index, or one that covers a movement column, still fails here.
     for _tn in ("receipts", "consumption", "returns"):
         _t = _MD.tables[_tn]
         _uqs = [c for c in _t.constraints
                 if c.__class__.__name__ == "UniqueConstraint"]
-        check(f"aw: {_tn} still has no unique constraint — ON CONFLICT is "
-              f"correctly absent there, not forgotten",
-              not _uqs and {c.name for c in _t.primary_key} == {"id"},
-              f"uq={_uqs}")
+        _uix = [i for i in _t.indexes if i.unique]
+        _label_only = (len(_uix) == 1
+                       and [c.name for c in _uix[0].columns] == ["Site_ID", "Source_Ref"]
+                       and "XLSX:" in str(_uix[0].dialect_options["postgresql"]["where"]))
+        check(f"aw: {_tn} has no uniqueness on a MOVEMENT — its only unique "
+              f"index is the partial one on the sync's row label",
+              not _uqs and {c.name for c in _t.primary_key} == {"id"}
+              and _label_only,
+              f"uq={_uqs} unique_indexes={[(i.name, [c.name for c in i.columns]) for i in _uix]}")
 
     # ── 3. load order is load-bearing ───────────────────────────────────────
     _order = list(pg.WORKBOOKS)
@@ -8567,10 +8577,16 @@ async def test_pg_excel_sync():
               "WHERE \"Equipment_Tag_No\"='SVCW-T1'") or 0) - 20) < 1e-9)
 
     rc, out = await _run(_dir, "--erp", "--commit")
+    # 2026-09-16: the ledger line now reports edits of ANY filled field, not
+    # only quantity corrections — "~0 edited (qty 0)" is the same no-op said
+    # more completely. The staged totals are asserted too, because a printed
+    # zero proves what was PLANNED and only the writer's counts prove what was
+    # WRITTEN.
     check("aw: re-running --commit is a NO-OP — the sync is idempotent",
           rc == 0 and await _svcw_counts() == (1, 1, 1, 1, 1)
-          and out.count("+0 new") >= 3 and "+0 new  ~0 corrected" in out,
-          f"rc={rc} counts={await _svcw_counts()}")
+          and out.count("+0 new") >= 3 and "+0 new  ~0 edited (qty 0)" in out
+          and "'inserted': 0, 'updated': 0" in out,
+          f"rc={rc} counts={await _svcw_counts()} out={out[-600:]}")
 
     # ── 6. atomicity: a failure in the LAST kind rolls the earlier ones back ─
     _bad = _books("SVCY")
@@ -10403,11 +10419,20 @@ async def test_manual_retrieval_and_login_throttle():
         check(f"be: {table} declares its hot-path indexes in models.py, so a "
               f"fresh create_all matches alembic e7c3b95a41d2",
               want <= have, f"missing {sorted(want - have)} (have {sorted(have)})")
-    check("be: no index on the ledgers is UNIQUE — the same (date, SAP, "
-          "quantity) line may legitimately repeat",
-          all(not i.unique for t in ("receipts", "consumption", "returns")
-              for i in _md.tables[t].indexes),
-          "a unique index reached a ledger table")
+    # ⚠️ 2026-09-16: ONE unique index is allowed per ledger, and only this
+    # shape — PARTIAL, on (Site_ID, Source_Ref), restricted to the Excel sync's
+    # `XLSX:` labels. A label names one row and can never merge two movements;
+    # any unique index touching a movement column still fails here, for the
+    # reason this check was written.
+    _bad_uix = [(t, i.name, [c.name for c in i.columns])
+                for t in ("receipts", "consumption", "returns")
+                for i in _md.tables[t].indexes if i.unique
+                and not ([c.name for c in i.columns] == ["Site_ID", "Source_Ref"]
+                         and "XLSX:" in str(i.dialect_options["postgresql"]["where"]))]
+    check("be: no index on the ledgers makes a MOVEMENT unique — the same "
+          "(date, SAP, quantity) line may legitimately repeat; the only unique "
+          "index allowed is the partial one on the sync's row label",
+          not _bad_uix, f"unique index on a movement: {_bad_uix}")
     _ = _bere
 
 async def test_surface_shield_routing():
@@ -21786,6 +21811,520 @@ async def _consumed(SL, site):
                 for c in await SL.consumed_by_component(s, site)}
 
 
+# --- Suite DC: the Excel sync is an upsert, and Phase 13 survives it ---------
+async def test_excel_sync_upsert_phase13():
+    """Suite DC — 2026-09-16. Re-syncing the workbook converges, edits land in
+    place, and a Phase 13 attribution is never overwritten, deleted or orphaned.
+
+    ⚠️ THE IDENTITY IS A PROVENANCE LABEL, NOT A MOVEMENT KEY. A unique key on
+    (Date, SAP, Tank No.) was measured against the real Consumption Log: 605
+    keys shared by 2,785 of 4,394 rows. DC-20..DC-23 are the genuine-duplicate
+    trap: two identical drums are two rows, on every run.
+
+    ⚠️ THE OPERATOR'S SCENARIO IS DC-01..DC-19, IN THEIR ORDER: sync a row,
+    attribute it, sync an edited quantity — no duplicate, quantity updated,
+    attribution intact — then the edited row comes back HIGHLIGHTED, is
+    re-assigned, the HOD is told, and approval updates the ORIGINAL entry. A
+    push that changes nothing asks nothing (DC-05, DC-12).
+    """
+    import io as _io
+
+    from sqlalchemy import text as _sqt
+    from sqlalchemy.exc import IntegrityError
+
+    from . import bulk_import as bi
+    from .services import sme_link as SL
+
+    SITE = "CNCEC"
+    await _qsep_seed_users()
+    transport = ASGITransport(app=app)
+    _HDR = ["Date", "SAP CODE", "Material Code", "Equipment Description", "UOM",
+            "Qty.", "Serial No.", "PR#", "Work Type", "Tank No.", "WBS#",
+            "Approved By", "Cons. Paper No.", "Pallet No.", "Received by",
+            "Prepared by", "Location", "Remarks", "Current Stock", "type"]
+
+    def _line(date, sap, qty, tank, remarks=None):
+        return [f"{date} 00:00:00", sap, None, None, "KG", qty, None, None,
+                "Lining", tank, None, None, None, None, None, None, None,
+                remarks, None, "Surface Shield"]
+
+    def _book(lines):
+        return _xlsx({"Consumption Log": [["CNCEC PROJECT"], _HDR, *lines]})
+
+    async def _sync(lines):
+        """One run of THE writer the CLI and the HTTP import share."""
+        async with SessionLocal() as s:
+            plan = await bi.plan_ledger(s, _book(lines), SITE)
+            counts = await bi.apply_ledger(s, plan, "svdc-sync")
+            stale = await SL.stale_attributions(
+                s, consumption_ids=counts["updated_ids"].get("consumption", []))
+            if stale:
+                await SL.notify_sync_edits(s, stale=stale, username="svdc-sync")
+            await s.commit()
+        return plan["sections"]["consumption"], counts, stale
+
+    async def _rows(sap="SVDC-1"):
+        async with SessionLocal() as s:
+            return [dict(r) for r in (await s.execute(_sqt(
+                'SELECT * FROM consumption WHERE "SAP_Code" = :s ORDER BY id'),
+                {"s": sap})).mappings().all()]
+
+    async def _one(sql, **p):
+        async with SessionLocal() as s:
+            return (await s.execute(_sqt(sql), p)).mappings().first()
+
+    async def _done(tag):
+        async with SessionLocal() as s:
+            return float((await s.execute(_sqt(
+                'SELECT COALESCE("Done_SQM", 0) FROM sme_sqm_progress WHERE '
+                '"Site_ID" = :site AND "Equipment_Tag_No" = :t AND '
+                "\"Lining_System_Code\" = 'SVDC-LS1'"),
+                {"site": SITE, "t": tag})).scalar() or 0.0)
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            ids = [r[0] for r in (await s.execute(_sqt(
+                "SELECT id FROM sme_consumption_log WHERE \"SAP_Code\" LIKE 'SVDC-%'"
+            ))).all()]
+            if ids:
+                await s.execute(_sqt(
+                    "DELETE FROM app_notifications WHERE event_key = "
+                    "'sme_link_edited' AND related_ref = ANY(:r)"),
+                    {"r": [str(i) for i in ids]})
+                await s.execute(_sqt("DELETE FROM sme_consumption_revision WHERE "
+                                     "\"Log_ID\" = ANY(:r)"), {"r": ids})
+            await s.execute(_sqt("DELETE FROM sme_consumption_log WHERE "
+                                 "\"SAP_Code\" LIKE 'SVDC-%'"))
+            await s.execute(_sqt("DELETE FROM consumption WHERE "
+                                 "\"SAP_Code\" LIKE 'SVDC-%'"))
+            await s.execute(_sqt("DELETE FROM sme_recipe WHERE "
+                                 "\"Lining_System_Code\" LIKE 'SVDC-%'"))
+            await s.execute(_sqt("DELETE FROM sme_sqm_progress WHERE "
+                                 "\"Equipment_Tag_No\" LIKE 'SVDC-%'"))
+            await s.execute(_sqt("DELETE FROM sme_equipment WHERE "
+                                 "\"Equipment_Tag_No\" LIKE 'SVDC-%'"))
+            await s.execute(_sqt("DELETE FROM inventory WHERE "
+                                 "\"SAP_Code\" LIKE 'SVDC-%'"))
+            await s.commit()
+
+    await _cleanup()
+    async with SessionLocal() as s:
+        for sap, mat in (("SVDC-1", "SVDC-MAT-1"), ("SVDC-2", "SVDC-MAT-2"),
+                         ("SVDC-3", "SVDC-MAT-3")):
+            await s.execute(_sqt(
+                'INSERT INTO inventory ("SAP_Code", "Material_Code", '
+                '"Equipment_Description", "Category", "UOM", "Site_ID") '
+                "VALUES (:s, :m, 'SVDC resin', 'Surface Shields', 'KG', :site)"),
+                {"s": sap, "m": mat, "site": SITE})
+            await s.execute(_sqt(
+                'INSERT INTO sme_recipe ("Lining_System_Code", '
+                '"Execution_Sub_Activity_Code", "Material_Code", "SAP_Code", '
+                '"Material_Name", "UOM", "For_1_SQM", "Lining_System_Name") '
+                "VALUES ('SVDC-LS1', 'ESDC1', :m, :s, 'SVDC resin', 'KG', 2.0, "
+                "'SVDC system')"), {"s": sap, "m": mat})
+        for tag in ("SVDC-TANK-A", "SVDC-TANK-B"):
+            await s.execute(_sqt(
+                'INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", '
+                '"Lining_System_Code", "Name", "Surface_Area_SQM") '
+                "VALUES (:site, :t, 'SVDC-LS1', :t, 400)"), {"site": SITE, "t": tag})
+        await s.commit()
+
+    try:
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            SUP = await _qsep_login(ac, "SVCQ-sup")
+            H = await _qsep_login(ac, "SVCQ-hod")
+
+            async def _queue():
+                r = await ac.get("/execution/sme-link/queue",
+                                 params={"site_id": SITE, "limit": 500}, headers=SUP)
+                return {i["consumption_id"]: i for i in r.json()["items"]
+                        if str(i["sap_code"]).startswith("SVDC-")}
+
+            # ══ 1. the operator's scenario ═════════════════════════════════
+            sec, cnt, _ = await _sync([_line("2026-06-01", "SVDC-1", 20, "SVDC-TANK-A")])
+            rows = await _rows()
+            check("DC-01 a workbook line syncs as ONE ledger row, labelled as the "
+                  "sync's own — the label is what a later run finds it by",
+                  len(rows) == 1 and cnt["inserted"] == 1
+                  and str(rows[0]["Source_Ref"]).startswith("XLSX:CNCEC:consumption:"),
+                  f"{len(rows)} rows, counts={cnt}, ref={rows[0]['Source_Ref'] if rows else None}")
+            cid = rows[0]["id"]
+
+            sec, cnt, _ = await _sync([_line("2026-06-01", "SVDC-1", 20, "SVDC-TANK-A")])
+            rows = await _rows()
+            check("DC-02 ⚠️ RE-SYNCING THE SAME WORKBOOK WRITES NOTHING — no "
+                  "insert, no update, same row, same id. The DO UPDATE guard "
+                  "skips a row whose values are already what the workbook says",
+                  len(rows) == 1 and rows[0]["id"] == cid and cnt["inserted"] == 0
+                  and cnt["updated"] == 0 and sec["matched"] == 1,
+                  f"{len(rows)} rows, counts={cnt}, matched={sec['matched']}")
+
+            r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+                "consumption_id": cid, "code": "SVDC-LS1", "tag": "SVDC-TANK-A",
+                "sqm": 10, "site_id": SITE})
+            a = r.json()
+            check("DC-03 a supervisor attributes the synced row — system code, "
+                  "equipment and area — through the ordinary Phase 13 path",
+                  r.status_code == 201 and a["status"] == "staged",
+                  f"{r.status_code} {r.text[:160]}")
+            log_id = a["id"]
+            lg = await _one("SELECT * FROM sme_consumption_log WHERE id = :i", i=log_id)
+            check("DC-04 …and the attribution records the FINGERPRINT of the "
+                  "ledger row it was measured against",
+                  lg["Source_Fingerprint"] is not None, str(lg["Source_Fingerprint"]))
+
+            r = await ac.post(f"/execution/sme-link/{log_id}/decide", headers=H,
+                              json={"approve": True})
+            check("DC-04a the HOD approves it, and 10 m² is credited to TANK-A",
+                  r.status_code == 200 and await _done("SVDC-TANK-A") == 10.0,
+                  f"{r.status_code} {r.text[:140]} done={await _done('SVDC-TANK-A')}")
+
+            sec, cnt, stale = await _sync([_line("2026-06-01", "SVDC-1", 20,
+                                                 "SVDC-TANK-A")])
+            q = await _queue()
+            check("DC-05 ⚠️ A PUSH THAT CHANGES NOTHING ASKS NOTHING AGAIN. The "
+                  "attributed row is not re-queued, no attribution goes stale, "
+                  "and nothing is written",
+                  cid not in q and not stale and cnt["updated"] == 0
+                  and cnt["inserted"] == 0,
+                  f"in queue={cid in q} stale={len(stale)} counts={cnt}")
+
+            # — the edit —
+            sec, cnt, stale = await _sync([_line("2026-06-01", "SVDC-1", 30,
+                                                 "SVDC-TANK-A")])
+            rows = await _rows()
+            check("DC-06 ⚠️⚠️ AN EDITED QUANTITY UPDATES THE SAME ROW IN PLACE — "
+                  "20 → 30, one row, the SAME id. Not a second row beside the "
+                  "first, which would deduct the drum twice",
+                  len(rows) == 1 and rows[0]["id"] == cid
+                  and float(rows[0]["Quantity"]) == 30.0
+                  and cnt["updated"] == 1 and cnt["inserted"] == 0,
+                  f"{len(rows)} rows ids={[x['id'] for x in rows]} "
+                  f"qty={[x['Quantity'] for x in rows]} counts={cnt}")
+            lg2 = await _one("SELECT * FROM sme_consumption_log WHERE id = :i", i=log_id)
+            check("DC-07 ⚠️⚠️ THE ATTRIBUTION IS PERFECTLY INTACT — same row, "
+                  "still linked to the same ledger id, system code, equipment, "
+                  "area and approval untouched by the sync",
+                  lg2 is not None and lg2["Consumption_ID"] == cid
+                  and lg2["Lining_System_Code"] == "SVDC-LS1"
+                  and lg2["Equipment_Tag_No"] == "SVDC-TANK-A"
+                  and float(lg2["SQM_Completed"]) == 10.0
+                  and lg2["status"] == "committed"
+                  and lg2["Source_Fingerprint"] == lg["Source_Fingerprint"],
+                  str(dict(lg2) if lg2 else None)[:260])
+            check("DC-08 …and no progress moved: an edit in a spreadsheet is not "
+                  "an approval, so TANK-A still reads the approved 10 m²",
+                  await _done("SVDC-TANK-A") == 10.0, str(await _done("SVDC-TANK-A")))
+
+            q = await _queue()
+            check("DC-09 ⚠️ THE EDITED ROW IS BACK IN THE QUEUE, MARKED EDITED, "
+                  "carrying its previous answer so the field confirms rather "
+                  "than starts again",
+                  cid in q and q[cid]["reason"] == "edited"
+                  and q[cid]["prev_code"] == "SVDC-LS1"
+                  and q[cid]["prev_tag"] == "SVDC-TANK-A"
+                  and float(q[cid]["prev_sqm"]) == 10.0
+                  and float(q[cid]["prev_qty"]) == 20.0
+                  and float(q[cid]["quantity"]) == 30.0,
+                  str(q.get(cid))[:260])
+            bell = await _one(
+                "SELECT COUNT(*) AS n FROM app_notifications WHERE event_key = "
+                "'sme_link_edited' AND recipient_role = 'hod' AND "
+                "recipient_site = :site AND related_ref = :r",
+                site=SITE, r=str(log_id))
+            check("DC-10 the sync told the site's HODs once that attributed "
+                  "consumption changed in Excel",
+                  len(stale) == 1 and bell["n"] >= 1,
+                  f"stale={len(stale)} bells={bell['n']}")
+
+            r = await ac.post(f"/execution/sme-link/{log_id}/decide", headers=H,
+                              json={"approve": True})
+            check("DC-10a an approved attribution cannot be approved again — the "
+                  "path back is re-assignment, not a second decision",
+                  r.status_code == 409, f"{r.status_code} {r.text[:120]}")
+
+            r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+                "consumption_id": cid, "code": "SVDC-LS1", "tag": "SVDC-TANK-A",
+                "sqm": 15, "site_id": SITE})
+            rv = r.json()
+            check("DC-11 the field re-assigns the three things against the new "
+                  "figures — it lands as a REVISION beside the approved entry, "
+                  "because the approved figures already count",
+                  r.status_code == 201 and rv["revision"] and rv["status"] == "committed",
+                  f"{r.status_code} {r.text[:160]}")
+            q = await _queue()
+            check("DC-12 …and leaves the queue — a fresh revision answers the edit",
+                  cid not in q, str(q.get(cid))[:160])
+            sec, cnt, stale = await _sync([_line("2026-06-01", "SVDC-1", 30,
+                                                 "SVDC-TANK-A")])
+            q = await _queue()
+            check("DC-12a ⚠️ RE-SYNCING THE SAME EDITED WORKBOOK ASKS NOTHING "
+                  "AGAIN — no write, no new stale attribution, not re-queued",
+                  cnt["updated"] == 0 and cnt["inserted"] == 0 and not stale
+                  and cid not in q, f"counts={cnt} stale={len(stale)}")
+            check("DC-13 approved figures still stand while the revision waits "
+                  "(TANK-A 10 m²)", await _done("SVDC-TANK-A") == 10.0,
+                  str(await _done("SVDC-TANK-A")))
+
+            r = await ac.post(f"/execution/sme-link/revisions/{rv['revision']}/decide",
+                              headers=SUP, json={"approve": True})
+            check("DC-14 only an HOD decides a revision", r.status_code == 403,
+                  f"{r.status_code}")
+            r = await ac.post(f"/execution/sme-link/revisions/{rv['revision']}/decide",
+                              headers=H, json={"approve": True,
+                                               "edits": {"Actual_Qty": 1},
+                                               "justification": "x"})
+            check("DC-14a the quantity is refused on a revision too, not ignored",
+                  r.status_code == 422, f"{r.status_code} {r.text[:120]}")
+            r = await ac.post(f"/execution/sme-link/revisions/{rv['revision']}/decide",
+                              headers=H, json={"approve": True})
+            lg3 = await _one("SELECT * FROM sme_consumption_log WHERE id = :i", i=log_id)
+            nlogs = await _one("SELECT COUNT(*) AS n FROM sme_consumption_log "
+                               "WHERE \"Consumption_ID\" = :c", c=cid)
+            check("DC-15 ⚠️⚠️ APPROVAL UPDATES THE ORIGINAL ENTRY IN PLACE — the "
+                  "same attribution row now says 30 drawn, 15 m², with the new "
+                  "fingerprint; there is still exactly ONE attribution for the drum",
+                  r.status_code == 200 and lg3["id"] == log_id
+                  and float(lg3["Actual_Qty"]) == 30.0
+                  and float(lg3["SQM_Completed"]) == 15.0
+                  and lg3["Source_Fingerprint"] != lg["Source_Fingerprint"]
+                  and nlogs["n"] == 1,
+                  f"{r.status_code} {str(dict(lg3))[:200]} logs={nlogs['n']}")
+            check("DC-16 ⚠️ …AND PROGRESS MOVED BY THE DIFFERENCE ONLY: TANK-A "
+                  "10 → 15, not 10 + 15",
+                  await _done("SVDC-TANK-A") == 15.0, str(await _done("SVDC-TANK-A")))
+            revrow = await _one("SELECT * FROM sme_consumption_revision WHERE id = :i",
+                                i=rv["revision"])
+            check("DC-17 the revision keeps what it changed FROM — the audit trail "
+                  "says 20 drawn / 10 m² became 30 drawn / 15 m²",
+                  revrow["status"] == "approved"
+                  and float(revrow["Prev_Actual_Qty"]) == 20.0
+                  and float(revrow["Prev_SQM_Completed"]) == 10.0,
+                  str(dict(revrow))[:220])
+
+            # reject → approved figures stand → re-queued with the reason
+            await _sync([_line("2026-06-01", "SVDC-1", 36, "SVDC-TANK-A")])
+            r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+                "consumption_id": cid, "code": "SVDC-LS1", "tag": "SVDC-TANK-B",
+                "sqm": 18, "site_id": SITE})
+            rv2 = r.json()["revision"]
+            r = await ac.post(f"/execution/sme-link/revisions/{rv2}/decide",
+                              headers=H, json={"approve": False,
+                                               "reject_reason": "it was TANK-A"})
+            q = await _queue()
+            check("DC-18 a REJECTED revision leaves the approved figures standing "
+                  "(TANK-A 15, TANK-B 0) and sends the row straight back to the "
+                  "field with the reason — the workbook still disagrees",
+                  r.status_code == 200 and await _done("SVDC-TANK-A") == 15.0
+                  and await _done("SVDC-TANK-B") == 0.0 and cid in q
+                  and q[cid]["last_revision_rejected_reason"] == "it was TANK-A",
+                  f"{r.status_code} A={await _done('SVDC-TANK-A')} "
+                  f"B={await _done('SVDC-TANK-B')} q={str(q.get(cid))[:160]}")
+            r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+                "consumption_id": cid, "code": "SVDC-LS1", "tag": "SVDC-TANK-B",
+                "sqm": 18, "site_id": SITE})
+            rv3 = r.json()["revision"]
+            await _sync([_line("2026-06-01", "SVDC-1", 40, "SVDC-TANK-A")])
+            r = await ac.post(f"/execution/sme-link/revisions/{rv3}/decide",
+                              headers=H, json={"approve": True})
+            check("DC-19 ⚠️ A REVISION FILED AGAINST AN EARLIER EDIT CANNOT BE "
+                  "APPROVED — the workbook changed again, so its figures are "
+                  "already out of date",
+                  r.status_code == 409 and await _done("SVDC-TANK-A") == 15.0,
+                  f"{r.status_code} {r.text[:140]}")
+
+            # ══ 2. genuine duplicate movements ═════════════════════════════
+            two = [_line("2026-06-05", "SVDC-2", 1, "SVDC-TANK-A"),
+                   _line("2026-06-05", "SVDC-2", 1, "SVDC-TANK-A")]
+            sec, cnt, _ = await _sync(two)
+            dup = await _rows("SVDC-2")
+            check("DC-20 ⚠️⚠️ TWO IDENTICAL DRUMS ARE TWO ROWS. Same day, SAP, "
+                  "tank and quantity — the shape 2,785 of the real workbook's "
+                  "4,394 rows share with a neighbour. A unique key on those "
+                  "columns would have merged them",
+                  len(dup) == 2 and cnt["inserted"] == 2
+                  and dup[0]["Source_Ref"] != dup[1]["Source_Ref"],
+                  f"{len(dup)} rows refs={[d['Source_Ref'] for d in dup]}")
+            sec, cnt, _ = await _sync(two)
+            check("DC-21 …and stay two on every re-run",
+                  len(await _rows("SVDC-2")) == 2 and cnt["inserted"] == 0
+                  and cnt["updated"] == 0, f"counts={cnt}")
+            sec, cnt, _ = await _sync([_line("2026-06-05", "SVDC-2", 1, "SVDC-TANK-A"),
+                                       _line("2026-06-05", "SVDC-2", 4, "SVDC-TANK-A")])
+            after = await _rows("SVDC-2")
+            check("DC-22 editing ONE of two identical drums updates exactly one "
+                  "row; its twin keeps its id and its quantity",
+                  len(after) == 2 and cnt["updated"] == 1 and cnt["inserted"] == 0
+                  and sorted(float(x["Quantity"]) for x in after) == [1.0, 4.0]
+                  and {x["id"] for x in after} == {x["id"] for x in dup},
+                  f"counts={cnt} qty={[x['Quantity'] for x in after]}")
+            async with SessionLocal() as s:
+                raised = False
+                try:
+                    await s.execute(_sqt(
+                        'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", '
+                        '"Site_ID", "Source_Ref") VALUES (\'2026-06-05\', '
+                        "'SVDC-2', 9, :site, :ref)"),
+                        {"site": SITE, "ref": after[0]["Source_Ref"]})
+                    await s.commit()
+                except IntegrityError:
+                    raised = True
+                    await s.rollback()
+            check("DC-23 ⚠️ THE DATABASE, NOT THE PLANNER, REFUSES A SECOND ROW "
+                  "WITH THE SAME LABEL — the upsert's guarantee holds even if a "
+                  "future planner bug tried",
+                  raised, "a duplicate XLSX label was accepted")
+
+            # ══ 3. rows written before labels existed, and rows the APP wrote ═
+            async with SessionLocal() as s:
+                legacy_id = (await s.execute(_sqt(
+                    'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", '
+                    '"Site_ID", "Tank_No", "Work_Type") VALUES (\'2026-06-09 00:00:00\','
+                    " 'SVDC-3', 7, :site, 'SVDC-TANK-B', 'Lining') RETURNING id"),
+                    {"site": SITE})).scalar_one()
+                exec_id = (await s.execute(_sqt(
+                    'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", '
+                    '"Site_ID", "Tank_No", "Source_Ref") VALUES (\'2026-06-10 00:00:00\','
+                    " 'SVDC-3', 5, :site, 'SVDC-TANK-B', 'SME_EXEC:777:888') "
+                    "RETURNING id"), {"site": SITE})).scalar_one()
+                await s.commit()
+            r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+                "consumption_id": legacy_id, "code": "SVDC-LS1",
+                "tag": "SVDC-TANK-B", "sqm": 3, "site_id": SITE})
+            legacy_log = r.json()["id"]
+            sec, cnt, stale = await _sync([
+                _line("2026-06-09", "SVDC-3", 7, "SVDC-TANK-B"),
+                _line("2026-06-10", "SVDC-3", 5, "SVDC-TANK-B")])
+            r3 = {x["id"]: x for x in await _rows("SVDC-3")}
+            check("DC-24 ⚠️ A ROW SYNCED BEFORE LABELS EXISTED IS ADOPTED, NOT "
+                  "RE-INSERTED — labelled by id, same row, attribution still on it",
+                  len(r3) == 2 and sec["adopted"] == 1 and cnt["inserted"] == 0
+                  and str(r3[legacy_id]["Source_Ref"]).startswith("XLSX:")
+                  and (await _one("SELECT \"Consumption_ID\" FROM sme_consumption_log "
+                                  "WHERE id = :i", i=legacy_log))["Consumption_ID"]
+                  == legacy_id,
+                  f"rows={len(r3)} adopted={sec['adopted']} counts={cnt}")
+            check("DC-25 ⚠️⚠️ AN EXECUTION ENTRY'S OWN POSTING ABSORBS ITS "
+                  "WORKBOOK TWIN AND IS NEVER RELABELLED — its SME_EXEC: anchor "
+                  "is what keeps it out of the attribution queue",
+                  r3[exec_id]["Source_Ref"] == "SME_EXEC:777:888"
+                  and len(r3) == 2, str(r3[exec_id]["Source_Ref"]))
+            sec, cnt, _ = await _sync([
+                _line("2026-06-09", "SVDC-3", 7, "SVDC-TANK-B"),
+                _line("2026-06-10", "SVDC-3", 6, "SVDC-TANK-B")])
+            r3b = {x["id"]: x for x in await _rows("SVDC-3")}
+            check("DC-26 …and when the workbook disagrees with it, that is a "
+                  "CONFLICT reported for a human — the app's 5 is not rewritten "
+                  "and no second row is inserted",
+                  len(sec["conflicts"]) == 1 and len(r3b) == 2
+                  and float(r3b[exec_id]["Quantity"]) == 5.0
+                  and cnt["inserted"] == 0,
+                  f"conflicts={sec['conflicts']} rows={len(r3b)}")
+
+            # ══ 4. the tank itself edited ══════════════════════════════════
+            sec, cnt, _ = await _sync([_line("2026-06-12", "SVDC-3", 2, "SVDC-TANK-A")])
+            t_id = [x for x in await _rows("SVDC-3")
+                    if x["Date"].startswith("2026-06-12")][0]["id"]
+            sec, cnt, _ = await _sync([_line("2026-06-12", "SVDC-3", 2, "SVDC-TANK-B")])
+            moved = [x for x in await _rows("SVDC-3") if x["Date"].startswith("2026-06-12")]
+            check("DC-27 ⚠️ A TANK NUMBER FIXED IN THE WORKBOOK MOVES THE SAME ROW — "
+                  "relabelled, same id, no second row. Without this a typo fix "
+                  "would deduct the drum twice",
+                  len(moved) == 1 and moved[0]["id"] == t_id
+                  and moved[0]["Tank_No"] == "SVDC-TANK-B"
+                  and sec["relabelled"] == 1 and cnt["inserted"] == 0,
+                  f"rows={len(moved)} relabelled={sec['relabelled']} counts={cnt}")
+            sec, cnt, _ = await _sync([_line("2026-06-12", "SVDC-3", 2, "SVDC-TANK-B")])
+            check("DC-28 …and the move is stable: the next run writes and "
+                  "relabels nothing",
+                  cnt["inserted"] == 0 and cnt["updated"] == 0
+                  and cnt["stamped"] == 0, f"counts={cnt}")
+
+            # ══ 5. the routing no longer writes orphan attributions ═════════
+            async with SessionLocal() as s:
+                n0 = (await s.execute(_sqt(
+                    "SELECT COUNT(*) FROM sme_consumption_log"))).scalar()
+                plan = await bi.plan_ledger(
+                    s, _book([_line("2026-06-15", "SVDC-3", 9, "SVDC-TANK-A")]), SITE)
+                routing = await bi.plan_sme_routing(s, SITE, plan)
+            check("DC-29 ⚠️ THE SYNC NO LONGER CREATES ATTRIBUTION ROWS OF ITS "
+                  "OWN. They were orphans at birth — written before the ledger "
+                  "row existed, so never linked — and they doubled the drum in "
+                  "the comparison and Man-Hours reports",
+                  routing["log_inserts"] == [], str(routing["log_inserts"])[:160])
+
+            # ══ 5b. --prune-vanished: the one delete, and what it refuses ═══
+            await _sync([_line("2026-06-20", "SVDC-2", 3, "SVDC-TANK-A"),
+                         _line("2026-06-21", "SVDC-2", 4, "SVDC-TANK-A")])
+            _r2 = {x["Date"][:10]: x["id"] for x in await _rows("SVDC-2")}
+            r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+                "consumption_id": _r2["2026-06-21"], "code": "SVDC-LS1",
+                "tag": "SVDC-TANK-A", "sqm": 2, "site_id": SITE})
+            # The operator edits both DATES in the workbook: each old row is now
+            # "vanished" and each edited line is new.
+            async with SessionLocal() as s:
+                plan = await bi.plan_ledger(s, _book([
+                    _line("2026-06-22", "SVDC-2", 3, "SVDC-TANK-A"),
+                    _line("2026-06-23", "SVDC-2", 4, "SVDC-TANK-A")]), SITE)
+                # Hermetic: prune only what THIS suite owns, whatever else a
+                # shared test database happens to hold.
+                for _sec in plan["sections"].values():
+                    _sec["vanished"] = [v for v in _sec.get("vanished", [])
+                                        if v["id"] in (_r2["2026-06-20"],
+                                                       _r2["2026-06-21"])]
+                await bi.apply_ledger(s, plan, "svdc-sync")
+                pr = await bi.prune_vanished(s, plan, "svdc-sync")
+                await s.commit()
+            left = {x["id"] for x in await _rows("SVDC-2")}
+            check("DC-29a ⚠️ --prune-vanished DELETES a row the workbook no longer "
+                  "names when NOTHING references it — the pre-edit copy that would "
+                  "otherwise deduct the drum a second time",
+                  _r2["2026-06-20"] in pr["consumption"]["deleted"]
+                  and _r2["2026-06-20"] not in left,
+                  f"pruned={pr} left={sorted(left)}")
+            check("DC-29b ⚠️⚠️ …AND KEEPS ONE THAT CARRIES A PHASE 13 ATTRIBUTION, "
+                  "reporting it instead. Deleting it would orphan exactly the "
+                  "work the operator asked the sync never to orphan",
+                  r.status_code == 201
+                  and _r2["2026-06-21"] in left
+                  and any(k["id"] == _r2["2026-06-21"]
+                          for k in pr["consumption"]["kept"]),
+                  f"assign={r.status_code} pruned={pr}")
+            check("DC-29c a truncated workbook is refused: 30 of 40 labelled rows "
+                  "missing reads as a half-saved file, not as thirty date edits",
+                  bi.prune_guard({"sections": {"consumption": {
+                      "vanished": [{"id": i} for i in range(30)],
+                      "upserts": [{}] * 10}}})
+                  and not bi.prune_guard({"sections": {"consumption": {
+                      "vanished": [{"id": 1}, {"id": 2}],
+                      "upserts": [{}] * 400}}}),
+                  "prune_guard thresholds moved")
+
+            # ══ 6. the HTTP import runs the same writer ════════════════════
+            ADM = await _qsep_login(ac, "SVCQ-admin")
+            r = await ac.post(
+                "/import/ledger", headers=ADM, params={"site_id": SITE, "commit": "true"},
+                files={"file": ("c.xlsx", _book([
+                    _line("2026-06-01", "SVDC-1", 44, "SVDC-TANK-A")]),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+            j = r.json()
+            check("DC-30 the admin's Bulk Import page uses the SAME writer and "
+                  "reports how many attributions it sent back to the field",
+                  r.status_code == 200 and j["attributions_edited"] == 1
+                  and len(await _rows()) == 1,
+                  f"{r.status_code} {str(j)[:200]}")
+    finally:
+        await _cleanup()
+        async with SessionLocal() as s:
+            left = (await s.execute(_sqt(
+                "SELECT (SELECT COUNT(*) FROM consumption WHERE \"SAP_Code\" LIKE 'SVDC-%') "
+                "+ (SELECT COUNT(*) FROM sme_consumption_log WHERE \"SAP_Code\" LIKE 'SVDC-%') "
+                "+ (SELECT COUNT(*) FROM inventory WHERE \"SAP_Code\" LIKE 'SVDC-%')"
+            ))).scalar()
+    check("DC-31 every mock entry this suite created is deleted again",
+          left == 0, f"{left} SVDC row(s) left behind")
+
+
 # --- Suite CS: slice 10b — the daily claim, valuation, and the soft gate ------
 async def test_slice_10b_ecosystem():
     """Suite CS — Phase 10 slice 10b. Tracks 2, 3 and 5.
@@ -24692,6 +25231,10 @@ async def main() -> int:
           "through ONE writer, and Consumed_Qty is an observation that moves "
           "no readiness figure")
     await test_sme_inventory_link_approval()
+    print("\n DC. The Excel sync is an upsert on a per-row label — re-runs "
+          "converge, edits land in place, and a Phase 13 attribution survives "
+          "every one of them")
+    await test_excel_sync_upsert_phase13()
     print("\n BW. The suite's own isolation — 1,400+ checks commit through the "
           "real app, so WHICH database they reach is itself a gate")
     await test_database_isolation()
