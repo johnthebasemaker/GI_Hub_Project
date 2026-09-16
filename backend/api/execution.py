@@ -28,7 +28,7 @@ from typing import Optional
 from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException, Query,
                      Response, UploadFile)
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -678,7 +678,13 @@ class SmeLinkDecideIn(BaseModel):
     approve: bool
     edits: Optional[dict] = None
     justification: str = ""
-    reject_reason: str = ""
+    # ⚠️ MANDATORY ON A REJECTION — enforced in `sme_link.decide`, not here,
+    # because it is optional on an approval and a model cannot see `approve`.
+    # Accepted as `Rejection_Reason` too (the operator's name for it) so either
+    # spelling reaches the same check; a reason that arrived under the other
+    # name and was dropped would turn a rejection into a 422 nobody expects.
+    reject_reason: str = Field("", validation_alias=AliasChoices(
+        "reject_reason", "Rejection_Reason"))
     site_id: Optional[str] = None
 
 

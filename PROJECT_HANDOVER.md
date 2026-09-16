@@ -364,6 +364,26 @@ second time, inflating `Done_SQM` and every completion figure derived from it.
   only *because* of the exclusion — which is an invariant to test, not a fact to
   assume (DB-12).
 
+### 1a-iv. ⚠️ A rejected ATTRIBUTION bounces back; a rejected EXECUTION ENTRY does not
+
+*Locked 2026-09-17 (operator). Suite DD.*
+
+An HOD rejection of a Phase 13 Surface Shield attribution returns the row to the
+field's queue: `status = 'rejected'` is one of the sweep's arms
+(`sme_link.NEEDS_FIELD_SQL`), `REASON_SQL` sorts it to the very top, and a
+resubmission updates the SAME `sme_consumption_log` row back to `staged` — the
+PENDING state `decide` accepts. The reason is mandatory (accepted as
+`reject_reason` or `Rejection_Reason`), the filer is notified by name, and the
+last `rejected_reason` / `rejected_at` are KEPT on the resubmitted row so the HOD
+sees what they sent back. Every reader keys on `status`, never on those columns.
+A rejected REVISION bounces the same way.
+
+**Why the two rejections differ.** Ruling Q4 keeps an execution entry's rejection
+terminal (suite CN-02) because the remedy is a fresh paper form with a fresh
+identity. An attribution has no paper: the consumption row IS the identity, so a
+terminal rejection stranded a real drum with no area against it for good. Do not
+"unify" the two.
+
 ### 1b. STRICT TIER SEGREGATION — a purchase order is never readiness
 
 *Locked 2026-08-03.*

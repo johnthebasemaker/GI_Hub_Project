@@ -3507,6 +3507,49 @@ removed. It **refuses** and writes nothing; `--force-prune` is required.
 Consumption tab. Surface Shield consumption is assigned only through the
 Execution queue, so a drum is never counted twice in the comparison reports.
 
+
+### 14ac.7 ⚠️ A rejection bounces back to the field
+
+*2026-09-17. Backend coverage: suite **DD**.*
+
+**What changed.** An HOD rejection of a Surface Shield assignment used to be
+terminal: the row left the queue and that consumption could never be assigned
+again, whatever the reason said. There is no fresh paper to raise for an
+assignment — the consumption row is the identity — so a rejection now returns
+the row to the field. ⚠️ **Execution entries are unchanged**: their rejection
+stays terminal (ruling Q4), because a new form is raised instead.
+
+**TC-SME-REJ-01** — as a Supervisor, assign a row. As the HOD, press **Reject**
+with the reason box empty. **Refused.** Nothing changes.
+
+**TC-SME-REJ-02** — reject it with a reason. The row leaves the HOD's pending
+list, and the Supervisor gets a notification quoting the reason.
+
+**TC-SME-REJ-03** — ⚠️ as the Supervisor, open the queue. The row is **at the
+very top**, above months of older unassigned rows, tinted red, badged
+**Rejected - Needs Correction**, with the HOD's reason and name beside it. The
+banner counts it.
+
+**TC-SME-REJ-04** — as the HOD, try to approve the rejected row directly (via
+the API). **Refused** — it is the field's to correct first. No area has been
+credited to any equipment.
+
+**TC-SME-REJ-05** — press **Correct & resubmit**. The rejected answer is filled
+in under the reason. Change the tank and area and press **Resubmit to HOD**.
+The row leaves the Supervisor's queue.
+
+**TC-SME-REJ-06** — ⚠️ as the HOD, the row is back in **Awaiting the HOD**,
+tagged **Resubmitted after rejection**, with your earlier reason in the tooltip
+and in the review dialog. It is the **same** assignment, not a second one. You
+were notified.
+
+**TC-SME-REJ-07** — approve it. The area is credited **once**, to the corrected
+equipment only.
+
+**TC-SME-REJ-08** — for an approved row edited in Excel, re-assign it, then
+reject the re-assignment as the HOD. It comes back to the field the same way,
+badged and on top, while the approved figures keep counting.
+
 ## 14aa. The AI evaluation gates (Phase 11 · 11f)
 
 Developer-facing. Nothing here is a screen; it is what CI refuses to merge.
