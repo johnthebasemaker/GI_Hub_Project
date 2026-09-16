@@ -105,9 +105,11 @@ function AssignModal({ row, onClose }: { row: Row | null; onClose: () => void })
         notes: v.notes ?? null, site_id: site || null,
       })).data,
     onSuccess: () => {
-      message.success(edited
-        ? 'Re-assigned — the HOD has been notified'
-        : 'Recorded — it now goes to the HOD for approval')
+      message.success(rejected
+        ? 'Resubmitted — it is back with the HOD'
+        : edited
+          ? 'Re-assigned — the HOD has been notified'
+          : 'Recorded — it now goes to the HOD for approval')
       void qc.invalidateQueries({ queryKey: ['/execution/sme-link/queue'] })
       void qc.invalidateQueries({ queryKey: ['/execution/sme-link/assigned'] })
       onClose()
@@ -119,19 +121,27 @@ function AssignModal({ row, onClose }: { row: Row | null; onClose: () => void })
   // re-pick what somebody already picked. A hint, never an assignment.
   // ⚠️ An EDITED row starts from its previous answer instead: the field is
   // confirming or correcting work already done, not starting from nothing.
-  const edited = s(row?.reason) === 'edited'
-  const hint = (edited ? s(row?.prev_code) : s(row?.hinted_system_code)) || undefined
+  // ⚠️ A REJECTED row starts from what was REJECTED, with the HOD's reason in
+  // front of it: the field is correcting their own answer, so they need to see
+  // it and what was wrong with it, not a blank form.
+  const rejected = s(row?.reason) === 'rejected'
+  const edited = s(row?.reason) === 'edited' || !!row?.edited_in_excel
+  const hint = (rejected ? s(row?.rejected_code)
+    : edited ? s(row?.prev_code) : s(row?.hinted_system_code)) || undefined
 
   return (
-    <Modal open={!!row} onCancel={onClose} title="What did this material cover?"
-      okText="Record" confirmLoading={save.isPending}
+    <Modal open={!!row} onCancel={onClose}
+      title={rejected ? 'Correct and resubmit' : 'What did this material cover?'}
+      okText={rejected ? 'Resubmit to HOD' : 'Record'} confirmLoading={save.isPending}
       afterOpenChange={(o) => {
         if (o) {
           setCode(hint)
           form.setFieldsValue({
             code: hint,
-            tag: edited ? s(row?.prev_tag) || undefined : undefined,
-            sqm: edited ? n(row?.prev_sqm) ?? undefined : undefined,
+            tag: rejected ? s(row?.rejected_tag) || undefined
+              : edited ? s(row?.prev_tag) || undefined : undefined,
+            sqm: rejected ? n(row?.rejected_sqm) ?? undefined
+              : edited ? n(row?.prev_sqm) ?? undefined : undefined,
           })
         }
       }}
@@ -144,6 +154,20 @@ function AssignModal({ row, onClose }: { row: Row | null; onClose: () => void })
             {s(row.work_date)}
             {s(row.tank_no) ? ` · noted against ${s(row.tank_no)}` : ''}
           </Typography.Paragraph>
+          {/* ⚠️ THE HOD'S REASON, FIRST AND UNMISSABLE. A rejection the field
+              cannot read is one they resubmit unchanged. */}
+          {rejected && (
+            <Alert type="error" showIcon style={{ marginBottom: 12 }}
+              title="Rejected — needs correction"
+              description={<>
+                <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>
+                  “{s(row.rejection_reason) || 'No reason recorded'}”
+                </Typography.Text>
+                {s(row.rejected_by) ? `— ${s(row.rejected_by)}. ` : ''}
+                The answer that was rejected is filled in below. Correct it and
+                resubmit; it goes straight back to the HOD.
+              </>} />
+          )}
           {/* ⚠️ THE EDIT, SHOWN AS AN EDIT. The operator asked for this to be
               highlighted, and the reason is practical: the field is being asked
               a question they already answered, and the only way that is not
@@ -158,7 +182,7 @@ function AssignModal({ row, onClose }: { row: Row | null; onClose: () => void })
                 {s(row.log_status) === 'committed'
                   ? ' The approved figures keep counting until the HOD approves these.'
                   : ''}
-                {s(row.last_revision_rejected_reason)
+                {!rejected && s(row.last_revision_rejected_reason)
                   ? <> The HOD rejected the last re-assignment: <em>{s(row.last_revision_rejected_reason)}</em></>
                   : null}
               </>} />
@@ -171,8 +195,10 @@ function AssignModal({ row, onClose }: { row: Row | null; onClose: () => void })
           <Form form={form} layout="vertical">
             <Form.Item name="code" label="System Code"
               rules={[{ required: true, message: 'Pick the lining system this was drawn for' }]}
-              extra={hint ? 'Pre-selected from the store keeper’s note — change it if that was wrong.'
-                : 'Only the systems whose recipe contains this material are offered.'}>
+              extra={rejected ? 'This is the answer the HOD rejected — change it if the system was wrong.'
+                : edited && hint ? 'Your previous answer — confirm it or change it.'
+                  : hint ? 'Pre-selected from the store keeper’s note — change it if that was wrong.'
+                    : 'Only the systems whose recipe contains this material are offered.'}>
               <Select showSearch optionFilterProp="label"
                 loading={systems.isFetching}
                 placeholder="Which system was this for?"
@@ -296,6 +322,12 @@ function DecideModal({ row, onClose }: { row: Row | null; onClose: () => void })
             <VarTag value={row.Variance_Pct} flag={row.Priority_Flag} />
             <PriorityTag flag={row.Priority_Flag} />
           </Space>
+          {row.resubmitted_after_rejection ? (
+            <Alert type="info" showIcon style={{ marginBottom: 12 }}
+              title="Resubmitted after you rejected it"
+              description={<>You sent this back: <em>“{s(row.rejected_reason)}”</em>.
+                The field has corrected it — these are the new figures.</>} />
+          ) : null}
           {/* ⚠️ THE ONE SENTENCE AN HOD MOST NEEDS ON THIS SCREEN. */}
           <Alert type="warning" showIcon style={{ marginBottom: 12 }}
             title="The quantity cannot be changed here"
@@ -410,7 +442,8 @@ export default function SmeLinkCard() {
 
   const queue = useQuery({
     queryKey: ['/execution/sme-link/queue'],
-    queryFn: async () => (await api.get<{ items: Row[]; total: number; edited: number }>(
+    queryFn: async () => (await api.get<{ items: Row[]; total: number; edited: number
+      rejected: number }>(
       '/execution/sme-link/queue', { params: { limit: 200 } })).data,
   })
   const assigned = useQuery({
@@ -421,16 +454,32 @@ export default function SmeLinkCard() {
   })
 
   const queueCols: ColumnsType<Row> = [
-    { title: 'Date', dataIndex: 'work_date', width: 110,
-      render: (v, r: Row) => (
-        <Space direction="vertical" size={0}>
-          <span>{s(v).slice(0, 10)}</span>
-          {s(r.reason) === 'edited' && (
+    // ⚠️ 2026-09-17: WHY THE ROW IS HERE, IN WORDS. A rejected row carries the
+    // HOD's reason in the table itself, not only behind a click — the field
+    // should be able to scan the top of the queue and know what to fix.
+    { title: 'Status', key: 'st', width: 260,
+      render: (_: unknown, r: Row) => (
+        <Space direction="vertical" size={2} style={{ maxWidth: 250 }}>
+          {s(r.reason) === 'rejected' && (<>
+            <Tag color="red" style={{ marginInlineEnd: 0, fontWeight: 600 }}>
+              Rejected - Needs Correction
+            </Tag>
+            <Typography.Text style={{ fontSize: 12, whiteSpace: 'normal' }}>
+              “{s(r.rejection_reason) || 'No reason recorded'}”
+              {s(r.rejected_by)
+                ? <Typography.Text type="secondary" style={{ fontSize: 11 }}> — {s(r.rejected_by)}</Typography.Text>
+                : null}
+            </Typography.Text>
+          </>)}
+          {(s(r.reason) === 'edited' || !!r.edited_in_excel) && (
             <Tooltip title="This consumption was already assigned, then its figures were changed in the Excel workbook. It needs assigning again against the new figures.">
               <Tag color="orange" style={{ marginInlineEnd: 0 }}>Edited in Excel</Tag>
             </Tooltip>
           )}
+          {s(r.reason) === 'unattributed' && <Tag style={{ marginInlineEnd: 0 }}>Needs an area</Tag>}
         </Space>) },
+    { title: 'Date', dataIndex: 'work_date', width: 110,
+      render: (v) => s(v).slice(0, 10) },
     { title: 'Material', key: 'm', width: 260,
       render: (_: unknown, r: Row) => (
         <Space direction="vertical" size={0}>
@@ -440,7 +489,7 @@ export default function SmeLinkCard() {
           </Typography.Text>
         </Space>) },
     { title: 'Drawn', key: 'q', width: 140, align: 'right',
-      render: (_: unknown, r: Row) => (s(r.reason) === 'edited'
+      render: (_: unknown, r: Row) => ((s(r.reason) === 'edited' || !!r.edited_in_excel)
         && n(r.prev_qty) !== n(r.quantity)
         ? <Space direction="vertical" size={0} style={{ alignItems: 'flex-end' }}>
             <strong><Qty value={r.quantity} unit={s(r.uom)} /></strong>
@@ -459,8 +508,10 @@ export default function SmeLinkCard() {
           </Tooltip>) },
     { title: '', key: 'a', fixed: 'right', width: 120,
       render: (_: unknown, r: Row) => (
-        <Button size="small" type="primary" onClick={() => setAssignRow(r)}>
-          {s(r.reason) === 'edited' ? 'Re-assign' : 'Record area'}
+        <Button size="small" type="primary" danger={s(r.reason) === 'rejected'}
+          onClick={() => setAssignRow(r)}>
+          {s(r.reason) === 'rejected' ? 'Correct & resubmit'
+            : s(r.reason) === 'edited' ? 'Re-assign' : 'Record area'}
         </Button>) },
   ]
 
@@ -495,8 +546,16 @@ export default function SmeLinkCard() {
   ]
 
   const assignedCols: ColumnsType<Row> = [
-    { title: 'Priority', key: 'p', width: 130,
-      render: (_: unknown, r: Row) => <PriorityTag flag={r.Priority_Flag} /> },
+    { title: 'Priority', key: 'p', width: 180,
+      render: (_: unknown, r: Row) => (
+        <Space direction="vertical" size={2}>
+          <PriorityTag flag={r.Priority_Flag} />
+          {r.resubmitted_after_rejection ? (
+            <Tooltip title={`You rejected it before: “${s(r.rejected_reason)}”`}>
+              <Tag color="blue" style={{ marginInlineEnd: 0 }}>Resubmitted after rejection</Tag>
+            </Tooltip>
+          ) : null}
+        </Space>) },
     { title: 'Date', dataIndex: 'entry_date', width: 110 },
     { title: 'Equipment', dataIndex: 'Equipment_Tag_No', width: 170 },
     { title: 'System', dataIndex: 'Lining_System_Code', width: 140,
@@ -532,12 +591,18 @@ export default function SmeLinkCard() {
               <>
                 <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
                   Surface Shield material issued from the store, with no area
-                  recorded against it yet — <strong>oldest first</strong>. This
+                  recorded against it yet — <strong>rejected rows first</strong>,
+                  then <strong>oldest first</strong>. This
                   list reaches back over the whole ledger, so it includes issues
                   from long before this screen existed.
                   {' '}Recording an area moves no stock: the material left the
                   store when it was issued.
                 </Typography.Paragraph>
+                {(queue.data?.rejected ?? 0) > 0 && (
+                  <Alert type="error" showIcon style={{ marginBottom: 8 }}
+                    title={`${queue.data?.rejected} row(s) rejected by the HOD — at the top, needs correction`}
+                    description="Each one shows the HOD's reason. Correct the system code, equipment or area and resubmit; it goes straight back to the HOD." />
+                )}
                 {(queue.data?.edited ?? 0) > 0 && (
                   <Alert type="warning" showIcon style={{ marginBottom: 8 }}
                     title={`${queue.data?.edited} row(s) marked Edited in Excel`}
@@ -546,6 +611,8 @@ export default function SmeLinkCard() {
                 <Table size="small" loading={queue.isFetching} columns={queueCols}
                   dataSource={queue.data?.items ?? []}
                   rowKey={(r) => String(r.consumption_id)}
+                  onRow={(r) => (s(r.reason) === 'rejected'
+                    ? { style: { background: 'rgba(255, 77, 79, 0.08)' } } : {})}
                   scroll={{ x: 'max-content' }}
                   pagination={{ pageSize: 10, showTotal: (t) => `${t} outstanding` }} />
               </>

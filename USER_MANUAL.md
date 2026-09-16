@@ -1059,7 +1059,8 @@ before it is applied. That question belongs to the person who applied it.
 Keeper, Supervisor and HOD.
 
 The queue lists every Surface Shield consumption with no area recorded against
-it, **oldest first**. For each one you supply three things:
+it, **oldest first** — except rows the HOD rejected, which sit at the very top
+(see §4.9a.6). For each one you supply three things:
 
 | | |
 |---|---|
@@ -1144,6 +1145,32 @@ keeps the old one and reports it as *vanished* rather than deleting it, because
 a deleted row could take somebody's work with it. An administrator can remove
 vanished rows with the sync's `--prune-vanished` option, which only deletes rows
 nothing is attached to.
+
+### 4.9a.6 ⚠️ When the HOD rejects an assignment — it comes back to you
+
+A rejection is **not the end**. The row returns to the top of the queue for the
+person who filed it to correct.
+
+**What the HOD does.** Press **Reject** and write the reason. A reason is
+required: the field cannot correct something nobody told them was wrong.
+
+**What the field sees.**
+
+1. The row is back in **Needs an area**, sorted **above everything else**, with a
+   red **Rejected - Needs Correction** badge and the HOD's reason written beside
+   it.
+2. The person who filed it also gets a notification with the reason.
+3. Press **Correct & resubmit**. The answer that was rejected is filled in, with
+   the reason shown above it. Change the system code, equipment or area.
+4. Press **Resubmit to HOD**. The row leaves your queue and goes straight back
+   to the HOD, marked **Resubmitted after rejection**, with their earlier reason
+   beside it. The HOD is notified.
+
+Nothing counts until the HOD approves: a rejected assignment credits no area to
+any equipment and adds nothing to the Estimator's consumed figure.
+
+A re-assignment of an **already-approved** row that the HOD rejects comes back
+the same way; the approved figures keep counting while you correct it.
 
 ## 4.10 Filing a consumption form
 

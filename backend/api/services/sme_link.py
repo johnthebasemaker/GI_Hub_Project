@@ -157,10 +157,45 @@ FRESH_REVISION_SQL = (
     "        WHERE v.\"Log_ID\" = l.\"id\" AND v.status = 'staged' "
     f"          AND v.\"Source_Fingerprint\" = {SOURCE_FP_SQL})")
 
-# Rows that need the field: never attributed, OR attributed and then edited in
-# Excel with no up-to-date answer waiting on the HOD.
+# ─── the rejection bounce-back (2026-09-17) ──────────────────────────────────
+#
+# ⚠️ A REJECTED ATTRIBUTION IS NOT THE END OF THE QUESTION. Until now an HOD
+# rejection on a first-time attribution was terminal: the row left the queue
+# for good, and the drum it described could never be attributed again, however
+# plainly the rejection reason said what was wrong ("it was TANK-A"). That
+# stranded real consumption with no area against it. The consumption row is
+# the identity here — there is no fresh paper to raise, unlike an execution
+# entry, whose terminal rejection (ruling Q4, suite CN-02) is untouched.
+#
+# So a rejection BOUNCES BACK: the row returns to the field's queue, at the TOP,
+# with the HOD's reason, and a resubmission sends it back to the HOD.
+#
+# The latest revision of an attribution, whatever its status. A revision the
+# HOD rejected is a bounce too — the field's re-assignment of an edited,
+# already-approved row came back — so it sorts and badges the same way.
+LATEST_REVISION_JOIN = (
+    "LEFT JOIN LATERAL ("
+    "  SELECT v.status, v.rejected_reason, v.hod_username, v.hod_decided_at, "
+    "         v.\"Lining_System_Code\", v.\"Equipment_Tag_No\", "
+    "         v.\"SQM_Completed\" "
+    "  FROM sme_consumption_revision v WHERE v.\"Log_ID\" = l.\"id\" "
+    "  ORDER BY v.id DESC LIMIT 1) lr ON TRUE")
+
+# Why this row is in front of the field. ONE expression, used by the SELECT,
+# the ORDER BY and the counts, so the badge, the sort and the banner can never
+# disagree about which rows were rejected.
+REASON_SQL = (
+    "(CASE WHEN l.\"id\" IS NULL THEN 'unattributed' "
+    "      WHEN l.\"status\" = 'rejected' OR lr.status = 'rejected' "
+    "      THEN 'rejected' ELSE 'edited' END)")
+
+# Rows that need the field: never attributed; OR REJECTED by the HOD; OR
+# attributed and then edited in Excel with no up-to-date answer waiting on the
+# HOD. A rejected revision needs no arm of its own: the row it revises is still
+# out of date with its ledger row, which is exactly why the revision existed.
 NEEDS_FIELD_SQL = (
-    f"(l.\"id\" IS NULL OR ({STALE_SQL} AND NOT {FRESH_REVISION_SQL}))")
+    f"(l.\"id\" IS NULL OR l.\"status\" = 'rejected' "
+    f"OR ({STALE_SQL} AND NOT {FRESH_REVISION_SQL}))")
 
 
 async def source_fingerprint(session: AsyncSession, consumption_id: int) -> Optional[str]:
@@ -226,7 +261,27 @@ SELECT c."id"            AS consumption_id,
        -- ⚠️ 2026-09-16: an EDITED row carries what it was attributed as, so
        -- the field re-answers with the old answer in front of them instead of
        -- starting from nothing.
-       CASE WHEN l."id" IS NULL THEN 'unattributed' ELSE 'edited' END AS reason,
+       {REASON_SQL} AS reason,
+       -- ⚠️ 2026-09-17: a REJECTED row carries the HOD's reason and the values
+       -- that were rejected, so the field sees what to fix without asking.
+       CASE WHEN l."status" = 'rejected' THEN l."rejected_reason"
+            WHEN lr.status = 'rejected' THEN lr.rejected_reason END
+                                 AS rejection_reason,
+       CASE WHEN l."status" = 'rejected' THEN l."hod_username"
+            WHEN lr.status = 'rejected' THEN lr.hod_username END AS rejected_by,
+       CASE WHEN l."status" = 'rejected' THEN l."rejected_at"
+            WHEN lr.status = 'rejected' THEN lr.hod_decided_at END AS rejected_at,
+       CASE WHEN l."status" = 'rejected' THEN l."Lining_System_Code"
+            WHEN lr.status = 'rejected' THEN lr."Lining_System_Code" END
+                                 AS rejected_code,
+       CASE WHEN l."status" = 'rejected' THEN l."Equipment_Tag_No"
+            WHEN lr.status = 'rejected' THEN lr."Equipment_Tag_No" END
+                                 AS rejected_tag,
+       CASE WHEN l."status" = 'rejected' THEN l."SQM_Completed"
+            WHEN lr.status = 'rejected' THEN lr."SQM_Completed" END
+                                 AS rejected_sqm,
+       -- Rejected AND edited in Excel since: both badges apply.
+       CASE WHEN l."id" IS NULL THEN FALSE ELSE {STALE_SQL} END AS edited_in_excel,
        l."id"                    AS log_id,
        l."status"                AS log_status,
        l."Lining_System_Code"    AS prev_code,
@@ -234,9 +289,8 @@ SELECT c."id"            AS consumption_id,
        l."SQM_Completed"         AS prev_sqm,
        l."Actual_Qty"            AS prev_qty,
        l."Variance_Pct"          AS prev_variance_pct,
-       (SELECT v.rejected_reason FROM sme_consumption_revision v
-         WHERE v."Log_ID" = l."id" AND v.status = 'rejected'
-         ORDER BY v.id DESC LIMIT 1) AS last_revision_rejected_reason
+       CASE WHEN lr.status = 'rejected' THEN lr.rejected_reason END
+                                 AS last_revision_rejected_reason
 FROM consumption c
 JOIN inventory i
   ON REPLACE(TRIM(i."SAP_Code"), ' ', '') = REPLACE(TRIM(c."SAP_Code"), ' ', '')
@@ -244,22 +298,29 @@ LEFT JOIN ({_MAT_BY_SAP}) m
   ON m.sap = REPLACE(TRIM(c."SAP_Code"), ' ', '')
 LEFT JOIN sme_consumption_log l
   ON l."Consumption_ID" = c."id"
+{LATEST_REVISION_JOIN}
 WHERE LOWER(TRIM(i."Category")) = LOWER(:category)
   AND {NEEDS_FIELD_SQL}
   AND {EXCLUDE_SELF_SQL}
   {{site}}
-ORDER BY c."Date" ASC, c."id" ASC
+-- ⚠️ REJECTED FIRST, then oldest first. A bounced row is work the field has
+-- already done once and the HOD is waiting on; left in date order it would sit
+-- behind months of never-attributed history and never be seen.
+ORDER BY CASE WHEN {REASON_SQL} = 'rejected' THEN 0 ELSE 1 END,
+         c."Date" ASC, c."id" ASC
 LIMIT :limit OFFSET :offset
 '''
 
 COUNT_SQL = f'''
 SELECT COUNT(*),
-       COUNT(*) FILTER (WHERE l."id" IS NOT NULL)
+       COUNT(*) FILTER (WHERE {REASON_SQL} = 'edited'),
+       COUNT(*) FILTER (WHERE {REASON_SQL} = 'rejected')
 FROM consumption c
 JOIN inventory i
   ON REPLACE(TRIM(i."SAP_Code"), ' ', '') = REPLACE(TRIM(c."SAP_Code"), ' ', '')
 LEFT JOIN sme_consumption_log l
   ON l."Consumption_ID" = c."id"
+{LATEST_REVISION_JOIN}
 WHERE LOWER(TRIM(i."Category")) = LOWER(:category)
   AND {NEEDS_FIELD_SQL}
   AND {EXCLUDE_SELF_SQL}
@@ -287,7 +348,7 @@ async def sweep(session: AsyncSession, *, site_id: Optional[str],
 
     rows = (await session.execute(
         text(SWEEP_SQL.format(site=where_site)), params)).mappings().all()
-    total, edited = (await session.execute(
+    total, edited, rejected = (await session.execute(
         text(COUNT_SQL.format(site=where_site)),
         {k: v for k, v in params.items()
          if k not in ("limit", "offset")})).one()
@@ -303,6 +364,7 @@ async def sweep(session: AsyncSession, *, site_id: Optional[str],
         d["hinted_system_code"] = hint_system_code(d.get("remarks"))
         items.append(d)
     return {"items": items, "total": int(total), "edited": int(edited or 0),
+            "rejected": int(rejected or 0),
             "category": category, "limit": int(limit), "offset": int(offset)}
 
 
@@ -563,7 +625,11 @@ async def assign(session: AsyncSession, *, consumption_id: int, code: str,
         f'JOIN consumption c ON c."id" = l."Consumption_ID" '
         f'WHERE l."Consumption_ID" = :cid ORDER BY l."id" LIMIT 1'),
         {"cid": consumption_id})).mappings().first()
-    if existing is not None and not existing["stale"]:
+    # ⚠️ 2026-09-17: …AND A REJECTED ONE IS ALWAYS OPEN TO CORRECTION. The HOD's
+    # rejection sent it back to the field; refusing the resubmission would make
+    # the rejection terminal again by another route.
+    if (existing is not None and not existing["stale"]
+            and existing["status"] != "rejected"):
         raise HTTPException(
             409, f"that consumption has already been attributed (row "
                  f"{existing['id']}), and its ledger row has not changed since.")
@@ -693,6 +759,11 @@ async def assigned(session: AsyncSession, *, site_id: Optional[str],
         'LIMIT :limit'), params)).mappings().all()
     items = [dict(r) for r in rows]
     for i in items:
+        # ⚠️ 2026-09-17: a pending row that carries a rejection came BACK — the
+        # field corrected what the HOD sent back. Said explicitly so the HOD
+        # reads it as a second look, with their own earlier reason beside it.
+        i["resubmitted_after_rejection"] = (i.get("status") == "staged"
+                                            and i.get("rejected_at") is not None)
         for k in ("created_at", "committed_at", "rejected_at", "hod_decided_at"):
             if i.get(k) is not None:
                 i[k] = str(i[k])
@@ -800,7 +871,14 @@ async def decide(session: AsyncSession, *, log_id: int, approve: bool,
             hod_username=username, hod_decided_at=func.now()))
         await write_audit(session, username, "SME_LINK_REJECT",
                           "sme_consumption_log", f"id={log_id} — {reason[:160]}")
-        return {"id": log_id, "status": "rejected", "reason": reason}
+        # ⚠️ 2026-09-17: A REJECTION BOUNCES BACK, and the person who filed it
+        # is told why. It is back at the top of their queue — a rejection
+        # nobody hears about is a row that sits there anyway.
+        await _notify_submitter(
+            session, username=row["entered_by"], site_id=row["Site_ID"],
+            log_id=log_id, reason=reason, actor=username)
+        return {"id": log_id, "status": "rejected", "reason": reason,
+                "bounced_back_to": row["entered_by"]}
 
     vals: dict = {}
     edited = False
@@ -984,6 +1062,31 @@ async def _notify_hod(session: AsyncSession, *, site_id: str, log_id: int,
         pass
 
 
+async def _notify_submitter(session: AsyncSession, *, username: Optional[str],
+                            site_id: str, log_id: int, reason: str,
+                            actor: str) -> None:
+    """Tell the person who filed an assignment that the HOD sent it back.
+
+    Addressed to that USER, not a role: the correction is theirs to make, and
+    a bell to every supervisor on site would be read by nobody in particular.
+    Never fatal — a messaging failure must not undo the HOD's decision.
+    """
+    if not username:
+        return
+    from .notifications import dispatch
+    try:
+        await dispatch(session, event_key="sme_link_rejected",
+                       title="Assignment rejected — needs correction",
+                       body=f"The HOD sent a Surface Shield assignment back: "
+                            f"{reason[:300]}. It is at the top of your queue.",
+                       recipient_user=username, recipient_site=site_id,
+                       link_page="/execution",
+                       related_table="sme_consumption_log",
+                       related_ref=str(log_id), created_by=actor)
+    except Exception:                                     # noqa: BLE001
+        pass
+
+
 async def _reassign(session: AsyncSession, *, existing: dict,
                     consumption_id: int, code: str, tag: str, sqm: float,
                     actual: float, expected: Optional[float],
@@ -1008,31 +1111,47 @@ async def _reassign(session: AsyncSession, *, existing: dict,
     site = existing["Site_ID"]
 
     if existing["status"] in ("staged", "rejected"):
+        bounced = existing["status"] == "rejected"
         await session.execute(update(log_t).where(log_t.c["id"] == log_id).values(
             Equipment_Tag_No=tag, Lining_System_Code=code, SQM_Completed=sqm,
             Expected_Qty=expected or 0.0, Actual_Qty=actual, Variance_Pct=var,
             Bench_For_1_SQM=rate, Priority_Flag=flag,
             Variance_Tolerance_Pct=tol, Source_Fingerprint=fp,
             notes=(notes if notes is not None else existing.get("notes")),
-            entered_by=username, status="staged",
-            # A rejection answered a question the edit has since changed.
-            rejected_at=None, rejected_reason=None,
+            entered_by=username,
+            # ⚠️ BACK TO THE HOD. `staged` is the PENDING state this workflow
+            # has always used — the one `decide` accepts and `assigned` lists.
+            status="staged",
+            # ⚠️ THE LAST REJECTION IS KEPT, deliberately. `status` alone says
+            # where the row is; `rejected_reason` / `rejected_at` beside a
+            # `staged` status tell the HOD "you sent this back once, and why",
+            # which is the first thing they need when it reappears. Nothing
+            # reads them as a state — every reader keys on `status`.
             hod_username=None, hod_decided_at=None))
         await write_audit(
-            session, username, "SME_LINK_REASSIGN", "sme_consumption_log",
-            f"id={log_id} consumption={consumption_id} edited in Excel; was "
+            session, username,
+            "SME_LINK_RESUBMIT" if bounced else "SME_LINK_REASSIGN",
+            "sme_consumption_log",
+            f"id={log_id} consumption={consumption_id} "
+            f"{'rejected (' + str(existing.get('rejected_reason') or '') + ')' if bounced else 'edited in Excel'}; was "
             f"{existing['Equipment_Tag_No']}/{existing['Lining_System_Code']} "
             f"sqm={float(existing['SQM_Completed'] or 0):g} "
             f"qty={float(existing['Actual_Qty'] or 0):g} → {tag}/{code} "
             f"sqm={sqm:g} qty={actual:g} [{flag}]")
         await _notify_hod(
             session, site_id=site, log_id=log_id,
-            title="Edited consumption re-assigned",
-            body=f"A Surface Shield consumption changed in Excel was re-assigned "
-                 f"to {tag} / {code}, {sqm:g} m² — review it.",
+            title=("Rejected assignment corrected and resubmitted" if bounced
+                   else "Edited consumption re-assigned"),
+            body=(f"A Surface Shield assignment you rejected ("
+                  f"{existing.get('rejected_reason') or 'no reason recorded'}) "
+                  f"was corrected to {tag} / {code}, {sqm:g} m² — review it."
+                  if bounced else
+                  f"A Surface Shield consumption changed in Excel was re-assigned "
+                  f"to {tag} / {code}, {sqm:g} m² — review it."),
             username=username)
         return {"id": log_id, "Consumption_ID": consumption_id,
                 "status": "staged", "revision": None, "reassigned": True,
+                "resubmitted_after_rejection": bounced,
                 "Lining_System_Code": code, "Equipment_Tag_No": tag,
                 "SQM_Completed": sqm, "Actual_Qty": actual,
                 "Expected_Qty": expected, "Variance_Pct": var,
@@ -1147,7 +1266,11 @@ async def decide_revision(session: AsyncSession, *, rev_id: int, approve: bool,
         await write_audit(session, username, "SME_LINK_REVISION_REJECT",
                           "sme_consumption_revision",
                           f"rev={rev_id} log={rev['Log_ID']} — {reason[:160]}")
-        return {"id": rev_id, "status": "rejected", "reason": reason}
+        await _notify_submitter(
+            session, username=rev["submitted_by"], site_id=rev["Site_ID"],
+            log_id=int(rev["Log_ID"]), reason=reason, actor=username)
+        return {"id": rev_id, "status": "rejected", "reason": reason,
+                "bounced_back_to": rev["submitted_by"]}
 
     # ⚠️ THE REVISION MUST STILL DESCRIBE THE LEDGER ROW. If the workbook was
     # edited AGAIN after the field re-assigned, this proposal is itself stale.

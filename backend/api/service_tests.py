@@ -22325,6 +22325,314 @@ async def test_excel_sync_upsert_phase13():
           left == 0, f"{left} SVDC row(s) left behind")
 
 
+# --- Suite DD: a rejection bounces back ---------------------------------------
+async def test_sme_rejection_loop():
+    """Suite DD — 2026-09-17. An HOD rejection of a Phase 13 attribution is NOT
+    terminal: it bounces back to the field, at the top, with the reason.
+
+    ⚠️ THE LIFECYCLE THE OPERATOR SPECIFIED, IN ITS ORDER (DD-01..DD-16):
+
+        supervisor submits → HOD rejects WITH a reason → the row reappears in
+        the supervisor's sweep, on top, badged, carrying the reason → the
+        supervisor corrects and resubmits → the row reappears in the HOD queue
+
+    ⚠️ WHY IT WAS TERMINAL, AND WHY THAT WAS WRONG HERE. A terminal rejection
+    suits an execution entry (ruling Q4, suite CN-02 — untouched): a fresh
+    paper form is raised. An attribution has no paper; the consumption row IS
+    the identity, so a terminal rejection stranded a real drum with no area
+    against it for good, however clearly the reason said what to fix.
+    """
+    from sqlalchemy import text as _sqt
+
+    from .services import sme_link as SL
+
+    SITE = "CNCEC"
+    await _qsep_seed_users()
+    transport = ASGITransport(app=app)
+
+    async def _one(sql, **p):
+        async with SessionLocal() as s:
+            return (await s.execute(_sqt(sql), p)).mappings().first()
+
+    async def _done(tag):
+        async with SessionLocal() as s:
+            return float((await s.execute(_sqt(
+                'SELECT COALESCE("Done_SQM", 0) FROM sme_sqm_progress WHERE '
+                '"Site_ID" = :site AND "Equipment_Tag_No" = :t AND '
+                "\"Lining_System_Code\" = 'SVDD-LS1'"),
+                {"site": SITE, "t": tag})).scalar() or 0.0)
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            ids = [r[0] for r in (await s.execute(_sqt(
+                "SELECT id FROM sme_consumption_log WHERE \"SAP_Code\" LIKE 'SVDD-%'"
+            ))).all()]
+            if ids:
+                await s.execute(_sqt(
+                    "DELETE FROM app_notifications WHERE event_key IN "
+                    "('sme_link_edited', 'sme_link_rejected') AND related_ref = ANY(:r)"),
+                    {"r": [str(i) for i in ids]})
+                await s.execute(_sqt("DELETE FROM sme_consumption_revision WHERE "
+                                     "\"Log_ID\" = ANY(:r)"), {"r": ids})
+            for sql in (
+                "DELETE FROM sme_consumption_log WHERE \"SAP_Code\" LIKE 'SVDD-%'",
+                "DELETE FROM consumption WHERE \"SAP_Code\" LIKE 'SVDD-%'",
+                "DELETE FROM sme_recipe WHERE \"Lining_System_Code\" LIKE 'SVDD-%'",
+                "DELETE FROM sme_sqm_progress WHERE \"Equipment_Tag_No\" LIKE 'SVDD-%'",
+                "DELETE FROM sme_equipment WHERE \"Equipment_Tag_No\" LIKE 'SVDD-%'",
+                "DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SVDD-%'"):
+                await s.execute(_sqt(sql))
+            await s.commit()
+
+    await _cleanup()
+    async with SessionLocal() as s:
+        await s.execute(_sqt(
+            'INSERT INTO inventory ("SAP_Code", "Material_Code", '
+            '"Equipment_Description", "Category", "UOM", "Site_ID") VALUES '
+            "('SVDD-1', 'SVDD-MAT-1', 'DD resin', 'Surface Shields', 'KG', :site)"),
+            {"site": SITE})
+        await s.execute(_sqt(
+            'INSERT INTO sme_recipe ("Lining_System_Code", '
+            '"Execution_Sub_Activity_Code", "Material_Code", "SAP_Code", '
+            '"Material_Name", "UOM", "For_1_SQM", "Lining_System_Name") VALUES '
+            "('SVDD-LS1', 'ESDD1', 'SVDD-MAT-1', 'SVDD-1', 'DD resin', 'KG', 2.0, "
+            "'DD system')"))
+        for tag in ("SVDD-TANK-A", "SVDD-TANK-B"):
+            await s.execute(_sqt(
+                'INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", '
+                '"Lining_System_Code", "Name", "Surface_Area_SQM") '
+                "VALUES (:site, :t, 'SVDD-LS1', :t, 400)"), {"site": SITE, "t": tag})
+        ids = {}
+        for key, date, qty in (("old", "2026-01-02 00:00:00", 3.0),
+                               ("main", "2026-08-01 00:00:00", 50.0),
+                               ("rev", "2026-08-02 00:00:00", 40.0)):
+            ids[key] = (await s.execute(_sqt(
+                'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", '
+                '"Site_ID", "Tank_No") VALUES (:d, \'SVDD-1\', :q, :site, '
+                "'SVDD-TANK-A') RETURNING id"),
+                {"d": date, "q": qty, "site": SITE})).scalar_one()
+        await s.commit()
+    cid = ids["main"]
+
+    try:
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            SUP = await _qsep_login(ac, "SVCQ-sup")
+            SK = await _qsep_login(ac, "SVCQ-sk")
+            H = await _qsep_login(ac, "SVCQ-hod")
+
+            async def _sweep():
+                r = await ac.get("/execution/sme-link/queue",
+                                 params={"site_id": SITE, "limit": 500}, headers=SUP)
+                return r.json()
+
+            async def _hod_queue():
+                r = await ac.get("/execution/sme-link/assigned",
+                                 params={"site_id": SITE, "status": "staged"},
+                                 headers=H)
+                return r.json()
+
+            # ── 1. the supervisor submits ───────────────────────────────────
+            r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+                "consumption_id": cid, "code": "SVDD-LS1", "tag": "SVDD-TANK-A",
+                "sqm": 20, "site_id": SITE})
+            log_id = r.json().get("id")
+            hq = await _hod_queue()
+            check("DD-01 the supervisor submits; the row goes to the HOD queue and "
+                  "leaves the sweep",
+                  r.status_code == 201
+                  and any(i["id"] == log_id for i in hq["items"])
+                  and all(i["consumption_id"] != cid for i in (await _sweep())["items"]),
+                  f"{r.status_code} {r.text[:140]}")
+
+            # ── 2. a rejection needs a reason ───────────────────────────────
+            for body in ({"approve": False}, {"approve": False, "reject_reason": "   "},
+                         {"approve": False, "Rejection_Reason": ""}):
+                r = await ac.post(f"/execution/sme-link/{log_id}/decide",
+                                  headers=H, json=body)
+                check(f"DD-02 ⚠️ a rejection with no reason is REFUSED ({body}) — "
+                      f"the field cannot correct what nobody told them was wrong",
+                      r.status_code == 422, f"{r.status_code} {r.text[:120]}")
+            st = await _one("SELECT status FROM sme_consumption_log WHERE id = :i",
+                            i=log_id)
+            check("DD-02a …and a refused rejection changes nothing",
+                  st["status"] == "staged", st["status"])
+
+            # ── 3. the HOD rejects, with the reason under the operator's name ─
+            r = await ac.post(f"/execution/sme-link/{log_id}/decide", headers=H,
+                              json={"approve": False,
+                                    "Rejection_Reason": "wrong tank — this was TANK-B, 25 m²"})
+            j = r.json()
+            row = await _one("SELECT * FROM sme_consumption_log WHERE id = :i", i=log_id)
+            check("DD-03 the HOD rejects with `Rejection_Reason`; the attribution "
+                  "is REJECTED and the reason is stored",
+                  r.status_code == 200 and j["status"] == "rejected"
+                  and row["status"] == "rejected"
+                  and row["rejected_reason"] == "wrong tank — this was TANK-B, 25 m²",
+                  f"{r.status_code} {r.text[:160]}")
+            check("DD-04 …the response says who it bounced back to",
+                  j.get("bounced_back_to") == "SVCQ-sup", str(j))
+            bell = await _one(
+                "SELECT COUNT(*) AS n FROM app_notifications WHERE event_key = "
+                "'sme_link_rejected' AND recipient_user = 'SVCQ-sup' "
+                "AND related_ref = :r", r=str(log_id))
+            check("DD-05 …and the supervisor who filed it is told, by name — a "
+                  "rejection nobody hears about is a row that just sits there",
+                  bell["n"] == 1, str(bell["n"]))
+
+            # ── 4. ⚠️ it reappears in the supervisor's sweep ─────────────────
+            sw = await _sweep()
+            mine = [i for i in sw["items"] if i["consumption_id"] == cid]
+            check("DD-06 ⚠️⚠️ THE REJECTED ROW REAPPEARS IN THE SUPERVISOR'S SWEEP. "
+                  "Before this change a rejection was terminal and the drum could "
+                  "never be attributed again",
+                  len(mine) == 1 and mine[0]["reason"] == "rejected",
+                  str(mine)[:200])
+            m = mine[0] if mine else {}
+            check("DD-07 …carrying the HOD's reason, who rejected it, and the "
+                  "values that were rejected, so the field sees what to fix",
+                  m.get("rejection_reason") == "wrong tank — this was TANK-B, 25 m²"
+                  and m.get("rejected_by") == "SVCQ-hod"
+                  and m.get("rejected_code") == "SVDD-LS1"
+                  and m.get("rejected_tag") == "SVDD-TANK-A"
+                  and float(m.get("rejected_sqm") or 0) == 20.0,
+                  str(m)[:260])
+            check("DD-08 ⚠️ …SORTED TO THE VERY TOP — above the SVDD row dated "
+                  "months earlier, and above every never-attributed row in the "
+                  "site's queue. Left in date order a bounced row would sit behind "
+                  "the whole history and never be seen",
+                  sw["items"] and sw["items"][0]["consumption_id"] == cid
+                  and any(i["consumption_id"] == ids["old"] for i in sw["items"]),
+                  f"first={sw['items'][0]['consumption_id'] if sw['items'] else None} "
+                  f"want={cid}")
+            check("DD-09 …and counted as rejected, not as edited",
+                  sw["rejected"] >= 1 and m.get("edited_in_excel") is False,
+                  f"rejected={sw['rejected']} edited={sw['edited']}")
+            r = await ac.get("/execution/sme-link/queue",
+                             params={"site_id": SITE, "limit": 500}, headers=SK)
+            check("DD-09a the store keeper's view of the queue shows it too — the "
+                  "bounce is on the workflow's queue, not a private inbox",
+                  any(i["consumption_id"] == cid and i["reason"] == "rejected"
+                      for i in r.json()["items"]), r.text[:160])
+
+            hq = await _hod_queue()
+            r = await ac.post(f"/execution/sme-link/{log_id}/decide", headers=H,
+                              json={"approve": True})
+            check("DD-10 while rejected it is NOT in the HOD's pending queue and "
+                  "cannot be approved — it is the field's to correct first",
+                  all(i["id"] != log_id for i in hq["items"])
+                  and r.status_code == 409, f"{r.status_code} {r.text[:120]}")
+            obs = {c["Material_Key"]: c["consumed_qty"]
+                   for c in await _consumed(SL, SITE)}
+            check("DD-11 a rejected attribution credits no area and counts in no "
+                  "Consumed_Qty",
+                  await _done("SVDD-TANK-A") == 0.0
+                  and obs.get("SVDD-MAT-1|SVDD-1", 0.0) == 0.0,
+                  f"done={await _done('SVDD-TANK-A')} obs={obs.get('SVDD-MAT-1|SVDD-1')}")
+
+            # ── 5. the supervisor corrects and resubmits ────────────────────
+            r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+                "consumption_id": cid, "code": "SVDD-LS1", "tag": "SVDD-TANK-B",
+                "sqm": 25, "site_id": SITE})
+            j = r.json()
+            row = await _one("SELECT * FROM sme_consumption_log WHERE id = :i", i=log_id)
+            n_logs = await _one("SELECT COUNT(*) AS n FROM sme_consumption_log WHERE "
+                                "\"Consumption_ID\" = :c", c=cid)
+            check("DD-12 ⚠️⚠️ THE CORRECTED RESUBMISSION IS ACCEPTED and flips the "
+                  "status back to PENDING (`staged`) — before this change it was a "
+                  "409 'already attributed'",
+                  r.status_code == 201 and j["status"] == "staged"
+                  and j.get("resubmitted_after_rejection") is True
+                  and row["status"] == "staged",
+                  f"{r.status_code} {r.text[:160]}")
+            check("DD-13 …on the SAME attribution row — one assignment per drum, "
+                  "now carrying the corrected tank and area",
+                  row["id"] == log_id and n_logs["n"] == 1
+                  and row["Equipment_Tag_No"] == "SVDD-TANK-B"
+                  and float(row["SQM_Completed"]) == 25.0,
+                  f"logs={n_logs['n']} {str(dict(row))[:180]}")
+            check("DD-14 …keeping the last rejection beside it, so the HOD sees "
+                  "what they sent back and why",
+                  row["rejected_reason"] == "wrong tank — this was TANK-B, 25 m²"
+                  and row["rejected_at"] is not None, str(row["rejected_reason"]))
+            sw = await _sweep()
+            check("DD-15 the corrected row leaves the supervisor's sweep",
+                  all(i["consumption_id"] != cid for i in sw["items"]),
+                  "still in the sweep")
+
+            # ── 6. ⚠️ it reappears in the HOD queue ──────────────────────────
+            hq = await _hod_queue()
+            back = [i for i in hq["items"] if i["id"] == log_id]
+            check("DD-16 ⚠️⚠️ THE ROW REAPPEARS IN THE HOD QUEUE, flagged as "
+                  "resubmitted after rejection with the earlier reason",
+                  len(back) == 1 and back[0]["status"] == "staged"
+                  and back[0]["resubmitted_after_rejection"] is True
+                  and back[0]["rejected_reason"] == "wrong tank — this was TANK-B, 25 m²",
+                  str(back)[:220])
+            bell = await _one(
+                "SELECT COUNT(*) AS n FROM app_notifications WHERE event_key = "
+                "'sme_link_edited' AND recipient_role = 'hod' AND related_ref = :r "
+                "AND title = 'Rejected assignment corrected and resubmitted'",
+                r=str(log_id))
+            check("DD-17 …and the HOD is told it came back corrected",
+                  bell["n"] == 1, str(bell["n"]))
+
+            r = await ac.post(f"/execution/sme-link/{log_id}/decide", headers=H,
+                              json={"approve": True})
+            check("DD-18 the HOD approves the corrected assignment; the area is "
+                  "credited ONCE, to the corrected tank",
+                  r.status_code == 200 and await _done("SVDD-TANK-B") == 25.0
+                  and await _done("SVDD-TANK-A") == 0.0,
+                  f"{r.status_code} A={await _done('SVDD-TANK-A')} "
+                  f"B={await _done('SVDD-TANK-B')}")
+            check("DD-19 an approved row does not return to the sweep",
+                  all(i["consumption_id"] != cid for i in (await _sweep())["items"]),
+                  "approved row is back in the sweep")
+
+            # ── 7. a rejected REVISION bounces the same way ─────────────────
+            rid = ids["rev"]
+            r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+                "consumption_id": rid, "code": "SVDD-LS1", "tag": "SVDD-TANK-A",
+                "sqm": 10, "site_id": SITE})
+            rev_log = r.json()["id"]
+            await ac.post(f"/execution/sme-link/{rev_log}/decide", headers=H,
+                          json={"approve": True})
+            async with SessionLocal() as s:          # the workbook edits it
+                await s.execute(_sqt('UPDATE consumption SET "Quantity" = 44 '
+                                     'WHERE id = :i'), {"i": rid})
+                await s.commit()
+            r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+                "consumption_id": rid, "code": "SVDD-LS1", "tag": "SVDD-TANK-A",
+                "sqm": 80, "site_id": SITE})
+            rev_id = r.json()["revision"]
+            r = await ac.post(f"/execution/sme-link/revisions/{rev_id}/decide",
+                              headers=H, json={"approve": False,
+                                               "Rejection_Reason": "80 m² is not credible"})
+            sw = await _sweep()
+            bounced = [i for i in sw["items"] if i["consumption_id"] == rid]
+            check("DD-20 ⚠️ A REJECTED RE-ASSIGNMENT OF AN APPROVED ROW BOUNCES THE "
+                  "SAME WAY — badged rejected, on top, with the HOD's reason and "
+                  "the values that were rejected",
+                  r.status_code == 200 and len(bounced) == 1
+                  and bounced[0]["reason"] == "rejected"
+                  and bounced[0]["rejection_reason"] == "80 m² is not credible"
+                  and float(bounced[0]["rejected_sqm"] or 0) == 80.0
+                  and sw["items"][0]["reason"] == "rejected",
+                  f"{r.status_code} {str(bounced)[:220]}")
+            r = await ac.post("/execution/sme-link/assign", headers=SUP, json={
+                "consumption_id": rid, "code": "SVDD-LS1", "tag": "SVDD-TANK-A",
+                "sqm": 22, "site_id": SITE})
+            hq = await _hod_queue()
+            check("DD-21 …and its correction goes back to the HOD as a fresh "
+                  "revision, leaving the sweep",
+                  r.status_code == 201 and r.json()["revision"]
+                  and any(v["Log_ID"] == rev_log and v["status"] == "staged"
+                          for v in hq["revisions"])
+                  and all(i["consumption_id"] != rid for i in (await _sweep())["items"]),
+                  f"{r.status_code} {r.text[:160]}")
+    finally:
+        await _cleanup()
+
+
 # --- Suite CS: slice 10b — the daily claim, valuation, and the soft gate ------
 async def test_slice_10b_ecosystem():
     """Suite CS — Phase 10 slice 10b. Tracks 2, 3 and 5.
@@ -25235,6 +25543,9 @@ async def main() -> int:
           "converge, edits land in place, and a Phase 13 attribution survives "
           "every one of them")
     await test_excel_sync_upsert_phase13()
+    print("\n DD. A rejection bounces back — to the top of the field's queue "
+          "with the HOD's reason, and a correction goes straight back to the HOD")
+    await test_sme_rejection_loop()
     print("\n BW. The suite's own isolation — 1,400+ checks commit through the "
           "real app, so WHICH database they reach is itself a gate")
     await test_database_isolation()
