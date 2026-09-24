@@ -308,6 +308,12 @@ app.include_router(auth_router)
 # Environment identity (open): GET /instance — Live or Practice (rule 17).
 app.include_router(instance_router)
 
+# Practice-only: the sandbox reset. NOT MOUNTED on Live — there it is a 404,
+# not a hidden button (rule 17, vector V11). See practice.py.
+from .practice import mounted as _practice_mounted, router as practice_router  # noqa: E402
+if _practice_mounted():
+    app.include_router(practice_router)
+
 # Inbound WhatsApp webhook (Phase 6). Unauthenticated by design — Meta calls it
 # with its own verify-token (GET) / X-Hub-Signature-256 HMAC (POST). Mounted at
 # both the bare path (single-origin nginx strips /api) and the /api/v1 form.

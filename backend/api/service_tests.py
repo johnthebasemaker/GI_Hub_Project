@@ -25474,6 +25474,235 @@ async def test_practice_sandbox_walls():
           backup_filename("gihub_training", t).startswith("gihub_training-"), "")
 
 
+async def test_practice_sandbox_data():
+    """Suite TR (S2) — the database wall, the reset, the overlay's accounts, and
+    what a Practice process does differently.
+
+    ⚠️ Every Postgres object this suite creates is a THROWAWAY with an
+    `svctest` name, created and dropped here. It never opens `gihub`,
+    `gihub_training` or `gihub_seed_training` (rule 15) — the wall and the
+    reset are proven on copies built from the SHIPPING functions
+    (`practice_db.wall_sql`, `practice.clone_from_seed`), so a green run says
+    something about the code that runs in production, not about a paraphrase.
+    """
+    import datetime as _dt
+    import importlib.util as _ilu
+
+    import psycopg2 as _pg
+
+    from . import auth as _auth
+    from . import practice as _pr
+    from . import testdb
+    from . import training as _tr
+
+    spec = _ilu.spec_from_file_location("practice_db", _ROOT_TR / "tools" / "practice_db.py")
+    pdb = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(pdb)
+    spec = _ilu.spec_from_file_location("practice_overlay", _ROOT_TR / "tools" / "practice_overlay.py")
+    ovl = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(ovl)
+
+    base, _db = testdb._split_url(testdb._sync(str(engine.url.render_as_string(hide_password=False))))
+    admin = base + "postgres"
+    wall_db, role = "gihub_svctest_wall", "gi_svctest_practice"
+    sandbox, seed = "gihub_svctest_training", "gihub_svctest_seed_training"
+
+    def _role_url(db: str) -> str:
+        u = testdb._split_url(base + db)[0]           # …//user@host:port/
+        head, rest = u.split("://", 1)
+        hostpart = rest.split("@", 1)[-1]
+        return f"postgresql://{role}@{hostpart}{db}"
+
+    try:
+        # ── TR-02: the CONNECT wall, built by the shipping SQL ──────────────
+        with testdb._connect(admin) as cur:
+            cur.execute(f'DROP DATABASE IF EXISTS "{wall_db}" WITH (FORCE)')
+            cur.execute(f'CREATE DATABASE "{wall_db}"')
+            for stmt in pdb.wall_sql(wall_db, role=role, ai_ro_exists=False):
+                cur.execute(stmt)
+        refused = ""
+        try:
+            c = _pg.connect(_role_url(wall_db))
+            c.close()
+        except _pg.OperationalError as e:
+            refused = str(e)
+        check("tr-02a: the Practice role is REFUSED by the walled database — "
+              "Postgres checks CONNECT after authentication, so this holds even "
+              "under the local mirror's trust auth, where any client may claim "
+              "any role", "permission denied" in refused, refused[:160] or "it connected")
+        opened = False
+        try:
+            c = _pg.connect(_role_url("postgres"))
+            c.close()
+            opened = True
+        except _pg.OperationalError:
+            pass
+        check("tr-02b: …negative control: the same role connects to a database "
+              "that is not walled (the refusal is the wall, not a broken login)",
+              opened, "")
+        with testdb._connect(admin) as cur:
+            cur.execute("SELECT rolsuper, rolcreatedb FROM pg_roles WHERE rolname = %s", (role,))
+            sup, cdb = cur.fetchone()
+        check("tr-02c: the wall's role is NOSUPERUSER (a superuser ignores "
+              "CONNECT entirely) and CREATEDB (the reset needs it)",
+              sup is False and cdb is True, f"super={sup} createdb={cdb}")
+
+        # ── TR-08: the reset ────────────────────────────────────────────────
+        paths = app.openapi()["paths"]
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            tok = _auth._make_token("admin", "admin", "", _auth.ACCESS_TTL)
+            r = await ac.post("/practice/reset", json={"confirm": _pr.CONFIRM_PHRASE},
+                              headers={"Authorization": f"Bearer {tok}"})
+        check("tr-08a: /practice/reset is NOT MOUNTED on Live — a 404 for an "
+              "admin with the right phrase, and absent from the OpenAPI schema. "
+              "Not a hidden button: there is no button",
+              r.status_code == 404 and "/practice/reset" not in paths,
+              f"status {r.status_code}")
+        def _refuses(name):
+            try:
+                _pr.reset_targets(name)
+                return False
+            except ValueError:
+                return True
+        check("tr-08b: the reset refuses every name that is not a Practice "
+              "sandbox — Live, the seed itself, an empty name, an injection",
+              all(_refuses(n) for n in ("gihub", "gihub_svctest", "gihub_seed_training",
+                                         "", 'x"; DROP DATABASE gihub; --_training')),
+              "")
+        check("tr-08c: …negative control: the Practice sandbox is accepted and "
+              "its seed is derived, never supplied",
+              _pr.reset_targets("gihub_training") == ("gihub_training", "gihub_seed_training"), "")
+
+        with testdb._connect(admin) as cur:
+            for db in (sandbox, seed):
+                cur.execute(f'DROP DATABASE IF EXISTS "{db}" WITH (FORCE)')
+            cur.execute(f'CREATE DATABASE "{seed}"')
+            cur.execute(f'CREATE DATABASE "{sandbox}"')
+        with testdb._connect(base + seed) as cur:
+            cur.execute("CREATE TABLE marker (v text)")
+            cur.execute("INSERT INTO marker VALUES ('seed')")
+        with testdb._connect(base + sandbox) as cur:
+            cur.execute("CREATE TABLE marker (v text)")
+            cur.execute("INSERT INTO marker VALUES ('a trainee typed this')")
+        # Hold a session open on the sandbox: the reset must terminate it, which
+        # is what a busy Practice API looks like at the moment somebody presses it.
+        held = _pg.connect(base.replace("+psycopg2", "") + sandbox)
+        await _pr.clone_from_seed(admin.replace("+psycopg2", ""), sandbox)
+        with testdb._connect(base + sandbox) as cur:
+            cur.execute("SELECT array_agg(v) FROM marker")
+            after = cur.fetchone()[0]
+        check("tr-08d: a reset replaces the sandbox with the seed — the trainee's "
+              "row is gone, the seed's is back — while a session was still open "
+              "on it", after == ["seed"], f"after={after}")
+        try:
+            held.close()
+        except Exception:  # noqa: BLE001 — it was terminated; that is the point
+            pass
+        blocked = False
+        try:
+            await _pr.clone_from_seed(admin.replace("+psycopg2", ""), "gihub_svctest")
+        except ValueError:
+            blocked = True
+        check("tr-08e: clone_from_seed itself refuses a non-Practice target before "
+              "it connects (the check is in the function, not only its caller)",
+              blocked, "")
+
+        # ── TR-10: the overlay's accounts ───────────────────────────────────
+        acc_roles = {r for _u, r, _s, _w in ovl.ACCOUNTS}
+        check("tr-10a: every role in ROLE_META has a shared practice account — a "
+              "role added next year without one fails here (rule 13's pattern)",
+              acc_roles == set(_auth.ROLE_META), f"missing {sorted(set(_auth.ROLE_META) - acc_roles)}")
+        bad_scope = []
+        for u, r, site, wh in ovl.ACCOUNTS:
+            if r in _auth._SCOPED_REG_ROLES and not site:
+                bad_scope.append(u)
+            if r in _auth._UNSCOPED_REG_ROLES and site:
+                bad_scope.append(u)
+            if r in _auth._DUAL_SCOPE_REG_ROLES and bool(site) == bool(wh):
+                bad_scope.append(u)
+        check("tr-10b: each account carries exactly the scope its role's "
+              "registration rule demands (scoped → a site, unscoped → none, "
+              "dual → exactly one)", not bad_scope, str(bad_scope))
+        from .admin import password_problems
+        check("tr-10c: the published practice password meets the password "
+              "policy a trainee resetting it would face",
+              not password_problems(ovl.DEFAULT_PASSWORD), "")
+        async with SessionLocal() as s:
+            await ovl.seed_accounts(s)
+            await ovl.seed_accounts(s)
+            users_t = ledger._MD.tables["users"]
+            n = await _count(s, users_t, users_t.c["username"].like("practice.%"))
+            harness = await _count(s, users_t, users_t.c["username"].in_(ovl.HARNESS_USERNAMES))
+            await s.rollback()
+        check("tr-10d: seeding accounts twice converges on the same nine rows, "
+              "and the published tutorial logins are removed (rolled back here)",
+              n == len(ovl.ACCOUNTS) and harness == 0, f"n={n} harness={harness}")
+    finally:
+        with testdb._connect(admin) as cur:
+            for db in (wall_db, sandbox, seed):
+                cur.execute(f'DROP DATABASE IF EXISTS "{db}" WITH (FORCE)')
+            cur.execute(f'DROP ROLE IF EXISTS "{role}"')
+
+    # ── TR-11: what a Practice process does differently ─────────────────────
+    saved = os.environ.get("GI_INSTANCE")
+    os.environ["GI_INSTANCE"] = "training"
+    try:
+        sk = _auth._make_token("svc_tr_sk", "store_keeper", "CNCEC", _auth.ACCESS_TTL)
+        sup = _auth._make_token("svc_tr_sup", "supervisor", "CNCEC", _auth.ACCESS_TTL)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            img = {"file": ("form.jpg", b"\xff\xd8\xff not really a jpeg", "image/jpeg")}
+            j = await ac.post("/ai/jobs", files=img, headers={"Authorization": f"Bearer {sk}"})
+            u = await ac.post("/execution/ocr/upload", files=img,
+                              headers={"Authorization": f"Bearer {sup}"})
+            check("tr-11a: OCR is refused in Practice at BOTH photo entry points "
+                  "(the store keeper's and the supervisor's), with a reason — "
+                  "ruling Q5: trainees never queue ahead of Live's forms",
+                  j.status_code == 503 and u.status_code == 503
+                  and "Practice" in j.json().get("detail", ""),
+                  f"jobs={j.status_code} upload={u.status_code}")
+            ack = await ac.post("/training/acknowledge", json={"module_key": "anything"},
+                                headers={"Authorization": f"Bearer {sk}"})
+            check("tr-11b: a training acknowledgement is refused in Practice with "
+                  "the explanation — certificates are Live-only (ruling Q2)",
+                  ack.status_code == 409 and "Live" in ack.json().get("detail", ""),
+                  f"{ack.status_code} {ack.text[:100]}")
+            enr = await ac.post("/auth/2fa/enroll", json={"password": "x"},
+                                headers={"Authorization": f"Bearer {sk}"})
+            check("tr-11c: 2FA enrolment is refused in Practice — one trainee's "
+                  "authenticator would lock a shared account (ruling Q4)",
+                  enr.status_code == 403, f"{enr.status_code}")
+        from .ai import client as _aic
+        vision_blocked = False
+        try:
+            await _aic.vision_json("x", system="x", image_b64="")
+        except RuntimeError as e:
+            vision_blocked = "Practice" in str(e)
+        check("tr-11d: the vision client is the LAST wall — it refuses in "
+              "Practice even for a route nobody remembered to guard",
+              vision_blocked, "")
+        async with SessionLocal() as s:
+            comp = ledger._MD.tables["training_compliance"]
+            before = await _count(s, comp)
+            await _tr._upsert(s, "svc_tr_sk", {"id": 1, "version": 1}, watched_seconds=999)
+            after = await _count(s, comp)
+            gate = await _auth.mfa_gate(s, "admin", 0)
+            await s.rollback()
+        check("tr-11e: no compliance row is written in Practice, whatever the "
+              "beacon says", before == after, f"{before} → {after}")
+        check("tr-11f: the 2FA mandate never blocks in Practice, even for an "
+              "un-enrolled admin", gate is None, str(gate))
+    finally:
+        if saved is None:
+            os.environ.pop("GI_INSTANCE", None)
+        else:
+            os.environ["GI_INSTANCE"] = saved
+    async with SessionLocal() as s:
+        gate_live = await _auth.mfa_gate(s, "admin", 0)
+    check("tr-11g: …negative control: back on Live, an un-enrolled admin is "
+          "still subject to the mandate", gate_live is not None, str(gate_live))
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -25755,6 +25984,9 @@ async def main() -> int:
           "the boot refusals, the tokens that do not cross, and the tripwire "
           "for the offline queue that every server wall would otherwise wave through")
     await test_practice_sandbox_walls()
+    print("\n TR (S2). The wall is a privilege, the reset is a clone, and the "
+          "sandbox differs from Live in exactly the four ways the operator ruled")
+    await test_practice_sandbox_data()
     print("\n BW. The suite's own isolation — 1,400+ checks commit through the "
           "real app, so WHICH database they reach is itself a gate")
     await test_database_isolation()

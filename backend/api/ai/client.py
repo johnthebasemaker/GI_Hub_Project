@@ -161,6 +161,12 @@ async def vision_json(prompt: str, *, system: str, image_b64: str,
     "which engine read this" is the first question asked when a quantity is
     disputed, and it is unanswerable later if nobody recorded it.
     """
+    # Rule 17, the LAST wall: every route that queues a vision job already
+    # refuses in Practice (practice.assert_ocr_available). This catches the
+    # route somebody adds next year without remembering to.
+    from ..config import is_practice
+    if is_practice():
+        raise RuntimeError("vision is switched off in Practice (ruling Q5)")
     if vision_provider() == "anthropic":
         return await _cloud_vision(prompt, system=system, image_b64=image_b64,
                                    num_predict=num_predict, timeout_s=timeout_s)

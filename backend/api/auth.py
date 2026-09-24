@@ -33,7 +33,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .config import instance, is_production, jwt_secret, refresh_cookie_name
+from .config import instance, is_practice, is_production, jwt_secret, refresh_cookie_name
 from .db import get_session
 from .ratelimit import (assert_login_allowed, assert_login_allowed_shared,
                         check_bucket, clear_login_failures,
@@ -261,6 +261,9 @@ async def _mfa_enforced_from(session: AsyncSession) -> _dt.date | None:
 async def mfa_gate(session: AsyncSession, role: str, totp_enabled) -> dict | None:
     """What to do about this account's second factor, or None for "nothing".
 
+    ⚠️ ALWAYS None IN PRACTICE (ruling Q4, rule 17): the practice accounts are
+    shared by a class, and a mandate nobody can satisfy is an outage.
+
     Returns `{"blocked": bool, "enforced_from": str|None}`. The caller mints an
     enrolment token when blocked and attaches a warning otherwise.
 
@@ -270,6 +273,8 @@ async def mfa_gate(session: AsyncSession, role: str, totp_enabled) -> dict | Non
     already checked; a bug in the ROLLOUT of that control must not be able to
     lock an entire company out of its own inventory system.
     """
+    if is_practice():
+        return None
     if totp_enabled:
         return None
     if (role or "").strip().lower() not in await _mfa_required_roles(session):
@@ -1137,6 +1142,12 @@ async def twofa_enroll(body: TwoFaEnrollIn = Body(...),
                        user: dict = Depends(enroll_or_current_user),
                        session: AsyncSession = Depends(get_session)):
     import pyotp
+    if is_practice():
+        # Rule 17 / ruling Q4: one trainee binding an authenticator to a SHARED
+        # practice account would lock the rest of the class out of it.
+        raise HTTPException(403, "Two-factor authentication is switched off in "
+                                 "Practice: the practice accounts are shared, and "
+                                 "one authenticator would lock everyone else out.")
     row = await _fetch_user(session, user["username"])
     if row is None:
         raise HTTPException(404, "user not found")
