@@ -33,7 +33,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .config import is_production, jwt_secret
+from .config import instance, is_production, jwt_secret, refresh_cookie_name
 from .db import get_session
 from .ratelimit import (assert_login_allowed, assert_login_allowed_shared,
                         check_bucket, clear_login_failures,
@@ -76,7 +76,13 @@ JWT_ALG = "HS256"
 # shouldn't demand a password every week.
 ACCESS_TTL = _dt.timedelta(minutes=15)
 REFRESH_TTLS = {"web": _dt.timedelta(days=7), "native": _dt.timedelta(days=90)}
-REFRESH_COOKIE = "gi_refresh"
+# Per-instance (rule 17): Live and Practice share an origin, so they must not
+# share a cookie name. Live keeps `gi_refresh`, byte-identical to before.
+REFRESH_COOKIE = refresh_cookie_name()
+# Which environment minted a token. Every token carries it; `_decode` refuses
+# the other one's. Redundant with the per-instance JWT_SECRET BY DESIGN — it
+# is what still refuses when somebody copies one secret into both env files.
+INSTANCE = instance()
 MFA_TTL = _dt.timedelta(minutes=5)
 
 # Role label + hierarchy level (from config.py ROLES / ROLE_HIERARCHY).
@@ -183,7 +189,7 @@ def _make_token(sub: str, role: str, site_id: str, ttl: _dt.timedelta,
     payload = {"sub": sub, "role": role, "site_id": site_id or "",
                "warehouse_id": warehouse_id or "",
                "scope": scope, "iat": now, "exp": now + ttl,
-               **(extra or {})}
+               **(extra or {}), "env": INSTANCE}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 
@@ -194,7 +200,18 @@ def _decode(token: str, scope: str) -> dict:
         raise HTTPException(401, "invalid or expired token")
     if p.get("scope") != scope:
         raise HTTPException(401, "wrong token scope")
+    if not token_env_ok(p):
+        raise HTTPException(401, "this sign-in belongs to the other environment "
+                                 "(Live / Practice) — sign in again here")
     return p
+
+
+def token_env_ok(payload: dict, inst: str | None = None) -> bool:
+    """Rule 17's claim check. A token minted before the claim existed carries
+    none and is read as Live, so deploying this signs nobody out of Live — and
+    Practice, which never issued a claim-less token, refuses it. `inst` exists
+    so suite TR can ask the Practice question without re-importing the app."""
+    return payload.get("env", "production") == (inst or INSTANCE)
 
 
 # ── Phase 10 Track 1: 2FA that is MANDATORY for privileged roles ────────────
@@ -815,6 +832,8 @@ async def logout(response: Response,
     if gi_refresh:
         try:
             p = jwt.decode(gi_refresh, JWT_SECRET, algorithms=[JWT_ALG])
+            if not token_env_ok(p):
+                raise jwt.InvalidTokenError("other environment")
             row = (await session.execute(select(refresh_t.c["family_id"]).where(
                 refresh_t.c["refresh_token_jti"] == p.get("jti", "")))).first()
             if row is not None:

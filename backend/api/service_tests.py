@@ -25269,6 +25269,211 @@ async def test_crud_read_rbac():
         await _qsep_cleanup()
 
 
+_ROOT_TR = __import__("pathlib").Path(__file__).resolve().parents[2]
+
+
+async def test_practice_sandbox_walls():
+    """Suite TR (S1) — rule 17: Practice is a second PROCESS, not a second
+    session, and every wall that keeps the two apart refuses LOUDLY.
+
+    The property is invisible when it holds: a Practice receipt that reached
+    Live would look like any other receipt. So every case below asserts a
+    REFUSAL, and each refusal has a negative control proving the wall does not
+    also refuse the legitimate case — a wall that blocks everything is
+    indistinguishable, in a green run, from one that works.
+    """
+    import datetime as _dt
+    import subprocess as _sp
+
+    import jwt as _jwt
+
+    from . import auth as _auth
+    from . import config as _cfg
+    from .console import backup_filename
+    from .instance import declared_mismatch
+    from .services import emailer as _em
+    from .services import whatsapp as _wa
+
+    ip = _cfg.instance_problems
+    good_practice = {"GI_INSTANCE": "training",
+                     "DATABASE_URL": "postgresql://gi_training@h:5433/gihub_training"}
+
+    # ── TR-01: the boot refusal, as a pure function ──────────────────────────
+    check("tr-01a: Live on its own database has nothing to refuse (negative "
+          "control — the default configuration of every existing box)",
+          ip({"DATABASE_URL": "postgresql://postgres@h/gihub"}) == [], "")
+    check("tr-01b: a correctly configured Practice process is accepted "
+          "(negative control)", ip(good_practice) == [], str(ip(good_practice)))
+    check("tr-01c: GI_INSTANCE=training pointed at the LIVE database is refused — "
+          "the misconfiguration that would turn every practice click into a "
+          "real stock movement",
+          any("_training" in x for x in ip({"GI_INSTANCE": "training",
+                                             "DATABASE_URL": "postgresql://p@h/gihub"})), "")
+    check("tr-01d: …and GI_INSTANCE=training with NO DATABASE_URL (the config "
+          "default is Live's `gihub`) is refused too, not defaulted",
+          bool(ip({"GI_INSTANCE": "training"})), "")
+    check("tr-01e: Live pointed at the Practice database — or its TEMPLATE — is "
+          "refused (the other direction)",
+          bool(ip({"DATABASE_URL": "postgresql://p@h/gihub_training"}))
+          and bool(ip({"DATABASE_URL": "postgresql://p@h/gihub_training_tpl"})), "")
+    check("tr-01f: an unrecognised GI_INSTANCE is refused, never guessed at — "
+          "'trainig' is not Live",
+          bool(ip({"GI_INSTANCE": "trainig"})), "")
+
+    # ── TR-01g: …and wired in: db.py refuses BEFORE an engine exists ──────────
+    base_env = {k: v for k, v in os.environ.items()
+                if k not in _cfg.PRACTICE_FORBIDDEN_ENV and k != "GI_INSTANCE"}
+    base_env["GI_DOTENV"] = "0"
+    probe = "import backend.api.db; print('ENGINE-BUILT')"
+    bad = _sp.run([sys.executable, "-c", probe], cwd=str(_ROOT_TR),
+                  env=dict(base_env, GI_INSTANCE="training",
+                           DATABASE_URL="postgresql://postgres@127.0.0.1:5433/gihub"),
+                  capture_output=True, text=True)
+    check("tr-01g: a Practice process whose DATABASE_URL names Live exits "
+          "non-zero at import, before db.py has built an engine",
+          bad.returncode != 0 and "refusing to start" in bad.stderr
+          and "ENGINE-BUILT" not in bad.stdout,
+          f"exit {bad.returncode}: {bad.stderr[-200:]}")
+    ok = _sp.run([sys.executable, "-c", probe], cwd=str(_ROOT_TR),
+                 env=dict(base_env, GI_INSTANCE="training",
+                          DATABASE_URL="postgresql://gi_training@127.0.0.1:5433/gihub_training"),
+                 capture_output=True, text=True)
+    check("tr-01h: …negative control: the same process with a Practice database "
+          "imports cleanly (import opens no connection, so none needs to exist)",
+          ok.returncode == 0 and "ENGINE-BUILT" in ok.stdout,
+          f"exit {ok.returncode}: {ok.stderr[-200:]}")
+
+    # ── TR-03 / TR-04: tokens do not cross ───────────────────────────────────
+    now = _dt.datetime.now(_dt.timezone.utc)
+
+    def _tok(secret, **extra):
+        body = {"sub": "admin", "role": "admin", "site_id": "", "warehouse_id": "",
+                "scope": "access", "iat": now, "exp": now + _dt.timedelta(minutes=5)}
+        body.update(extra)
+        return _jwt.encode(body, secret, algorithm=_auth.JWT_ALG)
+
+    live_tok = _auth._make_token("admin", "admin", "", _auth.ACCESS_TTL)
+    check("tr-03a: every token Live mints now carries env='production'",
+          _jwt.decode(live_tok, _auth.JWT_SECRET, algorithms=[_auth.JWT_ALG]).get("env")
+          == "production", "")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        async def me(tok):
+            return (await ac.get("/auth/me", headers={"Authorization": f"Bearer {tok}"})
+                    ).status_code
+        check("tr-03b: a Live token opens /auth/me (negative control)",
+              await me(live_tok) == 200, "")
+        check("tr-03c: a token signed with ANOTHER instance's secret is 401 — "
+              "the primary wall: Practice and Live never share a key",
+              await me(_tok(_cfg._DEV_JWT_SECRET_PRACTICE + "x", env="training")) == 401, "")
+        check("tr-03d: with the SAME secret (an operator copied one env file "
+              "into both), a Practice-claimed token is STILL 401 — the claim is "
+              "the second wall, and this is the case it exists for",
+              await me(_tok(_auth.JWT_SECRET, env="training")) == 401, "")
+        check("tr-04a: a claim-less token minted before rule 17 still opens Live — "
+              "deploying this signs nobody out",
+              await me(_tok(_auth.JWT_SECRET)) == 200, "")
+        check("tr-04b: …and the same claim-less token is refused by Practice, "
+              "which never minted one",
+              _auth.token_env_ok({"sub": "x"}, "production")
+              and not _auth.token_env_ok({"sub": "x"}, "training"), "")
+
+        # ── TR-05: the tripwire refuses a request prepared for the other side ─
+        tr = {"X-GI-Instance": "training"}
+        g = await ac.get("/auth/me", headers=tr)
+        pst = await ac.post("/entry/receipts", json={}, headers=tr)
+        check("tr-05a: X-GI-Instance: training → 409 on Live for a GET, BEFORE "
+              "authentication (no token was sent, and it is not a 401)",
+              g.status_code == 409, f"got {g.status_code}")
+        check("tr-05b: …and for a POST — the offline-queue replay that is vector "
+              "V4, refused whatever route it names",
+              pst.status_code == 409 and "Practice" in pst.json().get("detail", ""),
+              f"got {pst.status_code} {pst.text[:120]}")
+        garbled = await ac.post("/entry/receipts", json={},
+                                headers={"X-GI-Instance": "trainig"})
+        check("tr-05c: a garbled declaration is refused, not ignored",
+              garbled.status_code == 409, f"got {garbled.status_code}")
+        own = await ac.get("/auth/me", headers={"X-GI-Instance": "production"})
+        bare = await ac.get("/auth/me")
+        check("tr-05d: declaring THIS environment, or nothing at all, passes "
+              "through to the route's own auth (negative control: 401, not 409)",
+              own.status_code == 401 and bare.status_code == 401,
+              f"own={own.status_code} bare={bare.status_code}")
+        ident = await ac.get("/instance", headers=tr)
+        check("tr-05e: GET /instance answers even a client confused about which "
+              "environment it is talking to — and the answer is the SERVER's, "
+              "never the client's declaration",
+              ident.status_code == 200 and ident.json().get("instance") == "production"
+              and ident.json().get("label") == "Live" and ident.json().get("practice") is False,
+              f"{ident.status_code} {ident.text[:120]}")
+        check("tr-05f: the pure decision: absent passes, own passes, other and "
+              "garbled refuse; 'practice'/'live' are aliases, not new names",
+              not declared_mismatch(None, "production")
+              and not declared_mismatch("Live", "production")
+              and not declared_mismatch("practice", "training")
+              and declared_mismatch("training", "production")
+              and declared_mismatch("", "production"), "")
+
+        # ── TR-07: the refresh cookie keeps Live's name ──────────────────────
+        r = await ac.post("/auth/login", json={"username": "worker", "password": "floor2026"})
+        check("tr-07a: Live still sets `gi_refresh` — byte-identical for every "
+              "existing browser and native session",
+              bool(r.cookies.get("gi_refresh")), f"status {r.status_code}")
+    check("tr-07b: Practice's refresh cookie has its OWN name, so signing in to "
+          "one environment does not overwrite the other's session",
+          _cfg.refresh_cookie_name("training") == "gi_refresh_training"
+          and _cfg.refresh_cookie_name("production") == "gi_refresh", "")
+
+    # ── TR-06: outbound cannot leave a Practice process ─────────────────────
+    saved = {k: os.environ.get(k) for k in
+             ("GI_INSTANCE", "GI_OUTBOUND", "WHATSAPP_TOKEN",
+              "WHATSAPP_PHONE_NUMBER_ID", "SMTP_HOST", "JWT_SECRET", "GI_ENV")}
+    try:
+        os.environ.update(WHATSAPP_TOKEN="tr-fake", WHATSAPP_PHONE_NUMBER_ID="1",
+                          SMTP_HOST="smtp.invalid")
+        os.environ.pop("GI_INSTANCE", None)
+        os.environ.pop("GI_OUTBOUND", None)
+        live_on = _wa.enabled() and _em.enabled()
+        os.environ["GI_OUTBOUND"] = "off"
+        killed = not _wa.enabled() and not _em.enabled()
+        os.environ.pop("GI_OUTBOUND", None)
+        os.environ["GI_INSTANCE"] = "training"
+        practice_off = not _wa.enabled() and not _em.enabled()
+        check("tr-06a: with credentials present, Live sends (negative control)",
+              live_on, "")
+        check("tr-06b: GI_OUTBOUND=off silences WhatsApp AND email even with "
+              "live credentials in the environment", killed, "")
+        check("tr-06c: a Practice process cannot send even if a token got in — "
+              "the second wall behind the boot refusal", practice_off, "")
+        check("tr-06d: …and the boot refusal names the credential it found",
+              any("WHATSAPP_TOKEN" in x for x in
+                  ip(dict(good_practice, WHATSAPP_TOKEN="x"))), "")
+        # Dev fallback keys differ, so even a laptop with no JWT_SECRET set
+        # cannot verify one environment's token in the other.
+        os.environ.pop("JWT_SECRET", None)
+        os.environ.pop("GI_ENV", None)
+        practice_key = _cfg.jwt_secret()
+        os.environ.pop("GI_INSTANCE", None)
+        live_key = _cfg.jwt_secret()
+        check("tr-06e: with no JWT_SECRET at all (dev), Live and Practice fall "
+              "back to DIFFERENT signing keys", practice_key != live_key, "")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # ── TR-09: a Practice dump can never pass for a Live one ────────────────
+    t = _dt.datetime(2026, 9, 24, 14, 5, 9)
+    check("tr-09a: Live's dump name is unchanged (`gihub-<ts>.dump`)",
+          backup_filename("gihub", t) == "gihub-20260924-140509.dump",
+          backup_filename("gihub", t))
+    check("tr-09b: a Practice dump names its database, so nobody restores it "
+          "over Live by mistake (vector V8)",
+          backup_filename("gihub_training", t).startswith("gihub_training-"), "")
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -25546,6 +25751,10 @@ async def main() -> int:
     print("\n DD. A rejection bounces back — to the top of the field's queue "
           "with the HOD's reason, and a correction goes straight back to the HOD")
     await test_sme_rejection_loop()
+    print("\n TR. Rule 17 — Practice is a second process, not a second session: "
+          "the boot refusals, the tokens that do not cross, and the tripwire "
+          "for the offline queue that every server wall would otherwise wave through")
+    await test_practice_sandbox_walls()
     print("\n BW. The suite's own isolation — 1,400+ checks commit through the "
           "real app, so WHICH database they reach is itself a gate")
     await test_database_isolation()

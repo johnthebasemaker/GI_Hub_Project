@@ -52,6 +52,7 @@ from .training import router as training_router
 from .ai.router import router as ai_router  # noqa: E402
 from .notifications import router as notifications_router  # noqa: E402
 from .readonly import read_only_guard  # noqa: E402
+from .instance import instance_guard, router as instance_router  # noqa: E402
 from .console import admin as console_admin_router  # noqa: E402
 from .sla import router as sla_router  # noqa: E402
 from .console import oversight as console_oversight_router  # noqa: E402
@@ -259,6 +260,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+@app.middleware("http")
+async def _instance_middleware(request, call_next):
+    """Rule 17 tripwire: a request that DECLARES the other environment
+    (X-GI-Instance) is refused 409 before routing. An assertion, never a
+    selector — this process has one database. Registered BEFORE CORS so it
+    sits inside it and a cross-origin native client can read the 409's reason.
+    Rules and the why: instance.py."""
+    return await instance_guard(request, call_next)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -293,6 +304,9 @@ async def _delivery_preference_middleware(request, call_next):
 
 # Auth (open): login + JWT + /auth/me.
 app.include_router(auth_router)
+
+# Environment identity (open): GET /instance — Live or Practice (rule 17).
+app.include_router(instance_router)
 
 # Inbound WhatsApp webhook (Phase 6). Unauthenticated by design — Meta calls it
 # with its own verify-token (GET) / X-Hub-Signature-256 HMAC (POST). Mounted at

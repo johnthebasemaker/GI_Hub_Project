@@ -182,6 +182,15 @@ def _find_pg_dump() -> Optional[str]:
             or (p if os.path.exists(p := "/opt/homebrew/opt/postgresql@16/bin/pg_dump") else None))
 
 
+def backup_filename(dbname: str, now: "_dt.datetime") -> str:
+    """`<database>-<timestamp>.dump`. Live's database is `gihub`, so Live's
+    names are unchanged; a Practice dump reads `gihub_training-…` and can never
+    be mistaken for a Live one and restored over it (rule 17, vector V8). It
+    used to be a hard-coded `gihub-` whatever database was dumped."""
+    safe = "".join(ch for ch in (dbname or "gihub") if ch.isalnum() or ch in "_-")
+    return f"{safe or 'gihub'}-{now.strftime('%Y%m%d-%H%M%S')}.dump"
+
+
 @admin.post("/backup", summary="Run pg_dump now (custom format) into GI_BACKUPS_DIR")
 async def run_backup(user: dict = Depends(require_level(4)),
                      session: AsyncSession = Depends(get_session)):
@@ -192,11 +201,12 @@ async def run_backup(user: dict = Depends(require_level(4)),
     u = urlparse(async_database_url().replace("+asyncpg", ""))
     out_dir = os.environ.get("GI_BACKUPS_DIR", os.path.join("backups", "new_stack"))
     os.makedirs(out_dir, exist_ok=True)
-    fname = f"gihub-{_dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.dump"
+    dbname = (u.path or "/gihub").lstrip("/")
+    fname = backup_filename(dbname, _dt.datetime.now())
     path = os.path.join(out_dir, fname)
     cmd = [pg_dump, "-Fc", "-h", u.hostname or "127.0.0.1",
            "-p", str(u.port or 5432), "-U", u.username or "postgres",
-           "-d", (u.path or "/gihub").lstrip("/"), "-f", path]
+           "-d", dbname, "-f", path]
     env = dict(os.environ)
     if u.password:
         env["PGPASSWORD"] = u.password
