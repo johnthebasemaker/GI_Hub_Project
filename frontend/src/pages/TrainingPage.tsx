@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import PracticeNotice from '../components/PracticeNotice'
 import {
   Alert, App, Button, Card, Empty, Progress, Segmented, Space, Table, Tabs, Tag, Typography,
 } from 'antd'
@@ -346,6 +347,7 @@ export default function TrainingPage() {
 
   return (
     <div style={{ padding: 16, maxWidth: 900 }}>
+      <PracticeNotice kind="training" />
       <Typography.Title level={4} style={{ marginTop: 0 }}>Training &amp; Onboarding</Typography.Title>
       {isHod
         ? (

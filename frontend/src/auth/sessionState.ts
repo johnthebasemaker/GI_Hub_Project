@@ -67,6 +67,8 @@ export const NEVER_CLEARED = [
   'gi-hub-theme',          // display preference
   'gi_sync_interval_min',  // offline sync cadence
   'gi_token',              // owned by api/client.ts setAuthToken(), not us
+  'gi_token@training',     // …and its Practice twin (rule 17)
+  'gi_env',                // Live | Practice — api/environment.ts
 ] as const
 
 /** Last username seen by a successful sign-in. Not user content itself. */

@@ -18,10 +18,24 @@
  *   'gi-offline-queue'   detail {count}          — badge updates
  *   'gi-offline-queued'  detail {path}           — "saved offline" toast
  *   'gi-offline-flushed' detail {sent, failed[]} — "synced" toast
+ *
+ * ⚠️ RULE 17, VECTOR V4 — THE ONE CONTAMINATION PATH NO SERVER WALL CAN SEE.
+ * A queued entry used to be replayed against whatever API base was current,
+ * under whatever token was current. So a receipt practised offline in Practice,
+ * followed by a switch to Live and a sign-in, arrived at LIVE as a perfectly
+ * valid request from a perfectly valid Live session. Three things close it:
+ *   1. one IndexedDB per environment (`gi-offline` / `gi-offline@training`),
+ *      so this page can only ever SEE its own environment's queue;
+ *   2. every entry is STAMPED with the environment it was made in, and an
+ *      entry whose stamp is not this page's is never sent (entries from before
+ *      the stamp existed were made by Live, and are read as Live);
+ *   3. the stamp rides the replay as `X-GI-Instance`, so if 1 and 2 were ever
+ *      both wrong the server refuses it with a 409 (backend/api/instance.py).
  */
 import { api } from '../api/client'
+import { CURRENT_ENV, ENV_HEADER, offlineDbName, type GiEnv } from '../api/environment'
 
-const DB_NAME = 'gi-offline'
+const DB_NAME = offlineDbName(CURRENT_ENV)
 const STORE = 'queue'
 
 export interface QueuedEntry {
@@ -30,6 +44,14 @@ export interface QueuedEntry {
   body: unknown
   headers: Record<string, string>
   queuedAt: string
+  /** The environment this entry was made in. Absent on pre-rule-17 entries,
+   * which were all made by Live. */
+  env?: GiEnv
+}
+
+/** An entry is replayed only in the environment that made it. */
+export function entryEnv(e: Pick<QueuedEntry, 'env'>): GiEnv {
+  return e.env === 'training' ? 'training' : 'production'
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -75,7 +97,7 @@ export function isNetworkError(err: unknown): boolean {
 }
 
 export async function enqueue(path: string, body: unknown, headers: Record<string, string>): Promise<void> {
-  await addEntry({ path, body, headers, queuedAt: new Date().toISOString() })
+  await addEntry({ path, body, headers, queuedAt: new Date().toISOString(), env: CURRENT_ENV })
   window.dispatchEvent(new CustomEvent('gi-offline-queued', { detail: { path } }))
   await emitCount()
 }
@@ -105,9 +127,12 @@ export async function flushQueue(): Promise<{ sent: number; failed: string[] }> 
   try {
     const entries = await listQueue()
     for (const entry of entries.sort((a, b) => (a.id ?? 0) - (b.id ?? 0))) {
+      // Never sent, never dropped: it belongs to the other environment and
+      // will be replayed when this browser is back in it.
+      if (entryEnv(entry) !== CURRENT_ENV) continue
       try {
         await api.post(entry.path, entry.body, {
-          headers: { ...entry.headers, 'X-Offline-Replay': '1' },
+          headers: { ...entry.headers, [ENV_HEADER]: entryEnv(entry), 'X-Offline-Replay': '1' },
         })
         await removeEntry(entry.id!)
         sent += 1

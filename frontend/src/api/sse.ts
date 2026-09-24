@@ -1,4 +1,5 @@
 import { apiBase, getAuthToken } from './client'
+import { CURRENT_ENV, ENV_HEADER } from './environment'
 
 // Shared SSE consumer (Phase AI-5) — the HubAssistant pattern extracted:
 // axios buffers whole responses and EventSource can't carry the bearer
@@ -16,6 +17,7 @@ export async function streamSse(
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${getAuthToken() ?? ''}`,
+      [ENV_HEADER]: CURRENT_ENV,   // rule 17 tripwire — see api/client.ts
     },
     body: JSON.stringify(body ?? {}),
     signal,

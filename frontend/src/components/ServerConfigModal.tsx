@@ -14,7 +14,7 @@ import { useState } from 'react'
 import { App, Alert, Button, Form, Input, Modal, Space, Tag, Typography } from 'antd'
 import { CloudServerOutlined } from '@ant-design/icons'
 import {
-  apiBase, getApiBaseDefault, isApiOverridden, normalizeApiBase, setApiBase,
+  apiBase, getApiBaseDefault, isApiOverridden, normalizeApiBase, setApiBase, TOKEN_KEY,
 } from '../api/client'
 
 // The two servers this project actually has. `local` is the dev tunnel served
@@ -34,7 +34,7 @@ export default function ServerConfigModal({ open, onClose }:
     message.success(`Server set to ${next} — signing out to reconnect.`)
     // Drop the old server's token, then hard-reload so every cached query and
     // in-flight request starts again against the new base.
-    try { localStorage.removeItem('gi_token') } catch { /* private mode */ }
+    try { localStorage.removeItem(TOKEN_KEY) } catch { /* private mode */ }
     setTimeout(() => window.location.reload(), 600)
   }
 
