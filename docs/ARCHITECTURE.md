@@ -485,6 +485,68 @@ service_tests must NEVER be removed). Secret-scan every push range for the Meta 
 WhatsApp phone-number ID before pushing (the exact grep lives in the project
 memory — deliberately not reproduced here).
 
+## 6a. Practice (Live | Practice) — a second process, not a second session (rule 17)
+
+*Shipped 2026-09-24 (branch `feat/practice-sandbox`). Design record:
+`PROPOSED_SANDBOX_PLAN.md`. Locked as rule 17 in `PROJECT_HANDOVER.md`.*
+
+```
+                    ┌──────────── nginx / Vite proxy ────────────┐
+ browser / native → │  /                → SPA (ONE build)        │
+                    │  /api/            → api            (Live)  │──► gihub                (superuser locally / app role)
+                    │  /training-api/   → api-training (Practice)│──► gihub_training       (role gi_training)
+                    └────────────────────────────────────────────┘          ▲  CREATE DATABASE … TEMPLATE
+                                                                   gihub_seed_training
+```
+
+**The one decision.** Nothing in the API selects a database per request. A
+process learns what it is from `GI_INSTANCE` (`config.instance()`), holds
+exactly one `DATABASE_URL`, and `config.assert_instance_safe()` — called by
+`db.py` **before** the engine is built — refuses to boot when the two disagree
+(Practice must open a `*_training` database, Live must not open one, and
+Practice may hold no WhatsApp/SMTP/cloud-vision credential). That is rule 15's
+own mechanism applied to a long-running process. A per-request switch was
+rejected because **30 `SessionLocal()` sites in 12 files** (AI jobs, trace
+drain, answer cache, Bloom filters, limiter, digest, weekly report, scheduler,
+briefing) never see a request, and in-process caches (Bloom snapshots, the
+login throttle) cannot serve two registers.
+
+**The walls, outermost first:**
+
+| Vector | Wall | Where |
+|---|---|---|
+| V1 wrong database | `gi_training` has **no CONNECT** on `gihub` (Postgres privilege; holds under trust auth) | `tools/practice_db.py wall` / `verify` |
+| V2 misconfigured process | boot refusal, both directions | `config.assert_instance_safe` ← `db.py` |
+| V3 token replay | different `JWT_SECRET` **and** an `env` claim `_decode` checks (claim-less = Live, so no mass logout) | `auth._make_token` / `token_env_ok` |
+| V4 offline replay | one IndexedDB per environment, entries stamped, stamp sent as `X-GI-Instance`; server 409s a mismatch before routing | `frontend/src/offline/queue.ts`, `backend/api/instance.py` |
+| V5 PWA cache | distinct URL prefix; the `gi-api-read` regex cannot match `/training-api/` | `vite.config.ts` |
+| V6 cookie clobber | `gi_refresh` (Live, unchanged) vs `gi_refresh_training` | `config.refresh_cookie_name` |
+| V7 outbound | boot refusal + `whatsapp/emailer.enabled()` honour `outbound_enabled()`; overlay phones are non-routable | `config.py`, `services/*` |
+| V8 backup confusion | dump names carry the database; Practice has no backup volume | `console.backup_filename` |
+| V10 wrong belief | banner/tag/title/print watermark from `GET /instance` (server), never the toggle; red mismatch bar | `components/PracticeBanner.tsx` |
+| V11 reset | router mounted only in Practice (404 on Live); target from config, must end `_training`; role owns only the Practice DBs | `backend/api/practice.py` |
+
+**Deliberate differences in Practice** (operator rulings): OCR refused at every
+vision entry point plus `ai/client.vision_json` as the last wall (Q5);
+`training_compliance` never written, acknowledge refused (Q2); 2FA neither
+mandated nor enrollable (Q4); outbound impossible.
+
+**Data.** `tools/practice_db.py build` = `make_tutorial_db.py --today <today>`
+(untouched, so every tutorial's `DATASET_VERSION` stays valid — P12-5) →
+`cutover_migrate.py` (P12-4, the same loader as tutorials/E2E; builds at head)
+→ AI read-only grants → `tools/practice_overlay.py` (one `practice.<role>`
+account per `ROLE_META` role, tutorial logins removed, real queues staged
+through the real app, MFA mandate off) → reset. ~3 s. Reset = `DROP DATABASE …
+WITH (FORCE)` + `CREATE DATABASE … TEMPLATE gihub_seed_training`, ~0.6 s; the
+Practice API runs **one worker** so the FORCE can terminate every session it
+holds (both engines are disposed first).
+
+**Client.** `frontend/src/api/environment.ts`: `CURRENT_ENV` is fixed for the
+page's life; `switchEnvironment()` logs out of the current API, persists, and
+reloads — no cached query/stream/queue handle survives. Live keeps `gi_token`;
+Practice uses `gi_token@training`. The Practice base is the Live base's
+`/training-api` twin, so native builds get the toggle unchanged.
+
 ## 7. AI routing layers — and the cross-cutting patterns filed beside them
 
 > §7a–§7d grew into this section rather than being designed into it, and

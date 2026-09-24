@@ -207,6 +207,11 @@ def cmd_build(today: _dt.date) -> int:
 
     print("▶ 5/5 overlay — practice accounts, seeded queues, Practice settings")
     env = {k: v for k, v in os.environ.items()}
+    # An EPHEMERAL signing key: the overlay mints tokens only to drive the app
+    # in-process, and inside the production image the inherited JWT_SECRET is
+    # LIVE's — which a Practice process must never hold, even briefly.
+    import secrets as _secrets
+    env.update(JWT_SECRET=_secrets.token_hex(32))
     env.update(GI_INSTANCE="training", GI_DOTENV="0", GI_SCHEDULER="0",
                DATABASE_URL=with_db(practice_url(), seed).replace(
                    "postgresql://", "postgresql+asyncpg://", 1))

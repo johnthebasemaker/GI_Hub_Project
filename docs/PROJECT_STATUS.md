@@ -1,4 +1,10 @@
-# PROJECT STATUS — resume here (updated 2026-09-07 · Phase 12 COMPLETE · deployment PAUSED)
+# PROJECT STATUS — resume here (updated 2026-09-24 · Practice sandbox shipped · deployment PAUSED)
+
+> 🆕 **2026-09-24 — Practice sandbox (rule 17).** A **Live | Practice** switch on
+> the sign-in page. Practice is a second API process on its own synthetic
+> database that cannot open Live's. Build it with `tools/practice_db.py wall &&
+> … build`; `bin/dev.sh` starts it on :8001. See `PROJECT_HANDOVER.md` rule 17,
+> `docs/ARCHITECTURE.md` §6a and `USER_MANUAL.md` §26 / §17.9.
 
 > 🔄 **2026-08-13 — the backend suite runs against its OWN database.**
 > `gihub_svctest`, rebuilt from `gi_database.db` before the engine is created,

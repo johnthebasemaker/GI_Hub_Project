@@ -150,12 +150,12 @@ test('V4: an entry queued offline in Practice is never replayed into Live', asyn
 
   // …and the Practice entry was not dropped: back in Practice it is still
   // queued, and it lands where it was made.
+  // ONE page load, then hands off: the app flushes its queue at boot, and a
+  // second navigation while that POST is in flight would replay it again (the
+  // entry is removed only when the response arrives — a pre-existing property
+  // of the queue, not of Practice). The Practice session is still in
+  // `gi_token@training`, because this browser left Practice without signing out.
   await live.evaluate(() => localStorage.setItem('gi_env', 'training'))
-  await live.reload()
-  await live.goto('/')
-  if (await live.getByPlaceholder('Username').isVisible()) {
-    await signIn(live, 'practice.storekeeper', PRACTICE_PASSWORD)
-  }
   await live.goto('/entry/receive')
   await live.waitForFunction(() => '__giOffline' in window)
   await expect.poll(async () => Number(sql(PRACTICE_DB,

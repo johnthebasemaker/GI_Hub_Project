@@ -1,7 +1,13 @@
 # PROPOSED — "Training Mode" sandbox environment
 
-> **Status: PROPOSAL, awaiting operator approval. No application code has been
-> written.** Drafted 2026-09-24 against `main` @ `e518221`.
+> **Status: APPROVED and IMPLEMENTED (2026-09-24), branch `feat/practice-sandbox`.**
+> Drafted against `main` @ `e518221`. The operator approved Option C, the
+> CONNECT wall, distinct JWT secrets and rule 17, and answered Q1–Q10 (recorded
+> in §12 below). What shipped differs from this proposal in the places listed
+> in §12 — everything else is as written.
+>
+> ⚠️ Naming: the internal name stayed `training` (`GI_INSTANCE`, `*_training`
+> databases, `/training-api/`); the user-facing label is **Practice** (ruling Q1).
 >
 > Read with: `PROJECT_HANDOVER.md` (rule 15, P10-x, P11-x, P12-x),
 > `.claude/RULES.md`, `tools/make_tutorial_db.py`.
@@ -495,3 +501,45 @@ confirm.
 | One DB, a Postgres `training` **schema** + `search_path` per request | same per-request switch as A/B, just at the connection level; pooled connections keep `search_path` across checkouts unless every checkout resets it |
 | A separate Postgres **cluster** for Training | the strongest wall, but a second daemon with its own backups, upgrades and RAM on a 16 GB box. The CONNECT-privilege wall gives the isolation that matters for a fraction of that. It is still available if you want it (say so in Q7). |
 | Seeding Training from a scrubbed copy of Live | P12-0: redaction only masks what somebody thought to name. Synthetic, or not at all. |
+
+---
+
+## 12. Operator rulings and what shipped (2026-09-24)
+
+| Q | Ruling | Where it lives |
+|---|---|---|
+| Q1 | Toggle reads **Live \| Practice** | `LoginPage.tsx`, `environment.ts` `ENV_LABEL` |
+| Q2 | No compliance writes in Practice; notice shown | `training._upsert` no-op, acknowledge 409, `PracticeNotice` |
+| Q3 | One environment per browser; switching signs out | `switchEnvironment()` logs out + reloads |
+| Q4 | Shared `practice.<role>` accounts; 2FA off | `tools/practice_overlay.py`, `auth.mfa_gate`, 2FA enroll 403 |
+| Q5 | Assistant + NL→SQL on, OCR off with a notice | `practice.assert_ocr_available` at every vision entry + `vision_json` |
+| Q6 | Reset: Practice admin button only, no schedule | `POST /practice/reset`, Admin Console → Practice |
+| Q7 | Hardening Live's DB role: out of scope | — (Live still connects as a superuser locally) |
+| Q8 | One shared sandbox | — |
+| Q9 | Toggle on native apps too | `practiceBase()` derives from `VITE_API_URL` |
+| Q10 | No Practice mode in legacy Streamlit | — |
+
+**Differences from the proposal as written:**
+
+* **Seed database name** is `gihub_seed_training`, not `gihub_training_tpl`:
+  the overlay runs AS a Practice process against the seed, so the seed must
+  pass rule 17's own boot check (name ends `_training`). Live refuses any name
+  *containing* `_training`, which covers it.
+* **The JWT "hash equality" boot check** became a deploy-time check
+  (`deploy-v2.sh` aborts if `PRACTICE_JWT_SECRET == JWT_SECRET`), plus
+  distinct dev fallback keys per instance. A process cannot see the other's
+  secret, so a boot-time comparison had nothing to compare.
+* **Phones** in the overlay became `+000000000000` for employees and NULL for
+  practice accounts.
+* **The five tutorial harness logins are removed** from Practice: `admin /
+  admin2026` is published in the repo.
+* **`practice.admin` has its own password** (generated and printed once unless
+  `PRACTICE_ADMIN_PASSWORD` is set), because it is the one account that can
+  wipe everyone's work.
+* **Server-side operations text** went into admin-only `USER_MANUAL.md` §17.9;
+  the every-role chapter §26 is user-facing.
+* **Outbox rows are not produced** in Practice (dispatch sees no configured
+  channel), so the bell is the visible trace, not the WhatsApp Console.
+* **Not verified locally:** `docker compose config` and `nginx -t` (Docker is
+  not installed on the development Mac). The compose file parses as YAML and
+  the nginx block mirrors `/api/` with request-time resolution.

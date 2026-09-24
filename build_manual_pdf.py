@@ -95,6 +95,8 @@ ROLE_MANUAL_RECIPES = {
             "22. Quality, Safety, Employees & Procurement (QSEP)",
             # Slice 11c: AI Traces is one of the auditor's own pages.
             "25. Phase 11 — AI Traces",
+            # Rule 17 — every role has a practice account.
+            "26. Practice Mode — learn the system without touching Live",
         ],
     },
     "store_keeper": {
@@ -119,6 +121,8 @@ ROLE_MANUAL_RECIPES = {
             # omitted it would leave the one person who meets those refusals
             # with no written explanation of them.
             "22. Quality, Safety, Employees & Procurement (QSEP)",
+            # Rule 17 — every role has a practice account.
+            "26. Practice Mode — learn the system without touching Live",
         ],
     },
     "qc": {
@@ -133,6 +137,8 @@ ROLE_MANUAL_RECIPES = {
             "12. FAQ — Master Index by Role",
             "15. Warehouse Portal Manual",
             "22. Quality, Safety, Employees & Procurement (QSEP)",
+            # Rule 17 — every role has a practice account.
+            "26. Practice Mode — learn the system without touching Live",
         ],
     },
     "supervisor": {
@@ -146,6 +152,8 @@ ROLE_MANUAL_RECIPES = {
             "11. Status Codes, Reason Codes & Glossary",
             "12. FAQ — Master Index by Role",
             "22. Quality, Safety, Employees & Procurement (QSEP)",
+            # Rule 17 — every role has a practice account.
+            "26. Practice Mode — learn the system without touching Live",
         ],
     },
     "hod": {
@@ -162,6 +170,8 @@ ROLE_MANUAL_RECIPES = {
             "11. Status Codes, Reason Codes & Glossary",
             "12. FAQ — Master Index by Role",
             "22. Quality, Safety, Employees & Procurement (QSEP)",
+            # Rule 17 — every role has a practice account.
+            "26. Practice Mode — learn the system without touching Live",
         ],
     },
     "logistics": {
@@ -175,6 +185,8 @@ ROLE_MANUAL_RECIPES = {
             "16. Cross-Role Procurement Walk-through",
             "11. Status Codes, Reason Codes & Glossary",
             "22. Quality, Safety, Employees & Procurement (QSEP)",
+            # Rule 17 — every role has a practice account.
+            "26. Practice Mode — learn the system without touching Live",
         ],
     },
     "warehouse_user": {
@@ -192,6 +204,8 @@ ROLE_MANUAL_RECIPES = {
             # work described only in chapter 21.
             "21. 2026-08 Feature Update — What Changed",
             "22. Quality, Safety, Employees & Procurement (QSEP)",
+            # Rule 17 — every role has a practice account.
+            "26. Practice Mode — learn the system without touching Live",
         ],
     },
     "admin": {

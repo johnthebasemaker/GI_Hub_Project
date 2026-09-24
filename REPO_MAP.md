@@ -99,3 +99,19 @@ off (users are being pointed at the React app):
 | **`fixtures/ocr_ground_truth.yaml`** | Expected values for the OCR fixtures — **tracked, because a score's yardstick must be reviewable in a diff** | ✅ |
 | **`fixtures/ocr/`** | The operator's three real documents (a delivery note naming a driver, a register with thirty employees' names) | ❌ **gitignored** |
 | **`Trail Files/`** | The operator's drop folder for the same documents | ❌ **gitignored** |
+
+---
+
+## Practice sandbox additions (rule 17, 2026-09-24)
+
+| Path | What it is | Tracked? |
+|---|---|---|
+| `backend/api/instance.py` | `GET /instance` (the server's own identity, drives the banner) + the `X-GI-Instance` 409 tripwire | ✅ |
+| `backend/api/practice.py` | Practice-only behaviours (OCR refusal) and `POST /practice/reset` — **mounted only in a Practice process** | ✅ |
+| `tools/practice_db.py` | `wall` · `build` · `reset` · `verify` — the CONNECT wall, the seed, the template clone, and the proof | ✅ |
+| `tools/practice_overlay.py` | What a sandbox needs that a video does not: shared `practice.<role>` accounts, seeded queues, Practice settings. Runs AS a Practice process | ✅ |
+| `bin/practice_api.sh` | The Practice API launcher (`:8001`), exec'd by `bin/dev.sh` | ✅ |
+| `frontend/src/api/environment.ts` | Live \| Practice selection, fixed per page load | ✅ |
+| `frontend/src/components/Practice{Banner,Notice,ResetCard}.tsx` | Server-driven banner/tag, the OCR/Training notices, the Admin Console reset | ✅ |
+| `tests/e2e/specs/practice.spec.ts` | Toggle → server banner → isolated approval; tokens/headers don't cross; the offline-queue (V4) case | ✅ |
+| `PROPOSED_SANDBOX_PLAN.md` | The approved design record (Option C + the rulings Q1–Q10) | ✅ |

@@ -112,6 +112,54 @@ services:
       retries: 5
       start_period: 20s
 
+  # ── Practice (rule 17) — a SECOND API process on its own database ─────────
+  # Same image, different environment. Behind the `practice` PROFILE, so a box
+  # that has not configured it deploys exactly as before; deploy-v2.sh adds
+  # `--profile practice` once PRACTICE_JWT_SECRET is set.
+  #
+  # ⚠️ NO `env_file: .env`, and that is the point: deploy/.env holds the live
+  # Meta token and SMTP password, and a Practice process must not be ABLE to
+  # send (config.assert_instance_safe refuses to boot if one reaches it). Every
+  # variable it needs is listed explicitly below.
+  #
+  # It connects as `gi_training`, which has NO CONNECT on ${POSTGRES_DB}
+  # (tools/practice_db.py wall) — the wall is a Postgres privilege, not this file.
+  # ONE worker: the reset's DROP … WITH (FORCE) terminates only sessions this
+  # role may signal, and a class of trainees does not need four.
+  api-training:
+    profiles: [practice]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["uvicorn", "backend.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+    environment:
+      GI_ENV: production
+      GI_INSTANCE: training
+      GI_DOTENV: "0"
+      GI_OUTBOUND: "off"
+      # MUST differ from JWT_SECRET — deploy-v2.sh refuses to continue if equal.
+      JWT_SECRET: ${PRACTICE_JWT_SECRET:?PRACTICE_JWT_SECRET must be set in deploy/.env to run Practice}
+      DATABASE_URL: postgresql+asyncpg://gi_training:${PRACTICE_DB_PASSWORD:?PRACTICE_DB_PASSWORD must be set}@db:5432/gihub_training
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      GI_TRUSTED_PROXIES: ${GI_TRUSTED_PROXIES:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      OLLAMA_HOST: http://ollama:11434
+      GI_AI_CONCURRENCY: "1"
+      # Disposable data: no backup volume, no shared report archive (V8).
+      GI_BACKUPS_DIR: /tmp/practice-backups
+      GI_REPORTS_ARCHIVE_DIR: /tmp/practice-reports
+    networks: [gi-new]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/instance').status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   web:
     build:
       context: ..

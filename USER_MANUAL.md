@@ -357,6 +357,10 @@ The first time the app starts, these accounts are created. **Change the password
 
 **Elements:**
 
+- **Live | Practice switch** — above the username. **Live** is the real system
+  and is selected unless you choose otherwise. **Practice** is a separate
+  training copy with made-up data, where nothing you do affects Live. Switching
+  signs you out. See **§26 Practice Mode** for everything about it.
 - **Username text box** — your assigned username (case-sensitive).
 - **Password text box** — masked input. Min 8 characters policy enforced on creation.
 - **🔑 Sign In button** — checks your credentials and takes you straight to the first page your role can open.
@@ -4282,6 +4286,52 @@ people who use the system rather than run it.
 | Architecture reference | How the system is built, and why |
 | Standard operating procedure | Day-to-day operating rules for every role |
 
+## 17.9 The Practice sandbox (rule 17)
+
+Practice is a **second copy of the GI Hub server**, running beside Live. It
+connects to its own database (`gihub_training`) using a database account
+(`gi_training`) that has no permission to open Live's database. Several things
+stop the two from ever mixing:
+
+- A Practice server **refuses to start** if it is pointed at Live's database,
+  and a Live server refuses to start if it is pointed at a Practice one.
+- The two sign sessions with **different keys**, so a Practice sign-in is
+  rejected by Live and a Live sign-in is rejected by Practice.
+- Every request says which environment it was meant for. A server refuses a
+  request meant for the other one.
+- Practice **refuses to start** if WhatsApp, email or cloud-vision credentials
+  are present in its settings.
+
+**First-time setup on a machine (local development):**
+
+```bash
+.venv/bin/python tools/practice_db.py wall      # the database account + its no-access-to-Live rule
+.venv/bin/python tools/practice_db.py build     # made-up data + practice accounts (~3 s)
+.venv/bin/python tools/practice_db.py verify    # proves every rule above holds
+```
+
+After that, `./bin/dev.sh localhost` starts the Practice server on port 8001
+alongside Live. `build` prints the `practice.admin` password once, unless
+`PRACTICE_ADMIN_PASSWORD` is set. The shared password is `PRACTICE_PASSWORD`,
+and defaults to the one on the trainees' card.
+
+⚠️ Any reload that re-creates Live's database, such as a mirror reload, removes
+the "no access" rule. Run `tools/practice_db.py wall` again afterwards. `verify`
+tells you if it is missing. This is the same routine as the AI read-only
+account.
+
+**On the production server**, set `PRACTICE_JWT_SECRET` (it must be different
+from `JWT_SECRET`), `PRACTICE_DB_PASSWORD`, `PRACTICE_PASSWORD` and
+`PRACTICE_ADMIN_PASSWORD` in `deploy/.env`. From then on, every deploy rebuilds
+Practice from scratch with fresh dates. Leave `PRACTICE_JWT_SECRET` blank and
+Practice is simply not deployed.
+
+**`tools/practice_db.py reset`** does from the command line what the admin's
+button does. Use it if the `practice.admin` password has been changed and
+forgotten.
+
+What trainees see, and the four things Practice does differently, is in **§26**.
+
 # 18. Material Estimator (SME) Manual
 
 > **Access:** `🧪 Material Estimator` page — exact-locked to **HOD + Admin**. HOD is scoped to their own site; Admin gets a sidebar site picker. SK / Supervisor / Logistics / Warehouse never see this page.
@@ -6075,3 +6125,130 @@ Three things about it are worth knowing:
   the "chat with your data" card, the insights panel, the end-of-day summary —
   always asks the database afresh. A remembered stock figure would be a wrong
   number with a confident timestamp on it.
+
+---
+
+# 26. Practice Mode — learn the system without touching Live
+
+Practice is a **separate copy of GI Hub for training**. It has every page, every
+role and every workflow Live has, but it runs on its own made-up data in its own
+database. Nothing you do in Practice can reach Live: not a receipt, not an
+approval, not a message.
+
+Use it to learn a job before doing it for real, to rehearse something you do
+rarely (a return, a stock count, a PR), or to try something out without worrying
+about the result.
+
+## 26.1 Switching between Live and Practice
+
+On the sign-in screen, above the username box, there is a **Live | Practice**
+switch.
+
+- **Live** is selected unless you choose otherwise. It is the real system.
+- Choose **Practice** and the page reloads, ready to sign in to Practice.
+- Choose **Live** again to go back.
+
+Things to know about switching:
+
+- **Switching signs you out.** You sign in again in the environment you picked.
+  This is deliberate: a browser is in one environment at a time.
+- **Your Live password does not work in Practice**, and a Practice password does
+  not work in Live. They are separate systems with separate accounts (§26.3).
+- The installed apps (Windows, macOS, Android, iOS) have the same switch.
+
+## 26.2 How you know you are in Practice
+
+The page tells you in four ways, and none of them can be dismissed:
+
+| Where | What you see |
+|---|---|
+| Top of every page | An **amber bar**: *PRACTICE — practice data, nothing here is real.* |
+| Page header | An amber **PRACTICE** tag beside the title, and an amber line under the header that stays when you scroll |
+| Browser tab | The tab title starts with **PRACTICE ·** |
+| Anything you print | A large diagonal **PRACTICE — NOT REAL DATA** watermark |
+
+These come from **the server you are connected to**, not from the switch. The
+server reports which environment it is, and the page shows what it says.
+
+⚠️ **If you see a red bar saying "Environment mismatch"**, the switch and the
+server disagree. Everything you try to save will be refused until that is
+fixed. Sign out, pick the environment again, and tell your administrator if the
+red bar comes back.
+
+## 26.3 The practice accounts
+
+Practice has **one shared account per role**. Your trainer gives you the
+password for these accounts.
+
+| Role | Practice account |
+|---|---|
+| Store Keeper | `practice.storekeeper` |
+| Supervisor | `practice.supervisor` |
+| Head of Department | `practice.hod` |
+| Quality Control | `practice.qc` |
+| Head of Qualities | `practice.qchod` |
+| Warehouse | `practice.warehouse` |
+| Logistics | `practice.logistics` |
+| Auditor (view-only) | `practice.auditor` |
+| Admin | `practice.admin` (separate password, held by your trainer or administrator) |
+
+The site-based accounts work at site **CNCEC**, and the Warehouse account works
+at warehouse **WH-01**.
+
+Everyone in a class uses the same accounts, so you will see each other's
+practice entries. That is normal.
+
+## 26.4 What is in Practice
+
+The data is **made up but realistic**. The categories, units of measure, lining
+systems, work types and tank numbers are real. The material names, SAP codes,
+people, vendors, quantities, prices and dates are all invented. Nothing in
+Practice is a real person or a real stock figure.
+
+It is the **same data the training videos use**. If a video shows *Tutorial
+Demo Gasket Set* (SAP 899001), you can find it in Practice.
+
+Work is already waiting so every role has something to do: receipts, issues and
+a return waiting for HOD approval, a draft purchase request, and one already
+with Logistics.
+
+## 26.5 What works differently in Practice
+
+Everything works exactly as in Live, **except these four things**. Each one is
+switched off on purpose:
+
+| In Practice… | Why |
+|---|---|
+| **No WhatsApp message or email is ever sent.** Notifications still appear in the bell. | A practice alert must never reach a real phone or inbox. |
+| **Photo reading (OCR) is switched off.** The page explains this, and you can still paste text or type rows in. | The AI engine is shared with Live and takes minutes per page, so trainees must never queue ahead of real forms. |
+| **Training videos watched in Practice are not counted.** You can watch as much as you like, but **I have watched and understood this** is refused. | Training records are kept in Live only. Sign in to Live to have a video counted. |
+| **Two-factor authentication is off**, and cannot be turned on. | The accounts are shared, so one person's authenticator would lock everyone else out. |
+
+## 26.6 Offline entries stay where they were made
+
+If you lose signal while saving an entry, GI Hub keeps it and sends it when the
+connection returns (§4). In Practice this still works, with one extra
+guarantee: **an entry saved in Practice is only ever sent to Practice.** If you
+switch to Live before it has been sent, it waits, and it is sent the next time
+this browser is back in Practice. It can never be sent to Live, even if you
+sign in to Live on the same device.
+
+## 26.7 Resetting Practice (admins)
+
+Over time Practice fills up with everyone's practice work. An admin can put it
+back to its starting state:
+
+1. Sign in to **Practice** as `practice.admin`.
+2. Open **Admin Console → Practice**. The page shows when the data was built and
+   when, and by whom, it was last reset.
+3. Click **Reset Practice data…** and type `RESET PRACTICE DATA` to confirm.
+
+The reset takes about a second. **It removes everything anyone has done in
+Practice**, and everyone signed in to Practice is signed out. The approval
+queues are filled up again. Live is not affected in any way. It is a different
+database, and the Practice server has no permission to open it.
+
+The **Practice** tab and the reset only exist in Practice. In Live there is no
+such button, and the server has no such function.
+
+How administrators set up and run Practice on a server is in **§17.9**.
