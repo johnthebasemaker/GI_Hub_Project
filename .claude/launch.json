@@ -6,6 +6,18 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "frontend"],
       "port": 5173
+    },
+    {
+      "name": "gi-hub-api",
+      "runtimeExecutable": "./run_api.sh",
+      "runtimeArgs": [],
+      "port": 8000
+    },
+    {
+      "name": "gi-hub-practice-api",
+      "runtimeExecutable": "./bin/practice_api.sh",
+      "runtimeArgs": [],
+      "port": 8001
     }
   ]
 }

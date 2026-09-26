@@ -2,7 +2,7 @@
 
 > Loaded on demand from [`CLAUDE.md`](../CLAUDE.md) line 2.
 > [`PROJECT_HANDOVER.md`](../PROJECT_HANDOVER.md) is the authority and carries all
-> sixteen rules plus the Phase 10, 11 and 12 rulings; this file restates the
+> seventeen rules plus the Phase 10, 11 and 12 rulings; this file restates the
 > handful that are broken most often, in the imperative, because each one is a
 > real bug whose symptom appeared a long way from its cause.
 >
@@ -63,6 +63,30 @@ when a migration carries DML and declares no step.
 `data_upgrade(conn)` and call it from `upgrade()`.** Both paths then run the
 same code and cannot drift. The verifier catches raw SQL, `op.bulk_insert` and
 SQLAlchemy Core insert/update — suite BZ-12a pins all four forms.
+
+---
+
+## Rule 17 — Practice is a second PROCESS, not a second session
+
+*Locked 2026-09-24. Full text: `PROJECT_HANDOVER.md` rule 17.*
+
+* **Nothing selects a database per request.** A process reads `GI_INSTANCE`
+  and holds ONE `DATABASE_URL`; `config.assert_instance_safe()` runs in `db.py`
+  **above** `create_async_engine` and refuses a mismatch (Practice → only
+  `*_training`; Live → never `*_training`; Practice → no outbound credential).
+* **`X-GI-Instance` is an ASSERTION, never a selector.** A mismatch is a 409
+  before routing (`backend/api/instance.py`).
+* **The banner comes from `GET /instance`, never from the login toggle.**
+* **The offline queue is per-environment and stamped** — the one contamination
+  path no server wall can see (vector V4).
+* The Practice DB role has **no CONNECT on `gihub`**; a reload wipes the
+  revoke, so re-run `tools/practice_db.py wall`. `verify` proves it.
+* Practice-only data goes in `tools/practice_overlay.py`, **never** in
+  `make_tutorial_db.py` (P12-5 pins that one).
+* **If you add a `SessionLocal()` call, a background loop, or an outbound
+  sender, it is automatically correct in Practice** — that is the whole reason
+  for this shape. If you find yourself writing `if is_practice()` to route
+  data, stop: that is the rejected design.
 
 ---
 
@@ -356,7 +380,7 @@ Run these before saying anything is done. Baselines as of 2026-09-03.
 bash bin/ci_preflight.sh
 ```
 ```bash
-# Backend service tests — 2,328 checks, suites A…CX, its OWN throwaway DB (rule 15)
+# Backend service tests — 2,607 checks, suites A…DD + TR, its OWN throwaway DB (rule 15)
 GI_DOTENV=0 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
 JWT_SECRET=ci-only-service-test-secret-key-32bytes-min \
 .venv/bin/python -u -m backend.api.service_tests
@@ -392,8 +416,13 @@ DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib .venv/bin/python legacy/bug_check.p
 npm run build --prefix frontend
 ```
 ```bash
-# Headless E2E — 128 specs, ~55 s, builds and destroys its own gihub_e2e_pw stack
+# Headless E2E — 142 specs, ~70 s, builds and destroys its own gihub_e2e_pw stack
+# AND a Practice leg (a second uvicorn on its own *_training database, rule 17)
 cd tests/e2e && npm test
+```
+```bash
+# Practice walls (rule 17) — needs the sandbox built (tools/practice_db.py build)
+.venv/bin/python tools/practice_db.py verify
 ```
 ```bash
 # Alembic must have exactly one head

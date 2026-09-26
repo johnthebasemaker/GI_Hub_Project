@@ -41,6 +41,7 @@ from .ai import ocr_form as OF
 from .auth import (get_current_user, require_roles, resolve_site_param,
                    site_row_visible, site_scope)
 from .db import get_session
+from .practice import assert_ocr_available
 from .services import consumption_form as CF
 from .services import execution as X
 from .services.ledger import _MD
@@ -769,6 +770,7 @@ async def ocr_upload(file: UploadFile = File(...),
     and come from a DSLR nobody carries into a tank. PDF is accepted because
     office scanners and phone scanner apps default to it.
     """
+    assert_ocr_available()   # rule 17: no vision jobs in Practice (ruling Q5)
     sid = _write_site(user, site_id)
     mime = (file.content_type or "").lower()
     if mime not in _ALLOWED_UPLOAD:
@@ -844,6 +846,7 @@ async def ocr_job_requeue(job_id: int,
                           user: dict = Depends(require_roles(
                               "supervisor", "hod", "store_keeper")),
                           session: AsyncSession = Depends(get_session)):
+    assert_ocr_available()   # rule 17: no vision jobs in Practice (ruling Q5)
     row = (await session.execute(select(ai_jobs_t)
            .where(ai_jobs_t.c["id"] == job_id))).mappings().first()
     if row is None:

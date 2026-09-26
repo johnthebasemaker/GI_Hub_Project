@@ -46,6 +46,8 @@ from . import trace as ai_trace
 settings_t = _MD.tables["app_settings"]
 inventory_t = _MD.tables["inventory"]
 
+from ..practice import assert_ocr_available  # noqa: E402
+
 router = APIRouter(prefix="/ai", tags=["ai"])
 
 _FLAG_DEFAULTS = {"ai_enabled": "1", "ai_assistant_enabled": "1",
@@ -256,6 +258,7 @@ async def _store_scan(session: AsyncSession, *, file: UploadFile, data: bytes,
 async def _queue_vision(session: AsyncSession, *, data: bytes, user: dict,
                         attachment_id: int, doc_hint: str) -> dict:
     """Hand a scanned purchase document to the vision worker."""
+    assert_ocr_available()   # rule 17: no vision jobs in Practice (ruling Q5)
     flags = await _flags(session)
     if not flags.get("ocr_purchase_scans", True):
         raise HTTPException(
@@ -406,6 +409,7 @@ async def _require_ocr(session: AsyncSession) -> None:
 async def create_ocr_job(file: UploadFile = File(...), kind: str = "ocr_consumption",
                          user: dict = Depends(require_roles("store_keeper")),
                          session: AsyncSession = Depends(get_session)):
+    assert_ocr_available()   # rule 17: no vision jobs in Practice (ruling Q5)
     import asyncio as _aio
     await _require_ocr(session)
     if kind not in ai_jobs.JOB_KINDS:
@@ -463,6 +467,7 @@ async def requeue_ocr_job(job_id: int,
     the button appears exactly when the server has already concluded nobody is
     working on it.
     """
+    assert_ocr_available()   # rule 17: no vision jobs in Practice (ruling Q5)
     t = _MD.tables["ai_jobs"]
     row = (await session.execute(select(t).where(t.c["id"] == job_id))
            ).mappings().first()
@@ -487,6 +492,7 @@ async def create_ocr_job_from_attachment(body: FromAttachmentIn,
     """The SK just photographed/attached the delivery note for the batch —
     read the SAME bytes back out of entry_attachments and extract the DN
     header / consumption rows so the form can auto-fill. No re-upload."""
+    assert_ocr_available()   # rule 17: no vision jobs in Practice (ruling Q5)
     import asyncio as _aio
     await _require_ocr(session)
     if body.kind not in ai_jobs.JOB_KINDS:

@@ -1,13 +1,15 @@
 import { useState } from 'react'
 import { App, Button, ConfigProvider, Form, Input, Segmented, Select, Tooltip, Typography } from 'antd'
-import { EnvironmentOutlined, LockOutlined, SafetyOutlined, SettingOutlined, UserOutlined } from '@ant-design/icons'
+import { EnvironmentOutlined, ExperimentOutlined, LockOutlined, SafetyOutlined, SettingOutlined, ThunderboltOutlined, UserOutlined } from '@ant-design/icons'
 import { useAuth } from '../auth/AuthContext'
 import { useRegister, useRegisterSites, useRegisterWarehouses } from '../api/hooks'
 import { passwordProblems } from '../lib/password'
 import { darkTheme } from '../theme/themes'
 import ServerConfigModal from '../components/ServerConfigModal'
 import MandatoryEnrollPanel from '../components/MandatoryEnrollPanel'
-import { apiBase, isApiOverridden } from '../api/client'
+import { apiBase, isApiOverridden, switchEnvironment } from '../api/client'
+import { CURRENT_ENV, type GiEnv } from '../api/environment'
+import PracticeBanner from '../components/PracticeBanner'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -60,6 +62,7 @@ export default function LoginPage() {
   const { data: regWarehouses, isLoading: whLoading } =
     useRegisterWarehouses(mode === 'register' && isDual)
   const [serverOpen, setServerOpen] = useState(false)
+  const [switching, setSwitching] = useState(false)
 
   const onLogin = async (v: { username: string; password: string }) => {
     setLoading(true)
@@ -135,6 +138,38 @@ export default function LoginPage() {
               {mode === 'register' ? 'ERP CONSOLE — REQUEST ACCESS' : 'ERP CONSOLE — SIGN IN'}
             </div>
           </div>
+
+          {/* Rule 17 — Live | Practice. Chooses which API process this browser
+              talks to; switching signs out of the current one and reloads
+              (ruling Q3). What the page then SHOWS comes from the server
+              (PracticeBanner → GET /instance), not from this control. */}
+          {!mfaToken && !enroll && (
+            <div className="gi-env-switch">
+              <Segmented
+                aria-label="Environment"
+                value={CURRENT_ENV}
+                disabled={switching}
+                onChange={(v) => {
+                  setSwitching(true)
+                  void switchEnvironment(v as GiEnv)
+                }}
+                options={[
+                  { value: 'production', label: 'Live', icon: <ThunderboltOutlined /> },
+                  { value: 'training', label: 'Practice', icon: <ExperimentOutlined /> },
+                ]}
+              />
+            </div>
+          )}
+          {CURRENT_ENV === 'training' && !mfaToken && !enroll && (
+            <>
+              <PracticeBanner compact />
+              <Typography.Paragraph type="secondary" className="gi-practice-hint">
+                Sign in with the practice account your trainer gave you
+                (e.g. <code>practice.storekeeper</code>, <code>practice.hod</code>).
+                Your Live password does not work here.
+              </Typography.Paragraph>
+            </>
+          )}
 
           {mode === 'register' ? (
             <Form key="register" form={regForm} layout="vertical" onFinish={onRegister}

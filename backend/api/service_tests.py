@@ -25269,6 +25269,440 @@ async def test_crud_read_rbac():
         await _qsep_cleanup()
 
 
+_ROOT_TR = __import__("pathlib").Path(__file__).resolve().parents[2]
+
+
+async def test_practice_sandbox_walls():
+    """Suite TR (S1) — rule 17: Practice is a second PROCESS, not a second
+    session, and every wall that keeps the two apart refuses LOUDLY.
+
+    The property is invisible when it holds: a Practice receipt that reached
+    Live would look like any other receipt. So every case below asserts a
+    REFUSAL, and each refusal has a negative control proving the wall does not
+    also refuse the legitimate case — a wall that blocks everything is
+    indistinguishable, in a green run, from one that works.
+    """
+    import datetime as _dt
+    import subprocess as _sp
+
+    import jwt as _jwt
+
+    from . import auth as _auth
+    from . import config as _cfg
+    from .console import backup_filename
+    from .instance import declared_mismatch
+    from .services import emailer as _em
+    from .services import whatsapp as _wa
+
+    ip = _cfg.instance_problems
+    good_practice = {"GI_INSTANCE": "training",
+                     "DATABASE_URL": "postgresql://gi_training@h:5433/gihub_training"}
+
+    # ── TR-01: the boot refusal, as a pure function ──────────────────────────
+    check("tr-01a: Live on its own database has nothing to refuse (negative "
+          "control — the default configuration of every existing box)",
+          ip({"DATABASE_URL": "postgresql://postgres@h/gihub"}) == [], "")
+    check("tr-01b: a correctly configured Practice process is accepted "
+          "(negative control)", ip(good_practice) == [], str(ip(good_practice)))
+    check("tr-01c: GI_INSTANCE=training pointed at the LIVE database is refused — "
+          "the misconfiguration that would turn every practice click into a "
+          "real stock movement",
+          any("_training" in x for x in ip({"GI_INSTANCE": "training",
+                                             "DATABASE_URL": "postgresql://p@h/gihub"})), "")
+    check("tr-01d: …and GI_INSTANCE=training with NO DATABASE_URL (the config "
+          "default is Live's `gihub`) is refused too, not defaulted",
+          bool(ip({"GI_INSTANCE": "training"})), "")
+    check("tr-01e: Live pointed at the Practice database — or its TEMPLATE — is "
+          "refused (the other direction)",
+          bool(ip({"DATABASE_URL": "postgresql://p@h/gihub_training"}))
+          and bool(ip({"DATABASE_URL": "postgresql://p@h/gihub_training_tpl"})), "")
+    check("tr-01f: an unrecognised GI_INSTANCE is refused, never guessed at — "
+          "'trainig' is not Live",
+          bool(ip({"GI_INSTANCE": "trainig"})), "")
+
+    # ── TR-01g: …and wired in: db.py refuses BEFORE an engine exists ──────────
+    base_env = {k: v for k, v in os.environ.items()
+                if k not in _cfg.PRACTICE_FORBIDDEN_ENV and k != "GI_INSTANCE"}
+    base_env["GI_DOTENV"] = "0"
+    probe = "import backend.api.db; print('ENGINE-BUILT')"
+    bad = _sp.run([sys.executable, "-c", probe], cwd=str(_ROOT_TR),
+                  env=dict(base_env, GI_INSTANCE="training",
+                           DATABASE_URL="postgresql://postgres@127.0.0.1:5433/gihub"),
+                  capture_output=True, text=True)
+    check("tr-01g: a Practice process whose DATABASE_URL names Live exits "
+          "non-zero at import, before db.py has built an engine",
+          bad.returncode != 0 and "refusing to start" in bad.stderr
+          and "ENGINE-BUILT" not in bad.stdout,
+          f"exit {bad.returncode}: {bad.stderr[-200:]}")
+    ok = _sp.run([sys.executable, "-c", probe], cwd=str(_ROOT_TR),
+                 env=dict(base_env, GI_INSTANCE="training",
+                          DATABASE_URL="postgresql://gi_training@127.0.0.1:5433/gihub_training"),
+                 capture_output=True, text=True)
+    check("tr-01h: …negative control: the same process with a Practice database "
+          "imports cleanly (import opens no connection, so none needs to exist)",
+          ok.returncode == 0 and "ENGINE-BUILT" in ok.stdout,
+          f"exit {ok.returncode}: {ok.stderr[-200:]}")
+
+    # ── TR-03 / TR-04: tokens do not cross ───────────────────────────────────
+    now = _dt.datetime.now(_dt.timezone.utc)
+
+    def _tok(secret, **extra):
+        body = {"sub": "admin", "role": "admin", "site_id": "", "warehouse_id": "",
+                "scope": "access", "iat": now, "exp": now + _dt.timedelta(minutes=5)}
+        body.update(extra)
+        return _jwt.encode(body, secret, algorithm=_auth.JWT_ALG)
+
+    live_tok = _auth._make_token("admin", "admin", "", _auth.ACCESS_TTL)
+    check("tr-03a: every token Live mints now carries env='production'",
+          _jwt.decode(live_tok, _auth.JWT_SECRET, algorithms=[_auth.JWT_ALG]).get("env")
+          == "production", "")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        async def me(tok):
+            return (await ac.get("/auth/me", headers={"Authorization": f"Bearer {tok}"})
+                    ).status_code
+        check("tr-03b: a Live token opens /auth/me (negative control)",
+              await me(live_tok) == 200, "")
+        check("tr-03c: a token signed with ANOTHER instance's secret is 401 — "
+              "the primary wall: Practice and Live never share a key",
+              await me(_tok(_cfg._DEV_JWT_SECRET_PRACTICE + "x", env="training")) == 401, "")
+        check("tr-03d: with the SAME secret (an operator copied one env file "
+              "into both), a Practice-claimed token is STILL 401 — the claim is "
+              "the second wall, and this is the case it exists for",
+              await me(_tok(_auth.JWT_SECRET, env="training")) == 401, "")
+        check("tr-04a: a claim-less token minted before rule 17 still opens Live — "
+              "deploying this signs nobody out",
+              await me(_tok(_auth.JWT_SECRET)) == 200, "")
+        check("tr-04b: …and the same claim-less token is refused by Practice, "
+              "which never minted one",
+              _auth.token_env_ok({"sub": "x"}, "production")
+              and not _auth.token_env_ok({"sub": "x"}, "training"), "")
+
+        # ── TR-05: the tripwire refuses a request prepared for the other side ─
+        tr = {"X-GI-Instance": "training"}
+        g = await ac.get("/auth/me", headers=tr)
+        pst = await ac.post("/entry/receipts", json={}, headers=tr)
+        check("tr-05a: X-GI-Instance: training → 409 on Live for a GET, BEFORE "
+              "authentication (no token was sent, and it is not a 401)",
+              g.status_code == 409, f"got {g.status_code}")
+        check("tr-05b: …and for a POST — the offline-queue replay that is vector "
+              "V4, refused whatever route it names",
+              pst.status_code == 409 and "Practice" in pst.json().get("detail", ""),
+              f"got {pst.status_code} {pst.text[:120]}")
+        garbled = await ac.post("/entry/receipts", json={},
+                                headers={"X-GI-Instance": "trainig"})
+        check("tr-05c: a garbled declaration is refused, not ignored",
+              garbled.status_code == 409, f"got {garbled.status_code}")
+        own = await ac.get("/auth/me", headers={"X-GI-Instance": "production"})
+        bare = await ac.get("/auth/me")
+        check("tr-05d: declaring THIS environment, or nothing at all, passes "
+              "through to the route's own auth (negative control: 401, not 409)",
+              own.status_code == 401 and bare.status_code == 401,
+              f"own={own.status_code} bare={bare.status_code}")
+        ident = await ac.get("/instance", headers=tr)
+        check("tr-05e: GET /instance answers even a client confused about which "
+              "environment it is talking to — and the answer is the SERVER's, "
+              "never the client's declaration",
+              ident.status_code == 200 and ident.json().get("instance") == "production"
+              and ident.json().get("label") == "Live" and ident.json().get("practice") is False,
+              f"{ident.status_code} {ident.text[:120]}")
+        check("tr-05f: the pure decision: absent passes, own passes, other and "
+              "garbled refuse; 'practice'/'live' are aliases, not new names",
+              not declared_mismatch(None, "production")
+              and not declared_mismatch("Live", "production")
+              and not declared_mismatch("practice", "training")
+              and declared_mismatch("training", "production")
+              and declared_mismatch("", "production"), "")
+
+        # ── TR-07: the refresh cookie keeps Live's name ──────────────────────
+        r = await ac.post("/auth/login", json={"username": "worker", "password": "floor2026"})
+        check("tr-07a: Live still sets `gi_refresh` — byte-identical for every "
+              "existing browser and native session",
+              bool(r.cookies.get("gi_refresh")), f"status {r.status_code}")
+    check("tr-07b: Practice's refresh cookie has its OWN name, so signing in to "
+          "one environment does not overwrite the other's session",
+          _cfg.refresh_cookie_name("training") == "gi_refresh_training"
+          and _cfg.refresh_cookie_name("production") == "gi_refresh", "")
+
+    # ── TR-06: outbound cannot leave a Practice process ─────────────────────
+    saved = {k: os.environ.get(k) for k in
+             ("GI_INSTANCE", "GI_OUTBOUND", "WHATSAPP_TOKEN",
+              "WHATSAPP_PHONE_NUMBER_ID", "SMTP_HOST", "JWT_SECRET", "GI_ENV")}
+    try:
+        os.environ.update(WHATSAPP_TOKEN="tr-fake", WHATSAPP_PHONE_NUMBER_ID="1",
+                          SMTP_HOST="smtp.invalid")
+        os.environ.pop("GI_INSTANCE", None)
+        os.environ.pop("GI_OUTBOUND", None)
+        live_on = _wa.enabled() and _em.enabled()
+        os.environ["GI_OUTBOUND"] = "off"
+        killed = not _wa.enabled() and not _em.enabled()
+        os.environ.pop("GI_OUTBOUND", None)
+        os.environ["GI_INSTANCE"] = "training"
+        practice_off = not _wa.enabled() and not _em.enabled()
+        check("tr-06a: with credentials present, Live sends (negative control)",
+              live_on, "")
+        check("tr-06b: GI_OUTBOUND=off silences WhatsApp AND email even with "
+              "live credentials in the environment", killed, "")
+        check("tr-06c: a Practice process cannot send even if a token got in — "
+              "the second wall behind the boot refusal", practice_off, "")
+        check("tr-06d: …and the boot refusal names the credential it found",
+              any("WHATSAPP_TOKEN" in x for x in
+                  ip(dict(good_practice, WHATSAPP_TOKEN="x"))), "")
+        # Dev fallback keys differ, so even a laptop with no JWT_SECRET set
+        # cannot verify one environment's token in the other.
+        os.environ.pop("JWT_SECRET", None)
+        os.environ.pop("GI_ENV", None)
+        practice_key = _cfg.jwt_secret()
+        os.environ.pop("GI_INSTANCE", None)
+        live_key = _cfg.jwt_secret()
+        check("tr-06e: with no JWT_SECRET at all (dev), Live and Practice fall "
+              "back to DIFFERENT signing keys", practice_key != live_key, "")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # ── TR-09: a Practice dump can never pass for a Live one ────────────────
+    t = _dt.datetime(2026, 9, 24, 14, 5, 9)
+    check("tr-09a: Live's dump name is unchanged (`gihub-<ts>.dump`)",
+          backup_filename("gihub", t) == "gihub-20260924-140509.dump",
+          backup_filename("gihub", t))
+    check("tr-09b: a Practice dump names its database, so nobody restores it "
+          "over Live by mistake (vector V8)",
+          backup_filename("gihub_training", t).startswith("gihub_training-"), "")
+
+
+async def test_practice_sandbox_data():
+    """Suite TR (S2) — the database wall, the reset, the overlay's accounts, and
+    what a Practice process does differently.
+
+    ⚠️ Every Postgres object this suite creates is a THROWAWAY with an
+    `svctest` name, created and dropped here. It never opens `gihub`,
+    `gihub_training` or `gihub_seed_training` (rule 15) — the wall and the
+    reset are proven on copies built from the SHIPPING functions
+    (`practice_db.wall_sql`, `practice.clone_from_seed`), so a green run says
+    something about the code that runs in production, not about a paraphrase.
+    """
+    import datetime as _dt
+    import importlib.util as _ilu
+
+    import psycopg2 as _pg
+
+    from . import auth as _auth
+    from . import practice as _pr
+    from . import testdb
+    from . import training as _tr
+
+    spec = _ilu.spec_from_file_location("practice_db", _ROOT_TR / "tools" / "practice_db.py")
+    pdb = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(pdb)
+    spec = _ilu.spec_from_file_location("practice_overlay", _ROOT_TR / "tools" / "practice_overlay.py")
+    ovl = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(ovl)
+
+    base, _db = testdb._split_url(testdb._sync(str(engine.url.render_as_string(hide_password=False))))
+    admin = base + "postgres"
+    wall_db, role = "gihub_svctest_wall", "gi_svctest_practice"
+    sandbox, seed = "gihub_svctest_training", "gihub_svctest_seed_training"
+
+    def _role_url(db: str) -> str:
+        u = testdb._split_url(base + db)[0]           # …//user@host:port/
+        head, rest = u.split("://", 1)
+        hostpart = rest.split("@", 1)[-1]
+        return f"postgresql://{role}@{hostpart}{db}"
+
+    try:
+        # ── TR-02: the CONNECT wall, built by the shipping SQL ──────────────
+        with testdb._connect(admin) as cur:
+            cur.execute(f'DROP DATABASE IF EXISTS "{wall_db}" WITH (FORCE)')
+            cur.execute(f'CREATE DATABASE "{wall_db}"')
+            for stmt in pdb.wall_sql(wall_db, role=role, ai_ro_exists=False):
+                cur.execute(stmt)
+        refused = ""
+        try:
+            c = _pg.connect(_role_url(wall_db))
+            c.close()
+        except _pg.OperationalError as e:
+            refused = str(e)
+        check("tr-02a: the Practice role is REFUSED by the walled database — "
+              "Postgres checks CONNECT after authentication, so this holds even "
+              "under the local mirror's trust auth, where any client may claim "
+              "any role", "permission denied" in refused, refused[:160] or "it connected")
+        opened = False
+        try:
+            c = _pg.connect(_role_url("postgres"))
+            c.close()
+            opened = True
+        except _pg.OperationalError:
+            pass
+        check("tr-02b: …negative control: the same role connects to a database "
+              "that is not walled (the refusal is the wall, not a broken login)",
+              opened, "")
+        with testdb._connect(admin) as cur:
+            cur.execute("SELECT rolsuper, rolcreatedb FROM pg_roles WHERE rolname = %s", (role,))
+            sup, cdb = cur.fetchone()
+        check("tr-02c: the wall's role is NOSUPERUSER (a superuser ignores "
+              "CONNECT entirely) and CREATEDB (the reset needs it)",
+              sup is False and cdb is True, f"super={sup} createdb={cdb}")
+
+        # ── TR-08: the reset ────────────────────────────────────────────────
+        paths = app.openapi()["paths"]
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            tok = _auth._make_token("admin", "admin", "", _auth.ACCESS_TTL)
+            r = await ac.post("/practice/reset", json={"confirm": _pr.CONFIRM_PHRASE},
+                              headers={"Authorization": f"Bearer {tok}"})
+        check("tr-08a: /practice/reset is NOT MOUNTED on Live — a 404 for an "
+              "admin with the right phrase, and absent from the OpenAPI schema. "
+              "Not a hidden button: there is no button",
+              r.status_code == 404 and "/practice/reset" not in paths,
+              f"status {r.status_code}")
+        def _refuses(name):
+            try:
+                _pr.reset_targets(name)
+                return False
+            except ValueError:
+                return True
+        check("tr-08b: the reset refuses every name that is not a Practice "
+              "sandbox — Live, the seed itself, an empty name, an injection",
+              all(_refuses(n) for n in ("gihub", "gihub_svctest", "gihub_seed_training",
+                                         "", 'x"; DROP DATABASE gihub; --_training')),
+              "")
+        check("tr-08c: …negative control: the Practice sandbox is accepted and "
+              "its seed is derived, never supplied",
+              _pr.reset_targets("gihub_training") == ("gihub_training", "gihub_seed_training"), "")
+
+        with testdb._connect(admin) as cur:
+            for db in (sandbox, seed):
+                cur.execute(f'DROP DATABASE IF EXISTS "{db}" WITH (FORCE)')
+            cur.execute(f'CREATE DATABASE "{seed}"')
+            cur.execute(f'CREATE DATABASE "{sandbox}"')
+        with testdb._connect(base + seed) as cur:
+            cur.execute("CREATE TABLE marker (v text)")
+            cur.execute("INSERT INTO marker VALUES ('seed')")
+        with testdb._connect(base + sandbox) as cur:
+            cur.execute("CREATE TABLE marker (v text)")
+            cur.execute("INSERT INTO marker VALUES ('a trainee typed this')")
+        # Hold a session open on the sandbox: the reset must terminate it, which
+        # is what a busy Practice API looks like at the moment somebody presses it.
+        held = _pg.connect(base.replace("+psycopg2", "") + sandbox)
+        await _pr.clone_from_seed(admin.replace("+psycopg2", ""), sandbox)
+        with testdb._connect(base + sandbox) as cur:
+            cur.execute("SELECT array_agg(v) FROM marker")
+            after = cur.fetchone()[0]
+        check("tr-08d: a reset replaces the sandbox with the seed — the trainee's "
+              "row is gone, the seed's is back — while a session was still open "
+              "on it", after == ["seed"], f"after={after}")
+        try:
+            held.close()
+        except Exception:  # noqa: BLE001 — it was terminated; that is the point
+            pass
+        blocked = False
+        try:
+            await _pr.clone_from_seed(admin.replace("+psycopg2", ""), "gihub_svctest")
+        except ValueError:
+            blocked = True
+        check("tr-08e: clone_from_seed itself refuses a non-Practice target before "
+              "it connects (the check is in the function, not only its caller)",
+              blocked, "")
+
+        # ── TR-10: the overlay's accounts ───────────────────────────────────
+        acc_roles = {r for _u, r, _s, _w in ovl.ACCOUNTS}
+        check("tr-10a: every role in ROLE_META has a shared practice account — a "
+              "role added next year without one fails here (rule 13's pattern)",
+              acc_roles == set(_auth.ROLE_META), f"missing {sorted(set(_auth.ROLE_META) - acc_roles)}")
+        bad_scope = []
+        for u, r, site, wh in ovl.ACCOUNTS:
+            if r in _auth._SCOPED_REG_ROLES and not site:
+                bad_scope.append(u)
+            if r in _auth._UNSCOPED_REG_ROLES and site:
+                bad_scope.append(u)
+            if r in _auth._DUAL_SCOPE_REG_ROLES and bool(site) == bool(wh):
+                bad_scope.append(u)
+        check("tr-10b: each account carries exactly the scope its role's "
+              "registration rule demands (scoped → a site, unscoped → none, "
+              "dual → exactly one)", not bad_scope, str(bad_scope))
+        from .admin import password_problems
+        check("tr-10c: the published practice password meets the password "
+              "policy a trainee resetting it would face",
+              not password_problems(ovl.DEFAULT_PASSWORD), "")
+        async with SessionLocal() as s:
+            await ovl.seed_accounts(s)
+            await ovl.seed_accounts(s)
+            users_t = ledger._MD.tables["users"]
+            n = await _count(s, users_t, users_t.c["username"].like("practice.%"))
+            harness = await _count(s, users_t, users_t.c["username"].in_(ovl.HARNESS_USERNAMES))
+            await s.rollback()
+        check("tr-10d: seeding accounts twice converges on the same nine rows, "
+              "and the published tutorial logins are removed (rolled back here)",
+              n == len(ovl.ACCOUNTS) and harness == 0, f"n={n} harness={harness}")
+    finally:
+        with testdb._connect(admin) as cur:
+            for db in (wall_db, sandbox, seed):
+                cur.execute(f'DROP DATABASE IF EXISTS "{db}" WITH (FORCE)')
+            cur.execute(f'DROP ROLE IF EXISTS "{role}"')
+
+    # ── TR-11: what a Practice process does differently ─────────────────────
+    saved = os.environ.get("GI_INSTANCE")
+    os.environ["GI_INSTANCE"] = "training"
+    try:
+        sk = _auth._make_token("svc_tr_sk", "store_keeper", "CNCEC", _auth.ACCESS_TTL)
+        sup = _auth._make_token("svc_tr_sup", "supervisor", "CNCEC", _auth.ACCESS_TTL)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            img = {"file": ("form.jpg", b"\xff\xd8\xff not really a jpeg", "image/jpeg")}
+            j = await ac.post("/ai/jobs", files=img, headers={"Authorization": f"Bearer {sk}"})
+            u = await ac.post("/execution/ocr/upload", files=img,
+                              headers={"Authorization": f"Bearer {sup}"})
+            check("tr-11a: OCR is refused in Practice at BOTH photo entry points "
+                  "(the store keeper's and the supervisor's), with a reason — "
+                  "ruling Q5: trainees never queue ahead of Live's forms",
+                  j.status_code == 503 and u.status_code == 503
+                  and "Practice" in j.json().get("detail", ""),
+                  f"jobs={j.status_code} upload={u.status_code}")
+            ack = await ac.post("/training/acknowledge", json={"module_key": "anything"},
+                                headers={"Authorization": f"Bearer {sk}"})
+            check("tr-11b: a training acknowledgement is refused in Practice with "
+                  "the explanation — certificates are Live-only (ruling Q2)",
+                  ack.status_code == 409 and "Live" in ack.json().get("detail", ""),
+                  f"{ack.status_code} {ack.text[:100]}")
+            enr = await ac.post("/auth/2fa/enroll", json={"password": "x"},
+                                headers={"Authorization": f"Bearer {sk}"})
+            check("tr-11c: 2FA enrolment is refused in Practice — one trainee's "
+                  "authenticator would lock a shared account (ruling Q4)",
+                  enr.status_code == 403, f"{enr.status_code}")
+        from .ai import client as _aic
+        vision_blocked = False
+        try:
+            await _aic.vision_json("x", system="x", image_b64="")
+        except RuntimeError as e:
+            vision_blocked = "Practice" in str(e)
+        check("tr-11d: the vision client is the LAST wall — it refuses in "
+              "Practice even for a route nobody remembered to guard",
+              vision_blocked, "")
+        async with SessionLocal() as s:
+            comp = ledger._MD.tables["training_compliance"]
+            before = await _count(s, comp)
+            await _tr._upsert(s, "svc_tr_sk", {"id": 1, "version": 1}, watched_seconds=999)
+            after = await _count(s, comp)
+            gate = await _auth.mfa_gate(s, "admin", 0)
+            await s.rollback()
+        check("tr-11e: no compliance row is written in Practice, whatever the "
+              "beacon says", before == after, f"{before} → {after}")
+        check("tr-11f: the 2FA mandate never blocks in Practice, even for an "
+              "un-enrolled admin", gate is None, str(gate))
+    finally:
+        if saved is None:
+            os.environ.pop("GI_INSTANCE", None)
+        else:
+            os.environ["GI_INSTANCE"] = saved
+    async with SessionLocal() as s:
+        gate_live = await _auth.mfa_gate(s, "admin", 0)
+    check("tr-11g: …negative control: back on Live, an un-enrolled admin is "
+          "still subject to the mandate", gate_live is not None, str(gate_live))
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -25546,6 +25980,13 @@ async def main() -> int:
     print("\n DD. A rejection bounces back — to the top of the field's queue "
           "with the HOD's reason, and a correction goes straight back to the HOD")
     await test_sme_rejection_loop()
+    print("\n TR. Rule 17 — Practice is a second process, not a second session: "
+          "the boot refusals, the tokens that do not cross, and the tripwire "
+          "for the offline queue that every server wall would otherwise wave through")
+    await test_practice_sandbox_walls()
+    print("\n TR (S2). The wall is a privilege, the reset is a clone, and the "
+          "sandbox differs from Live in exactly the four ways the operator ruled")
+    await test_practice_sandbox_data()
     print("\n BW. The suite's own isolation — 1,400+ checks commit through the "
           "real app, so WHICH database they reach is itself a gate")
     await test_database_isolation()

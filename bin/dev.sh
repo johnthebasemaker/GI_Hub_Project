@@ -7,7 +7,7 @@
 #   ./bin/dev.sh gi          # …serving the gi.giinventory.com mirror (NO connector)
 #   ./bin/dev.sh stop        # kill API + Vite + OUR connector, guaranteed
 #   ./bin/dev.sh status      # what is up, on which ports, since when
-#   ./bin/dev.sh logs [api|web|tunnel]
+#   ./bin/dev.sh logs [api|practice|web|tunnel]
 #
 # WHY A SCRIPT AND NOT `concurrently`: the four pieces are not four npm
 # processes. Postgres is a brew LaunchAgent that must be adopted rather than
@@ -40,6 +40,7 @@ PG_FORMULA="${PG_FORMULA:-postgresql@16}"
 PG_HOST="127.0.0.1"
 PG_PORT="5433"
 API_PORT="8000"
+PRACTICE_PORT="8001"      # rule 17: the Practice API, a second process
 WEB_PORT="5173"
 TUNNEL_NAME="gi-hub"
 TUNNEL_CONFIG="$ROOT/deploy/cloudflared/config.yml"
@@ -141,6 +142,21 @@ start_api() {
   ok "API      pid $pid   http://127.0.0.1:$API_PORT/docs"
 }
 
+# Rule 17: the Practice API. Started only when its sandbox exists — a missing
+# sandbox is a setup step the developer has not done yet, not a reason to
+# refuse the Live stack. Connecting AS gi_training is the check, so a wall that
+# was never built shows up here too.
+start_practice() {
+  if ! psql -h "$PG_HOST" -p "$PG_PORT" -U gi_training -d gihub_training -tAc 'SELECT 1' >/dev/null 2>&1; then
+    warn "Practice  not started — no sandbox yet. Build it once:
+   ${bold}.venv/bin/python tools/practice_db.py wall && .venv/bin/python tools/practice_db.py build${off}"
+    return 0
+  fi
+  local pid; pid="$(start_bg practice "$ROOT/bin/practice_api.sh")"
+  wait_for 60 "Practice API" http_ok "http://127.0.0.1:$PRACTICE_PORT/instance" || true
+  ok "Practice pid $pid   http://127.0.0.1:$PRACTICE_PORT/instance  (Live | Practice toggle on the login page)"
+}
+
 start_web() { # start_web <npm-script>
   local script="$1" pid
   pid="$(start_bg web npm --prefix "$ROOT/frontend" run "$script")"
@@ -198,7 +214,7 @@ free_port_or_die() {
   port_busy "$port" || return 0
   holder="$(port_pid "$port")"
   local ours=""
-  for c in api web; do
+  for c in api practice web; do
     local p; p="$(live_pid "$c" || true)"
     [ -n "$p" ] && [ "$p" = "$holder" ] && ours="yes"
   done
@@ -217,11 +233,13 @@ preflight() {
   [ -d "$ROOT/frontend/node_modules" ] || die "frontend deps missing — run: npm ci --prefix frontend"
   mkdir -p "$RUN_DIR"
   # A previous stack still holding its pidfiles is simply replaced.
-  if live_pid api >/dev/null 2>&1 || live_pid web >/dev/null 2>&1 || live_pid tunnel >/dev/null 2>&1; then
+  if live_pid api >/dev/null 2>&1 || live_pid practice >/dev/null 2>&1 \
+     || live_pid web >/dev/null 2>&1 || live_pid tunnel >/dev/null 2>&1; then
     info "an existing stack is running — stopping it first"
     cmd_stop quiet
   fi
   free_port_or_die "$API_PORT" API
+  free_port_or_die "$PRACTICE_PORT" Practice
   free_port_or_die "$WEB_PORT" Vite
 }
 
@@ -235,6 +253,7 @@ cmd_start() { # cmd_start <env>
   if [ "$env" = "tunnel" ]; then assert_no_foreign_connector; fi
   ensure_postgres
   start_api
+  start_practice
   case "$env" in
     localhost) start_web dev ;;
     tunnel)    start_web dev:local; start_tunnel ;;
@@ -263,7 +282,7 @@ cmd_start() { # cmd_start <env>
 cmd_stop() {
   local quiet="${1:-}"
   local stopped=0 c p
-  for c in tunnel web api; do
+  for c in tunnel web practice api; do
     if p="$(live_pid "$c")"; then
       stop_group "$p"
       [ -n "$quiet" ] || ok "stopped $c (pid $p)"
@@ -282,6 +301,7 @@ cmd_stop() {
     sleep 0.3
     local leftover=""
     port_busy "$API_PORT" && leftover="$leftover :$API_PORT"
+    port_busy "$PRACTICE_PORT" && leftover="$leftover :$PRACTICE_PORT"
     port_busy "$WEB_PORT" && leftover="$leftover :$WEB_PORT"
     if [ -n "$leftover" ]; then
       warn "still listening —$leftover (not ours; lsof -nP -iTCP$leftover -sTCP:LISTEN)"
@@ -303,9 +323,10 @@ cmd_status() {
     warn "Postgres  :$PG_PORT   down"
   fi
   local c p label
-  for c in api web tunnel; do
+  for c in api practice web tunnel; do
     case "$c" in
       api)    label="API       :$API_PORT" ;;
+      practice) label="Practice  :$PRACTICE_PORT" ;;
       web)    label="Vite      :$WEB_PORT" ;;
       tunnel) label="Tunnel    $TUNNEL_NAME" ;;
     esac
@@ -325,11 +346,11 @@ cmd_status() {
 cmd_logs() {
   local which="${1:-}"
   if [ -n "$which" ]; then
-    [ -f "$(logfile "$which")" ] || die "no log for '$which' (api|web|tunnel)"
+    [ -f "$(logfile "$which")" ] || die "no log for '$which' (api|practice|web|tunnel)"
     tail -n 80 -f "$(logfile "$which")"
   else
     local files="" c
-    for c in api web tunnel; do
+    for c in api practice web tunnel; do
       [ -f "$(logfile "$c")" ] && files="$files $(logfile "$c")"
     done
     [ -n "$files" ] || die "no logs yet — start the stack first"
@@ -342,14 +363,17 @@ usage() {
   cat <<EOF
 ${bold}GI Hub — unified dev stack${off}
 
-  ${bold}./bin/dev.sh localhost${off}   Postgres + API + Vite            → http://localhost:$WEB_PORT
+  ${bold}./bin/dev.sh localhost${off}   Postgres + API + Practice API + Vite → http://localhost:$WEB_PORT
   ${bold}./bin/dev.sh tunnel${off}      …plus the cloudflared connector  → https://$TUNNEL_HOSTNAME
   ${bold}./bin/dev.sh gi${off}          …serving the legacy mirror       → https://$GI_HOSTNAME
                           (no connector — the root daemon already serves it)
 
   ${bold}./bin/dev.sh stop${off}        kill API + Vite + our connector  (add ${bold}--db${off} to stop Postgres too)
   ${bold}./bin/dev.sh status${off}      what is up, on which ports, for how long
-  ${bold}./bin/dev.sh logs${off} [api|web|tunnel]
+  ${bold}./bin/dev.sh logs${off} [api|practice|web|tunnel]
+
+The Practice API (rule 17) starts on :$PRACTICE_PORT whenever its sandbox exists;
+build it once with ${bold}tools/practice_db.py wall${off} then ${bold}build${off}.
 
 Only ONE mode runs at a time — all three want :$WEB_PORT, and Vite's strictPort
 makes a second one fail loudly instead of drifting to :5174.

@@ -52,40 +52,43 @@ from . import trace as _trace
 # else was "not in your section". Add the role here in the same commit that
 # adds it to `auth.ROLE_META`.
 _ROLE_ALLOWED: dict[str, set[int]] = {
-    "store_keeper":   {1, 2, 3, 4, 10, 11, 12, 13, 21, 22, 24},
-    "supervisor":     {1, 2, 3, 4, 5, 11, 12, 13, 21, 22, 24},
-    "hod":            {1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 16, 18, 19, 21, 22, 24},
+    "store_keeper":   {1, 2, 3, 4, 10, 11, 12, 13, 21, 22, 24, 26},
+    "supervisor":     {1, 2, 3, 4, 5, 11, 12, 13, 21, 22, 24, 26},
+    "hod":            {1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 16, 18, 19, 21, 22, 24, 26},
     # Strict isolation: Logistics never sees Warehouse internals (and vice
     # versa); neither sees site-level chapters 4–6.
-    "logistics":      {1, 2, 3, 9, 11, 12, 13, 14, 16, 21, 22, 24},
-    "warehouse_user": {1, 2, 3, 9, 11, 12, 13, 15, 16, 21, 22, 24},
+    "logistics":      {1, 2, 3, 9, 11, 12, 13, 14, 16, 21, 22, 24, 26},
+    "warehouse_user": {1, 2, 3, 9, 11, 12, 13, 15, 16, 21, 22, 24, 26},
     # QC (2026-08-09) inspects and decides, and does nothing else. Chapter 22
     # is its own; 4 and 15 are there because an inspector has to understand
     # the issue and the goods-in they sit between, not to let them do either.
-    "qc":             {1, 2, 3, 4, 11, 12, 15, 21, 22, 24},
+    "qc":             {1, 2, 3, 4, 11, 12, 15, 21, 22, 24, 26},
     # The Head of Qualities (2026-08-22) oversees Surface Shield across every
     # site. Its chapters are orientation, the procurement chain the material
     # travels down, the quality chapter and the data model — plus §23, its own.
     # NOT the site role chapters: it does not issue, receive or approve, and
     # operational how-tos it cannot perform would only mislead it.
-    "qc_hod":         {1, 2, 3, 9, 10, 11, 12, 16, 21, 22, 23, 24},
+    "qc_hod":         {1, 2, 3, 9, 10, 11, 12, 16, 21, 22, 23, 24, 26},
     # The view-only Auditor (2026-08-03) reads across every site but can
     # open only Dashboard / Stock / Records / Reports / Lining Coverage.
     # Its chapters mirror exactly that: orientation, reporting, the data
     # model and the glossary. No role operational how-tos it could not
     # perform anyway, and not the hosting chapter.
+    # §26 (Practice Mode, rule 17) goes to EVERY role: every role has a
+    # practice account and is told how to switch, and a trainee asking "why
+    # can't I read this photo?" must be answered out of the chapter that says.
     # §25 (AI Traces) is admin+auditor ONLY, unlike §21/§24 which went to
     # every role. Those are "what changed" chapters about features everyone
     # uses; §25 describes ONE page that only these two roles can open, and a
     # store keeper answered out of it would be told how to read a screen the
     # nav refuses them.
-    "auditor":        {1, 2, 3, 8, 9, 10, 11, 12, 16, 20, 21, 22, 24, 25},
+    "auditor":        {1, 2, 3, 8, 9, 10, 11, 12, 16, 20, 21, 22, 24, 25, 26},
     # ⚠️ THE UPPER BOUND IS EXCLUSIVE AND HAS TO MOVE WITH THE MANUAL. Adding
     # a chapter without touching this line gives the ADMIN less than everybody
     # else — the one role that is supposed to see all of it. `tests/ai_eval`
     # pins the resulting set, so the omission fails a gate rather than being
     # discovered by an administrator who cannot find a chapter.
-    "admin":          set(range(1, 26)),
+    "admin":          set(range(1, 27)),
 }
 
 _SECTION_TITLES = {
@@ -114,6 +117,7 @@ _SECTION_TITLES = {
     23: "Quality Oversight (Head of Qualities) Manual",
     24: "Phase 10 — Security, Training and the Board Brief",
     25: "Phase 11 — AI Traces",
+    26: "Practice Mode",
 }
 
 

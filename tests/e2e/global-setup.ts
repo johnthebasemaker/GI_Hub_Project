@@ -20,8 +20,9 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import {
   API_PORT, API_URL, ASYNC_DB_URL, AUTH_DIR, E2E_DB, E2E_PASSWORD, JWT_SECRET,
-  PG_HOST, PG_PORT, PG_USER, PY, ROOT, RUNTIME_DIR, SYNC_DB_URL, USERS,
-  WEB_PORT, WEB_URL,
+  PG_HOST, PG_PORT, PG_USER, PRACTICE_ADMIN_PASSWORD, PRACTICE_API_PORT,
+  PRACTICE_API_URL, PRACTICE_DB, PRACTICE_DB_URL, PRACTICE_JWT_SECRET, PY, ROOT, RUNTIME_DIR,
+  SYNC_DB_URL, USERS, WEB_PORT, WEB_URL,
 } from './harness/env'
 
 function psql(sql: string, db = 'postgres'): string {
@@ -224,6 +225,29 @@ export default async function globalSetup() {
   ].join('\n')
   execFileSync(PY, ['-c', resetScript], { cwd: ROOT, stdio: 'inherit' })
 
+  // ── 2b. the Practice sandbox (rule 17) ───────────────────────────────────
+  // Built by the SHIPPING tool, not a harness copy of it (the P12-4 argument:
+  // a second builder is a second place for isolation to be got wrong). `wall`
+  // revokes CONNECT on this run's Live database from the Practice role — the
+  // Live API below connects as a superuser and is unaffected.
+  const practiceEnv = {
+    ...process.env,
+    LIVE_DB: E2E_DB,
+    PRACTICE_DATABASE_URL: PRACTICE_DB_URL,
+    PRACTICE_ADMIN_URL: `postgresql://${PG_USER}@${PG_HOST}:${PG_PORT}/postgres`,
+    PRACTICE_ADMIN_PASSWORD,
+    GI_DOTENV: '0',
+  }
+  console.log('[e2e] building the Practice sandbox via tools/practice_db.py …')
+  for (const step of ['wall', 'build']) {
+    execFileSync(PY, [path.join(ROOT, 'tools', 'practice_db.py'), step],
+      { cwd: ROOT, env: practiceEnv, stdio: ['ignore', 'ignore', 'inherit'] })
+  }
+  // Same relaxation as step 1b, for the same reason: the practice spec's
+  // offline receipt carries no supporting document.
+  psql("INSERT INTO app_settings (key, value) VALUES ('require_entry_documents','0') "
+       + "ON CONFLICT (key) DO UPDATE SET value='0'", PRACTICE_DB)
+
   // ── 3. hermetic backend ───────────────────────────────────────────────────
   console.log(`[e2e] starting uvicorn on :${API_PORT} …`)
   const apiLog = fs.openSync(path.join(RUNTIME_DIR, 'api.log'), 'w')
@@ -244,6 +268,34 @@ export default async function globalSetup() {
   )
   api.unref()
 
+  // ── 3b. the Practice API — a second PROCESS, as in production ───────────
+  console.log(`[e2e] starting the Practice uvicorn on :${PRACTICE_API_PORT} …`)
+  const practiceLog = fs.openSync(path.join(RUNTIME_DIR, 'practice.log'), 'w')
+  const {
+    WHATSAPP_TOKEN: _w1, WHATSAPP_PHONE_NUMBER_ID: _w2, SMTP_HOST: _s1, SMTP_SERVER: _s2,
+    SMTP_USER: _s3, SMTP_PASS: _s4, GI_AI_VISION_API_KEY: _v, GI_AI_RO_URL: _ro,
+    ...cleanEnv
+  } = process.env
+  void [_w1, _w2, _s1, _s2, _s3, _s4, _v, _ro]
+  const practice = spawn(
+    PY, ['-m', 'uvicorn', 'backend.api.main:app', '--host', '127.0.0.1',
+      '--port', String(PRACTICE_API_PORT)],
+    {
+      cwd: ROOT,
+      detached: true,
+      stdio: ['ignore', practiceLog, practiceLog],
+      env: {
+        ...cleanEnv,
+        GI_INSTANCE: 'training',
+        GI_DOTENV: '0',
+        GI_SCHEDULER: '0',
+        JWT_SECRET: PRACTICE_JWT_SECRET,
+        DATABASE_URL: PRACTICE_DB_URL.replace('postgresql://', 'postgresql+asyncpg://'),
+      },
+    },
+  )
+  practice.unref()
+
   // ── 4. Vite dev server proxying /api → the hermetic backend ──────────────
   console.log(`[e2e] starting Vite on :${WEB_PORT} …`)
   const webLog = fs.openSync(path.join(RUNTIME_DIR, 'web.log'), 'w')
@@ -253,17 +305,21 @@ export default async function globalSetup() {
       cwd: path.join(ROOT, 'frontend'),
       detached: true,
       stdio: ['ignore', webLog, webLog],
-      env: { ...process.env, VITE_API_PROXY: API_URL, BROWSER: 'none' },
+      env: {
+        ...process.env, VITE_API_PROXY: API_URL, VITE_PRACTICE_PROXY: PRACTICE_API_URL,
+        BROWSER: 'none',
+      },
     },
   )
   web.unref()
 
   fs.writeFileSync(
     path.join(RUNTIME_DIR, 'pids.json'),
-    JSON.stringify({ api: api.pid, web: web.pid }, null, 2),
+    JSON.stringify({ api: api.pid, practice: practice.pid, web: web.pid }, null, 2),
   )
 
   await waitFor(`${API_URL}/health`, 'backend')
+  await waitFor(`${PRACTICE_API_URL}/health`, 'Practice backend')
   await waitFor(WEB_URL, 'frontend')
   await warmVite()
   console.log('[e2e] stack ready — backend :%d, frontend :%d, db %s', API_PORT, WEB_PORT, E2E_DB)

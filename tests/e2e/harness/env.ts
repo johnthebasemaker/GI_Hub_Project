@@ -27,6 +27,25 @@ export const ASYNC_DB_URL = `postgresql+asyncpg://${PG_USER}@${PG_HOST}:${PG_POR
 // bcrypt hashes are overwritten INSIDE the throwaway DB only).
 export const E2E_PASSWORD = 'E2ePlaywright!2026'
 
+// ── Rule 17: the Practice leg ───────────────────────────────────────────────
+// A SECOND API process on its own database, exactly as in production. Built by
+// the shipping tool (tools/practice_db.py build) from the synthetic dataset —
+// never from gi_database.db — and walled off from THIS run's Live database.
+// The name must end `_training` (rule 17's boot check); it is derived from
+// E2E_DB so the tutorial recorder's stack (E2E_DB=gihub_tutorial_pw) gets its
+// own and never collides with the gate's.
+export const PRACTICE_API_PORT = Number(process.env.E2E_PRACTICE_PORT ?? API_PORT + 10)
+export const PRACTICE_API_URL = `http://127.0.0.1:${PRACTICE_API_PORT}`
+export const PRACTICE_DB = `${E2E_DB.replace(/_/g, '')}_training`
+export const PRACTICE_SEED_DB = `${E2E_DB.replace(/_/g, '')}_seed_training`
+export const PRACTICE_ROLE_DB_USER = 'gi_training'
+export const PRACTICE_PASSWORD = 'Practice@2026'           // overlay default
+export const PRACTICE_ADMIN_PASSWORD = 'E2ePracticeAdmin!2026'
+// A DIFFERENT signing key from Live's — the primary wall between the two.
+export const PRACTICE_JWT_SECRET = 'ci-only-practice-e2e-signing-key-32bytes-min'
+export const PRACTICE_DB_URL =
+  `postgresql://${PRACTICE_ROLE_DB_USER}@${PG_HOST}:${PG_PORT}/${PRACTICE_DB}`
+
 export type Role =
   | 'admin' | 'hod' | 'sk' | 'supervisor' | 'logistics'
   | 'warehouse' | 'auditor'

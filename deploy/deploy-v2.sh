@@ -54,6 +54,7 @@ echo "    prev=${PREV_SHA:-none}  new=${NEW_SHA}"
 
 echo "==> [3/7] Building v2 images (SHA-tagged: ${NEW_SHA})"
 $NEW build api web
+# (api-training reuses the api build context; `up` builds it from cache.)
 # Tag the freshly built images with the git SHA so rollback has a concrete target.
 for svc in api web; do
     docker tag "${PROJECT}-${svc}:latest" "${PROJECT}-${svc}:${NEW_SHA}" 2>/dev/null \
@@ -71,12 +72,43 @@ for i in $(seq 1 30); do
 done
 $NEW run --rm api sh -c 'cd /app/backend && alembic upgrade head'
 
+# ── 4b. Practice sandbox (rule 17) — only when configured ───────────────────
+# Rebuilt from scratch on EVERY deploy: cutover_migrate builds the seed at
+# alembic head, so Practice never runs migrations-behind, and a deploy is the
+# natural moment to refresh the synthetic dates. Runs inside the api image
+# (it carries tools/ and legacy/), connecting as the cluster admin for the
+# wall and the seed's CREATE DATABASE, and as gi_training for everything else.
+envval() { grep -E "^$1=" "${HERE}/.env" | tail -1 | cut -d= -f2-; }
+PROFILES=""
+if [ -n "$(envval PRACTICE_JWT_SECRET)" ]; then
+    if [ "$(envval PRACTICE_JWT_SECRET)" = "$(envval JWT_SECRET)" ]; then
+        echo "ABORT: PRACTICE_JWT_SECRET equals JWT_SECRET — Practice and Live must never share a signing key"
+        exit 1
+    fi
+    [ -n "$(envval PRACTICE_DB_PASSWORD)" ] || { echo "ABORT: PRACTICE_DB_PASSWORD is empty"; exit 1; }
+    echo "==> [4b] Practice sandbox: wall + rebuild (tools/practice_db.py)"
+    PG_ADMIN="postgresql://$(envval POSTGRES_USER):$(envval POSTGRES_PASSWORD)@db:5432/postgres"
+    PG_PRACTICE="postgresql://gi_training:$(envval PRACTICE_DB_PASSWORD)@db:5432/gihub_training"
+    for step in wall build verify; do
+        $NEW run --rm --no-deps \
+            -e PRACTICE_ADMIN_URL="$PG_ADMIN" -e PRACTICE_DATABASE_URL="$PG_PRACTICE" \
+            -e PRACTICE_DB_PASSWORD="$(envval PRACTICE_DB_PASSWORD)" \
+            -e PRACTICE_PASSWORD="$(envval PRACTICE_PASSWORD)" \
+            -e PRACTICE_ADMIN_PASSWORD="$(envval PRACTICE_ADMIN_PASSWORD)" \
+            -e LIVE_DB="$(envval POSTGRES_DB)" \
+            api python tools/practice_db.py "$step"
+    done
+    PROFILES="--profile practice"
+else
+    echo "    (Practice not configured — PRACTICE_JWT_SECRET is blank; skipping)"
+fi
+
 echo "==> [5/7] Starting v2 (no port handover needed under the tunnel)"
 # Under the Cloudflare Tunnel the v2 stack publishes NO host ports, so it no
 # longer contends with the v1 root nginx on :80/:443 — both can run at once and
 # v1 is left alone here. Which stack the public hostname reaches is decided by
 # the TUNNEL ROUTE in the Zero Trust dashboard, not by who holds the port.
-$NEW up -d --remove-orphans
+$NEW $PROFILES up -d --remove-orphans
 
 echo "==> [6/7] Health check"
 if bash "${HERE}/health-check.sh"; then

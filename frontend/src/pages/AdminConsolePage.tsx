@@ -11,6 +11,8 @@ import { api } from '../api/client'
 import type { Row as ApiRow } from '../api/client'
 import { useSystemOverview } from '../api/hooks'
 import { AiTracesPanel } from './AiTracesPage'
+import PracticeResetCard from '../components/PracticeResetCard'
+import { useInstance } from '../components/PracticeBanner'
 import KpiCard from '../components/KpiCard'
 import KpiRow from '../components/KpiRow'
 import { brand, status } from '../theme/tokens'
@@ -525,6 +527,8 @@ function FeedbackTab() {
 }
 
 export default function AdminConsolePage() {
+  // Rule 17: the Practice tab exists only when the SERVER says it is Practice.
+  const practice = useInstance().data?.practice === true
   return (
     <div>
       <Typography.Title level={3} style={{ marginTop: 0 }}>Admin Console</Typography.Title>
@@ -543,6 +547,7 @@ export default function AdminConsolePage() {
           // here alone would be invisible to the role the operator named.
           { key: 'ai-traces', label: 'AI Traces', children: <AiTracesPanel /> },
           { key: 'feedback', label: 'Feedback', children: <FeedbackTab /> },
+          ...(practice ? [{ key: 'practice', label: 'Practice', children: <PracticeResetCard /> }] : []),
         ]}
       />
     </div>

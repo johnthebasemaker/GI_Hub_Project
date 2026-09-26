@@ -62,7 +62,9 @@ def _starttls() -> bool:
 
 
 def enabled() -> bool:
-    return bool(_host())
+    # Rule 17: never in Practice, never with GI_OUTBOUND=off (see whatsapp.enabled).
+    from ..config import outbound_enabled
+    return outbound_enabled() and bool(_host())
 
 
 def logistics_to() -> str:

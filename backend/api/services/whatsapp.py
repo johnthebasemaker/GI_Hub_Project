@@ -94,7 +94,10 @@ def _escalation_to() -> str:
 
 
 def enabled() -> bool:
-    return bool(_phone_id() and _token())
+    # Rule 17: never in Practice, never with GI_OUTBOUND=off — the second wall
+    # behind config.assert_instance_safe refusing to boot with a token present.
+    from ..config import outbound_enabled
+    return outbound_enabled() and bool(_phone_id() and _token())
 
 
 def _graph_url(path: str) -> str:

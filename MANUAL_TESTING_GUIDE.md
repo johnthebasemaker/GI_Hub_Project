@@ -3550,6 +3550,100 @@ equipment only.
 reject the re-assignment as the HOD. It comes back to the field the same way,
 badged and on top, while the approved figures keep counting.
 
+## 14ad. Practice Mode — the Live | Practice sandbox (rule 17)
+
+**What it is for.** Trainees learn the system without touching Live. Practice
+is a **second API process** on its own database (`gihub_training`), built from
+the Phase 12 synthetic dataset. The SPA only chooses which process to call.
+Nothing in the API chooses a database per request.
+
+⚠️ **Every test below is about a REFUSAL, or about something landing in ONE
+place and not the other.** "It works in Practice" proves nothing on its own.
+The failure to catch is a practice entry that ALSO reached Live, and that looks
+exactly like a real one. Check both databases.
+
+**Setup.** Run `tools/practice_db.py wall` and `build` once, then
+`./bin/dev.sh localhost`. The Practice API is on :8001. Run
+`tools/practice_db.py verify` first. Every line must be ✅.
+
+### 14ad.1 Switching and identity (vectors V10, V3, V6)
+
+**TC-PRAC-01** — the sign-in page shows **Live | Practice** with **Live**
+selected, and no amber bar. Choose **Practice**. The page reloads with an amber
+bar, an amber ring round the card, and a tab title starting **PRACTICE ·**.
+
+**TC-PRAC-02** — ⚠️ **the banner is the SERVER's, not the switch's.** With
+Practice selected, stop the Practice API (`./bin/dev.sh stop`, then start only
+Live). The amber **bar** must **not** appear on the strength of the switch
+alone, and nothing can be saved. (The card's amber ring and the tab-title
+prefix DO follow the switch while the server cannot be reached. They err toward
+"Practice", never toward "Live", which is the safe direction for V10.) Then point the `/training-api` proxy at Live
+(`VITE_PRACTICE_PROXY=http://127.0.0.1:8000`). The page must show the **red
+"Environment mismatch" bar**, and every save must fail with a 409.
+
+**TC-PRAC-03** — sign in to Practice as `practice.hod`. Your Live password
+does **not** work there, and a Practice password does not work in Live. In
+the browser's storage, Practice uses `gi_token@training` and never writes
+`gi_token`. The cookie is `gi_refresh_training`, never `gi_refresh`.
+
+**TC-PRAC-04** — switch from Practice to Live. You are signed out, the
+Practice token is gone, and the amber bar is gone. Switching back does not
+resume the old Practice session.
+
+### 14ad.2 Nothing crosses (vectors V1, V2, V4, V9)
+
+**TC-PRAC-05** — ⚠️ **the one that matters.** In Practice, approve one of the
+seeded issues (Remarks *Practice seed — approve or reject me*). Check that
+`consumption` in `gihub_training` gained exactly one row. Check that `gihub`
+(Live) has **no** row for that `Issued_To`. The names are synthetic and the
+collision check proved them absent from the real register, so any hit in Live
+is contamination.
+
+**TC-PRAC-06** — ⚠️ **the offline queue (V4), the one no server wall sees.**
+In Practice, go offline and save a receipt, so it is queued. Without coming
+back online in Practice, switch the browser to Live and sign in there. The
+Live queue must show **0** entries, and a sync must send **nothing**. Switch
+back to Practice. The entry is still queued and lands in **Practice**.
+Automated as `tests/e2e/specs/practice.spec.ts`.
+
+**TC-PRAC-07** — start a Practice API with `DATABASE_URL` naming `gihub`.
+It must **refuse to start**, with *refusing to start — environment/database
+mismatch*. Start Live with a `*_training` database. That must refuse too.
+
+**TC-PRAC-08** — `psql -U gi_training -d gihub` must fail with **permission
+denied for database**. That is the wall, and it holds under the local mirror's
+trust auth.
+
+### 14ad.3 The four deliberate differences (rulings Q2, Q4, Q5; V7)
+
+**TC-PRAC-09** — in Practice, OCR Import and the supervisor's form upload show
+the blue *Photo reading is switched off* notice. An upload returns **503** with
+the same reason. The paste lane still works.
+
+**TC-PRAC-10** — in Practice, the Training Hub shows *Videos watched in Practice
+are not counted*. **I have watched and understood this** is refused with the
+reason, and no `training_compliance` row appears in either database.
+
+**TC-PRAC-11** — in Practice, Security → *Enable 2FA* is refused (403). No
+practice account is ever asked for an authenticator code.
+
+**TC-PRAC-12** — trigger any notification in Practice. It appears in the bell,
+and **nothing** is sent. Start a Practice API with `WHATSAPP_TOKEN` set. It
+must refuse to start.
+
+### 14ad.4 The reset (V11)
+
+**TC-PRAC-13** — in Live, `POST /practice/reset` as an admin returns **404**,
+and there is no Practice tab in the Admin Console.
+
+**TC-PRAC-14** — in Practice as `practice.admin`: Admin Console → **Practice**.
+The button stays disabled until `RESET PRACTICE DATA` is typed exactly. Run
+it. Every trainee entry is gone, the seeded queues are back, you are signed
+out, and the tab shows the new *Last reset* time and your name. Live's row
+counts are identical before and after.
+
+**TC-PRAC-15** — as `practice.hod`, the reset returns **403**.
+
 ## 14aa. The AI evaluation gates (Phase 11 · 11f)
 
 Developer-facing. Nothing here is a screen; it is what CI refuses to merge.
@@ -3723,12 +3817,13 @@ regression, not a new normal.**
 | Gate | Baseline | Command |
 |---|---|---|
 | **Harness hygiene — runs FIRST** | **10 controls, 0 failed** | `bash bin/ci_preflight.sh` |
-| Backend service tests | **2,328 / 0** (suites A…CX) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
+| Backend service tests | **2,607 / 0** (suites A…DD + TR) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
 | Legacy regression | **599 / 0 / 0** ⚠️ `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` on macOS, or the QR check SKIPS | `.venv/bin/python legacy/bug_check.py` |
-| Playwright E2E | **128 / 128** | `cd tests/e2e && npm test` |
+| Playwright E2E | **142 / 142** (incl. the Practice leg — its own second uvicorn + sandbox) | `cd tests/e2e && npm test` |
+| Practice walls | **every line ✅** | `.venv/bin/python tools/practice_db.py verify` |
 | **AI evals — Tier 1** | **147 / 147, 0 leaks** · recall **1.000** / precision **0.994** | `.venv/bin/python -m tests.ai_eval.runner` |
 | AI eval grid freshness | **current, 72 verified cases** | `.venv/bin/python tools/gen_eval_grid.py --check` |
-| SME TS↔PY parity | **1,313 comparisons** | `npm run parity:sme --prefix frontend` |
+| SME TS↔PY parity | **1,334 comparisons** | `npm run parity:sme --prefix frontend` |
 | SME UI math | **33 / 0** | `npm run test:ui-math --prefix frontend` |
 | Navigation route coverage | **51 routes, all claimed** | `npm run test:nav --prefix frontend` |
 | 🎬 Tutorial scripts | **NOT A GATE** (Phase 12) — lints without a browser | `.venv/bin/python tools/generate_tutorial.py --all --dry-run` |

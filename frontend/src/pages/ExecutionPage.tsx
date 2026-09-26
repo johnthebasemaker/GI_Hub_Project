@@ -33,6 +33,7 @@
  * submits '' and the API stores '' (a real value; NULL would break both the
  * key and every GROUP BY over it).
  */
+import PracticeNotice from '../components/PracticeNotice'
 import {
   CameraOutlined, DownloadOutlined, PlusOutlined, PrinterOutlined,
   UploadOutlined,
@@ -1155,6 +1156,7 @@ function OcrUploadCard({ onDraft }: { onDraft: (id: number) => void }) {
   return (
     <Card size="small" style={{ marginBottom: 12 }}
       title={<Space><CameraOutlined />Upload a filled form</Space>}>
+      <PracticeNotice kind="ocr" />
       <Space wrap align="start">
         {/* ⚠️ THE GATE WRAPS THE UPLOAD, NOT THE PAGE. Wrapping the card
             blocked the "Print a consumption form" control beside it, so

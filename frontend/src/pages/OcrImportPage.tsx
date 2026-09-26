@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import PracticeNotice from '../components/PracticeNotice'
 import {
   Alert, App, Button, Card, DatePicker, Descriptions, Input, InputNumber, Popconfirm, Radio,
   Select, Space, Tag, Typography, Upload,
@@ -311,6 +312,7 @@ export default function OcrImportPage() {
 
   return (
     <div>
+      <PracticeNotice kind="ocr" />
       <Typography.Title level={3} style={{ marginTop: 0 }}>📷 OCR Import</Typography.Title>
       <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
         Photograph a handwritten consumption list or a printed delivery note — the

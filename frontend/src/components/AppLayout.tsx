@@ -21,6 +21,7 @@ import NotificationBell from './NotificationBell'
 import OfflineSyncBadge from './OfflineSyncBadge'
 import SyncControls from './SyncControls'
 import ProfileModal from './ProfileModal'
+import PracticeBanner, { PracticeTag } from './PracticeBanner'
 
 const { Header, Sider, Content } = Layout
 
@@ -242,6 +243,8 @@ export default function AppLayout() {
         )}
       </ConfigProvider>
       <Layout>
+        {/* Rule 17: Live | Practice, as the SERVER reports it (GET /instance). */}
+        <PracticeBanner compact={isMobile} />
         <Header
           className="gi-header"
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingInline: 24 }}
@@ -252,6 +255,7 @@ export default function AppLayout() {
                 onClick={() => setNavOpen(true)} />
             )}
             <Typography.Text strong className="gi-header-title">Warehouse &amp; Inventory</Typography.Text>
+            <PracticeTag />
           </Space>
           <Space size="middle" className="gi-header-actions">
             <Tooltip title="Jump to any page (⌘K / Ctrl-K)">

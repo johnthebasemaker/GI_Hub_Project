@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from .config import async_database_url
+from .config import assert_instance_safe, async_database_url
+
+# Rule 17: a process whose GI_INSTANCE and database disagree never gets as far as
+# holding an engine. This line must stay ABOVE create_async_engine — the same
+# import-order property rule 15's testdb relies on, used here as a refusal.
+assert_instance_safe()
 
 engine = create_async_engine(
     async_database_url(),

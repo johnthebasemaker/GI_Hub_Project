@@ -528,3 +528,42 @@ body {
 .ant-table-sticky-holder .ant-table-thead > tr > th {
   background: var(--gi-table-header-bg) !important;
 }
+
+/* ─── Practice sandbox (rule 17) ─────────────────────────────────────────
+   `gi-practice` is put on <body> by PracticeBanner from what the SERVER says
+   (GET /instance), never from the login toggle. Amber, because it must be
+   impossible to mistake for Live at a glance — and it survives a scroll,
+   which the banner itself does not. */
+body.gi-practice .gi-header {
+  box-shadow: inset 0 -3px 0 #f5a623;
+}
+body.gi-practice .gi-login-card {
+  box-shadow: 0 0 0 2px #f5a623, 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+.gi-env-switch {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+.gi-practice-hint {
+  font-size: 12px;
+  text-align: center;
+  margin: -6px 0 14px;
+}
+@media print {
+  /* A printed Practice page must never pass for a Live record. */
+  body.gi-practice::after {
+    content: 'PRACTICE — NOT REAL DATA';
+    position: fixed;
+    top: 42%;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 56px;
+    font-weight: 700;
+    color: rgba(245, 166, 35, 0.28);
+    transform: rotate(-18deg);
+    pointer-events: none;
+    z-index: 9999;
+  }
+}

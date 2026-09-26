@@ -1,5 +1,26 @@
 # SESSION HANDOVER — read this first, then `PROJECT_HANDOVER.md`
 
+> ## 🆕 PRACTICE SANDBOX (2026-09-24) — Live | Practice, rule 17
+>
+> Branch `feat/practice-sandbox`, four slices (S1 walls · S2 data · S3 client ·
+> S4 deploy + docs). Design record and the operator's rulings Q1–Q10:
+> [`PROPOSED_SANDBOX_PLAN.md`](PROPOSED_SANDBOX_PLAN.md). **Rule 17** in
+> `PROJECT_HANDOVER.md` is the part to read.
+>
+> * Practice is a **second API process** (`GI_INSTANCE=training`, `:8001`
+>   locally, `api-training` behind the compose `practice` profile) on
+>   `gihub_training`, connecting as `gi_training`, which **cannot CONNECT to
+>   `gihub`**. Nothing selects a database per request.
+> * First time on a machine: `.venv/bin/python tools/practice_db.py wall`,
+>   then `build`, then `verify`. After that `./bin/dev.sh localhost` starts it.
+> * ⚠️ **A mirror reload wipes the CONNECT revoke** — re-run `practice_db.py
+>   wall` alongside `create_ai_readonly_role.sql`.
+> * Shared accounts `practice.<role>` (password `PRACTICE_PASSWORD`, default on
+>   the trainee card); `practice.admin` has its own (printed once by `build`
+>   unless `PRACTICE_ADMIN_PASSWORD` is set).
+> * Practice refuses OCR, records no training compliance, has no 2FA, and
+>   cannot send anything. Everything else is the same binary.
+>
 > ## 🆕 PHASE 12 SHIPPED (2026-09-06 → 09-07) — read this block first
 >
 > Five slices, all merged to `main` (PRs #73–#76). **Nothing is mid-flight.**

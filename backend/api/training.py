@@ -46,6 +46,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .auth import get_current_user, require_level, require_roles
 from .db import get_session
 from .services.ledger import _MD, write_audit
+from .config import is_practice
+
+COMPLIANCE_OFF_MESSAGE = (
+    "You are in Practice. Watching here is fine, but training certificates are "
+    "recorded in Live only — sign in to Live to have this video counted.")
 
 router = APIRouter(tags=["training"])
 
@@ -111,6 +116,11 @@ async def _upsert(session: AsyncSession, username: str, module: dict,
     posting progress at once is ordinary, and a check-then-insert would raise
     an IntegrityError on the loser for no reason.
     """
+    # Rule 17 / ruling Q2: Practice records nothing. A certificate earned in the
+    # sandbox is evidence nobody can produce in Live — and writing it ACROSS
+    # into Live is the one cross-database path rule 17 exists to forbid.
+    if is_practice():
+        return
     stmt = pg_insert(compliance_t).values(
         username=username, module_id=module["id"],
         module_version=module["version"], updated_at=_now(), **values)
@@ -228,6 +238,8 @@ async def acknowledge(body: AckIn = Body(...),
     The bar is `COMPLETE_AT` of the asset's duration; a module with no published
     asset cannot be acknowledged at all.
     """
+    if is_practice():
+        raise HTTPException(409, COMPLIANCE_OFF_MESSAGE)
     mod = await _module_by_key(session, body.module_key)
     if mod is None:
         raise HTTPException(404, f"no training module {body.module_key!r}")
@@ -273,6 +285,8 @@ async def defer(body: DeferIn = Body(...),
     if mod is None:
         raise HTTPException(404, f"no training module {body.module_key!r}")
     st = await _state(session, user["username"], mod)
+    if is_practice():   # rule 17 / Q2 — allowed, and recorded nowhere
+        return {**st, "allowed": True, "practice": True}
     await _upsert(session, user["username"], mod,
                   deferred_at=_now(), deferrals=st["deferrals"] + 1)
     await write_audit(session, user["username"], "TRAINING_DEFERRED",

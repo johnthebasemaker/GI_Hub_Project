@@ -58,7 +58,7 @@ export default defineConfig({
       },
       workbox: {
         // never let the SPA fallback swallow API calls
-        navigateFallbackDenylist: [/^\/api\//],
+        navigateFallbackDenylist: [/^\/api\//, /^\/training-api\//],
         runtimeCaching: [
           {
             // core READ endpoints for offline warehouse viewing: stock views,
@@ -95,6 +95,14 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/api/, ''),
       },
+      // Rule 17: the Practice API is a SECOND process (bin/dev.sh starts it on
+      // :8001). Same shape as /api, different backend — nothing in the SPA
+      // decides data, it only picks which of these two prefixes to call.
+      '/training-api': {
+        target: process.env.VITE_PRACTICE_PROXY ?? 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/training-api/, ''),
+      },
     },
   },
   // `vite preview` serves the BUILT bundle on the same port and proxy as dev.
@@ -110,6 +118,11 @@ export default defineConfig({
         target: process.env.VITE_API_PROXY || 'http://127.0.0.1:8000',
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/api/, ''),
+      },
+      '/training-api': {
+        target: process.env.VITE_PRACTICE_PROXY || 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/training-api/, ''),
       },
     },
   },

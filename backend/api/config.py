@@ -118,6 +118,7 @@ CORS_ORIGINS = (
 # The dev JWT signing key. Deliberately long (≥32 bytes) so PyJWT doesn't warn
 # about HMAC key length in local dev — but it is refused in production.
 _DEV_JWT_SECRET = "dev-insecure-change-me-not-for-production-use-0123456789"
+_DEV_JWT_SECRET_PRACTICE = "dev-insecure-practice-sandbox-key-not-for-production-01"
 
 # Audit A04-F4: the production guard rejected a missing, short, or dev-default
 # secret — but the CI/test key is 43 chars and none of those, so it PASSED. That
@@ -127,6 +128,7 @@ _DEV_JWT_SECRET = "dev-insecure-change-me-not-for-production-use-0123456789"
 # regardless of length; add new ones here rather than trusting the length check.
 _PUBLISHED_SECRETS = frozenset({
     _DEV_JWT_SECRET,
+    _DEV_JWT_SECRET_PRACTICE,
     "ci-only-service-test-secret-key-32bytes-min",   # docs §8 + CI workflows
     "CHANGE_ME",                                     # deploy/.env placeholder
     "CHANGE_ME_run_openssl_rand_hex_32",             # .env.example placeholder
@@ -160,7 +162,133 @@ def jwt_secret() -> str:
                 "JWT_SECRET is a publicly published placeholder/test value — "
                 "refusing to start. Generate a real one: openssl rand -hex 32")
         return s
+    # Dev: the two environments get DIFFERENT fallback keys, so a Practice token
+    # cannot verify on Live even on a laptop with no JWT_SECRET set at all. The
+    # `env` claim (auth._decode) is the second wall behind this one.
+    if not s and normalize_instance(os.environ.get("GI_INSTANCE")) == "training":
+        return _DEV_JWT_SECRET_PRACTICE
     return s or _DEV_JWT_SECRET
+
+
+# --- instance identity: Live vs Practice (rule 17) ----------------------------
+# ⚠️ PRACTICE IS A SECOND PROCESS, NOT A SECOND SESSION. Nothing in the API
+# selects a database per request. A process knows which environment it is from
+# its OWN environment variables, holds exactly one DATABASE_URL, and refuses to
+# boot when its name and its database disagree — the mechanism rule 15 already
+# uses for the test database, applied to a long-running process. See
+# PROPOSED_SANDBOX_PLAN.md §3 for why a header- or token-selected database was
+# rejected (30 session sites have no request to read either from).
+#
+# Internal name `training` (GI_INSTANCE, database suffix); user-facing label
+# "Practice", because "Training" is already the video Training Hub.
+INSTANCE_LIVE = "production"
+INSTANCE_PRACTICE = "training"
+PRACTICE_DB_SUFFIX = "_training"
+_INSTANCE_ALIASES = {
+    "": INSTANCE_LIVE, "production": INSTANCE_LIVE, "live": INSTANCE_LIVE,
+    "prod": INSTANCE_LIVE,
+    "training": INSTANCE_PRACTICE, "practice": INSTANCE_PRACTICE,
+}
+INSTANCE_LABELS = {INSTANCE_LIVE: "Live", INSTANCE_PRACTICE: "Practice"}
+
+# A Practice process must not be ABLE to reach the outside world. These are
+# refused at boot, not merely ignored: a value present in a Practice process
+# means somebody copied the Live env file, and the next thing it would do is
+# text a real phone number a trainee typed (P10-8, P11-9).
+PRACTICE_FORBIDDEN_ENV = (
+    "WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID",
+    "SMTP_HOST", "SMTP_SERVER", "SMTP_USER", "SMTP_PASS",
+    "GI_AI_VISION_API_KEY",
+)
+
+
+def normalize_instance(raw: str | None) -> str | None:
+    """Canonical instance name, or None for a value nobody should guess at."""
+    return _INSTANCE_ALIASES.get((raw or "").strip().lower())
+
+
+def instance() -> str:
+    """This process's environment: 'production' (Live) or 'training' (Practice).
+
+    An unrecognised GI_INSTANCE is NOT read as Live — `assert_instance_safe`
+    refuses it at boot, so by the time anything calls this the value is known.
+    """
+    return normalize_instance(os.environ.get("GI_INSTANCE")) or INSTANCE_LIVE
+
+
+def is_practice() -> bool:
+    return instance() == INSTANCE_PRACTICE
+
+
+def database_name(url: str | None = None) -> str:
+    """The DATABASE a URL names (never the cluster) — '' when it names none."""
+    from urllib.parse import urlsplit
+    u = url if url is not None else async_database_url()
+    try:
+        return (urlsplit(u).path or "").lstrip("/").split("?")[0]
+    except ValueError:
+        return ""
+
+
+def instance_problems(env=None) -> list[str]:
+    """Every reason this process must not start, as a pure function of its env.
+
+    Pure so suite TR can exercise each branch without spawning a server; the
+    wiring into `db.py` is proved separately with one real subprocess.
+    """
+    env = os.environ if env is None else env
+    raw = env.get("GI_INSTANCE", "")
+    inst = normalize_instance(raw)
+    if inst is None:
+        return [f"GI_INSTANCE={raw!r} is not a known environment "
+                f"(use 'production' or 'training')"]
+    url = (env.get("DATABASE_URL") or "").strip() or DEFAULT_DATABASE_URL
+    db = database_name(url)
+    problems: list[str] = []
+    if inst == INSTANCE_PRACTICE:
+        if not db.endswith(PRACTICE_DB_SUFFIX):
+            problems.append(
+                f"GI_INSTANCE=training but DATABASE_URL names {db!r} — a Practice "
+                f"process may only open a database ending {PRACTICE_DB_SUFFIX!r}")
+        present = [k for k in PRACTICE_FORBIDDEN_ENV if (env.get(k) or "").strip()]
+        if present:
+            problems.append(
+                "GI_INSTANCE=training but outbound credentials are set "
+                f"({', '.join(present)}) — Practice must not be able to send")
+    elif PRACTICE_DB_SUFFIX in db:
+        # `in`, not `endswith`: Live must not open the Practice TEMPLATE
+        # (`gihub_training_tpl`) either, or TR's throwaway copies.
+        problems.append(
+            f"DATABASE_URL names the Practice database {db!r} but GI_INSTANCE is "
+            f"Live — set GI_INSTANCE=training, or point Live at its own database")
+    return problems
+
+
+def assert_instance_safe() -> None:
+    """Refuse to start. Called by db.py BEFORE the engine exists, so a
+    misconfigured process never holds a connection to anything."""
+    problems = instance_problems()
+    if problems:
+        raise RuntimeError("refusing to start — environment/database mismatch:\n  "
+                           + "\n  ".join(problems))
+
+
+def outbound_enabled() -> bool:
+    """False in Practice, or when GI_OUTBOUND=off. Checked by
+    whatsapp.enabled() and emailer.enabled() — the second wall behind the boot
+    refusal, for somebody editing a running box's environment."""
+    if is_practice():
+        return False
+    return os.environ.get("GI_OUTBOUND", "on").strip().lower() not in (
+        "off", "0", "false", "no")
+
+
+def refresh_cookie_name(inst: str | None = None) -> str:
+    """Two backends on one origin must not overwrite each other's refresh
+    cookie (path '/'). Not a leak — the secrets differ — but it signs people
+    out of the other environment every time they switch."""
+    return "gi_refresh_training" if (inst or instance()) == INSTANCE_PRACTICE \
+        else "gi_refresh"
 
 
 def public_base_url() -> str:

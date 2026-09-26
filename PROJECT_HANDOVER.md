@@ -1,5 +1,14 @@
 # PROJECT HANDOVER — the authority on what is locked
 
+> **Updated 2026-09-24** by the Practice sandbox (branch
+> `feat/practice-sandbox`, four slices S1–S4). **New and binding: RULE 17 —
+> Practice is a second PROCESS, not a second session** (stated in full below,
+> after rule 16). Trainees get a **Live | Practice** switch on the sign-in page;
+> Practice is a separate API process on its own database, seeded from the
+> Phase 12 synthetic dataset, and it cannot open Live's database at all. The
+> design record, including the operator's rulings Q1–Q10, is
+> [`PROPOSED_SANDBOX_PLAN.md`](PROPOSED_SANDBOX_PLAN.md).
+>
 > **Updated 2026-09-07** by Phase 12 (Automated Role-Based Video Tutorials).
 > Five slices, all merged: **12-prototype** the pipeline; **12a** the synthetic
 > dataset; **12b** the manifest, WebVTT and freeze-padding; **12c** the
@@ -210,6 +219,66 @@ proving each rule still fires on its bug and stays quiet on its fix.
 
 ⚠️ **On macOS the QR round-trip skips unless you
 `export DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`** — with it, 599/0/0.
+
+### 17. PRACTICE IS A SECOND PROCESS, NOT A SECOND SESSION
+
+*Locked 2026-09-24 (the Practice sandbox, operator-approved design).*
+
+> **Nothing in the API selects a database per request. An instance knows what
+> it is from its own environment and refuses to boot when its name and its
+> database disagree. A request header may ASSERT an environment and be
+> refused — never CHOOSE one.**
+
+Trainees needed a sandbox with every feature Live has and zero contamination in
+either direction. Three shapes were weighed (`PROPOSED_SANDBOX_PLAN.md` §3):
+
+* **A header that selects the session** — rejected. It is client-controlled on
+  every request, a missing header must default to *something*, and **30
+  `SessionLocal()` sites in 12 files** (AI jobs, trace drain, answer cache,
+  Bloom filters, limiter, digest, weekly report, scheduler, briefing) never see
+  a request at all. The PWA cache keys on URL, so identical URLs would serve
+  one environment's reads in the other.
+* **A JWT claim that selects the session** — rejected as the router.
+  `/auth/login`, `/auth/register` and every background loop run before a token
+  exists. Kept as a **claim** (`env`), which `_decode` checks.
+* ✅ **Two processes** — the same image, `GI_INSTANCE=training`, its own
+  `DATABASE_URL`, its own `JWT_SECRET`. This is rule 15's mechanism, applied to
+  a long-running process: the engine is built at import time from the URL the
+  process holds, and `config.assert_instance_safe()` — called by `db.py`
+  **above** `create_async_engine` — refuses a Practice process on a
+  non-`*_training` database, a Live process on any `*_training` database, and a
+  Practice process holding any WhatsApp/SMTP/cloud-vision credential.
+
+**The wall that does not depend on our code:** the Practice process connects as
+`gi_training`, which has **no CONNECT privilege on `gihub`**. Postgres checks
+that after authentication, so it holds under the local mirror's trust auth too.
+⚠️ Any reload that recreates `gihub` wipes the revoke — re-run
+`tools/practice_db.py wall` (the same ritual as `create_ai_readonly_role.sql`);
+`verify` says when it is missing.
+
+⚠️ **The contamination path nobody would look for is in the CLIENT.** The
+offline queue replayed a stored mutation against whatever base was current,
+under whatever token was current — so a receipt practised offline reached Live
+under a *valid Live session*, and every server wall waved it through. It is
+closed three times: one IndexedDB per environment, entries stamped with their
+environment and never sent from the other, and the stamp sent as
+`X-GI-Instance` so the server 409s it before routing (vector V4; E2E
+`practice.spec.ts`).
+
+**Do not:**
+
+| | Do not |
+|---|---|
+| **17a** | Add a per-request database switch "because it would be simpler". Every sub-rule below exists because it is not. |
+| **17b** | Give `api-training` the `env_file: .env`. It would receive the live Meta token — and then refuse to boot, which is the correct outcome and still an outage. |
+| **17c** | Edit `tools/make_tutorial_db.py` to enrich Practice. Its output is pinned by P12-5; Practice-only data goes in `tools/practice_overlay.py`. |
+| **17d** | Make the banner follow the login toggle. It follows `GET /instance` — what the SERVER is — so a misrouted proxy shows as a red mismatch rather than a reassuring label (V10). |
+| **17e** | Run the Practice API with more than one worker. The reset's `DROP DATABASE … WITH (FORCE)` can terminate only sessions its own role may signal. |
+| **17f** | Mount `/practice/reset` on Live behind a role check. It is not mounted there at all; on Live it is a 404. |
+
+Suite **TR** (48 checks, including subprocess boot refusals and a wall + reset
+proven on throwaways built by the SHIPPING functions) and
+`tests/e2e/specs/practice.spec.ts` gate it.
 
 ### 1. SME allocation is keyed on `(Material_Code, SAP_Code)` — never pool by code alone
 

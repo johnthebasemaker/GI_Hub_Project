@@ -1,5 +1,8 @@
 import axios from 'axios'
 import { blocksRequest } from '../auth/readOnly'
+import {
+  baseFor, CURRENT_ENV, ENV_HEADER, persistEnv, tokenKeyFor, type GiEnv,
+} from './environment'
 
 /** Rejection raised when a view-only account attempts a mutating request. */
 export class ReadOnlyError extends Error {
@@ -41,7 +44,9 @@ function readOverride(): string {
   try { return localStorage.getItem(API_OVERRIDE_KEY) || '' } catch { return '' }
 }
 
-let _apiBase = readOverride() || BUILD_API_BASE
+// Rule 17: the Live base is chosen as before (override → build → /api); in
+// Practice it is that base's `/training-api` twin. See api/environment.ts.
+let _apiBase = baseFor(CURRENT_ENV, readOverride() || BUILD_API_BASE)
 
 /** The base every request actually uses right now (override → build → /api). */
 export function apiBase(): string { return _apiBase }
@@ -63,9 +68,28 @@ export function setApiBase(input: string): string {
     if (norm) localStorage.setItem(API_OVERRIDE_KEY, norm)
     else localStorage.removeItem(API_OVERRIDE_KEY)
   } catch { /* private mode — the override just won't persist */ }
-  _apiBase = norm || BUILD_API_BASE
+  _apiBase = baseFor(CURRENT_ENV, norm || BUILD_API_BASE)
   api.defaults.baseURL = _apiBase
   return _apiBase
+}
+
+/**
+ * Switch Live ⇄ Practice. Signs out of the CURRENT environment first (revoking
+ * its refresh family server-side, best-effort), then persists the choice and
+ * reloads — ruling Q3: one environment per browser, and switching signs you
+ * out. The reload is what guarantees no cached query, stream or queue handle
+ * crosses over (see api/environment.ts).
+ */
+export async function switchEnvironment(next: GiEnv): Promise<void> {
+  if (next === CURRENT_ENV) return
+  try {
+    await axios.post(`${_apiBase}/auth/logout`, null, {
+      withCredentials: true, headers: { [ENV_HEADER]: CURRENT_ENV }, timeout: 4000,
+    })
+  } catch { /* offline or already signed out — the reload still separates them */ }
+  try { localStorage.removeItem(TOKEN_KEY) } catch { /* private mode */ }
+  persistEnv(next)
+  window.location.reload()
 }
 
 // withCredentials keeps the httpOnly refresh cookie flowing when the base is
@@ -87,7 +111,8 @@ export function detectClientType(): 'web' | 'native' {
 }
 
 // --- auth token plumbing -----------------------------------------------------
-export const TOKEN_KEY = 'gi_token'
+// Per environment: Live keeps 'gi_token'; Practice uses its own key.
+export const TOKEN_KEY = tokenKeyFor(CURRENT_ENV)
 let _token: string | null = localStorage.getItem(TOKEN_KEY)
 
 export function setAuthToken(token: string | null) {
@@ -133,6 +158,12 @@ export function setAuthRole(role: string | null) { _role = role }
 
 api.interceptors.request.use((cfg) => {
   if (_token) cfg.headers.Authorization = `Bearer ${_token}`
+  // Rule 17 tripwire: every request DECLARES the environment it was prepared
+  // for; the server refuses (409) a request meant for the other one. An
+  // offline replay keeps the environment it was STAMPED with at queue time —
+  // that is the whole point of vector V4 — so an existing value is never
+  // overwritten here.
+  if (!cfg.headers[ENV_HEADER]) cfg.headers[ENV_HEADER] = CURRENT_ENV
   // View-only roles (Auditor): stop a mutating request before it is sent, so
   // the user gets an immediate, legible refusal instead of a round trip that
   // comes back 403. The SERVER is the actual boundary (backend/api/readonly.py)
@@ -162,6 +193,7 @@ async function refreshAccessToken(): Promise<string | null> {
     // native case). Only the short-lived access token lives in JS.
     const { data } = await axios.post(`${apiBase()}/auth/refresh`, null, {
       withCredentials: true,
+      headers: { [ENV_HEADER]: CURRENT_ENV },
     })
     const t = (data?.access_token as string) ?? null
     if (t) setAuthToken(t)
