@@ -117,6 +117,11 @@ export default function App() {
         <Route path="feedback" element={<FeedbackPage />} />
         <Route path="security" element={<SecurityPage />} />
         <Route path="training" element={<TrainingPage />} />
+        {/* Any other path — `/login` after signing in, a bookmark, a typo —
+            still renders the layout, whose guard sends an unlisted path to
+            the role's home page. Without this there is no match at all and
+            the screen is blank (canAccessPath refuses it, so nothing leaks). */}
+        <Route path="*" element={null} />
       </Route>
     </Routes>
   )

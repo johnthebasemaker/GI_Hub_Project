@@ -48,12 +48,18 @@ function routePaths() {
     if (n.tagName.getText() !== 'Route') return
     let path
     let isIndex = false
+    let element
     for (const a of n.attributes.properties) {
       if (!ts.isJsxAttribute(a)) continue
       const name = a.name.getText()
       if (name === 'index') isIndex = true
       if (name === 'path' && a.initializer) path = str(a.initializer)
+      if (name === 'element' && a.initializer) element = a.initializer.getText()
     }
+    // The catch-all is allowed ONLY if it renders nothing: it exists so the
+    // layout (and its guard's redirect) renders for an unknown path. A `*`
+    // route that rendered a page would be a page with no access rule.
+    if (path === '*' && element === '{null}') return
     if (isIndex) out.add('/')
     else if (path) out.add(path.startsWith('/') ? path : `/${path}`)
   })
