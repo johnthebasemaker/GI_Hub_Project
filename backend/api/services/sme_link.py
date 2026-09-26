@@ -845,7 +845,8 @@ REFUSED = ("Actual_Qty", "Quantity", "quantity", "Expected_Qty", "Variance_Pct",
 async def decide(session: AsyncSession, *, log_id: int, approve: bool,
                  edits: Optional[dict], justification: str,
                  reject_reason: str, username: str,
-                 site_id: Optional[str]) -> dict:
+                 site_id: Optional[str], credit: bool = True,
+                 notify: bool = True) -> dict:
     """Approve (optionally correcting the ATTRIBUTION) or reject.
 
     ⚠️ APPROVAL IS WHAT CREDITS THE AREA. Until an HOD approves, the row is an
@@ -919,9 +920,10 @@ async def decide(session: AsyncSession, *, log_id: int, approve: bool,
         # ⚠️ 2026-09-17: A REJECTION BOUNCES BACK, and the person who filed it
         # is told why. It is back at the top of their queue — a rejection
         # nobody hears about is a row that sits there anyway.
-        await _notify_submitter(
-            session, username=row["entered_by"], site_id=row["Site_ID"],
-            log_id=log_id, reason=reason, actor=username)
+        if notify:
+            await _notify_submitter(
+                session, username=row["entered_by"], site_id=row["Site_ID"],
+                log_id=log_id, reason=reason, actor=username)
         return {"id": log_id, "status": "rejected", "reason": reason,
                 "bounced_back_to": row["entered_by"]}
 
@@ -996,8 +998,12 @@ async def decide(session: AsyncSession, *, log_id: int, approve: bool,
     # ⚠️ AND THE AREA REACHES THE PROGRESS LEDGER, THROUGH THE SAME FUNCTION
     # `post_progress` USES. Two copies of this increment is how one vessel gets
     # credited twice; suite DB asserts the two paths stay disjoint.
-    await X.credit_done_sqm(session, site_id=row["Site_ID"], tag=tag,
-                            code=code, sqm=sqm)
+    # ⚠️ PHASE 14c — `credit=False` when a GROUP decides: the group credits its
+    # area ONCE (services/sme_groups.decide_group). Crediting here per member
+    # is defect D3 — a four-component job credited four times.
+    if credit:
+        await X.credit_done_sqm(session, site_id=row["Site_ID"], tag=tag,
+                                code=code, sqm=sqm)
 
     await write_audit(session, username, "SME_LINK_APPROVE",
                       "sme_consumption_log",
@@ -1006,7 +1012,7 @@ async def decide(session: AsyncSession, *, log_id: int, approve: bool,
                          f"{justification.strip()[:120]})" if edited else ""))
     return {"id": log_id, "status": "committed", "Lining_System_Code": code,
             "Equipment_Tag_No": tag, "SQM_Completed": sqm,
-            "hod_edited": edited, "Done_SQM_credited": sqm}
+            "hod_edited": edited, "Done_SQM_credited": sqm if credit else 0.0}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1362,13 +1368,22 @@ async def decide_revision(session: AsyncSession, *, rev_id: int, approve: bool,
                                    or DEFAULT_TOLERANCE_PCT))
 
     # ── move the progress credit by the difference ──────────────────────────
+    # ⚠️ PHASE 14c — a row that belongs to a MULTI-material job carries the
+    # job's area, and that area was credited ONCE for the whole job. Moving it
+    # per row would take the job's area off once per edited material. So the
+    # GROUP's credit moves, once, and only if the job's answer changed; the
+    # other members take the new answer too, so the job stays one answer.
+    from . import sme_groups as G
     old_sqm = float(log["SQM_Completed"] or 0)
-    if old_sqm:
-        await X.credit_done_sqm(session, site_id=log["Site_ID"],
-                                tag=log["Equipment_Tag_No"],
-                                code=log["Lining_System_Code"], sqm=-old_sqm)
-    await X.credit_done_sqm(session, site_id=log["Site_ID"], tag=tag, code=code,
-                            sqm=sqm)
+    moved = await G.revise_group_credit(session, log=dict(log), code=code, tag=tag,
+                                        sqm=sqm)
+    if not moved:
+        if old_sqm:
+            await X.credit_done_sqm(session, site_id=log["Site_ID"],
+                                    tag=log["Equipment_Tag_No"],
+                                    code=log["Lining_System_Code"], sqm=-old_sqm)
+        await X.credit_done_sqm(session, site_id=log["Site_ID"], tag=tag, code=code,
+                                sqm=sqm)
 
     # ── the ORIGINAL attribution takes the new values ───────────────────────
     await session.execute(update(log_t).where(log_t.c["id"] == log["id"]).values(
@@ -1385,6 +1400,10 @@ async def decide_revision(session: AsyncSession, *, rev_id: int, approve: bool,
         hod_edited=edited or bool(log["hod_edited"]),
         HOD_Edit_Justification=((justification or "").strip() or
                                 log["HOD_Edit_Justification"])))
+    if moved:
+        # every member of the job — this one included — measured against the
+        # job's ONE answer, same-SAP draws sharing one expectation.
+        await G.reshare_committed(session, group_id=int(log["group_id"]), sqm=sqm)
     await session.execute(update(rev_t).where(rev_t.c["id"] == rev_id).values(
         status="approved", hod_username=username, hod_decided_at=func.now(),
         hod_edited=edited,

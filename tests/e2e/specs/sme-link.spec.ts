@@ -38,6 +38,8 @@ for (const role of ['supervisor', 'sk', 'hod'] as const) {
       // consumption" sounds like it deducts something, and this does not —
       // the material left the store when it was issued.
       await expect(page.getByText(/Recording an area moves no stock/)).toBeVisible()
+      // Phase 14c: the queue is grouped into jobs (day × equipment).
+      await expect(page.getByText(/grouped by day and equipment/)).toBeVisible()
 
       expect(errors, `uncaught page errors: ${errors.join(' | ')}`).toHaveLength(0)
       await ctx.close()
@@ -56,6 +58,7 @@ test('the HOD tab explains that every row is reviewed, not just the outliers',
     await expect(page.getByText(/Every.{0,3} Surface Shield consumption is reviewed/))
       .toBeVisible()
     await expect(page.getByText(/never whether a decision is needed/)).toBeVisible()
+    await expect(page.getByText(/decided as a whole/)).toBeVisible()
     await ctx.close()
   })
 

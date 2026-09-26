@@ -71,6 +71,31 @@ export default async function globalSetup() {
   psql('UPDATE inventory SET "Unit_Size" = 9, "Base_UOM" = \'KG\' '
        + 'WHERE "SAP_Code" = \'1045\'', E2E_DB)
 
+  // ── 1b-iii. Phase 14c: one Surface Shield JOB (sme-jobs.spec.ts) ─────────
+  // Two cans of a two-component system drawn on one day against one vessel,
+  // with the area typed in Remarks — so the job card has a suggested system
+  // code (9102 lists both) and a pre-filled area (12.5) to assert on.
+  psql(
+    "INSERT INTO inventory (\"SAP_Code\", \"Material_Code\", \"Equipment_Description\", "
+    + "\"Category\", \"UOM\", \"Unit_Size\", \"Base_UOM\") "
+    + "VALUES ('E2EJOB-1','E2EJOB-A','E2E job base','Surface Shields','Can',4,'KG'), "
+    + "('E2EJOB-2','E2EJOB-B','E2E job hardener','Surface Shields','Can',1,'KG') "
+    + "ON CONFLICT (\"SAP_Code\") DO NOTHING", E2E_DB)
+  psql(
+    "INSERT INTO sme_recipe (\"Lining_System_Code\", \"Lining_System_Name\", "
+    + "\"Material_Code\", \"SAP_Code\", \"Material_Name\", \"UOM\", \"For_1_SQM\") "
+    + "VALUES ('9102','E2E JOB','E2EJOB-A','E2EJOB-1','E2E job base','KG',0.8), "
+    + "('9102','E2E JOB','E2EJOB-B','E2EJOB-2','E2E job hardener','KG',0.2)", E2E_DB)
+  psql(
+    "INSERT INTO sme_equipment (\"Site_ID\", \"Equipment_Tag_No\", \"Name\", "
+    + "\"Lining_System_Code\", \"Surface_Area_SQM\") "
+    + "VALUES ('CNCEC','E2E-JOB-TANK','E2E job tank','9102',200)", E2E_DB)
+  psql(
+    "INSERT INTO consumption (\"Date\", \"SAP_Code\", \"Quantity\", \"Site_ID\", "
+    + "\"Tank_No\", \"Remarks\") VALUES "
+    + "('2026-09-20','E2EJOB-1',2.5,'CNCEC','E2E-JOB-TANK','Shell - 12.5 SQM Done'), "
+    + "('2026-09-20','E2EJOB-2',2.5,'CNCEC','E2E-JOB-TANK',NULL)", E2E_DB)
+
   // ── 1c. the SME tier-segregation fixture (sme-tiers.spec.ts) ─────────────
   // A purpose-built copy of the PHENACIN ACP POWDER shape that produced the
   // 2026-08-03 bug report: a material with ZERO stock on the shelf and MORE

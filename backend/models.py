@@ -1095,6 +1095,11 @@ class SmeConsumptionLog(Base):
     # corrected next quarter cannot quietly rewrite this quarter's variance.
     Pack_Qty = Column(Float)
     Unit_Size_Used = Column(Float)
+    # ── Phase 14c: the JOB this draw belongs to (sme_attribution_group). The
+    # group's SQM is credited to Done_SQM ONCE — defect D3 was each material
+    # crediting its own copy of the same area. NULL = attributed alone before
+    # groups existed (none live), which behaves as a group of one.
+    group_id = Column(Integer)
     __table_args__ = (
         # The sweep's own question: is this ledger row already attributed?
         Index("ix_sme_cons_log_consumption", "Consumption_ID"),
@@ -1929,6 +1934,42 @@ class PrRegistry(Base):
     Site_ID = Column(Text, nullable=False)
     created_by = Column(Text)
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+
+
+class SmeAttributionGroup(Base):
+    """Phase 14c — one JOB: the Surface Shield materials drawn for one piece of
+    equipment on one day, attributed together to ONE system code and ONE area.
+
+    The operator asked for the SQM once per (date, equipment), not once per
+    material (Track 1). That is also the fix for defect D3: when every material
+    carried its own SQM, a four-component PU job of 13.37 m² credited 53.48 m²
+    to the vessel. Here the area is credited ONCE, on group approval, by the
+    same `credit_done_sqm` every other path uses; member rows carry the group's
+    SQM only for their own variance.
+
+    The supervisor submits the group; the HOD approves or rejects the WHOLE
+    group (ruling Q14-11). "Split" is simply submitting a subset of the day's
+    materials under one system and the rest under another (Q14-10).
+    """
+    __tablename__ = "sme_attribution_group"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    Site_ID = Column(Text, nullable=False)
+    Work_Date = Column(Text, nullable=False)
+    Equipment_Tag_No = Column(Text, nullable=False)
+    Lining_System_Code = Column(Text, nullable=False)
+    SQM_Completed = Column(Float, nullable=False)
+    status = Column(Text, nullable=False, server_default=text("'staged'"))
+    notes = Column(Text)
+    submitted_by = Column(Text)
+    submitted_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    hod_username = Column(Text)
+    hod_decided_at = Column(DateTime)
+    rejected_reason = Column(Text)
+    Done_SQM_Credited = Column(Float)
+    __table_args__ = (
+        Index("ix_sme_attr_group_site_status", "Site_ID", "status"),
+        Index("ix_sme_attr_group_tag", "Site_ID", "Equipment_Tag_No", "Lining_System_Code"),
+    )
 
 
 class ConsumptionReconciliation(Base):

@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import SystemCode from '../sme/SystemCode'
+import { HodJobs, JobQueue, useJobQueue, useStagedJobs } from './SmeJobs'
 
 /**
  * Surface Shield consumption — the Inventory ⇄ SME bridge (Phase 13, Track 3).
@@ -71,163 +72,6 @@ function PriorityTag({ flag }: { flag: unknown }) {
   return s(flag) === 'HIGH'
     ? <Tag color="red">High Priority</Tag>
     : <Tag>Normal</Tag>
-}
-
-/** Attribute one ledger row: system, tag, area. */
-function AssignModal({ row, onClose }: { row: Row | null; onClose: () => void }) {
-  const { message } = App.useApp()
-  const qc = useQueryClient()
-  const [form] = Form.useForm()
-  const [code, setCode] = useState<string | undefined>()
-
-  const sap = s(row?.sap_code)
-  const site = s(row?.site_id)
-  const systems = useQuery({
-    queryKey: ['/execution/sme-link/system-codes', sap],
-    enabled: !!row,
-    queryFn: async () => (await api.get<{ items: Row[] }>(
-      '/execution/sme-link/system-codes', { params: { sap } })).data.items,
-  })
-  const equipment = useQuery({
-    queryKey: ['/execution/sme-link/equipment', code, site],
-    enabled: !!code,
-    queryFn: async () => (await api.get<{ items: Row[] }>(
-      '/execution/sme-link/equipment',
-      { params: { code, site_id: site } })).data.items,
-  })
-
-  const save = useMutation({
-    mutationFn: async (v: Record<string, unknown>) =>
-      (await api.post('/execution/sme-link/assign', {
-        consumption_id: Number(row?.consumption_id),
-        code: v.code, tag: v.tag, sqm: v.sqm,
-        work_date: s(row?.work_date) || null,
-        notes: v.notes ?? null, site_id: site || null,
-      })).data,
-    onSuccess: () => {
-      message.success(rejected
-        ? 'Resubmitted — it is back with the HOD'
-        : edited
-          ? 'Re-assigned — the HOD has been notified'
-          : 'Recorded — it now goes to the HOD for approval')
-      void qc.invalidateQueries({ queryKey: ['/execution/sme-link/queue'] })
-      void qc.invalidateQueries({ queryKey: ['/execution/sme-link/assigned'] })
-      onClose()
-    },
-    onError: (e) => message.error(errMsg(e)),
-  })
-
-  // The store keeper's `LS <code>` note, read back so the field does not
-  // re-pick what somebody already picked. A hint, never an assignment.
-  // ⚠️ An EDITED row starts from its previous answer instead: the field is
-  // confirming or correcting work already done, not starting from nothing.
-  // ⚠️ A REJECTED row starts from what was REJECTED, with the HOD's reason in
-  // front of it: the field is correcting their own answer, so they need to see
-  // it and what was wrong with it, not a blank form.
-  const rejected = s(row?.reason) === 'rejected'
-  const edited = s(row?.reason) === 'edited' || !!row?.edited_in_excel
-  const hint = (rejected ? s(row?.rejected_code)
-    : edited ? s(row?.prev_code) : s(row?.hinted_system_code)) || undefined
-
-  return (
-    <Modal open={!!row} onCancel={onClose}
-      title={rejected ? 'Correct and resubmit' : 'What did this material cover?'}
-      okText={rejected ? 'Resubmit to HOD' : 'Record'} confirmLoading={save.isPending}
-      afterOpenChange={(o) => {
-        if (o) {
-          setCode(hint)
-          form.setFieldsValue({
-            code: hint,
-            tag: rejected ? s(row?.rejected_tag) || undefined
-              : edited ? s(row?.prev_tag) || undefined : undefined,
-            sqm: rejected ? n(row?.rejected_sqm) ?? undefined
-              : edited ? n(row?.prev_sqm) ?? undefined : undefined,
-          })
-        }
-      }}
-      onOk={() => form.validateFields().then((v) => save.mutate(v))}>
-      {row && (
-        <>
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-            <strong>{s(row.material_name) || s(row.sap_code)}</strong>
-            {' · '}<Qty value={row.quantity} unit={s(row.uom)} /> drawn on{' '}
-            {s(row.work_date)}
-            {s(row.tank_no) ? ` · noted against ${s(row.tank_no)}` : ''}
-          </Typography.Paragraph>
-          {/* ⚠️ THE HOD'S REASON, FIRST AND UNMISSABLE. A rejection the field
-              cannot read is one they resubmit unchanged. */}
-          {rejected && (
-            <Alert type="error" showIcon style={{ marginBottom: 12 }}
-              title="Rejected — needs correction"
-              description={<>
-                <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>
-                  “{s(row.rejection_reason) || 'No reason recorded'}”
-                </Typography.Text>
-                {s(row.rejected_by) ? `— ${s(row.rejected_by)}. ` : ''}
-                The answer that was rejected is filled in below. Correct it and
-                resubmit; it goes straight back to the HOD.
-              </>} />
-          )}
-          {/* ⚠️ THE EDIT, SHOWN AS AN EDIT. The operator asked for this to be
-              highlighted, and the reason is practical: the field is being asked
-              a question they already answered, and the only way that is not
-              confusing is to show them what changed in the workbook. */}
-          {edited && (
-            <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-              title="Edited in Excel since this was assigned"
-              description={<>
-                The workbook now says <strong><Qty value={row.quantity} unit={s(row.uom)} /></strong>
-                {' '}where it was assigned against <strong><Qty value={row.prev_qty} unit={s(row.uom)} /></strong>.
-                {' '}The previous answer is filled in below — confirm it or correct it.
-                {s(row.log_status) === 'committed'
-                  ? ' The approved figures keep counting until the HOD approves these.'
-                  : ''}
-                {!rejected && s(row.last_revision_rejected_reason)
-                  ? <> The HOD rejected the last re-assignment: <em>{s(row.last_revision_rejected_reason)}</em></>
-                  : null}
-              </>} />
-          )}
-          {/* ⚠️ STATED PLAINLY, because "recording consumption" sounds like it
-              deducts something and this does not. */}
-          <Alert type="info" showIcon style={{ marginBottom: 12 }}
-            title="This records what the material was used for — it does not move any stock"
-            description="The material left the store when it was issued. What is missing is the area it covered, so it can be compared against the recipe." />
-          <Form form={form} layout="vertical">
-            <Form.Item name="code" label="System Code"
-              rules={[{ required: true, message: 'Pick the lining system this was drawn for' }]}
-              extra={rejected ? 'This is the answer the HOD rejected — change it if the system was wrong.'
-                : edited && hint ? 'Your previous answer — confirm it or change it.'
-                  : hint ? 'Pre-selected from the store keeper’s note — change it if that was wrong.'
-                    : 'Only the systems whose recipe contains this material are offered.'}>
-              <Select showSearch optionFilterProp="label"
-                loading={systems.isFetching}
-                placeholder="Which system was this for?"
-                onChange={(v) => { setCode(v); form.setFieldsValue({ tag: undefined }) }}
-                options={(systems.data ?? []).map((x) => ({
-                  value: s(x.code),
-                  label: `${s(x.code)}${x.name ? ` — ${s(x.name)}` : ''}`,
-                }))} />
-            </Form.Item>
-            <Form.Item name="tag" label="Equipment / tank"
-              rules={[{ required: true, message: 'Pick the equipment this was applied to' }]}
-              extra="Filtered to the equipment that system code applies to.">
-              <Select showSearch optionFilterProp="label" disabled={!code}
-                loading={equipment.isFetching}
-                placeholder={code ? 'Which vessel?' : 'Pick a system code first'}
-                options={(equipment.data ?? []).map((x) => ({
-                  value: s(x.tag),
-                  label: `${s(x.tag)}${x.name && x.name !== x.tag ? ` — ${s(x.name)}` : ''}`,
-                }))} />
-            </Form.Item>
-            <Form.Item name="sqm" label="Area covered (m²)"
-              rules={[{ required: true, message: 'How much area did this material cover?' }]}>
-              <InputNumber min={0.01} step={1} style={{ width: 200 }} />
-            </Form.Item>
-          </Form>
-        </>
-      )}
-    </Modal>
-  )
 }
 
 /**
@@ -436,84 +280,19 @@ function RevisionModal({ row, onClose }: { row: Row | null; onClose: () => void 
 export default function SmeLinkCard() {
   const { user } = useAuth()
   const isHod = user?.role === 'hod' || user?.role === 'admin'
-  const [assignRow, setAssignRow] = useState<Row | null>(null)
   const [decideRow, setDecideRow] = useState<Row | null>(null)
   const [revisionRow, setRevisionRow] = useState<Row | null>(null)
 
-  const queue = useQuery({
-    queryKey: ['/execution/sme-link/queue'],
-    queryFn: async () => (await api.get<{ items: Row[]; total: number; edited: number
-      rejected: number }>(
-      '/execution/sme-link/queue', { params: { limit: 200 } })).data,
-  })
+  // Phase 14c: the queue is JOBS (day × equipment); its label still counts
+  // the materials waiting, so the number means what it meant before.
+  const queue = useJobQueue()
+  const staged = useStagedJobs()
   const assigned = useQuery({
     queryKey: ['/execution/sme-link/assigned'],
     queryFn: async () => (await api.get<{ items: Row[]; high_priority: number
       tolerance_pct: number; revisions: Row[] }>(
       '/execution/sme-link/assigned', { params: { status: 'staged' } })).data,
   })
-
-  const queueCols: ColumnsType<Row> = [
-    // ⚠️ 2026-09-17: WHY THE ROW IS HERE, IN WORDS. A rejected row carries the
-    // HOD's reason in the table itself, not only behind a click — the field
-    // should be able to scan the top of the queue and know what to fix.
-    { title: 'Status', key: 'st', width: 260,
-      render: (_: unknown, r: Row) => (
-        <Space direction="vertical" size={2} style={{ maxWidth: 250 }}>
-          {s(r.reason) === 'rejected' && (<>
-            <Tag color="red" style={{ marginInlineEnd: 0, fontWeight: 600 }}>
-              Rejected - Needs Correction
-            </Tag>
-            <Typography.Text style={{ fontSize: 12, whiteSpace: 'normal' }}>
-              “{s(r.rejection_reason) || 'No reason recorded'}”
-              {s(r.rejected_by)
-                ? <Typography.Text type="secondary" style={{ fontSize: 11 }}> — {s(r.rejected_by)}</Typography.Text>
-                : null}
-            </Typography.Text>
-          </>)}
-          {(s(r.reason) === 'edited' || !!r.edited_in_excel) && (
-            <Tooltip title="This consumption was already assigned, then its figures were changed in the Excel workbook. It needs assigning again against the new figures.">
-              <Tag color="orange" style={{ marginInlineEnd: 0 }}>Edited in Excel</Tag>
-            </Tooltip>
-          )}
-          {s(r.reason) === 'unattributed' && <Tag style={{ marginInlineEnd: 0 }}>Needs an area</Tag>}
-        </Space>) },
-    { title: 'Date', dataIndex: 'work_date', width: 110,
-      render: (v) => s(v).slice(0, 10) },
-    { title: 'Material', key: 'm', width: 260,
-      render: (_: unknown, r: Row) => (
-        <Space direction="vertical" size={0}>
-          <span>{s(r.material_name) || s(r.sap_code)}</span>
-          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-            SAP {s(r.sap_code)}{r.material_code ? ` · ${s(r.material_code)}` : ''}
-          </Typography.Text>
-        </Space>) },
-    { title: 'Drawn', key: 'q', width: 140, align: 'right',
-      render: (_: unknown, r: Row) => ((s(r.reason) === 'edited' || !!r.edited_in_excel)
-        && n(r.prev_qty) !== n(r.quantity)
-        ? <Space direction="vertical" size={0} style={{ alignItems: 'flex-end' }}>
-            <strong><Qty value={r.quantity} unit={s(r.uom)} /></strong>
-            <Typography.Text type="secondary" delete style={{ fontSize: 11 }}>
-              <Qty value={r.prev_qty} unit={s(r.uom)} />
-            </Typography.Text>
-          </Space>
-        : <Qty value={r.quantity} unit={s(r.uom)} />) },
-    { title: 'Noted against', dataIndex: 'tank_no', width: 160,
-      render: (v) => s(v) || <Typography.Text type="secondary">—</Typography.Text> },
-    { title: 'System', key: 'ls', width: 150,
-      render: (_: unknown, r: Row) => (s(r.hinted_system_code)
-        ? <SystemCode code={s(r.hinted_system_code)} plain />
-        : <Tooltip title="No system was noted at issue, so the app will ask rather than guess — a guessed code compares the draw against the wrong benchmark.">
-            <Tag>not stated</Tag>
-          </Tooltip>) },
-    { title: '', key: 'a', fixed: 'right', width: 120,
-      render: (_: unknown, r: Row) => (
-        <Button size="small" type="primary" danger={s(r.reason) === 'rejected'}
-          onClick={() => setAssignRow(r)}>
-          {s(r.reason) === 'rejected' ? 'Correct & resubmit'
-            : s(r.reason) === 'edited' ? 'Re-assign' : 'Record area'}
-        </Button>) },
-  ]
 
   // ⚠️ BEFORE AND AFTER, SIDE BY SIDE. A revision replaces figures that already
   // count; an HOD approving one needs to see what it replaces, not just what it
@@ -577,6 +356,9 @@ export default function SmeLinkCard() {
   ]
 
   const tol = assigned.data?.tolerance_pct ?? 10
+  // A row inside a job is decided with its job; only rows filed before jobs
+  // existed (no group) are decided one at a time.
+  const loose = (assigned.data?.items ?? []).filter((r) => r.group_id == null)
 
   return (
     <Card size="small" style={{ marginBottom: 12 }}
@@ -586,41 +368,12 @@ export default function SmeLinkCard() {
         items={[
           {
             key: 'queue',
-            label: `Needs an area (${queue.data?.total ?? 0})`,
-            children: (
-              <>
-                <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-                  Surface Shield material issued from the store, with no area
-                  recorded against it yet — <strong>rejected rows first</strong>,
-                  then <strong>oldest first</strong>. This
-                  list reaches back over the whole ledger, so it includes issues
-                  from long before this screen existed.
-                  {' '}Recording an area moves no stock: the material left the
-                  store when it was issued.
-                </Typography.Paragraph>
-                {(queue.data?.rejected ?? 0) > 0 && (
-                  <Alert type="error" showIcon style={{ marginBottom: 8 }}
-                    title={`${queue.data?.rejected} row(s) rejected by the HOD — at the top, needs correction`}
-                    description="Each one shows the HOD's reason. Correct the system code, equipment or area and resubmit; it goes straight back to the HOD." />
-                )}
-                {(queue.data?.edited ?? 0) > 0 && (
-                  <Alert type="warning" showIcon style={{ marginBottom: 8 }}
-                    title={`${queue.data?.edited} row(s) marked Edited in Excel`}
-                    description="These were already assigned, then their quantity, date or tank changed in the workbook. Re-assign them against the new figures — the previous answer is filled in for you. A workbook push that changes nothing does not send a row back." />
-                )}
-                <Table size="small" loading={queue.isFetching} columns={queueCols}
-                  dataSource={queue.data?.items ?? []}
-                  rowKey={(r) => String(r.consumption_id)}
-                  onRow={(r) => (s(r.reason) === 'rejected'
-                    ? { style: { background: 'rgba(255, 77, 79, 0.08)' } } : {})}
-                  scroll={{ x: 'max-content' }}
-                  pagination={{ pageSize: 10, showTotal: (t) => `${t} outstanding` }} />
-              </>
-            ),
+            label: `Needs an area (${queue.data?.total_rows ?? 0})`,
+            children: <JobQueue />,
           },
           {
             key: 'staged',
-            label: `Awaiting the HOD (${(assigned.data?.items?.length ?? 0)
+            label: `Awaiting the HOD (${(staged.data?.length ?? 0) + loose.length
               + (assigned.data?.revisions?.length ?? 0)})`,
             children: (
               <>
@@ -630,12 +383,28 @@ export default function SmeLinkCard() {
                   is flagged <Tag color="red" style={{ marginInline: 4 }}>High Priority</Tag>
                   and sorted to the top — the band decides what an HOD sees
                   first, never whether a decision is needed.
-                  {' '}Approval credits the area to that equipment.
+                  {' '}Each card is <strong>one job</strong> — one day on one
+                  piece of equipment — decided as a whole: approval credits its
+                  area to that equipment <strong>once</strong>.
                 </Typography.Paragraph>
-                <Table size="small" loading={assigned.isFetching}
-                  columns={assignedCols} dataSource={assigned.data?.items ?? []}
-                  rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
-                  pagination={{ pageSize: 10, showTotal: (t) => `${t} awaiting` }} />
+                <HodJobs isHod={isHod} />
+                {loose.length > 0 && (
+                  <>
+                    <Typography.Title level={5} style={{ marginTop: 16 }}>
+                      Filed one material at a time
+                    </Typography.Title>
+                    <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+                      Submitted before jobs were grouped. Each is decided on its own
+                      and credits its own area, as it always did.
+                    </Typography.Paragraph>
+                    <Table size="small" loading={assigned.isFetching}
+                      columns={assignedCols} dataSource={loose}
+                      rowKey={(r) => String(r.id)} scroll={{ x: 'max-content' }}
+                      pagination={{ pageSize: 10, showTotal: (t) => `${t} awaiting` }} />
+                  </>
+                )}
+                {!staged.isLoading && (staged.data?.length ?? 0) === 0 && loose.length === 0
+                  && <Typography.Text type="secondary">Nothing awaiting a decision.</Typography.Text>}
                 {(assigned.data?.revisions?.length ?? 0) > 0 && (
                   <>
                     <Typography.Title level={5} style={{ marginTop: 16 }}>
@@ -657,7 +426,6 @@ export default function SmeLinkCard() {
             ),
           },
         ]} />
-      <AssignModal row={assignRow} onClose={() => setAssignRow(null)} />
       <DecideModal row={decideRow} onClose={() => setDecideRow(null)} />
       <RevisionModal row={revisionRow} onClose={() => setRevisionRow(null)} />
     </Card>
