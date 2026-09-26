@@ -540,6 +540,12 @@ confirm.
   the every-role chapter §26 is user-facing.
 * **Outbox rows are not produced** in Practice (dispatch sees no configured
   channel), so the bell is the visible trace, not the WhatsApp Console.
-* **Not verified locally:** `docker compose config` and `nginx -t` (Docker is
-  not installed on the development Mac). The compose file parses as YAML and
-  the nginx block mirrors `/api/` with request-time resolution.
+* **Verified 2026-09-26 with Docker (colima):** `docker compose config` both
+  with and without the `practice` profile, `nginx -t` on the envsubst-rendered
+  template, and a live nginx container returning **200 on `/api/`, 502 on
+  `/training-api/` with no Practice container, and 200 once one exists**.
+  ⚠️ `docker compose config` caught a real defect: the `${PRACTICE_*:?}` guards
+  made the WHOLE compose file invalid on a box without Practice configured
+  (compose interpolates services whose profile is off), so a Live deploy would
+  have failed. They are `:-` now; the guard is `deploy-v2.sh` + the boot-time
+  key check.
