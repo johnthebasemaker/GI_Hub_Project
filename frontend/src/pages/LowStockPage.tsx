@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { fmtPackBase } from '../lib/units'
 import { App, Button, Select, Space, Typography } from 'antd'
 import { Table } from '../lib/smartTable'
 import { FileAddOutlined } from '@ant-design/icons'
@@ -21,7 +22,9 @@ const columns: ColumnsType<Row> = [
   { title: 'UOM', dataIndex: 'UOM', width: 70 },
   { title: 'Min', dataIndex: 'Minimum_Qty', align: 'right', width: 80 },
   { title: 'Current', dataIndex: 'Current_Stock', align: 'right', width: 90,
-    render: (v) => <Typography.Text type="danger" strong>{String(v)}</Typography.Text> },
+    // Phase 14a: minimums stay in packs (Q14-7); the base figure rides along.
+    render: (v, row) => <Typography.Text type="danger" strong>
+      {fmtPackBase(row.SAP_Code, v, row.UOM as string) ?? String(v)}</Typography.Text> },
   { title: 'Shortage', dataIndex: 'Shortage', align: 'right', width: 90 },
   { title: 'Daily burn (30d)', dataIndex: 'Daily_Burn', align: 'right', width: 120 },
   { title: 'Days of supply', dataIndex: 'Days_Of_Supply', align: 'right', width: 120,

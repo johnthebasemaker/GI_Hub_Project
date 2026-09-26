@@ -525,6 +525,21 @@ async def categories(session: AsyncSession = Depends(get_session),
     return {"categories": [r[0] for r in res.all()]}
 
 
+@app.get("/meta/unit-sizes", tags=["meta"],
+         summary="Surface Shield pack → base factors (Phase 14a, display only)")
+async def meta_unit_sizes(user: dict = Depends(get_current_user),
+                          session: AsyncSession = Depends(get_session)):
+    """`{SAP: {pack_uom, unit_size, factor, base_uom}}` for every Surface Shield.
+
+    The frontend's ONLY source for base figures ("21 Can · 189 KG"). It reads
+    `services/units.py` — the one home of the conversion — so the screen can
+    never compute a factor the server would not. Master data, readable by any
+    signed-in role, like `/meta/categories`.
+    """
+    from .services import units as U
+    return {"items": await U.unit_map(session)}
+
+
 @app.get("/meta/work-queues", tags=["meta"],
          summary="Pending-work counts for the sidebar badges (role- and site-aware)")
 async def work_queues(user: dict = Depends(get_current_user),

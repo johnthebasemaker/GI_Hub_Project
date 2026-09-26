@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { baseReadout } from '../lib/units'
 import {
   Alert, App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Popconfirm, Row, Select,
   Space, Tag, Typography,
@@ -69,6 +70,8 @@ export default function IssuePage() {
   const draft = useFormDraft(form, 'issue')
 
   const watchSap = Form.useWatch('SAP_Code', form)
+  // Phase 14a (Q14-6): packs are entered; the base figure is read out live.
+  const watchQty = Form.useWatch('Quantity', form)
   const watchSite = Form.useWatch('Site_ID', form)
   const watchLot = Form.useWatch('Lot_Number', form)
   const { data: bins } = useBins(watchSap, watchSite)
@@ -446,7 +449,8 @@ export default function IssuePage() {
 
           <Row gutter={16}>
             <Col xs={24} md={8}>
-              <Form.Item name="Quantity" label="Quantity" rules={[{ required: true }]}>
+              <Form.Item name="Quantity" label="Quantity" rules={[{ required: true }]}
+                extra={baseReadout(watchSap, watchQty) ?? undefined}>
                 <InputNumber min={0.0001} style={{ width: '100%' }} placeholder="0" />
               </Form.Item>
             </Col>

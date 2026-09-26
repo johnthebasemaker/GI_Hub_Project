@@ -25788,6 +25788,272 @@ async def test_entry_replay_idempotency():
               f1.status_code == 404 and f2.status_code == 404, f"{f1.status_code}/{f2.status_code}")
 
 
+async def test_phase14a_units():
+    """Suite 14A — packs and base units, converted in ONE place.
+
+    The ledger counts PACKS; the recipe speaks BASE units. Before Phase 14 the
+    attribution variance compared a can with a kilogram (D1) and a QR form's KG
+    figure was posted into a ledger of cans (D2). Both are asserted here on
+    concrete numbers, beside the property that must NOT move: readiness (L5).
+    """
+    import io as _io
+    import re as _re
+    from pathlib import Path as _P
+
+    import openpyxl as _ox
+    from fastapi import HTTPException
+    from sqlalchemy import text as _t
+
+    from . import bulk_import as BI
+    from . import sme as SME
+    from . import sme_engine as E
+    from .services import execution as X
+    from .services import quality as Q
+    from .services import sme_link as SL
+    from .services import units as U
+
+    SITE = "SVUA-SITE"
+    async with SessionLocal() as s:
+        CAT = await Q.controlled_category(s)
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            for q in ("DELETE FROM sme_consumption_log WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_execution_entry_material WHERE \"Entry_ID\" IN "
+                      "(SELECT id FROM sme_execution_entry WHERE \"Site_ID\" = :site)",
+                      "DELETE FROM sme_execution_entry WHERE \"Site_ID\" = :site",
+                      "DELETE FROM consumption WHERE \"SAP_Code\" LIKE 'SVUA-%'",
+                      "DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SVUA-%'",
+                      "DELETE FROM sme_recipe WHERE \"Lining_System_Code\" LIKE 'SVUA-%'",
+                      "DELETE FROM sme_equipment WHERE \"Equipment_Tag_No\" LIKE 'SVUA-%'",
+                      "DELETE FROM sme_sqm_progress WHERE \"Equipment_Tag_No\" LIKE 'SVUA-%'"):
+                await s.execute(_t(q), {"site": SITE})
+            await s.commit()
+
+    await _cleanup()
+    try:
+        async with SessionLocal() as s:
+            for sap, uom, cat, us, mat in (
+                    ("SVUA-1", "Can", CAT, 9.0, "SVUA-MAT-1"),     # container, known
+                    ("SVUA-2", "Bag", CAT, None, "SVUA-MAT-2"),    # container, UNKNOWN
+                    ("SVUA-3", "KG", CAT, None, "SVUA-MAT-3"),     # measure pack
+                    ("SVUA-4", "Can", "PPE", 5.0, "SVUA-MAT-4")):  # not a shield
+                await s.execute(_t(
+                    'INSERT INTO inventory ("SAP_Code", "Material_Code", '
+                    '"Equipment_Description", "Category", "UOM", "Site_ID", '
+                    '"Unit_Size", "Base_UOM") VALUES (:s, :m, :s, :c, :u, :site, '
+                    'CAST(:us AS double precision), :bu)'),
+                    {"s": sap, "m": mat, "c": cat, "u": uom, "site": SITE, "us": us,
+                     "bu": "KG" if us is not None else None})
+            await s.execute(_t(
+                'INSERT INTO sme_recipe ("Lining_System_Code", "Execution_Sub_Activity_Code", '
+                '"Material_Code", "SAP_Code", "Material_Name", "UOM", "For_1_SQM", '
+                '"Lining_System_Name") VALUES (\'SVUA-LS1\', \'SVUA-ESC1\', '
+                '\'SVUA-MAT-1\', \'SVUA-1\', \'Adhesive\', \'KG\', 2.0, \'SVUA system\')'))
+            await s.execute(_t(
+                'INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", "Name", '
+                '"Lining_System_Code", "Surface_Area_SQM", "Equipment_Total_SQM") '
+                "VALUES (:site, 'SVUA-TANK', 'Tank', 'SVUA-LS1', 100, 100)"), {"site": SITE})
+            await s.commit()
+
+        # ── 14A-01..04: the factor rule, and the two twins agreeing ───────────
+        async with SessionLocal() as s:
+            py = {k: (await U.unit_info(s, k))["factor"] for k in
+                  ("SVUA-1", "SVUA-2", "SVUA-3", "SVUA-4")}
+            sq = {r[0]: (None if r[1] is None else float(r[1])) for r in (await s.execute(_t(
+                f'SELECT i."SAP_Code", {U.factor_sql("i")} FROM inventory i '
+                "WHERE i.\"SAP_Code\" LIKE 'SVUA-%'"), {"ss_category": CAT})).all()}
+        check("14A-01: a Surface Shield CAN with a Unit Size converts by it (9)",
+              py["SVUA-1"] == 9.0, str(py))
+        check("14A-02: ⚠️ a Surface Shield CONTAINER with no Unit Size is UNKNOWN "
+              "(None) — never 1. Treating one bag as one kilogram is defect D1",
+              py["SVUA-2"] is None, str(py))
+        check("14A-03: a pack that is itself a measure (KG) is its own base (1); "
+              "a non-shield has no conversion at all (None)",
+              py["SVUA-3"] == 1.0 and py["SVUA-4"] is None, str(py))
+        check("14A-04: the SQL twin (FACTOR_SQL) and the Python twin agree on every "
+              "kind of row — two copies that disagree are how a unit leaks",
+              py == sq, f"py={py} sql={sq}")
+        check("14A-05: pack ⇄ base round-trip: 4.5 cans × 9 = 40.5 kg, and 45 kg "
+              "written on a form is 5 cans in the ledger",
+              U.base_qty(4.5, 9.0) == 40.5 and U.pack_from_base(45, 9.0) == 5.0
+              and U.base_qty(3, None) is None, "")
+
+        # ── 14A-06..08: D1 — the attribution compares kg with kg ─────────────
+        async with SessionLocal() as s:
+            cid = (await s.execute(_t(
+                'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                '"Tank_No") VALUES (\'2026-09-20\', \'SVUA-1\', 4.5, :site, \'SVUA-TANK\') '
+                'RETURNING id'), {"site": SITE})).scalar_one()
+            res = await SL.assign(s, consumption_id=cid, code="SVUA-LS1", tag="SVUA-TANK",
+                                  sqm=20.0, work_date=None, notes=None,
+                                  username="svc-14a", site_id=SITE)
+            log = (await s.execute(_t(
+                'SELECT "Actual_Qty", "Expected_Qty", "Variance_Pct", "Pack_Qty", '
+                '"Unit_Size_Used" FROM sme_consumption_log WHERE "Consumption_ID" = :c'),
+                {"c": cid})).mappings().first()
+            cid2 = (await s.execute(_t(
+                'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                '"Tank_No") VALUES (\'2026-09-20\', \'SVUA-2\', 2, :site, \'SVUA-TANK\') '
+                'RETURNING id'), {"site": SITE})).scalar_one()
+            refused = None
+            try:
+                await SL.assign(s, consumption_id=cid2, code="SVUA-LS1", tag="SVUA-TANK",
+                                sqm=5.0, work_date=None, notes=None, username="svc-14a",
+                                site_id=SITE)
+            except HTTPException as e:
+                refused = e
+            await s.rollback()
+        check("14A-06: ⚠️ D1 FIXED — 4.5 cans of a 9 kg adhesive over 20 m² at "
+              "2.0 kg/m²: actual 40.5 KG against 40 KG expected, +1.25 %. The old "
+              "code recorded '4.5' against 40 and called it −88.75 %",
+              log is not None and float(log["Actual_Qty"]) == 40.5
+              and float(log["Expected_Qty"]) == 40.0
+              and round(float(log["Variance_Pct"]), 2) == 1.25, str(dict(log or {})))
+        check("14A-07: …and the pack count and the factor are SNAPSHOTTED beside it, "
+              "so a Unit Size corrected next quarter cannot rewrite this variance",
+              log is not None and float(log["Pack_Qty"]) == 4.5
+              and float(log["Unit_Size_Used"]) == 9.0, str(dict(log or {})))
+        check("14A-08: a shield bag with NO Unit Size is REFUSED (422, naming the "
+              "fix) rather than attributed as if a bag were a kilogram",
+              refused is not None and refused.status_code == 422
+              and "Unit Size" in str(refused.detail), str(refused))
+
+        # ── 14A-09..11: D2 — a KG form posts PACKS; the variance is base ──────
+        async with SessionLocal() as s:
+            opened = await X.open_entry(
+                s, username="svc-14a", role="supervisor", site_id=SITE,
+                work_date="2026-09-21", equipment_tag="SVUA-TANK", code="SVUA-LS1",
+                esc="SVUA-ESC1", qty_unit="base",
+                materials=[{"Material_Code": "SVUA-MAT-1", "SAP_Code": "SVUA-1",
+                            "Actual_Qty": 45}])
+            await X.post_stock(s, opened["id"], username="svc-14a")
+            posted = (await s.execute(_t(
+                'SELECT "Quantity" FROM consumption WHERE "Source_Ref" LIKE :r'),
+                {"r": f"SME_EXEC:{opened['id']}:%"})).scalar()
+            bad = await X.open_entry(
+                s, username="svc-14a", role="supervisor", site_id=SITE,
+                work_date="2026-09-21", equipment_tag="SVUA-TANK", code="SVUA-LS1",
+                esc="SVUA-ESC1", qty_unit="base",
+                materials=[{"Material_Code": "SVUA-MAT-2", "SAP_Code": "SVUA-2",
+                            "Actual_Qty": 10}])
+            d2_refused = None
+            try:
+                await X.post_stock(s, bad["id"], username="svc-14a")
+            except HTTPException as e:
+                d2_refused = e
+            await s.rollback()
+        check("14A-09: ⚠️ D2 FIXED — a form written in KG (45 kg of a 9 kg can) "
+              "deducts 5 CANS, not 45",
+              posted is not None and float(posted) == 5.0, f"posted={posted}")
+        check("14A-10: a KG line whose SAP has no Unit Size is refused before "
+              "anything posts, naming the fix",
+              d2_refused is not None and d2_refused.status_code == 422, str(d2_refused))
+        v_pack = X.compute_variance(
+            {"Actual_SQM": 10, "Qty_Unit": "pack"},
+            [{"Bench_For_1_SQM": 2.0, "Actual_Qty": 2, "Unit_Is_SS": True, "Unit_Factor": 9.0}], [])
+        v_unknown = X.compute_variance(
+            {"Actual_SQM": 10, "Qty_Unit": "pack"},
+            [{"Bench_For_1_SQM": 2.0, "Actual_Qty": 2, "Unit_Is_SS": True, "Unit_Factor": None}], [])
+        v_legacy = X.compute_variance(
+            {"Actual_SQM": 10, "Qty_Unit": None},
+            [{"Bench_For_1_SQM": 2.0, "Actual_Qty": 2, "Unit_Is_SS": True, "Unit_Factor": 9.0}], [])
+        lp, lu, ll = (v["materials"][0] for v in (v_pack, v_unknown, v_legacy))
+        check("14A-11: the execution variance compares BASE with the benchmark — 2 "
+              "cans × 9 = 18 kg vs 20 kg is −10 %; an unknown factor is None; an "
+              "entry filed before the tick (NULL) keeps its original meaning",
+              lp and lp["Actual_Qty"] == 18.0 and lp["Variance_Pct"] == -10.0
+              and lu and lu["Variance_Pct"] is None
+              and ll and ll["Actual_Qty"] == 2.0,
+              f"{lp} | {lu} | {ll}")
+
+        # ── 14A-12..13: the sync reads Unit Size and names every disagreement ─
+        wb = _ox.Workbook()
+        ws = wb.active
+        ws.title = "Inventory"
+        ws.append(["Sl. No.", "SAP CODE", "Material Code", "Equipment Description", "UOM",
+                   "Category", "Opening Stock", "Minimum Qty", "Unit Size",
+                   "4.33kg For 1 SQM"])
+        ws.append([1, "SVUA-W1", "SVUA-WM1", "PRIMER X (10KG)", "Can", "Surface Shield", 0, 0, 10, None])
+        ws.append([2, "SVUA-W2", "SVUA-WM2", "FILLER Y", "Bag", "Surface Shield", 0, 0, None, None])
+        ws.append([3, "SVUA-W3", "SVUA-WM3", "RESIN Z (25KG)", "Can", "Surface Shield", 0, 0, 20, None])
+        buf = _io.BytesIO()
+        wb.save(buf)
+        async with SessionLocal() as s:
+            plan = await BI.plan_inventory(s, buf.getvalue(), SITE)
+        ins = {r["SAP_Code"]: r for r in plan["inserts"]}
+        warn = " | ".join(plan["warnings"])
+        check("14A-12: the Inventory sheet's 'Unit Size' lands on the row with its "
+              "Base_UOM (a can of lining chemical → KG); the empty '4.33kg For 1 SQM' "
+              "column is DECLINED, not imported (ruling Q14-8.1)",
+              ins.get("SVUA-W1", {}).get("Unit_Size") == 10
+              and ins.get("SVUA-W1", {}).get("Base_UOM") == "KG"
+              and "4.33kg For 1 SQM" in warn and "NOT imported" in warn, warn[:300])
+        check("14A-13: reported, never blocking: a shield bag with NO Unit Size, and a "
+              "description ('25KG') disagreeing with its Unit Size (20) — Unit Size wins",
+              "SVUA-W2" in warn and "SVUA-W3" in warn and "SVUA-W3" in ins, warn[:300])
+
+        # ── 14A-14: L5 — readiness does not move ─────────────────────────────
+        def _strip(obj):
+            if isinstance(obj, dict):
+                return {k: _strip(v) for k, v in obj.items() if k != "Consumed_Qty"}
+            if isinstance(obj, list):
+                return [_strip(x) for x in obj]
+            return obj
+
+        async def _model():
+            async with SessionLocal() as s:
+                snap = await SME._snapshot_rows(s, None)
+            m = E.build_model(snap["equipment"], snap["recipes"], snap["materials"],
+                              snap["progress"])
+            order = [e["Equipment_Tag_No"] for e in snap["equipment"]][:30]
+            return {**E.run_plan(m, order), **E.run_suggestion_engine(m, order)}
+
+        before = await _model()
+        async with SessionLocal() as s:
+            await s.execute(_t(
+                'UPDATE inventory SET "Unit_Size" = 25 WHERE "SAP_Code" IN '
+                "(SELECT \"SAP_Code\" FROM inventory WHERE LOWER(TRIM(\"Category\")) = "
+                "LOWER(:c) AND \"Unit_Size\" IS NULL AND \"SAP_Code\" NOT LIKE 'SVUA-%' "
+                "LIMIT 5)"), {"c": CAT})
+            after = await _model()
+            await s.rollback()
+        check("14A-14: ⚠️ L5 — READINESS DOES NOT MOVE. The estimator's plan and "
+              "suggestions are byte-identical (bar the Consumed_Qty observation) "
+              "whatever the Unit Sizes are: the SME seed is already in base units, "
+              "so the factor can only ever touch the observation (rules 1a/1b/1c)",
+              _strip(before) == _strip(after), _sme_deep_diff(_strip(before), _strip(after)))
+
+        # ── 14A-15: one home — no second conversion in the backend ───────────
+        root = _P(__file__).parent
+        leaks = []
+        pat = _re.compile(r'Unit_Size["\']?\]?\)?\s*\*|\*\s*[^\n#]*\bUnit_Size\b')
+        for f in root.rglob("*.py"):
+            if f.name in ("units.py", "service_tests.py"):
+                continue
+            for n, line in enumerate(f.read_text(errors="ignore").splitlines(), 1):
+                if pat.search(line) and not line.strip().startswith("#"):
+                    leaks.append(f"{f.name}:{n}")
+        check("14A-15: the conversion lives in ONE module — no `* Unit_Size` "
+              "anywhere else in the backend (a second copy is how a unit leaks)",
+              not leaks, str(leaks))
+
+        # ── 14A-16: the display source ───────────────────────────────────────
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+            tok = (await ac.post("/auth/login", headers={"X-Real-IP": "203.0.113.90"},
+                                 json={"username": "worker", "password": "floor2026"})).json()["access_token"]
+            r = await ac.get("/meta/unit-sizes", headers={"Authorization": f"Bearer {tok}"})
+        items = r.json().get("items", {}) if r.status_code == 200 else {}
+        check("14A-16: GET /meta/unit-sizes serves the factor map the screens use "
+              "(read from services/units.py, never recomputed in the browser)",
+              items.get("SVUA-1", {}).get("factor") == 9.0
+              and items.get("SVUA-2", {}).get("factor") is None
+              and "SVUA-4" not in items, str({k: v for k, v in items.items() if k.startswith("SVUA")}))
+    finally:
+        await _cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -26065,6 +26331,9 @@ async def main() -> int:
     print("\n DD. A rejection bounces back — to the top of the field's queue "
           "with the HOD's reason, and a correction goes straight back to the HOD")
     await test_sme_rejection_loop()
+    print("\n 14A. Phase 14a — packs and base units, converted in ONE place; D1 "
+          "and D2 fixed on concrete numbers; readiness does not move (L5)")
+    await test_phase14a_units()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

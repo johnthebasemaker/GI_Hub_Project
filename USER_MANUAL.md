@@ -1313,6 +1313,42 @@ fresh form and copy the figures across.
 **A photo it could not read.** It says so rather than creating a blank entry — a
 blank entry that gets submitted is a consumption of zero, recorded silently.
 
+### 4.10.8 Packs or kilograms on the form
+
+Above the materials table the form asks **QTY USED is written in: ☐ PACKS ☐ KG**.
+
+- **Write packs** — cans, bags, rolls — the way the store counts them. The UOM
+  column now prints the pack (Can, Bag) and the small print under each material
+  says what one pack holds, e.g. *1 Can = 9 KG*.
+- If you wrote kilograms instead, **tick KG**. The app converts to packs before
+  anything leaves the stock, using the material's Unit Size — 45 KG of a 9 KG
+  can deducts **5 cans**.
+- **Nothing ticked means packs.** When you review the photo, the same choice is
+  shown as *Quantities on this form are written in*. Check it matches the
+  paper.
+
+⚠️ If a material has no Unit Size yet, a form written in **KG** cannot be
+posted — the app says which material and asks for the Unit Size to be filled in
+the Inventory sheet. Writing that line in packs always works.
+
+## 4.11 Surface Shield quantities — packs and kilograms
+
+The store counts Surface Shield materials in **packs** — cans, bags, rolls. The
+estimator and the recipes measure them in **kilograms** (or m² for rubber sheet,
+or pieces for bricks). Every Surface Shield quantity is now shown **both ways,
+kilograms first**:
+
+> **189 KG · 21 Can**
+
+- You still **enter packs** on the Issue, Receive and Return forms. Under the
+  quantity box a live line shows what that comes to, e.g. *= 40.5 KG (1 Can = 9 KG)*.
+- Stock, the Material Card, Low Stock, Records and the approval queues show
+  both figures. **Minimums stay in packs.**
+- How much one pack holds comes from the **Unit Size** column of the Inventory
+  sheet, and nowhere else. Change it there and re-run the Excel sync.
+- A Surface Shield material with **no Unit Size** shows *— (no unit size)*
+  instead of a kilogram figure. It never guesses that one can is one kilogram.
+
 # 5. Supervisor Manual
 
 The Supervisor monitors a single site's stock, generates reports, and provides oversight. They cannot approve transactions (that's HOD).
@@ -4391,6 +4427,10 @@ The SME does **not** issue stock itself. Day-to-day consumption is entered on th
 - **SME inventory is isolated from ERP `inventory`.** The SME baseline lives in its own seed table; quantities shown are derived, not stored. Do not expect SME edits to change the Live Dashboard stock and vice-versa.
 - **Master-data grids order by an explicit key** (not row order); if a grid says "No records found" but data exists, it's a known historical bug class — refresh / report it.
 - The initial SME baseline is loaded per site by an Admin as a one-off setup step.
+- **`Consumed_Qty` is in the estimator's own units** (KG, M2, EA) from Phase 14:
+  the packs a draw used × the material's **Unit Size** (Inventory sheet), fixed
+  at the moment the draw was attributed. It is an observation beside the plan
+  and moves **no** readiness figure (§4.11).
 
 ---
 

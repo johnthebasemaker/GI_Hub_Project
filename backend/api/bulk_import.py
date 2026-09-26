@@ -255,9 +255,15 @@ def _is_declined_inventory_col(header: str) -> bool:
                           count as master data would create a second truth
                           (the workbook already disagrees with the DB on 131
                           of 452 SAPs).
+      `4.33kg For 1 SQM`  added to the 2026-09-26 workbook, EMPTY on every
+                          row, and declared not needed (operator ruling
+                          Q14-8.1). Any "… for 1 SQM" column on the Inventory
+                          sheet is declined: per-SQM rates are the recipe's
+                          (`For_1_SQM.xlsx`), never the warehouse master's.
     """
     h = header.strip().lower()
-    return h == "current location" or h.startswith("audit ")
+    return (h == "current location" or h.startswith("audit ")
+            or h.endswith("for 1 sqm"))
 
 
 def _col(headers: list[str], *names: str) -> Optional[int]:
@@ -294,6 +300,9 @@ async def plan_inventory(session: AsyncSession, data: bytes, site_id: str) -> di
         "uom": ("UOM",), "cat": ("Category",),
         "open": ("Opening Stock", "Opening_Stock"),
         "min": ("Minimum Qty", "Minimum_Qty"),
+        # Phase 14a — the pack → base factor (ruling Q14-4: THIS column is the
+        # single source of truth; the SME seed's Package Size is not consulted).
+        "unit": ("Unit Size", "Unit_Size"),
     }
     ix = {k: _col(headers, *names) for k, names in colspec.items()}
     if ix["sap"] is None:
@@ -358,7 +367,8 @@ async def plan_inventory(session: AsyncSession, data: bytes, site_id: str) -> di
                                   "Equipment_Description": _s(cell("desc")),
                                   "UOM": _s(cell("uom")), "Category": cat,
                                   "Opening_Stock": _f(cell("open")),
-                                  "Minimum_Qty": _f(cell("min"))}})
+                                  "Minimum_Qty": _f(cell("min"))},
+                       "unit_size": _f(cell("unit"))})
 
     # Material_Code resolution (unique across inventory):
     #   in-file duplicate        → first row keeps it, later rows import codeless
@@ -390,6 +400,9 @@ async def plan_inventory(session: AsyncSession, data: bytes, site_id: str) -> di
                                 f"without it")
                 p["mat"] = None
 
+    # ── Phase 14a: Unit Size + Base_UOM, and the checks that make them safe ──
+    await _plan_unit_sizes(session, parsed, warnings)
+
     inserts, updates, unchanged = [], [], 0
     for p in parsed:
         fields = {k: v for k, v in p["fields"].items() if v is not None}
@@ -412,6 +425,85 @@ async def plan_inventory(session: AsyncSession, data: bytes, site_id: str) -> di
                         ", ".join(f"{k} ×{v}" for k, v in normalised_cats.items()))
     return {"inserts": inserts, "updates": updates, "unchanged": unchanged,
             "rejects": rejects, "warnings": warnings, "releases": releases}
+
+
+_PACK_WEIGHT_RE = None
+
+
+def _described_size(desc: Optional[str]) -> Optional[float]:
+    """The pack size a description states — "(9KG)", "25 kg/Bag",
+    "Ea Can 2.82 kg" — or None. Used only to REPORT a disagreement."""
+    global _PACK_WEIGHT_RE
+    import re
+    if _PACK_WEIGHT_RE is None:
+        _PACK_WEIGHT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*k(?:g|gs)?\b", re.I)
+    m = _PACK_WEIGHT_RE.findall(str(desc or ""))
+    return float(m[-1]) if m else None
+
+
+async def _plan_unit_sizes(session: AsyncSession, parsed: list[dict],
+                           warnings: list[str]) -> None:
+    """Fold `Unit Size` / `Base_UOM` into each Surface Shield row's fields.
+
+    ⚠️ REPORTED, NEVER BLOCKING. A sync that refused the workbook over a label
+    typo would stop the ledger for a display problem (the P10-2 argument about
+    fail directions). Every disagreement is named instead:
+
+      · a Surface Shield row with no Unit Size (its base figure is UNKNOWN until
+        filled — never silently 1 pack = 1 kg; see services/units.py);
+      · a Unit Size ≤ 0 (ignored);
+      · a description whose stated pack weight disagrees with the column
+        (caught 1041-1: "2.82 kg" in the text, 2.86 in the column);
+      · the recipe's `Package_Size` disagreeing — informational only: the
+        Inventory sheet wins (Q14-4, Q14-8.2).
+    """
+    from .services import units as U
+    from .services import quality
+    cat = (await quality.controlled_category(session)).strip().lower()
+    seed_uom = {str(r[0] or "").replace(" ", "").strip(): r[1] for r in (await session.execute(
+        select(seed_t.c["SAP_Code"], seed_t.c["UOM"]))).all() if r[0]}
+    recipe_pkg = {}
+    for sap, pkg in (await session.execute(
+            select(recipe_t.c["SAP_Code"], recipe_t.c["Package_Size"]))).all():
+        try:
+            if sap and pkg not in (None, ""):
+                recipe_pkg[str(sap).replace(" ", "").strip()] = float(str(pkg).strip())
+        except ValueError:
+            pass
+    missing, bad, described, recipe_diff = [], [], [], []
+    for p in parsed:
+        f = p["fields"]
+        if str(f.get("Category") or "").strip().lower() != cat:
+            continue
+        us = p.get("unit_size")
+        sap = str(p["sap"]).replace(" ", "").strip()
+        if us is None:
+            if not U.is_measure_uom(f.get("UOM")):
+                missing.append(p["sap"])
+            continue
+        if us <= 0:
+            bad.append(f"{p['sap']} ({us:g})")
+            continue
+        f["Unit_Size"] = us
+        f["Base_UOM"] = U.default_base_uom(pack_uom=f.get("UOM"), unit_size=us,
+                                           seed_uom=seed_uom.get(sap))
+        d = _described_size(f.get("Equipment_Description"))
+        if d is not None and abs(d - us) > 0.01 * max(us, 1e-9) and not U.is_measure_uom(f.get("UOM")):
+            described.append(f"{p['sap']} (description says {d:g}, Unit Size {us:g})")
+        rp = recipe_pkg.get(sap)
+        if rp is not None and abs(rp - us) > 1e-9:
+            recipe_diff.append(f"{p['sap']} (recipe {rp:g} → Unit Size {us:g} wins)")
+    if missing:
+        warnings.append("Surface Shield row(s) with NO Unit Size — their base (KG) "
+                        "figures stay UNKNOWN until it is filled: " + ", ".join(missing))
+    if bad:
+        warnings.append("Unit Size must be > 0 — ignored: " + ", ".join(bad))
+    if described:
+        warnings.append("pack size in the description disagrees with Unit Size "
+                        "(Unit Size is used): " + ", ".join(described))
+    if recipe_diff:
+        warnings.append("recipe Package_Size disagrees with Unit Size (Unit Size is "
+                        "the source of truth, Q14-4): " + ", ".join(recipe_diff))
 
 
 async def apply_inventory(session: AsyncSession, plan: dict, username: str) -> None:

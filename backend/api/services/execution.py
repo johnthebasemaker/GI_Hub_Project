@@ -174,24 +174,38 @@ def compute_variance(entry: dict, materials: list[dict],
     compare this" and "this matched perfectly" must never render the same.
     """
     sqm = float(entry.get("Actual_SQM") or 0.0)
+    unit = entry.get("Qty_Unit")
 
     mat_lines, mat_exp_total, mat_act_total = [], 0.0, 0.0
     for m in materials:
         per = m.get("Bench_For_1_SQM")
-        act = float(m.get("Actual_Qty") or 0.0)
+        written = float(m.get("Actual_Qty") or 0.0)
+        # ⚠️ PHASE 14a. The benchmark is BASE units per m². A line written in
+        # PACKS is converted with its factor; a Surface Shield pack with no
+        # known factor cannot be compared, and says so (None) rather than
+        # measuring cans against kilograms. `unit` NULL = an entry filed before
+        # the tick existed — it keeps its original meaning (as written).
+        if unit == "pack" and m.get("Unit_Is_SS"):
+            fac = m.get("Unit_Factor")
+            act = None if fac is None else round(written * float(fac), 4)
+        else:
+            act = written
         exp = (float(per) * sqm) if per is not None else None
         pct = (round((act - exp) / exp * 100.0, 2)
-               if exp not in (None, 0) else None)
+               if act is not None and exp not in (None, 0) else None)
         mat_lines.append({
             "Material_Code": m.get("Material_Code"),
             "SAP_Code": m.get("SAP_Code"),
             "UOM": m.get("UOM"),
-            "Actual_Qty": round(act, 4),
+            "Actual_Qty": None if act is None else round(act, 4),
+            "Written_Qty": round(written, 4),
+            "Qty_Unit": unit,
+            "Base_UOM": m.get("Base_UOM"),
             "Benchmark_Qty": None if exp is None else round(exp, 4),
-            "Variance_Qty": None if exp is None else round(act - exp, 4),
+            "Variance_Qty": None if (exp is None or act is None) else round(act - exp, 4),
             "Variance_Pct": pct,
         })
-        if exp is not None:
+        if exp is not None and act is not None:
             mat_exp_total += exp
             mat_act_total += act
 
@@ -234,6 +248,16 @@ async def _lines(session: AsyncSession, entry_id: int) -> tuple[list, list]:
     mans = [dict(r) for r in (await session.execute(
         select(man_t).where(man_t.c["Entry_ID"] == entry_id)
         .order_by(man_t.c["Role_Code"]))).mappings().all()]
+    # Phase 14a — each line carries its pack→base factor (services/units.py),
+    # so the variance can compare BASE with the benchmark whatever unit the
+    # paper was written in.
+    from . import units as U
+    umap = await U.unit_map(session, [m.get("SAP_Code") for m in mats])
+    for m in mats:
+        u = umap.get(str(m.get("SAP_Code") or "").replace(" ", "").strip())
+        m["Unit_Is_SS"] = bool(u)
+        m["Unit_Factor"] = u["factor"] if u else None
+        m["Base_UOM"] = u["base_uom"] if u else None
     return mats, mans
 
 
@@ -259,7 +283,8 @@ async def open_entry(session: AsyncSession, *, username: str, role: str,
                      code: str, esc: str, variant: str = "",
                      materials: list[dict] | None = None,
                      origin: str = "manual", form_uuid: str | None = None,
-                     shift: str | None = None) -> dict:
+                     shift: str | None = None,
+                     qty_unit: str | None = None) -> dict:
     """Create an entry at DRAFT_SUPERVISOR.
 
     ⚠️ THE SUPERVISOR OPENS IT NOW, not the store keeper. The record starts
@@ -287,6 +312,7 @@ async def open_entry(session: AsyncSession, *, username: str, role: str,
         # an entry is filed when somebody reaches a desk, not when the work
         # happened. See models.SmeExecutionEntry.Shift.
         Shift=(shift if shift in ("Day", "Night") else None),
+        Qty_Unit=(qty_unit if qty_unit in ("pack", "base") else None),
         created_by=username).returning(entry_t.c["id"]))).scalar_one()
 
     for i, m in enumerate(materials or []):
@@ -340,7 +366,8 @@ async def supervisor_submit(session: AsyncSession, *, username: str,
                             material_reason: str, manpower_reason: str,
                             materials: list[dict] | None = None,
                             esc: Optional[str] = None,
-                            variant: Optional[str] = None) -> dict:
+                            variant: Optional[str] = None,
+                            qty_unit: Optional[str] = None) -> dict:
     """The supervisor files the form: area, crew, quantities and lots.
 
     ⚠️ THIS NOW ACCEPTS MATERIAL FIGURES, which Phase 5 explicitly refused. The
@@ -355,6 +382,11 @@ async def supervisor_submit(session: AsyncSession, *, username: str,
     under it, and a zero-variance entry carrying a stated reason is evidence
     the supervisor actually looked at the comparison.
     """
+    if qty_unit in ("pack", "base"):
+        # The supervisor confirms which box was ticked; set BEFORE the entry is
+        # read so the variance below is computed in the right unit.
+        await session.execute(update(entry_t).where(entry_t.c["id"] == entry_id)
+                              .values(Qty_Unit=qty_unit))
     entry = await get_entry(session, entry_id, site_id)
     if float(actual_sqm or 0) <= 0:
         raise HTTPException(422, "actual SQM must be greater than zero")
@@ -772,12 +804,43 @@ async def post_stock(session: AsyncSession, entry_id: int, *,
     mats = (await session.execute(select(mat_t)
             .where(mat_t.c["Entry_ID"] == entry_id))).mappings().all()
 
+    # ⚠️ PHASE 14a — DEFECT D2. The ledger counts PACKS. A form written in KG
+    # (the box the supervisor ticked, ruling Q14-3) is converted back to packs
+    # HERE, before anything is posted: the printed UOM column used to say KG
+    # and the number went straight into a ledger of cans — 40 kg deducted 40
+    # cans. A Surface Shield line in KG with no known factor is REFUSED rather
+    # than guessed, before any line posts (the loop below is all-or-nothing
+    # inside the caller's transaction).
+    from . import units as U
+    unit = row.get("Qty_Unit")
+    umap = await U.unit_map(session, [m["SAP_Code"] for m in mats]) if unit == "base" else {}
+
+    def _ledger_qty(m) -> float:
+        written = float(m["Actual_Qty"] or 0)
+        if unit != "base":
+            return written
+        u = umap.get(str(m["SAP_Code"] or "").replace(" ", "").strip())
+        if u is None:                    # not a Surface Shield: no pack concept
+            return written
+        packs = U.pack_from_base(written, u["factor"])
+        if packs is None:
+            raise HTTPException(
+                422, f"line {m['Material_Code']} (SAP {m['SAP_Code']}) was "
+                     f"written in KG, but SAP {m['SAP_Code']} has no Unit Size, "
+                     f"so it cannot be converted to the "
+                     f"{u['pack_uom'] or 'packs'} the store counts. Fill "
+                     f"'Unit Size' in the Inventory sheet and re-sync, or re-enter "
+                     f"the line in packs.")
+        return packs
+
+    ledger_qty = {int(m["id"]): _ledger_qty(m) for m in mats if not m["Consumption_ID"]}
+
     posted, warnings = [], []
     for m in mats:
         if m["Consumption_ID"]:
             continue                      # already posted — see the docstring
         sap = str(m["SAP_Code"] or "").strip()
-        qty = float(m["Actual_Qty"] or 0)
+        qty = ledger_qty[int(m["id"])]
         if not sap or qty <= 0:
             continue
         res = await post_consumption(session, username=username, data={

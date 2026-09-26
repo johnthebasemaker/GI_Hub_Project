@@ -289,6 +289,22 @@ async def recipe_rows(session: AsyncSession, *, code: str,
         seen[mc] = seen.get(mc, 0) + 1
     for r in rows:
         r["needs_qualifier"] = seen.get(str(r["Material_Code"] or ""), 0) > 1
+
+    # ⚠️ PHASE 14a — DEFECT D2. The UOM column used to print the RECIPE unit
+    # (KG) beside a box whose number went into a ledger of CANS. The paper now
+    # prints the PACK unit the store counts, with "1 Can = 9 KG" in the small
+    # print, and a PACKS / KG tick above the table (ruling Q14-3).
+    # ⚠️ `UOM` (the recipe's) is left untouched and is still what
+    # `fingerprint()` hashes, so paper already in the field stays valid — the
+    # print-only values live in separate keys.
+    from . import units as U
+    umap = await U.unit_map(session, [r.get("SAP_Code") for r in rows])
+    for r in rows:
+        u = umap.get(str(r.get("SAP_Code") or "").replace(" ", "").strip())
+        if u and u.get("factor") and not U.is_measure_uom(u.get("pack_uom")):
+            r["Print_UOM"] = str(u["pack_uom"] or "").strip()
+            r["Pack_Note"] = (f"1 {r['Print_UOM']} = {float(u['factor']):g} "
+                              f"{u.get('base_uom') or r.get('UOM') or ''}".strip())
     return rows
 
 
@@ -325,7 +341,9 @@ def _row_label(r: dict) -> tuple[str, str]:
     bits = [str(r.get("Material_Code") or "").strip()]
     if r.get("SAP_Code"):
         bits.append(f"SAP {str(r['SAP_Code']).strip()}")
-    if r.get("Package_Size"):
+    if r.get("Pack_Note"):
+        bits.append(r["Pack_Note"])          # Phase 14a — Unit Size is the truth
+    elif r.get("Package_Size"):
         bits.append(f"pack {str(r['Package_Size']).strip()}")
     return name, "   ·   ".join(b for b in bits if b)
 
@@ -489,6 +507,28 @@ def _draw_form(pdf, *, rows: list[dict], site_id: str, code: str, esc: str,
         _field(pdf, MARGIN + 2 * (w3 + gap), y, w3, "Area done (m2)")
         y += 3.6 + 9.0 + 6.0
 
+        # ── Phase 14a: which unit the QTY column is written in (Q14-3) ─────
+        # Drawn inside the 6 mm band that already separated the header fields
+        # from the table head, so no box the rectifier measures moves. Nothing
+        # ticked = PACKS, which is what the store counts and the printed UOM
+        # column now says.
+        pdf.set_font("helvetica", "B", 7)
+        pdf.set_text_color(30, 40, 60)
+        band_y = y - 5.2
+        pdf.set_xy(MARGIN, band_y)
+        pdf.cell(40, 3.6, "QTY USED is written in:")
+        pdf.set_draw_color(40, 40, 40)
+        pdf.set_line_width(0.3)
+        for i, lab in enumerate(("PACKS (Can / Bag / Roll)", "KG")):
+            bx = MARGIN + 40 + i * 58
+            pdf.rect(bx, band_y + 0.2, 3.2, 3.2)
+            pdf.set_xy(bx + 4.4, band_y)
+            pdf.cell(52, 3.6, lab)
+        pdf.set_font("helvetica", "", 6.5)
+        pdf.set_text_color(120, 120, 120)
+        pdf.set_xy(MARGIN, band_y)
+        pdf.cell(inner, 3.6, "tick ONE - nothing ticked = PACKS", align="R")
+
         # ── the table head ────────────────────────────────────────────────
         pdf.set_fill_color(232, 236, 242)
         pdf.set_draw_color(140, 140, 140)
@@ -556,7 +596,8 @@ def _draw_form(pdf, *, rows: list[dict], site_id: str, code: str, esc: str,
         pdf.set_font("helvetica", "", 8)
         pdf.set_text_color(60, 60, 60)
         pdf.set_xy(MARGIN + C_NO + C_NAME, y + 3)
-        pdf.cell(C_UOM, 5, _txt(str(r.get("UOM") or "")), align="C")
+        pdf.cell(C_UOM, 5, _txt(str(r.get("Print_UOM") or r.get("UOM") or "")),
+                 align="C")
 
         # ⚠️ TWO WHITE BOXES ARE ALL THE MODEL HAS TO READ. Clean rectangles
         # with a heavy border and nothing inside — no rule, no hint text, no

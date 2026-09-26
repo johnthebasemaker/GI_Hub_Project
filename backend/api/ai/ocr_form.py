@@ -91,6 +91,7 @@ Output STRICT JSON, no markdown fences, no prose:
   "equipment_text": "the Equipment / Tank No. box exactly as written, or ''",
   "area_text":      "the Area done (m2) box exactly as written, or ''",
   "area_sqm":       <number if unambiguous, else null>,
+  "qty_unit":       "pack" if the PACKS box above the table is ticked, "kg" if the KG box is ticked, '' if neither,
   "filled_by":      "the 'Filled in by' name, or ''",
   "rows": [
     {
@@ -449,6 +450,11 @@ async def read_form(image_bytes: bytes) -> dict:
         "equipment_text": str(parsed.get("equipment_text") or "").strip(),
         "area_text": area_text,
         "area_sqm": _num(parsed.get("area_sqm"), area_text),
+        # Phase 14a (Q14-3): nothing ticked = PACKS. Only an explicit "kg"
+        # means kilograms; anything else the model says is read as packs, the
+        # unit the form now prints — and the supervisor confirms it on review.
+        "qty_unit": ("base" if str(parsed.get("qty_unit") or "").strip().lower()
+                     in ("kg", "kgs", "base") else "pack"),
         "filled_by": str(parsed.get("filled_by") or "").strip(),
         "rows": rows,
         "model": model_id,

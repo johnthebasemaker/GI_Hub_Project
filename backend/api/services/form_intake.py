@@ -274,7 +274,9 @@ async def build_entry(session: AsyncSession, read: dict, *, site_id: str,
         shift=shift,
         code=reg["Lining_System_Code"],
         esc=reg["Execution_Sub_Activity_Code"] or _first_esc(recipe),
-        materials=lines, origin="ocr", form_uuid=reg["Form_UUID"])
+        materials=lines, origin="ocr", form_uuid=reg["Form_UUID"],
+        # Phase 14a — which box was ticked; the supervisor confirms on review.
+        qty_unit=read.get("qty_unit") or "pack")
 
     await session.execute(update(entry_t).where(entry_t.c["id"] == opened["id"])
                           .values(OCR_Job_ID=job_id, OCR_Image=image_bytes,

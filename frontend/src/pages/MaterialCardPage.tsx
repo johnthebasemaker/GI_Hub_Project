@@ -11,6 +11,7 @@
  * payload ("1163|Cable Tie Wire ( Nylon)"); the server resolves all three, so
  * this page never has to guess what a sticker encodes.
  */
+import { fmtPackBase } from '../lib/units'
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
@@ -125,6 +126,12 @@ export default function MaterialCardPage() {
             value={d.current_stock} suffix={d.uom}
             valueStyle={d.below_minimum ? { color: C_LOW } : undefined}
             precision={Number.isInteger(d.current_stock) ? 0 : 2} />
+          {/* Phase 14a: the base figure (KG / M2) beside the pack count. */}
+          {fmtPackBase(d.sap_code, d.current_stock, d.uom) && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {fmtPackBase(d.sap_code, d.current_stock, d.uom)}
+            </Typography.Text>
+          )}
         </Card>
         <Card size="small">
           <Statistic title="Days of cover"
