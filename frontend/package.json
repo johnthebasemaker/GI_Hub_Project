@@ -7,7 +7,7 @@
     "dev": "vite",
     "dev:local": "VITE_TUNNEL=1 VITE_TUNNEL_HOST=local.giinventory.com vite",
     "dev:gi": "VITE_TUNNEL=1 VITE_TUNNEL_HOST=gi.giinventory.com vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/critical_path_check.mjs",
     "lint": "oxlint",
     "parity:sme": "node scripts/sme_parity.mjs",
     "test:ui-math": "node --import ./scripts/register-ts.mjs scripts/sme_ui_math.mjs",
@@ -17,7 +17,8 @@
     "preview:gi": "npm run build && VITE_TUNNEL=1 VITE_TUNNEL_HOST=gi.giinventory.com vite preview",
     "cap:sync": "npm run build && npx cap sync",
     "cap:android": "npm run cap:sync && npx cap open android",
-    "cap:ios": "npm run cap:sync && npx cap open ios"
+    "cap:ios": "npm run cap:sync && npx cap open ios",
+    "check:critical": "node scripts/critical_path_check.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "^6.3.2",
@@ -34,7 +35,8 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-router-dom": "^7.18.1",
-    "recharts": "^3.9.2"
+    "recharts": "^3.9.2",
+    "three": "^0.186.1"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.4.2",
@@ -42,6 +44,7 @@
     "@types/node": "^24.13.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.186.0",
     "@vitejs/plugin-react": "^6.0.3",
     "oxlint": "^1.71.0",
     "typescript": "~6.0.2",

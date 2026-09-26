@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
@@ -32,9 +32,65 @@ const TUNNEL_HOST = process.env.VITE_TUNNEL_HOST ?? 'local.giinventory.com'
 // one of the defaults above.
 const ALLOWED_HOSTS = Array.from(new Set([...TUNNEL_HOSTS, TUNNEL_HOST]))
 
+// Phase 14e — the login's optional WebGL mark is its OWN entry
+// (src/three/boot.ts), injected into index.html as `<script type="module"
+// async>` AFTER the bundle is built. Listing it in index.html directly would
+// make Vite fold it into the app's entry; as a separate input it stays out of
+// the app bundle entirely, so the sign-in page's critical path does not grow by
+// a byte (scripts/critical_path_check.mjs enforces exactly that).
+//
+// The scene (Three.js) is a THIRD entry, which boot.ts adds as a module
+// <script> from the URL this plugin writes into `data-gi-scene`. An import()
+// instead would make Vite share its preload helper with the app entry and
+// re-split the app's chunks (+234 B on the critical path, measured) — this way
+// the app bundle is untouched.
+const LOGIN_FX_ENTRY = 'loginFx'
+const LOGIN_SCENE_ENTRY = 'loginScene'
+function loginFx(): Plugin {
+  return {
+    name: 'gi-login-fx',
+    transformIndexHtml: {
+      order: 'post',
+      handler(html, ctx) {
+        // dev: both served as source by the dev server
+        let src = '/src/three/boot.ts'
+        let scene = '/src/three/loginScene.ts'
+        if (ctx.bundle) {
+          const entry = (name: string) => {
+            const c = Object.values(ctx.bundle!).find(
+              (x) => x.type === 'chunk' && x.isEntry && x.name === name)
+            if (!c) throw new Error(`gi-login-fx: the ${name} entry was not built`)
+            return `/${c.fileName}`
+          }
+          src = entry(LOGIN_FX_ENTRY)
+          scene = entry(LOGIN_SCENE_ENTRY)
+        }
+        return {
+          html,
+          tags: [{
+            tag: 'script',
+            attrs: { type: 'module', async: true, src, 'data-gi-scene': scene },
+            injectTo: 'body',
+          }],
+        }
+      },
+    },
+  }
+}
+
 export default defineConfig({
+  build: {
+    rollupOptions: {
+      input: {
+        index: 'index.html',
+        [LOGIN_FX_ENTRY]: 'src/three/boot.ts',
+        [LOGIN_SCENE_ENTRY]: 'src/three/loginScene.ts',
+      },
+    },
+  },
   plugins: [
     react(),
+    loginFx(),
     // Phase B — PWA: installable app + offline read cache. The service worker
     // is generated only for `vite build` output (dev/HMR is unaffected). The
     // offline MUTATION queue is separate app code (src/offline/queue.ts) and
@@ -57,6 +113,12 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // ⚠️ Phase 14e: NEVER precache the WebGL scene. The service worker
+        // installs on every device, phones included; precaching the ~146 KB
+        // chunk would hand every one of them the download Tier 1's device
+        // gate exists to spare them. critical_path_check.mjs fails the build
+        // if it ever reappears in sw.js.
+        globIgnores: ['**/loginScene-*.js'],
         // never let the SPA fallback swallow API calls
         navigateFallbackDenylist: [/^\/api\//, /^\/training-api\//],
         runtimeCaching: [

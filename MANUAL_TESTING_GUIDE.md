@@ -3846,6 +3846,58 @@ change to plumbing (`src/api/`, `src/lib/`) does not count.
 **TC-TUT-02** — `--notify` twice in a row rings the **admin** bell once. An HOD
 sees no bell and gets 403 from `/announcements/admin/tutorials`.
 
+## 14aj. Phase 14e — the 3D login (Tier 0 CSS glass, Tier 1 lazy WebGL)
+
+**What it is for.** The login looks like the launcher, and the sign-in form is
+never slower for it. Tier 0 is CSS and a static `/brand/gi-mark.svg`, for
+everyone. Tier 1 is WebGL, only on a capable desktop. It lives in two build
+entries that the app never imports. `src/three/boot.ts` is an **async**
+`<script>` that `vite.config.ts` (the `gi-login-fx` plugin) injects into
+`index.html`. `src/three/loginScene.ts` is the scene, which boot adds when the
+browser is idle. `npm run build` runs `scripts/critical_path_check.mjs`.
+
+**TC-3D-01** — ⚠️ **the budget.** `npm run build` ends with *CRITICAL PATH: ✅
+PASS — JS … (+0 B vs baseline)*. The check fails on:
+- **any** growth of the sign-in page's critical-path JS over
+  `perf/critical-path.json` (the 14d build). Content hashes are normalised, so it
+  counts code, not hash churn;
+- WebGL in any critical-path chunk, or in the async bootstrap;
+- a bootstrap over 1 KB gz;
+- a scene over 180 KB gz, or missing entirely;
+- the scene appearing in the service worker's precache list.
+
+To prove it, add `import { WebGLRenderer } from 'three'` to `LoginPage.tsx`
+and rebuild: it fails on the JS growth and on WebGL.
+
+**TC-3D-02** — on a desktop with a graphics card, open the sign-in page. The
+form is usable at once. The gold mark rises and turns into place to the **left**
+of the card, and a light sweeps across it. Gold dust drifts and a halo glows.
+Move the mouse: the mark **and the card** turn with it, the card by 2° at most.
+`.gi-login` carries `data-gi3d="on"`.
+
+**TC-3D-03** — ⚠️ switch to another tab and back. In DevTools → Performance,
+nothing renders while hidden, and it drops to **0 fps** a few seconds after the
+mouse stops. Waking it does not jump.
+
+**TC-3D-04** — ⚠️ **dispose.** Sign in: `canvas.gi-login-fx` is gone from the
+DOM. Sign out: the scene comes back.
+
+**TC-3D-05** — turn on *Reduce motion* (macOS: Accessibility → Display). The
+scene chunk is not fetched (Network tab) and nothing moves. Turning it on while
+the scene runs removes the scene.
+
+**TC-3D-06** — on a phone or tablet, or in the Android, iOS or desktop app: Tier 0
+only, and no scene chunk is fetched. The service worker never precaches it
+either: search `dist/sw.js` for `loginScene` and there is no match.
+
+**TC-3D-07** — in Chrome with `--disable-gpu` or `--use-angle=swiftshader`: no
+mark. `.gi-login` carries `data-gi3d="unavailable"` with
+`data-gi3d-reason="software"`, and the CSS glass is unchanged. A GPU too slow for
+the scene says `data-gi3d-reason="slow"`.
+
+**TC-3D-08** — the Executive Summary and the Training page show glass cards.
+Print the Executive Summary: the print is unchanged.
+
 ## 14aa. The AI evaluation gates (Phase 11 · 11f)
 
 Developer-facing. Nothing here is a screen; it is what CI refuses to merge.

@@ -622,3 +622,158 @@ body.gi-practice .gi-login-card {
   .gi-glass-tilt, .gi-glass-tilt:hover { transform: none; transition: none; }
   .gi-rise-3d { animation: none; }
 }
+
+/* ── Phase 14e — the 3D login, Tier 0 (CSS + a static SVG; 0 KB of JS) ────────
+   Everyone gets this, native apps included (ruling Q14-12): the GI mark as two
+   layered, tilted planes floating behind a glass card, and a small mark above
+   the wordmark turning in 3D. The mark is /brand/gi-mark.svg, an image the
+   browser fetches like any other — nothing here is on the JS critical path.
+   Tier 1 (WebGL, lazy) cross-fades in over this on capable desktops and sets
+   `data-gi3d="on"` on .gi-login, which fades these layers out. */
+.gi-login {
+  position: relative;
+  overflow: hidden;
+  perspective: 1200px;
+  isolation: isolate;
+}
+.gi-login::before,
+.gi-login::after {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  background: url('/brand/gi-mark.svg') center / contain no-repeat;
+  transition: opacity 900ms ease;
+}
+/* the near plane */
+.gi-login::before {
+  width: min(52vw, 620px);
+  aspect-ratio: 412 / 246;
+  left: -6vw;
+  top: 8vh;
+  opacity: 0.16;
+  filter: drop-shadow(0 18px 40px rgba(212, 175, 55, 0.35));
+  transform: rotateX(16deg) rotateY(-26deg) translateZ(-60px);
+  animation: gi-mark-float 14s ease-in-out infinite;
+}
+/* the far plane — blurred and offset, for depth */
+.gi-login::after {
+  width: min(38vw, 440px);
+  aspect-ratio: 412 / 246;
+  right: -4vw;
+  bottom: 6vh;
+  opacity: 0.08;
+  filter: blur(3px);
+  transform: rotateX(-12deg) rotateY(22deg) translateZ(-220px);
+  animation: gi-mark-float 18s ease-in-out -6s infinite reverse;
+}
+.gi-login-card {
+  position: relative;
+  z-index: 1;
+  transform-style: preserve-3d;
+  border-color: rgba(212, 175, 55, 0.38);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 0 0 1px rgba(212, 175, 55, 0.06);
+}
+.gi-login-head .gi-wordmark::before {
+  content: '';
+  display: block;
+  width: 88px;
+  aspect-ratio: 412 / 246;
+  margin: 0 auto 10px;
+  background: url('/brand/gi-mark.svg') center / contain no-repeat;
+  filter: drop-shadow(0 6px 14px rgba(212, 175, 55, 0.35));
+  animation: gi-mark-turn 7s ease-in-out infinite;
+}
+@keyframes gi-mark-float {
+  0%, 100% { translate: 0 0; rotate: 0deg; }
+  50% { translate: 0 -18px; rotate: 1.5deg; }
+}
+@keyframes gi-mark-turn {
+  0%, 100% { transform: perspective(400px) rotateY(-14deg) rotateX(4deg); }
+  50% { transform: perspective(400px) rotateY(14deg) rotateX(-4deg); }
+}
+/* Tier 1 on: the WebGL canvas carries the mark; the CSS planes step back. */
+.gi-login[data-gi3d='on']::before,
+.gi-login[data-gi3d='on']::after { opacity: 0; }
+.gi-login-fx {
+  position: absolute;
+  inset: 0;
+  /* a canvas is a replaced element: `inset` alone leaves it at its intrinsic
+     (device-pixel) size, twice the screen on a retina display */
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 900ms ease;
+}
+.gi-login[data-gi3d='on'] .gi-login-fx { opacity: 1; }
+/* …and the card turns with the scene's pointer parallax (set by loginScene.ts,
+   never more than two degrees; absent everywhere else). */
+.gi-login[data-gi3d='on'] .gi-login-card {
+  transform: perspective(1400px) rotateX(var(--gi-rx, 0deg)) rotateY(var(--gi-ry, 0deg));
+  transition: transform 120ms linear;
+}
+
+/* ── Phase 14e — landing pages: glass and scroll-driven reveals ──────────────
+   Executive Summary and the Training Hub (Q14-12). CSS only; the reveal uses
+   scroll-driven animations where the browser has them and is simply absent
+   where it does not. Never in print (the Executive Summary prints to A4). */
+@media screen {
+  .exec-report {
+    position: relative;
+    isolation: isolate;
+  }
+  .exec-report::before {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    inset: -12px;
+    pointer-events: none;
+    background:
+      url('/brand/gi-mark.svg') right 4% top 24px / 220px auto no-repeat,
+      radial-gradient(900px 500px at 90% 0%, rgba(212, 175, 55, 0.07), transparent 60%);
+    opacity: 0.22;
+  }
+  .exec-report .ant-card {
+    background: var(--gi-glass-bg);
+    border-color: var(--gi-glass-rim);
+    -webkit-backdrop-filter: blur(10px) saturate(130%);
+    backdrop-filter: blur(10px) saturate(130%);
+  }
+  .gi-training-hero {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px 20px;
+    margin-bottom: 16px;
+  }
+  .gi-training-hero img {
+    width: 76px;
+    height: auto;
+    filter: drop-shadow(0 6px 14px rgba(212, 175, 55, 0.35));
+    animation: gi-mark-turn 7s ease-in-out infinite;
+  }
+  .gi-training .ant-card { transition: transform 260ms ease, box-shadow 260ms ease; }
+  .gi-training .ant-card:hover { transform: translateY(-2px) rotateX(1.5deg); }
+  @supports (animation-timeline: view()) {
+    .exec-report .ant-card,
+    .gi-training .ant-card {
+      animation: gi-scroll-in linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 60%;
+    }
+  }
+}
+@keyframes gi-scroll-in {
+  from { opacity: 0.25; transform: perspective(900px) translateY(26px) rotateX(9deg); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gi-login::before, .gi-login::after,
+  .gi-login-head .gi-wordmark::before,
+  .gi-training-hero img { animation: none; }
+  .exec-report .ant-card, .gi-training .ant-card { animation: none; transition: none; }
+  .gi-training .ant-card:hover { transform: none; }
+}
