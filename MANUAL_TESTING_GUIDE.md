@@ -3898,6 +3898,39 @@ the scene says `data-gi3d-reason="slow"`.
 **TC-3D-08** — the Executive Summary and the Training page show glass cards.
 Print the Executive Summary: the print is unchanged.
 
+## 14ak. Stock vs the Excel workbook, and the /login gap
+
+**What it is for.** The check finds which materials' GI Hub stock differs from
+the workbook's Current Stock, and why. The code is in
+`backend/api/services/stock_excel.py`. Suite SX pins it.
+
+**TC-SX-01** — run `.venv/bin/python tools/stock_excel_check.py`. Every
+differing SAP is listed with causes, and **no** SAP has an *Unexplained* line.
+On 2026-09-26 this was 14 of 505: 13 *Only in GI Hub* and 1 *No longer in
+Excel*.
+
+**TC-SX-02** — ⚠️ the Stock page shows the banner, and those SAPs have red rows
+with a **≠ Excel** tag. **Review the differences** lists each one with the GI Hub
+record number or the Excel row.
+
+**TC-SX-03** — **Get the marked workbook** (or add `--marked` to the tool):
+- the copy opens with the **GI Hub check** sheet first;
+- the Inventory rows are red, with a note on Current Stock;
+- your original file is unchanged (its modified time is the same).
+
+**TC-SX-04** — fix one cause, for example reverse a test receipt with a Stock
+Adjustment, then **Check again**. That SAP leaves the list.
+
+**TC-SX-05** — as the auditor: the banner is visible but there is no upload
+button, and a direct upload gets 403.
+
+**TC-SX-06** — `tools/pg_excel_sync.py --commit` ends with *stored for the Stock
+page*, and the banner shows the new time.
+
+**TC-LOGIN-01** — sign out, open `/login`, and sign in. You land on your home
+page, not a blank screen. Then open `/no-such-page` while signed in: you land on
+your home page.
+
 ## 14aa. The AI evaluation gates (Phase 11 · 11f)
 
 Developer-facing. Nothing here is a screen; it is what CI refuses to merge.

@@ -810,7 +810,7 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
         section = {"inserts": [], "corrections": [], "updates": [],
                    "upserts": [], "stamps": [], "conflicts": [], "vanished": [],
                    "matched": 0, "adopted": 0, "relabelled": 0,
-                   "zero_skipped": 0, "db_only": 0}
+                   "zero_skipped": 0, "db_only": 0, "db_only_rows": []}
         out["sections"][kind] = section
         if not headers:
             out["warnings"].append(f"{spec['sheet']}: sheet missing — skipped")
@@ -976,6 +976,13 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
                     "ref": _s(r.get(ref)), "Source_Ref": r["Source_Ref"]})
             else:
                 section["db_only"] += 1
+                # 2026-09-26: WHICH rows, not just how many — the stock-vs-
+                # workbook check (services/stock_excel.py) names each one.
+                section["db_only_rows"].append({
+                    "id": r["id"], "date": _day(r.get("Date")),
+                    "sap": r.get("SAP_Code"), "qty": r.get("Quantity"),
+                    "ref": _s(r.get(ref)), "owner": r["_owner"],
+                    "Source_Ref": r.get("Source_Ref")})
 
         if section["conflicts"]:
             out["warnings"].append(

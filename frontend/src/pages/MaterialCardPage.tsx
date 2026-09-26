@@ -20,6 +20,7 @@ import {
 } from 'antd'
 import { ArrowLeftOutlined, WarningOutlined } from '@ant-design/icons'
 import KpiRow from '../components/KpiRow'
+import { useMismatchMap } from '../components/ExcelCheck'
 import { Table } from '../lib/smartTable'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -72,6 +73,7 @@ export default function MaterialCardPage() {
   const [days, setDays] = useState(30)
   const [flowMode, setFlowMode] = useState<'flows' | 'balance'>('flows')
 
+  const mism = useMismatchMap()
   const q = useQuery({
     queryKey: ['/stock/material-card', sap, days],
     enabled: !!sap,
@@ -118,6 +120,15 @@ export default function MaterialCardPage() {
         SAP {d.sap_code}{d.material_code ? ` · MAT ${d.material_code}` : ''}
         {d.category ? ` · ${d.category}` : ''}
       </Typography.Text>
+      {mism.get(d.sap_code) && (() => {
+        const m = mism.get(d.sap_code)!
+        return (
+          <Alert type="warning" showIcon style={{ marginTop: 12 }} data-testid="excel-mismatch-card"
+            title={`GI Hub says ${nf(m.app ?? 0)} ${d.uom}; the Excel workbook says ${nf(m.workbook)}`}
+            description={<>{m.causes.map((c, i) => (
+              <div key={i}>• {c.what} <i>{c.fix}</i></div>))}</>} />
+        )
+      })()}
 
       {/* KPI strip */}
       <KpiRow style={{ marginTop: 16 }}>

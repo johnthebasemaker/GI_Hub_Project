@@ -1972,6 +1972,25 @@ class SmeAttributionGroup(Base):
     )
 
 
+class StockExcelCheck(Base):
+    """2026-09-26 — one run of "does GI Hub's stock match the Excel workbook's
+    Current Stock, and if not, WHY" (services/stock_excel.py). `items` is the
+    JSON list of mismatching SAPs, each with its causes. The Stock page reads
+    the latest row; nothing here changes stock."""
+    __tablename__ = "stock_excel_checks"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    Site_ID = Column(Text, nullable=False)
+    workbook = Column(Text)
+    checked_by = Column(Text)
+    checked_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    total_saps = Column(Integer, nullable=False, server_default=text('0'))
+    matched = Column(Integer, nullable=False, server_default=text('0'))
+    items = Column(Text, nullable=False, server_default=text("'[]'"))
+    __table_args__ = (
+        Index("ix_stock_excel_checks_site_at", "Site_ID", "checked_at"),
+    )
+
+
 class FeatureAnnouncement(Base):
     """Phase 14d — a "What's new" announcement, AUTHORED AS CODE.
 

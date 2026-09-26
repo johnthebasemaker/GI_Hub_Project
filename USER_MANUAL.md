@@ -363,7 +363,7 @@ The first time the app starts, these accounts are created. **Change the password
   signs you out. See **§26 Practice Mode** for everything about it.
 - **Username text box** — your assigned username (case-sensitive).
 - **Password text box** — masked input. Min 8 characters policy enforced on creation.
-- **🔑 Sign In button** — checks your credentials and takes you straight to the first page your role can open.
+- **🔑 Sign In button** — checks your credentials and takes you straight to the first page your role can open. This works from any address, including a bookmarked `/login`; an address that is not a page takes you to your home page instead of a blank screen.
 - **"Don't have an account? Request access" link** — opens a self-service registration form.
 
 **Registration form elements:**
@@ -513,6 +513,55 @@ next to the bell; a number on it means something new is waiting.
 
 A matching notification also appears in the bell (§3.6). Announcements are
 **in-app only** — never WhatsApp or email.
+
+## 3.9 Stock vs the Excel workbook — which materials differ, and why
+
+*Added 26 September 2026.*
+
+GI Hub keeps its own stock ledger, and the site also keeps `CNCEC_Inventory.xlsx`.
+After every Excel sync, GI Hub compares its stock for every material with the
+workbook's **Current Stock** column. It then works out **why** any material
+differs.
+
+**Where:** the top of the **Stock** page.
+- A yellow banner says how many materials differ, for example *14 of 505
+  materials don't match the Excel workbook*, and when that was checked.
+- Each of those materials has a red row and a red **≠ Excel** tag. Point at the
+  tag to see the reason.
+- **Review the differences** lists every material. Each one shows its workbook
+  and GI Hub figures, **what caused the difference**, where to look (a GI Hub
+  record number or an Excel sheet and row) and **how to fix it**.
+- A material's own page (scan its QR or open it from Stock) shows the same
+  warning.
+
+**What the causes mean:**
+
+| Tag | What happened | How to fix it |
+|---|---|---|
+| **Only in GI Hub** | A receipt, issue or return was entered in GI Hub, and the workbook's log never got it. The entry names who made it and its remarks. | If it really happened, add it to the log. If it was a test or a mistake, reverse it in GI Hub with a Stock Adjustment, or have an admin remove it. |
+| **No longer in Excel** | GI Hub took a line from the workbook, and the workbook has since lost it (deleted or re-dated). | Put the line back if that was a mistake. Otherwise an admin removes it with the sync's `--prune-vanished` option. |
+| **Not synced yet** | The workbook has a line GI Hub doesn't have yet. | Run the Excel sync. |
+| **Edited in Excel** | A quantity was changed in the workbook after the last sync. | Run the Excel sync. |
+| **Sheet totals stale** | The Inventory sheet's own Current Stock doesn't match its own logs. Current Stock is a typed value in this workbook, so it can fall behind. | Correct the figure on the Inventory sheet. |
+| **Opening stock** | The Opening Stock differs. | Run the sync, or correct the workbook. |
+| **Unexplained** | Part of the difference that none of the above explains. It is always shown, never hidden. | Compare the material's records by hand. |
+
+**The marked workbook.** Press **Get the marked workbook** and choose your
+`CNCEC_Inventory.xlsx`. You get back a **copy** containing:
+- a **GI Hub check** sheet first, listing every cause with how to fix it;
+- each differing material's row on the Inventory sheet filled **red**, with a
+  note on its Current Stock cell;
+- any log line the check names filled **amber**.
+
+Make the fixes in **your own** workbook, then sync again. Your file itself is
+never changed. **Check again** uploads the workbook and refreshes the list
+without downloading anything.
+
+Store Keepers, Warehouse, HODs, Logistics and Admins can upload. Everyone who
+can see Stock can read the result. Nothing on this screen changes stock.
+
+⚠️ **The check only explains.** It never corrects stock by itself, because
+deciding whether an entry was real is a person's call.
 
 # 4. Store Keeper Manual
 

@@ -824,6 +824,18 @@ async def main() -> int:
             # an unsynced database legitimately mismatches.
             if args.commit and mismatches:
                 exit_code = 1
+            # 2026-09-26: after a committed sync, store WHY each SAP differs, so
+            # the Stock page shows it (services/stock_excel.py; read-only).
+            if args.commit:
+                from backend.api.services import stock_excel as SE
+                # (the session is already in a transaction — verify_stock
+                # read through it — so this commits rather than begin()s)
+                diag = await SE.diagnose(session, data["inventory"], site_id=args.site)
+                await SE.store(session, diag, site_id=args.site,
+                               workbook=WORKBOOKS["inventory"], username=args.user)
+                await session.commit()
+                print(f"   stored for the Stock page — reasons: "
+                      f"tools/stock_excel_check.py --marked writes a marked copy")
 
     await engine.dispose()
     return exit_code

@@ -75,6 +75,7 @@ from .locations import router as locations_router  # noqa: E402
 from .assets import router as assets_router  # noqa: E402
 from .bulk_import import router as bulk_import_router  # noqa: E402
 from .stock import router as stock_router  # noqa: E402
+from .stock_excel import router as stock_excel_router  # noqa: E402
 from .warehouse import router as warehouse_router  # noqa: E402
 from .dashboard import router as dashboard_router  # noqa: E402
 from .qc import router as qc_router  # noqa: E402
@@ -342,6 +343,8 @@ for e in ENTITIES:
 
 # Derived (computed) stock endpoints — /stock/live, /by-site, /lots, /expiring.
 app.include_router(stock_router, dependencies=_auth)
+# Stock vs the Excel workbook — which SAPs differ and why (read + upload-to-check).
+app.include_router(stock_excel_router, dependencies=_auth)
 
 # Dashboard metrics — valuation KPI + chart series (self-guarded, ≥supervisor).
 app.include_router(dashboard_router)
