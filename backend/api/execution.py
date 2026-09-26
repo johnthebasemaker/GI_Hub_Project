@@ -635,8 +635,12 @@ async def sme_link_assign(body: SmeLinkAssignIn = Body(...),
     from .services import sme_link as SL
 
     site = resolve_site_param(user, body.site_id)
+    from .services import sme_groups as G
     async with session.begin():
-        out = await SL.assign(
+        # ⚠️ PHASE 14c — THE PER-ROW API IS A GROUP OF ONE (ruling Q14-16), so a
+        # single row is decided, and credited, through the same group path as
+        # a job of ten. Its response is the row's, as before, plus `group_id`.
+        out = await G.submit_one(
             session, consumption_id=body.consumption_id, code=body.code,
             tag=body.tag, sqm=body.sqm, work_date=body.work_date,
             notes=body.notes, username=user["username"], site_id=site)
@@ -723,13 +727,90 @@ async def sme_link_decide(log_id: int, body: SmeLinkDecideIn = Body(...),
     from .services import sme_link as SL
 
     site = resolve_site_param(user, body.site_id)
+    from .services import sme_groups as G
     async with session.begin():
-        out = await SL.decide(
-            session, log_id=log_id, approve=body.approve, edits=body.edits,
-            justification=body.justification,
-            reject_reason=body.reject_reason,
-            username=user["username"], site_id=site)
+        gid = await G.group_of_log(session, log_id)
+        if gid:
+            # ⚠️ PHASE 14c — a row that belongs to a JOB is decided WITH its job
+            # (ruling Q14-11): the HOD approves or rejects the whole group, and
+            # the area is credited once. A per-row decision would credit it
+            # once per material — defect D3.
+            out = await G.decide_group(
+                session, group_id=int(gid), approve=body.approve, edits=body.edits,
+                justification=body.justification, reject_reason=body.reject_reason,
+                username=user["username"], site_id=site)
+            first = (out.get("rows") or [{}])[0]
+            out = {**first, **{k: v for k, v in out.items() if k != "rows"},
+                   "id": log_id, "rows": out.get("rows")}
+        else:
+            out = await SL.decide(
+                session, log_id=log_id, approve=body.approve, edits=body.edits,
+                justification=body.justification,
+                reject_reason=body.reject_reason,
+                username=user["username"], site_id=site)
     return out
+
+
+# ═══ Phase 14c — the grouped queue: one system code and one SQM per JOB ═══════
+class SmeGroupSubmitIn(BaseModel):
+    work_date: str = Field(min_length=8)
+    tag: str = Field(min_length=1, max_length=128)
+    code: str = Field(min_length=1, max_length=64)
+    sqm: float = Field(gt=0)
+    consumption_ids: list[int] = Field(min_length=1)
+    notes: Optional[str] = None
+    site_id: Optional[str] = None
+
+
+@router.get("/sme-link/groups",
+            summary="Unattributed Surface Shield draws, grouped by date and equipment")
+async def sme_link_groups(site_id: Optional[str] = Query(None),
+                          user: dict = Depends(require_roles(*_LINK_ROLES)),
+                          session: AsyncSession = Depends(get_session)):
+    """The Phase 13 sweep, grouped (Track 1): one card per (date, equipment),
+    a suggested system code from the materials drawn, and the SQM asked ONCE.
+    Unmapped Tank No. values are listed for Tank Aliases; non-equipment draws
+    are counted and left in stock (ruling Q14-9)."""
+    from .services import sme_groups as G
+    return await G.queue(session, site_id=resolve_site_param(user, site_id))
+
+
+@router.post("/sme-link/groups", status_code=201,
+             summary="Attribute one job: one system code, one SQM, chosen materials")
+async def sme_link_group_submit(body: SmeGroupSubmitIn = Body(...),
+                                user: dict = Depends(require_roles(*_LINK_ROLES)),
+                                session: AsyncSession = Depends(get_session)):
+    """"Split" is submitting a subset: the rest of the day's materials stay in
+    the queue for another system code (ruling Q14-10)."""
+    from .services import sme_groups as G
+    site = _write_site(user, body.site_id)
+    async with session.begin():
+        return await G.submit(session, site_id=site, work_date=body.work_date,
+                              tag=body.tag, code=body.code, sqm=body.sqm,
+                              consumption_ids=body.consumption_ids, notes=body.notes,
+                              username=user["username"])
+
+
+@router.get("/sme-link/groups/staged", summary="Jobs awaiting the HOD")
+async def sme_link_groups_staged(site_id: Optional[str] = Query(None),
+                                 user: dict = Depends(require_roles(*_LINK_ROLES)),
+                                 session: AsyncSession = Depends(get_session)):
+    from .services import sme_groups as G
+    return {"items": await G.staged_groups(session, site_id=resolve_site_param(user, site_id))}
+
+
+@router.post("/sme-link/groups/{group_id}/decide",
+             summary="HOD: approve or reject a whole job")
+async def sme_link_group_decide(group_id: int, body: SmeLinkDecideIn = Body(...),
+                                user: dict = Depends(require_roles("hod")),
+                                session: AsyncSession = Depends(get_session)):
+    from .services import sme_groups as G
+    site = resolve_site_param(user, body.site_id)
+    async with session.begin():
+        return await G.decide_group(
+            session, group_id=group_id, approve=body.approve, edits=body.edits,
+            justification=body.justification, reject_reason=body.reject_reason,
+            username=user["username"], site_id=site)
 
 
 @router.post("/sme-link/revisions/{rev_id}/decide",

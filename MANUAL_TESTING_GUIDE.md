@@ -3764,6 +3764,45 @@ paper entry is **not** merged. It is listed as *Possible duplicate*.
 **TC-REC-10** — run the same sync twice. The second run reports **0 inserted,
 0 updated**, and every bucket total is identical (L6).
 
+## 14ah. Phase 14c — the grouped Surface Shield queue (one job, one area, one credit)
+
+**What it is for.** The attribution queue asks once per **job** — one day on one
+piece of equipment — instead of once per material. The HOD decides the job
+whole, and its area is credited **once** (defect D3). The code is in
+`backend/api/services/sme_groups.py`. Suite 14C pins it.
+
+⚠️ Check the equipment's **Done SQM** before and after each approval, not just
+the status. The failure to catch is an area credited once per material, and a
+green *committed* on a quadrupled area is exactly that.
+
+**TC-GRP-01** — log four PU 1 mm components and a toluene against one tank on
+one day. The queue shows **one** card with 5 materials. PU 1 mm is suggested
+(`covers 4 of 5`), and the toluene is marked **not in recipe** and unticked.
+
+**TC-GRP-02** — put `Floor - 13.37 SQM Done` in one row's Remarks. The card's
+area is pre-filled **13.37**.
+
+**TC-GRP-03** — ⚠️ **D3.** Submit the four components and approve as HOD. The
+tank's Done SQM rises by **13.37**, not 53.48. Suite 14C-06.
+
+**TC-GRP-04** — **split.** After TC-GRP-03 the toluene is still on the card, on
+its own. Submit it under another system the tank carries.
+
+**TC-GRP-05** — reject a job with a reason. **Every** material is back, as one
+card at the top with the reason. The filer gets **one** notification. Done SQM is
+unchanged.
+
+**TC-GRP-06** — a row logged against *Others* is not in the queue and is still
+in stock. A row against an unmapped tank name is listed above the cards; map it
+in Tank Aliases and it joins a job.
+
+**TC-GRP-07** — ⚠️ **revision.** Edit one material of an approved four-material
+job in the workbook, re-sync, re-assign it with 15 m² and approve. Done SQM moves
+by **+1.63** (13.37 → 15) once, and every member now reads 15 m². Suite 14C-10.
+
+**TC-GRP-08** — the per-row API still works: `POST /execution/sme-link/assign`
+files a group of one, and approving it credits its own area once.
+
 ## 14aa. The AI evaluation gates (Phase 11 · 11f)
 
 Developer-facing. Nothing here is a screen; it is what CI refuses to merge.

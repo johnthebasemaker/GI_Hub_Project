@@ -26275,6 +26275,242 @@ async def test_phase14b_reconciliation():
         await _cleanup()
 
 
+async def test_phase14c_groups():
+    """Suite 14C — one system code and one SQM per JOB (Track 1), credited once
+    (defect D3), decided as a whole by the HOD (Q14-11), split when two systems
+    shared a day (Q14-10), and the per-row API kept as a group of one (Q14-16).
+    """
+    from fastapi import HTTPException
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from .services import quality as Q
+    from .services import sme_groups as G
+    from .services import sme_link as SL
+
+    SITE, TAG, TAG2 = "SVGC-SITE", "SVGC-J050", "SVGC-J022"
+    async with SessionLocal() as s:
+        CAT = await Q.controlled_category(s)
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            for q in ("DELETE FROM sme_consumption_revision WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_consumption_log WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_attribution_group WHERE \"Site_ID\" = :site",
+                      "DELETE FROM app_notifications WHERE recipient_site = :site",
+                      "DELETE FROM consumption WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_sqm_progress WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_tank_alias WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_equipment WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_recipe WHERE \"Lining_System_Code\" LIKE 'SVGC-%'",
+                      "DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SVGC-%'"):
+                await s.execute(_t(q), {"site": SITE})
+            await s.commit()
+
+    async def done(code, tag=TAG):
+        async with SessionLocal() as s:
+            return round(float((await s.execute(_t(
+                'SELECT COALESCE(SUM("Done_SQM"), 0) FROM sme_sqm_progress WHERE '
+                '"Site_ID" = :s AND "Equipment_Tag_No" = :t AND "Lining_System_Code" = :c'),
+                {"s": SITE, "t": tag, "c": code})).scalar()), 4)
+
+    async def cons(day, sap, qty, tank=TAG, remarks=None):
+        async with SessionLocal() as s:
+            cid = (await s.execute(_t(
+                'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                '"Tank_No", "Remarks") VALUES (:d, :p, :q, :site, :t, :r) RETURNING id'),
+                {"d": day, "p": sap, "q": qty, "site": SITE, "t": tank, "r": remarks})).scalar_one()
+            await s.commit()
+        return cid
+
+    await _cleanup()
+    try:
+        async with SessionLocal() as s:
+            for sap, uom, us in (("SVGC-1", "Can", 2.52), ("SVGC-2", "Can", 2.86),
+                                 ("SVGC-3", "Bag", 6.0), ("SVGC-4", "Can", 10.0),
+                                 ("SVGC-T", "KG", None), ("SVGC-R", "ROL", 11.0)):
+                await s.execute(_t(
+                    'INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+                    '"Category", "UOM", "Site_ID", "Unit_Size") VALUES (:p, :m, :p, :c, :u, :site, '
+                    'CAST(:us AS double precision))'),
+                    {"p": sap, "m": "M-" + sap, "c": CAT, "u": uom, "site": SITE, "us": us})
+            for code, sap, rate in (("SVGC-PUL1", "SVGC-1", 0.8), ("SVGC-PUL1", "SVGC-2", 0.9),
+                                    ("SVGC-PUL1", "SVGC-3", 3.5), ("SVGC-PUL1", "SVGC-4", 0.15),
+                                    ("SVGC-RL", "SVGC-R", 1.1)):
+                await s.execute(_t(
+                    'INSERT INTO sme_recipe ("Lining_System_Code", "Execution_Sub_Activity_Code", '
+                    '"Material_Code", "SAP_Code", "Material_Name", "UOM", "For_1_SQM", '
+                    '"Lining_System_Name") VALUES (:c, \'ESC\', :m, :p, :p, \'KG\', :r, :c)'),
+                    {"c": code, "m": "M-" + sap, "p": sap, "r": rate})
+            for tag, code in ((TAG, "SVGC-PUL1"), (TAG, "SVGC-RL"), (TAG2, "SVGC-RL")):
+                await s.execute(_t(
+                    'INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", "Name", '
+                    '"Lining_System_Code", "Surface_Area_SQM", "Equipment_Total_SQM") '
+                    "VALUES (:site, :t, :t, :c, 500, 500)"), {"site": SITE, "t": tag, "c": code})
+            await s.commit()
+
+        D = "2026-09-24"
+        ids = [await cons(D, "SVGC-1", 4.5, remarks="Floor - 13.37 SQM Done"),
+               await cons(D, "SVGC-2", 4.5), await cons(D, "SVGC-3", 9),
+               await cons(D, "SVGC-4", 0.23)]
+        tol_id = await cons(D, "SVGC-T", 3)
+        await cons(D, "SVGC-1", 1, tank="Others")
+        await cons(D, "SVGC-1", 1, tank="Tank Q")
+
+        async with SessionLocal() as s:
+            q = await G.queue(s, site_id=SITE)
+        g = next((x for x in q["groups"] if x["tag"] == TAG and x["work_date"] == D), None)
+        check("14C-01: the day's draws on one piece of equipment are ONE card — five "
+              "materials, not five questions; the 'Others' draw is left in stock and "
+              "outside the queue (Q14-9); 'Tank Q' is listed to be mapped",
+              g is not None and len(g["rows"]) == 5 and q["excluded_non_equipment"] >= 1
+              and any(u["tank_no"] == "Tank Q" for u in q["unmapped"]),
+              f"rows={len(g['rows']) if g else None} unmapped={q['unmapped']}")
+        check("14C-02: the system code is SUGGESTED from the materials — the PU system "
+              "lists 4 of the 5 (toluene is not in its recipe), the rubber system none",
+              g and g["suggested_code"] == "SVGC-PUL1"
+              and g["candidates"][0]["coverage"] == 0.8
+              and g["candidates"][0]["missing"] == ["SVGC-T"], str(g and g["candidates"]))
+        check("14C-03: the SQM is pre-filled from what the store keeper already typed "
+              "('Floor - 13.37 SQM Done') — a hint the field confirms, never the record",
+              g and g["sqm_hint"] == 13.37, str(g and g["sqm_hint"]))
+
+        # ── split: the four PU components under PUL1, the toluene left over ──
+        async with SessionLocal() as s:
+            res = await G.submit(s, site_id=SITE, work_date=D, tag=TAG, code="SVGC-PUL1",
+                                 sqm=13.37, consumption_ids=ids, notes=None,
+                                 username="svgc-sup")
+            await s.commit()
+            q2 = await G.queue(s, site_id=SITE)
+        left = next((x for x in q2["groups"] if x["tag"] == TAG and x["work_date"] == D), None)
+        check("14C-04: SPLIT — submitting the four components leaves the toluene as its "
+              "own card for another system code (ruling Q14-10)",
+              res["joined"] == 4 and left is not None
+              and [r["consumption_id"] for r in left["rows"]] == [tol_id],
+              str(left and [r["consumption_id"] for r in left["rows"]]))
+        async with SessionLocal() as s:
+            rows = (await s.execute(_t(
+                'SELECT "SAP_Code", "Actual_Qty", "Expected_Qty", "Pack_Qty", group_id '
+                'FROM sme_consumption_log WHERE group_id = :g ORDER BY "SAP_Code"'),
+                {"g": res["group_id"]})).mappings().all()
+        a = {r["SAP_Code"]: r for r in rows}
+        check("14C-05: every member is in BASE units against ITS OWN benchmark for the "
+              "ONE area: Comp C 9 bags × 6 = 54 KG vs 3.5 × 13.37 = 46.795 KG",
+              a.get("SVGC-3") and float(a["SVGC-3"]["Actual_Qty"]) == 54.0
+              and round(float(a["SVGC-3"]["Expected_Qty"]), 3) == 46.795
+              and all(r["group_id"] == res["group_id"] for r in rows), str(dict(a.get("SVGC-3") or {})))
+
+        before = await done("SVGC-PUL1")
+        async with SessionLocal() as s:
+            d = await G.decide_group(s, group_id=res["group_id"], approve=True, edits=None,
+                                     justification="", reject_reason="", username="svgc-hod",
+                                     site_id=SITE)
+            await s.commit()
+            st = (await s.execute(_t(
+                'SELECT array_agg(DISTINCT status) FROM sme_consumption_log WHERE group_id = :g'),
+                {"g": res["group_id"]})).scalar()
+        check("14C-06: ⚠️ D3 FIXED — approving the four-component job credits its area "
+              "ONCE: +13.37 m², not 4 × 13.37 = 53.48",
+              round(await done("SVGC-PUL1") - before, 4) == 13.37 and st == ["committed"]
+              and d["Done_SQM_credited"] == 13.37, f"Δ={round(await done('SVGC-PUL1') - before, 4)} st={st}")
+
+        # ── the per-row API is a group of one, and its decision is the group's ─
+        D2 = "2026-09-23"
+        x1 = await cons(D2, "SVGC-1", 2)
+        x2 = await cons(D2, "SVGC-2", 2)
+        async with SessionLocal() as s:
+            r2 = await G.submit(s, site_id=SITE, work_date=D2, tag=TAG, code="SVGC-PUL1",
+                                sqm=5.0, consumption_ids=[x1, x2], notes=None, username="svgc-sup")
+            await s.commit()
+            lid = (await s.execute(_t(
+                'SELECT id FROM sme_consumption_log WHERE "Consumption_ID" = :c'), {"c": x1})).scalar()
+        b2 = await done("SVGC-PUL1")
+        hod = _auth._make_token("svgc-hod", "hod", SITE, _auth.ACCESS_TTL)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            rr = await ac.post(f"/execution/sme-link/{lid}/decide",
+                               json={"approve": True}, headers={"Authorization": f"Bearer {hod}"})
+        async with SessionLocal() as s:
+            st2 = (await s.execute(_t(
+                'SELECT array_agg(DISTINCT status) FROM sme_consumption_log WHERE group_id = :g'),
+                {"g": r2["group_id"]})).scalar()
+        check("14C-07: deciding ONE row of a job decides the WHOLE job (ruling Q14-11) — "
+              "both members committed, the area (+5) credited once",
+              rr.status_code == 200 and st2 == ["committed"]
+              and round(await done("SVGC-PUL1") - b2, 4) == 5.0,
+              f"{rr.status_code} {rr.text[:160]} st={st2} Δ={round(await done('SVGC-PUL1') - b2, 4)}")
+
+        # ── the whole job rejected, and back in the queue with the reason ─────
+        D3 = "2026-09-22"
+        y1 = await cons(D3, "SVGC-3", 3)
+        y2 = await cons(D3, "SVGC-4", 1)
+        async with SessionLocal() as s:
+            r3 = await G.submit(s, site_id=SITE, work_date=D3, tag=TAG, code="SVGC-PUL1",
+                                sqm=4.0, consumption_ids=[y1, y2], notes=None, username="svgc-sup")
+            await s.commit()
+        b3 = await done("SVGC-PUL1")
+        async with SessionLocal() as s:
+            await G.decide_group(s, group_id=r3["group_id"], approve=False, edits=None,
+                                 justification="", reject_reason="wrong vessel — this was J022",
+                                 username="svgc-hod", site_id=SITE)
+            await s.commit()
+            q3 = await G.queue(s, site_id=SITE)
+        back = next((x for x in q3["groups"] if x["tag"] == TAG and x["work_date"] == D3), None)
+        check("14C-08: a rejected job credits nothing and returns to the queue as ONE "
+              "card carrying the HOD's reason",
+              await done("SVGC-PUL1") == b3 and back is not None and len(back["rows"]) == 2
+              and back["rejected"] and "J022" in back["rejected"][0]["reason"],
+              str(back and back["rejected"]))
+
+        # ── validation ───────────────────────────────────────────────────────
+        z1 = await cons("2026-09-21", "SVGC-1", 1)
+        z2 = await cons("2026-09-21", "SVGC-2", 1, tank=TAG2)
+        bad = []
+        for ids_, expect in (([tol_id, z1], "day"), ([z2], "tank")):
+            async with SessionLocal() as s:
+                try:
+                    await G.submit(s, site_id=SITE, work_date=D if expect == "day" else "2026-09-21",
+                                   tag=TAG, code="SVGC-PUL1", sqm=1, consumption_ids=ids_,
+                                   notes=None, username="svgc-sup")
+                    bad.append(expect)
+                except HTTPException as e:
+                    if e.status_code != 422:
+                        bad.append(expect)
+                await s.rollback()
+        check("14C-09: a job is ONE day on ONE piece of equipment — a draw from another "
+              "day, or logged against another vessel, is refused (422)", not bad, str(bad))
+
+        # ── an approved job edited in Excel: the job's credit moves ONCE ──────
+        b4 = await done("SVGC-PUL1")
+        async with SessionLocal() as s:
+            await s.execute(_t('UPDATE consumption SET "Quantity" = 5 WHERE id = :i'), {"i": ids[0]})
+            await s.commit()
+            rev = await SL.assign(s, consumption_id=ids[0], code="SVGC-PUL1", tag=TAG, sqm=15.0,
+                                  work_date=D, notes=None, username="svgc-sup", site_id=SITE)
+            await s.commit()
+            rid = (await s.execute(_t(
+                "SELECT id FROM sme_consumption_revision WHERE \"Consumption_ID\" = :c AND status = 'staged'"),
+                {"c": ids[0]})).scalar()
+            await SL.decide_revision(s, rev_id=int(rid), approve=True, edits=None,
+                                     justification="", reject_reason="", username="svgc-hod",
+                                     site_id=SITE)
+            await s.commit()
+            sq = (await s.execute(_t(
+                'SELECT array_agg(DISTINCT "SQM_Completed") FROM sme_consumption_log WHERE group_id = :g'),
+                {"g": res["group_id"]})).scalar()
+            ec = (await s.execute(_t(
+                'SELECT "Expected_Qty" FROM sme_consumption_log WHERE group_id = :g '
+                'AND "SAP_Code" = \'SVGC-3\''), {"g": res["group_id"]})).scalar()
+        check("14C-10: ⚠️ a revision of ONE material of an approved four-material job "
+              "moves the JOB's area once (13.37 → 15: +1.63), not once per material, and "
+              "every member now carries the job's one answer and is re-measured against it "
+              "(Comp C: 3.5 × 15 = 52.5 KG)",
+              round(await done("SVGC-PUL1") - b4, 4) == 1.63 and sq == [15.0]
+              and ec is not None and round(float(ec), 4) == 52.5,
+              f"Δ={round(await done('SVGC-PUL1') - b4, 4)} sqm={sq} exp={ec}")
+    finally:
+        await _cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -26558,6 +26794,9 @@ async def main() -> int:
     print("\n 14B. Phase 14b — one quantity per bucket: the four double-count paths, "
           "both orders, the book catching up, ±1 day, and convergence")
     await test_phase14b_reconciliation()
+    print("\n 14C. Phase 14c — one system code and one SQM per job, credited once, "
+          "decided whole, split when two systems share a day")
+    await test_phase14c_groups()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

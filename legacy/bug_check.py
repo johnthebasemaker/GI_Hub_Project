@@ -1604,6 +1604,8 @@ def check_models_schema_parity() -> None:
                ("inventory", "Unit_Size"), ("inventory", "Base_UOM"),
                ("sme_consumption_log", "Pack_Qty"),
                ("sme_consumption_log", "Unit_Size_Used"),
+               # Phase 14c (alembic e8b4c16d2f03): the job a draw belongs to.
+               ("sme_consumption_log", "group_id"),
                # 2026-08 execution sub-activity (alembic f1d3b7a24c60): the
                # recipe line's quantity is now per sub-activity, so LSC2's
                # Resin A is 0.2700 as ESC21 primer and 1.4674 as ESC22 screed

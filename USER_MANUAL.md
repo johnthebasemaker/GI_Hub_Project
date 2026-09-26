@@ -1073,20 +1073,42 @@ later, and the queue will simply ask. A blank is not a failure.
 ⚠️ **You are never asked for the area.** You cannot know it — the drum leaves
 before it is applied. That question belongs to the person who applied it.
 
-### 4.9a.2 What the field does — the queue
+### 4.9a.2 What the field does — the queue, one job at a time
+
+*Phase 14c (26 September 2026). This replaced asking for a system code,
+equipment and area on every material separately.*
 
 **Where:** Execution Entries → the Surface Shield consumption queue. Store
 Keeper, Supervisor and HOD.
 
-The queue lists every Surface Shield consumption with no area recorded against
-it, **oldest first** — except rows the HOD rejected, which sit at the very top
-(see §4.9a.6). For each one you supply three things:
+The queue groups the unattributed Surface Shield consumption into **jobs**. A
+job is everything drawn on **one day** against **one piece of equipment** — the
+Consumption Log's **Tank No.**, read through the site's Tank Aliases. Rows the
+HOD rejected sit at the very top (see §4.9a.6); the rest follow, oldest first.
+Type a tag or a date into **Find a job** to go straight to one.
+
+Each card lists the job's materials, each shown **base first, then packs**
+(`10 KG · 2.5 Can`). You answer **once for the whole job**:
 
 | | |
 |---|---|
-| **System Code** | Pre-selected when the store keeper already chose one. Otherwise pick from the list — it offers only the systems whose recipe actually contains that material. |
-| **Equipment / tank** | Filtered to the equipment carrying the system code you picked. |
-| **Area covered (m²)** | What that material actually covered. |
+| **System code** | **Suggested from the materials.** The app picks the system whose recipe lists the most of what was drawn — a job that drew all four components of PU 1 mm is PU 1 mm. Each option says how many of the job's materials it covers (`covers 4 of 5`). A code the store keeper noted (`LS …`) ranks higher. |
+| **Area covered (m²)** | **Asked once for the job**, not once per material. Pre-filled when the store keeper typed it in Remarks (`Floor - 13.37 SQM Done`) — confirm it or correct it. |
+| **Materials** | Every material is ticked except any the chosen system's recipe does not list, which are marked **not in recipe**. |
+
+Press **Submit N to the HOD**. The whole job goes to the HOD as one approval.
+
+⚠️ **Two systems on one vessel on one day? Split.** Untick the materials that
+belong to the second system and submit the first. The unticked materials stay on
+the card; pick the second system, confirm its area and submit again.
+
+⚠️ **Materials drawn for no equipment are not in the queue.** Draws noted
+against *Others*, *To Site*, *Scaffolding*, *Housekeeping* and the like stay in
+the stock figures but cover no area, so they are counted under the queue and
+left out of it.
+
+⚠️ **A Tank No. no equipment answers to is listed above the cards.** Map it in
+**SME → Tank Aliases** and its draws join a job.
 
 ⚠️ **The system code is asked, never guessed.** If the app cannot tell which
 system a draw was for, it offers you the candidates rather than choosing one.
@@ -1108,9 +1130,15 @@ would count the same drum against the same vessel twice.
 Nothing is deducted. The stock left the shelf when it was issued; this records
 **what it was for**, not that it went.
 
-Each submission is compared against the recipe: `rate × area` is what the
-system expected, and the difference is the variance. Every row then goes to the
-**HOD** — see §4.9a.4.
+Each material in a job is compared against **its own** recipe line for the
+job's one area: `rate × area` is what the system expected for that material, and
+the difference is the variance. Two draws of the same material in one job share
+that one expectation. The job then goes to the **HOD** — see §4.9a.4.
+
+⚠️ **The job's area is credited once.** Approving a four-material job of
+13.37 m² adds **13.37 m²** to that equipment's completed area — not 13.37 once
+per material. (Before Phase 14c each material credited its own copy; that
+over-counted multi-component jobs.)
 
 > ⚠️ **Your estimator figures do not move.** Readiness, completion, achievable
 > area and the buy list are calculated from the Material Estimator's own
@@ -1123,8 +1151,16 @@ system expected, and the difference is the variance. Every row then goes to the
 is no band inside which a row files itself.
 
 What the **±10%** tolerance does is set **priority**. A draw more than 10% above
-or below the benchmark is flagged **High Priority** and sits at the top of the
-HOD's queue; the rest follow, oldest first.
+or below the benchmark is flagged **High Priority**, and a job holding one sits at
+the top of the HOD's queue; the rest follow, oldest first.
+
+⚠️ **The HOD decides the whole job.** Each card on **Awaiting the HOD** is one
+job. **Review job** shows every material, its drawn and expected quantity and its
+variance. **Approve the job** credits its area once. **Reject the job** sends
+every material back with the one reason. The HOD can correct the area or the
+equipment on approval, with a written reason; the quantities cannot be changed
+there. Rows filed one material at a time before Phase 14c are listed below the
+jobs and decided as before.
 
 ⚠️ **A variance that cannot be calculated is High Priority too.** If the recipe
 has no line for that material in that system, there is no benchmark to compare
@@ -1176,15 +1212,13 @@ required: the field cannot correct something nobody told them was wrong.
 
 **What the field sees.**
 
-1. The row is back in **Needs an area**, sorted **above everything else**, with a
-   red **Rejected - Needs Correction** badge and the HOD's reason written beside
-   it.
-2. The person who filed it also gets a notification with the reason.
-3. Press **Correct & resubmit**. The answer that was rejected is filled in, with
-   the reason shown above it. Change the system code, equipment or area.
-4. Press **Resubmit to HOD**. The row leaves your queue and goes straight back
-   to the HOD, marked **Resubmitted after rejection**, with their earlier reason
-   beside it. The HOD is notified.
+1. The job is back in **Needs an area**, sorted **above everything else**, as one
+   card with a red **Rejected - Needs Correction** badge and the HOD's reason.
+2. The person who filed it also gets **one** notification with the reason, not
+   one per material.
+3. Correct the system code, the area or the materials ticked.
+4. Press **Correct & resubmit**. The job leaves your queue and goes straight back
+   to the HOD, marked **Resubmitted after rejection**. The HOD is notified.
 
 Nothing counts until the HOD approves: a rejected assignment credits no area to
 any equipment and adds nothing to the Estimator's consumed figure.
@@ -4457,6 +4491,10 @@ The SME does **not** issue stock itself. Day-to-day consumption is entered on th
   the packs a draw used × the material's **Unit Size** (Inventory sheet), fixed
   at the moment the draw was attributed. It is an observation beside the plan
   and moves **no** readiness figure (§4.11).
+- **A Surface Shield job's area is credited once** from Phase 14c: one day on one
+  piece of equipment is one job, whatever the number of materials, and the HOD
+  approves or rejects it whole (§4.9a.2). A Done SQM that jumped by a multiple of
+  a job's area was filed before 26 September 2026, one material at a time.
 
 ---
 
