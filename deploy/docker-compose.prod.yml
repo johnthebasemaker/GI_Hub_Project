@@ -142,8 +142,15 @@ services:
       GI_DOTENV: "0"
       GI_OUTBOUND: "off"
       # MUST differ from JWT_SECRET — deploy-v2.sh refuses to continue if equal.
-      JWT_SECRET: ${PRACTICE_JWT_SECRET:?PRACTICE_JWT_SECRET must be set in deploy/.env to run Practice}
-      DATABASE_URL: postgresql+asyncpg://gi_training:${PRACTICE_DB_PASSWORD:?PRACTICE_DB_PASSWORD must be set}@db:5432/gihub_training
+      # ⚠️ `:-`, NOT `:?`. Compose interpolates EVERY service, including ones
+      # whose profile is off, so a `:?` here made the whole file invalid on a
+      # box that has not configured Practice — a Live deploy broken by a
+      # feature that is switched off (caught by `docker compose config`,
+      # 2026-09-26). The guard lives where it cannot break Live: deploy-v2.sh
+      # adds `--profile practice` only when both values are set, and a blank
+      # key is refused at boot anyway (GI_ENV=production → config.jwt_secret).
+      JWT_SECRET: ${PRACTICE_JWT_SECRET:-}
+      DATABASE_URL: postgresql+asyncpg://gi_training:${PRACTICE_DB_PASSWORD:-}@db:5432/gihub_training
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       GI_TRUSTED_PROXIES: ${GI_TRUSTED_PROXIES:-}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
