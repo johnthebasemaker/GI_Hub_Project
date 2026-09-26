@@ -1,0 +1,9 @@
+key: sme-grouped-queue
+title: Surface Shield attribution — one job, one area
+body: |
+  The Surface Shield queue now groups the day's draws on one piece of equipment
+  into a single job. The system code is suggested from the materials and the area
+  is asked once. The HOD approves the whole job, and its area is credited once.
+routes: [/execution]
+roles: [supervisor, hod, store_keeper, admin]
+manual: "4.9a.2"

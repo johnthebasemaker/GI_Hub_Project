@@ -49,7 +49,7 @@ export const PRACTICE_DB_URL =
 export type Role =
   | 'admin' | 'hod' | 'sk' | 'supervisor' | 'logistics'
   | 'warehouse' | 'auditor'
-  | 'qc' | 'qcwh' | 'qcnone' | 'qchod'
+  | 'qc' | 'qcwh' | 'qcnone' | 'qchod' | 'news'
 export const USERS: Record<Role, string> = {
   admin: 'admin', // global admin
   hod: 'hod', // head_of_department @ CNCEC
@@ -74,6 +74,10 @@ export const USERS: Record<Role, string> = {
   // Phase 8 slice 8d. Cross-site by definition, so NO site and NO warehouse —
   // binding it to one would contradict the reason the role exists.
   qchod: 'e2e_qc_hod', // Head of Qualities, global, Surface Shield only
+  // Phase 14d. The What's-new panel OPENS BY ITSELF for its audience, and the
+  // specs run in parallel — so the announcement spec speaks to a user nobody
+  // else signs in as: a QC at a site of its own (global-setup step 1g).
+  news: 'e2e_news', // qc @ E2E-NEWS
 }
 
 // Site and warehouse the QC fixtures are pinned to. Specs assert against these

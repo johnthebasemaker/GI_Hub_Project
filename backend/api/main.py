@@ -57,6 +57,7 @@ from .console import admin as console_admin_router  # noqa: E402
 from .sla import router as sla_router  # noqa: E402
 from .console import oversight as console_oversight_router  # noqa: E402
 from .console import public as console_public_router  # noqa: E402
+from .announcements import router as announcements_router  # noqa: E402
 from .console import traces as console_traces_router  # noqa: E402
 from .console import xsite as xsite_router  # noqa: E402
 from .documents import router as documents_router  # noqa: E402
@@ -462,6 +463,10 @@ app.include_router(training_router, dependencies=_auth)
 # signature (ticket or bearer) or raises 401, and the role fence runs after it.
 # Suite CZ pins both halves.
 app.include_router(training_media_router)
+
+# Phase 14d — "What's new" (any signed-in user) + the admin's publish controls
+# and tutorial-staleness report (exact-locked to admin, per route).
+app.include_router(announcements_router, dependencies=_auth)
 
 # Intelligence layer — /ai/health + the Hub Assistant SSE stream (self-guarded,
 # any authenticated user; role-gated context inside manual_qa).

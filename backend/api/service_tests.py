@@ -10009,6 +10009,8 @@ async def test_auditor_read_only():
         ("POST", "/auth/2fa/enroll"), ("POST", "/auth/2fa/verify"),
         ("POST", "/auth/2fa/disable"),
         ("POST", "/auth/phone/request-otp"), ("POST", "/auth/phone/verify-otp"),
+        # Phase 14d: the caller's own "I have seen this announcement" receipt.
+        ("POST", "/announcements/read"),
         ("POST", "/sme/plan/cascade"), ("POST", "/sme/plan/export"),
         ("POST", "/sme/export/rows"),
         ("POST", "/ai/assistant"), ("POST", "/ai/query"),
@@ -26511,6 +26513,288 @@ async def test_phase14c_groups():
         await _cleanup()
 
 
+async def test_phase14d_announcements():
+    """Suite 14D — "What's new" reaches only the people a feature concerns
+    (audience = the navigation matrix, rule 14), is authored as code
+    (Q14-13), is in-app only, and tutorial staleness warns ADMINS only
+    (Q14-14) without ever gating.
+    """
+    import json as _json
+    import subprocess as _sp
+    import tempfile
+    from datetime import datetime, timedelta
+    from pathlib import Path as _P
+
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from .services import announcements as AN
+    from .services import tutorial_staleness as TS
+
+    ROOT_ = _P(__file__).resolve().parents[2]
+    snap = AN.nav_access()
+
+    def _tok(user, role, site):
+        return {"Authorization": f"Bearer {_auth._make_token(user, role, site, _auth.ACCESS_TTL)}"}
+
+    # ── the audience is the navigation matrix ────────────────────────────────
+    sme = AN.audience_for(["/sme"])
+    refused = []
+    for routes, roles in ((["/no-such-page"], None), (["/records/stock"], None),
+                          (["/sme"], ["store_keeper"]), (["/sme"], ["wizard"])):
+        try:
+            AN.audience_for(routes, roles)
+            refused.append(False)
+        except ValueError:
+            refused.append(True)
+    check("14D-01: an announcement's audience is the NAV MATRIX's answer for its "
+          "route (/sme → exactly the roles that can open /sme); a route the matrix "
+          "does not know, a /records/* it cannot resolve, a roles: list that narrows "
+          "to nobody and an unknown role are all REFUSED, never guessed",
+          sorted(sme) == sorted(snap["routes"]["/sme"]) and "store_keeper" not in sme
+          and all(refused) and AN.audience_for(["/stock"], ["hod", "store_keeper"])
+          == [r for r in snap["routes"]["/stock"] if r in ("hod", "store_keeper")],
+          f"sme={sme} refused={refused}")
+
+    r = _sp.run([sys.executable, str(ROOT_ / "tools" / "announcements.py"), "nav", "--check"],
+                cwd=ROOT_, capture_output=True, text=True)
+    check("14D-02: the audience snapshot (backend/api/data/nav_access.json) matches "
+          "frontend/src/config/nav.tsx today — a manifest edit without a refresh fails here",
+          r.returncode == 0, (r.stdout + r.stderr)[-300:])
+
+    good, bad = AN.load_dir()
+    check("14D-03: every shipped file in docs/announcements/ loads — valid YAML, a real "
+          "route, and a manual: section USER_MANUAL.md actually has (rule 13)",
+          good and not bad, str(bad))
+
+    with tempfile.TemporaryDirectory() as td:
+        d = _P(td)
+        (d / "a.yaml").write_text("key: svd-dead-link\ntitle: T\nbody: B\nroutes: [/sme]\nmanual: '99.9'\n")
+        (d / "b.yaml").write_text("key: Bad Key\ntitle: T\nbody: B\nroutes: [/sme]\n")
+        (d / "c.yaml").write_text("key: svd-no-route\ntitle: T\nbody: B\n")
+        (d / "e.yaml").write_text("key: svd-ok\ntitle: T\nbody: B\nroutes: [/sme]\n")
+        (d / "f.yaml").write_text("key: svd-ok\ntitle: T2\nbody: B\nroutes: [/sme]\n")
+        g2, b2 = AN.load_dir(d)
+    check("14D-04: a dead manual link, a bad key, a missing route and a duplicate key "
+          "are each refused BY FILE NAME, and the good file still loads",
+          [x["key"] for x in g2] == ["svd-ok"] and len(b2) == 4
+          and any("99.9" in x["problem"] for x in b2), str(b2))
+
+    SITE = "SVD-SITE"
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            ids = [x[0] for x in (await s.execute(_t(
+                "SELECT id FROM feature_announcements WHERE key LIKE 'svd-%'"))).all()]
+            if ids:
+                await s.execute(_t("DELETE FROM feature_announcement_reads WHERE announcement_id = ANY(:i)"), {"i": ids})
+                await s.execute(_t("DELETE FROM app_notifications WHERE related_table = 'feature_announcements' "
+                                   "AND related_ref = ANY(:r)"), {"r": [str(i) for i in ids]})
+            await s.execute(_t("DELETE FROM feature_announcements WHERE key LIKE 'svd-%'"))
+            await s.execute(_t("DELETE FROM app_settings WHERE key = :k"), {"k": TS.SETTING_KEY})
+            await s.execute(_t("DELETE FROM app_notifications WHERE event_key = 'tutorial_stale'"))
+            await s.commit()
+
+    await _cleanup()
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            d = _P(td)
+            (d / "1.yaml").write_text(
+                "key: svd-hod-news\ntitle: For the HOD\nbody: Estimator news\nroutes: [/sme]\n")
+            (d / "2.yaml").write_text(
+                "key: svd-site-news\ntitle: One site only\nbody: Only there\nroutes: [/stock]\n"
+                f"roles: [hod, store_keeper]\nsites: [{SITE}]\n")
+            async with SessionLocal() as s:
+                r1 = await AN.sync(s, username="svc", directory=d)
+                r2 = await AN.sync(s, username="svc", directory=d)
+                (d / "1.yaml").write_text(
+                    "key: svd-hod-news\ntitle: For the HOD\nbody: Estimator news, corrected\nroutes: [/sme]\n")
+                r3 = await AN.sync(s, username="svc", directory=d)
+                await s.commit()
+                st = (await s.execute(_t(
+                    "SELECT status FROM feature_announcements WHERE key = 'svd-hod-news'"))).scalar()
+        check("14D-05: sync loads files as DRAFTS; a second sync of the same files changes "
+              "nothing; an edited file updates its row",
+              (r1["added"], r2["added"], r2["updated"], r3["updated"], st) == (2, 0, 0, 1, "draft"),
+              f"{r1} {r2} {r3} {st}")
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            hod = _tok("svd-hod", "hod", "CNCEC")
+            sk = _tok("svd-sk", "store_keeper", "CNCEC")
+            aud = _tok("svd-aud", "auditor", "")
+            adm = _tok("svd-admin", "admin", "")
+            hod_x = _tok("svd-hod-x", "hod", SITE)
+
+            async def keys(h, **p):
+                rr = await ac.get("/announcements/whats-new", headers=h, params=p)
+                return [a["key"] for a in rr.json()["items"] if a["key"].startswith("svd-")]
+
+            check("14D-06: a DRAFT reaches nobody", await keys(hod) == [], str(await keys(hod)))
+
+            async with SessionLocal() as s:
+                wa0 = (await s.execute(_t("SELECT COUNT(*) FROM whatsapp_outbox"))).scalar()
+            forb = [(await ac.get("/announcements/admin", headers=hod)).status_code,
+                    (await ac.post("/announcements/admin/svd-hod-news/publish", json={}, headers=aud)).status_code,
+                    (await ac.post("/announcements/admin/sync", headers=hod)).status_code]
+            pub = await ac.post("/announcements/admin/svd-hod-news/publish", json={}, headers=adm)
+            check("14D-07: publishing is ADMIN-only (an HOD and an auditor get 403); the "
+                  "admin's publish rings the bell once per audience role",
+                  forb == [403, 403, 403] and pub.status_code == 200
+                  and pub.json()["bells"] == len(sme), f"{forb} {pub.status_code} {pub.text[:200]}")
+
+            async with SessionLocal() as s:
+                wa1 = (await s.execute(_t("SELECT COUNT(*) FROM whatsapp_outbox"))).scalar()
+                bell_roles = sorted(x[0] for x in (await s.execute(_t(
+                    "SELECT recipient_role FROM app_notifications WHERE event_key = 'feature_announcement' "
+                    "AND related_ref = (SELECT id::text FROM feature_announcements WHERE key = 'svd-hod-news')"))).all())
+            check("14D-08: IN-APP ONLY (Q14-14/Q14-13) — the bell rows go to exactly the "
+                  "audience roles and not one WhatsApp message is queued",
+                  wa1 == wa0 and bell_roles == sorted(sme), f"wa {wa0}->{wa1} bells={bell_roles}")
+            check("14D-09: the HOD sees it; a store keeper — who cannot open /sme — does not",
+                  await keys(hod) == ["svd-hod-news"] and await keys(sk) == [],
+                  f"hod={await keys(hod)} sk={await keys(sk)}")
+
+            await ac.post("/announcements/admin/svd-site-news/publish", json={}, headers=adm)
+            check("14D-10: sites: narrows it — an HOD at another site does not see a "
+                  "one-site announcement; an HOD at that site does",
+                  "svd-site-news" not in await keys(hod) and "svd-site-news" in await keys(hod_x),
+                  f"cncec={await keys(hod)} x={await keys(hod_x)}")
+
+            async with SessionLocal() as s:
+                hid = (await s.execute(_t(
+                    "SELECT id FROM feature_announcements WHERE key = 'svd-hod-news'"))).scalar()
+                sid = (await s.execute(_t(
+                    "SELECT id FROM feature_announcements WHERE key = 'svd-site-news'"))).scalar()
+            m1 = await ac.post("/announcements/read", json={"ids": [hid, sid]}, headers=hod)
+            again = await keys(hod)
+            hist = await ac.get("/announcements/whats-new", headers=hod, params={"include_read": True})
+            check("14D-11: closing the panel marks what it showed as read — it does not come "
+                  "back; the history still lists it as read; an id the caller could not see "
+                  "is not marked",
+                  m1.json()["marked"] == 1 and again == []
+                  and any(a["key"] == "svd-hod-news" and a["read"] for a in hist.json()["items"]),
+                  f"{m1.text} again={again}")
+            m2 = await ac.post("/announcements/read", json={"ids": [hid]}, headers=aud)
+            check("14D-12: a VIEW-ONLY auditor can mark its own receipt (the read-only "
+                  "guard allows exactly /announcements/read) — otherwise the panel would "
+                  "reappear forever", m2.status_code == 200, f"{m2.status_code} {m2.text[:120]}")
+
+            # ── schedule, release, retract ──────────────────────────────────
+            with tempfile.TemporaryDirectory() as td:
+                (_P(td) / "3.yaml").write_text(
+                    "key: svd-later\ntitle: Later\nbody: Tomorrow\nroutes: [/sme]\n")
+                async with SessionLocal() as s:
+                    await AN.sync(s, username="svc", directory=_P(td))
+                    await s.commit()
+            at = (datetime.now() + timedelta(days=1)).isoformat()
+            sc = await ac.post("/announcements/admin/svd-later/publish", json={"at": at}, headers=adm)
+            before = "svd-later" in await keys(hod)
+            async with SessionLocal() as s:
+                await s.execute(_t("UPDATE feature_announcements SET publish_at = now() - interval '1 minute' "
+                                   "WHERE key = 'svd-later'"))
+                await s.commit()
+            after = "svd-later" in await keys(hod)
+            await keys(hod)
+            async with SessionLocal() as s:
+                lid = (await s.execute(_t("SELECT id FROM feature_announcements WHERE key = 'svd-later'"))).scalar()
+                nb = (await s.execute(_t(
+                    "SELECT COUNT(*) FROM app_notifications WHERE related_table = 'feature_announcements' "
+                    "AND related_ref = :r"), {"r": str(lid)})).scalar()
+            check("14D-13: a SCHEDULED announcement is invisible until its time, then the "
+                  "first reader after it releases it — and the bell rings ONCE, however "
+                  "many readers follow",
+                  sc.json()["status"] == "scheduled" and not before and after and nb == len(sme),
+                  f"{sc.text[:120]} before={before} after={after} bells={nb}")
+
+            rt = await ac.post("/announcements/admin/svd-later/retract", headers=adm)
+            async with SessionLocal() as s:
+                nb2 = (await s.execute(_t(
+                    "SELECT COUNT(*) FROM app_notifications WHERE related_table = 'feature_announcements' "
+                    "AND related_ref = :r"), {"r": str(lid)})).scalar()
+            check("14D-14: RETRACT takes it out of every panel and removes its unread bell rows",
+                  rt.status_code == 200 and "svd-later" not in await keys(hod) and nb2 == 0,
+                  f"{rt.status_code} bells={nb2}")
+
+            # ── tutorial staleness: admins only, never a gate ────────────────
+            tst = [(await ac.get("/announcements/admin/tutorials", headers=h)).status_code
+                   for h in (hod, aud, sk)]
+            ta = await ac.get("/announcements/admin/tutorials", headers=adm)
+            check("14D-15: the tutorial-staleness report is ADMIN-only (Q14-14) — HOD, "
+                  "auditor and store keeper get 403", tst == [403, 403, 403] and ta.status_code == 200,
+                  f"{tst} {ta.status_code}")
+
+        # A throwaway repository, because CI checks out one commit and a real
+        # history cannot be assumed (a SKIP is not a PASS — rule 16).
+        with tempfile.TemporaryDirectory() as td:
+            root = _P(td)
+            src = root / "frontend" / "src"
+            (src / "pages").mkdir(parents=True)
+            (src / "lib").mkdir()
+            (root / "docs" / "tutorials" / "out").mkdir(parents=True)
+            (src / "App.tsx").write_text(
+                "import { lazy } from 'react'\n"
+                "const APage = lazy(() => import('./pages/APage'))\n"
+                "const BPage = lazy(() => import('./pages/BPage'))\n"
+                '<Route path="a" element={<APage />} />\n<Route path="b" element={<BPage />} />\n')
+            (src / "pages" / "APage.tsx").write_text(
+                "import Card from './ACard'\nimport { u } from '../lib/u'\nexport default 1\n")
+            (src / "pages" / "ACard.tsx").write_text("export default 1\n")
+            (src / "pages" / "BPage.tsx").write_text("export default 2\n")
+            (src / "lib" / "u.ts").write_text("export const u = 1\n")
+
+            def git(*a):
+                return _sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                               cwd=root, capture_output=True, text=True).stdout.strip()
+            git("init", "-q")
+            git("add", "-A")
+            git("commit", "-q", "-m", "one")
+            sha = git("rev-parse", "HEAD")
+            for tid, route in (("t_a", "/a"), ("t_b", "/b"), ("t_x", "/x")):
+                (root / "docs" / "tutorials" / "out" / f"{tid}.manifest.json").write_text(_json.dumps({
+                    "tutorial_id": tid, "training_module_key": tid, "title": tid,
+                    "script_path": f"tools/tutorials/{tid}.yaml", "git": {"sha": sha},
+                    "routes": {"declared": [route], "visited": [route]}}))
+            (root / "docs" / "tutorials" / "out" / "t_old.manifest.json").write_text(_json.dumps({
+                "tutorial_id": "t_old", "git": {"sha": "0" * 40},
+                "routes": {"declared": ["/a"], "visited": []}}))
+            (src / "lib" / "u.ts").write_text("export const u = 2\n")
+            git("commit", "-qam", "plumbing only")
+            quiet = {i["tutorial"]: i["status"] for i in TS.scan(root=root)["items"]}
+            (src / "pages" / "ACard.tsx").write_text("export default 3\n")
+            git("commit", "-qam", "a card changed")
+            res = TS.scan(root=root, announced={"t_b": "svd-hod-news"})
+            st = {i["tutorial"]: i for i in res["items"]}
+        check("14D-16: a change to a component a tutorial's page renders makes it "
+              "POSSIBLY STALE, naming the file; a change to plumbing (lib/) does not",
+              quiet.get("t_a") == "current" and st["t_a"]["status"] == "possibly_stale"
+              and st["t_a"]["changed"] == ["frontend/src/pages/ACard.tsx"]
+              and "--script tools/tutorials/t_a.yaml" in st["t_a"]["rerecord"],
+              f"quiet={quiet} a={st.get('t_a')}")
+        check("14D-17: 'cannot tell' is its own answer, never 'fresh' — a SHA the clone "
+              "lacks and a route no page renders are UNKNOWN; an announcement that says "
+              "rerender: flags its tutorial even when no file changed",
+              st["t_old"]["status"] == "unknown" and st["t_x"]["status"] == "unknown"
+              and st["t_b"]["status"] == "possibly_stale"
+              and st["t_b"].get("announced_rerender") == "svd-hod-news",
+              str({k: (v["status"], v["reason"]) for k, v in st.items()}))
+
+        async with SessionLocal() as s:
+            rang1 = await TS.record(s, res)
+            rang2 = await TS.record(s, res)
+            await s.commit()
+            bells = (await s.execute(_t(
+                "SELECT recipient_role, recipient_user FROM app_notifications "
+                "WHERE event_key = 'tutorial_stale'"))).all()
+            stored = await TS.last(s)
+        check("14D-18: the finding rings the ADMIN bell once — the same finding again does "
+              "not ring it twice — and is stored for the Training Hub",
+              rang1 and not rang2 and [tuple(b) for b in bells] == [("admin", None)]
+              and stored and stored.get("stale") == res["stale"],
+              f"{rang1} {rang2} {bells}")
+    finally:
+        await _cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -26797,6 +27081,9 @@ async def main() -> int:
     print("\n 14C. Phase 14c — one system code and one SQM per job, credited once, "
           "decided whole, split when two systems share a day")
     await test_phase14c_groups()
+    print("\n 14D. Phase 14d — What's new reaches only the people a feature concerns; "
+          "tutorial staleness warns admins only")
+    await test_phase14d_announcements()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

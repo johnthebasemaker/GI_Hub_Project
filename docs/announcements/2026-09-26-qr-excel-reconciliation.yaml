@@ -1,0 +1,8 @@
+key: qr-excel-reconciliation
+title: The paper form and the Excel log no longer count a drum twice
+body: |
+  When a QR consumption form and the Excel Consumption Log record the same drums,
+  stock now holds one quantity per day, equipment and material — the larger of
+  the two, never their sum. Differences are listed in SME → QR ⇄ Excel for the HOD.
+routes: [/sme]
+manual: "6.17"

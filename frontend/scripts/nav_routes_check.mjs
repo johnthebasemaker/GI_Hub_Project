@@ -138,5 +138,35 @@ if (orphans.length) {
   process.exit(1)
 }
 
+// ── Phase 14d: the announcement audience snapshot must match the manifest ──
+// Announcements are addressed by ROUTE and their audience is derived from
+// this manifest (rule 14). The API image has no Node, so the matrix travels as
+// `backend/api/data/nav_access.json`; a manifest edit without a refresh would
+// announce a page to people who can no longer open it. Role levels come from
+// `auth.ROLE_META`, the one place they are defined — read, never restated.
+{
+  const { execFileSync } = await import('node:child_process')
+  const repo = join(ROOT, '..')
+  const auth = readFileSync(join(repo, 'backend', 'api', 'auth.py'), 'utf8')
+  const block = auth.split('ROLE_META = {')[1]?.split('}\n')[0] ?? ''
+  const levels = Object.fromEntries([...block.matchAll(
+    /"(\w+)":\s*\{"label":[^,]+,\s*"level":\s*(\d+)\}/g)].map((m) => [m[1], Number(m[2])]))
+  const fresh = JSON.parse(execFileSync('node',
+    [join(ROOT, 'scripts', 'nav_access_dump.mjs'), JSON.stringify(levels)], { encoding: 'utf8' }))
+  let snap = null
+  try {
+    snap = JSON.parse(readFileSync(join(repo, 'backend', 'api', 'data', 'nav_access.json'), 'utf8'))
+  } catch { /* reported below */ }
+  const norm = (d) => JSON.stringify({ sane: d.sane, roleLevels: d.roleLevels, publics: d.publics,
+    routes: Object.fromEntries(Object.keys(d.routes).sort().map((k) => [k, d.routes[k]])) })
+  if (!snap || norm(snap) !== norm(fresh) || Object.keys(levels).length < 5) {
+    console.error('\n== NAV ROUTE COVERAGE: ❌ FAIL — backend/api/data/nav_access.json is STALE ==\n'
+      + 'The navigation matrix changed; the announcement audiences are derived from it.\n'
+      + 'Run `.venv/bin/python tools/announcements.py nav` and commit the result.\n')
+    process.exit(1)
+  }
+}
+
 console.log(`== NAV ROUTE COVERAGE: ✅ PASS (${routes.size} routes, all claimed; `
-  + `${keys.size} manifest keys, ${publics.length} public prefix) ==`)
+  + `${keys.size} manifest keys, ${publics.length} public prefix; announcement `
+  + `audience snapshot current) ==`)

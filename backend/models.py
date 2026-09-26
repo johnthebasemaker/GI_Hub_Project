@@ -1972,6 +1972,55 @@ class SmeAttributionGroup(Base):
     )
 
 
+class FeatureAnnouncement(Base):
+    """Phase 14d — a "What's new" announcement, AUTHORED AS CODE.
+
+    The text lives in `docs/announcements/<date>-<key>.yaml`, reviewed in the PR
+    that ships the feature (ruling Q14-13), and is loaded into this table by a
+    sync. An admin then previews, publishes, schedules or retracts it; nobody
+    types announcement copy into a production form.
+
+    ⚠️ THE AUDIENCE IS NOT A SECOND ACCESS LIST. `routes` names where the
+    feature lives; `audience_roles` is DERIVED from the navigation matrix (rule
+    14) at sync time — the roles that can open any of those routes, optionally
+    narrowed by the file's `roles:`. A role the matrix refuses can never be in
+    it, so an announcement cannot point anyone at a page they cannot open.
+    """
+    __tablename__ = "feature_announcements"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(Text, nullable=False, unique=True)
+    title = Column(Text, nullable=False)
+    body = Column(Text, nullable=False)
+    routes = Column(Text, nullable=False)          # JSON list
+    audience_roles = Column(Text, nullable=False)  # JSON list, derived
+    sites = Column(Text)                           # JSON list or NULL = every site
+    tutorial_module = Column(Text)
+    manual_section = Column(Text)
+    rerender = Column(Boolean, nullable=False, server_default=text('false'))
+    source_path = Column(Text)
+    source_sha256 = Column(Text)
+    status = Column(Text, nullable=False, server_default=text("'draft'"))
+    publish_at = Column(DateTime)
+    published_at = Column(DateTime)
+    published_by = Column(Text)
+    retracted_at = Column(DateTime)
+    retracted_by = Column(Text)
+    created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    updated_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    __table_args__ = (
+        Index("ix_feature_announcements_status", "status"),
+    )
+
+
+class FeatureAnnouncementRead(Base):
+    """Phase 14d — one user has seen one announcement. Per database, so a
+    trainee's receipts in Practice never mark Live as read (rule 17)."""
+    __tablename__ = "feature_announcement_reads"
+    announcement_id = Column(Integer, primary_key=True)
+    username = Column(Text, primary_key=True)
+    read_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+
+
 class ConsumptionReconciliation(Base):
     """Phase 14b — one row per BUCKET where a QR execution entry and the Excel
     Consumption Log both speak for the same drums.

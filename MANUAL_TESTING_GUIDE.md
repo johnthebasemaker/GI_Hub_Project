@@ -3803,6 +3803,49 @@ by **+1.63** (13.37 → 15) once, and every member now reads 15 m². Suite 14C-1
 **TC-GRP-08** — the per-row API still works: `POST /execution/sme-link/assign`
 files a group of one, and approving it credits its own area once.
 
+## 14ai. Phase 14d — What's new and tutorial freshness
+
+**What it is for.** Announcements are YAML in `docs/announcements/`. Their
+audience is derived from the navigation matrix. They are published by an admin
+and delivered in-app only. The code is in `backend/api/services/announcements.py`
+and `tutorial_staleness.py`. Suite 14D pins it.
+
+**TC-ANN-01** — `tools/announcements.py lint` lists every shipped file with its
+audience. Add a file whose `manual:` names a section that does not exist. It is
+refused **by file name**, and the others still load.
+
+**TC-ANN-02** — ⚠️ **audience.** In Admin Console → Announcements, press **Load
+from files**. The `qr-excel-reconciliation` row's Audience is **admin, auditor,
+hod** — the roles that can open `/sme`. A store keeper never sees it.
+
+**TC-ANN-03** — publish `sme-grouped-queue`. Sign in as a supervisor: the
+What's-new panel opens by itself. Press **Got it**, then reload. It does **not**
+reopen. The gift icon still lists it.
+
+**TC-ANN-04** — sign in as the auditor (view-only) with an unread announcement
+and press **Got it**. It stays closed after a reload. The read-only guard allows
+exactly `/announcements/read`.
+
+**TC-ANN-05** — schedule one for two minutes ahead. It is invisible until then.
+After the time, the first page load shows it, and the bell has one row per
+audience role — not one per reader.
+
+**TC-ANN-06** — retract it. It leaves every panel, and its unread bell rows are
+gone.
+
+**TC-ANN-07** — no WhatsApp: `whatsapp_outbox` has no new row after a publish.
+
+**TC-ANN-08** — change a route's access in `frontend/src/config/nav.tsx` and run
+`npm run test:nav`. It fails with *nav_access.json is STALE*. Run
+`tools/announcements.py nav` and it passes.
+
+**TC-TUT-01** — `tools/tutorial_staleness.py` lists each tutorial. One whose page
+changed since its manifest's SHA is **possibly stale** and names the file. A
+change to plumbing (`src/api/`, `src/lib/`) does not count.
+
+**TC-TUT-02** — `--notify` twice in a row rings the **admin** bell once. An HOD
+sees no bell and gets 403 from `/announcements/admin/tutorials`.
+
 ## 14aa. The AI evaluation gates (Phase 11 · 11f)
 
 Developer-facing. Nothing here is a screen; it is what CI refuses to merge.
