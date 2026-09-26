@@ -257,6 +257,14 @@ export default async function globalSetup() {
     + "'A fixture announcement for one QC at one site.', '[\"/stock\"]', '[\"qc\"]', "
     + "'[\"E2E-NEWS\"]', '4.11', 'draft') ON CONFLICT (key) DO NOTHING", E2E_DB)
 
+  // ── 1h. stock vs the Excel workbook (stock-excel.spec.ts) ─────────────────
+  // One stored check naming SAP 1001, so the Stock page's banner, its red
+  // "≠ Excel" tag and the Material Card's alert have something to show.
+  psql(
+    "INSERT INTO stock_excel_checks (\"Site_ID\", workbook, checked_by, total_saps, matched, items) "
+    + "VALUES ('CNCEC', 'CNCEC_Inventory.xlsx', 'e2e-setup', 505, 504, "
+    + "'[{\"sap\": \"1001\", \"description\": \"E2E fixture material\", \"uom\": \"Can\", \"excel_row\": 47, \"workbook\": 21, \"app\": 25.75, \"difference\": 4.75, \"unexplained\": 0, \"causes\": [{\"code\": \"app_only\", \"effect\": 4.75, \"what\": \"A receipt of 4.75 on 2026-06-11 was entered in GI Hub by e2e, and the Receipt Log does not have it.\", \"fix\": \"If it really happened, add it to the Receipt Log.\", \"where\": {\"ledger\": \"receipts\", \"id\": 1}}]}]')", E2E_DB)
+
   // ── 2. known passwords for the role users (throwaway DB only) ────────────
   const resetScript = [
     'import bcrypt, sys',

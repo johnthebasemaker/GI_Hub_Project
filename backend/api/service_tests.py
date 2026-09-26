@@ -26795,6 +26795,174 @@ async def test_phase14d_announcements():
         await _cleanup()
 
 
+async def test_stock_vs_excel():
+    """Suite SX — GI Hub's stock vs the Excel workbook's Current Stock: WHICH
+    materials differ and WHY, in causes a person can act on, adding up to the
+    difference; stored for the Stock page; a marked COPY of the workbook.
+    Nothing here changes stock (services/stock_excel.py).
+    """
+    import io as _io
+    from datetime import datetime as _dt
+
+    import openpyxl
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from . import bulk_import as bi
+    from .services import stock_excel as SE
+
+    SITE = "SVX-SITE"
+    SAPS = ("SVX-1", "SVX-2", "SVX-3", "SVX-4")
+
+    def book(receipts, consumption, returns, inventory):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Inventory"
+        ws.append(["title"])
+        ws.append(["Sl. No.", "SAP CODE", "Material Code", "Equipment Description", "UOM",
+                   "Category", "Opening Stock", "Receipt", "Consumption", "Return",
+                   "Current Stock"])
+        for i, (sap, op, rc, co, rt, cur) in enumerate(inventory, 1):
+            ws.append([i, sap, f"M-{sap}", f"Item {sap}", "EA", "TOOLS", op, rc, co, rt, cur])
+        for name, rows, extra in (("Receipt Log", receipts, "DN. No."),
+                                  ("Consumption Log", consumption, "Tank No."),
+                                  ("Return Log", returns, "Reason")):
+            s = wb.create_sheet(name)
+            s.append(["title"])
+            s.append(["Date ", "SAP CODE", "Material Code", "Equipment Description", "UOM",
+                      "Qty.", extra])
+            for d, sap, q, ref in rows:
+                s.append([_dt.fromisoformat(d), sap, f"M-{sap}", f"Item {sap}", "EA", q, ref])
+        out = _io.BytesIO()
+        wb.save(out)
+        return out.getvalue()
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            for tbl in ("receipts", "consumption", "returns"):
+                await s.execute(_t(f'DELETE FROM {tbl} WHERE "SAP_Code" = ANY(:p)'), {"p": list(SAPS)})
+            await s.execute(_t('DELETE FROM inventory WHERE "SAP_Code" = ANY(:p)'), {"p": list(SAPS)})
+            await s.execute(_t('DELETE FROM stock_excel_checks WHERE "Site_ID" = :s'), {"s": SITE})
+            await s.commit()
+
+    await _cleanup()
+    try:
+        async with SessionLocal() as s:
+            for sap in SAPS:
+                await s.execute(_t(
+                    'INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+                    '"Category", "UOM", "Site_ID", "Opening_Stock") VALUES (:p, :m, :p, \'TOOLS\', '
+                    '\'EA\', :s, 0)'), {"p": sap, "m": f"M-{sap}", "s": SITE})
+            await s.commit()
+
+        # 1. the workbook as it was synced: everything agrees
+        rec = [("2026-09-01", "SVX-1", 10, "DN-1"), ("2026-09-01", "SVX-2", 5, "DN-2"),
+               ("2026-09-02", "SVX-3", 8, "DN-3"), ("2026-09-02", "SVX-4", 4, "DN-4")]
+        con = [("2026-09-03", "SVX-2", 2, "T1"), ("2026-09-03", "SVX-2", 1, "T1"),
+               ("2026-09-04", "SVX-3", 3, "T2")]
+        inv_ok = [("SVX-1", 0, 10, 0, 0, 10), ("SVX-2", 0, 5, 3, 0, 2),
+                  ("SVX-3", 0, 8, 3, 0, 5), ("SVX-4", 0, 4, 0, 0, 4)]
+        v1 = book(rec, con, [], inv_ok)
+        async with SessionLocal() as s:
+            plan = await bi.plan_ledger(s, v1, SITE)
+            await bi.apply_ledger(s, plan, "svx")
+            await s.commit()
+            clean = await SE.diagnose(s, v1, site_id=SITE)
+            await s.rollback()
+        mine = [i for i in clean["items"] if i["sap"] in SAPS]
+        check("SX-01: after a sync, a workbook that agrees with GI Hub lists NONE of its "
+              "materials as different", not mine, str(mine))
+
+        # 2. then life happens:
+        #    SVX-1 — a receipt of 2 entered in GI Hub only (the log never got it)
+        #    SVX-2 — the second issue (1) deleted from the Consumption Log → vanished
+        #    SVX-3 — a new issue (1) typed into the log, not synced yet
+        #    SVX-4 — the Inventory sheet's Current Stock left stale (says 6, logs say 4)
+        async with SessionLocal() as s:
+            await s.execute(_t(
+                'INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID", "Received_by", '
+                '"Remarks") VALUES (\'2026-09-05\', \'SVX-1\', 2, :s, \'tester\', \'asdf\')'), {"s": SITE})
+            await s.commit()
+        con2 = [("2026-09-03", "SVX-2", 2, "T1"), ("2026-09-04", "SVX-3", 3, "T2"),
+                ("2026-09-06", "SVX-3", 1, "T2")]
+        inv2 = [("SVX-1", 0, 10, 0, 0, 10), ("SVX-2", 0, 5, 2, 0, 3),
+                ("SVX-3", 0, 8, 4, 0, 4), ("SVX-4", 0, 4, 0, 0, 6)]
+        v2 = book(rec, con2, [], inv2)
+        async with SessionLocal() as s:
+            before = {r[0]: float(r[1]) for r in (await s.execute(_t(
+                'SELECT "SAP_Code", COUNT(*) FROM receipts WHERE "SAP_Code" = ANY(:p) GROUP BY 1'),
+                {"p": list(SAPS)})).all()}
+            res = await SE.diagnose(s, v2, site_id=SITE)
+            await s.rollback()
+            after = {r[0]: float(r[1]) for r in (await s.execute(_t(
+                'SELECT "SAP_Code", COUNT(*) FROM receipts WHERE "SAP_Code" = ANY(:p) GROUP BY 1'),
+                {"p": list(SAPS)})).all()}
+        by = {i["sap"]: i for i in res["items"] if i["sap"] in SAPS}
+        codes = {k: [c["code"] for c in v["causes"]] for k, v in by.items()}
+        check("SX-02: all four are listed, each with the RIGHT cause — only in GI Hub, "
+              "no longer in Excel, not synced yet, the sheet's own total stale",
+              codes.get("SVX-1") == ["app_only"] and codes.get("SVX-2") == ["vanished"]
+              and codes.get("SVX-3") == ["not_synced"] and codes.get("SVX-4") == ["sheet_totals"],
+              str(codes))
+        check("SX-03: ⚠️ the causes ADD UP to each difference — nothing is left "
+              "unexplained, and an unexplained remainder would be listed, never hidden",
+              by and all(abs(sum(c["effect"] for c in v["causes"]) - v["difference"]) < 1e-6
+                         and v["unexplained"] == 0 for v in by.values()),
+              str({k: (v["difference"], [c["effect"] for c in v["causes"]]) for k, v in by.items()}))
+        c1 = by["SVX-1"]["causes"][0]
+        check("SX-04: each cause says what happened, who entered it, and how to fix it — "
+              "and points at the exact GI Hub record or Excel row",
+              "tester" in c1["what"] and "asdf" in c1["what"] and "Receipt Log" in c1["fix"]
+              and c1["where"].get("ledger") == "receipts"
+              and by["SVX-3"]["causes"][0]["where"].get("sheet") == "Consumption Log"
+              and by["SVX-3"]["causes"][0]["where"].get("row") == 5,
+              f"{c1} {by['SVX-3']['causes'][0]['where']}")
+        check("SX-05: the check CHANGES NOTHING — the sync's planner runs read-only",
+              before == after, f"{before} → {after}")
+
+        # 3. stored for the Stock page; read over HTTP; uploads gated
+        ad = {"Authorization": f"Bearer {_auth._make_token('svx-admin', 'admin', '', _auth.ACCESS_TTL)}"}
+        sk = {"Authorization": f"Bearer {_auth._make_token('svx-sk', 'store_keeper', SITE, _auth.ACCESS_TTL)}"}
+        aud = {"Authorization": f"Bearer {_auth._make_token('svx-aud', 'auditor', '', _auth.ACCESS_TTL)}"}
+        files = {"file": ("CNCEC_Inventory.xlsx", v2,
+                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            up = await ac.post("/stock/excel-check", files=files, headers=sk)
+            got = await ac.get("/stock/excel-check", headers=sk)
+            deny = await ac.post("/stock/excel-check", files=files, headers=aud)
+            read_aud = await ac.get("/stock/excel-check", params={"site_id": SITE}, headers=aud)
+            mk = await ac.post("/stock/excel-check/marked", files=files,
+                               data={"site_id": SITE}, headers=ad)
+            bad = await ac.post("/stock/excel-check", headers=sk,
+                                files={"file": ("x.csv", b"a,b", "text/csv")})
+        latest_saps = {i["sap"] for i in (got.json().get("check") or {}).get("items", [])}
+        check("SX-06: a store keeper uploads the workbook, the result is STORED for their "
+              "site and read back; a view-only auditor can read it but not upload (403); "
+              "a non-.xlsx upload is refused (422)",
+              up.status_code == 200 and set(SAPS) <= latest_saps and deny.status_code == 403
+              and read_aud.status_code == 200 and bad.status_code == 422,
+              f"{up.status_code} {deny.status_code} {read_aud.status_code} {bad.status_code} {latest_saps}")
+        ok_mk = mk.status_code == 200 and mk.headers.get("content-type", "").startswith(
+            "application/vnd.openxmlformats")
+        marked = openpyxl.load_workbook(_io.BytesIO(mk.content)) if ok_mk else None
+        inv_ws = marked["Inventory"] if marked else None
+        red_row = None
+        if inv_ws is not None:
+            for r in range(3, inv_ws.max_row + 1):
+                if inv_ws.cell(r, 2).value == "SVX-1":
+                    red_row = r
+        check("SX-07: the MARKED COPY comes back as an .xlsx with a “GI Hub check” sheet "
+              "first, the differing Inventory row filled red with a note on its Current "
+              "Stock cell, and the unsynced log line marked amber",
+              marked is not None and marked.sheetnames[0] == "GI Hub check"
+              and red_row is not None and inv_ws.cell(red_row, 1).fill.fgColor.rgb == SE.RED
+              and inv_ws.cell(red_row, 11).comment is not None
+              and marked["Consumption Log"].cell(5, 1).fill.fgColor.rgb == SE.AMBER,
+              f"{mk.status_code} {marked.sheetnames[:2] if marked else None} row={red_row}")
+    finally:
+        await _cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -27084,6 +27252,8 @@ async def main() -> int:
     print("\n 14D. Phase 14d — What's new reaches only the people a feature concerns; "
           "tutorial staleness warns admins only")
     await test_phase14d_announcements()
+    print("\n SX. Stock vs the Excel workbook — which materials differ, and why")
+    await test_stock_vs_excel()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

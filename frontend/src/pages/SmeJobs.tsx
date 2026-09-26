@@ -321,10 +321,7 @@ function JobDecideModal({ job, onClose }: { job: StagedJob | null; onClose: () =
     decide.mutate({ approve: false, reject_reason: v.justification, site_id: job?.Site_ID ?? null })
   }
   return (
-    <Modal open={!!job} onCancel={onClose} title="Approve this job" width={720}
-      afterOpenChange={(o) => {
-        if (o && job) form.setFieldsValue({ sqm: job.SQM_Completed, tag: job.Equipment_Tag_No, justification: '' })
-      }}
+    <Modal open={!!job} onCancel={onClose} title="Approve this job" width={720} destroyOnHidden
       footer={[
         <Button key="c" onClick={onClose}>Cancel</Button>,
         <Button key="r" danger loading={decide.isPending} onClick={reject}>Reject the job</Button>,
@@ -341,7 +338,12 @@ function JobDecideModal({ job, onClose }: { job: StagedJob | null; onClose: () =
           <Alert type="info" showIcon style={{ margin: '12px 0' }}
             title="One decision for the whole job"
             description="Approving credits the job’s area ONCE, whatever the number of materials. Rejecting sends every material back with your reason. The quantities cannot be changed here — the material left the shelf when it was issued." />
-          <Form form={form} layout="vertical">
+          {/* ⚠️ Filled from the job AS IT RENDERS, not after the opening
+              animation: an Approve clicked in that window used to read an
+              empty area, take it for a change and refuse it for lack of a
+              reason. */}
+          <Form form={form} layout="vertical" key={job.id}
+            initialValues={{ sqm: job.SQM_Completed, tag: job.Equipment_Tag_No, justification: '' }}>
             <Space wrap>
               <Form.Item name="sqm" label="Area covered (m²)">
                 <InputNumber min={0.01} step={1} style={{ width: 180 }} />

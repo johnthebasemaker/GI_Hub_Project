@@ -16,6 +16,11 @@ interface Props {
   hasCategory?: boolean
   extraParams?: ListParams
   toolbarExtra?: ReactNode
+  /** Adjust the generated columns (e.g. a badge in the SAP cell). Keep it
+   * stable (module-level or memoised) — it is part of the columns memo. */
+  decorateColumns?: (cols: ReturnType<typeof buildColumns>) => ReturnType<typeof buildColumns>
+  /** A class per row (e.g. highlight rows that need attention). */
+  rowClassName?: (row: Record<string, unknown>) => string
 }
 
 /** Hoisted so it is not a fresh object on every render. */
@@ -25,6 +30,7 @@ const SCROLL_X = { x: 'max-content' as const }
 // free-text search and category filter.
 export default function BrowseTable({
   path, hasSite, searchable, hasCategory, extraParams, toolbarExtra,
+  decorateColumns, rowClassName,
 }: Props) {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -67,7 +73,10 @@ export default function BrowseTable({
   // buildColumns() walks the first row and allocates a fresh `render` closure
   // per column. New closures mean new column identities, which is the second
   // reason every cell repainted.
-  const columns = useMemo(() => buildColumns(rows), [rows])
+  const columns = useMemo(() => {
+    const cols = buildColumns(rows)
+    return decorateColumns ? decorateColumns(cols) : cols
+  }, [rows, decorateColumns])
 
   const onPageChange = useCallback((p: number, ps: number) => {
     setPage(p)
@@ -148,6 +157,7 @@ export default function BrowseTable({
         columns={columns}
         dataSource={dataSource}
         rowKey="__rk"
+        rowClassName={rowClassName}
         scroll={SCROLL_X}
         sticky
         pagination={pagination}

@@ -777,3 +777,6 @@ body.gi-practice .gi-login-card {
   .exec-report .ant-card, .gi-training .ant-card { animation: none; transition: none; }
   .gi-training .ant-card:hover { transform: none; }
 }
+
+/* Stock vs the Excel workbook — a row whose SAP differs (components/ExcelCheck). */
+.gi-row-excel-mismatch > td { background: rgba(255, 77, 79, 0.08) !important; }
