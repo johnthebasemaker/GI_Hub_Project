@@ -377,6 +377,29 @@ The first time the app starts, these accounts are created. **Change the password
 
 Admin must approve via Admin Portal → Users tab before the user can log in.
 
+### 3.1.1 The look of the sign-in page
+
+*Phase 14e.*
+
+The sign-in card is glass over the gold GI mark. What you see depends on your
+device, and **the form works the same on all of them**, from the first moment:
+
+- **Everyone**, including the Android, iOS and desktop apps: the glass card and
+  the GI mark drawn in the page's style, floating gently.
+- **A desktop computer with a graphics card**: after the form appears, a 3D gold
+  GI mark rises and turns into place to the left of the card, over a pane of
+  glass. As you move the mouse, the mark and the sign-in card turn gently
+  together. It is loaded separately and only after the page is ready, so it never
+  delays signing in. It stops when you switch tabs, rests when the mouse is
+  still, and is removed as soon as you sign in.
+- **Phones, tablets, the installed apps, computers without a graphics card, and
+  anyone with *Reduce motion* switched on in their system settings**: no 3D
+  mark, and nothing moves. The page is otherwise identical.
+
+The Executive Summary and the Training page use the same glass style. Their
+cards rise gently into place as you scroll, except with *Reduce motion* on and
+when printing.
+
 ## 3.2 Sidebar (visible after login)
 
 Every page shares this sidebar. Reading top to bottom:

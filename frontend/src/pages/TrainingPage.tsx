@@ -347,9 +347,20 @@ export default function TrainingPage() {
   )
 
   return (
-    <div style={{ padding: 16, maxWidth: 900 }}>
+    <div className="gi-training" style={{ padding: 16, maxWidth: 900 }}>
       <PracticeNotice kind="training" />
-      <Typography.Title level={4} style={{ marginTop: 0 }}>Training &amp; Onboarding</Typography.Title>
+      {/* Phase 14e: the landing's glass header (CSS only — index.css). */}
+      <div className="gi-glass gi-training-hero">
+        <img src="/brand/gi-mark.svg" alt="" aria-hidden="true" />
+        <div>
+          <Typography.Title level={4} style={{ margin: 0, color: 'var(--gi-glass-text)' }}>
+            Training &amp; Onboarding
+          </Typography.Title>
+          <Typography.Text style={{ color: 'var(--gi-glass-text)', opacity: 0.75, fontSize: 13 }}>
+            Short tutorials for the work your role does — watch, then acknowledge.
+          </Typography.Text>
+        </div>
+      </div>
       {isHod
         ? (
           <Tabs
