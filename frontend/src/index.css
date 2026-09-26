@@ -567,3 +567,58 @@ body.gi-practice .gi-login-card {
     z-index: 9999;
   }
 }
+
+/* ── Phase 14 — glass, Tier 0 (CSS only, 0 KB of JS) ─────────────────────────
+   Used by the What's-new panel (14d) and the login + landing pages (14e).
+   `backdrop-filter` degrades to a plain translucent card where unsupported,
+   and every motion below is switched off under prefers-reduced-motion. */
+:root,
+:root[data-theme='dark'] {
+  --gi-glass-bg: rgba(22, 32, 56, 0.55);
+  --gi-glass-rim: rgba(212, 175, 55, 0.45);
+  --gi-glass-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  --gi-glass-text: #e8edf7;
+}
+:root[data-theme='light'] {
+  --gi-glass-bg: rgba(255, 255, 255, 0.62);
+  --gi-glass-rim: rgba(180, 140, 30, 0.45);
+  --gi-glass-shadow: 0 18px 50px rgba(15, 30, 60, 0.18);
+  --gi-glass-text: #0f1e3c;
+}
+.gi-glass {
+  background: var(--gi-glass-bg);
+  border: 1px solid var(--gi-glass-rim);
+  border-radius: 16px;
+  box-shadow: var(--gi-glass-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  backdrop-filter: blur(14px) saturate(140%);
+  color: var(--gi-glass-text);
+}
+/* A card that lifts toward the reader in 3D on hover — perspective on the
+   parent, the tilt on the card. */
+.gi-glass-stage { perspective: 900px; }
+.gi-glass-tilt {
+  transform-style: preserve-3d;
+  transition: transform 260ms ease, box-shadow 260ms ease;
+}
+.gi-glass-tilt:hover {
+  transform: rotateX(4deg) rotateY(-5deg) translateZ(14px);
+  box-shadow: 0 26px 60px rgba(0, 0, 0, 0.35);
+}
+.gi-whats-new .ant-modal-container,
+.gi-whats-new .ant-modal-content {
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+.gi-whats-new-card { padding: 18px 20px; margin-bottom: 14px; }
+.gi-whats-new-card h4 { margin: 0 0 6px; color: var(--gi-gold); }
+@keyframes gi-rise-3d {
+  from { opacity: 0; transform: translateY(14px) rotateX(8deg); }
+  to   { opacity: 1; transform: none; }
+}
+.gi-rise-3d { animation: gi-rise-3d 420ms cubic-bezier(.2, .7, .2, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .gi-glass-tilt, .gi-glass-tilt:hover { transform: none; transition: none; }
+  .gi-rise-3d { animation: none; }
+}

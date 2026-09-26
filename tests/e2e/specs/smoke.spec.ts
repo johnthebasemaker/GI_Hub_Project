@@ -9,6 +9,8 @@ import { Role, storageStatePath } from '../harness/env'
 
 type Check = { path: string; marker?: string | RegExp }
 const ROUTES: Record<Role, Check[]> = {
+  // Exists only for announcements.spec.ts (a What's-new audience of one).
+  news: [],
   admin: [
     { path: '/', marker: 'Dashboard' },
     { path: '/stock', marker: 'Stock (derived)' },

@@ -18,6 +18,7 @@ import HubAssistant from './HubAssistant'
 import QrScanner from './QrScanner'
 import { BARCODE_FORMATS, parseScanPayload } from '../lib/barcode'
 import NotificationBell from './NotificationBell'
+import WhatsNew from './WhatsNew'
 import OfflineSyncBadge from './OfflineSyncBadge'
 import SyncControls from './SyncControls'
 import ProfileModal from './ProfileModal'
@@ -281,6 +282,7 @@ export default function AppLayout() {
             </Tooltip>
             <SyncControls />
             <OfflineSyncBadge />
+            <WhatsNew />
             <NotificationBell />
             {readOnly && (
               <Tooltip title="Your account is view-only — you can read everything your role reaches, but nothing can be changed.">

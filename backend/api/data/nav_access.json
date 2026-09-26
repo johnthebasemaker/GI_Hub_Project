@@ -1,0 +1,278 @@
+{
+ "_generated_by": "tools/announcements.py nav — do not edit by hand",
+ "sane": true,
+ "roleLevels": {
+  "admin": 4,
+  "logistics": 3,
+  "auditor": 3,
+  "hod": 2,
+  "qc_hod": 2,
+  "warehouse_user": 1,
+  "supervisor": 1,
+  "qc": 1,
+  "store_keeper": 0
+ },
+ "publics": [
+  "/stock/material/"
+ ],
+ "routes": {
+  "/": [
+   "admin",
+   "logistics",
+   "auditor",
+   "hod",
+   "warehouse_user",
+   "supervisor",
+   "store_keeper"
+  ],
+  "/admin/ai-traces": [
+   "admin"
+  ],
+  "/admin/audit": [
+   "admin"
+  ],
+  "/admin/console": [
+   "admin"
+  ],
+  "/admin/inventory": [
+   "admin"
+  ],
+  "/admin/overdue": [
+   "admin"
+  ],
+  "/admin/pending": [
+   "admin"
+  ],
+  "/admin/users": [
+   "admin"
+  ],
+  "/assets": [
+   "admin",
+   "logistics",
+   "auditor",
+   "hod",
+   "warehouse_user",
+   "supervisor",
+   "store_keeper"
+  ],
+  "/bulk-import": [
+   "admin",
+   "hod"
+  ],
+  "/documents": [
+   "admin",
+   "logistics",
+   "auditor",
+   "hod",
+   "qc_hod",
+   "warehouse_user",
+   "supervisor",
+   "qc",
+   "store_keeper"
+  ],
+  "/entry/adjust": [
+   "admin",
+   "store_keeper"
+  ],
+  "/entry/count": [
+   "admin",
+   "store_keeper"
+  ],
+  "/entry/issue": [
+   "admin",
+   "store_keeper"
+  ],
+  "/entry/ocr": [
+   "admin",
+   "store_keeper"
+  ],
+  "/entry/receive": [
+   "admin",
+   "store_keeper"
+  ],
+  "/entry/return": [
+   "admin",
+   "store_keeper"
+  ],
+  "/entry/returnables": [
+   "admin",
+   "store_keeper"
+  ],
+  "/execution": [
+   "admin",
+   "hod",
+   "supervisor",
+   "store_keeper"
+  ],
+  "/feedback": [
+   "admin",
+   "logistics",
+   "auditor",
+   "hod",
+   "qc_hod",
+   "warehouse_user",
+   "supervisor",
+   "qc",
+   "store_keeper"
+  ],
+  "/hod/approvals": [
+   "admin",
+   "hod"
+  ],
+  "/hod/burn-rate": [
+   "admin",
+   "auditor",
+   "hod"
+  ],
+  "/hod/documents": [
+   "admin",
+   "auditor",
+   "hod"
+  ],
+  "/hod/executive-summary": [
+   "admin",
+   "auditor",
+   "hod"
+  ],
+  "/hod/lining-coverage": [
+   "admin",
+   "auditor",
+   "hod"
+  ],
+  "/hod/low-stock": [
+   "admin",
+   "auditor",
+   "hod"
+  ],
+  "/hod/prs": [
+   "admin",
+   "auditor",
+   "hod"
+  ],
+  "/hod/requests": [
+   "admin",
+   "auditor",
+   "hod"
+  ],
+  "/hod/wbs": [
+   "admin",
+   "hod"
+  ],
+  "/hr/employees": [
+   "admin",
+   "auditor",
+   "hod",
+   "supervisor",
+   "store_keeper"
+  ],
+  "/locator": [
+   "admin",
+   "logistics",
+   "warehouse_user",
+   "store_keeper"
+  ],
+  "/logistics": [
+   "admin",
+   "logistics"
+  ],
+  "/logistics/lining-coverage": [
+   "admin",
+   "logistics"
+  ],
+  "/manhours": [
+   "admin",
+   "hod"
+  ],
+  "/ppe/forecast": [
+   "admin",
+   "logistics",
+   "hod",
+   "store_keeper"
+  ],
+  "/ppe/rules": [
+   "admin",
+   "hod",
+   "store_keeper"
+  ],
+  "/qc-hod": [
+   "admin",
+   "qc_hod"
+  ],
+  "/qc/accounts": [
+   "admin",
+   "logistics",
+   "hod",
+   "warehouse_user"
+  ],
+  "/qc/inspections": [
+   "admin",
+   "logistics",
+   "auditor",
+   "hod",
+   "warehouse_user",
+   "qc",
+   "store_keeper"
+  ],
+  "/reports": [
+   "admin",
+   "logistics",
+   "auditor",
+   "hod",
+   "qc_hod"
+  ],
+  "/security": [
+   "admin",
+   "logistics",
+   "auditor",
+   "hod",
+   "qc_hod",
+   "warehouse_user",
+   "supervisor",
+   "qc",
+   "store_keeper"
+  ],
+  "/site/incoming": [
+   "admin",
+   "store_keeper"
+  ],
+  "/sk/requests": [
+   "admin",
+   "store_keeper"
+  ],
+  "/sme": [
+   "admin",
+   "auditor",
+   "hod"
+  ],
+  "/stock": [
+   "admin",
+   "logistics",
+   "auditor",
+   "hod",
+   "warehouse_user",
+   "supervisor",
+   "qc",
+   "store_keeper"
+  ],
+  "/supervisor": [
+   "admin",
+   "supervisor"
+  ],
+  "/training": [
+   "admin",
+   "logistics",
+   "auditor",
+   "hod",
+   "qc_hod",
+   "warehouse_user",
+   "supervisor",
+   "qc",
+   "store_keeper"
+  ],
+  "/warehouse": [
+   "admin",
+   "logistics",
+   "warehouse_user"
+  ]
+ }
+}

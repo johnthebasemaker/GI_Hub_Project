@@ -76,6 +76,10 @@ _BASE_EXACT = frozenset({
     "/auth/2fa/disable",
     "/auth/phone/request-otp",
     "/auth/phone/verify-otp",
+    # Phase 14d: "I have seen this announcement" — one row in
+    # feature_announcement_reads keyed by the caller's own username. Without it
+    # a view-only account would be shown the same What's-new panel forever.
+    "/announcements/read",
 })
 
 # Per-role extras. Adding a path here is a deliberate edit with a reason

@@ -242,6 +242,21 @@ export default async function globalSetup() {
     + "\"Site_ID\" = excluded.\"Site_ID\", \"Warehouse_ID\" = excluded.\"Warehouse_ID\"",
     E2E_DB)
 
+  // ── 1g. Phase 14d: a What's-new audience of ONE (announcements.spec.ts) ──
+  // The panel opens by itself for its audience and the specs run in parallel,
+  // so the fixture announcement is addressed to a role at a site no other spec
+  // signs in at. Inserted as a DRAFT with its audience already derived (qc can
+  // open /stock); the spec publishes it through the admin API.
+  psql(
+    "INSERT INTO users (username, password_hash, role, \"Site_ID\", \"Warehouse_ID\") "
+    + "VALUES ('e2e_news','x','qc','E2E-NEWS',NULL) ON CONFLICT (username) DO NOTHING",
+    E2E_DB)
+  psql(
+    "INSERT INTO feature_announcements (key, title, body, routes, audience_roles, sites, "
+    + "manual_section, status) VALUES ('e2e-news','E2E: glass announcement', "
+    + "'A fixture announcement for one QC at one site.', '[\"/stock\"]', '[\"qc\"]', "
+    + "'[\"E2E-NEWS\"]', '4.11', 'draft') ON CONFLICT (key) DO NOTHING", E2E_DB)
+
   // ── 2. known passwords for the role users (throwaway DB only) ────────────
   const resetScript = [
     'import bcrypt, sys',

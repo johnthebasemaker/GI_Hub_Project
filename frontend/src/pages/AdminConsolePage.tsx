@@ -16,6 +16,7 @@ import { useInstance } from '../components/PracticeBanner'
 import KpiCard from '../components/KpiCard'
 import KpiRow from '../components/KpiRow'
 import { brand, status } from '../theme/tokens'
+import { AnnouncementsTab, TutorialFreshness } from '../components/AnnouncementsAdmin'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -547,6 +548,14 @@ export default function AdminConsolePage() {
           // here alone would be invisible to the role the operator named.
           { key: 'ai-traces', label: 'AI Traces', children: <AiTracesPanel /> },
           { key: 'feedback', label: 'Feedback', children: <FeedbackTab /> },
+          // Phase 14d — What's new (authored as code) + tutorial freshness (Q14-14).
+          { key: 'announcements', label: 'Announcements', children: (
+            <>
+              <AnnouncementsTab />
+              <div style={{ height: 16 }} />
+              <TutorialFreshness />
+            </>
+          ) },
           ...(practice ? [{ key: 'practice', label: 'Practice', children: <PracticeResetCard /> }] : []),
         ]}
       />

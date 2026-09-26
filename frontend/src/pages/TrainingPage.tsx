@@ -8,6 +8,7 @@ import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
+import { TutorialFreshness } from '../components/AnnouncementsAdmin'
 
 /**
  * Training & Onboarding (Phase 10 Track 5).
@@ -355,6 +356,11 @@ export default function TrainingPage() {
             items={[
               { key: 'mine', label: 'My training', children: mine },
               { key: 'team', label: 'Team compliance', children: <ComplianceTab /> },
+              // Phase 14d: which recordings the app has outgrown — admins only
+              // (ruling Q14-14); the server refuses the data to anyone else.
+              ...(user?.role === 'admin'
+                ? [{ key: 'fresh', label: 'Tutorial freshness', children: <TutorialFreshness /> }]
+                : []),
             ]}
           />
         )

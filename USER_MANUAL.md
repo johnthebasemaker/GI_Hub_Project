@@ -471,6 +471,26 @@ a bad connection.
 
 ---
 
+## 3.8 What's new
+
+*Phase 14d.*
+
+When a feature you use changes, a **What's new** panel opens by itself the next
+time you sign in. It shows only what concerns you: an announcement is sent to
+the roles that can open the page it is about, so nobody is told about a screen
+they cannot reach.
+
+Each card says what changed. **Open it** takes you to the page, **Watch the
+tutorial** plays the short video when there is one, and a **User Manual §** tag
+names the section to read.
+
+Press **Got it** and the panel closes. It does not open by itself again for the
+same announcements. To see recent ones, press the **gift icon** 🎁 in the top bar,
+next to the bell; a number on it means something new is waiting.
+
+A matching notification also appears in the bell (§3.6). Announcements are
+**in-app only** — never WhatsApp or email.
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.
@@ -2679,6 +2699,48 @@ A: HOD and Admin both write to the same settings, so the most recent save wins. 
 A: The current deployment runs comfortably at this site's user count, and the database it uses scales well beyond it. Growth in sites or users is a hosting decision rather than a rebuild.
 
 ---
+
+## 7.14 Admin Console → Announcements and tutorial freshness
+
+*Phase 14d.*
+
+**Where:** Admin Console → **Announcements**. Admin only.
+
+**Announcements are written in the pull request, not on this screen.** Each one
+is a file in `docs/announcements/`, added in the same change as the feature, so
+the sentence users read was reviewed with the code. The format is described in
+`docs/announcements/README.md`.
+
+1. Press **Load from files**. New and changed files arrive as **drafts**. A file
+   with a problem is refused by name with the reason — for example a page that is
+   not in the navigation, or a manual section that does not exist.
+2. **Preview** shows the card exactly as its audience will see it.
+3. **Publish** sends it now: the What's-new panel for its audience, and one bell
+   notification per role. **Schedule** picks a date and time instead; it is
+   released by the first request after that time.
+4. **Retract** takes it out of every panel and removes its unread bell rows.
+
+**Who sees it** is listed in the **Audience** column. It is worked out from the
+navigation: every role that can open the page the announcement is about, narrowed
+by the file's `roles:` and `sites:` when it has them. It cannot be widened beyond
+that. **Seen by** counts the people who have closed it.
+
+⚠️ Publishing never happens on a deploy. A loaded announcement stays a draft until
+an admin publishes it.
+
+### 7.14.1 Tutorial freshness
+
+The same tab (and **Training → Tutorial freshness**) lists every recorded
+tutorial as **current**, **possibly stale** or **unknown**. A tutorial is possibly
+stale when a page it shows has changed since it was recorded; the changed files
+are listed, with the command that re-records it. **Unknown** means the check could
+not tell — for example the server has no git history — and it is never counted as
+current.
+
+It is a warning, never a block, and only admins see it. After each deploy the
+host runs `tools/tutorial_staleness.py --notify`, which stores the result here
+and rings the **admin** bell once for each new finding. **Check now** runs it on
+the spot when this server has git.
 
 # 8. Reports Module — Detailed Reference
 

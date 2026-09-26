@@ -1,0 +1,9 @@
+key: surface-shield-units
+title: Surface Shield quantities now show kilograms and packs
+body: |
+  Surface Shield materials now show two figures, base unit first: "189 KG · 21 Can".
+  The Unit Size from the Inventory sheet does the conversion. On the consumption
+  form, tick PACKS or KG for the QTY USED column; a KG figure is converted to packs
+  before it touches stock.
+routes: [/stock, /execution, /entry/issue, /entry/receive, /entry/return]
+manual: "4.11"
