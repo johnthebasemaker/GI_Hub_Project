@@ -65,6 +65,12 @@ export default async function globalSetup() {
   psql("INSERT INTO app_settings (key, value) VALUES ('require_entry_documents','0') "
        + "ON CONFLICT (key) DO UPDATE SET value='0'", E2E_DB)
 
+  // ── 1b-ii. Phase 14a: one Surface Shield SAP with a Unit Size ────────────
+  // The legacy SQLite predates the column, so a cut-over database has none.
+  // BC 3004 is a 9 kg can in the real Inventory sheet; units.spec.ts reads it.
+  psql('UPDATE inventory SET "Unit_Size" = 9, "Base_UOM" = \'KG\' '
+       + 'WHERE "SAP_Code" = \'1045\'', E2E_DB)
+
   // ── 1c. the SME tier-segregation fixture (sme-tiers.spec.ts) ─────────────
   // A purpose-built copy of the PHENACIN ACP POWDER shape that produced the
   // 2026-08-03 bug report: a material with ZERO stock on the shelf and MORE

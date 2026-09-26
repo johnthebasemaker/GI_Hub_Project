@@ -216,6 +216,17 @@ class Inventory(Base):
     Category = Column(Text, server_default=text("'Others'"))
     Opening_Stock = Column(Float, server_default=text('0'))
     Sl_No = Column(Text)   # legacy serial label (293 live values — keep at cutover)
+    # ── Phase 14a (alembic c41d7e9a2b58): the PACK → BASE factor ─────────────
+    # For a Surface Shield SAP the ledger counts PACKS (Can / Bag / ROL — what
+    # the store handles and the workbook logs) while the recipe, the SME seed
+    # and every benchmark speak BASE units (KG / M2 / EA). `Unit_Size` is how
+    # many base units one pack holds, read from the Inventory sheet's
+    # `Unit Size` column — the single source of truth (operator ruling Q14-4).
+    # The ledger is NEVER converted; `services/units.py` derives base quantities
+    # at READ, in one place. New-stack only — the frozen legacy SQLite never
+    # learns these.
+    Unit_Size = Column(Float)
+    Base_UOM = Column(Text)
 
 class InventorySiteCosts(Base):
     __tablename__ = "inventory_site_costs"
@@ -1077,6 +1088,13 @@ class SmeConsumptionLog(Base):
     # NULL on every attribution filed before this column existed; readers fall
     # back to comparing `Actual_Qty` with the ledger quantity for those.
     Source_Fingerprint = Column(Text)
+    # ── Phase 14a: the attribution speaks BASE units, and says how it got there.
+    # `Actual_Qty` is BASE (pack × Unit_Size) from Phase 14 on — defect D1 was a
+    # can compared with a kilogram benchmark. The pack count and the factor are
+    # SNAPSHOTTED beside it, exactly like `Bench_For_1_SQM`, so a Unit Size
+    # corrected next quarter cannot quietly rewrite this quarter's variance.
+    Pack_Qty = Column(Float)
+    Unit_Size_Used = Column(Float)
     __table_args__ = (
         # The sweep's own question: is this ledger row already attributed?
         Index("ix_sme_cons_log_consumption", "Consumption_ID"),
@@ -1120,6 +1138,8 @@ class SmeConsumptionRevision(Base):
     Equipment_Tag_No = Column(Text, nullable=False)
     SQM_Completed = Column(Float, nullable=False)
     Actual_Qty = Column(Float, nullable=False)
+    Pack_Qty = Column(Float)          # Phase 14a — see SmeConsumptionLog
+    Unit_Size_Used = Column(Float)
     Expected_Qty = Column(Float)
     Variance_Pct = Column(Float)
     Bench_For_1_SQM = Column(Float)
@@ -1546,6 +1566,13 @@ class SmeExecutionEntry(Base):
     # for a scanned one: the grey OCR layer is empty for both, and only this
     # says whether that means "the model read nothing" or "there was no model".
     Entry_Origin = Column(Text, nullable=False, server_default=text("'manual'"))
+    # ── Phase 14a: which unit the paper's QTY column was written in (ruling
+    # Q14-3). 'pack' (Can/Bag — the default the form now prints ticked) or
+    # 'base' (KG). NULL = an entry filed before the tick existed, which keeps
+    # its original meaning exactly (no live entry has it — measured 2026-09-26).
+    # `services/units.py` converts; `post_stock` posts PACKS either way — the
+    # ledger speaks packs — and the variance compares BASE with the benchmark.
+    Qty_Unit = Column(Text)
 
     # ── the SK's verification step (the new middle of the chain) ────────────
     sk_verified_at = Column(DateTime)

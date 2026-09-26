@@ -146,7 +146,7 @@ SOURCE_FP_SQL = (
 STALE_SQL = (
     "(CASE WHEN l.\"Source_Fingerprint\" IS NOT NULL "
     f"      THEN l.\"Source_Fingerprint\" <> {SOURCE_FP_SQL} "
-    "      ELSE ROUND(CAST(COALESCE(l.\"Actual_Qty\", 0) AS NUMERIC), 4) "
+    "      ELSE ROUND(CAST(COALESCE(l.\"Pack_Qty\", l.\"Actual_Qty\", 0) AS NUMERIC), 4) "
     "        <> ROUND(CAST(COALESCE(c.\"Quantity\", 0) AS NUMERIC), 4) END)")
 
 # A staged revision already answers the edit — as long as it was filed against
@@ -525,6 +525,33 @@ def variance_pct(actual: float, expected: Optional[float]) -> Optional[float]:
     return round(100.0 * (float(actual) - float(expected)) / float(expected), 4)
 
 
+async def _units(session: AsyncSession, sap: str) -> dict:
+    from . import units as U
+    return await U.unit_info(session, sap)
+
+
+def units_base(pack: float, uinfo: dict) -> float:
+    """The BASE quantity an attribution records, or a 422.
+
+    ⚠️ A Surface Shield pack with no known factor is REFUSED, not guessed. The
+    only alternative is to record the can count as kilograms — defect D1 — and
+    a refusal that says "fill Unit Size in the Inventory sheet" is fixed in a
+    minute where a wrong variance is believed for a quarter.
+    """
+    from . import units as U
+    if not uinfo.get("is_surface_shield"):
+        return float(pack)
+    b = U.base_qty(pack, uinfo.get("factor"))
+    if b is None:
+        raise HTTPException(
+            422, f"SAP {uinfo.get('sap')} is counted in "
+                 f"{uinfo.get('pack_uom') or 'packs'} but has no Unit Size, so its "
+                 f"quantity cannot be compared with the recipe (which is per "
+                 f"{uinfo.get('base_uom') or 'kg'}). Fill 'Unit Size' for it in the "
+                 f"Inventory sheet and re-run the Excel sync.")
+    return b
+
+
 def classify(var_pct: Optional[float], tol_pct: float) -> str:
     """HIGH or NORMAL — the priority the queue sorts on.
 
@@ -666,7 +693,14 @@ async def assign(session: AsyncSession, *, consumption_id: int, code: str,
     material_code = await _resolve_material_code(session, sap)
     rate = await recipe_rate(session, code=code, material_code=material_code,
                              sap_code=sap)
-    actual = float(row["Quantity"] or 0)
+    # ⚠️ PHASE 14a — DEFECT D1. The ledger holds PACKS (cans, bags); the recipe
+    # rate is BASE units per m². `actual` used to be the pack count, so a
+    # 4.5-can draw of a 9 kg adhesive (40.5 kg) was measured as "4.5" against a
+    # kilogram benchmark. It is converted in ONE place (services/units.py) and
+    # the pack count and factor are snapshotted beside it.
+    uinfo = await _units(session, sap)
+    pack = float(row["Quantity"] or 0)
+    actual = units_base(pack, uinfo)
     expected = None if rate is None else round(rate * sqm, 4)
     var = variance_pct(actual, expected)
     tol = await tolerance_pct(session)
@@ -678,7 +712,7 @@ async def assign(session: AsyncSession, *, consumption_id: int, code: str,
             session, existing=dict(existing), consumption_id=consumption_id,
             code=code, tag=tag, sqm=sqm, actual=actual, expected=expected,
             var=var, rate=rate, flag=flag, tol=tol, fp=fp, notes=notes,
-            username=username)
+            username=username, pack=pack, unit_size=uinfo["factor"])
 
     new_id = (await session.execute(insert(log_t).values(
         batch_id=f"SWEEP:{consumption_id}",
@@ -693,6 +727,8 @@ async def assign(session: AsyncSession, *, consumption_id: int, code: str,
         SQM_Completed=sqm,
         Expected_Qty=expected or 0.0,
         Actual_Qty=actual,
+        Pack_Qty=pack,
+        Unit_Size_Used=uinfo["factor"],
         Variance_Pct=var,
         Bench_For_1_SQM=rate,
         Priority_Flag=flag,
@@ -1092,7 +1128,8 @@ async def _reassign(session: AsyncSession, *, existing: dict,
                     actual: float, expected: Optional[float],
                     var: Optional[float], rate: Optional[float], flag: str,
                     tol: float, fp: Optional[str], notes: Optional[str],
-                    username: str) -> dict:
+                    username: str, pack: Optional[float] = None,
+                    unit_size: Optional[float] = None) -> dict:
     """The field's new answer for a consumption the Excel sync edited.
 
     ⚠️ NOT YET APPROVED (staged, or rejected) → THE ATTRIBUTION IS UPDATED IN
@@ -1115,6 +1152,7 @@ async def _reassign(session: AsyncSession, *, existing: dict,
         await session.execute(update(log_t).where(log_t.c["id"] == log_id).values(
             Equipment_Tag_No=tag, Lining_System_Code=code, SQM_Completed=sqm,
             Expected_Qty=expected or 0.0, Actual_Qty=actual, Variance_Pct=var,
+            Pack_Qty=pack, Unit_Size_Used=unit_size,
             Bench_For_1_SQM=rate, Priority_Flag=flag,
             Variance_Tolerance_Pct=tol, Source_Fingerprint=fp,
             notes=(notes if notes is not None else existing.get("notes")),
@@ -1168,6 +1206,7 @@ async def _reassign(session: AsyncSession, *, existing: dict,
         Prev_Source_Fingerprint=existing.get("Source_Fingerprint"),
         Lining_System_Code=code, Equipment_Tag_No=tag, SQM_Completed=sqm,
         Actual_Qty=actual, Expected_Qty=expected, Variance_Pct=var,
+        Pack_Qty=pack, Unit_Size_Used=unit_size,
         Bench_For_1_SQM=rate, Priority_Flag=flag, Variance_Tolerance_Pct=tol,
         Source_Fingerprint=fp or "", notes=notes, submitted_by=username,
         status="staged")
@@ -1326,6 +1365,7 @@ async def decide_revision(session: AsyncSession, *, rev_id: int, approve: bool,
     await session.execute(update(log_t).where(log_t.c["id"] == log["id"]).values(
         Lining_System_Code=code, Equipment_Tag_No=tag, SQM_Completed=sqm,
         Actual_Qty=rev["Actual_Qty"], Expected_Qty=expected or 0.0,
+        Pack_Qty=rev.get("Pack_Qty"), Unit_Size_Used=rev.get("Unit_Size_Used"),
         Variance_Pct=var, Bench_For_1_SQM=rate, Priority_Flag=flag,
         Variance_Tolerance_Pct=rev["Variance_Tolerance_Pct"],
         Source_Fingerprint=rev["Source_Fingerprint"],

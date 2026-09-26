@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { baseReadout } from '../lib/units'
 import {
   Alert, App, Button, Card, Checkbox, Col, DatePicker, Form, Input, InputNumber,
   Row, Select, Space, Typography,
@@ -68,6 +69,8 @@ export default function ReturnPage() {
   const [olderWindow, setOlderWindow] = useState(false)
   const draft = useFormDraft(form, 'return')
   const watchSap = Form.useWatch('SAP_Code', form)
+  // Phase 14a (Q14-6): packs are entered; the base figure is read out live.
+  const watchQty = Form.useWatch('Quantity', form)
   const watchSite = Form.useWatch('Site_ID', form)
   const watchSource = Form.useWatch('source_receipt_id', form)
   const { data: docsRequired } = useDocsRequired()
@@ -256,7 +259,7 @@ export default function ReturnPage() {
               </Form.Item>
             </Col>
             <Col xs={24} md={8}>
-              <Form.Item name="Quantity" label={`Return quantity${source ? ` (max ${source.Quantity})` : ''}`}
+              <Form.Item name="Quantity" extra={baseReadout(watchSap, watchQty) ?? undefined} label={`Return quantity${source ? ` (max ${source.Quantity})` : ''}`}
                 rules={[{ required: true }]}>
                 <InputNumber min={0.0001} max={source ? Number(source.Quantity) : undefined}
                   style={{ width: '100%' }} placeholder="0" />

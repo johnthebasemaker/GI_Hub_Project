@@ -91,6 +91,10 @@ class OpenIn(BaseModel):
     shift: Optional[str] = Field(default=None, pattern="^(Day|Night)$")
     materials: list[MaterialIn] = []
     site_id: Optional[str] = None
+    # Phase 14a (ruling Q14-3): the unit the paper's QTY column was written in.
+    # 'pack' (Can/Bag — the form's default tick) or 'base' (KG). Omitted =
+    # unchanged; the ledger always receives PACKS (services/units.py).
+    qty_unit: Optional[str] = Field(default=None, pattern="^(pack|base)$")
 
 
 class ManpowerIn(BaseModel):
@@ -118,6 +122,10 @@ class SupervisorIn(BaseModel):
     execution_sub_activity_code: Optional[str] = None
     variant_key: Optional[str] = None
     site_id: Optional[str] = None
+    # Phase 14a (ruling Q14-3): the unit the paper's QTY column was written in.
+    # 'pack' (Can/Bag — the form's default tick) or 'base' (KG). Omitted =
+    # unchanged; the ledger always receives PACKS (services/units.py).
+    qty_unit: Optional[str] = Field(default=None, pattern="^(pack|base)$")
 
 
 class SkVerifyIn(BaseModel):
@@ -199,7 +207,7 @@ async def open_entry(body: OpenIn = Body(...),
         session, username=user["username"], role=user["role"], site_id=sid,
         work_date=body.work_date, equipment_tag=body.equipment_tag,
         code=body.lining_system_code, esc=body.execution_sub_activity_code,
-        variant=body.variant_key, shift=body.shift,
+        variant=body.variant_key, shift=body.shift, qty_unit=body.qty_unit,
         materials=[m.model_dump() for m in body.materials])
     await session.commit()
     return res
@@ -237,7 +245,8 @@ async def supervisor_submit(entry_id: int, body: SupervisorIn = Body(...),
         material_reason=body.material_variance_reason,
         manpower_reason=body.manpower_variance_reason,
         materials=[m.model_dump(exclude_unset=True) for m in body.materials],
-        esc=body.execution_sub_activity_code, variant=body.variant_key)
+        esc=body.execution_sub_activity_code, variant=body.variant_key,
+        qty_unit=body.qty_unit)
     await session.commit()
     return res
 

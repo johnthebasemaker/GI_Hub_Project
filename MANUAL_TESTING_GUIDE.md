@@ -3675,6 +3675,52 @@ two posts make two rows. Tools and the E2E harness send none.
 document) does not use up its key. Correcting and resending still works, and
 the resend is not told it is "still being processed".
 
+## 14af. Phase 14a — packs and base units (Surface Shields)
+
+**What it is for.** The ledger counts **packs** (cans, bags, rolls); the recipe
+and the estimator speak **base units** (KG, M2, EA). Before Phase 14 nothing
+converted between them:
+
+- **D1:** the attribution variance compared a can with a kilogram.
+- **D2:** a QR form's KG figure was posted into a ledger of cans.
+
+The ledger is **never** converted. Base figures are derived in one place
+(`backend/api/services/units.py`) from the Inventory sheet's **Unit Size**.
+
+**TC-UNIT-01** — run the Excel sync. All 35 Surface Shield rows carry a Unit
+Size and a Base UOM. The report names any shield row without one, any
+description whose "(9KG)" disagrees with it, and the recipe `Package_Size`
+disagreements (Unit Size wins). The `4.33kg For 1 SQM` column is listed as
+*deliberately NOT imported*.
+
+**TC-UNIT-02** — Material Card for **1045** (BC 3004, 9 KG can) shows
+**"N KG · M Can"**, KG first. Low Stock, Stock and Records show the same pair.
+A non-shield material shows its plain number.
+
+**TC-UNIT-03** — Issue form, SAP 1045, type **4.5**. The line under the box
+reads **= 40.5 KG (1 Can = 9 KG)**. The issue is staged as **4.5**; the ledger
+stays in packs.
+
+**TC-UNIT-04** — ⚠️ **D1.** Attribute a 4.5-can draw of 1045 over 20 m² in a
+system whose rate is 2.0 KG/m². Actual **40.5 KG** vs expected **40 KG** =
+**+1.25 %**, not the old −88.75 %. Suite 14A-06.
+
+**TC-UNIT-05** — ⚠️ **D2.** Print a form: the UOM column shows **Can/Bag** with
+*1 Can = 9 KG* in the small print, and a **PACKS / KG** tick above the table.
+File a form written in KG (45 for SAP 1045) with KG selected on review. The HOD
+approval deducts **5 cans**. Suite 14A-09.
+
+**TC-UNIT-06** — a shield material with **no** Unit Size:
+
+- the displays show *— (no unit size)*;
+- an attribution is **refused** with a message naming the Inventory sheet;
+- a **KG** form line for it cannot post.
+
+**TC-UNIT-07** — **L5: readiness does not move.** Record the estimator's
+Status / Completion % / SQM achievable-now for a site, change a Unit Size in
+the workbook and re-sync. Every readiness figure is identical; only
+`Consumed_Qty` may differ. Suite 14A-14. SME parity (1,334) is unchanged.
+
 ## 14aa. The AI evaluation gates (Phase 11 · 11f)
 
 Developer-facing. Nothing here is a screen; it is what CI refuses to merge.
@@ -3848,9 +3894,9 @@ regression, not a new normal.**
 | Gate | Baseline | Command |
 |---|---|---|
 | **Harness hygiene — runs FIRST** | **10 controls, 0 failed** | `bash bin/ci_preflight.sh` |
-| Backend service tests | **2,613 / 0** (suites A…DE + TR) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
+| Backend service tests | **2,629 / 0** (suites A…DE + TR + 14A) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
 | Legacy regression | **599 / 0 / 0** ⚠️ `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` on macOS, or the QR check SKIPS | `.venv/bin/python legacy/bug_check.py` |
-| Playwright E2E | **143 / 143** (incl. the Practice leg — its own second uvicorn + sandbox) | `cd tests/e2e && npm test` |
+| Playwright E2E | **144 / 144** (incl. the Practice leg — its own second uvicorn + sandbox) | `cd tests/e2e && npm test` |
 | Practice walls | **every line ✅** | `.venv/bin/python tools/practice_db.py verify` |
 | **AI evals — Tier 1** | **147 / 147, 0 leaks** · recall **1.000** / precision **0.994** | `.venv/bin/python -m tests.ai_eval.runner` |
 | AI eval grid freshness | **current, 72 verified cases** | `.venv/bin/python tools/gen_eval_grid.py --check` |

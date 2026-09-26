@@ -1598,6 +1598,12 @@ def check_models_schema_parity() -> None:
                # 12-hour shift a worker is on. New-stack only — the frozen
                # legacy attendance import has one undifferentiated day.
                ("mh_employees", "Shift"),
+               # 2026-09-26 Phase 14a (alembic c41d7e9a2b58): the pack → base
+               # factor and what an attribution converted. New-stack only —
+               # the frozen legacy SQLite never learns them.
+               ("inventory", "Unit_Size"), ("inventory", "Base_UOM"),
+               ("sme_consumption_log", "Pack_Qty"),
+               ("sme_consumption_log", "Unit_Size_Used"),
                # 2026-08 execution sub-activity (alembic f1d3b7a24c60): the
                # recipe line's quantity is now per sub-activity, so LSC2's
                # Resin A is 0.2700 as ESC21 primer and 1.4674 as ESC22 screed

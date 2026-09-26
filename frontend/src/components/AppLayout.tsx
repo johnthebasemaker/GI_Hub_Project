@@ -22,6 +22,7 @@ import OfflineSyncBadge from './OfflineSyncBadge'
 import SyncControls from './SyncControls'
 import ProfileModal from './ProfileModal'
 import PracticeBanner, { PracticeTag } from './PracticeBanner'
+import { useUnitSizesLoader } from '../lib/units'
 
 const { Header, Sider, Content } = Layout
 
@@ -104,6 +105,8 @@ export default function AppLayout() {
   const { data: health } = useHealth()
   const { data: queues } = useWorkQueues()
   const { user, logout, readOnly } = useAuth()
+  // Phase 14a: the pack → base factors every quantity display reads.
+  useUnitSizesLoader()
   const { mode, toggle } = useThemeMode()
   const { message } = App.useApp()
   const level = user?.level ?? 0

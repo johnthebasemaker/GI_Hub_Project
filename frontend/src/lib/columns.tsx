@@ -1,6 +1,7 @@
 import type { ColumnsType } from 'antd/es/table'
 import type { Row } from '../api/client'
 import { fmtCell } from './format'
+import { PACK_QTY_KEYS, fmtPackBase } from './units'
 
 function renderCell(v: unknown) {
   if (v === null || v === undefined) return <span style={{ opacity: 0.35 }}>—</span>
@@ -22,6 +23,14 @@ export function buildColumns(rows: Row[]): ColumnsType<Row> {
     ellipsis: true,
     width: Math.max(96, Math.round(key.length * 8.5) + 40),
     onHeaderCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
-    render: (v: unknown) => renderCell(v),
+    // Phase 14a: a Surface Shield pack quantity also shows its base figure,
+    // base first — "189 KG · 21 Can" (ruling Q14-5). Anything else is untouched.
+    render: (v: unknown, row: Row) => {
+      if (PACK_QTY_KEYS.has(key) && row && 'SAP_Code' in row) {
+        const dual = fmtPackBase(row.SAP_Code, v, (row.UOM as string) ?? null)
+        if (dual) return dual
+      }
+      return renderCell(v)
+    },
   }))
 }

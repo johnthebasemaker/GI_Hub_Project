@@ -44,6 +44,7 @@ import {
   Alert, App, Button, Card, Col, Descriptions, Divider, Form, Input, InputNumber,
   Modal, Popconfirm, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography,
   Upload,
+  Segmented,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -495,6 +496,8 @@ function SupervisorModal({ entry, onClose }: { entry: Row | null; onClose: () =>
       manpower: crew.filter((c) => c.Role_Code),
       material_variance_reason: v.material_variance_reason,
       manpower_variance_reason: v.manpower_variance_reason,
+      // Phase 14a (Q14-3): which box the paper's QTY column was written in.
+      qty_unit: v.qty_unit ?? 'pack',
       materials: (entry?.materials as Row[] ?? []).map((r) => ({
         id: Number(r.id),
         Actual_Qty: Number(mats[String(r.id)]?.Actual_Qty ?? r.Actual_Qty ?? 0),
@@ -581,7 +584,18 @@ function SupervisorModal({ entry, onClose }: { entry: Row | null; onClose: () =>
             </>
           )}
 
-          <Form form={form} layout="vertical">
+          <Form form={form} layout="vertical"
+            initialValues={{ qty_unit: String(entry?.Qty_Unit ?? 'pack') }}>
+            {/* Phase 14a (ruling Q14-3): the form's PACKS / KG tick. Packs is
+                what the store counts; a form written in KG is converted to
+                packs by the server before anything is deducted (defect D2). */}
+            <Form.Item name="qty_unit" label="Quantities on this form are written in"
+              tooltip="Tick what the paper says. Nothing ticked on the paper means PACKS.">
+              <Segmented options={[
+                { value: 'pack', label: 'Packs (Can / Bag / Roll)' },
+                { value: 'base', label: 'KG' },
+              ]} />
+            </Form.Item>
             <Form.Item name="actual_sqm" label="Actual area done (m²)"
               rules={[{ required: true, message: 'the area is required' }]}>
               <InputNumber min={0.01} step={1} style={{ width: 220 }} />
