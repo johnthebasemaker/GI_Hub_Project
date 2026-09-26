@@ -1931,6 +1931,66 @@ class PrRegistry(Base):
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
 
 
+class ConsumptionReconciliation(Base):
+    """Phase 14b — one row per BUCKET where a QR execution entry and the Excel
+    Consumption Log both speak for the same drums.
+
+    Bucket = (Site, work date, resolved equipment tag, SAP). The ledger holds
+    ONE quantity per bucket — max(QR, Excel), never their sum (invariant L1) —
+    and this row records how the two sources compared: `matched`,
+    `excel_extra` (the store book shows more — the difference is posted as one
+    delta row attached to the entry), `qr_extra` (the form claims more than the
+    book — a CONFLICT for the HOD, corrected through the entry), or
+    `possible_duplicate` (an Excel draw on the day before/after a QR bucket —
+    reported, never merged; ruling Q14-2).
+
+    Re-computed from SUMS on every sync and every post, never from the
+    previous decision, so a re-run converges (L6).
+    """
+    __tablename__ = "consumption_reconciliation"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    Site_ID = Column(Text, nullable=False)
+    Work_Date = Column(Text, nullable=False)            # YYYY-MM-DD
+    Equipment_Tag_No = Column(Text, nullable=False)
+    SAP_Code = Column(Text, nullable=False)
+    QR_Qty = Column(Float, nullable=False, server_default=text('0'))
+    Excel_Qty = Column(Float, nullable=False, server_default=text('0'))
+    Ledger_Qty = Column(Float, nullable=False, server_default=text('0'))
+    status = Column(Text, nullable=False)
+    entry_ids = Column(Text)                             # CSV of execution entry ids
+    detail = Column(Text)
+    notified_status = Column(Text)                       # the status the HOD was last told about
+    acknowledged_by = Column(Text)
+    acknowledged_at = Column(DateTime)
+    acknowledge_note = Column(Text)
+    updated_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    __table_args__ = (
+        UniqueConstraint("Site_ID", "Work_Date", "Equipment_Tag_No", "SAP_Code",
+                         name="uq_consumption_recon_bucket"),
+        Index("ix_consumption_recon_status", "Site_ID", "status"),
+    )
+
+
+class ConsumptionExecLink(Base):
+    """Phase 14b — a ledger row that an execution entry SPEAKS FOR without
+    having posted it.
+
+    Two ways a row lands here: an Excel row already in the ledger when the QR
+    entry is posted (`adopted` — the entry posts only what the book lacks), and
+    the one delta row a sync posts when the book shows more than the form
+    (`excel_extra`). Either way the row is ATTRIBUTED by the entry — its system,
+    tag and area came from the paper — so the attribution sweep must never
+    show it (invariant L3; `sme_link.EXCLUDE_SELF_SQL`).
+    """
+    __tablename__ = "consumption_exec_link"
+    Consumption_ID = Column(Integer, primary_key=True)
+    Entry_ID = Column(Integer, nullable=False)
+    Line_ID = Column(Integer)
+    via = Column(Text, nullable=False)                   # adopted | excel_extra
+    linked_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    __table_args__ = (Index("ix_consumption_exec_link_entry", "Entry_ID"),)
+
+
 class ProcurementIdempotency(Base):
     """A retry is not a second order.
 

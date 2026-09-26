@@ -13,6 +13,7 @@ import LocationReport from '../sme/LocationReport'
 import { EquipmentMatrixReport, ScopedExport, SystemCodeReport } from '../sme/MatrixReports'
 import TotalOverview from '../sme/TotalOverview'
 import ActualConsumption from '../sme/ActualConsumption'
+import Reconciliation from '../sme/Reconciliation'
 import MasterData from '../sme/MasterData'
 import { ScenarioProvider } from '../sme/ScenarioContext'
 import SessionBuilder from '../sme/SessionBuilder'
@@ -232,6 +233,10 @@ function SmePageBody({ siteId, setSiteId, sites }: {
           ...(canEditMasters ? [{
             key: 'actuals', label: '🧾 Actual Consumption',
             children: <ActualConsumption siteId={siteId} />,
+          }, {
+            // Phase 14b — how the QR paper and the Excel book compared.
+            key: 'reconcile', label: '⚖️ QR ⇄ Excel',
+            children: <Reconciliation siteId={siteId} />,
           }, {
             key: 'master', label: '🗄️ Master Data',
             children: <MasterData siteId={siteId} />,

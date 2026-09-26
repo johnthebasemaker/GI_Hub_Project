@@ -52,7 +52,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import require_roles, resolve_site_param, site_scope
+from .auth import require_roles, resolve_site_param, site_row_visible, site_scope
 from .bulk_import import alias_norm, match_alias
 from .db import get_session
 from .services.ledger import _MD, write_audit
@@ -107,6 +107,55 @@ def _write_site(user: dict, site_id: Optional[str]) -> str:
     if not scope:
         raise HTTPException(403, "your account has no site; ask an admin")
     return scope
+
+
+# ─── Phase 14b: QR ⇄ Excel reconciliation buckets ────────────────────────────
+@router.get("/reconciliation",
+            summary="How the QR execution entries and the Excel log compared, per bucket")
+async def list_reconciliation(site_id: Optional[str] = None,
+                              status: Optional[str] = None,
+                              user: dict = Depends(require_roles("hod")),
+                              session: AsyncSession = Depends(get_session)):
+    """One row per (day, tag, SAP) bucket. `qr_extra` (the paper claims more
+    than the book) and `possible_duplicate` are the HOD's to look at; the rest
+    is the audit trail of why the ledger holds max(QR, Excel) and never the
+    sum. Read services/reconcile.py for the arithmetic."""
+    from .services import reconcile as RC
+    site = resolve_site_param(user, site_id)
+    items = await RC.list_buckets(session, site_id=site, status=status)
+    open_ = [i for i in items if i["status"] in ("qr_extra", "over_ledger", "possible_duplicate")
+             and not i.get("acknowledged_by")]
+    return {"items": items, "needs_attention": len(open_)}
+
+
+class ReconAck(BaseModel):
+    note: str = Field(min_length=3)
+
+
+@router.post("/reconciliation/{recon_id}/acknowledge",
+             summary="HOD: I have looked at this conflict / possible duplicate")
+async def acknowledge_reconciliation(recon_id: int, body: ReconAck,
+                                     user: dict = Depends(require_roles("hod")),
+                                     session: AsyncSession = Depends(get_session)):
+    """⚠️ AN ACKNOWLEDGEMENT CHANGES NO QUANTITY. The fix for a `qr_extra` is
+    made on the execution entry (its posted quantity is corrected through the
+    entry — rule 3a), and for a duplicate on the workbook. This records that
+    somebody looked, and why they were content — a new situation in the same
+    bucket clears it (services/reconcile.upsert_bucket)."""
+    from .services import reconcile as RC
+    row = (await session.execute(select(RC.recon_t).where(
+        RC.recon_t.c["id"] == recon_id))).mappings().first()
+    if row is None or not site_row_visible(site_scope(user), row["Site_ID"]):
+        raise HTTPException(404, "reconciliation row not found")
+    await session.execute(update(RC.recon_t).where(RC.recon_t.c["id"] == recon_id).values(
+        acknowledged_by=user["username"], acknowledged_at=func.now(),
+        acknowledge_note=body.note.strip()))
+    await write_audit(session, user["username"], "RECON_ACKNOWLEDGED",
+                      "consumption_reconciliation",
+                      f"{row['Work_Date']} {row['Equipment_Tag_No']} {row['SAP_Code']} "
+                      f"[{row['status']}] — {body.note.strip()[:200]}")
+    await session.commit()
+    return {"acknowledged": True, "id": recon_id}
 
 
 # ─── tank aliases ─────────────────────────────────────────────────────────────

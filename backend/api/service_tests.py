@@ -26054,6 +26054,227 @@ async def test_phase14a_units():
         await _cleanup()
 
 
+async def test_phase14b_reconciliation():
+    """Suite 14B — one quantity per bucket when the QR paper and the Excel book
+    both speak for the same drums (invariant L1: max, never the sum).
+
+    Each scenario is a path that deducted a drum TWICE before Phase 14b
+    (PROPOSED_PHASE14_PLAN.md §1.4), asserted on the ledger total itself.
+    """
+    from sqlalchemy import text as _t
+
+    from . import bulk_import as bi
+    from .services import execution as X
+    from .services import quality as Q
+    from .services import reconcile as RC
+    from .services import sme_link as SL
+
+    SITE, SAP, TAG = "SVRB-SITE", "SVRB-1", "SVRB-TANK-091"
+    HDR = ["Date", "SAP CODE", "Material Code", "Equipment Description", "UOM",
+           "Qty.", "Serial No.", "PR#", "Work Type", "Tank No.", "WBS#",
+           "Approved By", "Cons. Paper No.", "Pallet No.", "Received by",
+           "Prepared by", "Location", "Remarks", "Current Stock", "type"]
+    async with SessionLocal() as s:
+        CAT = await Q.controlled_category(s)
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            for q in ("DELETE FROM consumption_exec_link WHERE \"Consumption_ID\" IN "
+                      "(SELECT id FROM consumption WHERE \"Site_ID\" = :site)",
+                      "DELETE FROM consumption_reconciliation WHERE \"Site_ID\" = :site",
+                      "DELETE FROM app_notifications WHERE related_table = "
+                      "'consumption_reconciliation' AND recipient_site = :site",
+                      "DELETE FROM sme_execution_entry_material WHERE \"Entry_ID\" IN "
+                      "(SELECT id FROM sme_execution_entry WHERE \"Site_ID\" = :site)",
+                      "DELETE FROM sme_execution_entry WHERE \"Site_ID\" = :site",
+                      "DELETE FROM consumption WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_tank_alias WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_equipment WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_recipe WHERE \"Lining_System_Code\" = 'SVRB-LS1'",
+                      "DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SVRB-%'"):
+                await s.execute(_t(q), {"site": SITE})
+            await s.commit()
+
+    book: list[list] = []
+
+    def line(day, qty, tank=TAG):
+        r = [""] * len(HDR)
+        r[0], r[1], r[4], r[5], r[9], r[19] = day, SAP, "Can", qty, tank, "Surface Shield"
+        return r
+
+    async def sync():
+        async with SessionLocal() as s:
+            plan = await bi.plan_ledger(s, _xlsx({"Consumption Log": [["CNCEC"], HDR, *book]}), SITE)
+            counts = await bi.apply_ledger(s, plan, "svrb-sync")
+            await s.commit()
+        return plan["sections"]["consumption"], counts
+
+    async def qr(day, qty):
+        async with SessionLocal() as s:
+            e = await X.open_entry(s, username="svrb", role="supervisor", site_id=SITE,
+                                   work_date=day, equipment_tag=TAG, code="SVRB-LS1",
+                                   esc="SVRB-ESC", qty_unit="pack",
+                                   materials=[{"Material_Code": "SVRB-M1", "SAP_Code": SAP,
+                                               "Actual_Qty": qty}])
+            res = await X.post_stock(s, e["id"], username="svrb")
+            await s.commit()
+        return e["id"], res
+
+    async def total(day):
+        async with SessionLocal() as s:
+            return round(float((await s.execute(_t(
+                'SELECT COALESCE(SUM("Quantity"), 0) FROM consumption WHERE "Site_ID" = :s '
+                'AND "SAP_Code" = :p AND LEFT("Date", 10) = :d'),
+                {"s": SITE, "p": SAP, "d": day})).scalar()), 4)
+
+    async def status(day):
+        async with SessionLocal() as s:
+            return (await s.execute(_t(
+                'SELECT status FROM consumption_reconciliation WHERE "Site_ID" = :s '
+                'AND "Work_Date" = :d AND "SAP_Code" = :p'),
+                {"s": SITE, "d": day, "p": SAP})).scalar()
+
+    await _cleanup()
+    try:
+        async with SessionLocal() as s:
+            await s.execute(_t(
+                'INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+                '"Category", "UOM", "Site_ID", "Unit_Size", "Base_UOM") '
+                "VALUES (:p, 'SVRB-M1', 'Adhesive', :c, 'Can', :site, 9, 'KG')"),
+                {"p": SAP, "c": CAT, "site": SITE})
+            await s.execute(_t(
+                'INSERT INTO sme_recipe ("Lining_System_Code", "Execution_Sub_Activity_Code", '
+                '"Material_Code", "SAP_Code", "Material_Name", "UOM", "For_1_SQM") '
+                "VALUES ('SVRB-LS1', 'SVRB-ESC', 'SVRB-M1', :p, 'Adhesive', 'KG', 1.0)"), {"p": SAP})
+            for tag in (TAG, "SVRB-J091"):
+                await s.execute(_t(
+                    'INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", "Name", '
+                    '"Lining_System_Code", "Surface_Area_SQM", "Equipment_Total_SQM") '
+                    "VALUES (:site, :t, :t, 'SVRB-LS1', 100, 100)"), {"site": SITE, "t": tag})
+            # An operator-mapped spelling whose normalised form is NOT the tag's.
+            await s.execute(_t(
+                'INSERT INTO sme_tank_alias ("Site_ID", alias_raw, alias_norm, '
+                '"Equipment_Tag_No", status) VALUES (:site, \'T91 svrb\', :n, :t, \'mapped\')'),
+                {"site": SITE, "n": bi.alias_norm("T91 svrb"), "t": TAG})
+            await s.execute(_t(
+                'INSERT INTO sme_tank_alias ("Site_ID", alias_raw, alias_norm, status) '
+                "VALUES (:site, 'Sample Plate', :n, 'ignored')"),
+                {"site": SITE, "n": bi.alias_norm("Sample Plate")})
+            await s.commit()
+
+        async with SessionLocal() as s:
+            resolve = await RC.resolver(s, SITE)
+        check("14B-01: the resolver maps an operator alias, keeps two tags apart that "
+              "share a suffix, and calls a sample plate non-equipment",
+              resolve("T91 svrb") == (TAG, "mapped") and resolve(TAG) == (TAG, "mapped")
+              and resolve("SVRB-J091")[0] == "SVRB-J091"
+              and resolve("Sample Plate") == (None, "ignored")
+              and resolve("somewhere")[1] == "unresolved", str(resolve("T91 svrb")))
+
+        # ── QR FIRST ─────────────────────────────────────────────────────────
+        await qr("2026-09-01", 9)
+        book.append(line("2026-09-01", 9))
+        await qr("2026-09-02", 9)
+        book += [line("2026-09-02", 4.5), line("2026-09-02", 4.5)]
+        await qr("2026-09-03", 9)
+        book.append(line("2026-09-03", 9, tank="T91 svrb"))
+        await qr("2026-09-04", 9)
+        book.append(line("2026-09-04", 12))
+        await qr("2026-09-05", 9)
+        book.append(line("2026-09-05", 6))
+        sec, counts = await sync()
+        check("14B-02: identical draw on both sides — the ledger holds 9, not 18",
+              await total("2026-09-01") == 9 and await status("2026-09-01") == "matched",
+              f"{await total('2026-09-01')} {await status('2026-09-01')}")
+        check("14B-03: ⚠️ SPLIT QUANTITY — paper 9, book 4.5 + 4.5: the ledger holds 9. "
+              "The old matcher took the first 4.5 as a conflict and INSERTED the second",
+              await total("2026-09-02") == 9, str(await total("2026-09-02")))
+        check("14B-04: ⚠️ TANK SPELLED DIFFERENTLY — the book says 'T91 svrb' (an alias "
+              "of the tag): the ledger holds 9, not 18",
+              await total("2026-09-03") == 9, str(await total("2026-09-03")))
+        check("14B-05: the book shows MORE (12 vs 9) — the ledger holds 12, the extra 3 "
+              "posted ONCE as a delta row, status 'excel_extra'",
+              await total("2026-09-04") == 12 and await status("2026-09-04") == "excel_extra",
+              f"{await total('2026-09-04')} {await status('2026-09-04')}")
+        async with SessionLocal() as s:
+            notes = (await s.execute(_t(
+                "SELECT COUNT(*) FROM app_notifications WHERE event_key = "
+                "'consumption_qr_extra' AND recipient_site = :site"), {"site": SITE})).scalar()
+        check("14B-06: the paper claims MORE than the book (9 vs 6) — the ledger holds 9 "
+              "(never the sum), status 'qr_extra', and the site's HOD is told",
+              await total("2026-09-05") == 9 and await status("2026-09-05") == "qr_extra"
+              and notes >= 1, f"{await total('2026-09-05')} {await status('2026-09-05')} n={notes}")
+
+        # ── L3: nothing the entry speaks for reaches the attribution queue ─────
+        async with SessionLocal() as s:
+            swept = (await s.execute(_t(
+                f'SELECT COUNT(*) FROM consumption c WHERE c."Site_ID" = :site AND {SL.EXCLUDE_SELF_SQL}'),
+                {"site": SITE, **SL.EXCLUDE_SELF_PARAMS})).scalar()
+        check("14B-07: ⚠️ L3 — every row in a QR bucket (the entry's own posts AND the "
+              "delta row) is excluded from the attribution sweep: none can be credited "
+              "a second SQM", swept == 0, f"swept={swept}")
+
+        # ── EXCEL FIRST ──────────────────────────────────────────────────────
+        book.append(line("2026-09-06", 9))
+        book.append(line("2026-09-07", 9))
+        await sync()
+        before6 = await total("2026-09-06")
+        await qr("2026-09-06", 9)
+        await qr("2026-09-07", 12)
+        check("14B-08: ⚠️ EXCEL FIRST, QR SECOND (the order the post never looked at) — "
+              "the entry ADOPTS the book's 9 and posts nothing more: still 9, not 18",
+              before6 == 9 and await total("2026-09-06") == 9
+              and await status("2026-09-06") == "matched",
+              f"before={before6} after={await total('2026-09-06')} {await status('2026-09-06')}")
+        check("14B-09: …and when the paper says more (12 vs the book's 9) the entry posts "
+              "only the REMAINDER 3 — the ledger holds 12",
+              await total("2026-09-07") == 12, str(await total("2026-09-07")))
+        async with SessionLocal() as s:
+            swept = (await s.execute(_t(
+                f'SELECT COUNT(*) FROM consumption c WHERE c."Site_ID" = :site AND {SL.EXCLUDE_SELF_SQL}'),
+                {"site": SITE, **SL.EXCLUDE_SELF_PARAMS})).scalar()
+        check("14B-10: the adopted Excel rows left the attribution queue with it (L3)",
+              swept == 0, f"swept={swept}")
+
+        # The book catches up IN PLACE: its 9 becomes 12.
+        book[book.index(line("2026-09-07", 9))] = line("2026-09-07", 12)
+        await sync()
+        check("14B-11: ⚠️ THE BOOK CATCHES UP — the store edits its line 9 → 12 after the "
+              "paper's remainder (3) posted: the remainder shrinks to 0, the ledger holds "
+              "12, not 15. The entry's own figure is never rewritten",
+              await total("2026-09-07") == 12 and await status("2026-09-07") == "matched",
+              f"{await total('2026-09-07')} {await status('2026-09-07')}")
+
+        # ── ±1 DAY and NOT-EQUIPMENT ─────────────────────────────────────────
+        book.append(line("2026-09-02", 5, tank="SVRB-J091"))     # other vessel, same day
+        book.append(line("2026-09-10", 7))                        # a day with no QR bucket
+        await qr("2026-09-11", 7)
+        book.append(line("2026-09-12", 2, tank="Sample Plate"))
+        await sync()
+        check("14B-12: a draw of the same SAP on ANOTHER vessel the same day is its own "
+              "movement — untouched by the bucket next door",
+              await total("2026-09-02") == 14, str(await total("2026-09-02")))
+        check("14B-13: ⚠️ ±1 DAY IS REPORTED, NEVER MERGED (ruling Q14-2) — the book's 7 on "
+              "the 10th stays, and is flagged a possible duplicate of the 11th's paper",
+              await total("2026-09-10") == 7 and await status("2026-09-10") == "possible_duplicate"
+              and await total("2026-09-11") == 7, f"{await total('2026-09-10')} {await status('2026-09-10')}")
+        check("14B-14: a non-equipment draw (sample plate) stays in stock, outside every "
+              "bucket (ruling Q14-9)", await total("2026-09-12") == 2, str(await total("2026-09-12")))
+
+        # ── L6: a re-run converges ───────────────────────────────────────────
+        snap = {d: await total(d) for d in ("2026-09-01", "2026-09-02", "2026-09-03",
+                                            "2026-09-04", "2026-09-05", "2026-09-06",
+                                            "2026-09-07", "2026-09-10", "2026-09-11")}
+        sec2, counts2 = await sync()
+        again = {d: await total(d) for d in snap}
+        check("14B-15: ⚠️ L6 — re-running the same workbook changes NOTHING: zero "
+              "inserts, zero updates, every bucket total identical",
+              again == snap and counts2["inserted"] == 0 and counts2["updated"] == 0,
+              f"ins={counts2['inserted']} upd={counts2['updated']} {again if again != snap else ''}")
+    finally:
+        await _cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -26334,6 +26555,9 @@ async def main() -> int:
     print("\n 14A. Phase 14a — packs and base units, converted in ONE place; D1 "
           "and D2 fixed on concrete numbers; readiness does not move (L5)")
     await test_phase14a_units()
+    print("\n 14B. Phase 14b — one quantity per bucket: the four double-count paths, "
+          "both orders, the book catching up, ±1 day, and convergence")
+    await test_phase14b_reconciliation()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()
