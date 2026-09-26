@@ -3644,6 +3644,37 @@ counts are identical before and after.
 
 **TC-PRAC-15** — as `practice.hod`, the reset returns **403**.
 
+## 14ae. Offline replays are idempotent (2026-09-26)
+
+**What it is for.** The offline queue removes an entry only when the server's
+**answer** arrives. A page that reloaded while a replay was in flight used to
+commit the row, lose the answer, and send it again on the next load. That made
+two pending rows for one drum. Each submission now carries one
+`Idempotency-Key`, minted before the first attempt and stored with the entry.
+The five staging routes (`/entry/receipts`, `/consumption`, `/returns`,
+`/adjustments`, `/bulk`) claim it in the **same transaction** as the staged
+row.
+
+**TC-IDEM-01** — as a Store Keeper, go offline and save a receipt. In the
+browser's IndexedDB (`gi-offline` → `queue`), the entry's headers carry an
+`Idempotency-Key`.
+
+**TC-IDEM-02** — ⚠️ **the one that matters.** Queue two receipts offline, come
+back online, and reload the page **repeatedly while the badge is syncing**. The
+HOD queue shows **exactly two** new receipts, never three or four. Automated as
+`offline-queue.spec.ts` → *a replay whose first answer was lost stages ONE row*.
+
+**TC-IDEM-03** — sending the same key with a **different** body returns
+**409**. Sending the same key with the same body returns the first answer
+marked `"replayed": true`, and nothing is staged. Suite **DE**.
+
+**TC-IDEM-04** — a request **without** the header behaves exactly as before:
+two posts make two rows. Tools and the E2E harness send none.
+
+**TC-IDEM-05** — a submission the server **refuses** (unknown SAP, missing
+document) does not use up its key. Correcting and resending still works, and
+the resend is not told it is "still being processed".
+
 ## 14aa. The AI evaluation gates (Phase 11 · 11f)
 
 Developer-facing. Nothing here is a screen; it is what CI refuses to merge.
@@ -3817,9 +3848,9 @@ regression, not a new normal.**
 | Gate | Baseline | Command |
 |---|---|---|
 | **Harness hygiene — runs FIRST** | **10 controls, 0 failed** | `bash bin/ci_preflight.sh` |
-| Backend service tests | **2,607 / 0** (suites A…DD + TR) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
+| Backend service tests | **2,613 / 0** (suites A…DE + TR) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
 | Legacy regression | **599 / 0 / 0** ⚠️ `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` on macOS, or the QR check SKIPS | `.venv/bin/python legacy/bug_check.py` |
-| Playwright E2E | **142 / 142** (incl. the Practice leg — its own second uvicorn + sandbox) | `cd tests/e2e && npm test` |
+| Playwright E2E | **143 / 143** (incl. the Practice leg — its own second uvicorn + sandbox) | `cd tests/e2e && npm test` |
 | Practice walls | **every line ✅** | `.venv/bin/python tools/practice_db.py verify` |
 | **AI evals — Tier 1** | **147 / 147, 0 leaks** · recall **1.000** / precision **0.994** | `.venv/bin/python -m tests.ai_eval.runner` |
 | AI eval grid freshness | **current, 72 verified cases** | `.venv/bin/python tools/gen_eval_grid.py --check` |

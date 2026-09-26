@@ -25703,6 +25703,91 @@ async def test_practice_sandbox_data():
           "still subject to the mandate", gate_live is not None, str(gate_live))
 
 
+async def test_entry_replay_idempotency():
+    """Suite DE — a replay is not a second entry.
+
+    The offline queue removes an entry only when the server's ANSWER arrives, so
+    a page that reloaded while a replay was in flight committed the row, lost the
+    answer, and sent it again on the next load: two pending rows for one drum
+    (found writing practice.spec.ts, 2026-09-24). The client now carries one
+    `Idempotency-Key` per submission through every replay, and the entry routes
+    claim it in the same transaction as the staged row.
+    """
+    import uuid as _uuid
+
+    from sqlalchemy import text as _t
+
+    pr_t = _MD.tables["pending_receipts"]
+    async with SessionLocal() as s:
+        sap = (await s.execute(_t(
+            'SELECT "SAP_Code" FROM inventory WHERE "Site_ID" = \'CNCEC\' '
+            'AND COALESCE("Category", \'\') <> \'Surface Shields\' '
+            'ORDER BY "SAP_Code" LIMIT 1'))).scalar()
+        wbs = (await s.execute(_t(
+            'SELECT "WBS_Number" FROM wbs_master WHERE "Site_ID" = \'CNCEC\' '
+            'AND COALESCE(status, \'active\') = \'active\' LIMIT 1'))).scalar()
+    marker = f"DE-{_uuid.uuid4().hex[:8]}"
+
+    async def count(supplier):
+        async with SessionLocal() as s:
+            return await _count(s, pr_t, pr_t.c["Supplier"] == supplier)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://svc") as ac:
+        _ip = {"X-Real-IP": "203.0.113.88"}
+        tok = (await ac.post("/auth/login", headers=_ip,
+                             json={"username": "worker", "password": "floor2026"})).json()["access_token"]
+        H = {"Authorization": f"Bearer {tok}"}
+        body = {"Date": "2026-09-26", "SAP_Code": sap, "Quantity": 7, "Site_ID": "CNCEC",
+                "Supplier": marker, **({"wbs": wbs} if wbs else {})}
+        key = str(_uuid.uuid4())
+
+        r1 = await ac.post("/entry/receipts", headers={**H, "Idempotency-Key": key}, json=body)
+        r2 = await ac.post("/entry/receipts", headers={**H, "Idempotency-Key": key}, json=body)
+        check("de-01: the first submission stages a receipt (negative control)",
+              r1.status_code == 201, f"{r1.status_code} {r1.text[:160]}")
+        check("de-02: ⚠️ the SAME key replayed — the reload that lost the first "
+              "answer — gets that answer back, marked replayed, and stages NOTHING",
+              r2.status_code == 201 and r2.json().get("replayed") is True
+              and r2.json().get("pending_id") == r1.json().get("pending_id")
+              and await count(marker) == 1,
+              f"{r2.status_code} {r2.text[:160]} rows={await count(marker)}")
+
+        r3 = await ac.post("/entry/receipts", headers={**H, "Idempotency-Key": key},
+                           json={**body, "Quantity": 8})
+        check("de-03: the same key with a DIFFERENT body is a 409 — a client bug, "
+              "not a retry, and replaying the first answer would hide it",
+              r3.status_code == 409 and await count(marker) == 1, f"{r3.status_code}")
+
+        m2 = marker + "-nokey"
+        await ac.post("/entry/receipts", headers=H, json={**body, "Supplier": m2})
+        await ac.post("/entry/receipts", headers=H, json={**body, "Supplier": m2})
+        check("de-04: no key means no protection was asked for — two posts, two "
+              "rows, exactly as before (tools and the E2E harness send none)",
+              await count(m2) == 2, f"rows={await count(m2)}")
+
+        m3 = marker + "-bulk"
+        bkey = str(_uuid.uuid4())
+        bulk = {"kind": "receipt", "rows": [{**body, "Supplier": m3}, {**body, "Supplier": m3}]}
+        b1 = await ac.post("/entry/bulk", headers={**H, "Idempotency-Key": bkey}, json=bulk)
+        b2 = await ac.post("/entry/bulk", headers={**H, "Idempotency-Key": bkey}, json=bulk)
+        check("de-05: a replayed BULK batch stages its lines once, not twice",
+              b1.status_code == 201 and b2.status_code == 201
+              and b2.json().get("replayed") is True and await count(m3) == 2,
+              f"{b1.status_code}/{b2.status_code} rows={await count(m3)}")
+
+        # A failed first attempt must not burn the key: the claim is in the
+        # same transaction as the stage, so a rollback frees it.
+        fkey = str(_uuid.uuid4())
+        f1 = await ac.post("/entry/receipts", headers={**H, "Idempotency-Key": fkey},
+                           json={**body, "SAP_Code": "NO-SUCH-SAP-DE"})
+        f2 = await ac.post("/entry/receipts", headers={**H, "Idempotency-Key": fkey},
+                           json={**body, "SAP_Code": "NO-SUCH-SAP-DE"})
+        check("de-06: a REFUSED submission leaves its key unclaimed — the retry is "
+              "refused for the same reason (404), not told it is 'in flight'",
+              f1.status_code == 404 and f2.status_code == 404, f"{f1.status_code}/{f2.status_code}")
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -25980,6 +26065,9 @@ async def main() -> int:
     print("\n DD. A rejection bounces back — to the top of the field's queue "
           "with the HOD's reason, and a correction goes straight back to the HOD")
     await test_sme_rejection_loop()
+    print("\n DE. A replay is not a second entry — one Idempotency-Key per "
+          "submission, claimed in the same transaction as the staged row")
+    await test_entry_replay_idempotency()
     print("\n TR. Rule 17 — Practice is a second process, not a second session: "
           "the boot refusals, the tokens that do not cross, and the tripwire "
           "for the offline queue that every server wall would otherwise wave through")

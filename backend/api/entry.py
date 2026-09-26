@@ -17,7 +17,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import LargeBinary, insert, text
 from sqlalchemy.exc import DataError, IntegrityError
@@ -29,6 +29,7 @@ from .auth import (get_current_user, require_roles, resolve_site_param,
 from .db import get_session
 from . import entry_docs
 from .services import emailer
+from .services import idempotency as idem
 from .services import ledger
 from .services import quality
 from .services import whatsapp as wa
@@ -36,6 +37,37 @@ from .services.notifications import dispatch, notify
 from .stock import SQL_SITE_STOCK
 
 router = APIRouter(prefix="/entry", tags=["data entry"])
+
+
+# ── A replay is not a second entry (offline-queue double replay, 2026-09-26) ──
+#
+# The PWA offline queue (frontend/src/offline/queue.ts) removes an entry from
+# IndexedDB only when the server's ANSWER arrives. A page that navigates or
+# reloads while a replay is in flight has committed the row on the server and
+# lost the answer, so the next page load replayed it again — a second pending
+# receipt or issue for one physical movement. The same happens to an online
+# submit whose response is lost after the commit.
+#
+# The client now mints ONE `Idempotency-Key` per submission, keeps it on the
+# queued entry, and resends it on every replay. These routes CLAIM the key in
+# the same transaction that stages the row (services/idempotency.py — the
+# claim-then-fill protocol procurement already uses), so the key and the row
+# commit together or not at all, and a repeat is handed the first answer.
+# ⚠️ A missing key means "not asked for" and behaves exactly as before — the
+# API is also called by tools and the E2E harness.
+IdemKey = Header(default=None, alias="Idempotency-Key")
+
+
+async def _idem_claim(session, key: Optional[str], action: str, body: BaseModel,
+                      user: dict) -> Optional[dict]:
+    return await idem.claim(session, key=key, action=action,
+                            body=body.model_dump(mode="json"), username=user["username"])
+
+
+async def _idem_finish(session, key: Optional[str], action: str, user: dict,
+                       result: dict) -> None:
+    await idem.finish(session, key=key, action=action, username=user["username"],
+                      result=result)
 
 
 async def _notify_hod_staged(session, *, kind_label: str, site_id: str, actor: str,
@@ -287,6 +319,7 @@ async def create_receipt(
     body: ReceiptIn = Body(...),
     user: dict = Depends(require_roles("store_keeper")),
     session: AsyncSession = Depends(get_session),
+    idempotency_key: Optional[str] = IdemKey,
 ):
     if body.extra:
         bad = [k for k in body.extra if k not in _RECEIPT_EXTRA_OK]
@@ -296,6 +329,9 @@ async def create_receipt(
     data = body.model_dump()
     try:
         async with session.begin():
+            prior = await _idem_claim(session, idempotency_key, "entry_receipt", body, user)
+            if prior is not None:
+                return prior
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
             # Parity A4/A1 — WBS (when the site has any) + supporting document
@@ -317,6 +353,7 @@ async def create_receipt(
             await _notify_hod_staged(session, kind_label="Receipt", site_id=body.Site_ID,
                                      actor=user["username"], ref=result.get("pending_id"),
                                      detail=f"{body.SAP_Code} · qty {data['Quantity']:g} · {body.Site_ID}")
+            await _idem_finish(session, idempotency_key, "entry_receipt", user, result)
         return result
     except HTTPException as e:
         await _alert_mtc_missing(session, e, user["username"])
@@ -330,9 +367,14 @@ async def create_consumption(
     body: ConsumptionIn = Body(...),
     user: dict = Depends(require_roles("store_keeper")),
     session: AsyncSession = Depends(get_session),
+    idempotency_key: Optional[str] = IdemKey,
 ):
     try:
         async with session.begin():
+            prior = await _idem_claim(session, idempotency_key, "entry_consumption", body, user)
+            if prior is not None:
+                # A replay: the FEFO-override alert below already went out once.
+                return prior
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
             # Phase 9a: the WBS gate for an ISSUE moved into `stage_consumption`,
@@ -349,6 +391,7 @@ async def create_consumption(
             await _notify_hod_staged(session, kind_label="Issue", site_id=body.Site_ID,
                                      actor=user["username"], ref=result.get("pending_id"),
                                      detail=f"{body.SAP_Code} · qty {body.Quantity:g} · {body.Site_ID}")
+            await _idem_finish(session, idempotency_key, "entry_consumption", user, result)
     except HTTPException as e:
         # An issue blocked for want of a certificate emails Logistics, who are
         # the only people who can produce one (2026-08-12).
@@ -380,9 +423,13 @@ async def create_return(
     body: ReturnIn = Body(...),
     user: dict = Depends(require_roles("store_keeper")),
     session: AsyncSession = Depends(get_session),
+    idempotency_key: Optional[str] = IdemKey,
 ):
     try:
         async with session.begin():
+            prior = await _idem_claim(session, idempotency_key, "entry_return", body, user)
+            if prior is not None:
+                return prior
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
             data = body.model_dump()
@@ -502,6 +549,7 @@ async def create_return(
                                             + (f" · QC {qc_ref}" if qc_ref else ""))
             if qc_row is not None:
                 result["qc_return_no"] = qc_ref
+            await _idem_finish(session, idempotency_key, "entry_return", user, result)
             return result
     except HTTPException:
         raise
@@ -636,6 +684,7 @@ async def create_adjustment(
     body: AdjustmentIn = Body(...),
     user: dict = Depends(require_roles("store_keeper")),
     session: AsyncSession = Depends(get_session),
+    idempotency_key: Optional[str] = IdemKey,
 ):
     if body.reason_code not in ledger.ADJUSTMENT_REASONS:
         raise HTTPException(422, f"unknown reason_code {body.reason_code!r}")
@@ -643,6 +692,9 @@ async def create_adjustment(
         raise HTTPException(400, "counted qty matches system qty — no adjustment needed")
     try:
         async with session.begin():
+            prior = await _idem_claim(session, idempotency_key, "entry_adjustment", body, user)
+            if prior is not None:
+                return prior
             if not await ledger.sap_exists(session, body.SAP_Code):
                 raise HTTPException(404, f"SAP_Code {body.SAP_Code!r} not in inventory")
             result = await ledger.stage_adjustment(session, username=user["username"], data=body.model_dump())
@@ -650,6 +702,7 @@ async def create_adjustment(
             await _notify_hod_staged(session, kind_label="Adjustment", site_id=body.Site_ID,
                                      actor=user["username"], ref=result.get("id") or result.get("pending_id"),
                                      detail=f"{body.SAP_Code} · variance {variance:+g} · {body.Site_ID}")
+            await _idem_finish(session, idempotency_key, "entry_adjustment", user, result)
             return result
     except HTTPException:
         raise
@@ -782,7 +835,8 @@ class BulkEntryIn(BaseModel):
              summary="Stage a batch of receipts/issues/returns for HOD approval")
 async def create_bulk(body: BulkEntryIn = Body(...),
                       user: dict = Depends(require_roles("store_keeper")),
-                      session: AsyncSession = Depends(get_session)):
+                      session: AsyncSession = Depends(get_session),
+                      idempotency_key: Optional[str] = IdemKey):
     model = _BULK_MODEL[body.kind]
     stager = _BULK_STAGER[body.kind]
     label = _BULK_LABEL[body.kind]
@@ -801,6 +855,9 @@ async def create_bulk(body: BulkEntryIn = Body(...),
         staged: list = []
         by_site: dict[str, int] = {}
         async with session.begin():
+            prior = await _idem_claim(session, idempotency_key, "entry_bulk", body, user)
+            if prior is not None:
+                return prior
             # Parity A1/A4 — batch gates: one supporting document covers the
             # whole batch (legacy "Whole entry" scope); WBS checked per row.
             doc_ids = await entry_docs.assert_entry_docs(
@@ -838,7 +895,9 @@ async def create_bulk(body: BulkEntryIn = Body(...),
                     session, kind_label=f"{cnt} {label}(s)", site_id=site_id,
                     actor=user["username"], ref=",".join(str(s) for s in staged),
                     detail=f"{cnt} {label.lower()} line(s) batch-submitted")
-        return {"staged": len(staged), "pending_ids": staged, "kind": body.kind}
+            out = {"staged": len(staged), "pending_ids": staged, "kind": body.kind}
+            await _idem_finish(session, idempotency_key, "entry_bulk", user, out)
+        return out
     except HTTPException as e:
         await _alert_mtc_missing(session, e, user["username"])
         raise

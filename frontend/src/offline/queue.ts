@@ -31,6 +31,17 @@
  *      the stamp existed were made by Live, and are read as Live);
  *   3. the stamp rides the replay as `X-GI-Instance`, so if 1 and 2 were ever
  *      both wrong the server refuses it with a 409 (backend/api/instance.py).
+ *
+ * ⚠️ A REPLAY IS NOT A SECOND ENTRY (2026-09-26). An entry leaves IndexedDB only
+ * when the server's ANSWER arrives, so a page that navigated or reloaded while
+ * a replay was in flight — the boot flush runs on every load — committed the
+ * row and lost the answer, and the next load sent it again: two pending rows
+ * for one drum. Every submission therefore carries ONE `Idempotency-Key`,
+ * minted before the first attempt, stored WITH the entry, and resent on every
+ * replay; the entry routes claim it in the same transaction as the staged row
+ * (backend/api/entry.py) and hand a repeat the first answer. An entry queued
+ * before keys existed is given one, and SAVED, before it is first sent — a key
+ * minted per attempt would protect nothing.
  */
 import { api } from '../api/client'
 import { CURRENT_ENV, ENV_HEADER, offlineDbName, type GiEnv } from '../api/environment'
@@ -82,6 +93,20 @@ function tx<T>(mode: IDBTransactionMode, run: (store: IDBObjectStore) => IDBRequ
 export const listQueue = () => tx<QueuedEntry[]>('readonly', (s) => s.getAll() as IDBRequest<QueuedEntry[]>)
 export const queueCount = () => tx<number>('readonly', (s) => s.count())
 const addEntry = (e: QueuedEntry) => tx('readwrite', (s) => s.add(e))
+const putEntry = (e: QueuedEntry) => tx('readwrite', (s) => s.put(e))
+
+export const IDEM_HEADER = 'Idempotency-Key'
+
+function newKey(): string {
+  const c = globalThis.crypto as Crypto | undefined
+  if (c?.randomUUID) return c.randomUUID()
+  return `k-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+}
+
+/** The headers with an idempotency key — the caller's own if it sent one. */
+export function withIdemKey(headers: Record<string, string>): Record<string, string> {
+  return headers[IDEM_HEADER] ? headers : { ...headers, [IDEM_HEADER]: newKey() }
+}
 const removeEntry = (id: number) => tx('readwrite', (s) => s.delete(id))
 
 async function emitCount() {
@@ -130,6 +155,12 @@ export async function flushQueue(): Promise<{ sent: number; failed: string[] }> 
       // Never sent, never dropped: it belongs to the other environment and
       // will be replayed when this browser is back in it.
       if (entryEnv(entry) !== CURRENT_ENV) continue
+      if (!entry.headers?.[IDEM_HEADER]) {
+        // Persist BEFORE sending: if this page dies mid-flight, the next replay
+        // must carry the SAME key, or the server cannot recognise it.
+        entry.headers = withIdemKey(entry.headers ?? {})
+        await putEntry(entry)
+      }
       try {
         await api.post(entry.path, entry.body, {
           headers: { ...entry.headers, [ENV_HEADER]: entryEnv(entry), 'X-Offline-Replay': '1' },
@@ -165,11 +196,15 @@ export async function postWithOfflineFallback<T>(
   body: unknown,
   headers: Record<string, string>,
 ): Promise<T | { queued: true }> {
+  // ONE key for this submission — the online attempt and every replay of it.
+  // An online POST whose response is lost after the commit is queued with the
+  // key it already used, so its replay is recognised rather than re-staged.
+  const keyed = withIdemKey(headers)
   try {
-    return (await api.post<T>(path, body, { headers })).data
+    return (await api.post<T>(path, body, { headers: keyed })).data
   } catch (err) {
     if (!isNetworkError(err)) throw err
-    await enqueue(path, body, headers)
+    await enqueue(path, body, keyed)
     return { queued: true }
   }
 }

@@ -453,6 +453,22 @@ When a Store Keeper logs in and there are overdue returnable items at their site
 
 > ⚠️ **OVERDUE ITEMS — Action Required:** N borrowed item(s) past expected return: **<item names>**. Go to the **Returnable Items** tab to follow up.
 
+
+## 3.7 Saving an entry when the signal drops
+
+If the network drops while you save a receipt, issue, return, stock adjustment
+or bulk batch, GI Hub **keeps the entry on your device** and shows a *saved
+offline* message instead of an error. A badge in the header shows how many
+entries are waiting. They are sent by themselves when the connection returns,
+and you can press the badge to send them straight away.
+
+**An entry is never saved twice.** Each save carries its own reference, and the
+server recognises it if it arrives again. That can happen when the page reloads
+while the entry is being sent, or when the connection drops just as the server
+confirms. The second arrival is matched to the first, and only one entry
+reaches your HOD. You never need to check for, or delete, a duplicate caused by
+a bad connection.
+
 ---
 
 # 4. Store Keeper Manual
@@ -6227,7 +6243,7 @@ switched off on purpose:
 ## 26.6 Offline entries stay where they were made
 
 If you lose signal while saving an entry, GI Hub keeps it and sends it when the
-connection returns (§4). In Practice this still works, with one extra
+connection returns (§3.7). In Practice this still works, with one extra
 guarantee: **an entry saved in Practice is only ever sent to Practice.** If you
 switch to Live before it has been sent, it waits, and it is sent the next time
 this browser is back in Practice. It can never be sent to Live, even if you
