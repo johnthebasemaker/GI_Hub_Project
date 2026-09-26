@@ -835,7 +835,18 @@ async def post_stock(session: AsyncSession, entry_id: int, *,
 
     ledger_qty = {int(m["id"]): _ledger_qty(m) for m in mats if not m["Consumption_ID"]}
 
-    posted, warnings = [], []
+    # ⚠️ PHASE 14b — EXCEL FIRST, QR SECOND (invariant L1). The store may have
+    # logged these drums in the workbook — and the sync landed them — before the
+    # paper was filed. Posting the form's full quantity on top would deduct the
+    # drum twice, which is the order the pre-14b code never looked at. So each
+    # line first ADOPTS the Excel rows already in its bucket (links them to this
+    # entry, which takes them out of the attribution queue — L3) and posts only
+    # what the book does not already hold. services/reconcile.py owns the
+    # arithmetic; the bucket's status is recorded below.
+    from . import reconcile as RC
+    touched: dict[tuple, float] = {}
+
+    posted, warnings, adopted_any = [], [], False
     for m in mats:
         if m["Consumption_ID"]:
             continue                      # already posted — see the docstring
@@ -843,6 +854,29 @@ async def post_stock(session: AsyncSession, entry_id: int, *,
         qty = ledger_qty[int(m["id"])]
         if not sap or qty <= 0:
             continue
+        ad = await RC.adopt_for_line(
+            session, site_id=row["Site_ID"], work_date=row["Work_Date"],
+            tag=str(row["Equipment_Tag_No"] or "").strip(), sap=sap, qty=qty,
+            entry_id=int(row["id"]), line_id=int(m["id"]))
+        k = (RC.day(row["Work_Date"]), str(row["Equipment_Tag_No"] or "").strip(),
+             RC.sap_norm(sap))
+        touched[k] = touched.get(k, 0.0) + ad["excel"]
+        if ad["adopted"]:
+            adopted_any = True
+        if ad["post"] <= 0:
+            # The book already holds all of it. The line is DONE — marked with
+            # the first adopted row, so a re-run skips it like a posted line.
+            await session.execute(update(mat_t).where(mat_t.c["id"] == m["id"])
+                                  .values(Consumption_ID=ad["adopted"][0]))
+            continue
+        qty = ad["post"]
+        # A line that ADOPTED Excel rows posts only the REMAINDER, and that row
+        # is marked `:R` — it is reconciliation's own figure ("what the book
+        # lacked when the paper arrived"), so a later sync may shrink it when
+        # the book catches up. The entry's authored quantity is on its material
+        # line and is never touched. Still `SME_EXEC:`-prefixed, so the Phase 13
+        # exclusion holds for it exactly as for a full post.
+        ref = f"SME_EXEC:{row['id']}:{m['id']}" + (":R" if ad["adopted"] else "")
         res = await post_consumption(session, username=username, data={
             "Date": row["Work_Date"], "SAP_Code": sap, "Quantity": qty,
             "Site_ID": row["Site_ID"],
@@ -852,7 +886,7 @@ async def post_stock(session: AsyncSession, entry_id: int, *,
             "Issued_By": username,
             "Lot_Number": m["Lot_No"] or None,
             "Remarks": f"Execution entry {row['Entry_No']}",
-            "Source_Ref": f"SME_EXEC:{row['id']}:{m['id']}",
+            "Source_Ref": ref,
         })
         cid = res.get("consumption_id")
         await session.execute(update(mat_t).where(mat_t.c["id"] == m["id"])
@@ -861,16 +895,31 @@ async def post_stock(session: AsyncSession, entry_id: int, *,
         # commit path sets those afterwards, and so do we, for the same reason:
         # the id is only known once the row exists.
         await session.execute(update(cons_t).where(cons_t.c["id"] == cid).values(
-            Source_Ref=f"SME_EXEC:{row['id']}:{m['id']}",
+            Source_Ref=ref,
             **({"WBS": row["WBS_Number"]} if row.get("WBS_Number") else {})))
         posted.append({"line_id": int(m["id"]), "consumption_id": cid,
                        "SAP_Code": sap, "Quantity": qty})
         if res.get("warning"):
             warnings.append(res["warning"])
 
-    if posted:
+    if posted or adopted_any:
         await session.execute(update(entry_t).where(entry_t.c["id"] == entry_id)
                               .values(Stock_Posted_At=_now()))
+    # Record each touched bucket from SUMS (the entry is now "posted", so
+    # qr_totals sees it). `Excel` here is what the book held when the paper
+    # arrived; the next sync re-derives it from the workbook itself.
+    if touched:
+        qr = await RC.qr_totals(session, row["Site_ID"])
+        for k, excel in touched.items():
+            b = qr.get(k, {"qr": 0.0, "entries": {int(row["id"])}})
+            ledger = (excel + sum(p["Quantity"] for p in posted
+                                  if RC.sap_norm(p["SAP_Code"]) == k[2]))
+            await RC.upsert_bucket(session, row["Site_ID"], k, qr=round(b["qr"], 4),
+                                   excel=round(excel, 4), ledger=round(ledger, 4),
+                                   entries=sorted(b["entries"]),
+                                   status=RC.status_of(b["qr"], excel),
+                                   username=username)
+        await RC.scan_neighbours(session, row["Site_ID"])
     return {"posted": len(posted), "lines": posted, "warnings": warnings}
 
 

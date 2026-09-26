@@ -803,7 +803,7 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
     known_saps = {r[0] for r in
                   (await session.execute(select(inventory_t.c["SAP_Code"]))).all()}
     known_saps |= extra_saps or set()  # dry-run chained after an inventory plan
-    out = {"sections": {}, "rejects": [], "warnings": []}
+    out = {"sections": {}, "rejects": [], "warnings": [], "site_id": site_id}
     for kind, spec in _LEDGER_SHEETS.items():
         headers, rows = _sheet_rows(data, spec["sheet"], ("sap code", "qty."),
                                     required=False)
@@ -855,8 +855,31 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
             select(table).where(table.c["Site_ID"] == site_id)
             .order_by(table.c["id"]))).mappings().all()]
 
+        # ⚠️ PHASE 14b — the one DELTA row per QR bucket (`XLSX:…:D`) belongs to
+        # services/reconcile.py, never to line-by-line matching: it stands for
+        # "the book shows this much MORE than the paper", not for any one
+        # workbook line, and letting the generic matcher claim it would pair it
+        # with whichever line happened to share its quantity.
+        from .services import reconcile as RC
+        delta_rows = [r for r in db_rows if RC.is_delta_label(r.get("Source_Ref"))] \
+            if kind == "consumption" else []
+        if delta_rows:
+            db_rows = [r for r in db_rows if not RC.is_delta_label(r.get("Source_Ref"))]
+
         res = _claim_ledger_rows(kind, site_id, ref, file_rows, db_rows)
         claimed, open_rows = res["claimed"], res["open_rows"]
+
+        # ⚠️ PHASE 14b — BUCKETS HOLDING A POSTED QR ENTRY (invariant L1). Their
+        # unclaimed lines are NOT inserted one by one: the ledger reaches
+        # max(QR, Excel) through ONE delta row, computed from sums. See
+        # services/reconcile.py for the arithmetic and the three orders it
+        # survives.
+        bucket_plan = await RC.plan_buckets(
+            session, site_id, file_rows=open_rows, claimed=claimed, db_rows=db_rows,
+            delta_rows=delta_rows) if kind == "consumption" else None
+        skip_ids = bucket_plan["skip"] if bucket_plan else set()
+        quiet_conflicts = bucket_plan["suppress_conflicts"] if bucket_plan else set()
+        section["bucketed"] = 0
 
         # ── labels: keep the ones rows already carry; allocate once otherwise
         next_n: dict[str, int] = {}
@@ -872,6 +895,9 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
         for fr in open_rows:
             v = fr["vals"]
             cl = fr.get("_claim")
+            if cl is None and id(fr) in skip_ids:
+                section["bucketed"] += 1           # represented by the delta row
+                continue
             if cl is None:
                 if float(v["Quantity"]) == 0.0:
                     section["zero_skipped"] += 1   # zero-qty history, no twin
@@ -885,6 +911,9 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
             db, how = cl["row"], cl["how"]
             if how == "app_matched":
                 section["matched"] += 1
+                continue
+            if how == "conflict" and int(db["id"]) in quiet_conflicts:
+                section["bucketed"] += 1           # the bucket status says it
                 continue
             if how == "conflict":
                 section["conflicts"].append({
@@ -923,6 +952,19 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
                 else:
                     section["matched"] += 1
             section["upserts"].append(dict(v, Source_Ref=label))
+
+        if bucket_plan:
+            existing = {r.get("Source_Ref") for r in delta_rows}
+            for d in bucket_plan["delta_upserts"]:
+                row = {k: v for k, v in d.items() if not k.startswith("_")}
+                section["upserts"].append(row)
+                if row["Source_Ref"] not in existing:
+                    section["inserts"].append(row)
+            section["reconcile"] = {
+                "buckets": bucket_plan["buckets"],
+                "delta_upserts": bucket_plan["delta_upserts"],
+                "delta_deletes": bucket_plan["delta_deletes"],
+                "remainder_updates": bucket_plan.get("remainder_updates", [])}
 
         for r in db_rows:
             if r["id"] in claimed:
@@ -1655,6 +1697,15 @@ async def apply_ledger(session: AsyncSession, plan: dict, username: str) -> dict
         counts["updated"] += upd
         counts["unchanged"] += len(rows) - ins - upd
         counts["updated_ids"][kind] = upd_ids
+
+        # Phase 14b — link the delta rows just written, drop the ones no longer
+        # needed, and record every bucket's status. AFTER the upsert, so the
+        # delta rows exist to be linked.
+        if section.get("reconcile"):
+            from .services import reconcile as RC
+            counts["reconcile"] = await RC.apply_buckets(
+                session, plan.get("site_id") or (rows[0]["Site_ID"] if rows else ""),
+                section["reconcile"], username)
 
         if ins or upd or section.get("stamps"):
             await write_audit(session, username, "BULK_IMPORT_LEDGER", table.name,

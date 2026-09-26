@@ -2117,6 +2117,32 @@ A: Admin sees all pending in Admin Portal → 📨 Pending Requests. If urgent, 
 **Q: I want to see all FEFO overrides logged by my Store Keepers.**
 A: Filter Admin → 📜 Audit Logs by the FEFO override action. Every consumption entry that used an override also carries the override reason on the row itself.
 
+
+## 6.17 SME → ⚖️ QR ⇄ Excel — when the paper and the book both record a drum
+
+A supervisor files a QR form for a job. The store keeper also logs the same
+drums in the Excel Consumption Log. GI Hub now makes sure they are counted
+**once**: for each **day · equipment · material** the stock holds **the larger
+of the two figures, never both added together**.
+
+| What you see | What it means | What to do |
+|---|---|---|
+| **Matched** | The paper and the book agree. | Nothing. |
+| **Excel shows more** | The book has extra drums the form did not list. The extra is added once and attached to the same job. No second area is credited. | Nothing, unless the extra is wrong. |
+| **Awaiting Excel** | The form is filed; the workbook has not caught up yet. | Nothing. It matches when the book is synced. |
+| **Conflict — paper claims more** | The form says more than the book. The stock holds the form's figure. You are notified. | Check the job. If the form is wrong, correct it on the **execution entry**. If the book is wrong, fix the workbook and re-sync. |
+| **Counted twice — fix at source** | Both the form and an edited book line cover the same drums, above both figures. | Correct the entry or the workbook. Nothing is rewritten automatically. |
+| **Possible duplicate (±1 day)** | An Excel draw of the same material on the same equipment one day from a QR form. It was **not** merged; only the exact day merges. | Check whether it is the same drum. If it is, remove or correct the workbook line. |
+
+**Which order things happen in does not matter.** If the book already had the
+drums when the form arrives, the form adopts them and only adds what is missing.
+If the form came first, the book's lines are matched against it. Equipment names
+are matched through the Tank Aliases screen, so a different spelling of the same
+tank still lands on the same vessel.
+
+**Acknowledge** records that you looked at a conflict or a possible duplicate.
+It changes **no quantity**.
+
 ---
 
 # 7. Admin Manual
@@ -5096,7 +5122,9 @@ every day.
 ⚠️ **Approval now deducts the material as well as posting the area.** Store
 keepers: **stop raising a separate material issue for lining work** — the
 execution entry is the only writer now, and doing both deducts the same drum
-twice.
+twice. *(From Phase 14 a drum that is also logged in the Excel Consumption Log
+is reconciled rather than deducted twice — see §6.17 — but the rule stands: one
+record per drum.)*
 
 ⚠️ **Rejection is final.** Raise a new entry from a fresh form.
 

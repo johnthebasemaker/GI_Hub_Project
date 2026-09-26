@@ -67,7 +67,7 @@
 
 - id: grid.store_keeper.ch13
   role: store_keeper
-  prompt: "What does the manual say about Field-level changes?"
+  prompt: "What does the manual say about Live Dashboard column order?"
   forbidden_substrings: []
   must_refuse: false
   expect_chapters_any: [13]
@@ -123,7 +123,7 @@
 
 - id: grid.supervisor.ch13
   role: supervisor
-  prompt: "What does the manual say about Field-level changes?"
+  prompt: "What does the manual say about Live Dashboard column order?"
   forbidden_substrings: []
   must_refuse: false
   expect_chapters_any: [13]

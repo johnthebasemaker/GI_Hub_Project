@@ -3721,6 +3721,49 @@ Status / Completion % / SQM achievable-now for a site, change a Unit Size in
 the workbook and re-sync. Every readiness figure is identical; only
 `Consumed_Qty` may differ. Suite 14A-14. SME parity (1,334) is unchanged.
 
+## 14ag. Phase 14b — QR ⇄ Excel reconciliation (one quantity per bucket)
+
+**What it is for.** A QR execution entry and the Excel Consumption Log can
+record the same drums. The ledger holds **max(QR, Excel)** per **day ·
+equipment · SAP** (invariant L1), reached from sums on every sync and every
+post. The arithmetic is in `backend/api/services/reconcile.py`. Buckets are
+listed in SME → ⚖️ QR ⇄ Excel.
+
+⚠️ Check the **stock total** for the bucket each time, not just the status. The
+failure to catch is a drum deducted twice, and a green status on a doubled total
+is exactly that.
+
+**TC-REC-01** — QR form 9 cans, then sync a workbook line of 9 for the same
+day and tank. Total **9**, *Matched*.
+
+**TC-REC-02** — ⚠️ **split.** Paper 9; book 4.5 + 4.5. Total **9** (it was
+13.5). Suite 14B-03.
+
+**TC-REC-03** — ⚠️ **spelling.** Map an alias in Tank Aliases, then log the
+book line under the alias. Total **9** (it was 18). Suite 14B-04.
+
+**TC-REC-04** — book **12**, paper 9. Total **12**, *Excel shows more*. The
+extra 3 is one row attached to the entry, and it does **not** appear in the
+Phase 13 attribution queue.
+
+**TC-REC-05** — book **6**, paper 9. Total **9**, *Conflict*, and the HOD's bell
+rings **once**. A re-sync does not ring it again.
+
+**TC-REC-06** — ⚠️ **Excel first.** Sync the book's 9, then file the paper for 9.
+The total stays **9** (it was 18). The book's row leaves the attribution
+queue. Paper 12 over a book of 9 posts only **3**. Suite 14B-08/09.
+
+**TC-REC-07** — ⚠️ **the book catches up.** After TC-REC-06's 12-vs-9, edit the
+book line to 12 and re-sync. The total is **12**, not 15. Suite 14B-11.
+
+**TC-REC-08** — a book line for the same tank and material **one day** from a
+paper entry is **not** merged. It is listed as *Possible duplicate*.
+
+**TC-REC-09** — a *Sample Plate* line stays in stock and is in no bucket.
+
+**TC-REC-10** — run the same sync twice. The second run reports **0 inserted,
+0 updated**, and every bucket total is identical (L6).
+
 ## 14aa. The AI evaluation gates (Phase 11 · 11f)
 
 Developer-facing. Nothing here is a screen; it is what CI refuses to merge.
@@ -3894,9 +3937,9 @@ regression, not a new normal.**
 | Gate | Baseline | Command |
 |---|---|---|
 | **Harness hygiene — runs FIRST** | **10 controls, 0 failed** | `bash bin/ci_preflight.sh` |
-| Backend service tests | **2,629 / 0** (suites A…DE + TR + 14A) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
+| Backend service tests | **2,644 / 0** (suites A…DE + TR + 14A + 14B) | `GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests` |
 | Legacy regression | **599 / 0 / 0** ⚠️ `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` on macOS, or the QR check SKIPS | `.venv/bin/python legacy/bug_check.py` |
-| Playwright E2E | **144 / 144** (incl. the Practice leg — its own second uvicorn + sandbox) | `cd tests/e2e && npm test` |
+| Playwright E2E | **145 / 145** (incl. the Practice leg — its own second uvicorn + sandbox) | `cd tests/e2e && npm test` |
 | Practice walls | **every line ✅** | `.venv/bin/python tools/practice_db.py verify` |
 | **AI evals — Tier 1** | **147 / 147, 0 leaks** · recall **1.000** / precision **0.994** | `.venv/bin/python -m tests.ai_eval.runner` |
 | AI eval grid freshness | **current, 72 verified cases** | `.venv/bin/python tools/gen_eval_grid.py --check` |

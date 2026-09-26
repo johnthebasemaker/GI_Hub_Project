@@ -106,7 +106,13 @@ SME_EXEC_PREFIX = "SME_EXEC:"
 # the filter (an unstamped row is an ordinary issue), which `NOT LIKE` alone
 # would silently drop. The `IS NULL` arm is not redundant.
 EXCLUDE_SELF_SQL = (
-    '(c."Source_Ref" IS NULL OR c."Source_Ref" NOT LIKE :sme_exec_like)')
+    '(c."Source_Ref" IS NULL OR c."Source_Ref" NOT LIKE :sme_exec_like)'
+    # ⚠️ PHASE 14b — and a ledger row an execution entry SPEAKS FOR without
+    # having posted it: an Excel row the entry adopted, or the one delta row a
+    # sync posted for "the book shows more than the paper". Its system, tag and
+    # area came from the paper too (services/reconcile.py, invariant L3).
+    ' AND NOT EXISTS (SELECT 1 FROM consumption_exec_link x '
+    '                 WHERE x."Consumption_ID" = c."id")')
 EXCLUDE_SELF_PARAMS = {"sme_exec_like": SME_EXEC_PREFIX + "%"}
 
 
@@ -635,7 +641,10 @@ async def assign(session: AsyncSession, *, consumption_id: int, code: str,
     # these, but a queue is a list and never a control: an id typed by hand, or
     # held over from a stale page, must not be able to attribute an execution
     # entry's own posting a second time.
-    if is_self_posted(row["Source_Ref"]):
+    linked = (await session.execute(text(
+        'SELECT "Entry_ID" FROM consumption_exec_link WHERE "Consumption_ID" = :c'),
+        {"c": consumption_id})).scalar()
+    if is_self_posted(row["Source_Ref"]) or linked is not None:
         raise HTTPException(
             409, "that consumption was posted by an execution entry, which "
                  "already recorded its system, its equipment and its area from "
