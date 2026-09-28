@@ -1194,7 +1194,7 @@ Each card lists the job's materials, each shown **base first, then packs**
 |---|---|
 | **System code** | **Suggested from the materials.** The app picks the system whose recipe lists the most of what was drawn — a job that drew all four components of PU 1 mm is PU 1 mm. Each option says how many of the job's materials it covers (`covers 4 of 5`). A code the store keeper noted (`LS …`) ranks higher. |
 | **Area covered (m²)** | **Asked once for the job**, not once per material. Pre-filled when the store keeper typed it in Remarks (`Floor - 13.37 SQM Done`) — confirm it or correct it. |
-| **Materials** | Every material is ticked except any the chosen system's recipe does not list, which are marked **not in recipe**. |
+| **Materials** | Every material is ticked except any the chosen system's recipe does not list, which are marked **not in recipe**. Tick or untick any row, or use the box in the header to tick or clear them all. The button always shows how many are ticked (**Submit 3 to the HOD**). |
 
 Press **Submit N to the HOD**. The whole job goes to the HOD as one approval.
 

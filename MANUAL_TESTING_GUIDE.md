@@ -3803,6 +3803,17 @@ by **+1.63** (13.37 → 15) once, and every member now reads 15 m². Suite 14C-1
 **TC-GRP-08** — the per-row API still works: `POST /execution/sme-link/assign`
 files a group of one, and approving it credits its own area once.
 
+**TC-GRP-09** — ⚠️ **the boxes (Phase 15b).** On a card with 2 or more
+materials:
+- the default materials show **ticked**;
+- untick one: its box clears, and the button reads **Submit N−1**;
+- tick it again: both are ticked, and the button reads **Submit N**;
+- the header box clears all (the button is disabled), then ticks all.
+
+Before 15b no box ever showed ticked, and each click kept only that one row
+(*"Submit 1"*). E2E `sme-jobs.spec` pins it and checks the submitted
+`consumption_ids`.
+
 ## 14ai. Phase 14d — What's new and tutorial freshness
 
 **What it is for.** Announcements are YAML in `docs/announcements/`. Their

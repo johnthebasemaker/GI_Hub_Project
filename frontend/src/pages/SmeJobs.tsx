@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Alert, App, Button, Card, Empty, Form, Input, InputNumber, Modal, Select,
   Space, Table, Tag, Tooltip, Typography,
@@ -76,6 +76,13 @@ function JobCard({ job }: { job: Job }) {
     .filter((r) => !c || c.coverage === 0 || c.covered.includes(sapKey(r.sap_code)))
     .map((r) => Number(r.consumption_id))
   const [sel, setSel] = useState<number[]>(() => defaultSel(cand))
+  // A refetch can add or remove rows under an open card (a store keeper posts
+  // another draw for the same tag and day). Keep the ticks that still exist;
+  // a NEW row arrives unticked — the supervisor decides about it, not a default.
+  const ids = useMemo(() => job.rows.map((r) => Number(r.consumption_id)), [job.rows])
+  useEffect(() => {
+    setSel((cur) => (cur.every((id) => ids.includes(id)) ? cur : cur.filter((id) => ids.includes(id))))
+  }, [ids])
   const rejected = job.rejected.length > 0
 
   const submit = useMutation({
@@ -139,7 +146,11 @@ function JobCard({ job }: { job: Job }) {
       )}
       <Table size="small" pagination={false} columns={cols} dataSource={job.rows}
         rowKey={(r) => String(r.consumption_id)}
-        rowSelection={{ selectedRowKeys: sel, onChange: (k) => setSel(k.map(Number)) }} />
+        // ⚠️ ONE key type end to end (Phase 15b). rowKey is a string, so the
+        // selection handed back to antd must be strings too: antd compares
+        // strictly, and 123 !== "123" left every box unticked and each click
+        // replacing the whole selection with one row ("Submit 1").
+        rowSelection={{ selectedRowKeys: sel.map(String), onChange: (k) => setSel(k.map(Number)) }} />
       <Space wrap align="end" style={{ marginTop: 10 }}>
         <div>
           <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
