@@ -3881,14 +3881,15 @@ To prove it, add `import { WebGLRenderer } from 'three'` to `LoginPage.tsx`
 and rebuild: it fails on the JS growth and on WebGL.
 
 **TC-3D-02** — on a desktop with a graphics card, open the sign-in page. The
-form is usable at once. The gold mark rises and turns into place to the **left**
-of the card, and a light sweeps across it. Gold dust drifts and a halo glows.
-Move the mouse: the mark **and the card** turn with it, the card by 2° at most.
-`.gi-login` carries `data-gi3d="on"`.
+form is usable at once. The gold mark rises into place **once**, in the band
+**above** the card (Phase 15c). It has no glass pane behind it and no dust, and
+then it stands still. Every ~9 s a band of light sweeps across it. Move the
+mouse: **nothing** moves, neither the mark nor the card. `.gi-login` carries
+`data-gi3d="on"`.
 
 **TC-3D-03** — ⚠️ switch to another tab and back. In DevTools → Performance,
-nothing renders while hidden, and it drops to **0 fps** a few seconds after the
-mouse stops. Waking it does not jump.
+nothing renders while hidden, and between sweeps it renders **nothing at all**.
+Waking it does not jump.
 
 **TC-3D-04** — ⚠️ **dispose.** Sign in: `canvas.gi-login-fx` is gone from the
 DOM. Sign out: the scene comes back.
@@ -3902,12 +3903,47 @@ only, and no scene chunk is fetched. The service worker never precaches it
 either: search `dist/sw.js` for `loginScene` and there is no match.
 
 **TC-3D-07** — in Chrome with `--disable-gpu` or `--use-angle=swiftshader`: no
-mark. `.gi-login` carries `data-gi3d="unavailable"` with
-`data-gi3d-reason="software"`, and the CSS glass is unchanged. A GPU too slow for
-the scene says `data-gi3d-reason="slow"`.
+3D mark. `.gi-login` carries `data-gi3d="unavailable"` with
+`data-gi3d-reason="software"`, and the CSS mark in the band is unchanged. A GPU
+too slow for the scene says `data-gi3d-reason="slow"`; a window too short for the
+band says `"space"`.
 
 **TC-3D-08** — the Executive Summary and the Training page show glass cards.
 Print the Executive Summary: the print is unchanged.
+
+## 15c. Phase 15c — the static login mark, and Practice in violet
+
+**What it is for.** The operator's screenshot showed an empty glass pane behind
+the card and the big mark sitting on the card. Practice also looked the same as
+Live apart from an amber bar. `login-3d.spec` and `practice.spec` pin this.
+
+**TC-15C-01** — open the sign-in page at 1280×720, 1024×640 and on a phone. The
+mark is in its own band at the top and the card starts **below** it; they never
+overlap. There is no translucent box and there are no tilted background marks.
+The mark rises in once, then only a light sweeps across it.
+
+**TC-15C-02** — make the window about 500 px tall. The top band disappears and a
+small, still mark sits above "GI Hub" inside the card.
+
+**TC-15C-03** — choose **Practice**. The page turns **violet**, the Sign in
+button is violet, and an amber **PRACTICE** badge pulses at the top left. Sign
+in: the badge pulses under the GI Hub logo in the sidebar, and the sidebar,
+header and background are violet. Choose **Live**: navy and gold, no badge.
+
+**TC-15C-04** — on a phone in Practice: the PRACTICE tag pulses at the top
+left, beside the menu button.
+
+**TC-15C-05** — turn on *Reduce motion*. The badge is still, and the login mark
+neither rises nor sweeps.
+
+**TC-15C-06** — `npm run build`: *CRITICAL PATH ✅*. The baseline was
+re-recorded **once** in 15c: JS +835 B raw over the 15b build, which is +666 B
+raw / +211 B gz over the 14d baseline. That is the Practice theme and badge,
+which must be there at first paint. The CSS baseline moved with it (+1095 B gz
+since 14d). The build also fails if `src/index.css` defines any `@keyframes`
+name twice. In 15c a login animation named `gi-rise` briefly replaced the
+dashboard's card entrance on Live, and `responsive.spec` caught it. The 3D chunk got **smaller**
+(no slab, rim or dust).
 
 ## 14ak. Stock vs the Excel workbook, and the /login gap
 

@@ -4,12 +4,12 @@ import { EnvironmentOutlined, ExperimentOutlined, LockOutlined, SafetyOutlined, 
 import { useAuth } from '../auth/AuthContext'
 import { useRegister, useRegisterSites, useRegisterWarehouses } from '../api/hooks'
 import { passwordProblems } from '../lib/password'
-import { darkTheme } from '../theme/themes'
+import { darkTheme, practiceTheme } from '../theme/themes'
 import ServerConfigModal from '../components/ServerConfigModal'
 import MandatoryEnrollPanel from '../components/MandatoryEnrollPanel'
 import { apiBase, isApiOverridden, switchEnvironment } from '../api/client'
 import { CURRENT_ENV, type GiEnv } from '../api/environment'
-import PracticeBanner from '../components/PracticeBanner'
+import PracticeBanner, { PracticeBadge } from '../components/PracticeBanner'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -121,8 +121,12 @@ export default function LoginPage() {
   // The login screen is always navy (the flagship first impression),
   // independent of the in-app light/dark toggle.
   return (
-    <ConfigProvider theme={darkTheme}>
+    <ConfigProvider theme={CURRENT_ENV === 'training' ? practiceTheme(darkTheme) : darkTheme}>
       <div className="gi-login">
+        {/* Phase 15c: the mark's own band above the card — static, never
+            overlapping it. Tier 1's canvas draws into the same band. */}
+        <div className="gi-login-crest" aria-hidden="true" />
+        {CURRENT_ENV === 'training' && <PracticeBadge floating />}
         <div className="gi-login-card gi-stagger">
           <div className="gi-login-head">
             {/* Server picker: an installed APK/EXE/DMG is built once against

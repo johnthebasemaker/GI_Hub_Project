@@ -10,7 +10,8 @@ import { AuthProvider } from './auth/AuthContext'
 import ErrorBoundary from './components/ErrorBoundary'
 import { ThemeModeProvider, useThemeMode } from './theme/ThemeContext'
 import RateLimitToast from './components/RateLimitToast'
-import { darkTheme, lightTheme } from './theme/themes'
+import { darkTheme, lightTheme, practiceTheme } from './theme/themes'
+import { isPractice } from './api/environment'
 import { registerSW } from 'virtual:pwa-register'
 import { initOfflineQueue } from './offline/queue'
 
@@ -39,8 +40,9 @@ const queryClient = new QueryClient({
 // Separate component so it can read the theme mode from context.
 function ThemedApp() {
   const { mode } = useThemeMode()
+  const base = mode === 'dark' ? darkTheme : lightTheme
   return (
-    <ConfigProvider theme={mode === 'dark' ? darkTheme : lightTheme}>
+    <ConfigProvider theme={isPractice() ? practiceTheme(base) : base}>
       <AntApp>
         {/* Global toasts (429 countdown + backend-unreachable) must exist on
             the LOGIN page too — that's where a dev first meets a dead API. */}

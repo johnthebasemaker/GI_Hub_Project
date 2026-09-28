@@ -45,7 +45,42 @@ test('Live is the default, and no Practice banner is painted on it', async ({ pa
   await page.goto('/')
   await expect(page.locator('.gi-env-switch .ant-segmented-item-selected')).toHaveText('Live')
   await expect(page.locator('.gi-practice-banner')).toHaveCount(0)
+  await expect(page.locator('.gi-practice-badge')).toHaveCount(0)
   await expect(page).not.toHaveTitle(/^PRACTICE/)
+  // Live keeps its gold primary (Phase 15c changes Practice only)
+  expect(await page.getByRole('button', { name: 'Sign in' }).evaluate(
+    (el) => getComputedStyle(el).backgroundColor)).toBe('rgb(212, 175, 55)')
+})
+
+test('15c: Practice is violet, with a pulsing PRACTICE badge top-left on the login and beside the logo',
+  async ({ page }) => {
+    await page.goto('/')
+    await choose(page, 'Practice')
+    const floating = page.locator('.gi-practice-badge--float')
+    await expect(floating).toBeVisible()
+    const box = await floating.boundingBox()
+    expect(box!.x).toBeLessThan(40)
+    expect(box!.y).toBeLessThan(40)
+    expect(await floating.evaluate((el) => getComputedStyle(el).animationName)).toBe('gi-practice-glow')
+    expect(await page.getByRole('button', { name: 'Sign in' }).evaluate(
+      (el) => getComputedStyle(el).backgroundColor)).toBe('rgb(142, 108, 239)')
+    await signIn(page, 'practice.hod', PRACTICE_PASSWORD)
+    const badge = page.locator('.gi-sider .gi-practice-badge')
+    await expect(badge).toBeVisible()
+    expect(await badge.evaluate((el) => getComputedStyle(el).animationName)).toBe('gi-practice-glow')
+    expect(await page.locator('.gi-sider').evaluate((el) => getComputedStyle(el).backgroundImage))
+      .toContain('rgb(42, 27, 61)')
+  })
+
+test('15c: under reduced motion the Practice badge stands still', async ({ browser }) => {
+  const ctx = await browser.newContext({ reducedMotion: 'reduce' })
+  const page = await ctx.newPage()
+  await page.goto('/')
+  await choose(page, 'Practice')
+  const floating = page.locator('.gi-practice-badge--float')
+  await expect(floating).toBeVisible()
+  expect(await floating.evaluate((el) => getComputedStyle(el).animationName)).toBe('none')
+  await ctx.close()
 })
 
 test('Practice: the server declares itself, a shared account signs in, and an approval lands only in the sandbox',
