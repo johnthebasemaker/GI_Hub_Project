@@ -3931,6 +3931,36 @@ page*, and the banner shows the new time.
 page, not a blank screen. Then open `/no-such-page` while signed in: you land on
 your home page.
 
+## 15a. Phase 15a — Practice cannot run migrations-behind; the item editor
+
+**What it is for.** On 2026-09-27 both Practice databases were six migrations
+behind, so Inventory, the HOD portal and the store keeper's Issue/Receipt
+pickers all failed with 500 errors in Practice. An item saved with site `cncec`
+was hidden from the CNCEC store keeper. Suite 15A pins both fixes.
+
+**TC-15A-01** — in Practice as `practice.admin`, add an item with Site `cncec`
+and Category `safety`. It is saved as **CNCEC / Safety**. Sign in as
+`practice.storekeeper`: the item is in the **Issue** and **Receipt** material
+pickers. Sign in to **Live**: it is not there.
+
+**TC-15A-02** — as `practice.hod`, open the HOD portal, Stock and the Surface
+Shield queue. Nothing shows a 500 error.
+
+**TC-15A-03** — add an item with a brand-new site such as `NEWSITE`. You are
+asked **"Create a new site…?"**. Cancel keeps the form open; OK saves it. Leave
+Site empty on a new item: *"Pick the site"*.
+
+**TC-15A-04** — ⚠️ **make it fail.** Stamp a copy of a Practice database
+behind head, or run the Practice API against an old backup. It **refuses to
+start** with *"Practice schema is behind … Fix: tools/practice_db.py
+migrate"*. Run that command; it backs up, migrates the seed and then the
+sandbox, and the API starts. Run it again and it reports both databases *at
+head* without touching them.
+
+**TC-15A-05** — `tools/practice_db.py verify` lists *"… is at the code's
+migration head"* for both databases. `curl localhost:8001/health` shows
+`"schema":"ok"`.
+
 ## 14aa. The AI evaluation gates (Phase 11 · 11f)
 
 Developer-facing. Nothing here is a screen; it is what CI refuses to merge.

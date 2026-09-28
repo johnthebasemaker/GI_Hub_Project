@@ -26795,6 +26795,162 @@ async def test_phase14d_announcements():
         await _cleanup()
 
 
+async def test_phase15a_practice_schema():
+    """Suite 15A — Practice cannot run migrations-behind, and the master editor
+    cannot hide an item behind a mis-typed site.
+
+    Found 2026-09-27: both Practice databases six migrations behind (every
+    Phase 14 read 500'd while this suite, on its own current DB, stayed
+    green), and a Practice item saved as site `cncec` that no CNCEC store
+    keeper could see.
+    """
+    import subprocess as _sp
+
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from . import schema_head as SH
+
+    # ── the pure rule ────────────────────────────────────────────────────────
+    heads = SH.code_heads()
+    check("15a-01: the code has exactly one migration head, read from the "
+          "shipped scripts", len(heads) == 1, str(heads))
+    check("15a-02: a database at head has no problem (negative control)",
+          SH.schema_problem(list(heads), heads) is None, "")
+    behind = SH.schema_problem(["f6b83d1a27c9"], heads)
+    check("15a-03: a database behind head is named as such, both revisions "
+          "quoted", bool(behind) and "f6b83d1a27c9" in behind and heads[0] in behind,
+          str(behind))
+    check("15a-04: a database with no alembic_version at all is a problem, "
+          "never read as 'fine'", bool(SH.schema_problem(None, heads)), "")
+    check("15a-05: with no scripts shipped nothing is claimed either way",
+          SH.schema_problem(["x"], ()) is None, "")
+    async with SessionLocal() as s:
+        cur = await SH.check(s)
+    check("15a-06: this suite's own database is at head (the migrations match "
+          "the models — rule 15)", cur is None, str(cur))
+
+    # ── wired in: a Practice process behind head refuses to start ────────────
+    base, _db = testdb._split_url(testdb._sync(str(engine.url.render_as_string(hide_password=False))))
+    admin = base + "postgres"
+    tmp = "gihub_svctest_behind_training"
+    probe = ("import asyncio\n"
+             "from backend.api.main import app, lifespan\n"
+             "async def go():\n"
+             "    async with lifespan(app):\n"
+             "        print('BOOTED')\n"
+             "asyncio.run(go())\n")
+    env = {k: v for k, v in os.environ.items()
+           if k not in _cfg_forbidden() and k != "GI_INSTANCE"}
+    env.update(GI_DOTENV="0", GI_SCHEDULER="0", GI_INSTANCE="training",
+               DATABASE_URL=(base + tmp).replace("+psycopg2", "+asyncpg"))
+    try:
+        with testdb._connect(admin) as c:
+            c.execute(f'DROP DATABASE IF EXISTS "{tmp}" WITH (FORCE)')
+            c.execute(f'CREATE DATABASE "{tmp}"')
+        with testdb._connect(base + tmp) as c:
+            c.execute("CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)")
+            c.execute("INSERT INTO alembic_version VALUES ('f6b83d1a27c9')")
+        bad = _sp.run([sys.executable, "-c", probe], cwd=str(_ROOT_TR), env=env,
+                      capture_output=True, text=True, timeout=120)
+        check("15a-07: a Practice process on a database behind head exits "
+              "non-zero at startup and names the fix (practice_db.py migrate)",
+              bad.returncode != 0 and "Practice schema is behind" in bad.stderr
+              and "practice_db.py migrate" in bad.stderr and "BOOTED" not in bad.stdout,
+              f"exit {bad.returncode}: {bad.stderr[-300:]}")
+        with testdb._connect(base + tmp) as c:
+            c.execute("UPDATE alembic_version SET version_num = %s", (heads[0],))
+        good = _sp.run([sys.executable, "-c", probe], cwd=str(_ROOT_TR), env=env,
+                       capture_output=True, text=True, timeout=120)
+        check("15a-08: …negative control: stamped at head, the same process "
+              "gets past the check", "BOOTED" in good.stdout
+              and "schema is behind" not in good.stderr,
+              f"exit {good.returncode}: {good.stderr[-300:]}")
+    finally:
+        with testdb._connect(admin) as c:
+            c.execute(f'DROP DATABASE IF EXISTS "{tmp}" WITH (FORCE)')
+
+    # ── practice_db.py: migrate + verify know about heads ────────────────────
+    src = (_ROOT_TR / "tools" / "practice_db.py").read_text()
+    check("15a-09: practice_db.py has a `migrate` command that backs up and "
+          "upgrades the SEED before the sandbox",
+          '"migrate"' in src and "for db in (seed, sandbox)" in src
+          and "pg_dump" in src, "")
+    dev = (_ROOT_TR / "bin" / "dev.sh").read_text()
+    check("15a-10: bin/dev.sh migrates Practice before starting it, and never "
+          "migrates Live", 'practice_db.py" migrate' in dev
+          and not any("alembic" in ln and "upgrade" in ln and "${bold}" not in ln
+                      for ln in dev.splitlines()), "")
+
+    # ── the master editor snaps Site / Category onto known spellings ─────────
+    SITE, CAT = "SV15-SITE", "SV15 Consumables"
+    SAPS = ("SV15-SEED", "SV15-A", "SV15-B", "SV15-C", "SV15-D")
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            await s.execute(_t('DELETE FROM inventory WHERE "SAP_Code" = ANY(:p)'), {"p": list(SAPS)})
+            await s.commit()
+
+    await _cleanup()
+    try:
+        async with SessionLocal() as s:
+            await s.execute(_t('INSERT INTO inventory ("SAP_Code", "Site_ID", "Category") '
+                               'VALUES (:a, :s, :c)'), {"a": "SV15-SEED", "s": SITE, "c": CAT})
+            await s.commit()
+        H = {"Authorization": f"Bearer {_auth._make_token('admin', 'admin', '', _auth.ACCESS_TTL)}"}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            r = await ac.post("/admin/inventory", headers=H, json={
+                "SAP_Code": "SV15-A", "Site_ID": "sv15-site", "Category": "sv15 consumable"})
+            async with SessionLocal() as s:
+                row = (await s.execute(_t('SELECT "Site_ID", "Category" FROM inventory '
+                                          'WHERE "SAP_Code" = \'SV15-A\''))).first()
+            check("15a-11: `sv15-site` / `sv15 consumable` are stored as the known "
+                  "`SV15-SITE` / `SV15 Consumables` — the `cncec` bug",
+                  r.status_code == 201 and row is not None and tuple(row) == (SITE, CAT),
+                  f"{r.status_code} {r.text[:160]} row={row}")
+            r = await ac.post("/admin/inventory", headers=H, json={
+                "SAP_Code": "SV15-B", "Site_ID": "NOWHERE-15", "Category": CAT})
+            d = r.json().get("detail") if r.status_code == 422 else {}
+            check("15a-12: an unknown site is a 422 `unknown_site` naming the known "
+                  "sites — not silently stored",
+                  r.status_code == 422 and isinstance(d, dict) and d.get("code") == "unknown_site"
+                  and SITE in d.get("known", []), f"{r.status_code} {r.text[:200]}")
+            r = await ac.post("/admin/inventory", headers=H, json={
+                "SAP_Code": "SV15-B", "Site_ID": "NOWHERE-15", "Category": CAT,
+                "confirm_new": True})
+            check("15a-13: …and accepted once the admin confirms it is a new site "
+                  "(opening a site stays possible)", r.status_code == 201, r.text[:160])
+            r = await ac.post("/admin/inventory", headers=H, json={
+                "SAP_Code": "SV15-C", "Site_ID": SITE, "Category": "Brand New Cat 15"})
+            d = r.json().get("detail") if r.status_code == 422 else {}
+            check("15a-14: an unknown category is a 422 `unknown_category`",
+                  r.status_code == 422 and isinstance(d, dict)
+                  and d.get("code") == "unknown_category", f"{r.status_code} {r.text[:200]}")
+            r = await ac.post("/admin/inventory", headers=H, json={"SAP_Code": "SV15-D"})
+            check("15a-15: a new item with no site is refused (it would be "
+                  "invisible to every site-scoped user)",
+                  r.status_code == 422 and "site_required" in r.text, f"{r.status_code} {r.text[:160]}")
+            r = await ac.patch("/admin/inventory/SV15-B", headers=H, json={"Site_ID": "sv15-SITE"})
+            async with SessionLocal() as s:
+                site_b = (await s.execute(_t('SELECT "Site_ID" FROM inventory '
+                                             'WHERE "SAP_Code" = \'SV15-B\''))).scalar()
+            check("15a-16: an EDIT snaps the site too", r.status_code == 200 and site_b == SITE,
+                  f"{r.status_code} {site_b}")
+            r = await ac.post("/admin/inventory", headers=H, json={"SAP_Code": "SV15-SEED",
+                                                                   "Site_ID": SITE})
+            check("15a-17: a duplicate SAP is still a 409 (negative control — the "
+                  "SAP rule is untouched; the row was seeded behind the Bloom "
+                  "filter's back, so this also proves the primary key still decides)",
+                  r.status_code == 409, f"{r.status_code} {r.text[:120]}")
+    finally:
+        await _cleanup()
+
+
+def _cfg_forbidden():
+    from . import config as _cfg
+    return _cfg.PRACTICE_FORBIDDEN_ENV
+
+
 async def test_stock_vs_excel():
     """Suite SX — GI Hub's stock vs the Excel workbook's Current Stock: WHICH
     materials differ and WHY, in causes a person can act on, adding up to the
@@ -27254,6 +27410,9 @@ async def main() -> int:
     await test_phase14d_announcements()
     print("\n SX. Stock vs the Excel workbook — which materials differ, and why")
     await test_stock_vs_excel()
+    print("\n 15A. Phase 15a — Practice cannot run migrations-behind; the master "
+          "editor snaps Site / Category onto the spellings already in use")
+    await test_phase15a_practice_schema()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

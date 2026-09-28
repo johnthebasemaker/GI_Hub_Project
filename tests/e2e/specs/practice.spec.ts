@@ -20,7 +20,7 @@ import { expect, request, test } from '@playwright/test'
 import { tokenFor } from '../harness/api'
 import {
   API_URL, E2E_DB, E2E_PASSWORD, PG_HOST, PG_PORT, PG_USER, PRACTICE_API_URL,
-  PRACTICE_DB, PRACTICE_PASSWORD, USERS, apiHeaders,
+  PRACTICE_ADMIN_PASSWORD, PRACTICE_DB, PRACTICE_PASSWORD, USERS, apiHeaders,
 } from '../harness/env'
 
 function sql(db: string, q: string): string {
@@ -164,3 +164,44 @@ test('V4: an entry queued offline in Practice is never replayed into Live', asyn
   expect(Number(sql(E2E_DB,
     `SELECT count(*) FROM pending_receipts WHERE "Supplier" = '${marker}'`))).toBe(0)
 })
+
+test('15a: an item the Practice admin adds reaches the store keeper and the HOD — and never Live',
+  async ({ page }) => {
+    // Found 2026-09-27: both Practice databases were six migrations behind, so
+    // /inventory 500'd and a new item looked "not saved"; and a site typed as
+    // `cncec` hid it from every CNCEC store keeper even once the list loaded.
+    const sap = `P15A${Date.now() % 1_000_000}`
+    const p = await request.newContext({ baseURL: PRACTICE_API_URL, extraHTTPHeaders: apiHeaders('63') })
+    const login = async (u: string, pw: string) => (await (await p.post('/auth/login',
+      { data: { username: u, password: pw } })).json()).access_token as string
+    const H = (t: string) => ({ Authorization: `Bearer ${t}`, 'X-GI-Instance': 'training' })
+    const admin = await login('practice.admin', PRACTICE_ADMIN_PASSWORD)
+    const made = await p.post('/admin/inventory', {
+      headers: H(admin),
+      data: { SAP_Code: sap, Equipment_Description: 'Phase 15a practice item', UOM: 'Each',
+              Site_ID: 'cncec', Category: 'safety' },
+    })
+    expect(made.status(), await made.text()).toBe(201)
+    expect(sql(PRACTICE_DB, `SELECT "Site_ID" || '|' || "Category" FROM inventory WHERE "SAP_Code" = '${sap}'`))
+      .toBe('CNCEC|Safety')
+    expect(Number(sql(E2E_DB, `SELECT count(*) FROM inventory WHERE "SAP_Code" = '${sap}'`))).toBe(0)
+
+    // Every read that 500'd on the stale schema answers for the roles that use it.
+    const hod = await login('practice.hod', PRACTICE_PASSWORD)
+    for (const path of ['/inventory?limit=5', '/meta/unit-sizes', '/announcements/whats-new',
+      '/execution/sme-link/groups/staged', '/sme/actuals/reconciliation', '/stock/excel-check']) {
+      expect((await p.get(path, { headers: H(hod) })).status(), path).toBe(200)
+    }
+    expect((await p.get('/health')).status()).toBe(200)
+    expect(((await (await p.get('/health')).json()) as { schema?: string }).schema).toBe('ok')
+    await p.dispose()
+
+    // …and the store keeper can pick it on the Issue form.
+    await page.goto('/')
+    await choose(page, 'Practice')
+    await signIn(page, 'practice.storekeeper', PRACTICE_PASSWORD)
+    await page.goto('/entry/issue')
+    await page.locator('.ant-select').filter({ hasText: 'Search material' }).first().click()
+    await page.keyboard.type(sap)
+    await expect(page.locator('.ant-select-item-option').filter({ hasText: sap }).first()).toBeVisible()
+  })

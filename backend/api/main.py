@@ -147,6 +147,25 @@ async def lifespan(app: FastAPI):
     # Report scheduler daemon — one asyncio task per worker; duplicate runs are
     # prevented by the atomic last_run claim in run_due_schedules(). Disable
     # with GI_SCHEDULER=0 (tests/CI import the app without running lifespan).
+    # Phase 15a: the schema must be at the code's migration head. A Practice
+    # process refuses to start when it is not (its sandbox is disposable and a
+    # stale one only ever 500s); Live only warns — migrating the operator's
+    # data is a person's decision. An unreachable database is /health's
+    # business, not a boot refusal (see db.py).
+    from . import schema_head as _sh
+    from .config import is_practice as _is_practice
+    try:
+        from .db import SessionLocal as _SL
+        async with _SL() as _s:
+            _problem = await _sh.check(_s)
+    except Exception as e:
+        _problem = None
+        print(f"[schema] head check skipped: {type(e).__name__}: {e}")
+    if _problem and _is_practice():
+        raise RuntimeError(f"refusing to start — Practice schema is behind: {_problem}. "
+                           f"Fix: {_sh.FIX_PRACTICE}")
+    if _problem:
+        print(f"[schema] ⚠️  {_problem}. Fix: {_sh.FIX_LIVE}")
     task = None
     digest_task = None
     weekly_task = None
@@ -488,14 +507,17 @@ async def health(session: AsyncSession = Depends(get_session)):
     the Cloudflare Access bypass for /api/* lands this endpoint is
     internet-reachable (audit A02-F11). Diagnostics moved to /health/detail."""
     await session.execute(text("SELECT 1"))
+    from . import schema_head
     from .auth import maintenance_on
-    return {"status": "ok", "maintenance": await maintenance_on(session)}
+    return {"status": "ok", "maintenance": await maintenance_on(session),
+            "schema": "behind" if await schema_head.check(session) else "ok"}
 
 
 @app.get("/health/detail", tags=["meta"], summary="Deployment diagnostics (admin)",
          dependencies=[Depends(require_level(4))])
 async def health_detail(session: AsyncSession = Depends(get_session)):
     await session.execute(text("SELECT 1"))
+    from . import schema_head
     from .ai.analytics import ro_wall_status
     from .auth import maintenance_on
     return {
@@ -505,6 +527,9 @@ async def health_detail(session: AsyncSession = Depends(get_session)):
         "maintenance": await maintenance_on(session),
         "entities": [e["name"] for e in ENTITIES],
         "ai_readonly_wall": await ro_wall_status(),
+        "schema": {"code_heads": list(schema_head.code_heads()),
+                   "database": await schema_head.db_revisions(session),
+                   "problem": await schema_head.check(session)},
     }
 
 

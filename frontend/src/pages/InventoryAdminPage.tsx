@@ -1,25 +1,41 @@
 import { useState } from 'react'
 import {
-  App, Button, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Typography,
+  App, AutoComplete, Button, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Typography,
 } from 'antd'
 import { Table } from '../lib/smartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import {
-  useCreateInventory, useDeleteInventory, useList, useSites, useUpdateInventory,
+  useCategories, useCreateInventory, useDeleteInventory, useList, useSites, useUpdateInventory,
 } from '../api/hooks'
 import type { Row } from '../api/client'
 
+type Detail = string | { code?: string; message?: string; value?: string }
+
+function detailOf(e: unknown): Detail | undefined {
+  return (e as { response?: { data?: { detail?: Detail } } })?.response?.data?.detail
+}
+
 function errMsg(e: unknown): string {
-  const x = e as { response?: { data?: { detail?: string } }; message?: string }
-  return x?.response?.data?.detail ?? x?.message ?? 'Action failed'
+  const d = detailOf(e)
+  if (d && typeof d === 'object') return d.message ?? 'Action failed'
+  return d ?? (e as { message?: string })?.message ?? 'Action failed'
+}
+
+/** Phase 15a: the server snaps a Site / Category onto the spelling already in
+ * use and refuses a NEW one until the admin says so — `cncec` typed into a
+ * free-text box once hid an item from every CNCEC store keeper. */
+function unknownValue(e: unknown): { code: string; value?: string } | null {
+  const d = detailOf(e)
+  return d && typeof d === 'object' && (d.code === 'unknown_site' || d.code === 'unknown_category')
+    ? { code: d.code, value: d.value } : null
 }
 
 const PAGE = 20
 type Mode = 'create' | 'edit' | null
 
 export default function InventoryAdminPage() {
-  const { message } = App.useApp()
+  const { message, modal } = App.useApp()
   const [form] = Form.useForm()
   const [mode, setMode] = useState<Mode>(null)
   const [target, setTarget] = useState<Row | null>(null)
@@ -27,6 +43,7 @@ export default function InventoryAdminPage() {
   const [page, setPage] = useState(1)
 
   const { data: sites } = useSites()
+  const { data: categories } = useCategories()
   const { data, isFetching } = useList('/inventory', {
     limit: PAGE, offset: (page - 1) * PAGE, site_id: site,
   })
@@ -46,21 +63,35 @@ export default function InventoryAdminPage() {
   }
   const close = () => { setMode(null); setTarget(null); form.resetFields() }
 
+  const save = async (confirmNew: boolean) => {
+    const v = await form.validateFields()
+    if (mode === 'create') {
+      await create.mutateAsync({ ...v, confirm_new: confirmNew })
+      message.success(`Item ${v.SAP_Code} created`)
+    } else if (mode === 'edit' && target) {
+      const { SAP_Code: _omit, ...body } = v
+      await update.mutateAsync({ sap: String(target.SAP_Code), body: { ...body, confirm_new: confirmNew } })
+      message.success(`Item ${target.SAP_Code} updated`)
+    }
+    close()
+  }
+
   const onOk = async () => {
     try {
-      const v = await form.validateFields()
-      if (mode === 'create') {
-        await create.mutateAsync(v)
-        message.success(`Item ${v.SAP_Code} created`)
-      } else if (mode === 'edit' && target) {
-        const { SAP_Code: _omit, ...body } = v
-        await update.mutateAsync({ sap: String(target.SAP_Code), body })
-        message.success(`Item ${target.SAP_Code} updated`)
-      }
-      close()
+      await save(false)
     } catch (e) {
       if ((e as { errorFields?: unknown }).errorFields) return
-      message.error(errMsg(e))
+      const unk = unknownValue(e)
+      if (!unk) { message.error(errMsg(e)); return }
+      const what = unk.code === 'unknown_site' ? 'site' : 'category'
+      modal.confirm({
+        title: `Create a new ${what} “${unk.value ?? ''}”?`,
+        content: `No item uses this ${what} yet. If you meant an existing one, press Cancel and pick it from the list.`,
+        okText: `Yes, new ${what}`,
+        onOk: async () => {
+          try { await save(true) } catch (e2) { message.error(errMsg(e2)) }
+        },
+      })
     }
   }
 
@@ -129,7 +160,11 @@ export default function InventoryAdminPage() {
           </Form.Item>
           <Space style={{ display: 'flex' }} align="start">
             <Form.Item name="Material_Code" label="Material Code"><Input /></Form.Item>
-            <Form.Item name="Category" label="Category"><Input placeholder="e.g. Consumables" /></Form.Item>
+            <Form.Item name="Category" label="Category">
+              <AutoComplete placeholder="e.g. Consumables" style={{ width: 170 }} aria-label="Category"
+                options={(categories ?? []).map((c) => ({ value: c }))}
+                filterOption={(i, o) => String(o?.value ?? '').toLowerCase().includes(i.toLowerCase())} />
+            </Form.Item>
             <Form.Item name="UOM" label="UoM"><Input placeholder="Each" /></Form.Item>
           </Space>
           <Space style={{ display: 'flex' }} align="start">
@@ -138,7 +173,11 @@ export default function InventoryAdminPage() {
             <Form.Item name="Opening_Stock" label="Opening Stock"><InputNumber min={0} style={{ width: 130 }} /></Form.Item>
           </Space>
           <Space style={{ display: 'flex' }} align="start">
-            <Form.Item name="Site_ID" label="Site"><Input placeholder="HQ" /></Form.Item>
+            <Form.Item name="Site_ID" label="Site" rules={[{ required: mode === 'create', message: 'Pick the site' }]}>
+              <AutoComplete placeholder="Site" style={{ width: 170 }} aria-label="Site"
+                options={(sites ?? []).map((s) => ({ value: s }))}
+                filterOption={(i, o) => String(o?.value ?? '').toLowerCase().includes(i.toLowerCase())} />
+            </Form.Item>
             <Form.Item name="Expiry_Date" label="Expiry Date"><Input placeholder="YYYY-MM-DD" /></Form.Item>
           </Space>
         </Form>
