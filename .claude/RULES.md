@@ -81,6 +81,11 @@ SQLAlchemy Core insert/update — suite BZ-12a pins all four forms.
   path no server wall can see (vector V4).
 * The Practice DB role has **no CONNECT on `gihub`**; a reload wipes the
   revoke, so re-run `tools/practice_db.py wall`. `verify` proves it.
+* **A migration is applied to BOTH instances.** Locally that is
+  `tools/practice_db.py migrate` (seed, then sandbox; `bin/dev.sh` runs it).
+  A Practice API behind head refuses to boot (`schema_head.py`, suite 15A);
+  on 2026-09-27 it had silently been six migrations behind, 500ing while
+  service_tests stayed green.
 * Practice-only data goes in `tools/practice_overlay.py`, **never** in
   `make_tutorial_db.py` (P12-5 pins that one).
 * **If you add a `SessionLocal()` call, a background loop, or an outbound

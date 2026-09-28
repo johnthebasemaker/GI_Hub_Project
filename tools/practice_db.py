@@ -6,6 +6,7 @@ tools/practice_db.py — build, reset and verify the Practice sandbox (rule 17).
     .venv/bin/python tools/practice_db.py build     # seed := synthetic fixture + overlay; then reset
     .venv/bin/python tools/practice_db.py reset     # sandbox := clone(seed)   (~1 s)
     .venv/bin/python tools/practice_db.py verify    # prove the walls hold; exit 1 if not
+    .venv/bin/python tools/practice_db.py migrate   # seed + sandbox → alembic head, trainee data kept
 
 Connection settings (defaults are the local :5433 trust-auth mirror):
 
@@ -21,9 +22,14 @@ THE THREE DATABASES
 
   gihub                 Live. `gi_training` has NO CONNECT on it — the wall.
   gihub_seed_training   the template. Synthetic fixture + overlay. Owned by
-                        gi_training. Rebuilt from scratch by `build`, which is
-                        why Practice never runs migrations-behind the way the
-                        local mirror does: `cutover_migrate` builds at head.
+                        gi_training. Rebuilt from scratch by `build`, which
+                        `cutover_migrate` builds at head — but only on the day
+                        of the build. ⚠️ A later migration leaves BOTH Practice
+                        databases behind until `migrate` (or a rebuild) runs:
+                        on 2026-09-27 they were six migrations behind and every
+                        Phase 14 read 500'd. `deploy-v2.sh` rebuilds on every
+                        deploy; on a dev box `bin/dev.sh` runs `migrate`, and
+                        the Practice API refuses to start behind head.
   gihub_training        the sandbox the Practice API serves. `reset` drops it
                         and clones the seed — the same thing the Practice
                         admin's button does (practice.clone_from_seed).
@@ -161,8 +167,9 @@ def cmd_wall() -> int:
 
 
 # ── build ───────────────────────────────────────────────────────────────────
-def _run(argv: list[str], env: dict | None = None, label: str = "") -> None:
-    proc = subprocess.run(argv, cwd=str(_ROOT), env=env, capture_output=True, text=True)
+def _run(argv: list[str], env: dict | None = None, label: str = "",
+         cwd: pathlib.Path | None = None) -> None:
+    proc = subprocess.run(argv, cwd=str(cwd or _ROOT), env=env, capture_output=True, text=True)
     if proc.returncode != 0:
         sys.stdout.write(proc.stdout[-3000:])
         sys.stderr.write(proc.stderr[-3000:])
@@ -241,6 +248,69 @@ def cmd_reset() -> int:
     return 0
 
 
+# ── migrate ─────────────────────────────────────────────────────────────────
+def revisions(url: str) -> list[str] | None:
+    """alembic_version rows of the database `url` names, None if unstamped."""
+    with connect(url) as cur:
+        cur.execute("SELECT to_regclass('public.alembic_version') IS NOT NULL")
+        if not cur.fetchone()[0]:
+            return None
+        cur.execute("SELECT version_num FROM alembic_version")
+        return sorted(r[0] for r in cur.fetchall())
+
+
+def cmd_migrate() -> int:
+    """`alembic upgrade head` on the SEED, then the SANDBOX — as the Practice
+    role, keeping every trainee row (Phase 15a).
+
+    The seed goes first and is not optional: a sandbox migrated alone is fixed
+    until the next Reset Practice clones the stale template back over it. Each
+    database behind head is dumped to `.backups/` before it is touched; one
+    already at head is left alone, so this is safe to run on every start.
+    """
+    from backend.api.schema_head import code_heads, schema_problem
+    sandbox, seed = names()
+    heads = code_heads()
+    py = sys.executable
+    alembic = str(pathlib.Path(py).with_name("alembic"))
+    backups = _ROOT / ".backups"
+    for db in (seed, sandbox):
+        url = with_db(practice_url(), db)
+        try:
+            have = revisions(url)
+        except Exception as e:  # noqa: BLE001 — say which database, then stop
+            print(f"❌ {db}: cannot connect as {PRACTICE_ROLE} — {str(e).strip()[:160]}")
+            return 1
+        problem = schema_problem(have, heads)
+        if problem is None:
+            print(f"✅ {db}: at head {', '.join(heads)}")
+            continue
+        if have is None:
+            print(f"❌ {db}: {problem} — rebuild it with `practice_db.py build`")
+            return 1
+        backups.mkdir(exist_ok=True)
+        stamp = _dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        dump = backups / f"{db}_{stamp}_before_migrate.sql"
+        with open(dump, "w") as fh:
+            proc = subprocess.run(["pg_dump", "--no-owner", _plain(url)], stdout=fh,
+                                  stderr=subprocess.PIPE, text=True)
+        if proc.returncode != 0:
+            print(f"❌ {db}: backup failed, NOT migrating — {proc.stderr.strip()[:200]}")
+            return 1
+        print(f"▶ {db}: {problem} — backup {dump.relative_to(_ROOT)}")
+        env = dict(os.environ, GI_DOTENV="0",
+                   DATABASE_URL=url.replace("postgresql://", "postgresql+psycopg2://", 1))
+        _run([alembic, "upgrade", "head"] if pathlib.Path(alembic).exists()
+             else [py, "-m", "alembic", "upgrade", "head"],
+             env=env, label=f"alembic upgrade ({db})", cwd=_ROOT / "backend")
+        after = schema_problem(revisions(url), heads)
+        if after:
+            print(f"❌ {db}: still not at head after upgrade — {after}")
+            return 1
+        print(f"✅ {db}: migrated to {', '.join(heads)}")
+    return 0
+
+
 # ── verify ──────────────────────────────────────────────────────────────────
 def cmd_verify() -> int:
     import psycopg2
@@ -294,6 +364,15 @@ def cmd_verify() -> int:
     except psycopg2.OperationalError as e:
         ok("the Practice URL opens the sandbox", False, str(e).strip()[:160])
 
+    from backend.api.schema_head import code_heads, schema_problem
+    for db in (seed, sandbox):
+        try:
+            problem = schema_problem(revisions(with_db(practice_url(), db)), code_heads())
+        except Exception as e:  # noqa: BLE001
+            problem = f"cannot read its revision — {str(e).strip()[:120]}"
+        ok(f"{db} is at the code's migration head", problem is None,
+           f"{problem} — run `practice_db.py migrate`")
+
     with connect(admin_url()) as cur:
         cur.execute("SELECT datname, pg_get_userbyid(datdba) FROM pg_database "
                     "WHERE datname IN (%s, %s)", (sandbox, seed))
@@ -307,7 +386,7 @@ def cmd_verify() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
-    ap.add_argument("command", choices=("wall", "build", "reset", "verify"))
+    ap.add_argument("command", choices=("wall", "build", "reset", "verify", "migrate"))
     ap.add_argument("--today", default=None,
                     help="anchor for the synthetic dates (default: today). The "
                          "tutorial RENDERS keep their pinned anchor; only the "
@@ -320,6 +399,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_build(today)
     if a.command == "reset":
         return cmd_reset()
+    if a.command == "migrate":
+        return cmd_migrate()
     return cmd_verify()
 
 

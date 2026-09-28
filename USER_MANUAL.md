@@ -322,6 +322,14 @@ Everything, including every other role's workspace as a support shadow, plus
 the Admin Portal: users, access requests, overdue actions, inventory master,
 the audit log and the console.
 
+**Adding an inventory item (Admin → Inventory Master → New item).** Pick the
+**Site** and the **Category** from the suggestions. The server matches them to
+the spelling already in use, ignoring capitals and a plural *s*, so `cncec` is
+saved as `CNCEC` and `consumable` as `Consumables`. This matters because a store
+keeper only sees items whose site matches theirs exactly. If you type a site or
+category that no item uses yet, GI Hub asks **"Create a new site…?"** first.
+Press Cancel if you meant an existing one. A new item must have a site.
+
 ## 2.4 Site scope by role
 
 | Role | What they see |
@@ -4565,6 +4573,20 @@ and defaults to the one on the trainees' card.
 the "no access" rule. Run `tools/practice_db.py wall` again afterwards. `verify`
 tells you if it is missing. This is the same routine as the AI read-only
 account.
+
+⚠️ **Both Practice databases must be migrated too.** When the code gains a
+database change, the Practice databases need it as well, or every screen that
+reads the new column fails with *500 Internal Server Error*. This happened on
+2026-09-27. `./bin/dev.sh` now runs this before starting Practice:
+
+```bash
+.venv/bin/python tools/practice_db.py migrate   # seed first, then the sandbox; backup taken; trainee data kept
+```
+
+A Practice server whose database is out of date **refuses to start** and prints
+that command. A Live server only warns, and `dev.sh` shows the warning, because
+migrating Live's data is your decision. `/health` reports `"schema": "ok"` or
+`"behind"`, and `verify` checks both Practice databases.
 
 **On the production server**, set `PRACTICE_JWT_SECRET` (it must be different
 from `JWT_SECRET`), `PRACTICE_DB_PASSWORD`, `PRACTICE_PASSWORD` and

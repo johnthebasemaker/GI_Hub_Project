@@ -140,6 +140,11 @@ start_api() {
   local pid; pid="$(start_bg api "$ROOT/run_api.sh")"
   wait_for 60 "API" http_ok "http://127.0.0.1:$API_PORT/health" || true
   ok "API      pid $pid   http://127.0.0.1:$API_PORT/docs"
+  # Phase 15a: Live is never migrated by a script — only told about.
+  if curl -fsS --max-time 3 "http://127.0.0.1:$API_PORT/health" 2>/dev/null | grep -q '"schema":"behind"'; then
+    warn "Live DB is BEHIND the code's migrations — reads of new columns will 500.
+   ${bold}cd backend && ../.venv/bin/alembic upgrade head${off}   (take a backup first)"
+  fi
 }
 
 # Rule 17: the Practice API. Started only when its sandbox exists — a missing
@@ -150,6 +155,13 @@ start_practice() {
   if ! psql -h "$PG_HOST" -p "$PG_PORT" -U gi_training -d gihub_training -tAc 'SELECT 1' >/dev/null 2>&1; then
     warn "Practice  not started — no sandbox yet. Build it once:
    ${bold}.venv/bin/python tools/practice_db.py wall && .venv/bin/python tools/practice_db.py build${off}"
+    return 0
+  fi
+  # Phase 15a: bring seed + sandbox to the code's migration head first (backup
+  # taken, trainee data kept; a no-op when already there). The Practice API
+  # refuses to boot behind head, so skipping this only moves the failure.
+  if ! "$ROOT/.venv/bin/python" "$ROOT/tools/practice_db.py" migrate; then
+    warn "Practice  not started — its databases could not be migrated (see above)."
     return 0
   fi
   local pid; pid="$(start_bg practice "$ROOT/bin/practice_api.sh")"

@@ -115,6 +115,9 @@ class InventoryCreateIn(BaseModel):
     Expiry_Date: Optional[str] = None
     Unit_Cost: Optional[float] = None
     Opening_Stock: Optional[float] = None
+    # Phase 15a: True = "yes, this Site / Category is NEW" — sent only after the
+    # form asked the admin, following a 422 `unknown_site` / `unknown_category`.
+    confirm_new: bool = False
 
 
 class InventoryUpdateIn(BaseModel):
@@ -128,6 +131,7 @@ class InventoryUpdateIn(BaseModel):
     Expiry_Date: Optional[str] = None
     Unit_Cost: Optional[float] = None
     Opening_Stock: Optional[float] = None
+    confirm_new: bool = False
 
 
 class ApprovePendingIn(BaseModel):
@@ -375,6 +379,77 @@ async def _sap_exists(session: AsyncSession, sap: str) -> bool:
             .where(func.trim(inventory_t.c["SAP_Code"]) == sap))).scalar_one() > 0
 
 
+def _fold(v: str) -> str:
+    """Case- and plural-blind comparison key: 'consumable' ~ 'Consumables'."""
+    k = " ".join(str(v).split()).lower()
+    return k[:-1] if k.endswith("s") else k
+
+
+async def _known_sites(session: AsyncSession) -> list[str]:
+    users_t = _MD.tables["users"]
+    equip_t = _MD.tables["sme_equipment"]
+    known: set[str] = set()
+    for col in (inventory_t.c["Site_ID"], users_t.c["Site_ID"], equip_t.c["Site_ID"]):
+        known |= {str(v).strip() for (v,) in (await session.execute(
+            select(col).distinct().where(col.is_not(None)))).all() if str(v).strip()}
+    return sorted(known)
+
+
+async def _canonical_site_category(session: AsyncSession, values: dict, *,
+                                   confirm_new: bool) -> None:
+    """Snap `Site_ID` and `Category` onto the spelling the system already uses.
+
+    Phase 15a. The master editor took both as free text and stored whatever
+    arrived: a Practice item saved as site `cncec` / category `consumable` was
+    invisible to the CNCEC store keeper (site scope compares `Site_ID`
+    EXACTLY) and matched no category filter. So:
+
+      · a case- or plural-variant of a known value is rewritten to it;
+      · the sync's own `CATEGORY_CANON` applies (`Surface Shield` → …);
+      · a genuinely NEW value is a 422 naming the known ones, unless the
+        admin confirmed it (`confirm_new`) — opening a site is legitimate,
+        typing one by accident is the bug.
+    """
+    from .bulk_import import CATEGORY_CANON
+    if "Site_ID" in values:
+        raw = " ".join(str(values["Site_ID"]).split())
+        if not raw:
+            values.pop("Site_ID")
+        else:
+            known = await _known_sites(session)
+            hit = next((k for k in known if k.lower() == raw.lower()), None)
+            if hit is not None:
+                values["Site_ID"] = hit
+            elif not confirm_new:
+                raise HTTPException(422, {
+                    "code": "unknown_site", "value": raw, "known": known,
+                    "message": f"Site {raw!r} does not exist yet (known: "
+                               f"{', '.join(known) or 'none'}). Pick one, or confirm "
+                               f"it is a new site."})
+            else:
+                values["Site_ID"] = raw
+    if "Category" in values:
+        raw = " ".join(str(values["Category"]).split())
+        if not raw:
+            values.pop("Category")
+        else:
+            raw = CATEGORY_CANON.get(raw.lower(), raw)
+            col = inventory_t.c["Category"]
+            known = sorted({str(v).strip() for (v,) in (await session.execute(
+                select(col).distinct().where(col.is_not(None)))).all() if str(v).strip()})
+            hit = next((k for k in known if k == raw), None) \
+                or next((k for k in known if _fold(k) == _fold(raw)), None)
+            if hit is not None:
+                values["Category"] = hit
+            elif not confirm_new:
+                raise HTTPException(422, {
+                    "code": "unknown_category", "value": raw, "known": known,
+                    "message": f"Category {raw!r} does not exist yet. Pick an existing "
+                               f"one, or confirm it is a new category."})
+            else:
+                values["Category"] = raw
+
+
 async def _sap_movements(session: AsyncSession, sap: str) -> int:
     total = 0
     for t in _SAP_REFS:
@@ -390,12 +465,19 @@ async def create_inventory(body: InventoryCreateIn,
     sap = (body.SAP_Code or "").strip()
     if not sap:
         raise HTTPException(422, "SAP_Code is required")
-    values = {k: v for k, v in body.model_dump().items() if v is not None}
+    values = {k: v for k, v in body.model_dump(exclude={"confirm_new"}).items()
+              if v is not None}
     values["SAP_Code"] = sap
     try:
         async with session.begin():
             if await _sap_exists(session, sap):
                 raise HTTPException(409, f"SAP_Code {sap!r} already exists")
+            if not str(values.get("Site_ID") or "").strip():
+                raise HTTPException(422, {
+                    "code": "site_required",
+                    "message": "Site is required — an item with no site is invisible "
+                               "to every site-scoped user (store keeper, supervisor)."})
+            await _canonical_site_category(session, values, confirm_new=body.confirm_new)
             await session.execute(insert(inventory_t).values(**values))
             await write_audit(session, actor["username"], "CREATE_INVENTORY", "inventory",
                               f"SAP={sap} opening={values.get('Opening_Stock', 0)}")
@@ -414,12 +496,16 @@ async def create_inventory(body: InventoryCreateIn,
 async def update_inventory(sap_code: str, body: InventoryUpdateIn,
                            actor: dict = Depends(require_level(4)),
                            session: AsyncSession = Depends(get_session)):
-    values = {k: v for k, v in body.model_dump().items() if v is not None}
+    values = {k: v for k, v in body.model_dump(exclude={"confirm_new"}).items()
+              if v is not None}
     if not values:
         raise HTTPException(422, "no fields to update")
     sap = sap_code.strip()
     try:
         async with session.begin():
+            await _canonical_site_category(session, values, confirm_new=body.confirm_new)
+            if not values:
+                raise HTTPException(422, "no fields to update")
             cur = (await session.execute(select(inventory_t.c["Opening_Stock"])
                    .where(func.trim(inventory_t.c["SAP_Code"]) == sap))).first()
             if cur is None:
