@@ -240,3 +240,19 @@ test('15a: an item the Practice admin adds reaches the store keeper and the HOD 
     await page.keyboard.type(sap)
     await expect(page.locator('.ant-select-item-option').filter({ hasText: sap }).first()).toBeVisible()
   })
+
+test('15d: Practice carries a Garnet job for the supervisor to answer Old / New on', async () => {
+  const p = await request.newContext({ baseURL: PRACTICE_API_URL, extraHTTPHeaders: apiHeaders('64') })
+  const tok = (await (await p.post('/auth/login',
+    { data: { username: 'practice.supervisor', password: PRACTICE_PASSWORD } })).json()).access_token as string
+  const q = await (await p.get('/execution/sme-link/groups',
+    { headers: { Authorization: `Bearer ${tok}`, 'X-GI-Instance': 'training' } })).json() as
+    { groups: { kind?: string; prep_code?: string | null; rows: { sap_code: string }[] }[] }
+  const garnet = q.groups.find((g) => g.kind === 'prep')
+  expect(garnet, 'the overlay staged one Garnet draw').toBeTruthy()
+  expect(garnet!.prep_code).toBe('ESC2')
+  expect(garnet!.rows.map((r) => r.sap_code)).toContain('899970')
+  // …and Live has no such material
+  expect(Number(sql(E2E_DB, `SELECT count(*) FROM inventory WHERE "SAP_Code" = '899970'`))).toBe(0)
+  await p.dispose()
+})

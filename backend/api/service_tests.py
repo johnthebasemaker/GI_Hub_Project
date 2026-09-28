@@ -26951,6 +26951,304 @@ def _cfg_forbidden():
     return _cfg.PRACTICE_FORBIDDEN_ENV
 
 
+async def test_phase15d_garnet():
+    """Suite 15D — Garnet is SURFACE PREP, benchmarked per surface (Old / New).
+
+    ESC1/ESC2 are the blasting codes; the 2026-09-27 workbooks put Garnet recipe
+    lines under them. Pinned here: those lines never turn blasting into a lining
+    system (planner, execution form, pickers); a Garnet job is its own card,
+    asked Old or New, measured in KG against the baseline table, snapshotted,
+    and credits NO area (Q15-6); the units rule reads a 1000 KG TON as KG.
+    """
+    from fastapi import HTTPException
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from .services import execution as X
+    from .services import planner as PL
+    from .services import prep as PR
+    from .services import quality as Q
+    from .services import sme_groups as G
+    from .services import units as U
+
+    SITE, TNK, FLR, AMB = "SV15D-SITE", "SV15D-TNK", "SV15D-FLR", "SV15D-AMB"
+    GAR, ARJ, PU, TONG = "SV15D-G", "SV15D-A", "SV15D-P", "SV15D-T1"
+    async with SessionLocal() as s:
+        CAT = await Q.controlled_category(s)
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            for q in ("DELETE FROM sme_consumption_revision WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_consumption_log WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_attribution_group WHERE \"Site_ID\" = :site",
+                      "DELETE FROM app_notifications WHERE recipient_site = :site",
+                      "DELETE FROM consumption WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_sqm_progress WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_surface_prep_progress WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_equipment WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_manpower_norm WHERE \"Activity\" LIKE 'SV15D %'",
+                      "DELETE FROM sme_recipe WHERE \"SAP_Code\" LIKE 'SV15D-%'",
+                      "DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SV15D-%'",
+                      "UPDATE sme_prep_baseline SET \"KG_Per_SQM\" = NULL, updated_by = NULL"):
+                await s.execute(_t(q), {"site": SITE})
+            await s.commit()
+
+    async def cons(day, sap, qty, tank):
+        async with SessionLocal() as s:
+            cid = (await s.execute(_t(
+                'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                '"Tank_No") VALUES (:d, :p, :q, :site, :t) RETURNING id'),
+                {"d": day, "p": sap, "q": qty, "site": SITE, "t": tank})).scalar_one()
+            await s.commit()
+        return cid
+
+    async def refused(coro) -> str:
+        try:
+            await coro
+        except HTTPException as e:
+            return f"{e.status_code} {e.detail}"
+        return "accepted"
+
+    def tok(user, role):
+        return {"Authorization": f"Bearer {_auth._make_token(user, role, SITE, _auth.ACCESS_TTL)}"}
+
+    await _cleanup()
+    try:
+        async with SessionLocal() as s:
+            for sap, desc, uom, us, base in (
+                    (GAR, "SV15D AUSTRALIAN GARNET 30/60", "TON", 1000, "KG"),
+                    (ARJ, "SV15D AREEJ GARNET 30/60", "TON", 1000, "KG"),
+                    (TONG, "SV15D OLD GARNET COUNTED AS TON", "TON", 1, "TON"),
+                    (PU, "SV15D PU COMP A", "Can", 10, "KG")):
+                await s.execute(_t(
+                    'INSERT INTO inventory ("SAP_Code", "Equipment_Description", "Category", '
+                    '"UOM", "Site_ID", "Unit_Size", "Base_UOM") VALUES (:p, :d, :c, :u, :site, '
+                    'CAST(:us AS double precision), :b)'),
+                    {"p": sap, "d": desc, "c": CAT, "u": uom, "site": SITE, "us": us, "b": base})
+            for code, sap, rate in (("ESC2", GAR, 20), ("ESC1", GAR, 18), ("SV15D-LS", PU, 1.0)):
+                await s.execute(_t(
+                    'INSERT INTO sme_recipe ("Lining_System_Code", "Execution_Sub_Activity_Code", '
+                    '"Material_Code", "SAP_Code", "Material_Name", "UOM", "For_1_SQM", '
+                    '"Lining_System_Name") VALUES (:c, :c, :m, :p, :p, \'KG\', :r, :c)'),
+                    {"c": code, "m": "M-" + sap, "p": sap, "r": rate})
+            for tag, typ, sub, code in ((TNK, "ME", "TANK", "SV15D-LS"),
+                                        (FLR, "CV", "CONCRETE SUBSTRATE", "SV15D-LS"),
+                                        (AMB, None, None, "SV15D-LS")):
+                await s.execute(_t(
+                    'INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", "Name", "Type", '
+                    '"Substrate", "Lining_System_Code", "Surface_Area_SQM", "Equipment_Total_SQM") '
+                    "VALUES (:site, :t, :t, :ty, :su, :c, 500, 500)"),
+                    {"site": SITE, "t": tag, "ty": typ, "su": sub, "c": code})
+            await s.execute(_t(
+                'INSERT INTO sme_manpower_norm ("Type", "Lining_System_Code", '
+                '"Execution_Sub_Activity_Code", "Activity", "Variant_Key", "Crew_Size", '
+                '"Hours_Per_Shift", "Manhours_Per_Shift", "Standard_Productivity_Per_Shift", '
+                '"SQM_Per_Hour_Per_Person") VALUES (\'ME\', \'ESC2\', \'ESC2\', '
+                "'SV15D Blasting Steel Surface', '', 4, 10, 40, 60, 1.5)"))
+            await s.commit()
+
+        # ── prep codes are DATA, and every lining list subtracts them ────────
+        async with SessionLocal() as s:
+            codes = await PR.prep_codes(s)
+            gar = await PR.garnet_saps(s)
+            lining = await PL._lining_codes(s)
+            t_tnk = await PR.code_for_tag(s, site_id=SITE, tag=TNK)
+            t_flr = await PR.code_for_tag(s, site_id=SITE, tag=FLR)
+            t_amb = await PR.code_for_tag(s, site_id=SITE, tag=AMB)
+        check("15d-01: ESC1 and ESC2 are surface prep because the baseline table says "
+              "so (seeded by the migration's data step)", {"ESC1", "ESC2"} <= codes, str(codes))
+        check("15d-02: Garnet is found by its prep recipe line (1429-style) AND by name "
+              "in the Surface Shield category (AREEJ-style, ruling Q15-4); a lining "
+              "material is not Garnet", GAR in gar and ARJ in gar and PU not in gar, str(gar))
+        check("15d-03: the substrate decides the prep code (Q15-5): ME/TANK → ESC2, "
+              "CV/CONCRETE → ESC1, no Type/Substrate → none",
+              (t_tnk, t_flr, t_amb) == ("ESC2", "ESC1", None), str((t_tnk, t_flr, t_amb)))
+        check("15d-04: the planner's lining systems EXCLUDE ESC1/ESC2 even though Garnet "
+              "recipe lines now name them — blasting stays surface prep",
+              lining is not None and "SV15D-LS" in lining and not ({"ESC1", "ESC2"} & lining),
+              str(sorted(lining or [])[:12]))
+        H_ADM = tok("admin", "admin")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            acts = (await ac.get("/execution/activities", headers=H_ADM)).json().get("items", [])
+            mh = (await ac.get("/mh/meta", headers=H_ADM)).json()
+            ls = (await ac.get("/entry/lining-systems", headers=H_ADM)).json()
+        blast = [a for a in acts if a.get("Activity") == "SV15D Blasting Steel Surface"]
+        check("15d-05: the blasting norm is still manpower-only on the execution form "
+              "(no lining-system dropdown, its area on surface-prep progress)",
+              len(blast) == 1 and blast[0]["manpower_only"] is True, str(blast))
+        ls_prep = {x["code"]: x.get("prep") for x in ls.get("systems", [])}
+        check("15d-06: Garnet's codes are in no lining list (Man-Hours) — and on the "
+              "issue form's list they are FLAGGED prep (the store keeper issues Garnet "
+              "against ESC1/ESC2; the Smart Calculator hides them), the lining code not",
+              "SV15D-LS" in mh.get("system_codes", []) and not ({"ESC1", "ESC2"}
+              & set(mh.get("system_codes", []))) and ls_prep.get("SV15D-LS") is False
+              and ls_prep.get("ESC2") is True and ls_prep.get("ESC1") is True,
+              str({k: v for k, v in ls_prep.items() if k.startswith(("ESC", "SV15D"))}))
+        async with SessionLocal() as s:
+            from .services import sme_link as _SL
+            eq2 = [e["tag"] for e in await _SL.equipment_for_system(s, site_id=SITE, code="ESC2")]
+            eq1 = [e["tag"] for e in await _SL.equipment_for_system(s, site_id=SITE, code="ESC1")]
+        check("15d-06b: the tank picker for a Garnet code lists the equipment whose "
+              "substrate calls for it (ESC2 → the tank, ESC1 → the floor)",
+              eq2 == [TNK] and eq1 == [FLR], f"{eq2} {eq1}")
+
+        # ── the baseline page ───────────────────────────────────────────────
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            r = await ac.get("/sme/master/prep-baseline", headers=tok("hod1", "hod"))
+            items = {(i["code"], i["state"]): i for i in r.json().get("items", [])}
+        check("15d-07: until set, NEW falls back to the workbook's For_1_SQM (20 steel, "
+              "18 concrete — Q15-9) and OLD has no benchmark",
+              r.status_code == 200 and items[("ESC2", "NEW")]["kg_per_sqm"] == 20
+              and items[("ESC2", "NEW")]["source"] == "workbook"
+              and items[("ESC1", "NEW")]["kg_per_sqm"] == 18
+              and items[("ESC2", "OLD")]["kg_per_sqm"] is None, str(items))
+
+        # ── the queue: Garnet is its own card ───────────────────────────────
+        D1, D2 = "2026-09-20", "2026-09-21"
+        g1 = await cons(D1, GAR, 3, TNK)
+        p1 = await cons(D1, PU, 2, TNK)
+        async with SessionLocal() as s:
+            q = await G.queue(s, site_id=SITE)
+        mine = [j for j in q["groups"] if j["tag"] == TNK and j["work_date"] == D1]
+        prep = next((j for j in mine if j.get("kind") == "prep"), None)
+        lin = next((j for j in mine if j.get("kind") == "lining"), None)
+        check("15d-08: the day's Garnet on the tank is its OWN card (kind=prep, ESC2 from "
+              "the substrate, no surface answer yet); the PU draw stays on the lining card",
+              prep is not None and lin is not None
+              and [r["consumption_id"] for r in prep["rows"]] == [g1]
+              and [r["consumption_id"] for r in lin["rows"]] == [p1]
+              and prep["prep_code"] == "ESC2" and prep["surface_hint"] is None,
+              str([(j.get("kind"), [r["consumption_id"] for r in j["rows"]]) for j in mine]))
+
+        async def submit(ids, code, state, tag=TNK, day=D1, sqm=140.0):
+            async with SessionLocal() as s:
+                out = await G.submit(s, site_id=SITE, work_date=day, tag=tag, code=code,
+                                     sqm=sqm, consumption_ids=ids, notes=None,
+                                     username="sv15d-sup", surface_state=state)
+                await s.commit()
+                return out
+
+        r_state = await refused(submit([g1], "ESC2", None))
+        r_lining = await refused(submit([g1], "SV15D-LS", None))
+        r_sub = await refused(submit([g1], "ESC1", "NEW"))
+        r_pu = await refused(submit([p1], "ESC2", "NEW"))
+        check("15d-09: refused — Garnet without Old/New; Garnet under a LINING code; "
+              "ESC1 (concrete) on a tank; a lining material on a Garnet job",
+              r_state.startswith("422") and "OLD surface or a NEW surface" in r_state
+              and r_lining.startswith("422") and "Garnet" in r_lining
+              and r_sub.startswith("422") and "ESC2" in r_sub
+              and r_pu.startswith("422") and "not Garnet" in r_pu,
+              " | ".join((r_state, r_lining, r_sub, r_pu))[:400])
+
+        res = await submit([g1], "ESC2", "new")
+        async with SessionLocal() as s:
+            row = (await s.execute(_t(
+                'SELECT "Actual_Qty", "Pack_Qty", "Bench_For_1_SQM", "Expected_Qty", '
+                '"Variance_Pct", "Priority_Flag", "Surface_State" FROM sme_consumption_log '
+                'WHERE "Consumption_ID" = :c'), {"c": g1})).mappings().first()
+            grp = (await s.execute(_t('SELECT "Surface_State" FROM sme_attribution_group '
+                                      'WHERE id = :g'), {"g": res["group_id"]})).scalar()
+        check("15d-10: 3 TON × 1000 = 3000 KG against NEW 20 KG/m² × 140 m² = 2800 KG → "
+              "+7.14 %, inside ±10 % (Q15-8); the answer is kept on the job and the row",
+              row is not None and row["Actual_Qty"] == 3000 and row["Pack_Qty"] == 3
+              and row["Bench_For_1_SQM"] == 20 and row["Expected_Qty"] == 2800
+              and abs(row["Variance_Pct"] - 7.1429) < 1e-3 and row["Priority_Flag"] == "NORMAL"
+              and row["Surface_State"] == "NEW" and grp == "NEW", str(dict(row or {})))
+
+        async with SessionLocal() as s:
+            dec = await G.decide_group(s, group_id=int(res["group_id"]), approve=True,
+                                       edits=None, justification="", reject_reason="",
+                                       username="sv15d-hod", site_id=None)
+            await s.commit()
+            lining_rows = (await s.execute(_t(
+                'SELECT COUNT(*) FROM sme_sqm_progress WHERE "Site_ID" = :s'),
+                {"s": SITE})).scalar()
+            prep_rows = (await s.execute(_t(
+                'SELECT COUNT(*) FROM sme_surface_prep_progress WHERE "Site_ID" = :s'),
+                {"s": SITE})).scalar()
+            credited = (await s.execute(_t(
+                'SELECT "Done_SQM_Credited", status FROM sme_attribution_group WHERE id = :g'),
+                {"g": res["group_id"]})).first()
+        check("15d-11: approving a Garnet job credits NO area — no lining progress row, "
+              "no surface-prep row (blasting entries already record it; Q15-6)",
+              dec["status"] == "committed" and dec["Done_SQM_credited"] == 0
+              and lining_rows == 0 and prep_rows == 0 and tuple(credited) == (0.0, "committed"),
+              f"{dec.get('Done_SQM_credited')} lining={lining_rows} prep={prep_rows} {credited}")
+        async with SessionLocal() as s:
+            await X.credit_done_sqm(s, site_id=SITE, tag=TNK, code="ESC2", sqm=50)
+            await s.commit()
+            direct = (await s.execute(_t(
+                'SELECT COUNT(*) FROM sme_sqm_progress WHERE "Site_ID" = :s'), {"s": SITE})).scalar()
+        check("15d-12: …because the ONE writer refuses a prep code, whoever calls it",
+              direct == 0, str(direct))
+
+        # ── the next job: pre-filled from this equipment's last answer ───────
+        g2 = await cons(D2, GAR, 3, TNK)
+        async with SessionLocal() as s:
+            q2 = await G.queue(s, site_id=SITE)
+        nxt = next((j for j in q2["groups"] if j["tag"] == TNK and j["work_date"] == D2
+                    and j.get("kind") == "prep"), None)
+        check("15d-13: the next Garnet job on the tank is pre-filled with its last answer "
+              "(NEW) — still asked per job (Q15-7)",
+              nxt is not None and nxt["surface_hint"] == "NEW", str(nxt and nxt["surface_hint"]))
+
+        # ── set OLD, measure an OLD job; editing NEW never rewrites the past ─
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            r_sk = await ac.put("/sme/master/prep-baseline", headers=tok("sk1", "store_keeper"),
+                                json={"code": "ESC2", "state": "OLD", "kg_per_sqm": 28})
+            r_bad = await ac.put("/sme/master/prep-baseline", headers=tok("hod1", "hod"),
+                                 json={"code": "ESC2", "state": "OLD", "kg_per_sqm": -1})
+            r_ok = await ac.put("/sme/master/prep-baseline", headers=tok("hod1", "hod"),
+                                json={"code": "ESC2", "state": "OLD", "kg_per_sqm": 28})
+        async with SessionLocal() as s:
+            aud = (await s.execute(_t(
+                "SELECT details FROM system_audit_log WHERE action_type = 'SME_PREP_BASELINE' "
+                "ORDER BY id DESC LIMIT 1"))).scalar()
+        check("15d-14: the HOD sets OLD = 28 (audited, old → new); a store keeper cannot; "
+              "a negative figure is refused",
+              r_sk.status_code == 403 and r_bad.status_code == 422 and r_ok.status_code == 200
+              and r_ok.json().get("source") == "set" and aud and "ESC2 OLD" in aud
+              and "28" in aud, f"{r_sk.status_code} {r_bad.status_code} {r_ok.text[:120]} {aud}")
+        res2 = await submit([g2], "ESC2", "OLD", day=D2)
+        async with SessionLocal() as s:
+            r2 = (await s.execute(_t(
+                'SELECT "Bench_For_1_SQM", "Expected_Qty", "Variance_Pct", "Priority_Flag" '
+                'FROM sme_consumption_log WHERE "Consumption_ID" = :c'), {"c": g2})).mappings().first()
+        check("15d-15: an OLD job is measured against OLD: 3000 KG vs 28 × 140 = 3920 KG → "
+              "−23.47 %, outside ±10 % → HIGH for the HOD",
+              res2["joined"] == 1 and r2["Bench_For_1_SQM"] == 28 and r2["Expected_Qty"] == 3920
+              and abs(r2["Variance_Pct"] + 23.4694) < 1e-3 and r2["Priority_Flag"] == "HIGH",
+              str(dict(r2)))
+        async with SessionLocal() as s:
+            await PR.set_baseline(s, code="ESC2", state="NEW", kg_per_sqm=25, username="hod1")
+            await s.commit()
+            b1 = (await s.execute(_t('SELECT "Bench_For_1_SQM" FROM sme_consumption_log '
+                                     'WHERE "Consumption_ID" = :c'), {"c": g1})).scalar()
+        check("15d-16: changing NEW later does not rewrite the approved job — its "
+              "benchmark was snapshotted at 20", b1 == 20, str(b1))
+
+        # ── units: a TON of 1000 KG is KG; a TON counted as 1 is refused ─────
+        check("15d-17: the base of a mass pack with Unit Size ≠ 1 is KG (TON × 1000), "
+              "and a pack of Unit Size 1 is still its own base",
+              U.default_base_uom(pack_uom="TON", unit_size=1000, seed_uom=None) == "KG"
+              and U.default_base_uom(pack_uom="TON", unit_size=1, seed_uom=None) == "TON"
+              and U.base_uom(pack_uom="TON", stored=None, fac=1000.0) == "KG"
+              and U.base_uom(pack_uom="KG", stored=None, fac=1.0) == "KG", "")
+        async with SessionLocal() as s:
+            await s.execute(_t(
+                'INSERT INTO sme_recipe ("Lining_System_Code", "Execution_Sub_Activity_Code", '
+                '"Material_Code", "SAP_Code", "Material_Name", "UOM", "For_1_SQM") '
+                "VALUES ('ESC2', 'ESC2', :m, :p, :p, 'KG', 20)"), {"m": "M-" + TONG, "p": TONG})
+            await s.commit()
+        t1 = await cons(D2, TONG, 2, TNK)
+        r_ton = await refused(submit([t1], "ESC2", "NEW", day=D2))
+        check("15d-18: Garnet still counted in TON with Unit Size 1 is REFUSED with the "
+              "fix (Unit Size 1000), never compared as 2 KG",
+              r_ton.startswith("422") and "1000" in r_ton, r_ton[:200])
+    finally:
+        await _cleanup()
+
+
 async def test_stock_vs_excel():
     """Suite SX — GI Hub's stock vs the Excel workbook's Current Stock: WHICH
     materials differ and WHY, in causes a person can act on, adding up to the
@@ -27413,6 +27711,9 @@ async def main() -> int:
     print("\n 15A. Phase 15a — Practice cannot run migrations-behind; the master "
           "editor snaps Site / Category onto the spellings already in use")
     await test_phase15a_practice_schema()
+    print("\n 15D. Phase 15d — Garnet is surface prep: its own card, Old/New benchmark "
+          "in KG, snapshotted, no area credited, never a lining system")
+    await test_phase15d_garnet()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

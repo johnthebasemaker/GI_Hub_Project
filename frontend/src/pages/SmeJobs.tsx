@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Alert, App, Button, Card, Empty, Form, Input, InputNumber, Modal, Select,
+  Alert, App, Button, Card, Empty, Form, Input, InputNumber, Modal, Radio, Select,
   Space, Table, Tag, Tooltip, Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -45,6 +45,11 @@ interface Job {
   rows: Row[]; rejected: { consumption_id: number; reason: string; by?: string }[]
   edited: number; candidates: Candidate[]
   suggested_code: string | null; sqm_hint: number | null
+  // Phase 15d — a Garnet (surface-prep) card
+  kind?: 'lining' | 'prep'
+  prep_code?: string | null
+  prep_options?: { code: string; name: string }[]
+  surface_hint?: 'OLD' | 'NEW' | null
 }
 interface QueueResp {
   groups: Job[]; total_rows: number
@@ -195,6 +200,104 @@ function JobCard({ job }: { job: Job }) {
   )
 }
 
+/**
+ * Phase 15d — a GARNET job: surface preparation, not lining. Its own card, its
+ * own area (the m² blasted), a prep code chosen by the equipment's substrate
+ * (concrete → ESC1, steel / vessel → ESC2) and the one question the benchmark
+ * needs: was it an OLD surface or a NEW one? Pre-filled with this equipment's
+ * last answer (ruling Q15-7), never guessed when there is none. Approving it
+ * records the variance only — Garnet credits no lining progress.
+ */
+function PrepJobCard({ job }: { job: Job }) {
+  const { message } = App.useApp()
+  const qc = useQueryClient()
+  const [code, setCode] = useState<string | undefined>(job.prep_code ?? undefined)
+  const [state, setState] = useState<'OLD' | 'NEW' | undefined>(job.surface_hint ?? undefined)
+  const [sqm, setSqm] = useState<number | null>(job.sqm_hint)
+  const rejected = job.rejected.length > 0
+  const submit = useMutation({
+    mutationFn: async () => (await api.post('/execution/sme-link/groups', {
+      work_date: job.work_date, tag: job.tag, code, sqm, surface_state: state,
+      consumption_ids: job.rows.map((r) => Number(r.consumption_id)), site_id: job.site_id,
+    })).data,
+    onSuccess: () => {
+      message.success('Garnet job submitted — the HOD sees it against the ' +
+        `${state === 'OLD' ? 'old' : 'new'}-surface benchmark`)
+      void qc.invalidateQueries({ queryKey: ['/execution/sme-link/groups'] })
+      void qc.invalidateQueries({ queryKey: ['/execution/sme-link/groups/staged'] })
+    },
+    onError: (e) => message.error(errMsg(e)),
+  })
+  const cols: ColumnsType<Row> = [
+    { title: 'Material', key: 'm',
+      render: (_: unknown, r: Row) => (
+        <Space direction="vertical" size={0}>
+          <span>{s(r.material_name) || s(r.sap_code)}</span>
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>SAP {s(r.sap_code)}</Typography.Text>
+        </Space>) },
+    { title: 'Drawn', key: 'q', align: 'right', render: (_: unknown, r: Row) => <Drawn r={r} /> },
+  ]
+  return (
+    <Card size="small" className="gi-job-card gi-prep-card" data-job={job.key}
+      style={{ marginBottom: 10, borderColor: rejected ? '#ff4d4f' : '#d4a017' }}
+      title={<Space wrap>
+        <strong>{job.work_date}</strong>
+        <span>·</span>
+        <strong>{job.tag}</strong>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>{job.site_id}</Typography.Text>
+        <Tag color="gold">Surface prep — Garnet</Tag>
+        {rejected && <Tag color="red">Rejected - Needs Correction</Tag>}
+      </Space>}>
+      {rejected && (
+        <Alert type="error" showIcon style={{ marginBottom: 8 }}
+          title="The HOD sent this job back"
+          description={<Typography.Text strong>“{job.rejected[0].reason || 'No reason recorded'}”</Typography.Text>} />
+      )}
+      <Table size="small" pagination={false} columns={cols} dataSource={job.rows}
+        rowKey={(r) => String(r.consumption_id)} />
+      <Space wrap align="end" style={{ marginTop: 10 }}>
+        <div>
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
+            Old surface or new surface?
+          </Typography.Text>
+          <Radio.Group value={state} onChange={(e) => setState(e.target.value)}
+            optionType="button" buttonStyle="solid" aria-label="Old surface or new surface"
+            options={[{ value: 'OLD', label: 'Old surface' }, { value: 'NEW', label: 'New surface' }]} />
+        </div>
+        <div>
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
+            Substrate (from the equipment)
+          </Typography.Text>
+          <Select style={{ minWidth: 240 }} value={code} placeholder="Concrete or steel?"
+            aria-label="Prep code" disabled={!!job.prep_code} onChange={setCode}
+            options={(job.prep_options ?? []).map((o) => ({ value: o.code, label: `${o.code} — ${o.name}` }))} />
+        </div>
+        <div>
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
+            Area blasted (m²)
+          </Typography.Text>
+          <InputNumber min={0.01} step={1} value={sqm ?? undefined} aria-label="Area blasted"
+            onChange={(v) => setSqm(v == null ? null : Number(v))} style={{ width: 160 }} />
+        </div>
+        <Button type="primary" danger={rejected} loading={submit.isPending}
+          disabled={!code || !sqm || !state} onClick={() => submit.mutate()}>
+          {rejected ? 'Correct & resubmit' : 'Submit Garnet to the HOD'}
+        </Button>
+      </Space>
+      {job.surface_hint && state === job.surface_hint && (
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '6px 0 0' }}>
+          Pre-filled with this equipment’s last answer — change it if this surface is different.
+        </Typography.Paragraph>
+      )}
+      {!job.prep_code && (
+        <Typography.Paragraph type="warning" style={{ fontSize: 12, margin: '6px 0 0' }}>
+          The equipment master does not say whether {job.tag} is concrete or steel — pick it here.
+        </Typography.Paragraph>
+      )}
+    </Card>
+  )
+}
+
 /** Shared by the queue and the tab label — one request, one cache entry. */
 export function useJobQueue() {
   return useQuery({
@@ -264,7 +367,9 @@ export function JobQueue() {
       {q.isLoading ? <Card loading size="small" /> : jobs.length === 0
         ? <Empty description="Nothing waiting for an area" />
         : <>
-            {jobs.slice(0, shown).map((j) => <JobCard key={j.key} job={j} />)}
+            {jobs.slice(0, shown).map((j) => (j.kind === 'prep'
+              ? <PrepJobCard key={j.key} job={j} />
+              : <JobCard key={j.key} job={j} />))}
             {jobs.length > shown && (
               <Button block onClick={() => setShown((x) => x + 10)}>
                 Show more ({jobs.length - shown} more job(s))
@@ -279,6 +384,19 @@ interface StagedJob extends Row {
   id: number; Site_ID: string; Work_Date: string; Equipment_Tag_No: string
   Lining_System_Code: string; SQM_Completed: number; submitted_by?: string
   rows: Row[]; high_priority: boolean
+  prep?: boolean; Surface_State?: string | null
+}
+
+/** Phase 15d — what a Garnet job is measured against, for the HOD. */
+function PrepTags({ job }: { job: StagedJob }) {
+  if (!job.prep) return null
+  const bench = n(job.rows[0]?.Bench_For_1_SQM)
+  return <>
+    <Tag color="gold">Garnet · {s(job.Surface_State) === 'OLD' ? 'Old surface' : 'New surface'}</Tag>
+    {bench == null
+      ? <Tooltip title="Set it in SME → Master Data → Garnet baseline"><Tag color="purple">no benchmark</Tag></Tooltip>
+      : <Tag>benchmark {r4(bench)} KG/m²</Tag>}
+  </>
 }
 
 function VarTag({ value, flag }: { value: unknown; flag?: unknown }) {
@@ -344,11 +462,16 @@ function JobDecideModal({ job, onClose }: { job: StagedJob | null; onClose: () =
             <strong>{job.Work_Date} · {job.Equipment_Tag_No}</strong>
             {' · '}<SystemCode code={job.Lining_System_Code} plain />
             {' · '}{job.rows.length} material(s){job.submitted_by ? ` · filed by ${job.submitted_by}` : ''}
+            {' '}<PrepTags job={job} />
           </Typography.Paragraph>
           <StagedRows rows={job.rows} />
-          <Alert type="info" showIcon style={{ margin: '12px 0' }}
-            title="One decision for the whole job"
-            description="Approving credits the job’s area ONCE, whatever the number of materials. Rejecting sends every material back with your reason. The quantities cannot be changed here — the material left the shelf when it was issued." />
+          {job.prep
+            ? <Alert type="info" showIcon style={{ margin: '12px 0' }}
+                title="Garnet is surface preparation"
+                description="Approving records this job’s variance against the Garnet benchmark for its surface. It credits no lining progress — blasted area is recorded by the blasting execution entries. Rejecting sends it back with your reason." />
+            : <Alert type="info" showIcon style={{ margin: '12px 0' }}
+                title="One decision for the whole job"
+                description="Approving credits the job’s area ONCE, whatever the number of materials. Rejecting sends every material back with your reason. The quantities cannot be changed here — the material left the shelf when it was issued." />}
           {/* ⚠️ Filled from the job AS IT RENDERS, not after the opening
               animation: an Approve clicked in that window used to read an
               empty area, take it for a change and refuse it for lack of a
@@ -356,13 +479,15 @@ function JobDecideModal({ job, onClose }: { job: StagedJob | null; onClose: () =
           <Form form={form} layout="vertical" key={job.id}
             initialValues={{ sqm: job.SQM_Completed, tag: job.Equipment_Tag_No, justification: '' }}>
             <Space wrap>
-              <Form.Item name="sqm" label="Area covered (m²)">
+              <Form.Item name="sqm" label={job.prep ? 'Area blasted (m²)' : 'Area covered (m²)'}>
                 <InputNumber min={0.01} step={1} style={{ width: 180 }} />
               </Form.Item>
-              <Form.Item name="tag" label="Equipment / tank">
-                <Select showSearch style={{ minWidth: 220 }} loading={equipment.isFetching}
-                  options={(equipment.data ?? []).map((x) => ({ value: s(x.tag), label: s(x.tag) }))} />
-              </Form.Item>
+              {!job.prep && (
+                <Form.Item name="tag" label="Equipment / tank">
+                  <Select showSearch style={{ minWidth: 220 }} loading={equipment.isFetching}
+                    options={(equipment.data ?? []).map((x) => ({ value: s(x.tag), label: s(x.tag) }))} />
+                </Form.Item>
+              )}
             </Space>
             <Form.Item name="justification" label="Reason — required if you change anything, and to reject">
               <Input.TextArea rows={2} maxLength={500} />
@@ -408,6 +533,7 @@ export function HodJobs({ isHod }: { isHod: boolean }) {
             <SystemCode code={j.Lining_System_Code} plain />
             <Tag>{r4(Number(j.SQM_Completed))} m²</Tag>
             <Tag>{j.rows.length} material(s)</Tag>
+            <PrepTags job={j} />
           </Space>}
           extra={isHod
             ? <Button size="small" type="primary" onClick={() => setOpen(j)}>Review job</Button>

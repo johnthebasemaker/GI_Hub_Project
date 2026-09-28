@@ -1,6 +1,7 @@
 # PROPOSED PHASE 15 PLAN — Training Polish, Garnet Integration & UI Fixes
 
-> **Status: PLANNING ONLY — awaiting operator approval. No application code has been written.**
+> **Status: APPROVED 2026-09-28 (Q15-0…Q15-9 as defaulted) and IMPLEMENTED** as slices 15a–15d.
+> Where the build departed from this plan, it is recorded in §7 at the end.
 > Rewritten 2026-09-27 (afternoon) after a fresh re-check of the live mirror, both Practice
 > databases, the Practice API log, the source, and the workbooks you saved at **13:28 today**.
 > Every number below was measured in this pass. Assumptions are labelled as assumptions.
@@ -380,3 +381,26 @@ If the same job were *Old surface* with baseline 28 KG/m², expected = 3920 KG, 
 | **Q15-9** | The four KG/m² numbers: do you have Old/New for both substrates? Should the workbook's 20 / 18 pre-fill **New** surface (and Old start empty)? | Pre-fill New from 20 / 18; Old empty until you set it |
 
 *Postgres on :5433 is running and in use by your `bin/dev.sh` servers, so I have left it up.*
+
+---
+
+## 7. Implementation notes — where the build departed from the plan
+
+1. **A Garnet job credits NO area (not `sme_surface_prep_progress`).** Blasted area
+   is already recorded by the supervisor's *blasting* execution entries, which post
+   to `sme_surface_prep_progress`. Crediting it again from the Garnet draw would count
+   every blasted m² twice. This also matches ruling Q15-6 (benchmark and variance
+   only). `execution.credit_done_sqm`, the one writer, refuses a prep code.
+2. **ESC1/ESC2 stay on `/entry/lining-systems`, flagged `prep: true`.** The Issue
+   form refuses any Surface Shield issued without a system code, so hiding them
+   would stop store keepers issuing Garnet in the app. The Smart Calculator (an
+   estimator) filters them out instead.
+3. **Execution daily-entry material lines do not ask Old/New.** Blasting entries are
+   manpower-only and carry no materials; Garnet reaches the benchmark only through
+   the queue (store-keeper issues and Excel rows).
+4. **The Practice example Garnet draw is a ledger row, not a staged issue.** Issuing
+   a Surface Shield needs a QC release and an MTC on file. Live's Garnet arrives the
+   same way (Excel sync), and the queue sweeps every ledger row (Q13-6).
+5. **15c re-recorded the critical-path baseline once:** +835 B raw JS over 15b, for
+   the Practice theme and badge. It also added a build check against duplicate
+   `@keyframes` names, after a name clash briefly changed a Live dashboard animation.

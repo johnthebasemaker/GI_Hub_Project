@@ -244,8 +244,14 @@ async def _lining_codes(session: AsyncSession) -> set:
     system, which is the same test `/execution/activities` uses for
     `manpower_only`. One definition, two callers.
     """
+    # ⚠️ PHASE 15d: …and minus the SURFACE-PREP codes. The 2026-09-27 workbooks
+    # put Garnet recipe lines under ESC1/ESC2 — the blasting codes — which by
+    # the rule above would have planned blasting as a lining system.
+    from . import prep as PR
+    prep = await PR.prep_codes(session)
     return {str(c) for (c,) in (await session.execute(
-        select(recipe_t.c["Lining_System_Code"]).distinct())).all() if c}
+        select(recipe_t.c["Lining_System_Code"]).distinct())).all()
+        if c and str(c).strip() not in prep}
 
 
 def _activity_to_codes(norms: list[dict], lining_codes: set) -> dict:

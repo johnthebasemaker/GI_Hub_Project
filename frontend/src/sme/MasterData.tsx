@@ -25,6 +25,7 @@ import {
 import { useAuth } from '../auth/AuthContext'
 import { buildColumns } from '../lib/columns'
 import { ManpowerNormsTab, RolesTab } from './ManpowerMaster'
+import GarnetBaseline from './GarnetBaseline'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -545,6 +546,10 @@ export default function MasterData({ siteId }: { siteId?: string }) {
           {
             key: 'roles', label: 'Roles',
             children: <RolesTab />,
+          },
+          {
+            key: 'garnet', label: 'Garnet baseline',
+            children: <GarnetBaseline />,
           },
         ]}
       />

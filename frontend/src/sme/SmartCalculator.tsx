@@ -9,6 +9,7 @@ import { api } from '../api/client'
 
 interface SystemInfo {
   code: string; short_name: string; substrate: string; lining_system: string
+  prep?: boolean   // Phase 15d: surface prep (Garnet) — not estimated here (Q15-6)
   sqm: { equipment_count: number; original_sqm: number; done_sqm: number; pending_sqm: number }
 }
 
@@ -216,7 +217,7 @@ export default function SmartCalculator({ siteId, stickyTop }:
             placeholder="Lining system(s)"
             loading={systems.isFetching} value={selCodes} onChange={setSelCodes}
             optionFilterProp="label"
-            options={(systems.data?.systems ?? []).map((s) => ({
+            options={(systems.data?.systems ?? []).filter((s) => !s.prep).map((s) => ({
               value: s.code,
               label: `${s.code} — ${s.short_name} (${s.substrate || '?'} · ${s.lining_system || '?'})`,
             }))} />

@@ -114,7 +114,7 @@ export default function IssuePage() {
     queryFn: async () => (await api.get('/entry/lining-systems',
       { params: watchSite ? { site_id: watchSite } : {} })).data as {
         systems: { code: string; short_name: string; substrate: string
-          lining_system: string; saps: string[]
+          lining_system: string; saps: string[]; prep?: boolean
           sqm: { equipment_count: number; original_sqm: number
             done_sqm: number; pending_sqm: number } }[]
         sap_index: Record<string, string[]>
@@ -380,7 +380,8 @@ export default function IssuePage() {
                     .filter((s) => s.saps.length > 0)
                     .map((s) => ({
                       value: s.code,
-                      label: `${s.code} — ${s.short_name} (${s.substrate || '?'})`,
+                      label: `${s.code} — ${s.short_name} (${s.substrate || '?'})`
+                        + (s.prep ? ' · surface prep (Garnet)' : ''),
                     }))} />
                 {/* ⚠️ PHASE 13f — THE TAG, AT THE MOMENT THE SK KNOWS IT.
                     The store keeper knows which vessel the drum is walking to;
@@ -404,7 +405,7 @@ export default function IssuePage() {
                       label: `${e.tag}${e.name && e.name !== e.tag ? ` — ${e.name}` : ''}`,
                     }))} />
                 )}
-                {liningSystem && (
+                {liningSystem && !liningSystem.prep && (
                   <>
                     <Tag color="green">
                       Done {liningSystem.sqm.done_sqm} SQM

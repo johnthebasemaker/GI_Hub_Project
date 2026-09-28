@@ -698,7 +698,17 @@ async def credit_done_sqm(session: AsyncSession, *, site_id: str, tag: str,
     ⚠️ ONLY EVER INCREMENTED HERE. `Original_SQM` belongs to the equipment
     master and is not ours to set: a progress row created by this function
     carries 0, and the master supplies the denominator.
+
+    ⚠️ PHASE 15d — A SURFACE-PREP CODE (ESC1/ESC2, Garnet) CREDITS NOTHING.
+    Blasting is not lining, and the blasted area is already recorded by the
+    blasting execution entries (`sme_surface_prep_progress`); a Garnet job's
+    area is for its benchmark only (ruling Q15-6). Refused HERE, in the one
+    writer, so no path — a job, a single row, a revision — can put it on
+    lining progress.
     """
+    from . import prep as PR
+    if await PR.is_prep(session, code):
+        return
     existing = (await session.execute(select(sqm_progress_t).where(
         sqm_progress_t.c["Site_ID"] == site_id,
         sqm_progress_t.c["Equipment_Tag_No"] == tag,

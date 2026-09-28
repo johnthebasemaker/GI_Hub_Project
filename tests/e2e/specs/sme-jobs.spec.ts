@@ -97,3 +97,65 @@ test('the HOD approves the job as a whole', async ({ browser }) => {
   await expect(page.getByText(/credited once to that equipment/)).toBeVisible()
   await ctx.close()
 })
+
+// ── Phase 15d — Garnet is surface preparation: its own card, Old or New ──────
+const GARNET = '[data-job="CNCEC|2026-09-21|E2E-GAR-TANK|prep"]'
+
+test('15d: a Garnet job is its own card and asks Old or New surface', async ({ browser }) => {
+  const ctx = await browser.newContext({ storageState: storageStatePath('supervisor') })
+  const page = await ctx.newPage()
+  await page.goto('/execution')
+  await page.getByLabel('Find a job').fill('E2E-GAR-TANK')
+  const card = page.locator(GARNET)
+  await expect(card).toBeVisible({ timeout: 20_000 })
+  await expect(card.getByText('Surface prep — Garnet')).toBeVisible()
+  // the substrate decides the code (ME / TANK → ESC2) and it is not editable
+  await expect(card.getByText(/ESC2/)).toBeVisible()
+  await expect(card.getByLabel('Area blasted')).toHaveValue('140')
+  const submit = card.getByRole('button', { name: 'Submit Garnet to the HOD' })
+  // no answer yet on this tank → nothing pre-filled, nothing submitted
+  await expect(submit).toBeDisabled()
+  await card.getByText('New surface', { exact: true }).click()
+  const posted = page.waitForRequest((r) => r.method() === 'POST'
+    && r.url().endsWith('/execution/sme-link/groups'))
+  await submit.click()
+  const body = (await posted).postDataJSON() as { code: string; surface_state: string; sqm: number }
+  expect(body).toMatchObject({ code: 'ESC2', surface_state: 'NEW', sqm: 140 })
+  await expect(page.getByText(/Garnet job submitted/)).toBeVisible()
+  await expect(page.locator(GARNET)).toHaveCount(0)
+  await ctx.close()
+})
+
+test('15d: the HOD sees the Garnet job against its benchmark, and approves it', async ({ browser }) => {
+  const ctx = await browser.newContext({ storageState: storageStatePath('hod') })
+  const page = await ctx.newPage()
+  await page.goto('/execution')
+  await page.getByText(/Awaiting the HOD/).click()
+  const card = page.locator('.gi-job-card', { hasText: 'E2E-GAR-TANK' })
+  await expect(card).toBeVisible({ timeout: 20_000 })
+  await expect(card.getByText('Garnet · New surface')).toBeVisible()
+  await expect(card.getByText('benchmark 20 KG/m²')).toBeVisible()
+  // 3 TON = 3000 KG against 20 × 140 = 2800 KG
+  await expect(card.getByText('+7.1%')).toBeVisible()
+  await card.getByRole('button', { name: 'Review job' }).click()
+  await expect(page.getByText('Garnet is surface preparation')).toBeVisible()
+  await page.getByRole('button', { name: 'Approve the job' }).click()
+  await expect(page.getByText(/Approved/)).toBeVisible()
+  await ctx.close()
+})
+
+test('15d: the HOD sets the Old-surface baseline once, and can edit it later', async ({ browser }) => {
+  const ctx = await browser.newContext({ storageState: storageStatePath('hod') })
+  const page = await ctx.newPage()
+  await page.goto('/sme')
+  await page.getByRole('tab', { name: /Master Data/ }).click()
+  await page.getByRole('tab', { name: 'Garnet baseline' }).click()
+  const box = page.locator('.gi-garnet-baseline')
+  await expect(box.getByText('from the workbook — not saved yet').first()).toBeVisible()
+  await expect(box.getByText(/benchmark\(s\) not set/)).toBeVisible()
+  await box.getByLabel('Steel / Vessel — Old surface (KG per m²)').fill('28')
+  await box.getByRole('button', { name: /Save 1 change/ }).click()
+  await expect(page.getByText(/Saved 1 benchmark/)).toBeVisible()
+  await expect(box.getByText(/saved by/).first()).toBeVisible()
+  await ctx.close()
+})

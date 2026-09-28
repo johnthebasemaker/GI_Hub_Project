@@ -774,9 +774,12 @@ async def list_manpower_norms(session: AsyncSession = Depends(get_session)):
     # supervisor opens without a store keeper. Computed, never stored: it is a
     # fact ABOUT the recipe table and would go stale the moment a recipe
     # line is added.
+    from .services import prep as PR
+    prep = await PR.prep_codes(session)     # Phase 15d: Garnet lines don't count
     material_keys = {(str(a), str(b)) for a, b in (await session.execute(
         select(recipe_t.c["Lining_System_Code"],
-               recipe_t.c["Execution_Sub_Activity_Code"]).distinct())).all()}
+               recipe_t.c["Execution_Sub_Activity_Code"]).distinct())).all()
+        if str(a or "").strip() not in prep}
     for r in rows:
         crew = crews.get(int(r["id"]), {})
         r["Crew"] = crew
@@ -959,3 +962,39 @@ async def delete_role(role_id: int,
                       f"{row['Role_Code']} id={role_id}")
     await session.commit()
     return {"deleted": True}
+
+
+# ═══ Phase 15d — the Garnet baseline (Old vs New surface, KG per m²) ═════════
+class PrepBaselineIn(BaseModel):
+    code: str = Field(min_length=1, max_length=16)
+    state: str = Field(min_length=1, max_length=16)
+    # None clears the saved figure (NEW then falls back to the workbook's).
+    kg_per_sqm: Optional[float] = None
+
+
+@router.get("/prep-baseline",
+            summary="Garnet benchmark per prep code × Old/New surface (KG per m²)")
+async def get_prep_baseline(user: dict = Depends(require_roles("hod")),
+                            session: AsyncSession = Depends(get_session)):
+    """The one-time setup page (editable later). Each row says what the
+    benchmark IS and where it comes from: `set` (saved here), `workbook` (NEW
+    only, the For_1_SQM figure — ruling Q15-9) or none (no benchmark: Old
+    surface until somebody sets it)."""
+    from .services import prep as PR
+    rows = await PR.table(session)
+    return {"items": rows, "complete": all(r["kg_per_sqm"] is not None for r in rows),
+            "garnet_saps": sorted(await PR.garnet_saps(session))}
+
+
+@router.put("/prep-baseline", summary="Set (or clear) one Garnet benchmark")
+async def put_prep_baseline(body: PrepBaselineIn,
+                            user: dict = Depends(require_roles("hod")),
+                            session: AsyncSession = Depends(get_session)):
+    """⚠️ A JOB KEEPS THE BENCHMARK IT WAS MEASURED AGAINST. The figure is
+    snapshotted on each attribution when it is filed, so changing it here moves
+    every FUTURE variance and no past one — the same rule as a recipe rate."""
+    from .services import prep as PR
+    async with session.begin():
+        return await PR.set_baseline(session, code=body.code.strip(), state=body.state,
+                                     kg_per_sqm=body.kg_per_sqm,
+                                     username=user["username"])

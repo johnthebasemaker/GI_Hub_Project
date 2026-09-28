@@ -172,9 +172,14 @@ async def activities(site_id: Optional[str] = None,
     is hidden — surface prep belongs to no system, and forcing a choice would
     trap the hours under whichever one was guessed.
     """
+    # Phase 15d: a surface-prep code's Garnet recipe line does not make its
+    # blasting norm a lining activity (services/prep.py).
+    from .services import prep as PR
+    prep = await PR.prep_codes(session)
     material_keys = {(str(a), str(b)) for a, b in (await session.execute(
         select(recipe_t.c["Lining_System_Code"],
-               recipe_t.c["Execution_Sub_Activity_Code"]).distinct())).all()}
+               recipe_t.c["Execution_Sub_Activity_Code"]).distinct())).all()
+        if str(a or "").strip() not in prep}
     rows = (await session.execute(
         select(norm_t.c["Lining_System_Code"],
                norm_t.c["Execution_Sub_Activity_Code"], norm_t.c["Activity"],
@@ -605,6 +610,8 @@ class SmeLinkAssignIn(BaseModel):
     work_date: Optional[str] = None
     notes: Optional[str] = None
     site_id: Optional[str] = None
+    # Phase 15d: OLD | NEW — required for Garnet (a surface-prep code), ignored otherwise.
+    surface_state: Optional[str] = None
 
 
 @router.post("/sme-link/assign", status_code=201,
@@ -643,7 +650,8 @@ async def sme_link_assign(body: SmeLinkAssignIn = Body(...),
         out = await G.submit_one(
             session, consumption_id=body.consumption_id, code=body.code,
             tag=body.tag, sqm=body.sqm, work_date=body.work_date,
-            notes=body.notes, username=user["username"], site_id=site)
+            notes=body.notes, username=user["username"], site_id=site,
+            surface_state=body.surface_state)
     return out
 
 
@@ -760,6 +768,8 @@ class SmeGroupSubmitIn(BaseModel):
     consumption_ids: list[int] = Field(min_length=1)
     notes: Optional[str] = None
     site_id: Optional[str] = None
+    # Phase 15d: OLD | NEW — required for a Garnet (surface-prep) job.
+    surface_state: Optional[str] = None
 
 
 @router.get("/sme-link/groups",
@@ -788,7 +798,7 @@ async def sme_link_group_submit(body: SmeGroupSubmitIn = Body(...),
         return await G.submit(session, site_id=site, work_date=body.work_date,
                               tag=body.tag, code=body.code, sqm=body.sqm,
                               consumption_ids=body.consumption_ids, notes=body.notes,
-                              username=user["username"])
+                              username=user["username"], surface_state=body.surface_state)
 
 
 @router.get("/sme-link/groups/staged", summary="Jobs awaiting the HOD")

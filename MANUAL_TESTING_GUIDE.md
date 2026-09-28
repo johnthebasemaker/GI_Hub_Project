@@ -3945,6 +3945,54 @@ name twice. In 15c a login animation named `gi-rise` briefly replaced the
 dashboard's card entrance on Live, and `responsive.spec` caught it. The 3D chunk got **smaller**
 (no slab, rim or dust).
 
+## 15d. Phase 15d — Garnet: surface prep, Old vs New surface
+
+**What it is for.** Garnet is benchmarked per surface (Old/New) and substrate
+(ESC1 concrete, ESC2 steel/vessel), and it never becomes a lining system. The
+code is in `backend/api/services/prep.py`. Suite 15D and `sme-jobs.spec` pin
+it.
+
+⚠️ Check that **blasting stays surface prep**, not just that the Garnet card
+works. The failure to catch is ESC1/ESC2 appearing as lining systems in the
+man-hour plan or the execution form.
+
+**TC-15D-01** — run the full Excel sync (with `For_1_SQM.xlsx`). The recipe step
+reports *surface-prep (Garnet) recipe line(s) under ESC1, ESC2 — imported, but
+NOT lining systems*. Then check:
+- Man-Hours → the system list has **no** ESC1/ESC2;
+- Smart Calculator → **no** ESC1/ESC2;
+- Execution → a *Blasting* activity still opens **without** a lining-system
+  dropdown.
+
+**TC-15D-02** — a Garnet draw on a tank shows as its own **Surface prep —
+Garnet** card, apart from the tank's lining card that day. Substrate reads
+ESC2, and *Submit* stays disabled until Old or New is picked.
+
+**TC-15D-03** — submit *New surface*, 140 m², for 3 TON: the HOD sees *Garnet ·
+New surface*, *benchmark 20 KG/m²* and **+7.1 %**. Approve. ⚠️ The tank's
+**Done SQM does not move**, and no ESC2 progress row appears.
+
+**TC-15D-04** — the next Garnet job on that tank comes pre-filled with **New
+surface**.
+
+**TC-15D-05** — as HOD, open **SME → Master Data → Garnet baseline**. New shows
+*from the workbook*; Old shows *not set*. Save Steel/Vessel Old = 28. A
+Garnet job on an old surface, 3 TON over 140 m², reads **−23.5 %** and is
+**High Priority**. Change New to 25: the approved job from TC-15D-03 still says
+20.
+
+**TC-15D-06** — a Garnet SAP still in TON with Unit Size 1 (AREEJ 1363 until
+the workbook is fixed): submitting its job is refused with *"Set its Unit Size
+to 1000"*.
+
+**TC-15D-07** — ⚠️ **the estimator is untouched.** `npm run parity:sme` passes
+with the goldens unchanged, and readiness / buy list show no Garnet (ruling
+Q15-6).
+
+**TC-15D-08** — in Practice, as `practice.supervisor`: a Garnet card
+(SAP 899970, ESC2) is in the queue to practise on. It appears after the next
+Practice rebuild; production deploys rebuild Practice on every deploy.
+
 ## 14ak. Stock vs the Excel workbook, and the /login gap
 
 **What it is for.** The check finds which materials' GI Hub stock differs from

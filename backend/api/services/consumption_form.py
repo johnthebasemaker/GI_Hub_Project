@@ -853,6 +853,8 @@ async def available_systems(session: AsyncSession) -> list[dict]:
     Drives the picker. A system with no recipe is omitted rather than offered
     and then refused — a menu entry that always errors is worse than no entry.
     """
+    from . import prep as PR
+    prep = await PR.prep_codes(session)     # Phase 15d: Garnet is not a lining system
     rows = (await session.execute(
         select(recipe_t.c["Lining_System_Code"],
                recipe_t.c["Lining_System_Name"],
@@ -860,7 +862,7 @@ async def available_systems(session: AsyncSession) -> list[dict]:
     by_code: dict[str, dict] = {}
     for r in rows:
         code = str(r["Lining_System_Code"] or "").strip()
-        if not code:
+        if not code or code in prep:
             continue
         slot = by_code.setdefault(code, {
             "Lining_System_Code": code,

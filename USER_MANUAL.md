@@ -1329,6 +1329,53 @@ any equipment and adds nothing to the Estimator's consumed figure.
 A re-assignment of an **already-approved** row that the HOD rejects comes back
 the same way; the approved figures keep counting while you correct it.
 
+### 4.9a.7 Garnet — surface preparation, Old or New surface
+
+*Phase 15d.* Garnet (SAP 1429 Australian and 1363 Areej) is the blasting
+abrasive. It prepares a surface **before** lining, so it is **not** part of any
+lining system's recipe, and it gets its **own card** in the queue: **Surface
+prep — Garnet**. On a day when a tank drew both Garnet and lining materials,
+you see two cards: one for the lining, one for the Garnet.
+
+**Store keepers** issue Garnet like any Surface Shield, against a system code.
+Garnet's codes are **ESC1** (concrete) and **ESC2** (steel / vessel), marked
+*surface prep (Garnet)* in the Lining System list. The tank list then shows the
+equipment of that substrate.
+
+On the Garnet card you answer:
+
+| | |
+|---|---|
+| **Old surface or new surface?** | **Required.** *Old* means a previously lined or coated surface, *New* means one that never was. Pre-filled with this equipment's last answer. Check it, because it decides the benchmark. |
+| **Substrate** | Filled in from the equipment: concrete → **ESC1**, tank / vessel / steel → **ESC2**. You only pick it when the equipment master does not say. |
+| **Area blasted (m²)** | The area this Garnet blasted. It is separate from any lining area. |
+
+Press **Submit Garnet to the HOD**. The draw is converted to KG (Garnet is
+counted in TON with a Unit Size of 1000, so 3 TON = 3000 KG). It is compared
+with the **Garnet baseline** for that substrate and surface × the area. For
+example, New surface on steel at 20 KG/m² × 140 m² gives 2800 KG expected, and
+3000 KG drawn is **+7.1 %**, inside the ±10 % band. The HOD sees *Garnet · New
+surface*, the benchmark and the variance, and approves or rejects as usual.
+
+⚠️ **Garnet credits no area.** Approving a Garnet job records its variance
+only. Blasted area is recorded by the **blasting** execution entries, and lining
+area by the lining jobs. Counting it again here would count every blasted m²
+twice.
+
+⚠️ **Garnet still counted in TON with Unit Size 1 is refused.** A ton cannot be
+compared with a KG/m² benchmark. Set its Unit Size to **1000** in the Inventory
+sheet and re-run the Excel sync.
+
+**The Garnet baseline (HOD / Admin): SME → Master Data → Garnet baseline.** Four
+figures, in KG per m²: Steel/Vessel × Old and New, and Concrete × Old and New.
+Until you save a figure:
+- **New surface** uses the workbook's `For_1_SQM` (20 steel, 18 concrete);
+- **Old surface** has **no benchmark**, and its jobs reach the HOD as High
+  Priority *no benchmark*.
+
+Saving a figure changes every **future** job only. A job already filed keeps the
+benchmark it was measured against. Every change is recorded in the audit log.
+
 ## 4.10 Filing a consumption form
 
 **Where:** Execution Entries (`/execution`).

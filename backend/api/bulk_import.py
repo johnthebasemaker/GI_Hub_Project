@@ -2056,6 +2056,19 @@ async def plan_sme_recipes(session: AsyncSession, data: bytes) -> dict:
         warnings.append(f"{adoptions} previously unclassified line(s) adopted "
                         f"into a sub-activity (Execution_Sub_Activity_Code "
                         f"filled in place, not duplicated)")
+    # Phase 15d: say what the Garnet lines ARE, so nobody reads them as a new
+    # lining system — they import, and services/prep.py keeps them out of every
+    # lining list; their benchmark is the Old/New baseline, not For_1_SQM.
+    from .services import prep as PR
+    prep = await PR.prep_codes(session)
+    prep_lines = sorted({str(r[code_i]).strip() for r in rows
+                         if code_i < len(r) and str(r[code_i] or "").strip() in prep})
+    if prep_lines:
+        warnings.append(
+            f"surface-prep (Garnet) recipe line(s) under {', '.join(prep_lines)} — "
+            f"imported, but NOT lining systems: the Garnet benchmark is the Old / New "
+            f"baseline (SME → Master Data → Garnet baseline); For_1_SQM only "
+            f"pre-fills New surface until it is set")
     # Anything still '' after this sync is a line the workbook no longer
     # describes. Reported, never deleted: a recipe row is master data and the
     # sync is not the place to decide it is obsolete.

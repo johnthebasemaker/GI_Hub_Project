@@ -1100,6 +1100,10 @@ class SmeConsumptionLog(Base):
     # crediting its own copy of the same area. NULL = attributed alone before
     # groups existed (none live), which behaves as a group of one.
     group_id = Column(Integer)
+    # ── Phase 15d: OLD | NEW surface, for a Garnet (surface-prep) row — the
+    # answer its `Bench_For_1_SQM` was taken from (services/prep.py). NULL on
+    # every lining row.
+    Surface_State = Column(Text)
     __table_args__ = (
         # The sweep's own question: is this ledger row already attributed?
         Index("ix_sme_cons_log_consumption", "Consumption_ID"),
@@ -1966,6 +1970,9 @@ class SmeAttributionGroup(Base):
     hod_decided_at = Column(DateTime)
     rejected_reason = Column(Text)
     Done_SQM_Credited = Column(Float)
+    # Phase 15d: OLD | NEW for a Garnet job (asked per job, ruling Q15-7);
+    # NULL for a lining job.
+    Surface_State = Column(Text)
     __table_args__ = (
         Index("ix_sme_attr_group_site_status", "Site_ID", "status"),
         Index("ix_sme_attr_group_tag", "Site_ID", "Equipment_Tag_No", "Lining_System_Code"),
@@ -1988,6 +1995,32 @@ class StockExcelCheck(Base):
     items = Column(Text, nullable=False, server_default=text("'[]'"))
     __table_args__ = (
         Index("ix_stock_excel_checks_site_at", "Site_ID", "checked_at"),
+    )
+
+
+class SmePrepBaseline(Base):
+    """Phase 15d — the Garnet benchmark, KG per m², for an OLD or a NEW surface.
+
+    One row per (prep code, surface state): ESC1 = blasting concrete, ESC2 =
+    blasting steel / vessel (ruling Q15-5). A code with a row here is SURFACE
+    PREP — never a lining system — which is what keeps the Garnet recipe lines
+    from turning blasting into one (services/prep.py). Seeded empty by the
+    migration's data step; NEW falls back to the workbook's For_1_SQM until the
+    HOD saves a figure (Q15-9). Every edit is audited, and a job keeps the
+    figure it was measured against (snapshotted on its rows).
+    """
+    __tablename__ = "sme_prep_baseline"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    Prep_Code = Column(Text, nullable=False)
+    Surface_State = Column(Text, nullable=False)
+    Material_Group = Column(Text, nullable=False, server_default=text("'GARNET'"))
+    Substrate_Class = Column(Text, nullable=False)
+    KG_Per_SQM = Column(Float)
+    updated_by = Column(Text)
+    updated_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    __table_args__ = (
+        UniqueConstraint("Prep_Code", "Surface_State", "Material_Group",
+                         name="uq_sme_prep_baseline"),
     )
 
 
