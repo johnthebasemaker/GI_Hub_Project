@@ -387,22 +387,25 @@ Admin must approve via Admin Portal → Users tab before the user can log in.
 
 ### 3.1.1 The look of the sign-in page
 
-*Phase 14e.*
+*Phase 14e, redesigned in Phase 15c.*
 
-The sign-in card is glass over the gold GI mark. What you see depends on your
-device, and **the form works the same on all of them**, from the first moment:
+The large gold GI mark sits in its own space at the top of the page, and the
+glass sign-in card sits below it, so the two never overlap. The mark **rises
+into place once** when the page opens. After that it stands still, and a slow
+band of light sweeps across the gold every few seconds. Nothing on the page
+follows the mouse. What you see depends on your device, and **the form works the
+same on all of them**, from the first moment:
 
-- **Everyone**, including the Android, iOS and desktop apps: the glass card and
-  the GI mark drawn in the page's style, floating gently.
-- **A desktop computer with a graphics card**: after the form appears, a 3D gold
-  GI mark rises and turns into place to the left of the card, over a pane of
-  glass. As you move the mouse, the mark and the sign-in card turn gently
-  together. It is loaded separately and only after the page is ready, so it never
-  delays signing in. It stops when you switch tabs, rests when the mouse is
-  still, and is removed as soon as you sign in.
-- **Phones, tablets, the installed apps, computers without a graphics card, and
-  anyone with *Reduce motion* switched on in their system settings**: no 3D
-  mark, and nothing moves. The page is otherwise identical.
+- **Everyone**, including the Android, iOS and desktop apps: the mark drawn
+  in the page's style.
+- **A desktop computer with a graphics card**: the same mark in 3D gold, in the
+  same place. It loads separately after the page is ready, so it never delays
+  signing in. It draws nothing between sweeps, stops when you switch tabs, and
+  is removed as soon as you sign in.
+- **A very short window** (under about 560 pixels tall): the large mark gives way
+  to a small, still mark inside the card.
+- **Anyone with *Reduce motion* switched on** in their system settings: no rise
+  and no sweep. The mark simply stands there.
 
 The Executive Summary and the Training page use the same glass style. Their
 cards rise gently into place as you scroll, except with *Reduce motion* on and
@@ -6436,10 +6439,12 @@ Things to know about switching:
 
 ## 26.2 How you know you are in Practice
 
-The page tells you in four ways, and none of them can be dismissed:
+The page tells you in six ways, and none of them can be dismissed:
 
 | Where | What you see |
 |---|---|
+| Colours | Practice is **violet**: the sidebar, the header, the page background and the main buttons. Live is navy and gold. |
+| Top left, under the GI Hub logo | A **pulsing amber PRACTICE badge**, on every page. On a phone it sits beside the menu button. On the sign-in page it appears at the top left as soon as you choose Practice. With *Reduce motion* on, it stays still. |
 | Top of every page | An **amber bar**: *PRACTICE — practice data, nothing here is real.* |
 | Page header | An amber **PRACTICE** tag beside the title, and an amber line under the header that stays when you scroll |
 | Browser tab | The tab title starts with **PRACTICE ·** |

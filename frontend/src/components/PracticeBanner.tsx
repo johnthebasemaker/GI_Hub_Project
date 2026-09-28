@@ -80,14 +80,33 @@ export default function PracticeBanner({ compact = false }: { compact?: boolean 
 }
 
 /** The header chip — stays visible after the banner scrolls away. Server-driven
- * like the banner. */
+ * like the banner. Pulses (Phase 15c) like the badge beside the logo; on a
+ * phone, where the sider is a drawer, it IS the top-left indicator. */
 export function PracticeTag() {
   const { data } = useInstance()
   if (!data?.practice) return null
   return (
-    <Tag color="orange" icon={<ExperimentOutlined />} className="gi-practice-tag"
+    <Tag color="orange" icon={<ExperimentOutlined />} className="gi-practice-tag gi-practice-pulse"
       style={{ marginInlineEnd: 0, fontWeight: 600 }}>
       PRACTICE
     </Tag>
+  )
+}
+
+/**
+ * Phase 15c — the pulsing amber PRACTICE badge at the top left of every page,
+ * under the GI Hub wordmark (and top-left on the login once Practice is
+ * chosen, `floating`). Server-driven like everything else here (V10): a page
+ * that is not talking to a Practice server never shows it. The pulse is a
+ * glow, about once a second, and stands still under reduced motion.
+ */
+export function PracticeBadge({ floating = false }: { floating?: boolean }) {
+  const { data } = useInstance()
+  if (!data?.practice) return null
+  return (
+    <span role="status" aria-label="Practice mode — nothing here is real"
+      className={`gi-practice-badge gi-practice-pulse${floating ? ' gi-practice-badge--float' : ''}`}>
+      <ExperimentOutlined /> PRACTICE
+    </span>
   )
 }

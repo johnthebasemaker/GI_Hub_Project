@@ -12,7 +12,8 @@ import type { User } from '../auth/AuthContext'
 import { NAV, ADMIN_DEFAULT_GROUPS, PRIMARY_GROUP, accessibleNodes, canAccess, canAccessPath, groupOfPath, roleHome } from '../config/nav'
 import type { NavGroup, NavNode } from '../config/nav'
 import { useThemeMode } from '../theme/ThemeContext'
-import { siderTheme } from '../theme/themes'
+import { practiceTheme, siderTheme } from '../theme/themes'
+import { isPractice } from '../api/environment'
 import CommandPalette from './CommandPalette'
 import HubAssistant from './HubAssistant'
 import QrScanner from './QrScanner'
@@ -22,7 +23,7 @@ import WhatsNew from './WhatsNew'
 import OfflineSyncBadge from './OfflineSyncBadge'
 import SyncControls from './SyncControls'
 import ProfileModal from './ProfileModal'
-import PracticeBanner, { PracticeTag } from './PracticeBanner'
+import PracticeBanner, { PracticeBadge, PracticeTag } from './PracticeBanner'
 import { useUnitSizesLoader } from '../lib/units'
 
 const { Header, Sider, Content } = Layout
@@ -200,6 +201,7 @@ export default function AppLayout() {
       <div className="gi-brand">
         <div className="gi-wordmark">GI&nbsp;Hub</div>
         <div className="gi-brand-sub">ERP CONSOLE</div>
+        <PracticeBadge />
       </div>
       <Menu
         mode="inline"
@@ -222,7 +224,7 @@ export default function AppLayout() {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <ConfigProvider theme={siderTheme}>
+      <ConfigProvider theme={isPractice() ? practiceTheme(siderTheme) : siderTheme}>
         {isMobile ? (
           <Drawer
             open={navOpen}
@@ -258,8 +260,9 @@ export default function AppLayout() {
               <Button type="text" aria-label="Open navigation" icon={<MenuOutlined />}
                 onClick={() => setNavOpen(true)} />
             )}
+            {isMobile && <PracticeTag />}
             <Typography.Text strong className="gi-header-title">Warehouse &amp; Inventory</Typography.Text>
-            <PracticeTag />
+            {!isMobile && <PracticeTag />}
           </Space>
           <Space size="middle" className="gi-header-actions">
             <Tooltip title="Jump to any page (⌘K / Ctrl-K)">

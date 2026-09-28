@@ -540,6 +540,55 @@ body.gi-practice .gi-header {
 body.gi-practice .gi-login-card {
   box-shadow: 0 0 0 2px #f5a623, 0 24px 60px rgba(0, 0, 0, 0.45);
 }
+/* Phase 15c — Practice wears violet (Q15-3): the rail, the header and the
+   page background change hue, so no one mistakes it for Live's navy. The
+   antd primary follows (theme/themes.ts → practiceTheme). */
+body.gi-practice {
+  --gi-sider-bg: linear-gradient(180deg, #2a1b3d 0%, #150d24 100%);
+  --gi-app-bg: linear-gradient(160deg, #120a1f 0%, #1d1231 60%, #120a1f 100%);
+}
+:root[data-theme='light'] body.gi-practice {
+  --gi-app-bg: linear-gradient(160deg, #f1ebff 0%, #faf8ff 60%, #f1ebff 100%);
+}
+body.gi-practice .gi-sider { border-right-color: rgba(245, 166, 35, 0.35); }
+body.gi-practice .gi-header { background: rgba(34, 20, 56, 0.82) !important; }
+:root[data-theme='light'] body.gi-practice .gi-header { background: rgba(250, 247, 255, 0.88) !important; }
+body.gi-practice .gi-login {
+  background: radial-gradient(1100px 700px at 82% -10%, rgba(110, 72, 190, 0.5), transparent 60%),
+    radial-gradient(900px 600px at -12% 110%, rgba(245, 166, 35, 0.1), transparent 55%),
+    linear-gradient(160deg, #0f0819 0%, #1d1231 60%, #0f0819 100%);
+}
+/* The PRACTICE badge under the wordmark, top-left on every page (and on the
+   login once Practice is chosen). A glow, about once a second — never a hard
+   blink — and still under reduced motion. */
+.gi-practice-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #1a1024;
+  background: #f5a623;
+}
+.gi-practice-badge--float {
+  position: fixed;
+  top: 14px;
+  left: 16px;
+  z-index: 10;
+  margin: 0;
+}
+.gi-practice-pulse { animation: gi-practice-glow 1s ease-in-out infinite alternate; }
+@keyframes gi-practice-glow {
+  from { opacity: 1; box-shadow: 0 0 0 0 rgba(245, 166, 35, 0); }
+  to { opacity: 0.7; box-shadow: 0 0 0 6px rgba(245, 166, 35, 0.35); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gi-practice-pulse { animation: none; }
+}
 .gi-env-switch {
   display: flex;
   justify-content: center;
@@ -623,98 +672,110 @@ body.gi-practice .gi-login-card {
   .gi-rise-3d { animation: none; }
 }
 
-/* ── Phase 14e — the 3D login, Tier 0 (CSS + a static SVG; 0 KB of JS) ────────
-   Everyone gets this, native apps included (ruling Q14-12): the GI mark as two
-   layered, tilted planes floating behind a glass card, and a small mark above
-   the wordmark turning in 3D. The mark is /brand/gi-mark.svg, an image the
-   browser fetches like any other — nothing here is on the JS critical path.
-   Tier 1 (WebGL, lazy) cross-fades in over this on capable desktops and sets
-   `data-gi3d="on"` on .gi-login, which fades these layers out. */
+/* ── Phase 14e/15c — the login, Tier 0 (CSS + a static SVG; 0 KB of JS) ─────
+   Everyone gets this, native apps included (ruling Q14-12). Phase 15c: the GI
+   mark stands STILL in a band above the card (`.gi-login-crest`) — it rises in
+   once and a slow band of light sweeps across it (Q15-1); the tilted marks
+   that floated behind the card are gone (Q15-2). The card is laid out BELOW
+   the band, so the two cannot overlap at any size. Tier 1 (WebGL, lazy) draws
+   into the same band on capable desktops and sets `data-gi3d="on"`, which
+   fades this mark out. */
 .gi-login {
+  --gi-crest-h: clamp(120px, 24vh, 240px);
   position: relative;
   overflow: hidden;
-  perspective: 1200px;
   isolation: isolate;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding-top: 0;
 }
-.gi-login::before,
-.gi-login::after {
-  content: '';
-  position: absolute;
-  z-index: 0;
+.gi-login-crest {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  width: 100%;
+  height: var(--gi-crest-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   pointer-events: none;
-  background: url('/brand/gi-mark.svg') center / contain no-repeat;
   transition: opacity 900ms ease;
 }
-/* the near plane */
-.gi-login::before {
-  width: min(52vw, 620px);
+.gi-login-crest::before,
+.gi-login-crest::after {
+  content: '';
+  width: min(72vw, calc(var(--gi-crest-h) * 1.3));
   aspect-ratio: 412 / 246;
-  left: -6vw;
-  top: 8vh;
-  opacity: 0.16;
-  filter: drop-shadow(0 18px 40px rgba(212, 175, 55, 0.35));
-  transform: rotateX(16deg) rotateY(-26deg) translateZ(-60px);
-  animation: gi-mark-float 14s ease-in-out infinite;
 }
-/* the far plane — blurred and offset, for depth */
-.gi-login::after {
-  width: min(38vw, 440px);
-  aspect-ratio: 412 / 246;
-  right: -4vw;
-  bottom: 6vh;
-  opacity: 0.08;
-  filter: blur(3px);
-  transform: rotateX(-12deg) rotateY(22deg) translateZ(-220px);
-  animation: gi-mark-float 18s ease-in-out -6s infinite reverse;
+.gi-login-crest::before {
+  background: url('/brand/gi-mark.svg') center / contain no-repeat;
+  filter: drop-shadow(0 10px 28px rgba(212, 175, 55, 0.35));
+  animation: gi-crest-rise 1.1s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+/* the sweep: a light band masked to the mark's own shape */
+.gi-login-crest::after {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  -webkit-mask: url('/brand/gi-mark.svg') center / contain no-repeat;
+  mask: url('/brand/gi-mark.svg') center / contain no-repeat;
+  background: linear-gradient(105deg, transparent 40%, rgba(255, 246, 214, 0.8) 50%, transparent 60%)
+    150% 0 / 300% 100% no-repeat;
+  animation: gi-crest-sweep 9s ease-in-out 1.4s infinite;
+}
+@keyframes gi-crest-rise {
+  from { opacity: 0; transform: translateY(26px) scale(0.92); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes gi-crest-sweep {
+  0% { background-position: 150% 0; }
+  30%, 100% { background-position: -50% 0; }
 }
 .gi-login-card {
   position: relative;
   z-index: 1;
-  transform-style: preserve-3d;
+  margin-bottom: 24px;
   border-color: rgba(212, 175, 55, 0.38);
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.07),
     0 0 0 1px rgba(212, 175, 55, 0.06);
 }
+/* The small mark inside the card only when the window is too short for the
+   band — then it is the only mark, and it is static too. */
 .gi-login-head .gi-wordmark::before {
   content: '';
-  display: block;
-  width: 88px;
+  display: none;
+  width: 72px;
   aspect-ratio: 412 / 246;
   margin: 0 auto 10px;
   background: url('/brand/gi-mark.svg') center / contain no-repeat;
   filter: drop-shadow(0 6px 14px rgba(212, 175, 55, 0.35));
-  animation: gi-mark-turn 7s ease-in-out infinite;
 }
-@keyframes gi-mark-float {
-  0%, 100% { translate: 0 0; rotate: 0deg; }
-  50% { translate: 0 -18px; rotate: 1.5deg; }
+@media (max-height: 560px) {
+  .gi-login { --gi-crest-h: 0px; padding-top: 24px; }
+  .gi-login-crest { display: none; }
+  .gi-login-head .gi-wordmark::before { display: block; }
 }
 @keyframes gi-mark-turn {
   0%, 100% { transform: perspective(400px) rotateY(-14deg) rotateX(4deg); }
   50% { transform: perspective(400px) rotateY(14deg) rotateX(-4deg); }
 }
-/* Tier 1 on: the WebGL canvas carries the mark; the CSS planes step back. */
-.gi-login[data-gi3d='on']::before,
-.gi-login[data-gi3d='on']::after { opacity: 0; }
+/* Tier 1 on: the WebGL canvas carries the mark, over the same band. */
+.gi-login[data-gi3d='on'] .gi-login-crest { opacity: 0; }
 .gi-login-fx {
   position: absolute;
-  inset: 0;
-  /* a canvas is a replaced element: `inset` alone leaves it at its intrinsic
-     (device-pixel) size, twice the screen on a retina display */
+  top: 0;
+  left: 0;
+  /* a canvas is a replaced element: without an explicit size it keeps its
+     intrinsic (device-pixel) size, twice the screen on a retina display */
   width: 100%;
-  height: 100%;
+  height: var(--gi-crest-h);
   z-index: 0;
   pointer-events: none;
   opacity: 0;
   transition: opacity 900ms ease;
 }
 .gi-login[data-gi3d='on'] .gi-login-fx { opacity: 1; }
-/* …and the card turns with the scene's pointer parallax (set by loginScene.ts,
-   never more than two degrees; absent everywhere else). */
-.gi-login[data-gi3d='on'] .gi-login-card {
-  transform: perspective(1400px) rotateX(var(--gi-rx, 0deg)) rotateY(var(--gi-ry, 0deg));
-  transition: transform 120ms linear;
-}
 
 /* ── Phase 14e — landing pages: glass and scroll-driven reveals ──────────────
    Executive Summary and the Training Hub (Q14-12). CSS only; the reveal uses
@@ -771,9 +832,9 @@ body.gi-practice .gi-login-card {
   to   { opacity: 1; transform: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .gi-login::before, .gi-login::after,
-  .gi-login-head .gi-wordmark::before,
+  .gi-login-crest::before,
   .gi-training-hero img { animation: none; }
+  .gi-login-crest::after { display: none; }
   .exec-report .ant-card, .gi-training .ant-card { animation: none; transition: none; }
   .gi-training .ant-card:hover { transform: none; }
 }

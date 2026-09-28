@@ -123,3 +123,21 @@ export const siderTheme: ThemeConfig = {
     },
   },
 }
+
+// Phase 15c — Practice wears violet (ruling Q15-3), so it cannot be mistaken
+// for Live's navy and gold at a glance; amber stays for the PRACTICE badge.
+// Chosen from `CURRENT_ENV` (known synchronously at load, so no Live-coloured
+// first paint); what the page SAYS it is still comes from GET /instance, and a
+// mismatch is the red banner with every write refused.
+const VIOLET = '#8E6CEF'
+export const practiceTheme = (t: ThemeConfig): ThemeConfig => ({
+  ...t,
+  token: { ...t.token, colorPrimary: VIOLET, colorLink: VIOLET, colorInfo: VIOLET },
+  components: {
+    ...t.components,
+    Button: { ...goldButton, colorPrimary: VIOLET, colorPrimaryHover: '#A58BFF',
+      colorPrimaryActive: '#7152D6', primaryColor: '#fff', primaryShadow: 'none' },
+    Menu: { ...t.components?.Menu, itemSelectedColor: '#CDBDFF',
+      itemSelectedBg: 'rgba(142, 108, 239, 0.22)', itemHoverBg: 'rgba(142, 108, 239, 0.16)' },
+  },
+})

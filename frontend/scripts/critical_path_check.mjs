@@ -98,6 +98,13 @@ if (asyncBytes > ASYNC_BUDGET) problems.push(`the async login bootstrap is ${asy
 if (asyncRefs.some((p) => WEBGL.test(readFileSync(join(DIST, p), 'utf8')))) problems.push('the async bootstrap contains WebGL — it must only load the scene')
 if (precached3d.length) problems.push(`the service worker precaches ${precached3d.join(', ')} — every installed phone would download it`)
 if (lazy3dBytes > LAZY_3D_BUDGET) problems.push(`the lazy 3D chunk is ${kb(lazy3dBytes)} gz (budget ${kb(LAZY_3D_BUDGET)})`)
+// Phase 15c: two `@keyframes` with one name is not an error to a browser — the
+// LATER one silently wins everywhere the name is used. A login animation named
+// `gi-rise` once replaced the dashboard's card entrance on Live.
+const srcCss = readFileSync(join(ROOT, 'src', 'index.css'), 'utf8')
+const frames = [...srcCss.matchAll(/@keyframes\s+([\w-]+)/g)].map((m) => m[1])
+const dupFrames = [...new Set(frames.filter((n, i) => frames.indexOf(n) !== i))]
+if (dupFrames.length) problems.push(`@keyframes defined twice in src/index.css (the later one wins everywhere): ${dupFrames.join(', ')}`)
 
 const line = `JS ${kb(jsBytes)} gz (${dJs >= 0 ? '+' : ''}${dJs} B raw vs baseline) · `
   + `CSS ${kb(cssBytes)} (${dCss >= 0 ? '+' : ''}${dCss} B) · lazy 3D ${kb(lazy3dBytes)}`

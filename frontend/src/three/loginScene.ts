@@ -1,48 +1,56 @@
 /**
- * Phase 14e — the login's Tier 1: the GI mark extruded in gold over a glass
- * slab, in WebGL. Its own build entry, loaded by `boot.ts` after first paint
- * and only on a capable desktop, so none of it is on the critical path
- * (enforced by `scripts/critical_path_check.mjs`: ≤ 180 KB gz, never on the
- * path, never precached by the service worker).
+ * Phase 14e/15c — the login's Tier 1: the GI mark extruded in gold, in WebGL,
+ * standing in the band ABOVE the sign-in card (`.gi-login-crest`). Its own
+ * build entry, loaded by `boot.ts` after first paint and only on a capable
+ * desktop, so none of it is on the critical path (enforced by
+ * `scripts/critical_path_check.mjs`: ≤ 180 KB gz, never on the path, never
+ * precached by the service worker).
  *
- * WHAT IT DOES. The mark rises and turns into place (an eased intro), a warm
- * key light sweeps across the gold, a soft halo glows behind it and a little
- * gold dust drifts through the glass. The pointer turns the whole rig — and
- * the sign-in card turns WITH it (CSS variables on `.gi-login`, two degrees at
- * most), so the page reads as one 3D space, not a video behind a form.
+ * WHAT IT DOES (Phase 15c, rulings Q15-1/Q15-2). The mark rises into place
+ * ONCE (an eased intro while a warm key light crosses it), then stands still.
+ * Every few seconds a slow band of light sweeps across the gold — the only
+ * motion after the intro. There is no glass slab behind it any more (it read
+ * as an empty pane behind the card), no drifting dust, and nothing follows the
+ * pointer: the mark and the card are static.
+ *
+ * WHERE IT IS. The canvas covers only the crest band (CSS gives both the same
+ * `--gi-crest-h`), and the camera distance is computed from the band's size so
+ * the whole mark always fits inside it. The card is laid out BELOW the band, so
+ * the two cannot overlap at any window size — the 14e version centred the mark
+ * in the margin beside an assumed 400 px card and collided on narrow windows.
  *
  * THE PERFORMANCE RULES, carried from the launcher (plan §5.2):
  *   · renders only while the login is visible (tab hidden → stops);
- *   · caps at 30 fps, and drops to ZERO when nothing moves — the scene settles
- *     a few seconds after the pointer stops, then waits for it. Its clock only
+ *   · caps at 30 fps, and renders NOTHING between sweeps — its clock only
  *     advances while it renders, so waking never jumps;
  *   · adaptive resolution: sustained heavy frames drop the pixel ratio to 1;
  *   · on sign-in the scene is DISPOSED (geometry, materials, textures, the GL
  *     context), not hidden — Ollama shares this GPU;
  *   · no WebGL, a SOFTWARE renderer (SwiftShader, llvmpipe…), frames far over
- *     budget, a lost context or the SVG not loading → it removes itself and
- *     Tier 0 (the CSS glass) stays exactly as it was.
+ *     budget, a lost context, no room for the band, or the SVG not loading →
+ *     it removes itself and Tier 0 (the CSS mark in the same band) stays.
  *
  * `.gi-login[data-gi3d]` says what happened, for people and for the E2E spec:
- * "loading" → "on" | "unavailable" (with `data-gi3d-reason` = "software" or
- * "slow" when the device has WebGL but could not afford the scene).
+ * "loading" → "on" | "unavailable" (with `data-gi3d-reason` = "software",
+ * "slow" or "space" when the device has WebGL but the scene was not drawn).
  */
 import {
-  ACESFilmicToneMapping, AdditiveBlending, AmbientLight, Box3, BufferAttribute, BufferGeometry,
-  CanvasTexture, Color, DirectionalLight, ExtrudeGeometry, Group, Mesh, MeshBasicMaterial,
-  MeshPhysicalMaterial, PerspectiveCamera, PMREMGenerator, Points, PointsMaterial, Scene, Shape,
-  ShapeGeometry, Sprite, SpriteMaterial, SRGBColorSpace, Vector3, WebGLRenderer,
+  ACESFilmicToneMapping, AdditiveBlending, AmbientLight, Box3, BufferGeometry, CanvasTexture,
+  Color, DirectionalLight, ExtrudeGeometry, Group, Mesh, MeshPhysicalMaterial, PerspectiveCamera,
+  PMREMGenerator, Scene, Sprite, SpriteMaterial, SRGBColorSpace, Vector3, WebGLRenderer,
 } from 'three'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { markShapes } from './markShapes'
 
 const MARK_URL = '/brand/gi-mark.svg'
 const FRAME_MS = 1000 / 30
-const SETTLE_MS = 3000
 const INTRO_S = 1.6
-const SLOW_FRAME_MS = 24        // average over the first frames → give up
+const SWEEP_S = 2.6             // one pass of light across the gold
+const SWEEP_EVERY_MS = 9000     // …then stillness until the next
+const SLOW_FRAME_MS = 24        // median over the first frames → give up
 const HEAVY_FRAME_MS = 12       // sustained → drop to pixel ratio 1
-const DUST = 160
+const MIN_BAND_PX = 60          // a band this short has no room for the mark
+const MARK_W = 1.4              // scene units the mark is scaled to
 
 function isSoftwareRenderer(gl: WebGLRenderingContext | WebGL2RenderingContext): boolean {
   try {
@@ -52,18 +60,6 @@ function isSoftwareRenderer(gl: WebGLRenderingContext | WebGL2RenderingContext):
   } catch {
     return false
   }
-}
-
-function roundedRect(w: number, h: number, r: number): Shape {
-  const s = new Shape()
-  const x = -w / 2
-  const y = -h / 2
-  s.moveTo(x + r, y)
-  s.lineTo(x + w - r, y); s.quadraticCurveTo(x + w, y, x + w, y + r)
-  s.lineTo(x + w, y + h - r); s.quadraticCurveTo(x + w, y + h, x + w - r, y + h)
-  s.lineTo(x + r, y + h); s.quadraticCurveTo(x, y + h, x, y + h - r)
-  s.lineTo(x, y + r); s.quadraticCurveTo(x, y, x + r, y)
-  return s
 }
 
 /** A soft round sprite, drawn once on a 2D canvas (no image to fetch). */
@@ -111,6 +107,16 @@ export function mountLoginScene(host: HTMLElement | null =
     return () => {}
   }
   el.prepend(canvas)
+  // A window too short for the crest band (CSS hides it) gets Tier 0's small
+  // mark inside the card instead — there is nowhere to draw this one.
+  if (canvas.clientHeight < MIN_BAND_PX) {
+    canvas.remove()
+    renderer.dispose()
+    renderer.forceContextLoss()
+    el.dataset.gi3d = 'unavailable'
+    el.dataset.gi3dReason = 'space'
+    return () => {}
+  }
   let dpr = Math.min(window.devicePixelRatio || 1, 2)
   renderer.setPixelRatio(dpr)
   renderer.outputColorSpace = SRGBColorSpace
@@ -126,35 +132,19 @@ export function mountLoginScene(host: HTMLElement | null =
   const camera = new PerspectiveCamera(32, 1, 0.1, 50)
   camera.position.set(0, 0, 6)
   scene.add(new AmbientLight(0xffffff, 0.3))
-  const key = new DirectionalLight(0xffe2a8, 2.4)      // the sweep
+  const key = new DirectionalLight(0xffe2a8, 2.4)      // crosses the mark during the intro
   const rim = new DirectionalLight(0x6fa8ff, 1.5)
   rim.position.set(4, -2, -3)
-  scene.add(key, rim)
+  const sweep = new DirectionalLight(0xfff1c8, 0)      // the slow band of light, between intros
+  scene.add(key, rim, sweep)
 
-  const rig = new Group()          // pointer parallax turns this
+  // A fixed three-quarter pose: enough angle for the bevel to catch the
+  // light, never moving (ruling Q15-1).
+  const rig = new Group()
+  rig.rotation.set(0.06, -0.16, 0)
   scene.add(rig)
   const geos: BufferGeometry[] = []
   const textures: CanvasTexture[] = []
-
-  // ── the glass slab, with a thin gold rim ────────────────────────────────
-  const glass = new MeshPhysicalMaterial({
-    color: new Color(0x7fa6e6), metalness: 0, roughness: 0.12, transparent: true,
-    opacity: 0.13, depthWrite: false, clearcoat: 1, clearcoatRoughness: 0.1, envMapIntensity: 1.1,
-  })
-  const slabGeo = new ExtrudeGeometry(roundedRect(1.75, 1.2, 0.12), {
-    depth: 0.06, bevelEnabled: true, bevelThickness: 0.02, bevelSize: 0.02,
-    bevelSegments: 3, curveSegments: 8,
-  })
-  slabGeo.translate(0, 0, -0.4)
-  geos.push(slabGeo)
-  rig.add(new Mesh(slabGeo, glass))
-  const rimShape = roundedRect(1.8, 1.25, 0.14)
-  rimShape.holes.push(roundedRect(1.77, 1.22, 0.13))
-  const rimGeo = new ShapeGeometry(rimShape, 12)
-  rimGeo.translate(0, 0, -0.3)
-  geos.push(rimGeo)
-  const rimMat = new MeshBasicMaterial({ color: 0xd4af37, transparent: true, opacity: 0.55, toneMapped: false })
-  rig.add(new Mesh(rimGeo, rimMat))
 
   // ── the halo behind the mark ────────────────────────────────────────────
   const haloTex = glowTexture('rgba(255, 200, 90, 0.55)', 'rgba(255, 200, 90, 0)')
@@ -162,27 +152,8 @@ export function mountLoginScene(host: HTMLElement | null =
   const haloMat = new SpriteMaterial({ map: haloTex, transparent: true, depthWrite: false,
     blending: AdditiveBlending, opacity: 0 })
   const halo = new Sprite(haloMat)
-  halo.scale.set(2.6, 1.9, 1)
   halo.position.z = -0.35
   rig.add(halo)
-
-  // ── gold dust drifting through the glass ────────────────────────────────
-  const dustPos = new Float32Array(DUST * 3)
-  const dustSeed = new Float32Array(DUST)
-  for (let i = 0; i < DUST; i++) {
-    dustPos[i * 3] = (Math.random() - 0.5) * 2.6
-    dustPos[i * 3 + 1] = (Math.random() - 0.5) * 1.8
-    dustPos[i * 3 + 2] = (Math.random() - 0.5) * 1.2
-    dustSeed[i] = Math.random() * Math.PI * 2
-  }
-  const dustGeo = new BufferGeometry()
-  dustGeo.setAttribute('position', new BufferAttribute(dustPos, 3))
-  geos.push(dustGeo)
-  const dotTex = glowTexture('rgba(255, 225, 150, 1)', 'rgba(255, 225, 150, 0)')
-  textures.push(dotTex)
-  const dustMat = new PointsMaterial({ map: dotTex, size: 0.035, transparent: true, opacity: 0,
-    depthWrite: false, blending: AdditiveBlending, color: 0xffd98a })
-  rig.add(new Points(dustGeo, dustMat))
 
   // ── the mark (filled in when the SVG arrives) ───────────────────────────
   const gold = new MeshPhysicalMaterial({
@@ -191,31 +162,33 @@ export function mountLoginScene(host: HTMLElement | null =
   })
   const mark = new Group()
   rig.add(mark)
+  let markH = MARK_W * 246 / 412   // the SVG's own aspect, until it arrives
 
   // ── the loop ────────────────────────────────────────────────────────────
   let raf = 0
   let last = 0
-  let settledAt = 0
   let alive = true
   let clock = 0                   // seconds; advances only while rendering
   let introAt = -1                // clock time the mark arrived
+  let sweepAt = -1                // clock time the current sweep began
+  let sweepTimer = 0
   let compiling = false
-  const target = { x: 0, y: 0 }
-  const cur = { x: 0, y: 0 }
   const probe: number[] = []     // frame costs after the warm-up frames
   let warm = 2                   // frames skipped before measuring
   let heavy = 0
 
   const place = () => {
-    const w = el.clientWidth || window.innerWidth
-    const h = el.clientHeight || window.innerHeight
+    const w = canvas.clientWidth
+    const h = canvas.clientHeight
+    if (!w || !h) return
     renderer.setSize(w, h, false)
     camera.aspect = w / h
+    // Stand back far enough that the whole mark — with room for the rise —
+    // fits the band: 80 % of its height, 70 % of its width, whichever binds.
+    const need = Math.max(markH / 0.8, MARK_W / 0.7 / camera.aspect)
+    camera.position.z = need / 2 / Math.tan((camera.fov * Math.PI) / 360)
     camera.updateProjectionMatrix()
-    // centred in the margin LEFT of the centred 400 px card, whatever the width
-    const halfW = Math.tan((camera.fov * Math.PI) / 360) * camera.position.z * camera.aspect
-    const cardLeft = Math.max(0, (w - 400) / 2) / w
-    rig.position.set(-halfW * (1 - cardLeft), 0.2, 0)
+    halo.scale.set(MARK_W * 1.7, Math.min(markH * 1.35, need), 1)
   }
 
   const frame = (now: number) => {
@@ -228,26 +201,17 @@ export function mountLoginScene(host: HTMLElement | null =
     last = now
     const t = clock
 
-    cur.x += (target.x - cur.x) * 0.08
-    cur.y += (target.y - cur.y) * 0.08
     const intro = introAt < 0 ? 0 : easeOutCubic((t - introAt) / INTRO_S)
-    rig.rotation.y = -0.35 + cur.x * 0.45 + Math.sin(t * 0.5) * 0.06
-    rig.rotation.x = 0.12 + cur.y * 0.3 + Math.cos(t * 0.4) * 0.03
-    mark.position.y = (1 - intro) * -0.5 + Math.sin(t * 0.8) * 0.04
+    mark.position.y = (1 - intro) * -0.5
     mark.rotation.y = (1 - intro) * -1.4
     mark.scale.setScalar(0.6 + 0.4 * intro)
-    haloMat.opacity = 0.38 * intro * (0.85 + 0.15 * Math.sin(t * 1.3))
-    dustMat.opacity = 0.7 * intro
-    // the key light sweeps across the gold, then keeps a slow drift
-    key.position.set(-4 + 6 * intro + Math.sin(t * 0.35) * 1.2, 4, 5)
-    for (let i = 0; i < DUST; i++) {
-      dustPos[i * 3 + 1] += 0.0016 + Math.sin(t + dustSeed[i]) * 0.0008
-      if (dustPos[i * 3 + 1] > 0.9) dustPos[i * 3 + 1] = -0.9
-    }
-    dustGeo.attributes.position.needsUpdate = true
-    // the sign-in card turns with the scene — two degrees, never more
-    el.style.setProperty('--gi-ry', `${(cur.x * 2).toFixed(2)}deg`)
-    el.style.setProperty('--gi-rx', `${(-cur.y * 2).toFixed(2)}deg`)
+    haloMat.opacity = 0.34 * intro
+    key.position.set(-4 + 6 * intro, 4, 5)
+    // the sweep: a band of light crossing left to right, fading in and out,
+    // so it starts and ends at nothing and never jumps
+    const p = sweepAt < 0 ? 1 : Math.min(1, (t - sweepAt) / SWEEP_S)
+    sweep.intensity = sweepAt < 0 ? 0 : 3.2 * Math.sin(Math.PI * p)
+    sweep.position.set(-6 + 12 * p, 2, 5)
 
     const f0 = performance.now()
     renderer.render(scene, camera)
@@ -276,28 +240,28 @@ export function mountLoginScene(host: HTMLElement | null =
       if (heavy > 10 && dpr > 1) { dpr = 1; renderer.setPixelRatio(1); place(); heavy = 0 }
       if (el.dataset.gi3d !== 'on') el.dataset.gi3d = 'on'
     }
-    const moving = Math.abs(target.x - cur.x) + Math.abs(target.y - cur.y) > 0.002
-      || (introAt >= 0 && t - introAt < INTRO_S)
-    if (moving) settledAt = now
-    // drop to 0 fps once settled; the pointer wakes it
-    if (now - settledAt < SETTLE_MS || introAt < 0) raf = requestAnimationFrame(frame)
+    const introRunning = introAt < 0 || t - introAt < INTRO_S
+    const sweepRunning = sweepAt >= 0 && p < 1
+    if (introRunning || sweepRunning) { raf = requestAnimationFrame(frame); return }
+    // Still: draw nothing until the next sweep.
+    if (sweepAt >= 0) sweepAt = -1
+    if (!sweepTimer) sweepTimer = window.setTimeout(startSweep, SWEEP_EVERY_MS)
   }
   const wake = () => {
     if (!alive || raf || document.hidden) return
-    settledAt = performance.now()
     last = 0
     raf = requestAnimationFrame(frame)
   }
-  const onPointer = (e: PointerEvent) => {
-    target.x = (e.clientX / window.innerWidth) * 2 - 1
-    target.y = (e.clientY / window.innerHeight) * 2 - 1
+  function startSweep() {
+    sweepTimer = 0
+    if (!alive) return
+    sweepAt = clock
     wake()
   }
   const onVisibility = () => { if (!document.hidden) wake() }
-  const onResize = () => { place(); wake() }
+  const onResize = () => { place(); if (introAt >= 0) { last = 0; raf = raf || requestAnimationFrame(frame) } }
   const onLost = (e: Event) => { e.preventDefault(); teardown(); el.dataset.gi3d = 'unavailable' }
 
-  window.addEventListener('pointermove', onPointer, { passive: true })
   window.addEventListener('resize', onResize)
   document.addEventListener('visibilitychange', onVisibility)
   canvas.addEventListener('webglcontextlost', onLost)
@@ -315,13 +279,15 @@ export function mountLoginScene(host: HTMLElement | null =
         depth, bevelEnabled: true, bevelThickness: 5, bevelSize: 3, bevelSegments: 3, curveSegments: 5,
       })
       geo.translate(-width / 2, height / 2, -depth / 2)
-      geo.scale(1.4 / width, 1.4 / width, 1.4 / width)
+      geo.scale(MARK_W / width, MARK_W / width, MARK_W / width)
       geos.push(geo)
       mark.add(new Mesh(geo, gold))
     }
+    markH = MARK_W * height / width
     const box = new Box3().setFromObject(mark)
     const c = box.getCenter(new Vector3())
     mark.children.forEach((m) => m.position.sub(c))
+    place()
     // Compile every shader BEFORE the intro starts (in parallel where the GPU
     // driver allows): the physical materials can take 100 ms+ to compile, and
     // doing it inside the first frame would stutter the intro and trip the
@@ -344,13 +310,13 @@ export function mountLoginScene(host: HTMLElement | null =
     if (!alive) return
     alive = false
     if (raf) cancelAnimationFrame(raf)
-    window.removeEventListener('pointermove', onPointer)
+    if (sweepTimer) window.clearTimeout(sweepTimer)
     window.removeEventListener('resize', onResize)
     document.removeEventListener('visibilitychange', onVisibility)
     canvas.removeEventListener('webglcontextlost', onLost)
     geos.forEach((g) => g.dispose())
     textures.forEach((x) => x.dispose())
-    ;[gold, glass, rimMat, haloMat, dustMat].forEach((m) => m.dispose())
+    ;[gold, haloMat].forEach((m) => m.dispose())
     env.dispose()
     pmrem.dispose()
     room.traverse((o) => {
@@ -362,8 +328,6 @@ export function mountLoginScene(host: HTMLElement | null =
     renderer.dispose()
     renderer.forceContextLoss()
     canvas.remove()
-    el.style.removeProperty('--gi-rx')
-    el.style.removeProperty('--gi-ry')
     if (el.dataset.gi3d === 'on' || el.dataset.gi3d === 'loading') delete el.dataset.gi3d
   }
   return teardown
