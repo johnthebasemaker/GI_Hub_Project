@@ -1,0 +1,11 @@
+key: garnet-baseline
+title: Garnet is now benchmarked per surface — Old or New
+body: |
+  Garnet draws have their own "Surface prep — Garnet" card in the Surface Shield
+  queue. Say whether the surface was Old or New; the draw (a TON counts as
+  1000 KG) is compared with the Garnet baseline for that substrate and surface.
+  HODs set the four baseline figures once in SME → Master Data → Garnet baseline.
+  Garnet credits no lining area.
+routes: [/execution, /sme]
+roles: [supervisor, hod, admin]
+manual: "4.9a.7"

@@ -1294,6 +1294,12 @@ async def lining_systems(site_id: Optional[str] = None,
                                              - float(r.done or 0), 0.0), 2)}
            for r in sqm_rows}
 
+    # Phase 15d: the surface-prep (Garnet) codes stay listed — the Issue form
+    # needs them, because every Surface Shield is issued against a code and
+    # Garnet's is ESC1/ESC2 — but FLAGGED, so the Smart Calculator (an
+    # estimator) leaves them out (Q15-6) and nothing reads them as lining.
+    from .services import prep as PR
+    prep = await PR.prep_codes(session)
     systems: dict[str, dict] = {}
     sap_index: dict[str, list[str]] = {}
     for r in rows:
@@ -1301,7 +1307,7 @@ async def lining_systems(site_id: Optional[str] = None,
         if not code:
             continue
         s = systems.setdefault(code, {
-            "code": code,
+            "code": code, "prep": code in prep,
             "short_name": (r["Lining_System_Name"] or "").strip(),
             "substrate": (r["Substrate"] or "").strip(),
             "lining_system": (r["Lining_System"] or "").strip(),

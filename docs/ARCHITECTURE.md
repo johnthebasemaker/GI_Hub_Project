@@ -373,6 +373,41 @@ both tables already carry `Work_Date`, `Equipment_Tag`, `System_Code`.
 - Mixed lining systems WARN rather than refuse — the HOD may have wanted that
   view.
 
+### 4f. Surface prep (Garnet) — Phase 15d, `services/prep.py`
+
+ESC1/ESC2 are the **blasting** codes: the sub-activity codes of the blasting
+man-hour norms. The planner calls a code "surface prep" when **no recipe line
+names it**. The 2026-09-27 workbooks added Garnet recipe lines under exactly
+those codes, which by that rule would have turned blasting into a lining system.
+
+- **A code is surface prep when it has a row in `sme_prep_baseline`.** The four
+  rows (ESC1/ESC2 × OLD/NEW) are seeded by the migration's `data_upgrade`.
+  `prep_codes()` is subtracted from every lining list: `planner._lining_codes`,
+  `/execution/activities` `manpower_only`, the norms grid, `/mh/meta`,
+  `consumption_form.available_systems`. `/entry/lining-systems` keeps them but
+  flags `prep: true`, because the Issue form needs them and the Smart Calculator
+  hides them.
+- **The benchmark is the baseline, not the recipe line.** `recipe_rate(…,
+  surface_state)` returns `sme_prep_baseline.KG_Per_SQM` for (code, OLD|NEW). NEW
+  falls back to the workbook's `For_1_SQM` until set (Q15-9); OLD has none until
+  set. It is snapshotted on the row like every benchmark.
+- **The pair is the substrate, not the equipment's code.** `pair_ok`: CV/CONCRETE
+  → ESC1, ME/TANK/VESSEL/STEEL → ESC2 (Q15-5), because no equipment *carries* a
+  prep code. `equipment_for_system` lists tags the same way.
+- **No area is credited.** `execution.credit_done_sqm`, the one writer, returns
+  early for a prep code. Blasted area is recorded by the blasting execution
+  entries; a Garnet job's area only feeds its variance (Q15-6).
+- **Garnet is its own card.** `sme_groups.queue` splits Garnet rows (recipe SAPs
+  under prep codes, plus controlled-category descriptions containing GARNET)
+  into `kind: "prep"` cards, with `prep_code` from the substrate and
+  `surface_hint` from the tag's last answer (Q15-7). The two sides refuse each
+  other's material (422).
+- **Units:** a mass pack with Unit Size ≠ 1 has base **KG** (`units._measure_base`),
+  so a TON of 1000 is 1000 KG. A prep row whose base is not KG is refused.
+- **Estimator untouched:** it is driven by the codes the *equipment* carries, and
+  none carries a prep code. Both engines are unchanged and the goldens identical
+  (rule 1c).
+
 ## 5. Frontend map (`frontend/src/`)
 
 React Router routes in `App.tsx`; **`config/nav.tsx` is the single

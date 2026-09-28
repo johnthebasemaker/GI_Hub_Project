@@ -164,17 +164,52 @@ async def queue(session: AsyncSession, *, site_id: Optional[str]) -> dict:
             g["edited"] += 1
         if it.get("prev_code") and not g["prev_code"]:
             g["prev_code"], g["prev_sqm"] = it.get("prev_code"), it.get("prev_sqm")
+    # ⚠️ PHASE 15d — GARNET IS ITS OWN CARD. It is surface preparation, benchmarked
+    # per surface (Old / New) under a prep code chosen by the equipment's
+    # substrate, with its OWN area (the blasted m² is not the lined m²). Left on
+    # the lining card it would only ever read "not in recipe".
+    from . import prep as PR
+    garnet = await PR.garnet_saps(session)
+    prep_names = {c: n for c, n in (await session.execute(text(
+        'SELECT TRIM("Lining_System_Code"), MAX("Lining_System_Name") FROM sme_recipe '
+        'WHERE TRIM("Lining_System_Code") IN (SELECT "Prep_Code" FROM sme_prep_baseline) '
+        'GROUP BY 1'))).all()}
+    prep_options = [{"code": c, "name": prep_names.get(c) or
+                     ("Blasting — concrete" if c == "ESC1" else "Blasting — steel / vessel")}
+                    for c in sorted(await PR.prep_codes(session))]
     out = []
     for (site, day, tag), g in sorted(groups.items(), key=lambda kv: (
             0 if kv[1]["rejected"] else 1, kv[0][1], kv[0][2])):
+        prep_rows = [r for r in g["rows"] if _sap(r["sap_code"]) in garnet]
+        if prep_rows:
+            ids = {r["consumption_id"] for r in prep_rows}
+            p = {**g, "rows": prep_rows,
+                 "rejected": [x for x in g["rejected"] if x["consumption_id"] in ids],
+                 "edited": sum(1 for r in prep_rows if r.get("reason") == "edited"),
+                 "kind": "prep", "candidates": [], "suggested_code": None,
+                 "prep_code": await PR.code_for_tag(session, site_id=site, tag=tag),
+                 "prep_options": prep_options,
+                 "surface_hint": await PR.last_state(session, site_id=site, tag=tag),
+                 "sqm_hint": sqm_hint([r["remarks"] for r in prep_rows]),
+                 "key": f"{site}|{day}|{tag}|prep"}
+            out.append(p)
+            g = {**g, "rows": [r for r in g["rows"] if r["consumption_id"] not in ids],
+                 "rejected": [x for x in g["rejected"] if x["consumption_id"] not in ids]}
+            g["edited"] = sum(1 for r in g["rows"] if r.get("reason") == "edited")
+            if not g["rows"]:
+                continue
         saps = [r["sap_code"] for r in g["rows"]]
         remarks = [r["remarks"] for r in g["rows"]]
         cands = await suggest(session, site_id=site, tag=tag, saps=saps, remarks=remarks)
+        g["kind"] = "lining"
         g["candidates"] = cands
         g["suggested_code"] = g["prev_code"] or (cands[0]["code"] if cands else None)
         g["sqm_hint"] = g["prev_sqm"] or sqm_hint(remarks)
         g["key"] = f"{site}|{day}|{tag}"
         out.append(g)
+    # rejected jobs first, then oldest first — the prep cards interleaved
+    out.sort(key=lambda j: (0 if j["rejected"] else 1, j["work_date"], j["tag"],
+                            1 if j.get("kind") == "prep" else 0))
     return {"groups": out, "total_rows": sw.get("total"),
             "unmapped": [{"site_id": s, "tank_no": t, "rows": n}
                          for (s, t), n in sorted(unmapped.items(), key=lambda x: -x[1])],
@@ -208,8 +243,13 @@ async def _share_expected(session: AsyncSession, group_id: int, sqm: float,
 
 async def submit(session: AsyncSession, *, site_id: str, work_date: str, tag: str,
                  code: str, sqm: float, consumption_ids: list[int],
-                 notes: Optional[str], username: str) -> dict:
-    """One system code and one SQM for the chosen materials of one job."""
+                 notes: Optional[str], username: str,
+                 surface_state: Optional[str] = None) -> dict:
+    """One system code and one SQM for the chosen materials of one job.
+
+    Phase 15d: a GARNET job is the same call with a prep code (ESC1/ESC2) and
+    `surface_state` OLD | NEW; its area is benchmark-only (services/prep.py)."""
+    from . import prep as PR
     from . import reconcile as RC
     from . import sme_link as SL
     ids = sorted({int(i) for i in consumption_ids or []})
@@ -238,15 +278,21 @@ async def submit(session: AsyncSession, *, site_id: str, work_date: str, tag: st
                      f"'{r['Tank_No'] or '(blank)'}', which "
                      + ("is not mapped to any equipment — map it in Tank Aliases first"
                         if st != "mapped" else f"is {rt}, not {tag}"))
+    prep = await PR.is_prep(session, code)
+    state = PR.norm_state(surface_state) if prep else None
+    if prep and state is None:
+        raise HTTPException(422, "Garnet is benchmarked per surface: say whether this "
+                                 "job was an OLD surface or a NEW surface.")
     gid = (await session.execute(pg_insert(group_t).values(
         Site_ID=site_id, Work_Date=_day(work_date), Equipment_Tag_No=tag,
         Lining_System_Code=code, SQM_Completed=sqm, status="staged", notes=notes,
+        Surface_State=state,
         submitted_by=username).returning(group_t.c["id"]))).scalar_one()
     results, joined = [], 0
     for cid in ids:
         res = await SL.assign(session, consumption_id=cid, code=code, tag=tag, sqm=sqm,
                               work_date=_day(work_date), notes=notes,
-                              username=username, site_id=site_id)
+                              username=username, site_id=site_id, surface_state=state)
         results.append(res)
         # A fresh or bounced row joins THIS group; a revision of an approved row
         # stays with its own job (decide_revision moves that job's credit).
@@ -264,14 +310,17 @@ async def submit(session: AsyncSession, *, site_id: str, work_date: str, tag: st
                                 sqm=sqm, n=joined, username=username)
     await write_audit(session, username, "SME_GROUP_SUBMIT", "sme_attribution_group",
                       f"group={gid} {_day(work_date)} {tag}/{code} sqm={sqm:g} "
-                      f"rows={len(ids)} joined={joined}")
+                      f"rows={len(ids)} joined={joined}"
+                      + (f" surface={state}" if state else ""))
     return {"group_id": gid, "rows": results, "joined": joined, "status": "staged",
-            "Lining_System_Code": code, "Equipment_Tag_No": tag, "SQM_Completed": sqm}
+            "Lining_System_Code": code, "Equipment_Tag_No": tag, "SQM_Completed": sqm,
+            "Surface_State": state}
 
 
 async def submit_one(session: AsyncSession, *, consumption_id: int, code: str, tag: str,
                      sqm: float, work_date: Optional[str], notes: Optional[str],
-                     username: str, site_id: Optional[str]) -> dict:
+                     username: str, site_id: Optional[str],
+                     surface_state: Optional[str] = None) -> dict:
     """The per-row API as a GROUP OF ONE (ruling Q14-16).
 
     Exactly the Phase 13 semantics — no same-day or same-tank requirement, the
@@ -284,7 +333,8 @@ async def submit_one(session: AsyncSession, *, consumption_id: int, code: str, t
         {"i": consumption_id})).mappings().first()
     res = await SL.assign(session, consumption_id=consumption_id, code=code, tag=tag,
                           sqm=sqm, work_date=work_date, notes=notes,
-                          username=username, site_id=site_id)
+                          username=username, site_id=site_id,
+                          surface_state=surface_state)
     staged = (await session.execute(select(log_t.c["id"]).where(
         log_t.c["id"] == int(res["id"]), log_t.c["status"] == "staged",
         log_t.c["Consumption_ID"] == consumption_id,
@@ -294,6 +344,7 @@ async def submit_one(session: AsyncSession, *, consumption_id: int, code: str, t
             Site_ID=row["Site_ID"], Work_Date=_day(work_date or row["Date"]),
             Equipment_Tag_No=tag.strip(), Lining_System_Code=code.strip(),
             SQM_Completed=float(sqm), status="staged", notes=notes,
+            Surface_State=res.get("Surface_State"),
             submitted_by=username).returning(group_t.c["id"]))).scalar_one()
         await session.execute(update(log_t).where(log_t.c["id"] == int(res["id"]))
                               .values(group_id=gid))
@@ -307,7 +358,8 @@ async def submit_one(session: AsyncSession, *, consumption_id: int, code: str, t
             await session.execute(update(group_t).where(
                 group_t.c["id"] == gid, group_t.c["status"].in_(("staged", "rejected")))
                 .values(Lining_System_Code=code.strip(), Equipment_Tag_No=tag.strip(),
-                        SQM_Completed=float(sqm), status="staged", rejected_reason=None))
+                        SQM_Completed=float(sqm), status="staged", rejected_reason=None,
+                        Surface_State=res.get("Surface_State")))
         res = {**res, "group_id": gid}
     return res
 
@@ -369,11 +421,14 @@ async def decide_group(session: AsyncSession, *, group_id: int, approve: bool,
     code = str(edits.get("Lining_System_Code") or g["Lining_System_Code"]).strip()
     tag = str(edits.get("Equipment_Tag_No") or g["Equipment_Tag_No"]).strip()
     sqm = float(edits.get("SQM_Completed", g["SQM_Completed"]) or 0)
-    # ⚠️ ONCE. The job's area, credited by the same function every path uses.
+    # ⚠️ ONCE. The job's area, credited by the same function every path uses —
+    # which credits nothing for a surface-prep (Garnet) job (Phase 15d).
+    from . import prep as PR
+    credited = 0.0 if await PR.is_prep(session, code) else sqm
     await X.credit_done_sqm(session, site_id=g["Site_ID"], tag=tag, code=code, sqm=sqm)
     await session.execute(update(group_t).where(group_t.c["id"] == group_id).values(
         status="committed", Lining_System_Code=code, Equipment_Tag_No=tag,
-        SQM_Completed=sqm, Done_SQM_Credited=sqm, hod_username=username,
+        SQM_Completed=sqm, Done_SQM_Credited=credited, hod_username=username,
         hod_decided_at=func.now()))
     if "SQM_Completed" in edits:
         # decide() recomputed each row against the whole job; re-share per SAP.
@@ -389,7 +444,7 @@ async def decide_group(session: AsyncSession, *, group_id: int, approve: bool,
     first = results[0] if results else {}
     return {**first, "group_id": group_id, "status": "committed", "rows": results,
             "Lining_System_Code": code, "Equipment_Tag_No": tag, "SQM_Completed": sqm,
-            "Done_SQM_credited": sqm}
+            "Surface_State": g.get("Surface_State"), "Done_SQM_credited": credited}
 
 
 async def group_of_log(session: AsyncSession, log_id: int) -> Optional[int]:
@@ -415,9 +470,12 @@ async def staged_groups(session: AsyncSession, *, site_id: Optional[str]) -> lis
             "id", "Consumption_ID", "SAP_Code", "Material_Code", "Pack_Qty",
             "Unit_Size_Used", "Actual_Qty", "Expected_Qty", "Variance_Pct",
             "Priority_Flag", "Bench_For_1_SQM")})
+    from . import prep as PR
+    prep = await PR.prep_codes(session)
     for g in groups:
         g["rows"] = by.get(int(g["id"]), [])
         g["high_priority"] = any(r["Priority_Flag"] == "HIGH" for r in g["rows"])
+        g["prep"] = str(g["Lining_System_Code"] or "").strip() in prep
     return groups
 
 
@@ -439,10 +497,12 @@ async def revise_group_credit(session: AsyncSession, *, log: dict, code: str,
         log_t.c["group_id"] == gid))).scalar_one()
     if g is None or g["status"] != "committed":
         return False
+    from . import prep as PR
+    cred = 0.0 if await PR.is_prep(session, code) else sqm
     if members <= 1:
         await session.execute(update(group_t).where(group_t.c["id"] == gid).values(
             Lining_System_Code=code, Equipment_Tag_No=tag, SQM_Completed=sqm,
-            Done_SQM_Credited=sqm))
+            Done_SQM_Credited=cred))
         return False
     same = (g["Lining_System_Code"] == code and g["Equipment_Tag_No"] == tag
             and abs(float(g["SQM_Completed"] or 0) - float(sqm)) < 1e-9)
@@ -455,7 +515,7 @@ async def revise_group_credit(session: AsyncSession, *, log: dict, code: str,
         await X.credit_done_sqm(session, site_id=g["Site_ID"], tag=tag, code=code, sqm=sqm)
         await session.execute(update(group_t).where(group_t.c["id"] == gid).values(
             Lining_System_Code=code, Equipment_Tag_No=tag, SQM_Completed=sqm,
-            Done_SQM_Credited=sqm))
+            Done_SQM_Credited=cred))
         await session.execute(update(log_t).where(
             log_t.c["group_id"] == gid, log_t.c["id"] != log["id"]).values(
             Lining_System_Code=code, Equipment_Tag_No=tag, SQM_Completed=sqm))
@@ -466,7 +526,7 @@ async def revise_group_credit(session: AsyncSession, *, log: dict, code: str,
                     log_t.c["id"], log_t.c["Material_Code"], log_t.c["SAP_Code"]).where(
                     log_t.c["group_id"] == gid, log_t.c["id"] != log["id"]))).all():
                 rate = await recipe_rate(session, code=code, material_code=m[1],
-                                         sap_code=m[2])
+                                         sap_code=m[2], surface_state=g.get("Surface_State"))
                 await session.execute(update(log_t).where(log_t.c["id"] == m[0])
                                       .values(Bench_For_1_SQM=rate))
     return True

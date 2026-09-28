@@ -96,6 +96,29 @@ export default async function globalSetup() {
     + "('2026-09-20','E2EJOB-1',2.5,'CNCEC','E2E-JOB-TANK','Shell - 12.5 SQM Done'), "
     + "('2026-09-20','E2EJOB-2',2.5,'CNCEC','E2E-JOB-TANK',NULL)", E2E_DB)
 
+  // ── 1b-iv. Phase 15d: one GARNET job (sme-jobs.spec.ts) ───────────────────
+  // Three TON (Unit Size 1000 → 3000 KG) of Garnet on a steel TANK, with the
+  // area in Remarks. The recipe's ESC2 line gives NEW its workbook figure (20
+  // KG/m²); the prep-code rows come from the migration's data step.
+  psql(
+    "INSERT INTO inventory (\"SAP_Code\", \"Material_Code\", \"Equipment_Description\", "
+    + "\"Category\", \"UOM\", \"Unit_Size\", \"Base_UOM\") "
+    + "VALUES ('E2EGAR-1','E2EGAR-A','E2E AUSTRALIAN GARNET 30/60','Surface Shields','TON',1000,'KG') "
+    + "ON CONFLICT (\"SAP_Code\") DO NOTHING", E2E_DB)
+  psql(
+    "INSERT INTO sme_recipe (\"Lining_System_Code\", \"Execution_Sub_Activity_Code\", "
+    + "\"Lining_System_Name\", \"Material_Code\", \"SAP_Code\", \"Material_Name\", \"UOM\", "
+    + "\"For_1_SQM\") VALUES ('ESC2','ESC2','Blasting Steel Surface','E2EGAR-A','E2EGAR-1',"
+    + "'E2E garnet','KG',20)", E2E_DB)
+  psql(
+    "INSERT INTO sme_equipment (\"Site_ID\", \"Equipment_Tag_No\", \"Name\", \"Type\", "
+    + "\"Substrate\", \"Lining_System_Code\", \"Surface_Area_SQM\") "
+    + "VALUES ('CNCEC','E2E-GAR-TANK','E2E garnet tank','ME','TANK','9102',300)", E2E_DB)
+  psql(
+    "INSERT INTO consumption (\"Date\", \"SAP_Code\", \"Quantity\", \"Site_ID\", "
+    + "\"Tank_No\", \"Remarks\") VALUES "
+    + "('2026-09-21','E2EGAR-1',3,'CNCEC','E2E-GAR-TANK','Shell - 140 SQM Done')", E2E_DB)
+
   // ── 1c. the SME tier-segregation fixture (sme-tiers.spec.ts) ─────────────
   // A purpose-built copy of the PHENACIN ACP POWDER shape that produced the
   // 2026-08-03 bug report: a material with ZERO stock on the shelf and MORE

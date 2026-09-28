@@ -60,6 +60,21 @@ def is_measure_uom(uom: Optional[str]) -> bool:
     return str(uom or "").strip().upper() in MEASURE_UOMS
 
 
+# Phase 15d — a MASS pack whose Unit Size is not 1 is not its own base: the
+# Inventory sheet counts Garnet in TON with Unit Size 1000, so one pack is
+# 1000 KG, and calling that base "TON" read 9 TON of stock as 9000 TON.
+MASS_UOMS = frozenset({"KG", "KGS", "G", "GM", "GR", "TON", "TONS", "MT"})
+
+
+def _measure_base(pack_uom: Optional[str], unit_size) -> str:
+    u = str(pack_uom or "").strip().upper()
+    try:
+        us = float(unit_size) if unit_size is not None else 1.0
+    except (TypeError, ValueError):
+        us = 1.0
+    return "KG" if u in MASS_UOMS and abs(us - 1.0) > 1e-9 else u
+
+
 def factor(*, is_surface_shield: bool, unit_size, pack_uom: Optional[str]) -> Optional[float]:
     """Base units per pack, or None. See the module docstring for the rules."""
     if not is_surface_shield:
@@ -98,7 +113,7 @@ def base_uom(*, pack_uom: Optional[str], stored: Optional[str],
     if stored and str(stored).strip():
         return str(stored).strip()
     if fac is not None and is_measure_uom(pack_uom):
-        return str(pack_uom).strip().upper()
+        return _measure_base(pack_uom, fac)
     return None
 
 
@@ -115,7 +130,7 @@ def default_base_uom(*, pack_uom: Optional[str], unit_size,
         u = str(seed_uom).strip().upper()
         return "M2" if u == "SQM" else u
     if is_measure_uom(pack_uom):
-        return str(pack_uom).strip().upper()
+        return _measure_base(pack_uom, unit_size)
     try:
         return "KG" if unit_size is not None and float(unit_size) > 0 else None
     except (TypeError, ValueError):

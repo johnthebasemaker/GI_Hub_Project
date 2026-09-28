@@ -226,8 +226,10 @@ async def meta(site_id: Optional[str] = None,
         select(sme_recipe_t.c["Lining_System_Code"]).distinct()
         .where(sme_recipe_t.c["Lining_System_Code"].is_not(None))
         .order_by(sme_recipe_t.c["Lining_System_Code"]))).scalars().all()
+    from .services import prep as PR
+    prep = await PR.prep_codes(session)      # Phase 15d: Garnet is not a lining system
     return {"equipment_tags": sorted(tag_loc), "tag_locations": tag_loc,
-            "system_codes": [str(c) for c in codes]}
+            "system_codes": [str(c) for c in codes if str(c).strip() not in prep]}
 
 
 # --- Overtime settings (HOD-configurable, app-level) --------------------------

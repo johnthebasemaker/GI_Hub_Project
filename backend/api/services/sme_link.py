@@ -435,6 +435,21 @@ async def equipment_for_system(session: AsyncSession, *, site_id: Optional[str],
     and `assign` re-checks the pair rather than trusting the list it handed
     out. A dropdown is a convenience; it is never a control.
     """
+    # Phase 15d: a surface-prep code (Garnet) is carried by NO equipment — it
+    # applies to every tag whose substrate calls for it (services/prep.py).
+    from . import prep as PR
+    if await PR.is_prep(session, code):
+        q = ('SELECT DISTINCT "Equipment_Tag_No" AS tag, "Name" AS name, "Location" AS location, '
+             '"Site_ID" AS site_id, "Type", "Substrate" FROM sme_equipment'
+             + (' WHERE "Site_ID" = :site' if site_id is not None else '')
+             + ' ORDER BY 1')
+        out, seen = [], set()
+        for r in (await session.execute(text(q), {"site": site_id})).mappings().all():
+            if PR.code_for(r["Type"], r["Substrate"]) == code.strip() and r["tag"] not in seen:
+                seen.add(r["tag"])
+                out.append({"tag": r["tag"], "name": r["name"], "location": r["location"],
+                            "site_id": r["site_id"], "original_sqm": 0, "done_sqm": 0})
+        return out
     params = {"code": code.strip()}
     where_site = ""
     if site_id is not None:
@@ -457,7 +472,7 @@ async def equipment_for_system(session: AsyncSession, *, site_id: Optional[str],
 
 
 async def recipe_rate(session: AsyncSession, *, code: str, material_code: str,
-                      sap_code: str) -> Optional[float]:
+                      sap_code: str, surface_state: Optional[str] = None) -> Optional[float]:
     """`For_1_SQM` for ONE component of ONE system, or None.
 
     ⚠️ KEYED ON `(Material_Code, SAP_Code)` — rule 1, again, and this is the
@@ -470,7 +485,14 @@ async def recipe_rate(session: AsyncSession, *, code: str, material_code: str,
     recipe. A zero would read as "the benchmark says none of this material" and
     turn every variance into a divide-by-zero dressed as a percentage; None
     says "we cannot compute this", which is a state the HOD must look at.
+
+    ⚠️ PHASE 15d — A SURFACE-PREP CODE (ESC1/ESC2, Garnet) IS NOT BENCHMARKED
+    FROM ITS RECIPE LINE but from the Old/New baseline (services/prep.py), so
+    `surface_state` decides it; without one there is no benchmark.
     """
+    from . import prep as PR
+    if await PR.is_prep(session, code):
+        return await PR.rate(session, code.strip(), surface_state)
     rows = (await session.execute(text('''
         SELECT SUM(r."For_1_SQM") AS rate
         FROM sme_recipe r
@@ -598,7 +620,7 @@ async def _resolve_material_code(session: AsyncSession, sap: str) -> str:
 async def assign(session: AsyncSession, *, consumption_id: int, code: str,
                  tag: str, sqm: float, work_date: Optional[str],
                  notes: Optional[str], username: str,
-                 site_id: Optional[str]) -> dict:
+                 site_id: Optional[str], surface_state: Optional[str] = None) -> dict:
     """Attribute one ledger row to a system, an equipment tag and an area.
 
     ⚠️ THIS IS AN ATTRIBUTION, NOT A DEDUCTION. The stock left the shelf when
@@ -687,21 +709,36 @@ async def assign(session: AsyncSession, *, consumption_id: int, code: str,
     # dropdown to the tags carrying this code — and a dropdown is a
     # convenience. An area posted against a tag that does not carry the system
     # credits progress to a vessel nobody is lining that way.
-    pair = (await session.execute(
-        select(func.count()).select_from(equipment_t)
-        .where(equipment_t.c["Site_ID"] == row["Site_ID"],
-               equipment_t.c["Equipment_Tag_No"] == tag,
-               equipment_t.c["Lining_System_Code"] == code))).scalar_one()
-    if not pair:
+    from . import prep as PR
+    if not await PR.pair_ok(session, site_id=row["Site_ID"], tag=tag, code=code):
         raise HTTPException(
-            422, f"{tag} does not carry system code {code} at "
-                 f"{row['Site_ID']}. Pick a tag from the list — it is filtered "
-                 f"to the equipment that system actually applies to.")
+            422, await PR.pair_message(session, site_id=row["Site_ID"], tag=tag, code=code)
+            or f"{tag} does not carry system code {code} at "
+               f"{row['Site_ID']}. Pick a tag from the list — it is filtered "
+               f"to the equipment that system actually applies to.")
 
     sap = sap_norm(row["SAP_Code"])
+    # ⚠️ PHASE 15d — GARNET IS SURFACE PREPARATION. It is benchmarked per
+    # surface (Old / New), under its own prep code, and never inside a lining
+    # system's recipe — so each side refuses the other's material.
+    prep = await PR.is_prep(session, code)
+    state = PR.norm_state(surface_state) if prep else None
+    garnet = sap in await PR.garnet_saps(session)
+    if prep and not garnet:
+        raise HTTPException(
+            422, f"{code} is surface preparation (Garnet). SAP {sap} is not Garnet — "
+                 f"attribute it to its lining system instead.")
+    if garnet and not prep:
+        raise HTTPException(
+            422, f"SAP {sap} is Garnet — surface preparation, not part of {code}'s "
+                 f"lining. Submit it on its Garnet card, answering Old or New surface.")
+    if prep and state is None:
+        raise HTTPException(
+            422, "Garnet is benchmarked per surface: say whether this was an OLD "
+                 "surface or a NEW surface.")
     material_code = await _resolve_material_code(session, sap)
     rate = await recipe_rate(session, code=code, material_code=material_code,
-                             sap_code=sap)
+                             sap_code=sap, surface_state=state)
     # ⚠️ PHASE 14a — DEFECT D1. The ledger holds PACKS (cans, bags); the recipe
     # rate is BASE units per m². `actual` used to be the pack count, so a
     # 4.5-can draw of a 9 kg adhesive (40.5 kg) was measured as "4.5" against a
@@ -710,6 +747,14 @@ async def assign(session: AsyncSession, *, consumption_id: int, code: str,
     uinfo = await _units(session, sap)
     pack = float(row["Quantity"] or 0)
     actual = units_base(pack, uinfo)
+    if prep and str(uinfo.get("base_uom") or "").strip().upper() != "KG":
+        # The benchmark is KG per m²; a TON counted as 1 would read as 0.1 % of
+        # the benchmark. Refused, like any unknown factor (defect D1).
+        raise HTTPException(
+            422, f"Garnet SAP {sap} is counted in {uinfo.get('pack_uom') or 'packs'} "
+                 f"with Unit Size {uinfo.get('unit_size')}, so its quantity is not in KG "
+                 f"and cannot be compared with the KG/m² benchmark. Set its Unit Size "
+                 f"to 1000 (kg per TON) in the Inventory sheet and re-run the Excel sync.")
     expected = None if rate is None else round(rate * sqm, 4)
     var = variance_pct(actual, expected)
     tol = await tolerance_pct(session)
@@ -721,7 +766,8 @@ async def assign(session: AsyncSession, *, consumption_id: int, code: str,
             session, existing=dict(existing), consumption_id=consumption_id,
             code=code, tag=tag, sqm=sqm, actual=actual, expected=expected,
             var=var, rate=rate, flag=flag, tol=tol, fp=fp, notes=notes,
-            username=username, pack=pack, unit_size=uinfo["factor"])
+            username=username, pack=pack, unit_size=uinfo["factor"],
+            surface_state=state)
 
     new_id = (await session.execute(insert(log_t).values(
         batch_id=f"SWEEP:{consumption_id}",
@@ -738,6 +784,7 @@ async def assign(session: AsyncSession, *, consumption_id: int, code: str,
         Actual_Qty=actual,
         Pack_Qty=pack,
         Unit_Size_Used=uinfo["factor"],
+        Surface_State=state,
         Variance_Pct=var,
         Bench_For_1_SQM=rate,
         Priority_Flag=flag,
@@ -763,6 +810,7 @@ async def assign(session: AsyncSession, *, consumption_id: int, code: str,
             "SQM_Completed": sqm, "Actual_Qty": actual,
             "Expected_Qty": expected, "Variance_Pct": var,
             "Bench_For_1_SQM": rate, "Priority_Flag": flag,
+            "Surface_State": state,
             "Variance_Tolerance_Pct": tol, "status": "staged"}
 
 
@@ -955,15 +1003,11 @@ async def decide(session: AsyncSession, *, log_id: int, approve: bool,
 
     # The pair is re-checked on the HOD's edit too — an HOD moving a row to a
     # different system may pick a tag that does not carry it.
-    pair = (await session.execute(
-        select(func.count()).select_from(equipment_t)
-        .where(equipment_t.c["Site_ID"] == row["Site_ID"],
-               equipment_t.c["Equipment_Tag_No"] == tag,
-               equipment_t.c["Lining_System_Code"] == code))).scalar_one()
-    if not pair:
+    from . import prep as PR
+    if not await PR.pair_ok(session, site_id=row["Site_ID"], tag=tag, code=code):
         raise HTTPException(
-            422, f"{tag} does not carry system code {code} at "
-                 f"{row['Site_ID']}.")
+            422, await PR.pair_message(session, site_id=row["Site_ID"], tag=tag, code=code)
+            or f"{tag} does not carry system code {code} at {row['Site_ID']}.")
 
     # ⚠️ THE BENCHMARK IS RE-SNAPSHOTTED ONLY WHEN THE ATTRIBUTION MOVED, and
     # then it is re-read for the NEW component/system pair — which is a
@@ -975,7 +1019,8 @@ async def decide(session: AsyncSession, *, log_id: int, approve: bool,
         if code != row["Lining_System_Code"]:
             rate = await recipe_rate(session, code=code,
                                      material_code=row["Material_Code"],
-                                     sap_code=row["SAP_Code"])
+                                     sap_code=row["SAP_Code"],
+                                     surface_state=row.get("Surface_State"))
         expected = None if rate is None else round(float(rate) * sqm, 4)
         var = variance_pct(float(row["Actual_Qty"] or 0), expected)
         tol = float(row["Variance_Tolerance_Pct"] or DEFAULT_TOLERANCE_PCT)
@@ -1012,7 +1057,9 @@ async def decide(session: AsyncSession, *, log_id: int, approve: bool,
                          f"{justification.strip()[:120]})" if edited else ""))
     return {"id": log_id, "status": "committed", "Lining_System_Code": code,
             "Equipment_Tag_No": tag, "SQM_Completed": sqm,
-            "hod_edited": edited, "Done_SQM_credited": sqm if credit else 0.0}
+            "hod_edited": edited,
+            # a prep (Garnet) row credits no area — credit_done_sqm refuses it
+            "Done_SQM_credited": sqm if credit and not await PR.is_prep(session, code) else 0.0}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1144,7 +1191,8 @@ async def _reassign(session: AsyncSession, *, existing: dict,
                     var: Optional[float], rate: Optional[float], flag: str,
                     tol: float, fp: Optional[str], notes: Optional[str],
                     username: str, pack: Optional[float] = None,
-                    unit_size: Optional[float] = None) -> dict:
+                    unit_size: Optional[float] = None,
+                    surface_state: Optional[str] = None) -> dict:
     """The field's new answer for a consumption the Excel sync edited.
 
     ⚠️ NOT YET APPROVED (staged, or rejected) → THE ATTRIBUTION IS UPDATED IN
@@ -1167,7 +1215,7 @@ async def _reassign(session: AsyncSession, *, existing: dict,
         await session.execute(update(log_t).where(log_t.c["id"] == log_id).values(
             Equipment_Tag_No=tag, Lining_System_Code=code, SQM_Completed=sqm,
             Expected_Qty=expected or 0.0, Actual_Qty=actual, Variance_Pct=var,
-            Pack_Qty=pack, Unit_Size_Used=unit_size,
+            Pack_Qty=pack, Unit_Size_Used=unit_size, Surface_State=surface_state,
             Bench_For_1_SQM=rate, Priority_Flag=flag,
             Variance_Tolerance_Pct=tol, Source_Fingerprint=fp,
             notes=(notes if notes is not None else existing.get("notes")),
@@ -1346,14 +1394,11 @@ async def decide_revision(session: AsyncSession, *, rev_id: int, approve: bool,
         raise HTTPException(422, "the area covered must be greater than zero. "
                                  "Reject the revision instead if the material "
                                  "was not applied.")
-    pair = (await session.execute(
-        select(func.count()).select_from(equipment_t)
-        .where(equipment_t.c["Site_ID"] == rev["Site_ID"],
-               equipment_t.c["Equipment_Tag_No"] == tag,
-               equipment_t.c["Lining_System_Code"] == code))).scalar_one()
-    if not pair:
-        raise HTTPException(422, f"{tag} does not carry system code {code} at "
-                                 f"{rev['Site_ID']}.")
+    from . import prep as PR
+    if not await PR.pair_ok(session, site_id=rev["Site_ID"], tag=tag, code=code):
+        raise HTTPException(
+            422, await PR.pair_message(session, site_id=rev["Site_ID"], tag=tag, code=code)
+            or f"{tag} does not carry system code {code} at {rev['Site_ID']}.")
 
     rate, expected, var, flag = (rev["Bench_For_1_SQM"], rev["Expected_Qty"],
                                  rev["Variance_Pct"], rev["Priority_Flag"])
@@ -1361,7 +1406,8 @@ async def decide_revision(session: AsyncSession, *, rev_id: int, approve: bool,
         if code != rev["Lining_System_Code"]:
             rate = await recipe_rate(session, code=code,
                                      material_code=log["Material_Code"],
-                                     sap_code=log["SAP_Code"])
+                                     sap_code=log["SAP_Code"],
+                                     surface_state=log.get("Surface_State"))
         expected = None if rate is None else round(float(rate) * sqm, 4)
         var = variance_pct(float(rev["Actual_Qty"] or 0), expected)
         flag = classify(var, float(rev["Variance_Tolerance_Pct"]

@@ -207,6 +207,10 @@ async def seed_queues() -> dict:
                     "wbs": WBS, "Remarks": "Practice seed — approve or reject me"})
                 if ri.status_code != 201:
                     print(f"  ⚠️  issue {sap}: {ri.status_code} {ri.text[:160]}")
+            try:
+                out["garnet_jobs"] = await _seed_garnet(today)
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  garnet example skipped: {type(e).__name__}: {str(e)[:160]}")
 
         async with SessionLocal() as s:
             await ledger.stage_return(s, username="practice.storekeeper", data={
@@ -242,6 +246,63 @@ async def seed_queues() -> dict:
             await _set(s, "require_entry_documents", prev)
             await s.commit()
     return out
+
+
+GARNET_SAP = "899970"   # synthetic, Practice-only (P12-5)
+
+
+async def _seed_garnet(today: str) -> int:
+    """Phase 15d — one Garnet draw on a steel tank, so the supervisor's queue
+    has a Surface-prep card to answer Old / New on, and the HOD a benchmark to
+    read.
+
+    Practice-only data, so it lives here and never in make_tutorial_db (P12-5).
+    Never fatal: a Practice without this example is still a Practice.
+    """
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+    from backend.api.services import prep as PR
+    from backend.api.services import quality
+
+    async with SessionLocal() as s:
+        cat = await quality.controlled_category(s)
+        tag = None
+        for t, ty, su in (await s.execute(text(
+                'SELECT "Equipment_Tag_No", "Type", "Substrate" FROM sme_equipment '
+                'WHERE "Site_ID" = :s ORDER BY "Equipment_Tag_No"'), {"s": SITE})).all():
+            if PR.code_for(ty, su) == "ESC2":
+                tag = t
+                break
+        if tag is None:
+            print("  ⚠️  garnet: no steel / vessel equipment to put the example on")
+            return 0
+        await s.execute(text(
+            'INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+            '"Category", "UOM", "Site_ID", "Unit_Size", "Base_UOM", "Opening_Stock") VALUES '
+            "(:p, 'MAT-899970', 'PRACTICE GARNET 30/60 MESH', :c, 'TON', :site, 1000, 'KG', 10) "
+            'ON CONFLICT ("SAP_Code") DO NOTHING'), {"p": GARNET_SAP, "c": cat, "site": SITE})
+        for code, name, rate in (("ESC1", "Blasting Civil Floor & Wall", 18),
+                                 ("ESC2", "Blasting Steel Surface", 20)):
+            await s.execute(text(
+                'INSERT INTO sme_recipe ("Lining_System_Code", "Execution_Sub_Activity_Code", '
+                '"Lining_System_Name", "Material_Code", "SAP_Code", "Material_Name", '
+                '"Material_Description", "UOM", "For_1_SQM") VALUES (:c, :c, :n, '
+                "'MAT-899970', :p, 'PRACTICE GARNET 30/60 MESH', 'Garnet', 'KG', :r)"),
+                {"c": code, "n": name, "p": GARNET_SAP, "r": rate})
+        await s.commit()
+    # ⚠️ A LEDGER ROW, not a staged issue: issuing a Surface Shield needs a QC
+    # release and an MTC on file, a chain this example has no business
+    # faking. Live's Garnet draws arrive the same way — from the Excel sync —
+    # and the queue sweeps every ledger row whatever its route (ruling Q13-6).
+    async with SessionLocal() as s:
+        await s.execute(text(
+            'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", "Tank_No", '
+            '"Work_Type", "Issued_To", "Remarks") VALUES (:d, :p, 2, :site, :t, '
+            "'Blasting', 'Tomas Halversen', 'Practice seed — Garnet — Shell - 90 SQM Done')"),
+            {"d": today, "p": GARNET_SAP, "site": SITE, "t": tag})
+        await s.commit()
+    return 1
 
 
 def fixture_version() -> int:
