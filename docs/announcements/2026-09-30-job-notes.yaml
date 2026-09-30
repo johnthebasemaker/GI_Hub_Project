@@ -1,0 +1,11 @@
+key: job-notes
+title: The store keeper's note now fills the whole job card
+body: |
+  A job card reads the store keeper's remark ("Floor - 13.37 SQM Done") and
+  fills in the area, the part of the equipment and the remark. You confirm or
+  correct them. The remark is saved with the job and shown to the HOD, in the
+  Production Log and on the Executive Summary. Two different notes on one day
+  are offered as two jobs, one button each.
+routes: [/execution]
+roles: [store_keeper, supervisor, hod, admin]
+manual: "4.9a.2"

@@ -1610,6 +1610,9 @@ def check_models_schema_parity() -> None:
                # Garnet (surface-prep) row — the answer its benchmark came
                # from. New-stack only; the frozen portal has no Garnet workflow.
                ("sme_consumption_log", "Surface_State"),
+               # Phase 15e (alembic c4f1a8d2e6b7): the part of the equipment a
+               # job covered, from the store keeper's remark. New-stack only.
+               ("sme_consumption_log", "Work_Area"),
                # 2026-08 execution sub-activity (alembic f1d3b7a24c60): the
                # recipe line's quantity is now per sub-activity, so LSC2's
                # Resin A is 0.2700 as ESC21 primer and 1.4674 as ESC22 screed

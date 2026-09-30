@@ -330,6 +330,14 @@ keeper only sees items whose site matches theirs exactly. If you type a site or
 category that no item uses yet, GI Hub asks **"Create a new site…?"** first.
 Press Cancel if you meant an existing one. A new item must have a site.
 
+**The HOD adds and edits items too** (30 September 2026). On the **Inventory**
+page (Records → Inventory), the Admin and the HOD have a **New item** button and
+an **Edit** button on each row. The same form, the same Site / Category
+matching and the same audit log apply. The HOD's items are always saved to
+**their own site**, which the form shows instead of asking. A HOD cannot add or
+edit another site's items. **Deleting** an item stays Admin-only (Admin →
+Inventory), because it cannot be undone.
+
 ## 2.4 Site scope by role
 
 | Role | What they see |
@@ -343,6 +351,15 @@ Press Cancel if you meant an existing one. A new item must have a site.
 | Head of Qualities | All sites globally, but ONLY Surface Shield material — every query on their page is filtered to the controlled category in the database, so the category is the boundary of the role rather than a filter on a page. They read, and they send escalations; they cannot approve an inspection, move stock, raise a PR or open any other portal. See §23. |
 | Auditor | All sites globally, **read-only**. Sits at level 3 so it is not site-locked — an auditor pinned to one site could not audit. It can open the Dashboard, Stock, Records, Reports and Lining Coverage and change nothing anywhere. See §20. |
 | Admin | All sites + all warehouses globally — has the "All Sites" filter on every multi-site view; warehouse picker in sidebar when shadowing the Warehouse Portal. |
+
+**A site-locked user is never asked for their site** (30 September 2026). On
+Issue, Receive, Return, Adjust, the supervisor's material request and the HOD's
+purchase request, a Store Keeper, Supervisor or HOD sees their site as a blue
+label (**CNCEC** *your site*), and the entry is saved there. The same goes for
+the "All sites" filters on Approvals, Burn Rate, Reports, SME and the Executive
+Summary. Picking another site used to be possible and only produced an error,
+because the server allows your own site only. An account with **no** site
+assigned still sees the dropdown; ask an Admin to set the site.
 
 ## 2.5 Default seeded accounts
 
@@ -1197,6 +1214,8 @@ Each card lists the job's materials, each shown **base first, then packs**
 |---|---|
 | **System code** | **Suggested from the materials.** The app picks the system whose recipe lists the most of what was drawn — a job that drew all four components of PU 1 mm is PU 1 mm. Each option says how many of the job's materials it covers (`covers 4 of 5`). A code the store keeper noted (`LS …`) ranks higher. |
 | **Area covered (m²)** | **Asked once for the job**, not once per material. Pre-filled when the store keeper typed it in Remarks (`Floor - 13.37 SQM Done`) — confirm it or correct it. |
+| **Part of the equipment** | *Phase 15e.* Pre-filled from the same note: `Floor - 13.37 SQM Done` → **Floor**, `Bottom B/L - 15.36 SQM Done` → **Bottom B/L**. Correct it if it is wrong; leave it blank if the note names no part (`65 SQM Done`). Saved with the job as its own field. |
+| **Remark** | *Phase 15e.* The store keeper's note, **exactly as they typed it**. Edit it if you need to; what you submit is saved with the job and shown to the HOD, in the Production Log and on the Executive Summary. |
 | **Materials** | Every material is ticked except any the chosen system's recipe does not list, which are marked **not in recipe**. Tick or untick any row, or use the box in the header to tick or clear them all. The button always shows how many are ticked (**Submit 3 to the HOD**). |
 
 Press **Submit N to the HOD**. The whole job goes to the HOD as one approval.
@@ -1204,6 +1223,19 @@ Press **Submit N to the HOD**. The whole job goes to the HOD as one approval.
 ⚠️ **Two systems on one vessel on one day? Split.** Untick the materials that
 belong to the second system and submit the first. The unticked materials stay on
 the card; pick the second system, confirm its area and submit again.
+
+⚠️ **Two different notes on one day are two jobs** (Phase 15e). When the store
+keeper wrote two remarks for the same equipment and day — `Floor - 9.25 SQM Done`
+and `Top of Brick Coving Applied - 4.82 SQM Done` — the card shows one button
+per note above the materials. The first is picked for you. Picking a note ticks
+**its** materials (and any with no remark), and fills in its area, part and
+remark. Submit it; the other note's materials stay on the card, already filled
+in from their own note, for a second submission.
+
+The app reads the figure from `… SQM`, `… m2`, `… m²`, or a figure straight
+before **Done** (`Sump Tank Wall 5.50 Done`). Words describing the day rather
+than the place — *is in progress*, *applied*, *done* — are left out of the part.
+It is always a **suggestion**: nothing is saved until you press Submit.
 
 ⚠️ **Materials drawn for no equipment are not in the queue.** Draws noted
 against *Others*, *To Site*, *Scaffolding*, *Housekeeping* and the like stay in
@@ -3498,7 +3530,8 @@ Which category requires a material certificate is a single setting, so extending
 ## 13.14 WBS Master + WBS-aware Entry Log + WBS Report
 
 - **HOD Portal → Site Config → 📐 WBS Numbers** lets the HOD add, close, or re-open WBS numbers for their site. Each WBS carries an optional Description and an `active` / `closed` status.
-- **Entry Log → Consumption Log and Receipt Staging** show a **WBS Number** dropdown filtered to the SK's site. If the HOD hasn't added any WBS yet, the SK sees a warning and a free-text fallback so work isn't blocked.
+- **Issue and Receive** show a **WBS Number** dropdown with the site's active WBS numbers, and it is **required** once the site has any. On Issue, a Work Type the HOD mapped to a WBS fills it in when left blank. WBS numbers are set up by the site's **HOD** (HOD → WBS), not by Logistics.
+- If the HOD hasn't added any WBS yet, the field shows **"None set up"**, greyed out, with the note *"the HOD adds them under HOD → WBS"*. Entries are not blocked, and the field becomes a dropdown as soon as the first WBS exists.
 - **Reports → 📐 WBS Report** rolls everything up by WBS for a chosen date range, scoped to the user's site. Columns: `WBS_Number`, `Consumption_Rows`, `Consumption_Qty`, `Consumption_Value_SAR`, `Receipt_Rows`, `Receipt_Qty`, `Receipt_Value_SAR`. Sorted by consumption value descending.
 - The WBS field is added automatically wherever it was missing on consumption, receipts and both staging queues. Entries made before the field existed show as "(no WBS)" in the report; new entries carry the WBS you picked all the way through from Store Keeper to HOD commit, untouched.
 

@@ -4,9 +4,10 @@ import type { ColumnsType } from 'antd/es/table'
 import type { FormInstance } from 'antd'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useAuth } from '../auth/AuthContext'
-import { useCancelSmr, useCreateSmr, useIntentVsActual, useInventoryMaster, useList, useSites, useSmrItems, useSmrList, useSmrStock } from '../api/hooks'
+import { useCancelSmr, useCreateSmr, useIntentVsActual, useInventoryMaster, useList, useSmrItems, useSmrList, useSmrStock } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 import { useState } from 'react'
+import SiteField from '../components/SiteField'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -41,7 +42,6 @@ function NewRequest() {
   const { message } = App.useApp()
   const { user } = useAuth()
   const [form] = Form.useForm<FormValues>()
-  const { data: sites } = useSites()
   const employees = useList('/employees', { limit: 500 })
   const inventory = useInventoryMaster()
   const create = useCreateSmr()
@@ -81,9 +81,7 @@ function NewRequest() {
       >
         <Row gutter={16}>
           <Col xs={24} md={8}>
-            <Form.Item name="site_id" label="Site" rules={[{ required: true }]}>
-              <Select placeholder="Site" options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
-            </Form.Item>
+            <SiteField name="site_id" />
           </Col>
           <Col xs={24} md={10}>
             <Form.Item name="worker_id" label="Worker" rules={[{ required: true }]}>

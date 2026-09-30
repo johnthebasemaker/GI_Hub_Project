@@ -8,7 +8,7 @@ import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import {
   useCategories, useDocsRequired, useInventoryMaster, useQcReturnLookup,
-  useReturnEntry, useReturnSources, useSites,
+  useReturnEntry, useReturnSources,
 } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 import DeliveryPrefRadio from '../components/DeliveryPrefRadio'
@@ -18,6 +18,7 @@ import type { EntryDoc } from '../components/EntryDocsUpload'
 import ItemSnapshot from '../components/ItemSnapshot'
 import { useFormDraft } from '../lib/formDraft'
 import { loadDefaults, saveDefaults } from '../lib/smartDefaults'
+import SiteField from '../components/SiteField'
 
 /**
  * Parity A2 — the legacy Return Items gates, rebuilt: the return is made
@@ -62,7 +63,6 @@ const REASONS = ['defect', 'damage', 'overstock', 'unused', 'return_to_supplier'
 export default function ReturnPage() {
   const { message } = App.useApp()
   const [form] = Form.useForm<FormValues>()
-  const { data: sites } = useSites()
   const inventory = useInventoryMaster()
   const ret = useReturnEntry()
   const [docs, setDocs] = useState<EntryDoc[]>([])
@@ -221,9 +221,7 @@ export default function ReturnPage() {
           initialValues={{ Date: dayjs(), ...loadDefaults('return') }} onFinish={onFinish}>
           <Row gutter={16}>
             <Col xs={24} md={8}>
-              <Form.Item name="Site_ID" label="Site" rules={[{ required: true }]}>
-                <Select placeholder="Select site" options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
-              </Form.Item>
+              <SiteField />
             </Col>
             <Col xs={24} md={5}>
               <Form.Item label="Category">

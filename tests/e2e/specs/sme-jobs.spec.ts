@@ -66,17 +66,23 @@ test('a supervisor attributes a two-material job with ONE code and ONE area', as
   await expect(card.getByText('2 material(s)')).toBeVisible()
   // Suggested from the materials: 9102's recipe lists both.
   await expect(card.getByText(/9102.*covers 2 of 2/)).toBeVisible()
-  // Pre-filled from the store keeper's "Shell - 12.5 SQM Done".
+  // Pre-filled from the store keeper's "Shell - 12.5 SQM Done" — the area,
+  // and (Phase 15e) the part of the equipment and the remark itself.
   await expect(card.getByLabel('Area covered')).toHaveValue('12.5')
+  await expect(card.getByLabel('Part of the equipment')).toHaveValue('Shell')
+  await expect(card.getByLabel('Remark')).toHaveValue('Shell - 12.5 SQM Done')
   // Base first, then packs (Q14-5): 2.5 cans × 4 kg.
   await expect(card.getByText('10 KG · 2.5 Can')).toBeVisible()
   const posted = page.waitForRequest((r) => r.method() === 'POST'
     && r.url().endsWith('/execution/sme-link/groups'))
   await card.getByRole('button', { name: /Submit 2 to the HOD/ }).click()
   // Exactly the two ticked rows travel — the ids, not a count.
-  const body = (await posted).postDataJSON() as { consumption_ids: number[] }
+  const body = (await posted).postDataJSON() as {
+    consumption_ids: number[]; notes: string; work_area: string }
   expect(body.consumption_ids).toHaveLength(2)
   expect(body.consumption_ids.every((n) => typeof n === 'number')).toBe(true)
+  expect(body.notes).toBe('Shell - 12.5 SQM Done')
+  expect(body.work_area).toBe('Shell')
   await expect(page.getByText(/goes to the HOD as one approval/)).toBeVisible()
   await expect(page.locator(JOB)).toHaveCount(0)
   expect(errors, errors.join(' | ')).toHaveLength(0)
@@ -88,13 +94,58 @@ test('the HOD approves the job as a whole', async ({ browser }) => {
   const page = await ctx.newPage()
   await page.goto('/execution')
   await page.getByText(/Awaiting the HOD/).click()
+  // the HOD's card (it has "Review job"): the queue tab stays mounted behind
+  // it, and since 15e it holds another E2E-JOB-TANK day (the two-note job)
   const card = page.locator('.gi-job-card', { hasText: 'E2E-JOB-TANK' })
+    .filter({ has: page.getByRole('button', { name: 'Review job' }) })
   await expect(card).toBeVisible({ timeout: 20_000 })
   await expect(card.getByText('12.5 m²')).toBeVisible()
+  // Phase 15e: the part and the remark it was filed with
+  await expect(card.getByTestId('job-remark')).toContainText('Shell')
+  await expect(card.getByTestId('job-remark')).toContainText('Remark: “Shell - 12.5 SQM Done”')
   await card.getByRole('button', { name: 'Review job' }).click()
   await expect(page.getByText('One decision for the whole job')).toBeVisible()
   await page.getByRole('button', { name: 'Approve the job' }).click()
   await expect(page.getByText(/credited once to that equipment/)).toBeVisible()
+  await ctx.close()
+})
+
+// ── Phase 15e — two notes on one day are two jobs ────────────────────────────
+const TWO = '[data-job="CNCEC|2026-09-22|E2E-JOB-TANK"]'
+
+test('15e: two store-keeper notes on one day are offered as two jobs', async ({ browser }) => {
+  const ctx = await browser.newContext({ storageState: storageStatePath('supervisor') })
+  const page = await ctx.newPage()
+  await page.goto('/execution')
+  await page.getByLabel('Find a job').fill('2026-09-22')
+  const card = page.locator(TWO)
+  await expect(card).toBeVisible({ timeout: 20_000 })
+  const notes = card.getByTestId('job-notes')
+  await expect(notes).toBeVisible()
+  // the first note is picked: its two rows ticked, its figures filled
+  const rows = card.locator('tbody .ant-checkbox-input')
+  await expect(rows).toHaveCount(3)
+  await expect(card.getByLabel('Area covered')).toHaveValue('9.25')
+  await expect(card.getByLabel('Part of the equipment')).toHaveValue('Floor')
+  await expect(card.getByRole('button', { name: /^Submit 2 to the HOD$/ })).toBeVisible()
+  // the second note: one row, its own area, part and remark
+  await notes.getByText('Top of Brick Coving · 4.82 m²').click()
+  await expect(card.getByLabel('Area covered')).toHaveValue('4.82')
+  await expect(card.getByLabel('Part of the equipment')).toHaveValue('Top of Brick Coving')
+  await expect(card.getByLabel('Remark')).toHaveValue('Top of Brick Coving Applied - 4.82 SQM Done')
+  const posted = page.waitForRequest((r) => r.method() === 'POST'
+    && r.url().endsWith('/execution/sme-link/groups'))
+  await card.getByRole('button', { name: /^Submit 1 to the HOD$/ }).click()
+  const body = (await posted).postDataJSON() as { consumption_ids: number[]; sqm: number; work_area: string }
+  expect(body.consumption_ids).toHaveLength(1)
+  expect(body.sqm).toBe(4.82)
+  expect(body.work_area).toBe('Top of Brick Coving')
+  // the Floor note's two materials stay, now with no choice left to make
+  await expect(card.locator('tbody .ant-checkbox-input')).toHaveCount(2)
+  await expect(card.getByTestId('job-notes')).toHaveCount(0)
+  await expect(card.getByLabel('Area covered')).toHaveValue('9.25')
+  await expect(card.getByLabel('Part of the equipment')).toHaveValue('Floor')
+  await expect(card.getByRole('button', { name: /^Submit 2 to the HOD$/ })).toBeVisible()
   await ctx.close()
 })
 

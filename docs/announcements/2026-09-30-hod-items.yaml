@@ -1,0 +1,9 @@
+key: hod-inventory-items
+title: HODs can add inventory items
+body: |
+  Records → Inventory now has a New item button, and an Edit button on each
+  row, for the HOD as well as the Admin. A HOD's items are always saved to
+  their own site. Deleting an item stays with the Admin.
+routes: [/stock]
+roles: [hod, admin]
+manual: "2.3.9"

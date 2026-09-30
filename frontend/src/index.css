@@ -680,14 +680,18 @@ body.gi-practice .gi-login {
    the band, so the two cannot overlap at any size. Tier 1 (WebGL, lazy) draws
    into the same band on capable desktops and sets `data-gi3d="on"`, which
    fades this mark out. */
+/* 2026-09-30: the crest + card column is CENTRED in the window (it used to hug
+   the top, leaving the card high and the bottom half empty) and a gap of its
+   own separates the mark from the card. */
 .gi-login {
-  --gi-crest-h: clamp(120px, 24vh, 240px);
+  --gi-crest-h: clamp(140px, 30vh, 300px);
+  --gi-crest-gap: clamp(16px, 5vh, 56px);
   position: relative;
   overflow: hidden;
   isolation: isolate;
   flex-direction: column;
-  justify-content: flex-start;
-  padding-top: 0;
+  justify-content: center;
+  padding-block: clamp(12px, 4vh, 40px);
 }
 .gi-login-crest {
   position: relative;
@@ -735,6 +739,7 @@ body.gi-practice .gi-login {
 .gi-login-card {
   position: relative;
   z-index: 1;
+  margin-top: var(--gi-crest-gap);
   margin-bottom: 24px;
   border-color: rgba(212, 175, 55, 0.38);
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.07),
@@ -752,7 +757,7 @@ body.gi-practice .gi-login {
   filter: drop-shadow(0 6px 14px rgba(212, 175, 55, 0.35));
 }
 @media (max-height: 560px) {
-  .gi-login { --gi-crest-h: 0px; padding-top: 24px; }
+  .gi-login { --gi-crest-h: 0px; --gi-crest-gap: 0px; padding-top: 24px; }
   .gi-login-crest { display: none; }
   .gi-login-head .gi-wordmark::before { display: block; }
 }

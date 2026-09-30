@@ -11,7 +11,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { BarcodeOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
-import { useBins, useBulkEntry, useCategories, useDocsRequired, useInventoryMaster, usePpeEligible, useSites, useWbsOptions, useWorkTypeOptions } from '../api/hooks'
+import { useBins, useBulkEntry, useCategories, useDocsRequired, useInventoryMaster, usePpeEligible, useWbsOptions, useWorkTypeOptions } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
 import PpeIssueFields from '../components/PpeIssueFields'
 import { emptyPpe, findPpeRule } from '../lib/ppe'
@@ -26,6 +26,8 @@ import QcClearanceBanner from '../components/QcClearanceBanner'
 import QrScanner from '../components/QrScanner'
 import { BARCODE_FORMATS, matchScanToSap } from '../lib/barcode'
 import { loadDefaults, saveDefaults } from '../lib/smartDefaults'
+import SiteField from '../components/SiteField'
+import WbsField from '../components/WbsField'
 
 interface FormValues {
   Site_ID: string
@@ -60,7 +62,6 @@ let _seq = 0
 export default function IssuePage() {
   const { message } = App.useApp()
   const [form] = Form.useForm<FormValues>()
-  const { data: sites } = useSites()
   const inventory = useInventoryMaster()
   const bulk = useBulkEntry('consumption', ['/consumption'])
   const [staged, setStaged] = useState<StagedRow[]>([])
@@ -343,9 +344,7 @@ export default function IssuePage() {
           initialValues={{ Date: dayjs(), ...loadDefaults('issue') }}>
           <Row gutter={16}>
             <Col xs={24} md={8}>
-              <Form.Item name="Site_ID" label="Site" rules={[{ required: true }]}>
-                <Select placeholder="Select site" options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
-              </Form.Item>
+              <SiteField />
             </Col>
             <Col xs={24} md={5}>
               <Form.Item label="Category">
@@ -467,15 +466,7 @@ export default function IssuePage() {
             </Col>
           </Row>
           <Row gutter={16}>
-            {!!wbsOptions?.length && (
-              <Col xs={24} md={8}>
-                <Form.Item name="wbs" label="WBS Number"
-                  rules={[{ required: true, message: 'This site requires a WBS' }]}>
-                  <Select showSearch placeholder="Pick WBS"
-                    options={wbsOptions.map((w) => ({ value: w, label: w }))} />
-                </Form.Item>
-              </Col>
-            )}
+            <WbsField options={wbsOptions} site={watchSite} />
             {!!watchLot && (
               <Col xs={24} md={8}>
                 <Form.Item name="FEFO_Override" label="Reason for manual lot (FEFO override)"

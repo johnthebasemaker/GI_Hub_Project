@@ -1104,6 +1104,10 @@ class SmeConsumptionLog(Base):
     # answer its `Bench_For_1_SQM` was taken from (services/prep.py). NULL on
     # every lining row.
     Surface_State = Column(Text)
+    # ── Phase 15e: the part of the equipment the job covered ("Floor",
+    # "Bottom B/L"), pre-filled from the store keeper's remark; the remark
+    # itself is `notes`. NULL when nobody named a part.
+    Work_Area = Column(Text)
     __table_args__ = (
         # The sweep's own question: is this ledger row already attributed?
         Index("ix_sme_cons_log_consumption", "Consumption_ID"),
@@ -1973,6 +1977,9 @@ class SmeAttributionGroup(Base):
     # Phase 15d: OLD | NEW for a Garnet job (asked per job, ruling Q15-7);
     # NULL for a lining job.
     Surface_State = Column(Text)
+    # Phase 15e: the part of the equipment ("Floor", "Shell") — pre-filled from
+    # the store keeper's remark, which is kept verbatim in `notes`.
+    Work_Area = Column(Text)
     __table_args__ = (
         Index("ix_sme_attr_group_site_status", "Site_ID", "status"),
         Index("ix_sme_attr_group_tag", "Site_ID", "Equipment_Tag_No", "Lining_System_Code"),

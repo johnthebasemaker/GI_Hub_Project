@@ -1134,11 +1134,14 @@ function useInventoryMutation<V>(fn: (v: V) => Promise<Row>) {
     },
   })
 }
-export const useCreateInventory = () =>
-  useInventoryMutation((body: Row) => api.post('/admin/inventory', body).then((r) => r.data))
-export const useUpdateInventory = () =>
+/** `base`: '/admin/inventory' (admin page) or '/inventory-items' — the same
+ * editor for the HOD too, scoped server-side to their own site (2026-09-30). */
+export type InventoryBase = '/admin/inventory' | '/inventory-items'
+export const useCreateInventory = (base: InventoryBase = '/admin/inventory') =>
+  useInventoryMutation((body: Row) => api.post(base, body).then((r) => r.data))
+export const useUpdateInventory = (base: InventoryBase = '/admin/inventory') =>
   useInventoryMutation(({ sap, body }: { sap: string; body: Row }) =>
-    api.patch(`/admin/inventory/${encodeURIComponent(sap)}`, body).then((r) => r.data))
+    api.patch(`${base}/${encodeURIComponent(sap)}`, body).then((r) => r.data))
 export const useDeleteInventory = () =>
   useInventoryMutation((sap: string) =>
     api.delete(`/admin/inventory/${encodeURIComponent(sap)}`).then((r) => r.data))
@@ -1553,6 +1556,9 @@ export interface SmeLogRow {
   SQM_Completed: number | null
   Expected_Qty: number | null
   Actual_Qty: number | null
+  /** Phase 15e: the part of the equipment, and the job's remark as filed. */
+  Work_Area?: string | null
+  Remarks?: string | null
 }
 export function useSmeProductionLog(siteId?: string) {
   return useQuery({

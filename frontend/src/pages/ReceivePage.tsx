@@ -9,7 +9,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { BarcodeOutlined, DeleteOutlined, EditOutlined, PaperClipOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
-import { useBulkEntry, useCategories, useDocsRequired, useInventoryMaster, useReceiptMeta, useSites, useWbsOptions } from '../api/hooks'
+import { useBulkEntry, useCategories, useDocsRequired, useInventoryMaster, useReceiptMeta, useWbsOptions } from '../api/hooks'
 import { api } from '../api/client'
 import type { Row as ApiRow } from '../api/client'
 import DeliveryPrefRadio from '../components/DeliveryPrefRadio'
@@ -21,6 +21,8 @@ import ItemSnapshot from '../components/ItemSnapshot'
 import QrScanner from '../components/QrScanner'
 import { BARCODE_FORMATS, matchScanToSap } from '../lib/barcode'
 import { loadDefaults, saveDefaults } from '../lib/smartDefaults'
+import SiteField from '../components/SiteField'
+import WbsField from '../components/WbsField'
 
 interface FormValues {
   Site_ID: string
@@ -54,7 +56,6 @@ let _seq = 0
 export default function ReceivePage() {
   const { message } = App.useApp()
   const [form] = Form.useForm<FormValues>()
-  const { data: sites } = useSites()
   const inventory = useInventoryMaster()
   const bulk = useBulkEntry('receipt', ['/receipts'])
   const [staged, setStaged] = useState<StagedRow[]>([])
@@ -246,9 +247,7 @@ export default function ReceivePage() {
           initialValues={{ Date: dayjs(), ...loadDefaults('receive') }}>
           <Row gutter={16}>
             <Col xs={24} md={8}>
-              <Form.Item name="Site_ID" label="Site" rules={[{ required: true }]}>
-                <Select placeholder="Select site" options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
-              </Form.Item>
+              <SiteField />
             </Col>
             <Col xs={24} md={5}>
               <Form.Item label="Category">
@@ -296,15 +295,7 @@ export default function ReceivePage() {
             <Col xs={24} md={8}><Form.Item name="Lot_Number" label="Lot Number (optional)"><Input placeholder="auto if expiry set" /></Form.Item></Col>
           </Row>
           <Row gutter={16}>
-            {!!wbsOptions?.length && (
-              <Col xs={24} md={8}>
-                <Form.Item name="wbs" label="WBS Number"
-                  rules={[{ required: true, message: 'This site requires a WBS' }]}>
-                  <Select showSearch placeholder="Pick WBS"
-                    options={wbsOptions.map((w) => ({ value: w, label: w }))} />
-                </Form.Item>
-              </Col>
-            )}
+            <WbsField options={wbsOptions} site={watchSite} />
             <Col xs={24} md={8}>
               <Form.Item name="Bin_Location" label="Bin / Shelf (optional)">
                 <Input placeholder="e.g. R2-S4" />

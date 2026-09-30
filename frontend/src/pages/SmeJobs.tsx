@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Alert, App, Button, Card, Empty, Form, Input, InputNumber, Modal, Radio, Select,
+  Alert, App, AutoComplete, Button, Card, Empty, Form, Input, InputNumber, Modal, Radio, Select,
   Space, Table, Tag, Tooltip, Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -40,8 +40,13 @@ interface Candidate {
   code: string; name?: string | null; coverage: number
   covered: string[]; missing: string[]; hinted: boolean
 }
+/** Phase 15e — one distinct store-keeper remark on a job, parsed server-side
+ * (`sme_groups.parse_note`): "Floor - 13.37 SQM Done" → Floor, 13.37. */
+interface Note { text: string; sqm: number | null; area: string | null; ids: number[] }
+
 interface Job {
   key: string; site_id: string; work_date: string; tag: string
+  notes?: Note[]
   rows: Row[]; rejected: { consumption_id: number; reason: string; by?: string }[]
   edited: number; candidates: Candidate[]
   suggested_code: string | null; sqm_hint: number | null
@@ -67,6 +72,34 @@ function Drawn({ r }: { r: Row }) {
   return <>{q == null ? '—' : r4(q)} {s(r.uom)}</>
 }
 
+/** Phase 15e: the part of the equipment and the remark, both pre-filled from
+ * the store keeper's note and both kept with the job exactly as submitted. */
+function NoteFields({ area, setArea, remark, setRemark, areas }: {
+  area: string; setArea: (v: string) => void
+  remark: string; setRemark: (v: string) => void
+  areas: string[]
+}) {
+  return (
+    <>
+      <div>
+        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
+          Part of the equipment
+        </Typography.Text>
+        <AutoComplete style={{ width: 200 }} value={area} onChange={(v) => setArea(String(v ?? ''))}
+          aria-label="Part of the equipment" placeholder="e.g. Floor, Shell" allowClear
+          options={areas.map((a) => ({ value: a }))} />
+      </div>
+      <div>
+        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
+          Remark (kept with the job)
+        </Typography.Text>
+        <Input style={{ width: 320 }} value={remark} maxLength={500} aria-label="Remark"
+          placeholder="e.g. Floor - 13.37 SQM Done" onChange={(e) => setRemark(e.target.value)} />
+      </div>
+    </>
+  )
+}
+
 function JobCard({ job }: { job: Job }) {
   const { message } = App.useApp()
   const qc = useQueryClient()
@@ -74,13 +107,50 @@ function JobCard({ job }: { job: Job }) {
   const [sqm, setSqm] = useState<number | null>(job.sqm_hint)
   const cand = job.candidates.find((c) => c.code === code)
   const inRecipe = useMemo(() => new Set(cand?.covered ?? []), [cand])
+  // ⚠️ PHASE 15e — TWO NOTES ARE TWO JOBS. A day on one equipment can carry two
+  // different remarks ("Floor - 9.25 SQM Done" and "Top of Brick Coving - 4.82
+  // SQM Done"). The note picked here decides the materials ticked (its own,
+  // plus the rows with no remark), the area, the part and the remark; the
+  // other note's materials stay on the card for their own submission.
+  const notes = useMemo(() => job.notes ?? [], [job.notes])
+  const multi = notes.length > 1
+  const [noteIx, setNoteIx] = useState(0)
+  const [area, setArea] = useState(notes[0]?.area ?? '')
+  const [remark, setRemark] = useState(notes[0]?.text ?? '')
+  const otherNoteIds = (ix: number) => new Set(multi
+    ? notes.flatMap((x, i) => (i === ix ? [] : x.ids.map(Number))) : [])
   // ⚠️ The default selection is what the chosen system's recipe contains: the
   // toluene drawn beside a PU job is not a PU component, and ticking it would
   // compare it against a benchmark that does not exist.
-  const defaultSel = (c?: Candidate) => job.rows
-    .filter((r) => !c || c.coverage === 0 || c.covered.includes(sapKey(r.sap_code)))
-    .map((r) => Number(r.consumption_id))
+  const defaultSel = (c?: Candidate, ix = noteIx) => {
+    const other = otherNoteIds(ix)
+    return job.rows
+      .filter((r) => !other.has(Number(r.consumption_id)))
+      .filter((r) => !c || c.coverage === 0 || c.covered.includes(sapKey(r.sap_code)))
+      .map((r) => Number(r.consumption_id))
+  }
   const [sel, setSel] = useState<number[]>(() => defaultSel(cand))
+  const pickNote = (ix: number) => {
+    const nt = notes[ix]
+    setNoteIx(ix)
+    if (nt?.sqm != null) setSqm(nt.sqm)
+    setArea(nt?.area ?? '')
+    setRemark(nt?.text ?? '')
+    setSel(defaultSel(cand, ix))
+  }
+  // One note submitted, the card refetches under the SAME key with the notes
+  // that are left — start again from the first of those, or the figures of
+  // the job just submitted would stay in the boxes.
+  const noteSig = notes.map((x) => x.text).join('\u0000')
+  const [seenSig, setSeenSig] = useState(noteSig)
+  if (noteSig !== seenSig) {
+    setSeenSig(noteSig)
+    setNoteIx(0)
+    if (notes[0]?.sqm != null) setSqm(notes[0].sqm)
+    setArea(notes[0]?.area ?? '')
+    setRemark(notes[0]?.text ?? '')
+    setSel(defaultSel(cand, 0))
+  }
   // A refetch can add or remove rows under an open card (a store keeper posts
   // another draw for the same tag and day). Keep the ticks that still exist;
   // a NEW row arrives unticked — the supervisor decides about it, not a default.
@@ -94,6 +164,7 @@ function JobCard({ job }: { job: Job }) {
     mutationFn: async () => (await api.post('/execution/sme-link/groups', {
       work_date: job.work_date, tag: job.tag, code, sqm,
       consumption_ids: sel, site_id: job.site_id,
+      notes: remark.trim() || null, work_area: area.trim() || null,
     })).data,
     onSuccess: () => {
       message.success(sel.length < job.rows.length
@@ -149,6 +220,22 @@ function JobCard({ job }: { job: Job }) {
             code, the area or the materials and submit again.
           </>} />
       )}
+      {multi && (
+        <div style={{ marginBottom: 8 }} data-testid="job-notes">
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+            The store keeper wrote {notes.length} notes for this day — pick the one you are submitting;
+            the other stays here for its own submission:
+          </Typography.Text>
+          <Radio.Group value={noteIx} onChange={(e) => pickNote(Number(e.target.value))}
+            optionType="button" size="small" aria-label="Store keeper's note"
+            options={notes.map((nt, i) => ({
+              value: i,
+              label: <Tooltip title={nt.text}>
+                {nt.area ?? 'Note'}{nt.sqm != null ? ` · ${r4(nt.sqm)} m²` : ''}
+              </Tooltip>,
+            }))} />
+        </div>
+      )}
       <Table size="small" pagination={false} columns={cols} dataSource={job.rows}
         rowKey={(r) => String(r.consumption_id)}
         // ⚠️ ONE key type end to end (Phase 15b). rowKey is a string, so the
@@ -179,21 +266,24 @@ function JobCard({ job }: { job: Job }) {
           <InputNumber min={0.01} step={1} value={sqm ?? undefined} aria-label="Area covered"
             onChange={(v) => setSqm(v == null ? null : Number(v))} style={{ width: 160 }} />
         </div>
+        <NoteFields area={area} setArea={setArea} remark={remark} setRemark={setRemark}
+          areas={[...new Set(notes.map((x) => x.area).filter((x): x is string => !!x))]} />
         <Button type="primary" danger={rejected} loading={submit.isPending}
           disabled={!code || !sqm || sel.length === 0}
           onClick={() => submit.mutate()}>
           {rejected ? 'Correct & resubmit' : `Submit ${sel.length} to the HOD`}
         </Button>
       </Space>
-      {job.sqm_hint != null && sqm === job.sqm_hint && (
+      {notes[noteIx] && (
         <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '6px 0 0' }}>
-          Area pre-filled from the store keeper’s note — confirm it or correct it.
+          Pre-filled from the store keeper’s note “{notes[noteIx].text}” — confirm or
+          correct the area, the part and the remark. The remark is saved with the job.
         </Typography.Paragraph>
       )}
       {sel.length > 0 && sel.length < job.rows.length && (
         <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '6px 0 0' }}>
           <strong>Split:</strong> the {job.rows.length - sel.length} unticked material(s) stay
-          on this card for another system code.
+          on this card {multi ? 'for their own note' : 'for another system code'}.
         </Typography.Paragraph>
       )}
     </Card>
@@ -214,11 +304,15 @@ function PrepJobCard({ job }: { job: Job }) {
   const [code, setCode] = useState<string | undefined>(job.prep_code ?? undefined)
   const [state, setState] = useState<'OLD' | 'NEW' | undefined>(job.surface_hint ?? undefined)
   const [sqm, setSqm] = useState<number | null>(job.sqm_hint)
+  const notes = job.notes ?? []
+  const [area, setArea] = useState(notes[0]?.area ?? '')
+  const [remark, setRemark] = useState(notes.map((x) => x.text).join(' | '))
   const rejected = job.rejected.length > 0
   const submit = useMutation({
     mutationFn: async () => (await api.post('/execution/sme-link/groups', {
       work_date: job.work_date, tag: job.tag, code, sqm, surface_state: state,
       consumption_ids: job.rows.map((r) => Number(r.consumption_id)), site_id: job.site_id,
+      notes: remark.trim() || null, work_area: area.trim() || null,
     })).data,
     onSuccess: () => {
       message.success('Garnet job submitted — the HOD sees it against the ' +
@@ -279,6 +373,8 @@ function PrepJobCard({ job }: { job: Job }) {
           <InputNumber min={0.01} step={1} value={sqm ?? undefined} aria-label="Area blasted"
             onChange={(v) => setSqm(v == null ? null : Number(v))} style={{ width: 160 }} />
         </div>
+        <NoteFields area={area} setArea={setArea} remark={remark} setRemark={setRemark}
+          areas={[...new Set(notes.map((x) => x.area).filter((x): x is string => !!x))]} />
         <Button type="primary" danger={rejected} loading={submit.isPending}
           disabled={!code || !sqm || !state} onClick={() => submit.mutate()}>
           {rejected ? 'Correct & resubmit' : 'Submit Garnet to the HOD'}
@@ -385,6 +481,18 @@ interface StagedJob extends Row {
   Lining_System_Code: string; SQM_Completed: number; submitted_by?: string
   rows: Row[]; high_priority: boolean
   prep?: boolean; Surface_State?: string | null
+  Work_Area?: string | null; notes?: string | null
+}
+
+/** Phase 15e: the part and the remark the job was filed with. */
+function JobNote({ job }: { job: StagedJob }) {
+  if (!job.Work_Area && !job.notes) return null
+  return (
+    <Typography.Paragraph style={{ margin: '0 0 8px' }} data-testid="job-remark">
+      {job.Work_Area && <Tag color="blue">{job.Work_Area}</Tag>}
+      {job.notes && <Typography.Text type="secondary">Remark: “{job.notes}”</Typography.Text>}
+    </Typography.Paragraph>
+  )
 }
 
 /** Phase 15d — what a Garnet job is measured against, for the HOD. */
@@ -464,6 +572,7 @@ function JobDecideModal({ job, onClose }: { job: StagedJob | null; onClose: () =
             {' · '}{job.rows.length} material(s){job.submitted_by ? ` · filed by ${job.submitted_by}` : ''}
             {' '}<PrepTags job={job} />
           </Typography.Paragraph>
+          <JobNote job={job} />
           <StagedRows rows={job.rows} />
           {job.prep
             ? <Alert type="info" showIcon style={{ margin: '12px 0' }}
@@ -538,6 +647,7 @@ export function HodJobs({ isHod }: { isHod: boolean }) {
           extra={isHod
             ? <Button size="small" type="primary" onClick={() => setOpen(j)}>Review job</Button>
             : <Typography.Text type="secondary">with the HOD</Typography.Text>}>
+          <JobNote job={j} />
           <StagedRows rows={j.rows} />
         </Card>
       ))}
