@@ -9,12 +9,13 @@ import type { ColumnsType } from 'antd/es/table'
 import dayjs, { Dayjs } from 'dayjs'
 import {
   downloadArchived, downloadReport, useArchiveReport, useDeleteArchived,
-  useReportArchive, useReports, useScheduleMutation, useSchedules, useSites,
+  useReportArchive, useReports, useScheduleMutation, useSchedules,
 } from '../api/hooks'
 import { streamSse } from '../api/sse'
 import { useReadOnly } from '../auth/useReadOnly'
 import { api } from '../api/client'
 import type { Row } from '../api/client'
+import { SiteFilter } from '../components/SiteField'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -30,7 +31,6 @@ const FORMATS: { key: string; label: string; icon: React.ReactNode }[] = [
 function ReportCard({ report }: { report: Row }) {
   const { message } = App.useApp()
   const ro = useReadOnly()
-  const { data: sites } = useSites()
   const filters = (report.filters as string[]) ?? []
   const [site, setSite] = useState<string | undefined>()
   const [days, setDays] = useState(30)
@@ -90,8 +90,7 @@ function ReportCard({ report }: { report: Row }) {
       </Typography.Paragraph>
       <Space wrap style={{ marginBottom: 12 }}>
         {filters.includes('site_id') && (
-          <Select allowClear placeholder="All sites" style={{ width: 150 }} value={site} onChange={setSite}
-            options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
+          <SiteFilter style={{ width: 150 }} value={site} onChange={setSite} />
         )}
         {filters.includes('days') && (
           <Space size={4}>

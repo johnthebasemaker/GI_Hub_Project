@@ -88,6 +88,15 @@ SQLAlchemy Core insert/update — suite BZ-12a pins all four forms.
   service_tests stayed green.
 * Practice-only data goes in `tools/practice_overlay.py`, **never** in
   `make_tutorial_db.py` (P12-5 pins that one).
+* ⚠️ **EVERY LIVE FEATURE SHIPS WITH ITS PRACTICE EXAMPLE** (operator standing
+  order, 2026-09-30). Anything added to or changed in Live must be visible and
+  usable in Practice **with dummy data** in the same PR: a new queue gets a
+  seeded item in it, a new field a row that fills it, a new screen something
+  to look at. Add it to `practice_overlay.py` (idempotent, never fatal, bump
+  `OVERLAY_VERSION`), then apply it to the EXISTING Practice databases too —
+  `migrate` moves only the schema, and a rebuild wipes trainee work. The
+  pattern is `seed_job_notes` / `_seed_garnet`. A feature a trainee cannot
+  find in Practice is not finished (rule 13).
 * **If you add a `SessionLocal()` call, a background loop, or an outbound
   sender, it is automatically correct in Practice** — that is the whole reason
   for this shape. If you find yourself writing `if is_practice()` to route
@@ -176,6 +185,9 @@ all four PU rows share a name and a UOM, and the UOM disagrees on 25 of 32 pairs
 * `USER_MANUAL.md` **at the repo root is the only manual**. It is the AI corpus,
   the in-app PDF and the ops PDF. A second `docs/USER_MANUAL.md` existed for a
   month and fell four phases behind; suite CJ fails if it comes back.
+* **A feature change also gets its Practice example** — dummy data in
+  `tools/practice_overlay.py`, applied to the existing Practice databases
+  (rule 17, standing order 2026-09-30).
 * **A role added to `auth.ROLE_META` must be added, in the same commit, to
   `ai/manual_qa._ROLE_ALLOWED` and `build_manual_pdf.ROLE_MANUAL_RECIPES`.**
 

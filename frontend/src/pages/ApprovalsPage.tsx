@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Alert, App, Badge, Button, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Tabs,
+  Alert, App, Badge, Button, Form, Input, InputNumber, Modal, Popconfirm, Space, Tabs,
   Typography,
 } from 'antd'
 import { Table } from '../lib/smartTable'
@@ -8,7 +8,7 @@ import { EditOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import {
   useHodBulkApprove, useHodCounts, useHodDecision, useHodEditPending,
-  useHodPending, useHodPreflight, useSites,
+  useHodPending, useHodPreflight,
 } from '../api/hooks'
 import type { Row } from '../api/client'
 import { buildColumns } from '../lib/columns'
@@ -19,6 +19,7 @@ import type { EntryDocRow } from '../api/hooks'
 import { DocPreviewDrawer } from './DocumentLibraryPage'
 import { PaperClipOutlined, WarningOutlined } from '@ant-design/icons'
 import { Drawer, Tag } from 'antd'
+import { SiteFilter } from '../components/SiteField'
 
 // which document type backs each approval kind (C1 — inline preview)
 const DOC_TYPE_FOR: Record<string, 'receipt' | 'consumption' | 'return' | undefined> = {
@@ -281,7 +282,6 @@ function PendingKind({ kind, siteId }: { kind: string; siteId?: string }) {
 }
 
 export default function ApprovalsPage() {
-  const { data: sites } = useSites()
   const [siteId, setSiteId] = useState<string | undefined>(undefined)
   const { data: counts } = useHodCounts(siteId)
   const { data: preflight } = useHodPreflight(siteId)
@@ -324,14 +324,7 @@ export default function ApprovalsPage() {
         />
       )}
 
-      <Select
-        allowClear
-        placeholder="All sites"
-        style={{ width: 180, marginBottom: 12 }}
-        value={siteId}
-        onChange={setSiteId}
-        options={(sites ?? []).map((s) => ({ value: s, label: s }))}
-      />
+      <SiteFilter style={{ width: 180, marginBottom: 12 }} value={siteId} onChange={setSiteId} />
 
       <Tabs
         items={[

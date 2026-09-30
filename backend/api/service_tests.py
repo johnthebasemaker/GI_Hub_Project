@@ -27417,6 +27417,216 @@ async def test_stock_vs_excel():
         await _cleanup()
 
 
+async def test_phase15e_followups():
+    """Suite 15E — the operator's 2026-09-30 follow-ups.
+
+    · a job card reads the store keeper's remark ("Floor - 13.37 SQM Done"):
+      area, part and remark pre-filled; two different notes on one day are two
+      jobs; what is submitted is kept on the job AND its rows, shown to the
+      HOD, in the Production Log and on the Executive Summary;
+    · the HOD adds and edits inventory items for their OWN site (DELETE stays
+      admin-only), through `/inventory-items`.
+    """
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from .services import quality as Q
+    from .services import sme_groups as G
+
+    SITE, OTHER, TNK, PU, THN = "SV15E-SITE", "SV15E-OTHER", "SV15E-TNK", "SV15E-P", "SV15E-T"
+    async with SessionLocal() as s:
+        CAT = await Q.controlled_category(s)
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            for q in ("DELETE FROM sme_consumption_revision WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_consumption_log WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_attribution_group WHERE \"Site_ID\" = :site",
+                      "DELETE FROM app_notifications WHERE recipient_site = :site",
+                      "DELETE FROM consumption WHERE \"Site_ID\" = :site",
+                      "DELETE FROM mh_production WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_sqm_progress WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_equipment WHERE \"Site_ID\" = :site",
+                      "DELETE FROM sme_recipe WHERE \"SAP_Code\" LIKE 'SV15E-%'",
+                      "DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SV15E-%'"):
+                await s.execute(_t(q), {"site": SITE})
+            await s.commit()
+
+    def tok(user, role, site=SITE):
+        return {"Authorization": f"Bearer {_auth._make_token(user, role, site, _auth.ACCESS_TTL)}"}
+
+    async def cons(day, sap, qty, remark):
+        async with SessionLocal() as s:
+            cid = (await s.execute(_t(
+                'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                '"Tank_No", "Remarks") VALUES (:d, :p, :q, :site, :t, :r) RETURNING id'),
+                {"d": day, "p": sap, "q": qty, "site": SITE, "t": TNK, "r": remark})).scalar_one()
+            await s.commit()
+        return cid
+
+    # ── the parser, on the shapes the live Consumption Log actually carries ──
+    shapes = {
+        "Floor - 13.37 SQM Done": ("Floor", 13.37),
+        "Bottom B/L  - 15.36 SQM Done": ("Bottom B/L", 15.36),
+        "Shell rubber lining is in progress 62 m2 done": ("Shell rubber lining", 62.0),
+        "Sump Tank Wall 5.50 Done": ("Sump Tank Wall", 5.5),
+        "Top of Brick Coving Applied - 4.82 SQM Done": ("Top of Brick Coving", 4.82),
+        "Floor Expansioon Joint Area = 2.50 SQM DONE": ("Floor Expansioon Joint Area", 2.5),
+        "65 SQM Done": (None, 65.0),
+        "FLOOR - 55 sqm": ("FLOOR", 55.0),
+        "Dyke Wall Patch Work": ("Dyke Wall Patch Work", None),
+    }
+    got = {t: (lambda p: (p["area"], p["sqm"]))(G.parse_note(t)) for t in shapes}
+    check("15e-01: the remark parser reads the part and the figure from every shape the "
+          "field writes (SQM / m2 / a bare figure before Done / no figure at all)",
+          got == shapes, str({k: v for k, v in got.items() if v != shapes[k]}))
+    check("15e-01b: an empty remark is no note, and the old sqm_hint still answers "
+          "(now also for '5.50 Done')",
+          G.parse_note("  ") is None and G.sqm_hint([None, "Sump Tank Wall 5.50 Done"]) == 5.5)
+
+    await _cleanup()
+    try:
+        async with SessionLocal() as s:
+            for sap, desc in ((PU, "SV15E PU COMP A"), (THN, "SV15E THINNER")):
+                await s.execute(_t(
+                    'INSERT INTO inventory ("SAP_Code", "Equipment_Description", "Category", '
+                    '"UOM", "Site_ID") VALUES (:p, :d, :c, \'KG\', :site)'),
+                    {"p": sap, "d": desc, "c": CAT, "site": SITE})
+            await s.execute(_t(
+                'INSERT INTO sme_recipe ("Lining_System_Code", "Execution_Sub_Activity_Code", '
+                '"Material_Code", "SAP_Code", "Material_Name", "UOM", "For_1_SQM", '
+                '"Lining_System_Name") VALUES (\'SV15E-LS\', \'SV15E-LS\', \'M-SV15E-P\', '
+                ':p, :p, \'KG\', 1.0, \'SV15E-LS\')'), {"p": PU})
+            await s.execute(_t(
+                'INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", "Name", "Type", '
+                '"Substrate", "Lining_System_Code", "Surface_Area_SQM", "Equipment_Total_SQM") '
+                "VALUES (:site, :t, :t, 'CV', 'CONCRETE SUBSTRATE', 'SV15E-LS', 500, 500)"),
+                {"site": SITE, "t": TNK})
+            await s.execute(_t(
+                'INSERT INTO sme_sqm_progress ("Site_ID", "Equipment_Tag_No", '
+                '"Lining_System_Code", "Original_SQM", "Done_SQM") '
+                "VALUES (:site, :t, 'SV15E-LS', 500, 0)"), {"site": SITE, "t": TNK})
+            await s.commit()
+
+        # ── two notes on one day are two jobs ────────────────────────────────
+        D = "2026-09-22"
+        a = await cons(D, PU, 9, "Floor - 9.25 SQM Done")
+        b = await cons(D, PU, 5, "Top of Brick Coving Applied - 4.82 SQM Done")
+        c = await cons(D, THN, 1, None)
+        async with SessionLocal() as s:
+            q = await G.queue(s, site_id=SITE)
+        card = next((j for j in q["groups"] if j["tag"] == TNK and j["work_date"] == D), None)
+        notes = (card or {}).get("notes") or []
+        check("15e-02: the card carries each DISTINCT note with the rows that wrote it "
+              "(a blank remark is no note), and pre-fills the first one's area",
+              card is not None and len(notes) == 2
+              and notes[0]["area"] == "Floor" and notes[0]["sqm"] == 9.25 and notes[0]["ids"] == [a]
+              and notes[1]["area"] == "Top of Brick Coving" and notes[1]["ids"] == [b]
+              and card["sqm_hint"] == 9.25, str(notes))
+
+        async with SessionLocal() as s:
+            out = await G.submit(s, site_id=SITE, work_date=D, tag=TNK, code="SV15E-LS",
+                                 sqm=9.25, consumption_ids=[a, c],
+                                 notes="  Floor - 9.25 SQM   Done ", username="sv15e-sup",
+                                 work_area=" Floor ")
+            await s.commit()
+        gid = out["group_id"]
+        async with SessionLocal() as s:
+            grp = (await s.execute(_t(
+                'SELECT "Work_Area", notes FROM sme_attribution_group WHERE id = :g'),
+                {"g": gid})).mappings().first()
+            logs = (await s.execute(_t(
+                'SELECT "Consumption_ID", "Work_Area", notes FROM sme_consumption_log '
+                'WHERE group_id = :g ORDER BY "Consumption_ID"'), {"g": gid})).mappings().all()
+            q2 = await G.queue(s, site_id=SITE)
+            staged = [g for g in await G.staged_groups(s, site_id=SITE) if g["id"] == gid]
+        check("15e-03: the part and the remark are kept on the job AND on each member row, "
+              "as submitted (whitespace tidied)",
+              dict(grp or {}) == {"Work_Area": "Floor", "notes": "Floor - 9.25 SQM Done"}
+              and [(r["Consumption_ID"], r["Work_Area"], r["notes"]) for r in logs]
+              == [(a, "Floor", "Floor - 9.25 SQM Done"), (c, "Floor", "Floor - 9.25 SQM Done")],
+              f"{dict(grp or {})} {[dict(r) for r in logs]}")
+        rest = next((j for j in q2["groups"] if j["tag"] == TNK and j["work_date"] == D), None)
+        check("15e-04: the other note's material stays on the card, now pre-filled from "
+              "ITS note (4.82 m², Top of Brick Coving)",
+              rest is not None and [r["consumption_id"] for r in rest["rows"]] == [b]
+              and rest["sqm_hint"] == 4.82 and rest["notes"][0]["area"] == "Top of Brick Coving",
+              str(rest and (rest["rows"], rest["notes"])))
+        check("15e-05: the HOD's queue shows the part and the remark",
+              len(staged) == 1 and staged[0]["Work_Area"] == "Floor"
+              and staged[0]["notes"] == "Floor - 9.25 SQM Done", str(staged[:1]))
+
+        async with SessionLocal() as s:
+            await G.decide_group(s, group_id=gid, approve=True, edits=None, justification="",
+                                 reject_reason="", username="sv15e-hod", site_id=SITE)
+            await s.execute(_t(
+                'INSERT INTO mh_production ("Site_ID", "Work_Date", "Equipment_Tag", '
+                '"System_Code", "SQM_Done") VALUES (:site, :d, :t, \'SV15E-LS\', 9.25)'),
+                {"site": SITE, "d": D, "t": TNK})
+            await s.commit()
+        H = tok("sv15e-hod", "hod")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            pl = (await ac.get("/sme/production-log", headers=H)).json().get("items", [])
+            ex = (await ac.get("/hod/executive-summary", headers=H,
+                               params={"date_from": D, "date_to": D})).json()
+            xl = await ac.get("/hod/executive-summary/export.xlsx", headers=H,
+                              params={"date_from": D, "date_to": D})
+        mine = [r for r in pl if r["Equipment_Tag_No"] == TNK]
+        check("15e-06: the Production Log (job history + its exports) carries Work_Area "
+              "and Remarks for the approved job",
+              len(mine) == 2 and all(r["Work_Area"] == "Floor"
+                                     and r["Remarks"] == "Floor - 9.25 SQM Done" for r in mine),
+              str(mine))
+        sqm_rows = [r for r in ex.get("sqm_detail", []) if r.get("Equipment_Tag") == TNK]
+        check("15e-07: the Executive Summary's SQM-done row shows the approved job's part "
+              "and remark; the Excel export still builds",
+              len(sqm_rows) == 1 and sqm_rows[0]["Remarks"] == "Floor · Floor - 9.25 SQM Done"
+              and xl.status_code == 200, f"{sqm_rows} {xl.status_code}")
+
+        # ── the HOD adds and edits items of their own site ──────────────────
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            r_new = await ac.post("/inventory-items", headers=H, json={
+                "SAP_Code": "SV15E-NEW", "Equipment_Description": "SV15E HOD ITEM",
+                "Category": CAT, "UOM": "EA"})
+            r_other = await ac.post("/inventory-items", headers=H, json={
+                "SAP_Code": "SV15E-X", "Site_ID": OTHER, "Category": CAT})
+            r_edit = await ac.patch("/inventory-items/SV15E-NEW", headers=H,
+                                    json={"Minimum_Qty": 7})
+            r_move = await ac.patch("/inventory-items/SV15E-NEW", headers=H,
+                                    json={"Site_ID": OTHER})
+            r_del = await ac.request("DELETE", "/admin/inventory/SV15E-NEW", headers=H)
+            r_sk = await ac.post("/inventory-items", headers=tok("sv15e-sk", "store_keeper"),
+                                 json={"SAP_Code": "SV15E-SK", "Category": CAT})
+            r_foreign = await ac.patch("/inventory-items/SV15E-NEW",
+                                       headers=tok("sv15e-hod2", "hod", OTHER),
+                                       json={"Minimum_Qty": 1})
+            r_adm = await ac.post("/inventory-items", headers=tok("admin", "admin", ""), json={
+                "SAP_Code": "SV15E-ADM", "Site_ID": SITE, "Category": CAT})
+        async with SessionLocal() as s:
+            row = (await s.execute(_t(
+                'SELECT "Site_ID", "Minimum_Qty" FROM inventory WHERE "SAP_Code" = \'SV15E-NEW\''
+            ))).mappings().first()
+            aud = (await s.execute(_t(
+                "SELECT COUNT(*) FROM system_audit_log WHERE username = 'sv15e-hod' "
+                "AND action_type IN ('CREATE_INVENTORY', 'UPDATE_INVENTORY') "
+                "AND details LIKE 'SAP=SV15E-NEW%'"))).scalar_one()
+        check("15e-08: a HOD adds an item — pinned to THEIR site though none was sent — "
+              "and edits it; both audited under their name",
+              r_new.status_code == 201 and r_edit.status_code == 200
+              and dict(row or {}) == {"Site_ID": SITE, "Minimum_Qty": 7.0} and aud >= 2,
+              f"{r_new.status_code} {r_new.text[:120]} {r_edit.status_code} {dict(row or {})} aud={aud}")
+        check("15e-09: refused — a HOD adding for another site, moving an item to another "
+              "site, editing another site's item, deleting (admin only); a store keeper "
+              "adding at all. The admin still adds for any site through the same route",
+              (r_other.status_code, r_move.status_code, r_foreign.status_code,
+               r_del.status_code, r_sk.status_code, r_adm.status_code)
+              == (403, 403, 403, 403, 403, 201),
+              str((r_other.status_code, r_move.status_code, r_foreign.status_code,
+                   r_del.status_code, r_sk.status_code, r_adm.status_code)))
+    finally:
+        await _cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -27714,6 +27924,9 @@ async def main() -> int:
     print("\n 15D. Phase 15d — Garnet is surface prep: its own card, Old/New benchmark "
           "in KG, snapshotted, no area credited, never a lining system")
     await test_phase15d_garnet()
+    print("\n 15E. Phase 15e — the store keeper's remark fills the job card (two notes, "
+          "two jobs) and is kept with it; the HOD adds items for their own site")
+    await test_phase15e_followups()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

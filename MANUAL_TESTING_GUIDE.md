@@ -3993,6 +3993,60 @@ Q15-6).
 (SAP 899970, ESC2) is in the queue to practise on. It appears after the next
 Practice rebuild; production deploys rebuild Practice on every deploy.
 
+## 15e. Phase 15e — follow-ups: the login crest, the store keeper's note, site and WBS, HOD items
+
+**What it is for.** These are the operator's 2026-09-30 follow-ups. Suite 15E,
+`sme-jobs.spec` (15e) and `followups-15e.spec` pin them.
+
+⚠️ Test the job card with a day that has **two** different notes, not just one.
+The failure to catch is the second note's figures being lost, or the first
+note's figures staying in the boxes after it was submitted.
+
+**TC-15E-01** — the login page on a desktop with a GPU. The whole gold mark is
+visible, centred in its band, and never cut off at the top. The card sits
+**lower**, with clear space between the mark and the card. Resize the window:
+the mark stays centred over the card.
+
+**TC-15E-02** — Execution Entries → a job whose note reads `Floor - 13.37 SQM
+Done`. The card pre-fills **Area 13.37**, **Part: Floor** and **Remark: Floor -
+13.37 SQM Done**. Change the remark, then submit. The HOD's card shows the
+**Floor** tag and *Remark: “…”* as you submitted it.
+
+**TC-15E-03** — a day with two notes (Practice: `PRACTICE-TK-01`, *Floor - 12.5*
+and *Sump Wall - 4.2*):
+- the card shows two note buttons, with the first one picked;
+- pick the second: only its materials are ticked, and the area, part and remark
+  are its own;
+- submit. The card keeps the first note's materials and is now filled in with
+  the **first** note's figures.
+
+**TC-15E-04** — approve a job, then open **SME → Execution Plan → Production
+details**. The day's line reads *… SQM done · Floor · “Floor - 13.37 SQM Done”*.
+The **progress-list** and **production-log** exports carry the **Work_Area** and
+**Remarks** columns. On the Executive Summary (screen, Excel and PDF), the
+SQM-done row for that day, tag and system has **Remarks**.
+
+**TC-15E-05** — as the store keeper, open Issue, Receive, Return and Adjust. The
+site is a blue label (**CNCEC** *your site*), not a dropdown, and the entry saves
+to CNCEC. Repeat as the HOD on Approvals, Burn Rate, Reports, SME and the
+Executive Summary: the filter shows the HOD's site as a label. As admin, every
+one of those is still a dropdown.
+
+**TC-15E-06** — a site with **no** WBS numbers: Issue and Receive show *WBS
+Number — None set up* (greyed out), with the note about HOD → WBS. As HOD, add a
+WBS number. The field becomes a required dropdown (on Live CNCEC there were
+**none** on 2026-09-30).
+
+**TC-15E-07** — as the HOD, open **Records → Inventory** and press **New item**.
+The Site is shown as the HOD's own site and cannot be changed. Save the item. It
+appears to the store keeper's Issue picker. **Edit** on a row works; there is no
+Delete. As the store keeper, there is no New item button, and a direct `POST
+/inventory-items` gets 403.
+
+**TC-15E-08** — ⚠️ **rule 17g.** In Practice, as `practice.supervisor`, the
+two-note job on `PRACTICE-TK-01` is in the queue. It was added to both existing
+Practice databases on 2026-09-30, not left for the next rebuild.
+
 ## 14ak. Stock vs the Excel workbook, and the /login gap
 
 **What it is for.** The check finds which materials' GI Hub stock differs from

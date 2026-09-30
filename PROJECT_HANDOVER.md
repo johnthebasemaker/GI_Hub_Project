@@ -275,6 +275,7 @@ environment and never sent from the other, and the stamp sent as
 | **17d** | Make the banner follow the login toggle. It follows `GET /instance` — what the SERVER is — so a misrouted proxy shows as a red mismatch rather than a reassuring label (V10). |
 | **17e** | Run the Practice API with more than one worker. The reset's `DROP DATABASE … WITH (FORCE)` can terminate only sessions its own role may signal. |
 | **17f** | Mount `/practice/reset` on Live behind a role check. It is not mounted there at all; on Live it is a 404. |
+| **17g** | Ship a Live feature without its Practice example. *Operator standing order, 2026-09-30:* anything added to or changed in Live must show in Practice with dummy data in the same PR — seeded in `tools/practice_overlay.py` (idempotent, never fatal, `OVERLAY_VERSION` bumped) AND applied to the existing Practice databases, since `migrate` moves only the schema and a rebuild wipes trainee work. First instance: `seed_job_notes` (a two-note lining job for the Phase 15e job card). |
 
 Suite **TR** (48 checks, including subprocess boot refusals and a wall + reset
 proven on throwaways built by the SHIPPING functions) and

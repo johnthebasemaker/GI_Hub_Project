@@ -119,6 +119,17 @@ export default async function globalSetup() {
     + "\"Tank_No\", \"Remarks\") VALUES "
     + "('2026-09-21','E2EGAR-1',3,'CNCEC','E2E-GAR-TANK','Shell - 140 SQM Done')", E2E_DB)
 
+  // ── 1b-v. Phase 15e: one day, one vessel, TWO notes (sme-jobs.spec.ts) ────
+  // The store keeper wrote two different remarks for two pieces of work on
+  // the same day — the card offers each note and submits them as two jobs.
+  psql(
+    "INSERT INTO consumption (\"Date\", \"SAP_Code\", \"Quantity\", \"Site_ID\", "
+    + "\"Tank_No\", \"Remarks\") VALUES "
+    + "('2026-09-22','E2EJOB-1',2,'CNCEC','E2E-JOB-TANK','Floor - 9.25 SQM Done'), "
+    + "('2026-09-22','E2EJOB-2',2,'CNCEC','E2E-JOB-TANK','Floor - 9.25 SQM Done'), "
+    + "('2026-09-22','E2EJOB-1',1,'CNCEC','E2E-JOB-TANK','Top of Brick Coving Applied - 4.82 SQM Done')",
+    E2E_DB)
+
   // ── 1c. the SME tier-segregation fixture (sme-tiers.spec.ts) ─────────────
   // A purpose-built copy of the PHENACIN ACP POWDER shape that produced the
   // 2026-08-03 bug report: a material with ZERO stock on the shelf and MORE

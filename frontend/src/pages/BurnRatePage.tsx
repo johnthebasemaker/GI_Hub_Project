@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { InputNumber, Select, Space, Typography } from 'antd'
+import { InputNumber, Space, Typography } from 'antd'
 import { Table } from '../lib/smartTable'
 import type { ColumnsType } from 'antd/es/table'
-import { useBurnRate, useSites } from '../api/hooks'
+import { useBurnRate } from '../api/hooks'
 import type { Row } from '../api/client'
+import { SiteFilter } from '../components/SiteField'
 
 const columns: ColumnsType<Row> = [
   { title: 'SAP', dataIndex: 'SAP_Code', key: 'SAP_Code', width: 110 },
@@ -16,7 +17,6 @@ const columns: ColumnsType<Row> = [
 ]
 
 export default function BurnRatePage() {
-  const { data: sites } = useSites()
   const [siteId, setSiteId] = useState<string | undefined>(undefined)
   const [days, setDays] = useState(30)
   const { data, isFetching } = useBurnRate(siteId, days)
@@ -31,14 +31,7 @@ export default function BurnRatePage() {
       </Typography.Paragraph>
 
       <Space style={{ marginBottom: 12 }}>
-        <Select
-          allowClear
-          placeholder="All sites"
-          style={{ width: 180 }}
-          value={siteId}
-          onChange={setSiteId}
-          options={(sites ?? []).map((s) => ({ value: s, label: s }))}
-        />
+        <SiteFilter style={{ width: 180 }} value={siteId} onChange={setSiteId} />
         <span>Days:</span>
         <InputNumber min={1} max={365} value={days} onChange={(v) => setDays(v ?? 30)} />
         {data?.since && <Typography.Text type="secondary">since {data.since}</Typography.Text>}

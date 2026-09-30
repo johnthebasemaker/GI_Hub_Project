@@ -1,6 +1,7 @@
 import { App, Button, Card, Col, Form, Input, InputNumber, Row, Select, Typography } from 'antd'
-import { useAdjustmentEntry, useAdjustmentReasons, useInventoryMaster, useSites } from '../api/hooks'
+import { useAdjustmentEntry, useAdjustmentReasons, useInventoryMaster } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
+import SiteField from '../components/SiteField'
 
 interface FormValues {
   Site_ID: string
@@ -20,7 +21,6 @@ function errMsg(e: unknown): string {
 export default function AdjustPage() {
   const { message } = App.useApp()
   const [form] = Form.useForm<FormValues>()
-  const { data: sites } = useSites()
   const inventory = useInventoryMaster()
   const { data: reasons } = useAdjustmentReasons()
   const adjust = useAdjustmentEntry()
@@ -65,9 +65,7 @@ export default function AdjustPage() {
         <Form<FormValues> form={form} layout="vertical" onFinish={onFinish}>
           <Row gutter={16}>
             <Col xs={24} md={8}>
-              <Form.Item name="Site_ID" label="Site" rules={[{ required: true }]}>
-                <Select placeholder="Select site" options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
-              </Form.Item>
+              <SiteField />
             </Col>
             <Col xs={24} md={16}>
               <Form.Item name="SAP_Code" label="Material (SAP Code)" rules={[{ required: true }]}>

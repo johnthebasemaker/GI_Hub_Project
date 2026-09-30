@@ -51,7 +51,7 @@ os.environ.setdefault("GI_DOTENV", "0")
 
 # Bumped when the OVERLAY's content changes. Reported with the tutorial
 # fixture's own DATASET_VERSION as "<fixture>.<overlay>".
-OVERLAY_VERSION = 1
+OVERLAY_VERSION = 2   # 2 = Phase 15e: a two-note lining job (2026-09-30)
 
 SITE = "CNCEC"
 WAREHOUSE = "WH-01"
@@ -211,6 +211,10 @@ async def seed_queues() -> dict:
                 out["garnet_jobs"] = await _seed_garnet(today)
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  garnet example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["note_jobs"] = await seed_job_notes(today)
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  job-note example skipped: {type(e).__name__}: {str(e)[:160]}")
 
         async with SessionLocal() as s:
             await ledger.stage_return(s, username="practice.storekeeper", data={
@@ -303,6 +307,70 @@ async def _seed_garnet(today: str) -> int:
             {"d": today, "p": GARNET_SAP, "site": SITE, "t": tag})
         await s.commit()
     return 1
+
+
+JOB_TAG = "PRACTICE-TK-01"
+JOB_CODE = "PRL1"
+JOB_SAPS = (("899971", "PRACTICE PU PRIMER", 0.35), ("899972", "PRACTICE PU TOPCOAT", 0.6))
+
+
+async def seed_job_notes(today: str) -> int:
+    """Phase 15e — a lining job whose store-keeper remarks fill the card.
+
+    One Practice tank with its own two-material system, and ONE day of draws
+    carrying TWO different notes ("Floor - 12.5 SQM Done", "Sump Wall - 4.2
+    SQM Done"), so a supervisor trainee sees the note buttons, the pre-filled
+    area / part / remark, and submits the two as two jobs; the HOD then sees the
+    remark on the approval card. The fixture's own recipes name no stock item
+    (their SAP_Code is blank), so no lining job could be practised without this.
+
+    Idempotent (keyed on the synthetic SAPs / tag) and never fatal. Practice-only
+    data (P12-5). Rule 17's standing order: a Live feature gets its example here.
+    """
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+    from backend.api.services import quality
+
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                'SELECT 1 FROM consumption WHERE "Tank_No" = :t LIMIT 1'), {"t": JOB_TAG})).first():
+            return 0
+        cat = await quality.controlled_category(s)
+        for sap, name, rate in JOB_SAPS:
+            await s.execute(text(
+                'INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+                '"Category", "UOM", "Site_ID", "Opening_Stock") VALUES '
+                "(:p, :m, :n, :c, 'KG', :site, 200) ON CONFLICT (\"SAP_Code\") DO NOTHING"),
+                {"p": sap, "m": f"MAT-{sap}", "n": name, "c": cat, "site": SITE})
+            await s.execute(text(
+                'INSERT INTO sme_recipe ("Lining_System_Code", "Execution_Sub_Activity_Code", '
+                '"Lining_System_Name", "Material_Code", "SAP_Code", "Material_Name", '
+                '"Material_Description", "UOM", "For_1_SQM") VALUES (:c, :c, '
+                "'Practice PU lining', :m, :p, :n, :n, 'KG', :r)"),
+                {"c": JOB_CODE, "m": f"MAT-{sap}", "p": sap, "n": name, "r": rate})
+        await s.execute(text(
+            'INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", "Name", "Type", '
+            '"Substrate", "Lining_System_Code", "Surface_Area_SQM", "Equipment_Total_SQM") '
+            "VALUES (:site, :t, 'Practice sump tank', 'CV', 'CONCRETE SUBSTRATE', :c, 120, 120)"),
+            {"site": SITE, "t": JOB_TAG, "c": JOB_CODE})
+        await s.execute(text(
+            'INSERT INTO sme_sqm_progress ("Site_ID", "Equipment_Tag_No", "Lining_System_Code", '
+            '"Original_SQM", "Done_SQM") VALUES (:site, :t, :c, 120, 0)'),
+            {"site": SITE, "t": JOB_TAG, "c": JOB_CODE})
+        # ⚠️ LEDGER ROWS, like the Garnet example: an issue of a Surface Shield
+        # needs a QC release and an MTC this example has no business faking.
+        for sap, qty, remark in (("899971", 4.4, "Floor - 12.5 SQM Done"),
+                                 ("899972", 7.5, "Floor - 12.5 SQM Done"),
+                                 ("899971", 1.5, "Sump Wall - 4.2 SQM Done"),
+                                 ("899972", 2.5, "Sump Wall - 4.2 SQM Done")):
+            await s.execute(text(
+                'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                '"Tank_No", "Work_Type", "Issued_To", "Remarks") VALUES '
+                "(:d, :p, :q, :site, :t, 'Lining', 'Aria Bellweather', :r)"),
+                {"d": today, "p": sap, "q": qty, "site": SITE, "t": JOB_TAG, "r": remark})
+        await s.commit()
+    return 2
 
 
 def fixture_version() -> int:

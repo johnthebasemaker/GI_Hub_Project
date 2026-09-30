@@ -264,8 +264,9 @@ def render_exec_pdf(d: dict, *, site: str | None, username: str) -> bytes:
            rows_of(d["returns_detail"],
                    ["Date", "SAP_Code", "Equipment_Description", "Quantity", "UOM", "Site_ID"]))
     _table(pdf, "SQM Done (Production)",
-           ["Work_Date", "Equipment_Tag", "System_Code", "SQM_Done"],
-           rows_of(d["sqm_detail"], ["Work_Date", "Equipment_Tag", "System_Code", "SQM_Done"]))
+           ["Work_Date", "Equipment_Tag", "System_Code", "SQM_Done", "Remarks"],
+           rows_of(d["sqm_detail"], ["Work_Date", "Equipment_Tag", "System_Code", "SQM_Done",
+                                     "Remarks"]))
     _table(pdf, "Manpower Present",
            ["Employee_Code", "Name", "Designation", "Worker_Type",
             "Hours", "OT_Hours", "Allocated_SQM"],

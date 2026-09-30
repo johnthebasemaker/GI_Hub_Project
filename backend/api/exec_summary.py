@@ -217,11 +217,23 @@ async def _build_summary(session: AsyncSession, *, site: str | None,
         ORDER BY r."Date" DESC, r.id DESC LIMIT {detail_limit}''', **P)
 
     # ── SQM done + manpower (Man-Hours module, read-only) ────────────────────
+    # Phase 15e: "Remarks" — the part of the equipment and the remark the
+    # APPROVED Surface Shield job for that day, tag and system was filed with
+    # ("Floor · Floor - 13.37 SQM Done"). A lookup beside the row, never a
+    # join that could split or drop a production row.
     sqm_detail = await _rows(session, f'''
-        SELECT "Work_Date", "Equipment_Tag", "System_Code", SUM("SQM_Done") AS "SQM_Done"
-        FROM mh_production WHERE "Work_Date" BETWEEN :dfrom AND :dto {sf}
-        GROUP BY "Work_Date", "Equipment_Tag", "System_Code"
-        ORDER BY "Work_Date" DESC, "Equipment_Tag" LIMIT {detail_limit}''', **P)
+        SELECT p."Work_Date", p."Equipment_Tag", p."System_Code", SUM(p."SQM_Done") AS "SQM_Done",
+               (SELECT string_agg(DISTINCT concat_ws(' · ', NULLIF(g."Work_Area", ''),
+                                                    NULLIF(g.notes, '')), ' | ')
+                  FROM sme_attribution_group g
+                 WHERE g.status = 'committed' AND g."Work_Date" = p."Work_Date"
+                   AND g."Equipment_Tag_No" = p."Equipment_Tag"
+                   AND g."Lining_System_Code" = p."System_Code"
+                   AND (g."Work_Area" IS NOT NULL OR g.notes IS NOT NULL)
+                   {_site_frag(site, 'g."Site_ID"')}) AS "Remarks"
+        FROM mh_production p WHERE p."Work_Date" BETWEEN :dfrom AND :dto {_site_frag(site, 'p."Site_ID"')}
+        GROUP BY p."Work_Date", p."Equipment_Tag", p."System_Code"
+        ORDER BY p."Work_Date" DESC, p."Equipment_Tag" LIMIT {detail_limit}''', **P)
     sqm_total = float(await _one(session,
         f'SELECT COALESCE(SUM("SQM_Done"),0) FROM mh_production '
         f'WHERE "Work_Date" BETWEEN :dfrom AND :dto {sf}', **P))
@@ -443,7 +455,7 @@ async def executive_summary_xlsx(date_from: str | None = Query(None),
         ("Returns", *tab(d["returns_detail"],
          ["Date", "SAP_Code", "Equipment_Description", "Quantity", "UOM", "Site_ID"])),
         ("SQM Done", *tab(d["sqm_detail"],
-         ["Work_Date", "Equipment_Tag", "System_Code", "SQM_Done"])),
+         ["Work_Date", "Equipment_Tag", "System_Code", "SQM_Done", "Remarks"])),
         ("Manpower Present", *tab(d["manpower"]["present"],
          ["Employee_Code", "Name", "Designation", "Worker_Type", "Hours", "OT_Hours", "Allocated_SQM"])),
         ("Manpower Absent", *tab(d["manpower"]["absent"],

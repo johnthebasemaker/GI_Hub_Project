@@ -12,6 +12,7 @@ import { api } from '../api/client'
 import { downloadPrPdf, useAutoDraftPr, useCreatePr, useEditPrLine, useHodPrLines, useHodPrs, useInventoryMaster, useRenamePr, useSites, useSubmitPr } from '../api/hooks'
 import { useIdempotencyKey } from '../api/idempotency'
 import type { Row as ApiRow } from '../api/client'
+import SiteField from '../components/SiteField'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -36,7 +37,6 @@ function NewPr() {
   const { message } = App.useApp()
   const { user } = useAuth()
   const [form] = Form.useForm<PrFormValues>()
-  const { data: sites } = useSites()
   const inventory = useInventoryMaster()
   const createIdem = useIdempotencyKey()
   const create = useCreatePr(createIdem)
@@ -92,9 +92,7 @@ function NewPr() {
       >
         <Row gutter={16}>
           <Col xs={24} md={7}>
-            <Form.Item name="site_id" label="Site" rules={[{ required: true }]}>
-              <Select placeholder="Site" options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
-            </Form.Item>
+            <SiteField name="site_id" />
           </Col>
           <Col xs={24} md={9}>
             <Form.Item name="supplier" label="Supplier (optional)">

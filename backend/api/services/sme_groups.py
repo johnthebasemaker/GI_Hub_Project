@@ -41,7 +41,64 @@ from .ledger import _MD, write_audit
 group_t = _MD.tables["sme_attribution_group"]
 log_t = _MD.tables["sme_consumption_log"]
 
-_SQM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:SQM|SQ\.?\s*M|M2|M²)\b", re.I)
+_SQM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:SQM|SQ\.?\s*M|M2|M²)(?![A-Za-z0-9])", re.I)
+# "Sump Tank Wall 5.50 Done" — a figure with no unit, but followed by Done.
+_DONE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:done|completed)\b", re.I)
+# Words that describe the day, not the part: "Shell rubber lining is in
+# progress 62 m2 done" names the part "Shell rubber lining".
+_NOT_PART = re.compile(r"\b(?:is\s+)?in\s+progress\b|\b(?:applied|done|completed)\b", re.I)
+_EDGE = " -–—=:,.;/"
+AREA_MAX = 80
+
+
+def parse_note(text: Optional[str]) -> Optional[dict]:
+    """One store keeper's remark → {text, sqm, area} (Phase 15e).
+
+    The field writes the day's work into the Consumption Log's Remarks in one
+    recognisable shape — "<part of the equipment> - <figure> SQM Done":
+
+        "Floor - 13.37 SQM Done"             → area "Floor",  13.37
+        "Bottom B/L  - 15.36 SQM Done"       → "Bottom B/L",  15.36
+        "Shell rubber lining is in progress 62 m2 done" → "Shell rubber lining", 62
+        "Sump Tank Wall 5.50 Done"           → "Sump Tank Wall", 5.5
+        "65 SQM Done"                        → no part, 65
+        "Dyke Wall Patch Work"               → "Dyke Wall Patch Work", no figure
+
+    ⚠️ A PRE-FILL, NEVER THE RECORD — the same stance as `hint_system_code`.
+    The card shows all three for the supervisor to confirm or correct; what is
+    stored is what they submit. `text` is the remark as typed (whitespace
+    collapsed), which is what is kept as the job's remark."""
+    t = " ".join(str(text or "").split())
+    if not t:
+        return None
+    m = _SQM_RE.search(t) or _DONE_RE.search(t)
+    sqm = None
+    if m:
+        try:
+            v = float(m.group(1))
+            sqm = v if v > 0 else None
+        except ValueError:
+            sqm = None
+    head = t[:m.start()] if m else t
+    area = " ".join(_NOT_PART.sub(" ", head).split()).strip(_EDGE).strip()
+    return {"text": t, "sqm": sqm, "area": (area[:AREA_MAX] or None)}
+
+
+def notes_of(rows: list[dict]) -> list[dict]:
+    """The DISTINCT remarks on a job's rows, each with the rows that carry it.
+
+    A day on one equipment can carry two notes — J022 on 2026-09-22: "Floor -
+    9.25 SQM Done" and "Top of Brick Coving Applied - 4.82 SQM Done". They are
+    two jobs (ruling 2026-09-30): the card offers each note, and picking one
+    ticks its own materials and pre-fills its figures. Order = first seen."""
+    out: dict[str, dict] = {}
+    for r in rows:
+        p = parse_note(r.get("remarks"))
+        if p is None:
+            continue
+        e = out.setdefault(p["text"].lower(), {**p, "ids": []})
+        e["ids"].append(r.get("consumption_id"))
+    return list(out.values())
 
 
 def sqm_hint(remarks: list[Optional[str]]) -> Optional[float]:
@@ -51,14 +108,9 @@ def sqm_hint(remarks: list[Optional[str]]) -> Optional[float]:
     Remarks is free text an HOD can edit. When the group's rows disagree the
     first stated figure is offered and the field confirms it."""
     for r in remarks:
-        m = _SQM_RE.search(str(r or ""))
-        if m:
-            try:
-                v = float(m.group(1))
-                if v > 0:
-                    return v
-            except ValueError:
-                continue
+        p = parse_note(r)
+        if p and p["sqm"]:
+            return p["sqm"]
     return None
 
 
@@ -191,6 +243,7 @@ async def queue(session: AsyncSession, *, site_id: Optional[str]) -> dict:
                  "prep_options": prep_options,
                  "surface_hint": await PR.last_state(session, site_id=site, tag=tag),
                  "sqm_hint": sqm_hint([r["remarks"] for r in prep_rows]),
+                 "notes": notes_of(prep_rows),
                  "key": f"{site}|{day}|{tag}|prep"}
             out.append(p)
             g = {**g, "rows": [r for r in g["rows"] if r["consumption_id"] not in ids],
@@ -205,6 +258,7 @@ async def queue(session: AsyncSession, *, site_id: Optional[str]) -> dict:
         g["candidates"] = cands
         g["suggested_code"] = g["prev_code"] or (cands[0]["code"] if cands else None)
         g["sqm_hint"] = g["prev_sqm"] or sqm_hint(remarks)
+        g["notes"] = notes_of(g["rows"])
         g["key"] = f"{site}|{day}|{tag}"
         out.append(g)
     # rejected jobs first, then oldest first — the prep cards interleaved
@@ -244,8 +298,13 @@ async def _share_expected(session: AsyncSession, group_id: int, sqm: float,
 async def submit(session: AsyncSession, *, site_id: str, work_date: str, tag: str,
                  code: str, sqm: float, consumption_ids: list[int],
                  notes: Optional[str], username: str,
-                 surface_state: Optional[str] = None) -> dict:
+                 surface_state: Optional[str] = None,
+                 work_area: Optional[str] = None) -> dict:
     """One system code and one SQM for the chosen materials of one job.
+
+    Phase 15e: `notes` is the job's remark (pre-filled from the store keeper's,
+    kept as submitted) and `work_area` the part of the equipment; both land on
+    the job and on every member row.
 
     Phase 15d: a GARNET job is the same call with a prep code (ESC1/ESC2) and
     `surface_state` OLD | NEW; its area is benchmark-only (services/prep.py)."""
@@ -280,13 +339,15 @@ async def submit(session: AsyncSession, *, site_id: str, work_date: str, tag: st
                         if st != "mapped" else f"is {rt}, not {tag}"))
     prep = await PR.is_prep(session, code)
     state = PR.norm_state(surface_state) if prep else None
+    notes = " ".join(str(notes or "").split())[:500] or None
+    area = " ".join(str(work_area or "").split())[:AREA_MAX] or None
     if prep and state is None:
         raise HTTPException(422, "Garnet is benchmarked per surface: say whether this "
                                  "job was an OLD surface or a NEW surface.")
     gid = (await session.execute(pg_insert(group_t).values(
         Site_ID=site_id, Work_Date=_day(work_date), Equipment_Tag_No=tag,
         Lining_System_Code=code, SQM_Completed=sqm, status="staged", notes=notes,
-        Surface_State=state,
+        Surface_State=state, Work_Area=area,
         submitted_by=username).returning(group_t.c["id"]))).scalar_one()
     results, joined = [], 0
     for cid in ids:
@@ -298,7 +359,7 @@ async def submit(session: AsyncSession, *, site_id: str, work_date: str, tag: st
         # stays with its own job (decide_revision moves that job's credit).
         n = (await session.execute(update(log_t).where(
             log_t.c["id"] == int(res["id"]), log_t.c["status"] == "staged",
-            log_t.c["Consumption_ID"] == cid).values(group_id=gid))).rowcount
+            log_t.c["Consumption_ID"] == cid).values(group_id=gid, Work_Area=area))).rowcount
         joined += n or 0
     if not joined:
         await session.execute(text('DELETE FROM sme_attribution_group WHERE id = :g'),
@@ -311,10 +372,11 @@ async def submit(session: AsyncSession, *, site_id: str, work_date: str, tag: st
     await write_audit(session, username, "SME_GROUP_SUBMIT", "sme_attribution_group",
                       f"group={gid} {_day(work_date)} {tag}/{code} sqm={sqm:g} "
                       f"rows={len(ids)} joined={joined}"
-                      + (f" surface={state}" if state else ""))
+                      + (f" surface={state}" if state else "")
+                      + (f" area={area!r}" if area else ""))
     return {"group_id": gid, "rows": results, "joined": joined, "status": "staged",
             "Lining_System_Code": code, "Equipment_Tag_No": tag, "SQM_Completed": sqm,
-            "Surface_State": state}
+            "Surface_State": state, "Work_Area": area, "notes": notes}
 
 
 async def submit_one(session: AsyncSession, *, consumption_id: int, code: str, tag: str,

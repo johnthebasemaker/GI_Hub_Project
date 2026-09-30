@@ -1,9 +1,9 @@
 import { useLayoutEffect, useRef, useState } from 'react'
-import { App, Button, Select, Space, Tabs, Typography, theme } from 'antd'
+import { App, Button, Space, Tabs, Typography, theme } from 'antd'
 import { Table } from '../lib/smartTable'
 import { FileExcelOutlined } from '@ant-design/icons'
 import {
-  downloadDocument, useSites, useSmeComparison, useSmeDemandMatrix, useSmeEquipment,
+  downloadDocument, useSmeComparison, useSmeDemandMatrix, useSmeEquipment,
   useSmeMaterials, useSmeRecipes, useSmeSqm,
 } from '../api/hooks'
 import type { Row as ApiRow } from '../api/client'
@@ -21,6 +21,7 @@ import SessionReport from '../sme/SessionReport'
 import SmartCalculator from '../sme/SmartCalculator'
 import SmeDashboard from '../sme/SmeDashboard'
 import { useAuth } from '../auth/AuthContext'
+import { SiteFilter } from '../components/SiteField'
 
 // One-click XLSX export of an SME view (read-only server render).
 function ExportButton({ exportKey, siteId }: { exportKey: string; siteId?: string }) {
@@ -91,21 +92,19 @@ function DemandMatrix({ siteId }: { siteId?: string }) {
 }
 
 export default function SmePage() {
-  const { data: sites } = useSites()
   const [siteId, setSiteId] = useState<string | undefined>(undefined)
   // Phase S1: persistent planning-scenario store (client-side priority order
   // for the TS cascade engine). The S2/S3 rebuild renders inside this provider.
   return (
     <ScenarioProvider siteId={siteId}>
-      <SmePageBody siteId={siteId} setSiteId={setSiteId} sites={sites} />
+      <SmePageBody siteId={siteId} setSiteId={setSiteId} />
     </ScenarioProvider>
   )
 }
 
-function SmePageBody({ siteId, setSiteId, sites }: {
+function SmePageBody({ siteId, setSiteId }: {
   siteId?: string
   setSiteId: (v: string | undefined) => void
-  sites?: string[]
 }) {
   const equipment = useSmeEquipment(siteId)
   const recipes = useSmeRecipes()
@@ -156,8 +155,7 @@ function SmePageBody({ siteId, setSiteId, sites }: {
           derived available quantity) — masters editable in 🗄️ Master Data (S6).
         </Typography.Paragraph>
         <Space style={{ marginBottom: 12 }}>
-          <Select allowClear placeholder="All sites" style={{ width: 180 }} value={siteId}
-            onChange={setSiteId} options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
+          <SiteFilter style={{ width: 180 }} value={siteId} onChange={setSiteId} />
         </Space>
       </div>
       <Tabs

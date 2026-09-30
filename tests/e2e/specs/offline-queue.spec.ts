@@ -18,6 +18,11 @@ test('offline entry queues, badges, and syncs on reconnect', async ({ page, cont
   // the badge lives in the app header — make sure the layout is mounted (and
   // its queue listeners attached) before we cut the network
   await expect(page.getByRole('button', { name: /sign out/i })).toBeVisible()
+  // …and the PAGE itself: it is a lazy route, and on the dev server its module
+  // graph arrives file by file. Cutting the network while that is in flight
+  // crashes the route into the error boundary (2026-09-30, after the form grew
+  // two shared components) — a race in the test, not the thing under test.
+  await expect(page.getByRole('heading', { name: 'Receive Stock' })).toBeVisible()
 
   await context.setOffline(true)
   const queued = await page.evaluate(

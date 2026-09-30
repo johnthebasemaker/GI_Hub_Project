@@ -178,6 +178,10 @@ export function mountLoginScene(host: HTMLElement | null =
   let heavy = 0
 
   const place = () => {
+    // The band is not at the top of the page (the crest + card column is
+    // centred), so the canvas follows it rather than assuming top: 0.
+    const band = el.querySelector<HTMLElement>('.gi-login-crest')
+    if (band) canvas.style.top = `${band.offsetTop}px`
     const w = canvas.clientWidth
     const h = canvas.clientHeight
     if (!w || !h) return
@@ -284,9 +288,15 @@ export function mountLoginScene(host: HTMLElement | null =
       mark.add(new Mesh(geo, gold))
     }
     markH = MARK_W * height / width
-    const box = new Box3().setFromObject(mark)
+    // ⚠️ CENTRE IN THE MARK'S OWN SPACE. `setFromObject(mark)` measures in
+    // WORLD space, i.e. through the intro pose the first frames have already
+    // applied (dropped 0.5, scaled 0.6, turned) — subtracting that centre left
+    // the finished mark half a band too high, cut off at the top of the window
+    // (2026-09-30). Headless runs never saw it: a software renderer takes Tier 0.
+    const box = new Box3()
+    for (const g of geos) { g.computeBoundingBox(); box.union(g.boundingBox!) }
     const c = box.getCenter(new Vector3())
-    mark.children.forEach((m) => m.position.sub(c))
+    for (const g of geos) g.translate(-c.x, -c.y, -c.z)
     place()
     // Compile every shader BEFORE the intro starts (in parallel where the GPU
     // driver allows): the physical materials can take 100 ms+ to compile, and

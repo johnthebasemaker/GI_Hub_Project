@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import {
-  Alert, Button, Card, Col, DatePicker, Descriptions, Empty, Progress, Row, Select, Space, Spin,
+  Alert, Button, Card, Col, DatePicker, Descriptions, Empty, Progress, Row, Space, Spin,
   Statistic, Tag, Typography,
 } from 'antd'
 import { Table } from '../lib/smartTable'
@@ -10,11 +10,12 @@ import {
 } from '@ant-design/icons'
 import dayjs, { Dayjs } from 'dayjs'
 import {
-  downloadExecSummaryPdf, downloadExecSummaryXlsx, useExecutiveSummary, useSites,
+  downloadExecSummaryPdf, downloadExecSummaryXlsx, useExecutiveSummary,
   type ExecSummaryKpi,
 } from '../api/hooks'
 import KpiRow from '../components/KpiRow'
 import { useAuth } from '../auth/AuthContext'
+import { SiteFilter } from '../components/SiteField'
 
 const { RangePicker } = DatePicker
 
@@ -72,7 +73,6 @@ const col = (title: string, dataIndex: string) => ({ title, dataIndex })
 
 export default function ExecutiveSummaryPage() {
   const { user } = useAuth()
-  const { data: sites } = useSites()
   const isAdmin = user?.role === 'admin'
   const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs(), dayjs()])
   const [site, setSite] = useState<string | undefined>(undefined)
@@ -106,14 +106,7 @@ export default function ExecutiveSummaryPage() {
             onChange={(v) => v && v[0] && v[1] && setRange([v[0], v[1]])}
           />
           {isAdmin && (
-            <Select
-              allowClear
-              placeholder="All sites"
-              style={{ minWidth: 140 }}
-              value={site}
-              onChange={setSite}
-              options={(sites ?? []).map((s) => ({ value: s, label: s }))}
-            />
+            <SiteFilter style={{ minWidth: 140 }} value={site} onChange={setSite} />
           )}
           <Button icon={<ReloadOutlined />} onClick={() => refetch()} loading={isFetching} />
         </Space>
@@ -193,7 +186,7 @@ export default function ExecutiveSummaryPage() {
               <Card size="small" title="SQM done (per equipment × system)">
                 <SectionTable rows={d.sqm_detail} empty="No production logged in this period"
                   columns={[col('Date', 'Work_Date'), col('Equipment', 'Equipment_Tag'),
-                    col('System', 'System_Code'), col('SQM', 'SQM_Done')]} />
+                    col('System', 'System_Code'), col('SQM', 'SQM_Done'), col('Remarks', 'Remarks')]} />
               </Card>
             </Col>
 

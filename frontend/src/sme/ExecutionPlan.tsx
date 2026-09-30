@@ -368,13 +368,17 @@ function ProgressList({ model, snap, siteId }: { model: SmeModel; snap: SmeSnaps
 
   // Date-wise production detail blocks (committed log entries).
   const detail = useMemo(() => {
-    const byUnit = new Map<string, Map<string, { sqm: number; mats: SmeLogRow[] }>>()
+    const byUnit = new Map<string, Map<string, { sqm: number; mats: SmeLogRow[]; notes: Set<string> }>>()
     for (const r of log ?? []) {
       const k = unitKey(r.Equipment_Tag_No, r.Lining_System_Code)
       if (!byUnit.has(k)) byUnit.set(k, new Map())
       const days = byUnit.get(k)!
-      if (!days.has(r.entry_date)) days.set(r.entry_date, { sqm: Number(r.SQM_Completed ?? 0), mats: [] })
-      days.get(r.entry_date)!.mats.push(r)
+      if (!days.has(r.entry_date)) days.set(r.entry_date, { sqm: Number(r.SQM_Completed ?? 0), mats: [], notes: new Set() })
+      const d = days.get(r.entry_date)!
+      d.mats.push(r)
+      // Phase 15e: the part and the remark the job was filed with
+      const note = [r.Work_Area, r.Remarks ? `“${r.Remarks}”` : ''].filter(Boolean).join(' · ')
+      if (note) d.notes.add(note)
     }
     return byUnit
   }, [log])
@@ -408,6 +412,9 @@ function ProgressList({ model, snap, siteId }: { model: SmeModel; snap: SmeSnaps
                 <div key={date} style={{ marginBottom: 10 }}>
                   <div style={{ ...mono, fontSize: '0.75rem', fontWeight: 700, marginBottom: 4 }}>
                     {date} — {nf(d.sqm, 2)} SQM done
+                    {d.notes.size > 0 && (
+                      <span style={{ fontWeight: 400, opacity: 0.8 }}> · {[...d.notes].join(' | ')}</span>
+                    )}
                   </div>
                   {/* Consumption LOG rows are historical ledger entries, not
                       allocation output — they carry no SAP_Code. */}

@@ -21,7 +21,8 @@ from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import ROLE_META, normalize_phone, require_level, revoke_all_sessions
+from .auth import (ROLE_META, normalize_phone, require_level, require_roles,
+                   revoke_all_sessions, site_scope)
 from .db import get_session
 from .services.ledger import _MD, write_audit  # reflected metadata + audit writer
 
@@ -458,16 +459,36 @@ async def _sap_movements(session: AsyncSession, sap: str) -> int:
     return total
 
 
+def _own_site(scope: Optional[str], site: Optional[str]) -> None:
+    """A site-scoped editor (the HOD, 2026-09-30) writes their own site only."""
+    if scope is None:
+        return
+    if not scope:
+        raise HTTPException(403, "your account has no site — ask an admin to add this item")
+    if site is not None and str(site).strip().lower() != scope.lower():
+        raise HTTPException(403, f"you can add or edit items for your own site ({scope}) only")
+
+
 @router.post("/inventory", status_code=201, summary="Add an inventory master item")
 async def create_inventory(body: InventoryCreateIn,
                            actor: dict = Depends(require_level(4)),
                            session: AsyncSession = Depends(get_session)):
+    return await _create_item(session, body, actor, scope=None)
+
+
+async def _create_item(session: AsyncSession, body: InventoryCreateIn, actor: dict, *,
+                       scope: Optional[str]) -> dict:
+    """Shared by the admin editor and the HOD's (`item_router`). `scope` None =
+    any site; a string = the only site this actor may write."""
     sap = (body.SAP_Code or "").strip()
     if not sap:
         raise HTTPException(422, "SAP_Code is required")
     values = {k: v for k, v in body.model_dump(exclude={"confirm_new"}).items()
               if v is not None}
     values["SAP_Code"] = sap
+    if scope is not None:
+        _own_site(scope, values.get("Site_ID"))
+        values["Site_ID"] = scope
     try:
         async with session.begin():
             if await _sap_exists(session, sap):
@@ -496,20 +517,31 @@ async def create_inventory(body: InventoryCreateIn,
 async def update_inventory(sap_code: str, body: InventoryUpdateIn,
                            actor: dict = Depends(require_level(4)),
                            session: AsyncSession = Depends(get_session)):
+    return await _update_item(session, sap_code, body, actor, scope=None)
+
+
+async def _update_item(session: AsyncSession, sap_code: str, body: InventoryUpdateIn,
+                       actor: dict, *, scope: Optional[str]) -> dict:
     values = {k: v for k, v in body.model_dump(exclude={"confirm_new"}).items()
               if v is not None}
     if not values:
         raise HTTPException(422, "no fields to update")
     sap = sap_code.strip()
+    if scope is not None:
+        _own_site(scope, values.get("Site_ID"))
+        values.pop("Site_ID", None)       # their own site, which it already is
     try:
         async with session.begin():
             await _canonical_site_category(session, values, confirm_new=body.confirm_new)
             if not values:
                 raise HTTPException(422, "no fields to update")
-            cur = (await session.execute(select(inventory_t.c["Opening_Stock"])
+            cur = (await session.execute(select(inventory_t.c["Opening_Stock"],
+                                                inventory_t.c["Site_ID"])
                    .where(func.trim(inventory_t.c["SAP_Code"]) == sap))).first()
             if cur is None:
                 raise HTTPException(404, f"SAP_Code {sap!r} not found")
+            if scope is not None:
+                _own_site(scope, cur[1] or "")
             # Opening_Stock feeds the identity math — audit any change explicitly.
             if "Opening_Stock" in values and float(values["Opening_Stock"]) != float(cur[0] or 0):
                 await write_audit(session, actor["username"], "OPENING_STOCK_EDIT", "inventory",
@@ -540,6 +572,30 @@ async def delete_inventory(sap_code: str,
                               .where(func.trim(inventory_t.c["SAP_Code"]) == sap))
         await write_audit(session, actor["username"], "DELETE_INVENTORY", "inventory", f"SAP={sap}")
     return {"deleted": True, "SAP_Code": sap}
+
+
+# --- the item editor for the HOD (2026-09-30) --------------------------------
+# The operator asked for "add material" in the HOD's portal as well as the
+# admin's. It is a SECOND router because `router` above is admin-only as a
+# whole (its dependency is level 4). Same models, same Site/Category snapping,
+# same audit rows — the one difference is scope: a HOD adds and edits items of
+# THEIR OWN site only. DELETE stays admin-only: removing a master row is the
+# irreversible one.
+item_router = APIRouter(prefix="/inventory-items", tags=["inventory"])
+
+
+@item_router.post("", status_code=201, summary="Add an inventory item (HOD: own site; admin: any)")
+async def create_item(body: InventoryCreateIn,
+                      actor: dict = Depends(require_roles("hod")),
+                      session: AsyncSession = Depends(get_session)):
+    return await _create_item(session, body, actor, scope=site_scope(actor))
+
+
+@item_router.patch("/{sap_code}", summary="Edit an inventory item (HOD: own site; admin: any)")
+async def update_item(sap_code: str, body: InventoryUpdateIn,
+                      actor: dict = Depends(require_roles("hod")),
+                      session: AsyncSession = Depends(get_session)):
+    return await _update_item(session, sap_code, body, actor, scope=site_scope(actor))
 
 
 # --- access requests (pending_users) -----------------------------------------

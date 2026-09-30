@@ -995,9 +995,13 @@ async def _production_log_rows(session: AsyncSession, site_id: str | None,
                                equipment_tag: str | None = None,
                                lining_system_code: str | None = None) -> list[dict]:
     l = sme_log_t
+    # Phase 15e: the part of the equipment and the job's remark, as the field
+    # wrote them ("Floor", "Floor - 13.37 SQM Done") — last, so every column
+    # an export or a reader already relied on keeps its position.
     stmt = select(l.c["entry_date"], l.c["Equipment_Tag_No"], l.c["Lining_System_Code"],
                   l.c["Material_Code"], l.c["SQM_Completed"], l.c["Expected_Qty"],
-                  l.c["Actual_Qty"]).where(l.c["status"] == "committed")
+                  l.c["Actual_Qty"], l.c["Work_Area"],
+                  l.c["notes"].label("Remarks")).where(l.c["status"] == "committed")
     if site_id is not None:
         stmt = stmt.where(l.c["Site_ID"] == site_id)
     if equipment_tag:

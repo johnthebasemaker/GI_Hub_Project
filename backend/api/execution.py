@@ -770,6 +770,8 @@ class SmeGroupSubmitIn(BaseModel):
     site_id: Optional[str] = None
     # Phase 15d: OLD | NEW — required for a Garnet (surface-prep) job.
     surface_state: Optional[str] = None
+    # Phase 15e: the part of the equipment ("Floor"); `notes` is the remark.
+    work_area: Optional[str] = Field(default=None, max_length=200)
 
 
 @router.get("/sme-link/groups",
@@ -798,7 +800,8 @@ async def sme_link_group_submit(body: SmeGroupSubmitIn = Body(...),
         return await G.submit(session, site_id=site, work_date=body.work_date,
                               tag=body.tag, code=body.code, sqm=body.sqm,
                               consumption_ids=body.consumption_ids, notes=body.notes,
-                              username=user["username"], surface_state=body.surface_state)
+                              username=user["username"], surface_state=body.surface_state,
+                              work_area=body.work_area)
 
 
 @router.get("/sme-link/groups/staged", summary="Jobs awaiting the HOD")
