@@ -27853,6 +27853,202 @@ async def test_phase16a_lots():
         await _cleanup()
 
 
+async def test_phase16b_lot_file():
+    """Suite 16B — the Lot Register workbook DESCRIBES lots and never moves stock.
+
+    Pinned here: the three layouts; the SAP column first and the name resolver
+    as the fallback (component letter + pack size, refusing ambiguity); every
+    row cross-checked against the Receipt Log on SAP + DN + date (rolls: SAP +
+    date) and every disagreement reported; MFD / expiry onto the lot; an expiry
+    before its MFD refused; shelf life learned from the file and used to derive
+    a missing expiry; an expiry typed in the app wins; the roll register; the
+    ledger UNTOUCHED; a second run writes nothing.
+    """
+    from datetime import datetime as _D
+
+    from sqlalchemy import text as _t
+
+    from . import stock as ST
+    from .services import lot_file as LF
+    from .services import lots as LOTS
+    from .services import quality as Q
+
+    SITE = "SV16B-SITE"
+    A, B3, B4, BR, R = "SV16B-A", "SV16B-D3", "SV16B-D4", "SV16B-BRK", "SV16B-ROL"
+    async with SessionLocal() as s:
+        CAT = await Q.controlled_category(s)
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            for q in ('DELETE FROM receipts WHERE "Site_ID" = :site',
+                      'DELETE FROM consumption WHERE "Site_ID" = :site',
+                      'DELETE FROM lots WHERE "Site_ID" = :site',
+                      'DELETE FROM lot_units WHERE "Site_ID" = :site',
+                      "DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SV16B-%'"):
+                await s.execute(_t(q), {"site": SITE})
+            await s.commit()
+
+    def d(x):
+        return _D.fromisoformat(x)
+
+    HB = [None, "S.NO.", "SAP", "MATERIAL", "Order No.", "Batch No.", "Size Of Package",
+          "MFG. DATE", "UOM", "QUANTITY", "Pallet", "RECEIVED DATE", "Location",
+          "EXPIRY DATE", "DN No.", "Materil Code", "REMARKS"]
+    HP = [None, "S.NO.", "SAP", "MATERIAL", "Order No.", "Package No.", "Size", "MFG. DATE",
+          "UOM", "QUANTITY", "Pallet", "RECEIVED DATE", "Location", "EXPIRY DATE", "DN No.",
+          "Materil Code", "REMARKS"]
+    HR = [None, "S.NO.", "SAP", "MATERIAL", "Order No.", "Roll No.", "SQM", "MFG. DATE",
+          "UOM", "QUANTITY", "Pallet", "RECEIVED DATE", "Location", "EXPIRY DATE",
+          "Tank No.", "Lining Date", "REMARKS"]
+    book = _xlsx({
+        "PU COMP A": [[None, None, None, None, None, None, None, None, None, 30], HB,
+                      [None, 1, A, "SV16B PU MF300(3MM) COMP A", None, 3504, "2.52 KG/Can",
+                       d("2026-03-16"), "Can", 20, None, d("2026-07-07"), None,
+                       d("2026-12-15"), 15717, "GI-SV16B", None],
+                      [None, 2, A, "SV16B PU MF300(3MM) COMP A", None, 3633, "2.52 KG/Can",
+                       d("2026-03-26"), "Can", 10, None, d("2026-07-11"), None, None,
+                       15724, "GI-WRONG", None]],
+        # no SAP column here: the resolver must use the component and the pack
+        # size (10 Kg → D3, 2.5 Kg → D4)
+        "PU COMP D": [[None], [h for h in HB if h != "SAP"],
+                      [None, 1, "SV16B PU MF300(3MM) COMP D", None, 3504, "10 Kg/Can",
+                       d("2026-03-16"), "Can", 5, None, d("2026-07-07"), None,
+                       d("2026-03-01"), 15717, None, None],
+                      [None, 2, "SV16B PU MF300(3MM) COMP D", None, 3504, "2.5 Kg/Can",
+                       d("2026-03-16"), "Can", 0.25, None, d("2026-07-07"), None,
+                       d("2026-12-15"), 15717, None, None]],
+        "BRICKS": [[None], HP,
+                   [None, 1, BR, "SV16B AR BRICKS", 4720002728, "80 OF 327", "(230X115)",
+                    d("2026-01-08"), "EA", 840, 1.1, d("2026-07-02"), "At Site", None,
+                    15707, None, None]],
+        "ROLLS": [[None], HR,
+                  [None, 1, R, "SV16B CHEMOLINE", "1O25003382", "1O25003382191", "4x1100",
+                   d("2025-08-29"), "Rolls", 1, 1.1, d("2026-06-14"), "Container 1",
+                   d("2028-08-29"), None, None, "In Stock"],
+                  [None, 2, R, "SV16B CHEMOLINE", "1O25003382", "1025003382192", "4x1100",
+                   d("2025-08-18"), "Rolls", 1, 1.1, d("2026-06-14"), "Container 1",
+                   None, None, None, "In Stock"]],
+    })
+
+    async def ledger_state():
+        async with SessionLocal() as s:
+            return [tuple(r) for r in (await s.execute(_t(
+                'SELECT "SAP_Code", "Quantity", "DN_No" FROM receipts WHERE "Site_ID" = :site '
+                'ORDER BY id'), {"site": SITE})).all()]
+
+    await _cleanup()
+    try:
+        async with SessionLocal() as s:
+            for sap, desc, uom, us, code in (
+                    (A, "SV16B PU MF300(3MM) COMP A Ea Can 2.52 kg", "Can", 2.52, "GI-SV16B"),
+                    (B3, "SV16B PU MF300(3MM) COMP D Ea Can 10 kg", "Can", 10, None),
+                    (B4, "SV16B PU MF300(3MM) COMP D Ea Can 2.5 kg", "Can", 2.5, None),
+                    (BR, "SV16B AR BRICKS 30MM", "EA", 1, None),
+                    (R, "SV16B CHEMOLINE 4E CN", "ROL", 11, None)):
+                await s.execute(_t(
+                    'INSERT INTO inventory ("SAP_Code", "Equipment_Description", "Category", '
+                    '"UOM", "Site_ID", "Unit_Size", "Material_Code", "Lot_Tracked") '
+                    'VALUES (:p, :d, :c, :u, :site, :us, :m, :f)'),
+                    {"p": sap, "d": desc, "c": CAT, "u": uom, "site": SITE, "us": us,
+                     "m": code, "f": False if sap == BR else None})
+            for day, sap, qty, dn, lot in (("2026-07-07", A, 20, "15717", "3504"),
+                                           ("2026-07-11", A, 10, "15724", None),
+                                           ("2026-07-07", B3, 5, "15717", "3504"),
+                                           ("2026-07-07", B4, 1, "15717", "3504"),
+                                           ("2026-07-02", BR, 840, "15707", None),
+                                           ("2026-06-14", R, 2, "13193", None)):
+                await s.execute(_t(
+                    'INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID", "DN_No", '
+                    '"Lot_Number") VALUES (:d, :p, :q, :site, :dn, :l)'),
+                    {"d": f"{day} 00:00:00", "p": sap, "q": qty, "site": SITE, "dn": dn, "l": lot})
+            await s.commit()
+            await LOTS.sync_lots_from_ledger(s, SITE)
+            await s.commit()
+        before = await ledger_state()
+
+        book_read = LF.read_workbook(book)
+        lay = {x["sheet"]: x["layout"] for x in book_read["sheets"]}
+        check("16b-01: the three layouts are told apart by their headers — batch, pallet "
+              "(bricks), roll", lay == {"PU COMP A": "batch", "PU COMP D": "batch",
+                                        "BRICKS": "pallet", "ROLLS": "roll"}, str(lay))
+
+        async with SessionLocal() as s:
+            p = await LF.plan(s, book, SITE)
+        d_saps = sorted({(r["sap"]) for r in book_read["rows"] if r["sheet"] == "PU COMP D"} - {None})
+        check("16b-02: every row resolves to ONE SAP — from the SAP column, or (no column) "
+              "by component + pack size: 10 Kg → D3, 2.5 Kg → D4",
+              p["resolved"] == 7 and not p["rejects"] and d_saps == [], str(p["rejects"]))
+        check("16b-03: every row is matched to its receipt (SAP + DN + date; rolls: SAP + "
+              "date), and the quantity disagreement is REPORTED (D4: file 0.25 vs ledger 1)",
+              p["matched"] == 7 and [m["key"][0] for m in p["qty_mismatch"]] == [B4],
+              str(p["qty_mismatch"]))
+        check("16b-04: an expiry BEFORE its MFD is refused (Q16-7), never loaded",
+              [(x["sap"], x["expiry"]) for x in p["expiry_refused"]] == [(B3, "2026-03-01")],
+              str(p["expiry_refused"]))
+        check("16b-05: the Material Code is a CHECK, never the key — a wrong code is reported "
+              "and the row still lands on its SAP",
+              [(x["sap"], x["file"]) for x in p["code_mismatch"]] == [(A, "GI-WRONG")],
+              str(p["code_mismatch"]))
+        check("16b-06: shelf life is LEARNED from the file's own MFD → expiry pairs (9 months) "
+              "where the item has none (Q16-5)",
+              p["shelf_life"].get(A) == 9, str(p["shelf_life"]))
+        check("16b-07: the bricks are cross-checked but get no lot (Q16-4); a batch lot no "
+              "receipt names is reported (3633 — the receipt had no lot)",
+              not any(l["SAP_Code"] == BR for l in p["lots"])
+              and [(x["sap"], x["lot"]) for x in p["file_only"]] == [(A, "3633")],
+              f"{p['lots']} {p['file_only']}")
+
+        async with SessionLocal() as s:
+            res = await LF.apply(s, p, "sv16b-sync")
+            await s.commit()
+            lots = {(r[0], r[1]): r[2:] for r in (await s.execute(_t(
+                'SELECT "SAP_Code", "Lot_Number", "MFD_Date", "Expiry_Date", "Expiry_Source", '
+                '"Batch_Ref" FROM lots WHERE "Site_ID" = :site'), {"site": SITE})).all()}
+            units = {r[0]: r[1] for r in (await s.execute(_t(
+                'SELECT "Unit_No", "Lot_Number" FROM lot_units WHERE "Site_ID" = :site'),
+                {"site": SITE})).all()}
+        check("16b-08: the lot gets its MFD and expiry from the file (source 'file'); a lot "
+              "with an MFD but no expiry gets MFD + shelf life (source 'derived')",
+              lots.get((A, "3504")) == ("2026-03-16", "2026-12-15", "file", None)
+              and lots.get((A, "3633")) == ("2026-03-26", "2026-12-26", "derived", None),
+              str(lots))
+        check("16b-09: the roll register — each roll a unit of its batch (Q16-3), the typed "
+              "'10…' corrected to '1O…' (Q16-12); the batch is a lot",
+              units == {"1O25003382191": "1O25003382", "1O25003382192": "1O25003382"}
+              and (R, "1O25003382") in lots, f"{units}")
+        check("16b-10: ⚠️ THE FILE MOVED NO STOCK — every receipt row and quantity is exactly "
+              "what it was", await ledger_state() == before, str(await ledger_state()))
+        async with SessionLocal() as s:
+            bal = (await s.execute(_t(
+                f'SELECT "Received_Qty" FROM ({ST.SQL_LOT_BALANCE}) lb WHERE "SAP_Code" = :r '
+                f'AND "Lot_Number" = \'1O25003382\' AND "Site_ID" = :site'),
+                {"r": R, "site": SITE})).scalar()
+        check("16b-11: a roll batch's received quantity counts its rolls (the roll receipts "
+              "carry no roll numbers)", float(bal or 0) == 2.0, str(bal))
+
+        async with SessionLocal() as s:
+            await s.execute(_t(
+                'UPDATE lots SET "Expiry_Date" = \'2027-01-31\', "Expiry_Source" = \'app\' '
+                'WHERE "Site_ID" = :site AND "SAP_Code" = :a AND "Lot_Number" = \'3504\''),
+                {"site": SITE, "a": A})
+            await s.commit()
+            p2 = await LF.plan(s, book, SITE)
+            res2 = await LF.apply(s, p2, "sv16b-sync")
+            await s.commit()
+            kept = (await s.execute(_t(
+                'SELECT "Expiry_Date" FROM lots WHERE "Site_ID" = :site AND "SAP_Code" = :a '
+                'AND "Lot_Number" = \'3504\''), {"site": SITE, "a": A})).scalar()
+        check("16b-12: a second run writes NOTHING (no lot, roll or receipt touched), and an "
+              "expiry a person typed in the app is kept over the file's",
+              res2["lots_new"] == 0 and res2["lots_changed"] == 0 and res2["units_new"] == 0
+              and res2["receipt_fills"] == 0 and kept == "2027-01-31",
+              f"{res2} kept={kept}")
+        check("16b-13: the first run's counts agree with what landed",
+              res["lots_new"] >= 2 and res["units_new"] == 2, str(res))
+    finally:
+        await _cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -28156,6 +28352,9 @@ async def main() -> int:
     print("\n 16A. Phase 16a — Serial No. is read by the item: a Surface Shield's batch "
           "is its lot, a roll keeps its number, equipment keeps its tag; re-runs converge")
     await test_phase16a_lots()
+    print("\n 16B. Phase 16b — the Lot Register workbook describes lots and never moves "
+          "stock: three layouts, SAP-first matching, every disagreement reported")
+    await test_phase16b_lot_file()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

@@ -133,9 +133,14 @@ os.environ.setdefault("JWT_SECRET", "pg-excel-sync-offline-run-key-32bytes!!")
 #                              first (as the older excel_sync.py does) leaves
 #                              that map empty on a fresh database, so short-name
 #                              rows are silently skipped.
+LOT_FILE_PATTERN = "*Rubber*Brick*CNCEC*.xlsx"
 WORKBOOKS: dict[str, str] = {
     "inventory": "CNCEC_Inventory.xlsx",
     "ledger": "CNCEC_Inventory.xlsx",
+    # Phase 16b — the Lot Register workbook. A PATTERN, not a name (ruling
+    # Q16-15): the operator's file is `Rubber & Brick Materials  - CNCEC.xlsx`
+    # (two spaces). After the ledger: it describes lots the ledger made.
+    "lots": LOT_FILE_PATTERN,
     "sme-recipes": "For_1_SQM.xlsx",
     "sme-manpower": "Manpower_Hour_Details.xlsx",
     "sme-equipment": "Equipment.xlsx",
@@ -147,7 +152,7 @@ WORKBOOKS: dict[str, str] = {
 # They are NOT in the default run: the everyday invocation is an SME re-sync,
 # and a typo in a spreadsheet must not be able to append to the warehouse
 # ledger as a side effect. Order within each group stays the SAFE SEQUENCE.
-ERP_KINDS = ("inventory", "ledger")
+ERP_KINDS = ("inventory", "ledger", "lots")
 SME_KINDS = tuple(k for k in WORKBOOKS if k not in ERP_KINDS)
 
 # kind → (table key in bulk_import, natural-key columns for ON CONFLICT).
@@ -386,6 +391,54 @@ async def apply_ledger(session, plan: dict, username: str) -> dict:
 
 
 # ─── reporting ───────────────────────────────────────────────────────────────
+def print_lot_plan(p: dict) -> None:
+    """The Lot Register reconciliation (plan §2.2). Every disagreement with
+    the Receipt Log is named; nothing here changes a quantity."""
+    layouts: dict[str, int] = {}
+    for sh in p["sheets"]:
+        layouts[sh["layout"]] = layouts.get(sh["layout"], 0) + 1
+    print(f"      sheets {len(p['sheets'])} ({', '.join(f'{k} {v}' for k, v in sorted(layouts.items()))})"
+          f" · rows {p['rows']} · resolved to a SAP {p['resolved']} · "
+          f"matched to a receipt {p['matched']}")
+    print(f"      lots   +{len(p['lots'])} new  ~{len(p['lot_changes'])} changed  · "
+          f"rolls +{p['units_new']} new ~{p['units_changed']} moved · "
+          f"receipt lots filled {len(p['receipt_fills'])}")
+    if p["shelf_life"]:
+        print("      shelf life learned (months, from the file's MFD → expiry; only where "
+              "unset): " + ", ".join(f"{k} {v}" for k, v in sorted(p["shelf_life"].items())))
+    def show(title, items, fmt, n=10):
+        if items:
+            print(f"      ⚠ {len(items)} {title}:")
+            for x in items[:n]:
+                print(f"          {fmt(x)}")
+            if len(items) > n:
+                print(f"          … {len(items) - n} more")
+    show("quantity disagreement(s) with the Receipt Log — the LEDGER is kept",
+         p["qty_mismatch"], lambda x: f"SAP {x['key'][0]} "
+         + (f"DN {x['key'][1]} " if len(x['key']) == 3 else "")
+         + f"{x['key'][-1]}: lot file {x['file']:g} vs receipts {x['receipts']:g}")
+    show("row(s) with no matching receipt (SAP + DN + date)", p["unmatched"],
+         lambda x: f"{x['sheet']} row {x['row']} SAP {x['sap']} DN {x['dn']} {x['received']}")
+    show("expiry date(s) BEFORE the MFD — NOT loaded, please correct", p["expiry_refused"],
+         lambda x: f"{x['sheet']} row {x['row']} SAP {x['sap']} lot {x['lot']}: "
+                   f"MFD {x['mfd']} expiry {x['expiry']}")
+    show("lot(s) whose rows disagree on dates — the EARLIEST expiry is used",
+         p["date_conflicts"], lambda x: f"SAP {x['sap']} lot {x['lot']}: MFD {x['mfd']} "
+                                        f"expiry {x['expiry']}")
+    show("Material Code(s) that disagree with the inventory (the SAP column decides)",
+         p["code_mismatch"], lambda x: f"{x['sheet']} row {x['row']} SAP {x['sap']}: file "
+                                       f"{x['file']} vs inventory {x['inventory']}")
+    show("batch lot(s) in the file that no receipt names — check the Receipt Log spelling",
+         p["file_only"], lambda x: f"SAP {x['sap']} lot {x['lot']!r} (receipts name "
+                                   f"{x['receipt_lots'] or 'no lot'})")
+    show("row(s) with no batch — no lot recorded", p["no_batch"],
+         lambda x: f"{x['sheet']} row {x['row']} SAP {x['sap']} DN {x['dn']} qty {x['qty']}",
+         n=5)
+    show("row(s) with no material or SAP but a batch / date — skipped", p["orphans"],
+         lambda x: f"{x['sheet']} row {x['row']} lot {x['lot']}")
+
+
+# ─── reporting (summaries) ───────────────────────────────────────────────────
 def format_summary(summary) -> str:
     if isinstance(summary, dict) and "receipts" in summary:
         return "\n      ".join(
@@ -537,9 +590,30 @@ async def main() -> int:
         kinds = [k for k in WORKBOOKS if k in want]  # keep the safe sequence
 
     # Read every workbook up front: a missing file must abort before any write.
+    import glob as _glob
     data: dict[str, bytes] = {}
-    for kind in kinds:
-        path = os.path.join(os.path.expanduser(args.dir), WORKBOOKS[kind])
+    asked = {k.strip() for k in (args.kinds or "").split(",") if k.strip()}
+    for kind in list(kinds):
+        name = WORKBOOKS[kind]
+        if "*" in name:
+            found = sorted(_glob.glob(os.path.join(os.path.expanduser(args.dir), name)))
+            # one match, or the newest of several (a stray copy must not win
+            # silently — say which one was read)
+            path = max(found, key=os.path.getmtime) if found else None
+            if path and len(found) > 1:
+                print(f"   ⚠ {len(found)} files match {name!r} — reading the newest: "
+                      f"{os.path.basename(path)}")
+            if path is None:
+                if kind in asked:
+                    print(f"❌ no workbook matches {name!r} in {args.dir}")
+                    return 2
+                # part of --erp: an absent lot file is not an error
+                print(f"   note   : no {name!r} in the folder — the lot step is skipped")
+                kinds.remove(kind)
+                continue
+            WORKBOOKS[kind] = os.path.basename(path)
+        else:
+            path = os.path.join(os.path.expanduser(args.dir), name)
         if not os.path.exists(path):
             print(f"❌ missing workbook: {path}")
             return 2
@@ -601,6 +675,9 @@ async def main() -> int:
             elif kind == "ledger":
                 plan = await bi.plan_ledger(session, data[kind], args.site,
                                             extra_saps=pending_saps)
+            elif kind == "lots":
+                from backend.api.services import lot_file as _lf
+                plan = await _lf.plan(session, data[kind], args.site)
             elif kind == "sme-equipment":
                 plan = await bi.plan_sme_equipment(session, data[kind], args.site)
             elif kind == "sme-recipes":
@@ -613,7 +690,10 @@ async def main() -> int:
             if kind == "inventory" and not args.commit:
                 pending_saps |= {r["SAP_Code"] for r in plan["inserts"]}
 
-            print(f"      {format_summary(bi._summary(plan))}")
+            if kind == "lots":
+                print_lot_plan(plan)
+            else:
+                print(f"      {format_summary(bi._summary(plan))}")
             if kind == "ledger" and plan.get("lots"):
                 # Phase 16 — `Serial No.` read by the item (services/lots.py)
                 _lr = plan["lots"]
@@ -789,6 +869,11 @@ async def main() -> int:
                         if refreshed:
                             print(f"      ↻ {refreshed} untouched asset(s) took "
                                   f"the workbook's new Location text")
+                elif kind == "lots":
+                    # Phase 16b — descriptions only: lots, the roll register,
+                    # a lot on a receipt that had none. Never a quantity.
+                    from backend.api.services import lot_file as _lf
+                    totals[kind] = await _lf.apply(session, plan, args.user)
                 elif kind == "sme-manpower":
                     # Its own path, not apply_master's: a norm writes TWO
                     # tables (the benchmark and its per-role crew), and the

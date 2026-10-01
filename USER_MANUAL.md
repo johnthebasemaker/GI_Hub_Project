@@ -634,6 +634,58 @@ Rules that keep this safe:
 Every receipt that names a lot creates that lot in GI Hub. A lot's stock is
 always **received − consumed − returned**, worked out from the ledger.
 
+### 3.10.2 The Lot Register workbook (`Rubber & Brick Materials - CNCEC.xlsx`)
+
+This workbook keeps, per Surface Shield material, one sheet of what arrived:
+batch, manufacture date (MFD), expiry, DN No. and quantity. Put it in the same
+folder as the other workbooks. The normal sync reads it automatically; any file
+named like `*Rubber*Brick*CNCEC*.xlsx` is found, and the run prints a **▶ lots**
+section.
+
+⚠️ **It never changes stock.** Stock comes only from the Receipt, Consumption and
+Return Logs. This workbook only **describes** the lots GI Hub already has: their
+MFD, expiry and batch. Its quantities are compared with the Receipt Log, and
+every difference is reported. A mistake in it can make an expiry wrong, but it
+can never double a quantity.
+
+**How each row is matched:**
+1. **To its material** — by the `SAP` column. If a sheet has no SAP column, GI Hub
+   matches the material name, the component letter (COMP C) and the pack size
+   (10 Kg vs 2.5 Kg), and refuses anything it cannot pin to exactly one item. The
+   material code is only a cross-check, because COMP A–D share one code.
+2. **To its receipt** — the same SAP, **DN No.** and **received date**. CHEMOLINE
+   rolls have no DN, so they match on SAP and date, roll by roll.
+3. **To its lot** — the `Batch No.` (normalised as in §3.10.1). For CHEMOLINE the
+   `Order No.` is the batch and each `Roll No.` is a roll inside it.
+
+**What it fills in:**
+
+| On… | It writes… |
+|---|---|
+| the lot | MFD, expiry, batch reference, DN No. |
+| the roll register | each CHEMOLINE roll and the batch it belongs to |
+| a receipt with no lot | the lot, when the workbook names exactly one batch for it |
+| an item with no shelf life | the shelf life (months), learned from its own MFD → expiry pairs |
+
+**Expiry:**
+- An expiry in the workbook is used as it is (*from the file*).
+- A missing expiry is **MFD + the item's shelf life** (*derived*).
+- If two rows of one lot disagree, the **earliest** expiry is used.
+- An expiry **before** its MFD is refused and reported.
+- An expiry a person typed on the **Receive** form is never overwritten.
+
+**Bricks** are compared with the receipts but get no lot (they have no batch and
+never expire).
+
+**What the sync tells you** (each is listed by sheet and row):
+- quantities that differ from the Receipt Log;
+- rows with no matching receipt;
+- expiries before the MFD;
+- lots whose rows disagree on dates;
+- material codes that disagree with the inventory;
+- a batch the Receipt Log spells differently (e.g. `0926` vs `0.926`);
+- rows with no batch.
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.
