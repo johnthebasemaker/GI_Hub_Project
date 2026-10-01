@@ -51,6 +51,9 @@ const MATRIX: Matrix = {
   '/': ['sk', 'warehouse', 'supervisor', 'hod', 'logistics', 'auditor'],
   // …but present on Stock: it is how they see what is waiting for them.
   '/stock': ALL,
+  // Phase 16 (ruling Q16-16) — the roles that hold, inspect or answer for
+  // controlled material. Read-only.
+  '/lots': ['sk', 'qc', 'hod'],
   // Only the roles that physically walk to a shelf, plus the racking owner.
   '/locator': ['sk', 'warehouse', 'logistics'],
   // Everyone who might sign out a tool. A QC inspects material, not hammers.

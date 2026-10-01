@@ -74,7 +74,12 @@ _FEFO_PICK = f"""
 SELECT "Lot_Number" FROM ({SQL_LOT_BALANCE}) lb
 WHERE "SAP_Code" = :sap AND "Site_ID" = :site
   AND "Status" = 'open' AND "Remaining_Qty" > 0
-ORDER BY CASE WHEN "Expiry_Date" IS NULL OR "Expiry_Date" = '' THEN 1 ELSE 0 END,
+-- Phase 16c: an EXPIRED lot goes LAST, not first. Earliest-expiry-first would
+-- otherwise suggest exactly the lot nobody should use. Still pickable by hand
+-- (FEFO is allow-and-log, never a block) — just never the default.
+ORDER BY CASE WHEN "Expiry_Date" IS NULL OR "Expiry_Date" = '' THEN 1
+              WHEN SUBSTRING("Expiry_Date" FROM 1 FOR 10) < TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD') THEN 2
+              ELSE 0 END,
          "Expiry_Date" ASC, "Received_Date" ASC
 LIMIT 1
 """
@@ -164,8 +169,19 @@ async def post_receipt(session: AsyncSession, *, username: str, data: dict) -> d
     remarks = data.get("Remarks") or None
     expiry = data.get("Expiry_Date") or None
     pr = data.get("PR_Number") or None
-    lot = (data.get("Lot_Number") or "").strip()
+    from . import lots as LOTS
+    lot = LOTS.norm_lot(data.get("Lot_Number")) or ""
+    mfd = (data.get("MFD_Date") or "")[:10] or None
     extra = data.get("extra") or {}
+    # Phase 16c — where this lot's expiry comes from: typed on the form ('app'),
+    # or MFD + the item's shelf life ('derived', ruling Q16-5).
+    exp_source = "app" if expiry else None
+    if not expiry and mfd:
+        life = (await session.execute(select(inventory_t.c["Shelf_Life_Months"]).where(
+            func.trim(inventory_t.c["SAP_Code"]) == sap))).scalar()
+        if life:
+            from .lot_file import add_months
+            expiry, exp_source = add_months(mfd, int(life)), "derived"
 
     # Auto-generate a lot only for expiry-tracked items (same rule as the app).
     if not lot and expiry:
@@ -191,7 +207,17 @@ async def post_receipt(session: AsyncSession, *, username: str, data: dict) -> d
         if not exists:
             await session.execute(insert(lots_t).values(
                 Lot_Number=lot, SAP_Code=sap, Site_ID=site, Received_Date=date,
-                Expiry_Date=expiry, Supplier=supplier, PR_Number=pr, Status="open"))
+                Expiry_Date=expiry, Supplier=supplier, PR_Number=pr, Status="open",
+                MFD_Date=mfd, Expiry_Source=exp_source, Source="app"))
+        else:
+            # a known lot arriving again: fill what it was missing, never overwrite
+            await session.execute(update(lots_t).where(
+                (lots_t.c["Lot_Number"] == lot) & (lots_t.c["SAP_Code"] == sap)
+                & (lots_t.c["Site_ID"] == site)).values(
+                MFD_Date=func.coalesce(lots_t.c["MFD_Date"], mfd),
+                Expiry_Source=func.coalesce(lots_t.c["Expiry_Source"],
+                                            exp_source if expiry else None),
+                Expiry_Date=func.coalesce(lots_t.c["Expiry_Date"], expiry)))
 
     # PR fulfilment: close the PR line when cumulative received >= requested.
     pr_status = None
@@ -245,7 +271,15 @@ async def post_consumption(session: AsyncSession, *, username: str, data: dict) 
     sap = data["SAP_Code"].strip()
     site = data["Site_ID"]
     qty = float(data["Quantity"])
-    lot = (data.get("Lot_Number") or "").strip()
+    from . import lots as LOTS
+    lot = LOTS.norm_lot(data.get("Lot_Number")) or ""
+    # Phase 16c — a ROLL names its batch: the roll register knows it
+    if not lot and data.get("Serial_No"):
+        if (await LOTS.tracking(session)).get(sap) == "roll":
+            roll = LOTS.norm_roll(data.get("Serial_No"))
+            data["Serial_No"] = roll
+            lot = (await LOTS.roll_register(session)).get((sap, roll)) \
+                or LOTS.roll_batch(roll) or ""
     if not lot:
         lot = await fefo_lot(session, sap, site)
 
@@ -306,6 +340,7 @@ async def stage_receipt(session: AsyncSession, *, username: str, data: dict) -> 
         "Site_ID": data["Site_ID"], "Expiry_Date": data.get("Expiry_Date") or None,
         "PR_Number": data.get("PR_Number") or None,
         "Lot_Number": (data.get("Lot_Number") or "").strip() or None,
+        "MFD_Date": (data.get("MFD_Date") or "")[:10] or None,   # Phase 16c
         "wbs": (data.get("wbs") or "").strip() or None,          # parity A4
         "Bin_Location": (data.get("Bin_Location") or "").strip() or None,  # parity B5
         "status": PENDING,

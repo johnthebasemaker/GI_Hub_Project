@@ -3993,6 +3993,46 @@ Q15-6).
 (SAP 899970, ESC2) is in the queue to practise on. It appears after the next
 Practice rebuild; production deploys rebuild Practice on every deploy.
 
+## 16c. Phase 16c — Lots & Expiry, the Issue lot picker, the Receive MFD
+
+**What it is for.** The screens: the Lots & Expiry page, the FEFO lot picker on
+Issue, MFD and expiry on Receive, the daily expiry notice, and shelf life and lot
+tracking in the item editor. The code is in `backend/api/lot_register.py`. Suite
+16C and `lots.spec` pin it.
+
+⚠️ Check that **an expired lot is never the suggestion**. The failure to catch is
+FEFO offering the oldest-dated lot when that lot is already past its expiry.
+
+**TC-16C-01** — as the store keeper, Issue → pick PU COMP A. The Lot field lists
+its lots, each with expiry, days left and quantity left; the first is marked
+**FEFO**, and the field's note says *Blank = FEFO: …*. An expired lot is last and
+red.
+
+**TC-16C-02** — pick the FEFO lot: no reason is asked. Pick another lot: *Reason
+for manual lot* appears. Submit, and the HOD sees the reason.
+
+**TC-16C-03** — Issue → CHEMOLINE: a **Roll** picker lists the rolls in stock,
+each with its batch. Pick one: the Batch fills in. After approval, the roll is no
+longer offered.
+
+**TC-16C-04** — Receive → PU COMP A: *Batch / Lot No.* and *Manufacture date
+(MFD)* appear. With an MFD and no expiry, the expiry note shows MFD + 9 months.
+An expiry before the MFD is refused. Approve the receipt: the lot shows the MFD
+and a *derived* expiry.
+
+**TC-16C-05** — Lots & Expiry as HOD: the status counts at the top filter the
+table; COROFLAKE `C 1823` / `D 1823` show **Expired**, and the red banner shows.
+A CHEMOLINE batch expands to its rolls, with tank and date for the used ones.
+As a supervisor or Logistics, the page is not in the sidebar, and
+`/lot-register` returns 403.
+
+**TC-16C-06** — the evening digest run (or `lots.expiry_notices`) gives the store
+keeper and the HOD **one** *lot(s) expire within 30 days* notice per site.
+
+**TC-16C-07** — item editor: set *Lot tracking: Not tracked* on an item. It
+leaves the Issue picker, and a sync gives it no lot. Set *Shelf life* on ECO
+PRIMER A; a lot with an MFD and no expiry now shows a derived expiry.
+
 ## 16b. Phase 16b — the Lot Register workbook describes lots
 
 **What it is for.** `Rubber & Brick Materials - CNCEC.xlsx` adds MFD, expiry and

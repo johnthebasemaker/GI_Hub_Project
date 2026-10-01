@@ -31,6 +31,7 @@ interface FormValues {
   Date: Dayjs
   Supplier?: string
   Expiry_Date?: Dayjs
+  MFD_Date?: Dayjs
   PR_Number?: string
   Lot_Number?: string
   Remarks?: string
@@ -70,6 +71,12 @@ export default function ReceivePage() {
   const watchSite = Form.useWatch('Site_ID', form)
   const watchMtc = Form.useWatch('mtc_document_id', form)
   const { data: meta } = useReceiptMeta(watchSap)
+  // Phase 16c — a lot-tracked item asks for its batch, MFD and expiry up front
+  const lotItem = !!meta?.lot_mode
+  const watchMfd = Form.useWatch('MFD_Date', form)
+  const watchExpiry = Form.useWatch('Expiry_Date', form)
+  const derivedExpiry = lotItem && watchMfd && !watchExpiry && meta?.shelf_life_months
+    ? watchMfd.add(meta.shelf_life_months, 'month').format('YYYY-MM-DD') : null
   const { data: wbsOptions } = useWbsOptions(watchSite)
   const { data: docsRequired } = useDocsRequired()
 
@@ -85,7 +92,7 @@ export default function ReceivePage() {
   const labelFor = (sap: string) =>
     itemOptions.find((o) => o.value === sap)?.label ?? sap
 
-  const RESET_FIELDS: (keyof FormValues)[] = ['SAP_Code', 'Quantity', 'Supplier', 'Expiry_Date', 'PR_Number', 'Lot_Number', 'Remarks', 'entry_uom', 'mtc_document_id', 'mtc_number', 'Bin_Location']
+  const RESET_FIELDS: (keyof FormValues)[] = ['SAP_Code', 'Quantity', 'Supplier', 'Expiry_Date', 'MFD_Date', 'PR_Number', 'Lot_Number', 'Remarks', 'entry_uom', 'mtc_document_id', 'mtc_number', 'Bin_Location']
 
   // C3 doc assist: the delivery-note header extracted from the attached
   // photo. Shared by every line of the batch — merged into each staged row's
@@ -148,6 +155,7 @@ export default function ReceivePage() {
       Supplier: v.Supplier || null,
       Remarks: v.Remarks || null,
       Expiry_Date: v.Expiry_Date ? v.Expiry_Date.format('YYYY-MM-DD') : null,
+      MFD_Date: v.MFD_Date ? v.MFD_Date.format('YYYY-MM-DD') : null,
       PR_Number: v.PR_Number || null,
       Lot_Number: v.Lot_Number || null,
       entry_uom: v.entry_uom || null,
@@ -178,6 +186,7 @@ export default function ReceivePage() {
       Quantity: r.Quantity as number, Date: dayjs(r.Date as string),
       Supplier: (r.Supplier as string) ?? undefined,
       Expiry_Date: r.Expiry_Date ? dayjs(r.Expiry_Date as string) : undefined,
+      MFD_Date: r.MFD_Date ? dayjs(r.MFD_Date as string) : undefined,
       PR_Number: (r.PR_Number as string) ?? undefined,
       Lot_Number: (r.Lot_Number as string) ?? undefined,
       Remarks: (r.Remarks as string) ?? undefined,
@@ -284,15 +293,46 @@ export default function ReceivePage() {
               </Form.Item>
             </Col>
             <Col xs={24} md={8}>
-              <Form.Item name="Expiry_Date" label="Expiry date (optional)">
+              <Form.Item name="Expiry_Date" label={lotItem ? 'Expiry date (from the label)' : 'Expiry date (optional)'}
+                dependencies={['MFD_Date']}
+                extra={derivedExpiry ? `Leave blank → ${derivedExpiry} (MFD + ${meta?.shelf_life_months} months)` : undefined}
+                rules={[({ getFieldValue }) => ({
+                  // Phase 16c (ruling Q16-7): an expiry before the MFD is a typo
+                  validator: (_, v: Dayjs | undefined) => {
+                    const m = getFieldValue('MFD_Date') as Dayjs | undefined
+                    return v && m && v.isBefore(m, 'day')
+                      ? Promise.reject(new Error('Expiry is before the manufacture date — check the label'))
+                      : Promise.resolve()
+                  },
+                })]}>
                 <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
               </Form.Item>
             </Col>
           </Row>
+          {lotItem && (
+            <Row gutter={16}>
+              <Col xs={24} md={8}>
+                <Form.Item name="Lot_Number" label={meta?.lot_mode === 'roll' ? 'Batch (Order No.)' : 'Batch / Lot No.'}
+                  extra="As printed on the can, bag or roll label — FEFO uses it to say which to issue first.">
+                  <Input placeholder="e.g. 3504" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item name="MFD_Date" label="Manufacture date (MFD)"
+                  rules={[{ validator: (_, v: Dayjs | undefined) => (v && v.isAfter(dayjs(), 'day')
+                    ? Promise.reject(new Error('The manufacture date is in the future'))
+                    : Promise.resolve()) }]}>
+                  <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
+                </Form.Item>
+              </Col>
+            </Row>
+          )}
           <Row gutter={16}>
             <Col xs={24} md={8}><Form.Item name="Supplier" label="Supplier"><Input placeholder="Supplier name" /></Form.Item></Col>
             <Col xs={24} md={8}><Form.Item name="PR_Number" label="PR Number (optional)"><Input placeholder="links + auto-closes PR" /></Form.Item></Col>
-            <Col xs={24} md={8}><Form.Item name="Lot_Number" label="Lot Number (optional)"><Input placeholder="auto if expiry set" /></Form.Item></Col>
+            {!lotItem && (
+              <Col xs={24} md={8}><Form.Item name="Lot_Number" label="Lot Number (optional)"><Input placeholder="auto if expiry set" /></Form.Item></Col>
+            )}
           </Row>
           <Row gutter={16}>
             <WbsField options={wbsOptions} site={watchSite} />

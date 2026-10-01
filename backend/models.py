@@ -357,6 +357,9 @@ class PendingReceipts(Base):
     DN_Number = Column(Text)
     Warehouse_ID = Column(Text)
     PO_Number_Source = Column(Text)
+    # Phase 16c (alembic e5b2c7a9d4f1): the lot's manufacture date, carried to
+    # `lots.MFD_Date` on approval (a missing expiry is derived from it).
+    MFD_Date = Column(Text)
 
 class PendingReturns(Base):
     __tablename__ = "pending_returns"

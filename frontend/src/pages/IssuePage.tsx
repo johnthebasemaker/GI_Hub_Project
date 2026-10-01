@@ -27,6 +27,8 @@ import QrScanner from '../components/QrScanner'
 import { BARCODE_FORMATS, matchScanToSap } from '../lib/barcode'
 import { loadDefaults, saveDefaults } from '../lib/smartDefaults'
 import SiteField from '../components/SiteField'
+import LotPicker from '../components/LotPicker'
+import { useLotOptions } from '../api/lotHooks'
 import WbsField from '../components/WbsField'
 
 interface FormValues {
@@ -76,6 +78,7 @@ export default function IssuePage() {
   const watchSite = Form.useWatch('Site_ID', form)
   const watchLot = Form.useWatch('Lot_Number', form)
   const { data: bins } = useBins(watchSap, watchSite)
+  const { data: lotOpts } = useLotOptions(watchSap, watchSite)
   const { data: wbsOptions } = useWbsOptions(watchSite)
   // Phase 9a. `enforced` is false until the HOD curates a list for this site,
   // and the field stays a free-text Input in that case — the backend gate is
@@ -250,7 +253,9 @@ export default function IssuePage() {
       wbs: v.wbs || null,
       // Parity B1 — a manual lot pick is a FEFO override; the reason travels
       // to the HOD (allow-and-log ruling: never blocks).
-      FEFO_Override: v.Lot_Number ? (v.FEFO_Override || 'manual lot (no reason given)') : null,
+      // Phase 16c: picking the FEFO lot itself is not an override.
+      FEFO_Override: v.Lot_Number && v.Lot_Number !== lotOpts?.fefo
+        ? (v.FEFO_Override || 'manual lot (no reason given)') : null,
       // QSEP — carried per LINE, not per batch. Two workers can be issued
       // different PPE in the same batch, so a batch-level field would
       // attribute the second person's gear to the first.
@@ -460,14 +465,13 @@ export default function IssuePage() {
               </Form.Item>
             </Col>
             <Col xs={24} md={8}>
-              <Form.Item name="Lot_Number" label="Lot (optional)">
-                <Input placeholder="blank → FEFO auto-pick" />
-              </Form.Item>
+              {/* Phase 16c — open lots in FEFO order (rolls for a roll item) */}
+              <LotPicker sap={watchSap} site={watchSite} />
             </Col>
           </Row>
           <Row gutter={16}>
             <WbsField options={wbsOptions} site={watchSite} />
-            {!!watchLot && (
+            {!!watchLot && watchLot !== lotOpts?.fefo && (
               <Col xs={24} md={8}>
                 <Form.Item name="FEFO_Override" label="Reason for manual lot (FEFO override)"
                   rules={[{ min: 5, message: 'Give at least 5 characters' }]}>
@@ -506,7 +510,9 @@ export default function IssuePage() {
           <Row gutter={16}>
             <Col xs={24} md={8}><Form.Item name="PR_Number" label="PR Number"><Input /></Form.Item></Col>
             <Col xs={24} md={8}><Form.Item name="Tank_No" label="Tank No"><Input /></Form.Item></Col>
-            <Col xs={24} md={8}><Form.Item name="Serial_No" label="Serial No"><Input /></Form.Item></Col>
+            {lotOpts?.mode !== 'roll' && (   /* a roll item picks its roll above */
+              <Col xs={24} md={8}><Form.Item name="Serial_No" label="Serial No"><Input /></Form.Item></Col>
+            )}
           </Row>
           <Form.Item name="Remarks" label="Remarks"><Input.TextArea rows={2} /></Form.Item>
           <Space>

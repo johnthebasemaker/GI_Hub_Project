@@ -117,6 +117,10 @@ export const NAV: NavGroup[] = [
       // manifest catching up to the API, not a widening.
       { key: '/', label: 'Dashboard', icon: <DashboardOutlined />, access: { anyRole: OPERATIONAL } },
       { key: '/stock', label: 'Stock', icon: <StockOutlined />, access: { anyRole: OPERATIONAL_AND_QC } },
+      // Phase 16 (ruling Q16-16): every lot, its expiry and what is left. The
+      // roles that hold, inspect or answer for controlled material — the store
+      // keeper, QC, the HOD and the Head of Qualities. Read-only.
+      { key: '/lots', label: 'Lots & Expiry', icon: <ExperimentOutlined />, access: { anyRole: [SK, QC, HOD, 'qc_hod'] } },
       // The rack locator sits at the TOP LEVEL on purpose: the store keeper is
       // the person who has to walk to the shelf, and burying it inside a
       // supervisor group would hide it from its only real user. Narrowed

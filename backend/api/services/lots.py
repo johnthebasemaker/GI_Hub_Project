@@ -195,3 +195,50 @@ async def unknown_lots(session: AsyncSession, site_id: str) -> list[dict]:
         elsewhere[r[0]] = r[1]
     return [dict(r, qty=float(r["qty"] or 0), received_under=elsewhere.get(r["lot"]))
             for r in rows]
+
+
+# ── the expiry notice (Phase 16c) ─────────────────────────────────────────────
+EXPIRY_NOTICE_DAYS = 30
+
+
+async def expiry_notices(session: AsyncSession, *, today=None) -> dict:
+    """ONE notice per site, per day, to the store keeper and the HOD: the lots
+    with stock left that expire within 30 days, and those already expired.
+
+    ⚠️ NEVER ONE PER LOT PER DAY — a list of forty identical pings teaches
+    people to ignore the bell. Called from the evening digest's daily run,
+    which already holds the one-worker claim (services/dailyjob.py), so it
+    cannot fire twice. WhatsApp copies go into that evening's digest, not out
+    one by one."""
+    import datetime as _dt
+
+    from ..lot_register import _rows
+    from .notifications import dispatch
+    today = today or _dt.date.today()
+    rows = [r for r in await _rows(session, site=None)
+            if r["status"] in ("expired", "expiring_30")]
+    by_site: dict[str, list[dict]] = {}
+    for r in rows:
+        by_site.setdefault(r["Site_ID"] or "HQ", []).append(r)
+    sent = 0
+    for site, items in by_site.items():
+        items.sort(key=lambda r: (r["days_left"] if r["days_left"] is not None else 0))
+        expired = [r for r in items if r["status"] == "expired"]
+        soon = [r for r in items if r["status"] != "expired"]
+        title = (f"{len(soon)} lot(s) expire within {EXPIRY_NOTICE_DAYS} days"
+                 + (f", {len(expired)} already expired" if expired else "")
+                 + f" — {site}")
+        body = " · ".join(
+            f"{r['SAP_Code']} lot {r['Lot_Number']} "
+            + (f"expired {-r['days_left']}d ago" if r["status"] == "expired"
+               else f"in {r['days_left']}d")
+            + f" ({r['Remaining_Qty']:g} left)" for r in items[:12])
+        if len(items) > 12:
+            body += f" · +{len(items) - 12} more"
+        for role in ("store_keeper", "hod"):
+            await dispatch(session, event_key="lot_expiry", title=title, body=body,
+                           severity="warning", recipient_role=role, recipient_site=site,
+                           link_page="/lots", related_table="lots",
+                           related_ref=f"{site}:{today.isoformat()}", delivery="evening")
+        sent += 1
+    return {"sites": sent, "lots": len(rows)}

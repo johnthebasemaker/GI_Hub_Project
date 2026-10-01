@@ -1622,6 +1622,9 @@ def check_models_schema_parity() -> None:
                ("lots", "updated_at"),
                ("returns", "Lot_Number"), ("returns", "Serial_No"),
                ("inventory", "Lot_Tracked"), ("inventory", "Shelf_Life_Months"),
+               # Phase 16c (alembic e5b2c7a9d4f1): the MFD a receipt carries
+               # to its lot through the HOD's approval.
+               ("pending_receipts", "MFD_Date"),
                # 2026-08 execution sub-activity (alembic f1d3b7a24c60): the
                # recipe line's quantity is now per sub-activity, so LSC2's
                # Resin A is 0.2700 as ESC21 primer and 1.4674 as ESC22 screed

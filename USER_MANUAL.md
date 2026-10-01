@@ -686,6 +686,56 @@ never expire).
 - a batch the Receipt Log spells differently (e.g. `0926` vs `0.926`);
 - rows with no batch.
 
+### 3.10.3 Lots & Expiry — which lot to use, and what is about to expire
+
+**The Lots & Expiry page** (sidebar, under Stock) is for the Store Keeper, QC, the
+HOD and the Head of Qualities. It lists every lot of a lot-tracked material, the
+oldest expiry first, with:
+- **MFD and expiry** — an expiry marked *derived* is MFD + the item's shelf life;
+- **status** — *Expired*, *≤ 30 days*, *≤ 60 days*, *≤ 90 days*, *OK*, *No expiry*;
+- **received, consumed, returned and remaining** — worked out from the ledger.
+
+Click a status at the top to show only those lots. **Show used-up lots** adds the
+lots with nothing left. A CHEMOLINE batch opens to show its rolls: when each was
+received, where it is, and for a used roll the day and tank it was issued to. A
+red banner warns when an expired lot still has stock. At the bottom, **Lots used
+but never received** lists lots the Consumption or Return Log names that no
+receipt brought in.
+
+**Issuing (the Issue form's Lot field).** For a lot-tracked material, the Lot
+field is a list of that material's open lots in **FEFO order**. Each shows its
+expiry, the days left and the quantity left.
+- The first one is marked **FEFO**. Leaving the field blank issues from it,
+  because GI Hub's own automatic pick uses the same order.
+- ⚠️ An **expired** lot is listed **last**, marked red, and is **never** the
+  suggestion, even though its date is the earliest. You can still choose it;
+  FEFO warns, it never blocks.
+- Choosing any lot other than the FEFO lot asks for a **reason**, which goes to
+  the HOD with the issue. Choosing the FEFO lot asks nothing.
+- **CHEMOLINE:** pick the **roll**; its batch fills in by itself. A roll already
+  issued is no longer offered.
+
+**Receiving (the Receive form).** For a lot-tracked material the form asks for
+the **batch** (as printed on the label), the **manufacture date (MFD)** and the
+**expiry**:
+- If you leave the expiry blank, it becomes MFD + the item's shelf life, and the
+  form shows the date it will use.
+- An expiry **before** the MFD, or an MFD in the future, is refused.
+- An expiry you type is kept, and the Lot Register workbook never overwrites it.
+
+**The daily expiry notice.** Each evening the Store Keeper and the HOD of a site
+get **one** notice listing that site's lots that expire within 30 days or have
+already expired, each with how much is left. It is one notice per site, never
+one per lot. On WhatsApp it arrives inside the evening summary.
+
+**Shelf life and lot tracking (item editor).** Admin → Inventory or Records →
+Inventory → **Edit** has two settings:
+- **Lot tracking:** *Automatic* — every Surface Shield except bricks — or *Tracked
+  by lot*, or *Not tracked*.
+- **Shelf life (months):** the number a missing expiry is derived from. The
+  Lot Register workbook fills it in where it is empty, from the item's own MFD →
+  expiry pairs (PU 9, Phenacin 6, BC 3004 24…).
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.
