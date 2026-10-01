@@ -27627,6 +27627,232 @@ async def test_phase15e_followups():
         await _cleanup()
 
 
+async def test_phase16a_lots():
+    """Suite 16A — the overloaded `Serial No.` column is read by the ITEM.
+
+    A Surface Shield's `Serial No.` is its BATCH → `Lot_Number`; a roll item's
+    is the ROLL → `Serial_No`, its batch → `Lot_Number`; anything else keeps an
+    asset tag in `Serial_No` and no lot. Pinned here: the normaliser on every
+    real shape, the category switch, the Return Log read at last, lots made
+    from receipts, NO DUPLICATE ROWS on a re-run, returns reducing the lot
+    balance, the FEFO pick order and the unknown-lot report.
+    """
+    from sqlalchemy import text as _t
+
+    from . import bulk_import as bi
+    from .services import ledger as LG
+    from .services import lots as LOTS
+    from .services import quality as Q
+
+    SITE = "SV16A-SITE"
+    P, B, R, E = "SV16A-P", "SV16A-B", "SV16A-R", "SV16A-E"
+    async with SessionLocal() as s:
+        CAT = await Q.controlled_category(s)
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            for q in ('DELETE FROM receipts WHERE "Site_ID" = :site',
+                      'DELETE FROM consumption WHERE "Site_ID" = :site',
+                      'DELETE FROM returns WHERE "Site_ID" = :site',
+                      'DELETE FROM lots WHERE "Site_ID" = :site',
+                      'DELETE FROM lot_units WHERE "Site_ID" = :site',
+                      "DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SV16A-%'"):
+                await s.execute(_t(q), {"site": SITE})
+            await s.commit()
+
+    # ── the normaliser, on the shapes the real workbooks carry ──────────────
+    shapes = {3504: "3504", 3504.0: "3504", "3504.0": "3504", " a4525 ": "A 4525",
+              "A  4525": "A 4525", "525106711A21425": "525106711A21425",
+              "N/A": None, "-": None, "": None, None: None, "0.926": "0.926"}
+    got = {k: LOTS.norm_lot(k) for k in shapes}
+    check("16a-01: one spelling per lot — 3504.0 → 3504, A4525 → 'A 4525', N/A/blank → none",
+          got == shapes, str({k: v for k, v in got.items() if v != shapes[k]}))
+    check("16a-02: a roll typed with a zero becomes the letter O (ruling Q16-12b), and its "
+          "batch is its first 10 characters",
+          LOTS.norm_roll("1025003382157") == "1O25003382157"
+          and LOTS.norm_roll("1O25003382157") == "1O25003382157"
+          and LOTS.roll_batch("1O25003382157") == "1O25003382"
+          and LOTS.roll_batch("GI-120237") is None)
+    it_lot = LOTS.interpret("3504", "lot")
+    it_eq = LOTS.interpret("GI-120237", None)
+    it_multi = LOTS.interpret("4525 = 55 Cans; 1823 = 2 Cans", "lot")
+    it_roll = LOTS.interpret("1025003382157", "roll", sap=R)
+    check("16a-03: interpret — a batch is a lot, an asset tag is a serial, several lots in "
+          "one cell are NOT guessed (Q16-2), a roll keeps its number and gains its batch",
+          it_lot == {"serial_no": "3504", "lot": "3504", "note": None}
+          and it_eq == {"serial_no": "GI-120237", "lot": None, "note": None}
+          and it_multi["lot"] is None and it_multi["note"] == "multi"
+          and it_roll == {"serial_no": "1O25003382157", "lot": "1O25003382",
+                          "note": "roll_fixed"},
+          f"{it_lot} {it_eq} {it_multi} {it_roll}")
+
+    await _cleanup()
+    try:
+        async with SessionLocal() as s:
+            for sap, desc, cat, uom, flag in (
+                    (P, "SV16A PU COMP A", CAT, "Can", None),
+                    (B, "SV16A AR BRICKS 30MM", CAT, "EA", False),
+                    (R, "SV16A CHEMOLINE ROLL", CAT, "ROL", None),
+                    (E, "SV16A WATER PUMP", "EQUIPMENTS/TOOLS", "EA", None)):
+                await s.execute(_t(
+                    'INSERT INTO inventory ("SAP_Code", "Equipment_Description", "Category", '
+                    '"UOM", "Site_ID", "Lot_Tracked") VALUES (:p, :d, :c, :u, :site, :f)'),
+                    {"p": sap, "d": desc, "c": cat, "u": uom, "site": SITE, "f": flag})
+            await s.commit()
+            tr = await LOTS.tracking(s)
+        check("16a-04: who is lot-tracked — a Surface Shield automatically, a roll item as "
+              "'roll'; the brick is switched off (Q16-4); equipment never",
+              tr.get(P) == "lot" and tr.get(R) == "roll" and B not in tr and E not in tr,
+              str({k: tr.get(k) for k in (P, B, R, E)}))
+
+        RH = ["Date", "SAP CODE", "Material Code", "Equipment Description", "UOM", "Qty.",
+              "Serial No.", "PR#", "WBS#", "Location", "Vehicle No.", "Driver Name",
+              "DN. No.", "Pallet No.", "Mob. From", "Prepared by", "Mob. To",
+              "Received by", "DN. Copy", "Remarks"]
+        CH = ["Date", "SAP CODE", "Material Code", "Equipment Description", "UOM", "Qty.",
+              "Serial No.", "PR#", "Work Type", "Tank No.", "WBS#", "Approved By",
+              "Cons. Paper No.", "Pallet No.", "Received by", "Prepared by", "Location",
+              "Remarks", "Current Stock", "type"]
+        TH = ["Date", "SAP CODE", "Material Code", "Equipment Description", "UOM", "Qty.",
+              "Serial No.", "PR#", "WBS#", "Reason", "Vehicle No.", "Driver Name", "DN. No.",
+              "Pallet No.", "Mob. From", "Prepared by", "Mob. To", "Received by", "DN. Copy",
+              "Remarks"]
+
+        def rec(d, sap, q, ser, dn):
+            return [f"{d} 00:00:00", sap, None, None, "EA", q, ser] + [None] * 5 + [dn] + [None] * 7
+
+        def con(d, sap, q, ser, tank):
+            return [f"{d} 00:00:00", sap, None, None, "EA", q, ser, None, "Lining", tank] \
+                + [None] * 10
+
+        def ret(d, sap, q, ser, reason):
+            return [f"{d} 00:00:00", sap, None, None, "EA", q, ser, None, None, reason] \
+                + [None] * 10
+
+        book = _xlsx({
+            "Receipt Log": [["CNCEC"], RH,
+                            rec("2026-07-01", P, 10, 3504, "D1"),
+                            rec("2026-07-02", P, 6, "A4525", "D2"),
+                            rec("2026-07-03", P, 2, "4525 = 1 Can; 1823 = 1 Can", "D3"),
+                            rec("2026-07-04", R, 3, "1025003382191", "D4"),
+                            rec("2026-07-05", B, 100, "2815", "D5"),
+                            rec("2026-07-06", E, 1, "GI-120237", "D6")],
+            "Consumption Log": [["CNCEC"], CH,
+                                con("2026-07-10", P, 3, "3504", "T1"),
+                                con("2026-07-11", P, 1, "ZZ9", "T1"),
+                                con("2026-07-12", R, 1, "1O25003382191", "T1")],
+            "Return Log": [["CNCEC"], TH,
+                           ret("2026-07-15", P, 2, "3504", "surplus"),
+                           ret("2026-07-16", E, 1, "GI-120237", "repair")],
+        })
+        async with SessionLocal() as s:
+            plan = await bi.plan_ledger(s, book, SITE)
+        ups = {k: {(r["SAP_Code"], r["Date"][:10]): r for r in plan["sections"][k]["upserts"]}
+               for k in ("receipts", "consumption", "returns")}
+        r_p = ups["receipts"][(P, "2026-07-01")]
+        r_a = ups["receipts"][(P, "2026-07-02")]
+        r_m = ups["receipts"][(P, "2026-07-03")]
+        r_r = ups["receipts"][(R, "2026-07-04")]
+        r_b = ups["receipts"][(B, "2026-07-05")]
+        r_e = ups["receipts"][(E, "2026-07-06")]
+        check("16a-05: Receipt Log — the Surface Shield's Serial No. is its LOT (3504, 'A 4525'); "
+              "the roll keeps its corrected number and gains its batch; the brick and the "
+              "equipment keep a serial and get NO lot; several lots in one cell get none",
+              r_p.get("Lot_Number") == "3504" and r_a.get("Lot_Number") == "A 4525"
+              and r_r.get("Serial_No") == "1O25003382191" and r_r.get("Lot_Number") == "1O25003382"
+              and r_b.get("Lot_Number") is None and r_b.get("Serial_No") == "2815"
+              and r_e.get("Lot_Number") is None and r_e.get("Serial_No") == "GI-120237"
+              and r_m.get("Lot_Number") is None,
+              str([r_p.get("Lot_Number"), r_a.get("Lot_Number"), r_r.get("Lot_Number"),
+                   r_b.get("Lot_Number"), r_e.get("Serial_No"), r_m.get("Lot_Number")]))
+        t_p = ups["returns"][(P, "2026-07-15")]
+        t_e = ups["returns"][(E, "2026-07-16")]
+        check("16a-06: the Return Log's Serial No. is read at last — a Surface Shield return "
+              "carries its lot, an equipment return its asset tag",
+              t_p.get("Lot_Number") == "3504" and t_e.get("Serial_No") == "GI-120237"
+              and t_e.get("Lot_Number") is None, f"{t_p} {t_e}")
+        check("16a-07: the plan says what it did — lot rows counted, the several-lots cell "
+              "and the corrected roll named in the warnings",
+              plan["lots"]["rows"] >= 5 and len(plan["lots"]["multi"]) == 1
+              and len(plan["lots"]["roll_fixed"]) == 1
+              and any("SEVERAL lots" in w for w in plan["warnings"])
+              and any("1O" in w for w in plan["warnings"]), str(plan["lots"]))
+
+        async with SessionLocal() as s:
+            counts = await bi.apply_ledger(s, plan, "sv16a-sync")
+            await s.commit()
+            lots = {(r[0], r[1]): r for r in (await s.execute(_t(
+                'SELECT "SAP_Code", "Lot_Number", "Received_Date", "Source", "Status" '
+                'FROM lots WHERE "Site_ID" = :site'), {"site": SITE})).all()}
+        check("16a-08: a lots row for every lot a RECEIPT names — and none for the brick, the "
+              "equipment or the lot consumption invented",
+              set(lots) == {(P, "3504"), (P, "A 4525"), (R, "1O25003382")}
+              and lots[(P, "3504")][2] == "2026-07-01" and lots[(P, "3504")][3] == "receipt"
+              and counts["lots"]["created"] == 3, f"{sorted(lots)} {counts.get('lots')}")
+
+        async with SessionLocal() as s:
+            plan2 = await bi.plan_ledger(s, book, SITE)
+            counts2 = await bi.apply_ledger(s, plan2, "sv16a-sync")
+            await s.commit()
+            n = {k: (await s.execute(_t(f'SELECT COUNT(*) FROM {k} WHERE "Site_ID" = :site'),
+                                     {"site": SITE})).scalar_one()
+                 for k in ("receipts", "consumption", "returns", "lots")}
+        check("16a-09: ⚠️ A SECOND SYNC CHANGES NOTHING — no row inserted or updated, no lot "
+              "created; the ledger still holds exactly the workbook's lines",
+              counts2["inserted"] == 0 and counts2["updated"] == 0
+              and counts2["lots"]["created"] == 0
+              and n == {"receipts": 6, "consumption": 3, "returns": 2, "lots": 3},
+              f"{counts2} {n}")
+
+        async with SessionLocal() as s:
+            bal = (await s.execute(_t(
+                f'SELECT "Received_Qty", "Consumed_Qty", "Returned_Qty", "Remaining_Qty" '
+                f'FROM ({__import__("backend.api.stock", fromlist=["x"]).SQL_LOT_BALANCE}) lb '
+                f'WHERE "SAP_Code" = :p AND "Lot_Number" = \'3504\' AND "Site_ID" = :site'),
+                {"p": P, "site": SITE})).first()
+        check("16a-10: the lot balance subtracts RETURNS — 10 received, 3 consumed, 2 returned "
+              "leaves 5 (it used to leave 7)",
+              bal is not None and tuple(float(x) for x in bal) == (10.0, 3.0, 2.0, 5.0), str(bal))
+
+        async with SessionLocal() as s:
+            await s.execute(_t(
+                'UPDATE lots SET "Expiry_Date" = :e WHERE "Site_ID" = :site AND "SAP_Code" = :p '
+                'AND "Lot_Number" = :l'), {"e": "2026-12-01", "site": SITE, "p": P, "l": "3504"})
+            await s.execute(_t(
+                'UPDATE lots SET "Expiry_Date" = :e WHERE "Site_ID" = :site AND "SAP_Code" = :p '
+                'AND "Lot_Number" = :l'), {"e": "2026-11-01", "site": SITE, "p": P, "l": "A 4525"})
+            await s.commit()
+            first = await LG.fefo_lot(s, P, SITE)
+            await s.execute(_t(
+                'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                '"Lot_Number") VALUES (\'2026-07-20\', :p, 6, :site, \'A 4525\')'),
+                {"p": P, "site": SITE})
+            await s.commit()
+            then = await LG.fefo_lot(s, P, SITE)
+        check("16a-11: FEFO picks the earliest-expiry lot with stock left — 'A 4525' "
+              "(Nov) before 3504 (Dec); once A 4525 is used up, 3504",
+              first == "A 4525" and then == "3504", f"{first} → {then}")
+
+        async with SessionLocal() as s:
+            unk = await LOTS.unknown_lots(s, SITE)
+        check("16a-12: a lot consumption names that no receipt brought in is REPORTED "
+              "(ZZ9), never invented as a lot and never blocked",
+              [(u["kind"], u["sap"], u["lot"]) for u in unk] == [("consumption", P, "ZZ9")],
+              str(unk))
+
+        async with SessionLocal() as s:
+            res = await LG.post_return(s, username="sv16a", data={
+                "Date": "2026-07-21", "SAP_Code": P, "Quantity": 1, "Site_ID": SITE,
+                "Reason": "damaged", "Lot_Number": "a4525"})
+            await s.commit()
+            lot = (await s.execute(_t('SELECT "Lot_Number" FROM returns WHERE id = :i'),
+                                   {"i": res["return_id"]})).scalar_one()
+        check("16a-13: a return posted in the app keeps its lot too (normalised), so the "
+              "lot's balance sees it", lot == "A 4525", str(lot))
+    finally:
+        await _cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -27927,6 +28153,9 @@ async def main() -> int:
     print("\n 15E. Phase 15e — the store keeper's remark fills the job card (two notes, "
           "two jobs) and is kept with it; the HOD adds items for their own site")
     await test_phase15e_followups()
+    print("\n 16A. Phase 16a — Serial No. is read by the item: a Surface Shield's batch "
+          "is its lot, a roll keeps its number, equipment keeps its tag; re-runs converge")
+    await test_phase16a_lots()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

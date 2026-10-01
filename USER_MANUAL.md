@@ -591,6 +591,49 @@ can see Stock can read the result. Nothing on this screen changes stock.
 ⚠️ **The check only explains.** It never corrects stock by itself, because
 deciding whether an entry was real is a person's call.
 
+## 3.10 Lots, FEFO and the Lot Register workbook
+
+*Phase 16 (October 2026).*
+
+A **lot** is one batch of a material: the cans of PU COMP A from batch `3504`,
+or the CHEMOLINE rolls of batch `1O25003382`. GI Hub keeps the stock of each
+lot, so it can tell the store keeper which lot to use first (**FEFO**, first
+expire, first out).
+
+### 3.10.1 What the `Serial No.` column means in the workbooks
+
+The Receipt, Consumption and Return Logs have one `Serial No.` column. GI Hub
+reads it according to **the item on that row**:
+
+| The item is… | `Serial No.` is… | GI Hub keeps it as… |
+|---|---|---|
+| a **Surface Shield** (PU, Furan, Phenacin, Coroflake, BC 3004…) | the **batch** | the **Lot No.** (and the cell as typed) |
+| a **roll** (CHEMOLINE, UOM `ROL`) | the **roll number** | the roll number, and its **batch** as the Lot No. |
+| a **brick** (AR 30/40 MM, carbon bricks) | not a lot — bricks have no batch and never expire | the serial, with no lot |
+| anything else (pumps, tools, equipment) | the **equipment / asset no.** | the serial, as before |
+
+Rules that keep this safe:
+- **A lot is spelled one way.** `3504.0` is `3504`, and `A4525` and `A 4525` are
+  the same lot (`A 4525`). `N/A` or a blank cell means no lot.
+- **Roll numbers begin with `1O` (the letter O).** A roll typed `10…` (with a
+  zero) is corrected to `1O…`, and the sync says so.
+- **One lot per cell.** A cell such as `4525 = 55 Cans; 1823 = 2 Cans` gets **no**
+  lot. Split it into one row per lot in the workbook; the sync names the rows
+  that need it.
+- **A lot that was never received is reported, not invented.** If the
+  Consumption Log names a lot no receipt brought in for that material, the sync
+  lists it with the material it *was* received under (often a typing slip), and
+  the consumption still counts toward stock.
+- **History keeps the lot it was given.** GI Hub never picks a lot for an old
+  workbook row that has none. Automatic FEFO applies only to issues entered in
+  the app.
+- **A return gives back to its lot.** The Return Log's `Serial No.` is now read
+  too: a Surface Shield return carries its lot, and an equipment return keeps its
+  asset tag.
+
+Every receipt that names a lot creates that lot in GI Hub. A lot's stock is
+always **received − consumed − returned**, worked out from the ledger.
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.

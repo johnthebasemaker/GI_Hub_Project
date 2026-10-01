@@ -227,6 +227,12 @@ class Inventory(Base):
     # learns these.
     Unit_Size = Column(Float)
     Base_UOM = Column(Text)
+    # ── Phase 16 (alembic d8a3f6c1b2e9): lot tracking ───────────────────────
+    # `Lot_Tracked` NULL = automatic (a Surface Shield is lot-tracked); FALSE
+    # for the bricks (no batch, no expiry — ruling Q16-4). `Shelf_Life_Months`
+    # derives a missing expiry from a lot's MFD (Q16-5). services/lots.py.
+    Lot_Tracked = Column(Boolean)
+    Shelf_Life_Months = Column(Integer)
 
 class InventorySiteCosts(Base):
     __tablename__ = "inventory_site_costs"
@@ -601,11 +607,17 @@ class Returns(Base):
     # ledger by (SAP_Code, Site_ID) and every report windows it by Date;
     # with primary keys alone both were sequential scans. NON-UNIQUE by
     # rule — the same (date, SAP, quantity) line may legitimately repeat.
+    # ── Phase 16 (alembic d8a3f6c1b2e9): the Return Log's `Serial No.` —
+    # a Surface Shield return gives back to its LOT; an equipment return keeps
+    # its asset tag. It used to be dropped.
+    Lot_Number = Column(Text)
+    Serial_No = Column(Text)
     __table_args__ = (
         Index("ux_returns_xlsx_ref", "Site_ID", "Source_Ref", unique=True,
               postgresql_where=text("\"Source_Ref\" LIKE 'XLSX:%'")),
         Index("ix_returns_sap_site", "SAP_Code", "Site_ID"),
         Index("ix_returns_date", "Date"),
+        Index("ix_returns_lot", "SAP_Code", "Lot_Number"),
     )
 class ReturnsHistory(Base):
     __tablename__ = "returns_history"
@@ -2723,8 +2735,40 @@ class Lots(Base):
     PR_Number = Column(Text)
     Status = Column(Text, server_default=text("'open'"))
     created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    # ── Phase 16 (alembic d8a3f6c1b2e9): what the Lot Register workbook knows.
+    # The lot file DESCRIBES a lot and never moves stock. `Expiry_Source`:
+    # file | derived (MFD + Shelf_Life_Months) | app. `Source`: receipt (made
+    # from a ledger row) | lotfile | app.
+    MFD_Date = Column(Text)
+    Expiry_Source = Column(Text)
+    Batch_Ref = Column(Text)
+    DN_No = Column(Text)
+    Source = Column(Text)
+    updated_at = Column(DateTime)
     __table_args__ = (
         UniqueConstraint("Lot_Number", "SAP_Code", "Site_ID"),
+    )
+
+
+class LotUnits(Base):
+    """Phase 16 — the roll register (ruling Q16-3). A CHEMOLINE roll is a UNIT
+    inside its production batch (the lot): FEFO picks the batch, the store
+    keeper picks the roll. Filled from the Lot Register workbook's roll sheet."""
+    __tablename__ = "lot_units"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    Unit_No = Column(Text, nullable=False)
+    Lot_Number = Column(Text, nullable=False)
+    SAP_Code = Column(Text, nullable=False)
+    Site_ID = Column(Text, nullable=False)
+    Received_Date = Column(Text)
+    SQM = Column(Text)
+    Pallet = Column(Text)
+    Location = Column(Text)
+    Source = Column(Text)
+    updated_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    __table_args__ = (
+        UniqueConstraint("SAP_Code", "Unit_No", name="uq_lot_units_sap_unit"),
+        Index("ix_lot_units_lot", "SAP_Code", "Lot_Number"),
     )
 
 

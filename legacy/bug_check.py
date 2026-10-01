@@ -1613,6 +1613,15 @@ def check_models_schema_parity() -> None:
                # Phase 15e (alembic c4f1a8d2e6b7): the part of the equipment a
                # job covered, from the store keeper's remark. New-stack only.
                ("sme_consumption_log", "Work_Area"),
+               # Phase 16 (alembic d8a3f6c1b2e9): FEFO lot management — what
+               # the Lot Register workbook knows about a lot, the lot / asset
+               # tag a return carries, and the per-item lot switch + shelf
+               # life. New-stack only; the frozen portal never learns them.
+               ("lots", "MFD_Date"), ("lots", "Expiry_Source"),
+               ("lots", "Batch_Ref"), ("lots", "DN_No"), ("lots", "Source"),
+               ("lots", "updated_at"),
+               ("returns", "Lot_Number"), ("returns", "Serial_No"),
+               ("inventory", "Lot_Tracked"), ("inventory", "Shelf_Life_Months"),
                # 2026-08 execution sub-activity (alembic f1d3b7a24c60): the
                # recipe line's quantity is now per sub-activity, so LSC2's
                # Resin A is 0.2700 as ESC21 primer and 1.4674 as ESC22 screed

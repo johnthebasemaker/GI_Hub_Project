@@ -281,9 +281,12 @@ async def post_return(session: AsyncSession, *, username: str, data: dict) -> di
     sap = data["SAP_Code"].strip()
     site = data["Site_ID"]
     qty = float(data["Quantity"])
+    # Phase 16: the lot it gives back to (returns had no lot column before).
+    from . import lots as LOTS
     new_id = (await session.execute(insert(returns_t).values(
         Date=data["Date"], SAP_Code=sap, Quantity=qty,
         Reason=data.get("Reason") or None, Remarks=data.get("Remarks") or None,
+        Lot_Number=LOTS.norm_lot(data.get("Lot_Number")),
         Site_ID=site).returning(returns_t.c["id"]))).scalar_one()
     await write_audit(session, username, "POST_RETURN", "returns",
                       f"id={new_id} sap={sap} site={site} qty={qty:g} "
@@ -519,7 +522,7 @@ async def commit_return(session: AsyncSession, *, approver: str, pending_id: int
         return {"error": "not found or already handled"}
     data = {"Date": _dt.date.today().isoformat(), "SAP_Code": row["SAP_Code"],
             "Quantity": row["Quantity"], "Site_ID": row["Site_ID"],
-            "Reason": row.get("Return_Reason"),
+            "Reason": row.get("Return_Reason"), "Lot_Number": row.get("Lot_Number"),
             "Remarks": f"Return DN: {row.get('Return_DN_No') or ''} · approved by {approver}".strip()}
     res = await post_return(session, username=approver, data=data)
     await session.execute(update(pending_returns_t).where(pending_returns_t.c["id"] == pending_id)

@@ -92,8 +92,24 @@ GROUP BY a."SAP_Code", a."Site_ID",
          i."Equipment_Description", i."Material_Code", i."UOM", i."Minimum_Qty"
 """
 
-# v_lot_balance — per-lot remaining quantity (receipts - consumption +/- transfers).
-SQL_LOT_BALANCE = """
+# v_lot_balance — per-lot remaining quantity.
+# Phase 16: remaining = received − consumed − RETURNED ± transfers. A returned
+# can is no longer on the shelf; before Phase 16 `returns` had no lot column and
+# the balance could not see it. Plus what the Lot Register workbook knows
+# (MFD, where the expiry came from, batch reference, DN) — descriptive only.
+_LOT_SUM = """COALESCE((
+        SELECT SUM(x."Quantity") FROM {t} x
+        WHERE x."Lot_Number" = l."Lot_Number"
+          AND TRIM(x."SAP_Code") = l."SAP_Code"
+          AND COALESCE(x."Site_ID",'HQ') = l."Site_ID"
+    ), 0)"""
+_LOT_XFER = """COALESCE((
+        SELECT SUM(t."Qty") FROM lot_transfers t
+        WHERE t."{col}" = l."Lot_Number"
+          AND t."SAP_Code" = l."SAP_Code"
+          AND COALESCE(t."Site_ID",'HQ') = l."Site_ID"
+    ), 0)"""
+SQL_LOT_BALANCE = f"""
 SELECT
     l."Lot_Number",
     l."SAP_Code",
@@ -103,41 +119,19 @@ SELECT
     l."Supplier",
     l."PR_Number",
     l."Status",
-    COALESCE((
-        SELECT SUM(r."Quantity") FROM receipts r
-        WHERE r."Lot_Number" = l."Lot_Number"
-          AND r."SAP_Code"   = l."SAP_Code"
-          AND COALESCE(r."Site_ID",'HQ') = l."Site_ID"
-    ), 0) AS "Received_Qty",
-    COALESCE((
-        SELECT SUM(c."Quantity") FROM consumption c
-        WHERE c."Lot_Number" = l."Lot_Number"
-          AND c."SAP_Code"   = l."SAP_Code"
-          AND COALESCE(c."Site_ID",'HQ') = l."Site_ID"
-    ), 0) AS "Consumed_Qty",
-    COALESCE((
-        SELECT SUM(r."Quantity") FROM receipts r
-        WHERE r."Lot_Number" = l."Lot_Number"
-          AND r."SAP_Code"   = l."SAP_Code"
-          AND COALESCE(r."Site_ID",'HQ') = l."Site_ID"
-    ), 0) - COALESCE((
-        SELECT SUM(c."Quantity") FROM consumption c
-        WHERE c."Lot_Number" = l."Lot_Number"
-          AND c."SAP_Code"   = l."SAP_Code"
-          AND COALESCE(c."Site_ID",'HQ') = l."Site_ID"
-    ), 0)
-    - COALESCE((
-        SELECT SUM(t."Qty") FROM lot_transfers t
-        WHERE t."From_Lot" = l."Lot_Number"
-          AND t."SAP_Code" = l."SAP_Code"
-          AND COALESCE(t."Site_ID",'HQ') = l."Site_ID"
-    ), 0)
-    + COALESCE((
-        SELECT SUM(t."Qty") FROM lot_transfers t
-        WHERE t."To_Lot" = l."Lot_Number"
-          AND t."SAP_Code" = l."SAP_Code"
-          AND COALESCE(t."Site_ID",'HQ') = l."Site_ID"
-    ), 0) AS "Remaining_Qty"
+    l."MFD_Date",
+    l."Expiry_Source",
+    l."Batch_Ref",
+    l."DN_No",
+    l."Source",
+    {_LOT_SUM.format(t="receipts")} AS "Received_Qty",
+    {_LOT_SUM.format(t="consumption")} AS "Consumed_Qty",
+    {_LOT_SUM.format(t="returns")} AS "Returned_Qty",
+    {_LOT_SUM.format(t="receipts")}
+    - {_LOT_SUM.format(t="consumption")}
+    - {_LOT_SUM.format(t="returns")}
+    - {_LOT_XFER.format(col="From_Lot")}
+    + {_LOT_XFER.format(col="To_Lot")} AS "Remaining_Qty"
 FROM lots l
 """
 

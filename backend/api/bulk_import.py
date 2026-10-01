@@ -533,6 +533,8 @@ async def apply_inventory(session: AsyncSession, plan: dict, username: str) -> N
 # master on every log sheet and are always ignored.)
 _LEDGER_ALWAYS_IGNORED = ("date", "sap code", "sap_code", "material code",
                           "equipment description", "uom")
+# Phase 16 — a dedicated lot column, should a ledger sheet ever carry one.
+_LOT_COLS = ("Lot No.", "Lot Number", "Lot_Number", "Batch No.")
 _LEDGER_SHEETS = {
     "receipts": {
         "sheet": "Receipt Log", "table": receipts_t,
@@ -543,7 +545,10 @@ _LEDGER_SHEETS = {
                  "Pallet_No": ("Pallet No.",), "Mob_From": ("Mob. From",),
                  "Mob_To": ("Mob. To",), "Prepared_by": ("Prepared by",),
                  "Received_by": ("Received by",), "DN_Copy": ("DN. Copy",),
-                 "Remarks": ("Remarks",)},
+                 "Remarks": ("Remarks",),
+                 # Phase 16: a column of its own if the sheet ever grows one;
+                 # until then derived from `Serial No.` by the item (services/lots.py)
+                 "Lot_Number": _LOT_COLS},
         "ref": "DN_No", "ignore": (),
     },
     "consumption": {
@@ -556,7 +561,8 @@ _LEDGER_SHEETS = {
                  # 2026-08-04: the programme a consumption belongs to. All
                  # 1,110 rows carry it, and it is what routes Surface Shields
                  # into the SME portal — see `plan_sme_routing`.
-                 "Item_Type": ("type",)},
+                 "Item_Type": ("type",),
+                 "Lot_Number": _LOT_COLS},
         # `consumption` has no Pallet_No / paper-number columns — 2026-07-14
         # workbook restructure adds both to the sheet; ignored by design.
         #
@@ -577,11 +583,16 @@ _LEDGER_SHEETS = {
     "returns": {
         "sheet": "Return Log", "table": returns_t,
         "cols": {"Quantity": ("Qty.",), "Reason": ("Reason",),
-                 "Remarks": ("Remarks",)},
+                 "Remarks": ("Remarks",),
+                 # Phase 16: the Return Log's `Serial No.` is read at last — a
+                 # Surface Shield return gives back to its LOT, an equipment
+                 # return keeps its asset tag (alembic d8a3f6c1b2e9)
+                 "Serial_No": ("Serial No.",), "Lot_Number": _LOT_COLS},
         # the Return Log reuses the Receipt Log template; `returns` is a
-        # narrow table (Date/SAP/Qty/Reason/Remarks) so the rest has no home
+        # narrow table (Date/SAP/Qty/Reason/Remarks/Serial/Lot) so the rest
+        # has no home
         "ref": "Reason",
-        "ignore": ("serial no.", "pr#", "wbs#", "location", "vehicle no.",
+        "ignore": ("pr#", "wbs#", "location", "vehicle no.",
                    "driver name", "dn. no.", "pallet no.", "mob. from",
                    "mob. to", "prepared by", "received by", "dn. copy"),
     },
@@ -804,6 +815,13 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
                   (await session.execute(select(inventory_t.c["SAP_Code"]))).all()}
     known_saps |= extra_saps or set()  # dry-run chained after an inventory plan
     out = {"sections": {}, "rejects": [], "warnings": [], "site_id": site_id}
+    # Phase 16 — `Serial No.` is read by the ITEM: a lot for a Surface Shield,
+    # a roll (and its batch) for a roll item, an asset tag for anything else.
+    from .services import lots as LOTS
+    track = await LOTS.tracking(session)
+    register = await LOTS.roll_register(session)
+    out["lots"] = lot_report = {"rows": 0, "multi": [], "roll_fixed": [],
+                                "roll_unknown": []}
     for kind, spec in _LEDGER_SHEETS.items():
         headers, rows = _sheet_rows(data, spec["sheet"], ("sap code", "qty."),
                                     required=False)
@@ -848,6 +866,20 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
                 v = _s(row[i])
                 if v is not None:
                     vals[field] = v
+            mode = track.get(sap)
+            if vals.get("Lot_Number"):
+                vals["Lot_Number"] = LOTS.norm_lot(vals["Lot_Number"])
+            elif mode and vals.get("Serial_No"):
+                it = LOTS.interpret(vals["Serial_No"], mode, sap=sap, register=register)
+                if mode == "roll" and it["serial_no"]:
+                    vals["Serial_No"] = it["serial_no"]   # the corrected roll
+                if it["lot"]:
+                    vals["Lot_Number"] = it["lot"]
+                    lot_report["rows"] += 1
+                if it["note"]:
+                    lot_report[it["note"]].append(
+                        {"sheet": spec["sheet"], "row": n, "sap": sap,
+                         "serial": row[colmap["Serial_No"]], "now": it["serial_no"]})
             file_rows.append({"n": n, "vals": vals})
 
         table, ref = spec["table"], spec["ref"]
@@ -999,6 +1031,21 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
             out["warnings"].append(
                 f"{spec['sheet']}: {section['db_only']} DB row(s) have no workbook "
                 f"counterpart — left untouched (this importer never deletes)")
+    if lot_report["multi"]:
+        out["warnings"].append(
+            f"{len(lot_report['multi'])} Serial No. cell(s) hold SEVERAL lots "
+            f"(e.g. {lot_report['multi'][0]['sheet']} row {lot_report['multi'][0]['row']} "
+            f"SAP {lot_report['multi'][0]['sap']}: {lot_report['multi'][0]['serial']!r}) — "
+            f"no lot set; split them into one row per lot (ruling Q16-2)")
+    if lot_report["roll_fixed"]:
+        out["warnings"].append(
+            f"{len(lot_report['roll_fixed'])} roll number(s) corrected 10… → 1O… "
+            f"(rolls begin with the letter O — ruling Q16-12): "
+            + ", ".join(f"{r['serial']}→{r['now']}" for r in lot_report["roll_fixed"][:5]))
+    if lot_report["roll_unknown"]:
+        out["warnings"].append(
+            f"{len(lot_report['roll_unknown'])} roll number(s) match no batch: "
+            + ", ".join(str(r["serial"]) for r in lot_report["roll_unknown"][:5]))
     return out
 
 
@@ -1722,6 +1769,12 @@ async def apply_ledger(session: AsyncSession, plan: dict, username: str) -> dict
                               f"relabelled {section.get('relabelled', 0)}), "
                               f"{len(section.get('conflicts', []))} app conflicts, "
                               f"{len(section.get('vanished', []))} vanished")
+    # Phase 16 — every lot a receipt now names gets its `lots` row, so FEFO can
+    # see it. AFTER the upserts (the receipts must exist), same transaction.
+    site = plan.get("site_id")
+    if site:
+        from .services import lots as LOTS
+        counts["lots"] = await LOTS.sync_lots_from_ledger(session, site)
     return counts
 
 

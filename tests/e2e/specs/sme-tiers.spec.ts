@@ -65,7 +65,15 @@ test.describe('sme-tiers:hod', () => {
     const ctx = await browser.newContext({ storageState: storageStatePath('hod') })
     page = await ctx.newPage()
     await page.goto('/sme')
-    await page.getByRole('tab', { name: /Total Overview/ }).click()
+    // Under the same contention a click can land while the page is still
+    // mounting its tabs and be lost — the 2026-09-30/10-01 failures show the
+    // Dashboard tab still selected after the click. Click until the tab IS
+    // selected, then wait for its content.
+    const tab = page.getByRole('tab', { name: /Total Overview/ })
+    await expect(async () => {
+      await tab.click()
+      await expect(tab).toHaveAttribute('aria-selected', 'true', { timeout: 2_000 })
+    }).toPass({ timeout: 60_000 })
     // antd keeps every visited tab mounted, so page-wide text locators would
     // also hit the Dashboard's copy — scope everything to THIS panel.
     panel = page.getByRole('tabpanel', { name: /Total Overview/ })

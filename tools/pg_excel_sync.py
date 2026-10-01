@@ -614,6 +614,13 @@ async def main() -> int:
                 pending_saps |= {r["SAP_Code"] for r in plan["inserts"]}
 
             print(f"      {format_summary(bi._summary(plan))}")
+            if kind == "ledger" and plan.get("lots"):
+                # Phase 16 — `Serial No.` read by the item (services/lots.py)
+                _lr = plan["lots"]
+                print(f"      lots            {_lr['rows']} row(s) carry a lot "
+                      f"(Surface Shield batch / roll batch) · "
+                      f"{len(_lr['multi'])} cell(s) with several lots · "
+                      f"{len(_lr['roll_fixed'])} roll no. corrected")
 
             # ── where things live ──
             # Racks ride on the inventory sheet, assets on the Consumption Log.
@@ -728,6 +735,19 @@ async def main() -> int:
                             await session.rollback()
                             return 4
                     totals[kind] = await apply_ledger(session, plan, args.user)
+                    # Phase 16 — lots the ledger names that no receipt brought in
+                    from backend.api.services import lots as _lots
+                    _unk = await _lots.unknown_lots(session, args.site)
+                    if _unk:
+                        print(f"      ⚠ {len(_unk)} lot(s) used but never received for "
+                              f"that SAP — kept as typed, correct them in the workbook:")
+                        for _u in _unk[:15]:
+                            print(f"          {_u['kind']:11s} SAP {_u['sap']:8s} lot "
+                                  f"{_u['lot']!r} ×{_u['n']} qty {_u['qty']:g}"
+                                  + (f"  (received under SAP {_u['received_under']})"
+                                     if _u.get("received_under") else ""))
+                        if len(_unk) > 15:
+                            print(f"          … {len(_unk) - 15} more")
                     if args.prune_vanished:
                         _pr = await bi.prune_vanished(session, plan, args.user)
                         for _k, _r in _pr.items():
