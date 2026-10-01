@@ -1,7 +1,7 @@
 # PROPOSED PHASE 16 PLAN — FEFO Lot Management & the Lot Register workbook
 
-> **Status: PROPOSED — awaiting your answers to §8 (Q16-1 … Q16-16). No application code
-> has been written.**
+> **Status: APPROVED 2026-10-01 (Q16-1…Q16-16 as defaulted, Q16-12 = (b)) and IMPLEMENTED**
+> as slices 16a–16d. Where the build departed from this plan, it is recorded in §9.
 > Analysed 2026-10-01 against Live (`gihub`, alembic head `c4f1a8d2e6b7`), `CNCEC_Inventory.xlsx`
 > (saved 09:52 today) and `Rubber & Brick Materials  - CNCEC.xlsx` (saved 10:09 today).
 > Every number below was measured with a read-only probe; assumptions are labelled.
@@ -303,3 +303,33 @@ own branch, as in Phase 15.
 | **Q16-14** | Add an `SAP` column to every lot sheet? | **(a) yes — the sync uses it first and the name rules only as a fallback** · (b) no — names only |
 | **Q16-15** | The file name `Rubber & Brick Materials  - CNCEC.xlsx` (two spaces) | **(a) keep it; the sync finds any `*Rubber*Brick*CNCEC*.xlsx` in the root and includes it in the normal `--erp` run** · (b) rename to `Lot_Register_CNCEC.xlsx` |
 | **Q16-16** | Who sees the Lot Register page and the expiry digest? | **(a) Store Keeper, HOD, QC, QC-HOD (read) — admin as always** · (b) HOD and admin only |
+
+---
+
+## 9. Implementation notes — where the build departed from the plan
+
+1. **FEFO puts an EXPIRED lot last** (new). Earliest-expiry-first would have
+   suggested the COROFLAKE `C 1823` / `D 1823` lots, which expired in 2024 and
+   still have stock. `ledger._FEFO_PICK` and the picker share the order: valid
+   lots by expiry, then lots with no expiry, then expired lots. An expired lot
+   is still selectable (allow-and-log).
+2. **Shelf life is learned automatically** where an item has none, as the
+   median of its own MFD → expiry pairs in the lot file (PU 9, Phenacin 6,
+   BC 3004 24, …). The plan had the operator type it first. An admin or HOD can
+   change it in the item editor, and the sync never overwrites a value that is
+   already set.
+3. **The manual is §3.10, not a new chapter.** Chapter 3 reaches every role; a
+   new chapter would have needed the per-role chapter maps, the printed
+   booklets and the AI-eval pins changed.
+4. **A roll batch's received quantity** is `GREATEST(receipts naming it, rolls in
+   the register)`, because the roll receipts carry no roll numbers.
+5. **`Serial_No` keeps the cell as typed** for a lot item (the plan said empty).
+   The sync never erases a stored value (COALESCE upsert), so clearing it would
+   have been a special case; the lot is in `Lot_Number`.
+6. **Two migrations, not one:** `d8a3f6c1b2e9` (16a: all lot schema) and
+   `e5b2c7a9d4f1` (16c: `pending_receipts.MFD_Date` for the Receive form).
+7. **The critical-path baseline was re-recorded once (+229 B)** for the Lots &
+   Expiry page's nav entry and route. The lot hooks live in `api/lotHooks.ts`, off
+   the critical path.
+8. **`sme-tiers.spec` was made more robust:** it clicks its tab until the tab is
+   selected (the click was being lost under load).

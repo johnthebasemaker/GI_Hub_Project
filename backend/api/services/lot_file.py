@@ -212,8 +212,14 @@ def resolve_sap(row: dict, inventory: dict[str, dict]) -> tuple[Optional[str], s
 
 
 # ── planning ─────────────────────────────────────────────────────────────────
-async def plan(session: AsyncSession, data: bytes, site_id: str) -> dict:
-    """Read the file and decide what to write. Writes nothing."""
+async def plan(session: AsyncSession, data: bytes, site_id: str,
+               pending_lots: Optional[dict] = None) -> dict:
+    """Read the file and decide what to write. Writes nothing.
+
+    `pending_lots` — {(SAP, day, DN): {lots}} from a ledger plan NOT yet
+    written (a dry run). Without it the preview would judge receipts by the
+    lots they had before this run, and report as "named by no receipt" every
+    lot the same run is about to give them."""
     book = read_workbook(data)
     inv = {r[0]: {"desc": r[1], "code": r[2], "unit_size": r[3], "life": r[4]}
            for r in (await session.execute(text(
@@ -233,6 +239,16 @@ async def plan(session: AsyncSession, data: bytes, site_id: str) -> dict:
         'SELECT id, TRIM("SAP_Code") AS sap, SUBSTRING("Date" FROM 1 FOR 10) AS day, '
         '"Quantity" AS qty, TRIM(COALESCE("DN_No", "DN_Number", \'\')) AS dn, '
         '"Lot_Number" AS lot FROM receipts WHERE "Site_ID" = :s'), {"s": site_id})).mappings().all()]
+    # lots the receipts name — stored, or about to be (a dry run's pending)
+    receipt_lots: dict[str, set] = defaultdict(set)
+    for r in recs:
+        if r["lot"]:
+            receipt_lots[r["sap"]].add(r["lot"])
+    for (psap, _d, _dn), plots in (pending_lots or {}).items():
+        receipt_lots[psap] |= set(plots)
+    for r in recs:
+        if not r["lot"] and (pending_lots or {}).get((r["sap"], r["day"], r["dn"])):
+            r["pending"] = True     # the ledger step gives it a lot — not ours to fill
     by_dn = defaultdict(list)
     by_day = defaultdict(list)
     for r in recs:
@@ -347,14 +363,16 @@ async def plan(session: AsyncSession, data: bytes, site_id: str) -> dict:
             # a person typed this expiry on the Receive form — the app wins
             want.pop("Expiry_Date")
             want.pop("Expiry_Source")
+        # A batch lot no receipt names: usually the Receipt Log spells it
+        # differently ('0.926' vs '0926'). Judged against the RECEIPTS (with a
+        # dry run's pending lots), not the lots table, which a dry run has not
+        # filled yet. Rolls are expected to be missing — their receipts carry
+        # no roll numbers; the register is their record.
+        named = sorted(receipt_lots.get(sap, set()))
+        if rs[0]["layout"] == "batch" and lot not in named:
+            out["file_only"].append({"sap": sap, "lot": lot, "receipt_lots": named})
         if cur is None:
             out["lots"].append({"Lot_Number": lot, "SAP_Code": sap, "Site_ID": site_id, **want})
-            # A batch lot no receipt names: usually the Receipt Log spells it
-            # differently ('0.926' vs '0926'). Rolls are expected here — their
-            # receipts carry no roll numbers, the register is their record.
-            if rs[0]["layout"] == "batch":
-                named = sorted({r["lot"] for r in recs if r["sap"] == sap and r["lot"]})
-                out["file_only"].append({"sap": sap, "lot": lot, "receipt_lots": named})
         else:
             cmp = {"MFD_Date": cur["mfd"], "Expiry_Date": cur["exp"],
                    "Expiry_Source": cur["src"], "Batch_Ref": cur["batch"],
@@ -370,7 +388,7 @@ async def plan(session: AsyncSession, data: bytes, site_id: str) -> dict:
     rec_by_id = {r["id"]: r for r in recs}
     for rid, lots_named in fill_groups.items():
         r = rec_by_id[rid]
-        if not r["lot"] and len(lots_named) == 1:
+        if not r["lot"] and not r.get("pending") and len(lots_named) == 1:
             out["receipt_fills"].append({"id": rid, "sap": r["sap"], "day": r["day"],
                                          "dn": r["dn"], "Lot_Number": next(iter(lots_named))})
 

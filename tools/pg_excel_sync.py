@@ -646,6 +646,7 @@ async def main() -> int:
     # Dry-run only: the ledger's soft-FK check cannot see inventory rows that
     # were never written, so hand it the SAPs the inventory plan would insert.
     pending_saps: set[str] = set()
+    pending_lots: dict[tuple, set] = {}   # Phase 16: (SAP, day, DN) → lots, dry run
     totals: dict[str, dict] = {}
     exit_code = 0
 
@@ -677,7 +678,10 @@ async def main() -> int:
                                             extra_saps=pending_saps)
             elif kind == "lots":
                 from backend.api.services import lot_file as _lf
-                plan = await _lf.plan(session, data[kind], args.site)
+                # a dry run has not written the ledger's lots: hand them over,
+                # so the preview says what --commit will do
+                plan = await _lf.plan(session, data[kind], args.site,
+                                      pending_lots=pending_lots)
             elif kind == "sme-equipment":
                 plan = await bi.plan_sme_equipment(session, data[kind], args.site)
             elif kind == "sme-recipes":
@@ -689,6 +693,12 @@ async def main() -> int:
 
             if kind == "inventory" and not args.commit:
                 pending_saps |= {r["SAP_Code"] for r in plan["inserts"]}
+            if kind == "ledger" and not args.commit:
+                for _r in plan["sections"]["receipts"]["upserts"]:
+                    if _r.get("Lot_Number"):
+                        pending_lots.setdefault(
+                            (_r["SAP_Code"], str(_r["Date"])[:10],
+                             str(_r.get("DN_No") or "").strip()), set()).add(_r["Lot_Number"])
 
             if kind == "lots":
                 print_lot_plan(plan)

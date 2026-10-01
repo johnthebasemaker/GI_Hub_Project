@@ -51,7 +51,7 @@ os.environ.setdefault("GI_DOTENV", "0")
 
 # Bumped when the OVERLAY's content changes. Reported with the tutorial
 # fixture's own DATASET_VERSION as "<fixture>.<overlay>".
-OVERLAY_VERSION = 2   # 2 = Phase 15e: a two-note lining job (2026-09-30)
+OVERLAY_VERSION = 3   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
 
 SITE = "CNCEC"
 WAREHOUSE = "WH-01"
@@ -215,6 +215,10 @@ async def seed_queues() -> dict:
                 out["note_jobs"] = await seed_job_notes(today)
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  job-note example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["lots"] = await seed_lots(today)
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  lot example skipped: {type(e).__name__}: {str(e)[:160]}")
 
         async with SessionLocal() as s:
             await ledger.stage_return(s, username="practice.storekeeper", data={
@@ -371,6 +375,89 @@ async def seed_job_notes(today: str) -> int:
                 {"d": today, "p": sap, "q": qty, "site": SITE, "t": JOB_TAG, "r": remark})
         await s.commit()
     return 2
+
+
+ROLL_SAP = "899973"
+
+
+async def seed_lots(today: str) -> int:
+    """Phase 16 — lots to practise FEFO on (rule 17g).
+
+    PRACTICE PU PRIMER (899971) gets three lots, dated from TODAY so the
+    buckets never drift: `PR-OLD` expired 15 days ago and still has stock (the
+    red banner, and the lot FEFO must NOT suggest), `PR-SOON` expires in 20
+    days (the FEFO suggestion, and the evening notice), `PR-LATE` in 9 months.
+    PRACTICE CHEMOLINE (899973, ROL) has one batch of three rolls in the roll
+    register — the Issue form's roll picker. One consumption names lot
+    `PR-TYPO`, which no receipt brought in: the "used but never received" list.
+
+    Ledger rows, like the other examples (a Surface Shield issue needs QC and
+    an MTC this example has no business faking). Idempotent; never fatal.
+    """
+    import datetime as _d
+
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+    from backend.api.services import lots as LOTS
+    from backend.api.services import quality
+
+    t0 = _d.date.fromisoformat(today)
+
+    def day(n):
+        return (t0 + _d.timedelta(days=n)).isoformat()
+
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                "SELECT 1 FROM lots WHERE \"Lot_Number\" = 'PR-SOON' LIMIT 1"))).first():
+            return 0
+        cat = await quality.controlled_category(s)
+        await s.execute(text(
+            'INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+            '"Category", "UOM", "Site_ID", "Opening_Stock", "Unit_Size", "Base_UOM") VALUES '
+            "(:p, 'MAT-899973', 'PRACTICE CHEMOLINE 4MM ROLL', :c, 'ROL', :site, 0, 11, 'M2') "
+            'ON CONFLICT ("SAP_Code") DO NOTHING'), {"p": ROLL_SAP, "c": cat, "site": SITE})
+        await s.execute(text(
+            'UPDATE inventory SET "Shelf_Life_Months" = 9 WHERE "SAP_Code" IN (\'899971\', \'899972\') '
+            'AND "Shelf_Life_Months" IS NULL'))
+        for lot, qty, mfd, exp in (("PR-OLD", 6, day(-290), day(-15)),
+                                   ("PR-SOON", 10, day(-250), day(20)),
+                                   ("PR-LATE", 12, day(-5), day(265))):
+            await s.execute(text(
+                'INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID", "Supplier", '
+                '"Lot_Number", "Remarks") VALUES (:d, \'899971\', :q, :site, '
+                "'Halcyon Industrial Supply', :l, 'Practice seed — a lot')"),
+                {"d": day(-30), "q": qty, "site": SITE, "l": lot})
+        await s.execute(text(
+            'INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID", "Supplier", '
+            '"Remarks") VALUES (:d, :p, 3, :site, \'Halcyon Industrial Supply\', '
+            "'Practice seed — 3 rolls')"), {"d": day(-30), "p": ROLL_SAP, "site": SITE})
+        await s.execute(text(
+            'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", "Lot_Number", '
+            '"Work_Type", "Issued_To", "Remarks") VALUES (:d, \'899971\', 1, :site, '
+            "'PR-TYPO', 'Lining', 'Aria Bellweather', 'Practice seed — a lot nobody received')"),
+            {"d": day(-2), "site": SITE})
+        await LOTS.sync_lots_from_ledger(s, SITE)
+        for lot, mfd, exp in (("PR-OLD", day(-290), day(-15)), ("PR-SOON", day(-250), day(20)),
+                              ("PR-LATE", day(-5), day(265))):
+            await s.execute(text(
+                'UPDATE lots SET "MFD_Date" = :m, "Expiry_Date" = :e, "Expiry_Source" = \'file\' '
+                'WHERE "Lot_Number" = :l AND "SAP_Code" = \'899971\' AND "Site_ID" = :site'),
+                {"m": mfd, "e": exp, "l": lot, "site": SITE})
+        await s.execute(text(
+            'INSERT INTO lots ("Lot_Number", "SAP_Code", "Site_ID", "Received_Date", '
+            '"MFD_Date", "Expiry_Date", "Expiry_Source", "Batch_Ref", "Status", "Source") '
+            "VALUES ('1O26009999', :p, :site, :r, :m, :e, 'file', '1O26009999', 'open', 'lotfile') "
+            'ON CONFLICT DO NOTHING'), {"p": ROLL_SAP, "site": SITE, "r": day(-30),
+                                        "m": day(-200), "e": day(895)})
+        for n in (1, 2, 3):
+            await s.execute(text(
+                'INSERT INTO lot_units ("Unit_No", "Lot_Number", "SAP_Code", "Site_ID", '
+                '"Received_Date", "Location", "Source") VALUES (:u, \'1O26009999\', :p, :site, '
+                ":r, 'Container 1', 'lotfile') ON CONFLICT DO NOTHING"),
+                {"u": f"1O26009999{n:03d}", "p": ROLL_SAP, "site": SITE, "r": day(-30)})
+        await s.commit()
+    return 4
 
 
 def fixture_version() -> int:
