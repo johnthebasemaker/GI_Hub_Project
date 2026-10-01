@@ -109,6 +109,17 @@ _LOT_XFER = """COALESCE((
           AND t."SAP_Code" = l."SAP_Code"
           AND COALESCE(t."Site_ID",'HQ') = l."Site_ID"
     ), 0)"""
+# A roll batch (CHEMOLINE): its receipts carry no roll numbers — 36 rolls
+# arrive as one "36 ROL" line — so what arrived per batch is the ROLL REGISTER
+# (`lot_units`, from the Lot Register workbook). Received = whichever is larger:
+# the receipts naming the batch, or its registered rolls (0 for a non-roll lot).
+_LOT_UNITS = """COALESCE((
+        SELECT COUNT(*) FROM lot_units u
+        WHERE u."Lot_Number" = l."Lot_Number"
+          AND u."SAP_Code" = l."SAP_Code"
+          AND u."Site_ID" = l."Site_ID"
+    ), 0)"""
+_LOT_RECEIVED = f"GREATEST({_LOT_SUM.format(t='receipts')}, {_LOT_UNITS})"
 SQL_LOT_BALANCE = f"""
 SELECT
     l."Lot_Number",
@@ -124,10 +135,10 @@ SELECT
     l."Batch_Ref",
     l."DN_No",
     l."Source",
-    {_LOT_SUM.format(t="receipts")} AS "Received_Qty",
+    {_LOT_RECEIVED} AS "Received_Qty",
     {_LOT_SUM.format(t="consumption")} AS "Consumed_Qty",
     {_LOT_SUM.format(t="returns")} AS "Returned_Qty",
-    {_LOT_SUM.format(t="receipts")}
+    {_LOT_RECEIVED}
     - {_LOT_SUM.format(t="consumption")}
     - {_LOT_SUM.format(t="returns")}
     - {_LOT_XFER.format(col="From_Lot")}

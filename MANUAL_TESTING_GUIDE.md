@@ -3993,6 +3993,41 @@ Q15-6).
 (SAP 899970, ESC2) is in the queue to practise on. It appears after the next
 Practice rebuild; production deploys rebuild Practice on every deploy.
 
+## 16b. Phase 16b — the Lot Register workbook describes lots
+
+**What it is for.** `Rubber & Brick Materials - CNCEC.xlsx` adds MFD, expiry and
+the roll register to the lots. It never changes stock. The code is in
+`backend/api/services/lot_file.py`. Suite 16B pins it.
+
+⚠️ Check that **stock does not move**. The failure to catch is a quantity, or a
+receipt row, that changed because of this workbook.
+
+**TC-16B-01** — run the ERP sync dry run with the workbook in the folder. The
+**▶ lots** section reports 30 sheets (batch 26, pallet 3, roll 1). Every row is
+resolved to a SAP and matched to a receipt (399 / 399 on 2026-10-01).
+
+**TC-16B-02** — the warnings list exactly the known inconsistencies:
+- 1041-4 0.25 vs 1, and Phenacin A lot 1262 0 vs 20;
+- the two wrong material codes;
+- Carbon Filler `0926` vs `0.926`;
+- the DN 13320 rows with no batch.
+
+**TC-16B-03** — `--commit`. STOCK VERIFICATION is unchanged (all SAPs match). Run
+again: `lots +0 new ~0 changed · rolls +0 new`.
+
+**TC-16B-04** — Stock → Lots: PU COMP A lot 3504 shows MFD 2026-03-16 and expiry
+2026-12-25 (*file*). ECO PRIMER 3441 has no expiry until a shelf life is set; set
+one, sync again, and it shows a *derived* expiry.
+
+**TC-16B-05** — CHEMOLINE: the two batches show 99 and 108 rolls received, and
+16 rolls remaining in total (207 − 191).
+
+**TC-16B-06** — change an expiry on the Receive form (source *app*), then sync
+again: the file does not overwrite it.
+
+**TC-16B-07** — rename the file to anything matching `*Rubber*Brick*CNCEC*.xlsx`:
+it is still found. Remove it: an `--erp` run skips the lot step with a note.
+
 ## 16a. Phase 16a — `Serial No.` is read by the item (lots from the ledger)
 
 **What it is for.** A Surface Shield's `Serial No.` is its batch (→ Lot No.), a
