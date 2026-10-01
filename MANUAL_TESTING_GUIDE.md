@@ -3993,6 +3993,37 @@ Q15-6).
 (SAP 899970, ESC2) is in the queue to practise on. It appears after the next
 Practice rebuild; production deploys rebuild Practice on every deploy.
 
+## 16a. Phase 16a — `Serial No.` is read by the item (lots from the ledger)
+
+**What it is for.** A Surface Shield's `Serial No.` is its batch (→ Lot No.), a
+roll's is its roll number (its batch → Lot No.), and anything else keeps an asset
+tag. The code is in `backend/api/services/lots.py`. Suite 16A pins it.
+
+⚠️ Check that **a second sync changes nothing**. The failure to catch is a
+duplicated receipt or consumption row after the lot column was filled in.
+
+**TC-16A-01** — run the ERP sync dry run. The ledger lines show `+0 new` (apart
+from rows you really added) and `~N edited` for the rows gaining a lot, with
+`qty 0`. The `lots` line counts the rows that carry a lot.
+
+**TC-16A-02** — `--commit`, then run the dry run again: **every** ledger line is
+`+0 new ~0 edited`, and **STOCK VERIFICATION** is still all SAPs.
+
+**TC-16A-03** — Stock → Lots: PU COMP A shows lot `3504`, COROFLAKE COMP A shows
+`A 4525`, `B 4525`, `C 1823`, `D 1823`; CHEMOLINE shows its batches (`1O25003382`…).
+No brick, pump or tool appears.
+
+**TC-16A-04** — the sync's *lot(s) used but never received* list names each
+Consumption Log lot no receipt brought in, with the SAP it was received under
+(e.g. Phenacin A `2477`, received under ACP powder 1038).
+
+**TC-16A-05** — a cell like `4525 = 55 Cans; 1823 = 2 Cans` is reported as
+*several lots* and gets no lot; a roll typed `1025…` is reported as corrected to
+`1O25…`.
+
+**TC-16A-06** — post a return in the app with a lot, approve it: the lot's
+Remaining drops by the returned quantity (it used to ignore returns).
+
 ## 15e. Phase 15e — follow-ups: the login crest, the store keeper's note, site and WBS, HOD items
 
 **What it is for.** These are the operator's 2026-09-30 follow-ups. Suite 15E,
