@@ -736,6 +736,16 @@ Inventory → **Edit** has two settings:
   Lot Register workbook fills it in where it is empty, from the item's own MFD →
   expiry pairs (PU 9, Phenacin 6, BC 3004 24…).
 
+### 3.10.4 Practising with lots
+
+Practice (§26) has lots to try all of this on:
+- **PRACTICE PU PRIMER (899971)** has three lots: `PR-OLD` (expired, still has
+  stock), `PR-SOON` (expires within 30 days, so it is the FEFO suggestion) and
+  `PR-LATE`.
+- **PRACTICE CHEMOLINE (899973)** has batch `1O26009999` with three rolls to pick.
+- One issue names lot `PR-TYPO`, which no receipt brought in, so the Lots & Expiry
+  page has a *used but never received* example.
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.

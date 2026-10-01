@@ -3993,6 +3993,24 @@ Q15-6).
 (SAP 899970, ESC2) is in the queue to practise on. It appears after the next
 Practice rebuild; production deploys rebuild Practice on every deploy.
 
+## 16d. Phase 16d — Lots in Practice (rule 17g)
+
+**TC-16D-01** — in Practice, as `practice.storekeeper`, Issue → PRACTICE PU PRIMER
+(899971). The Lot field lists `PR-SOON` (FEFO), `PR-LATE`, then `PR-OLD` (expired,
+red, last).
+
+**TC-16D-02** — Issue → PRACTICE CHEMOLINE (899973): the Roll picker lists
+`1O26009999001`–`003`.
+
+**TC-16D-03** — as `practice.hod`, Lots & Expiry shows:
+- the expired-stock banner (`PR-OLD`);
+- `PR-SOON` under *≤ 30 days*;
+- `PR-TYPO` under *used but never received*.
+
+**TC-16D-04** — ⚠️ rule 17g: these lots exist in BOTH Practice databases, and are
+recreated by a Practice reset (overlay v3). They were applied to the existing
+databases on 2026-10-01, not left for the next rebuild.
+
 ## 16c. Phase 16c — Lots & Expiry, the Issue lot picker, the Receive MFD
 
 **What it is for.** The screens: the Lots & Expiry page, the FEFO lot picker on

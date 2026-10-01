@@ -408,6 +408,45 @@ those codes, which by that rule would have turned blasting into a lining system.
   none carries a prep code. Both engines are unchanged and the goldens identical
   (rule 1c).
 
+### 4g. Lots & FEFO — Phase 16, `services/lots.py`, `services/lot_file.py`, `lot_register.py`
+
+The workbooks' `Serial No.` holds a Surface Shield's **batch** and every other
+item's **asset tag**. Before Phase 16 both landed in `Serial_No`, so Live had 0
+lots and FEFO had nothing to choose from.
+
+- **The item decides what `Serial No.` means.** `lots.tracking()` gives
+  `{SAP: 'lot'|'roll'}`. A controlled-category item is lot-tracked unless
+  `inventory.Lot_Tracked` says otherwise (the bricks are FALSE — data step
+  d8a3f6c1b2e9), and UOM `ROL` makes it a roll item. `lots.interpret()` maps a
+  cell to `(Serial_No, Lot_Number)`. `plan_ledger` uses it for all three logs; the
+  Return Log's serial is read for the first time.
+- **One lot spelling.** `norm_lot`: `3504.0` → `3504`, `A4525` → `A 4525`,
+  `N/A` → none. `norm_roll`: `10…` → `1O…` (Q16-12b); a roll's batch is its
+  first 10 characters unless the roll register says otherwise. A cell with
+  several lots gets none and is reported (Q16-2).
+- **The `XLSX:` label excludes Serial and Lot**, so filling a lot updates rows in
+  place (`~`), never `+`. `apply_ledger` (the one ledger writer) then creates a
+  `lots` row for every lot a receipt names (`sync_lots_from_ledger`, idempotent on
+  the existing unique key).
+- **Balance = received − consumed − returned ± transfers** (`stock.SQL_LOT_BALANCE`).
+  For a roll batch, received is `GREATEST(receipts naming it, rolls in lot_units)`,
+  because a "36 ROL" receipt line carries no roll numbers.
+- **The Lot Register workbook only describes.** `lot_file.plan/apply` resolves
+  each row to a SAP (the `SAP` column, else name + component + pack size,
+  ambiguity refused) and matches it to a receipt on SAP + DN + date (rolls: SAP +
+  date). It writes lot MFD / expiry / batch ref / DN, the roll register, a lot on
+  an existing lot-less receipt, and `Shelf_Life_Months` where unset (learned from
+  the file's MFD → expiry pairs). It never writes a quantity, and every
+  disagreement is reported. An expiry with `Expiry_Source = 'app'` is never
+  overwritten.
+- **FEFO puts expired lots LAST.** `ledger._FEFO_PICK` and
+  `lot_register.options` share one order: valid lots by expiry, then lots with no
+  expiry, then expired lots. It stays allow-and-log: a non-FEFO pick asks for a
+  reason, never blocks.
+- **The expiry notice** runs inside the evening digest's one-worker claim: one
+  notice per site to the store keeper and the HOD (`lots.expiry_notices`).
+- **The estimator is untouched:** the SME engines never read lots (rule 1c).
+
 ## 5. Frontend map (`frontend/src/`)
 
 React Router routes in `App.tsx`; **`config/nav.tsx` is the single
