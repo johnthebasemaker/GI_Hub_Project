@@ -101,6 +101,7 @@ class ReceiptIn(BaseModel):
     Expiry_Date: Optional[str] = Field(None, description="YYYY-MM-DD; auto-creates a lot")
     PR_Number: Optional[str] = None
     Lot_Number: Optional[str] = None
+    MFD_Date: Optional[str] = Field(None, description="YYYY-MM-DD manufacture date of the lot (Phase 16c)")
     entry_uom: Optional[str] = Field(None, description="pack UoM the qty is entered in; converted to base")
     mtc_document_id: Optional[int] = Field(None, description="MTC upload id (required for Rubber materials)")
     wbs: Optional[str] = Field(None, description="WBS Number (required once the site has active WBS)")
@@ -133,7 +134,15 @@ async def _receipt_meta(session, sap: str) -> dict:
     convs = [dict(m) for m in (await session.execute(text(
         'SELECT "Pack_UOM", "Factor" FROM uom_conversions '
         'WHERE TRIM("SAP_Code") = TRIM(:s) ORDER BY "Pack_UOM"'), {"s": sap})).mappings().all()]
-    return {"sap_code": sap, "base_uom": base_uom, "is_rubber": is_rubber, "conversions": convs}
+    # Phase 16c — is this a lot item, and how long does it keep? The Receive
+    # form asks for the batch, MFD and expiry only when it is.
+    from .services import lots as _lots
+    mode = (await _lots.tracking(session)).get(sap)
+    life = (await session.execute(text(
+        'SELECT "Shelf_Life_Months" FROM inventory WHERE TRIM("SAP_Code") = TRIM(:s)'),
+        {"s": sap})).scalar()
+    return {"sap_code": sap, "base_uom": base_uom, "is_rubber": is_rubber, "conversions": convs,
+            "lot_mode": mode, "shelf_life_months": life}
 
 
 async def _apply_receipt_guards(session, data: dict) -> Optional[int]:
@@ -151,6 +160,20 @@ async def _apply_receipt_guards(session, data: dict) -> Optional[int]:
     real stock invisible to everyone downstream.
     """
     sap = str(data["SAP_Code"]).strip()
+    # Phase 16c — a lot's dates must make sense (ruling Q16-7: an expiry before
+    # the manufacture date is a typo, never loaded)
+    mfd, exp = (data.get("MFD_Date") or "")[:10], (data.get("Expiry_Date") or "")[:10]
+    for label, v in (("MFD", mfd), ("expiry", exp)):
+        if v:
+            try:
+                dt.date.fromisoformat(v)
+            except ValueError:
+                raise HTTPException(422, f"{label} date {v!r} is not YYYY-MM-DD")
+    if mfd and exp and exp < mfd:
+        raise HTTPException(422, f"expiry {exp} is before the manufacture date {mfd} — "
+                                 f"check the label")
+    if mfd and mfd > dt.date.today().isoformat():
+        raise HTTPException(422, f"manufacture date {mfd} is in the future")
     meta = await _receipt_meta(session, sap)
     entry_uom = (data.get("entry_uom") or "").strip()
     if entry_uom and meta["base_uom"] and entry_uom != meta["base_uom"]:

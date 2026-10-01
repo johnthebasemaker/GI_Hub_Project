@@ -32,6 +32,7 @@ if _ROOT not in sys.path:
 from backend import models  # noqa: E402
 
 from .admin import item_router as inventory_item_router  # noqa: E402
+from .lot_register import router as lot_register_router  # noqa: E402
 from .admin import router as admin_router  # noqa: E402
 from .auth import get_current_user, require_level, require_roles, site_scope  # noqa: E402
 from .auth import router as auth_router  # noqa: E402
@@ -446,6 +447,7 @@ app.include_router(bulk_import_router)
 # Admin console — user management + audit-log viewer (self-guarded, admin only).
 app.include_router(admin_router)
 app.include_router(inventory_item_router)
+app.include_router(lot_register_router)
 
 # In-app notifications — the sidebar bell feed (self-scoped to the current user).
 app.include_router(notifications_router, dependencies=_auth)

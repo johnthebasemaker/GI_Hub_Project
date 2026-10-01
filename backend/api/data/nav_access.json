@@ -179,6 +179,13 @@
    "admin",
    "logistics"
   ],
+  "/lots": [
+   "admin",
+   "hod",
+   "qc_hod",
+   "qc",
+   "store_keeper"
+  ],
   "/manhours": [
    "admin",
    "hod"

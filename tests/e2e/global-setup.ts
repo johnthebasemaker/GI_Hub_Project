@@ -130,6 +130,25 @@ export default async function globalSetup() {
     + "('2026-09-22','E2EJOB-1',1,'CNCEC','E2E-JOB-TANK','Top of Brick Coving Applied - 4.82 SQM Done')",
     E2E_DB)
 
+  // ── 1b-vi. Phase 16: three lots of one Surface Shield (lots.spec.ts) ─────
+  // OLD expired 10 days ago, SOON expires in 20, LATE in 200 — dates relative
+  // to today so the buckets never drift. FEFO must suggest SOON, not OLD.
+  psql(
+    "INSERT INTO inventory (\"SAP_Code\", \"Material_Code\", \"Equipment_Description\", "
+    + "\"Category\", \"UOM\", \"Site_ID\") VALUES ('E2ELOT-1','E2ELOT-A',"
+    + "'E2E LOT PRIMER','Surface Shields','Can','CNCEC') ON CONFLICT (\"SAP_Code\") DO NOTHING",
+    E2E_DB)
+  psql(
+    "INSERT INTO receipts (\"Date\", \"SAP_Code\", \"Quantity\", \"Site_ID\", \"Lot_Number\") "
+    + "SELECT to_char(current_date - 60, 'YYYY-MM-DD'), 'E2ELOT-1', q, 'CNCEC', l "
+    + "FROM (VALUES ('E2EOLD', 4), ('E2ESOON', 6), ('E2ELATE', 8)) v(l, q)", E2E_DB)
+  psql(
+    "INSERT INTO lots (\"Lot_Number\", \"SAP_Code\", \"Site_ID\", \"Received_Date\", "
+    + "\"Expiry_Date\", \"Status\", \"Source\") SELECT l, 'E2ELOT-1', 'CNCEC', "
+    + "to_char(current_date - 60, 'YYYY-MM-DD'), to_char(current_date + d, 'YYYY-MM-DD'), "
+    + "'open', 'receipt' FROM (VALUES ('E2EOLD', -10), ('E2ESOON', 20), ('E2ELATE', 200)) v(l, d) "
+    + "ON CONFLICT DO NOTHING", E2E_DB)
+
   // ── 1c. the SME tier-segregation fixture (sme-tiers.spec.ts) ─────────────
   // A purpose-built copy of the PHENACIN ACP POWDER shape that produced the
   // 2026-08-03 bug report: a material with ZERO stock on the shelf and MORE

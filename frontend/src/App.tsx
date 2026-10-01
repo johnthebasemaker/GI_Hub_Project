@@ -44,6 +44,7 @@ const UsersPage = lazy(() => import('./pages/UsersPage'))
 const PendingUsersPage = lazy(() => import('./pages/PendingUsersPage'))
 const AuditLogPage = lazy(() => import('./pages/AuditLogPage'))
 const InventoryAdminPage = lazy(() => import('./pages/InventoryAdminPage'))
+const LotRegisterPage = lazy(() => import('./pages/LotRegisterPage'))
 const SecurityPage = lazy(() => import('./pages/SecurityPage'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const DocumentsPage = lazy(() => import('./pages/DocumentsPage'))
@@ -66,6 +67,7 @@ export default function App() {
       <Route element={<AppLayout />}>
         <Route index element={<Dashboard />} />
         <Route path="stock" element={<StockPage />} />
+        <Route path="lots" element={<LotRegisterPage />} />
         <Route path="locator" element={<LocatorPage />} />
         <Route path="assets" element={<AssetsPage />} />
         {/* Where a QR scan lands. The param may be a SAP code, a Material_Code

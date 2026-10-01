@@ -310,6 +310,15 @@ async def digest_loop() -> None:
                 if not await dailyjob.claim(s, "evening_digest", nxt):
                     _log.info("evening digest: another worker has it")
                     continue
+                # Phase 16c — today's lot-expiry notice, inside the same
+                # one-worker claim, BEFORE the send so its WhatsApp line rides
+                # in this evening's digest.
+                try:
+                    from . import lots as _lots
+                    _exp = await _lots.expiry_notices(s)
+                    _log.info("lot expiry notices: %s", _exp)
+                except Exception:  # noqa: BLE001 — a notice must never stop the digest
+                    _log.exception("lot expiry notices failed")
                 res = await send_evening_digests(s)
                 await s.commit()
                 await dailyjob.note_result(s, "evening_digest", str(res))

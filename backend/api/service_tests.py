@@ -28049,6 +28049,199 @@ async def test_phase16b_lot_file():
         await _cleanup()
 
 
+async def test_phase16c_fefo_surfaces():
+    """Suite 16C — the surfaces: which lot to issue, and what is about to expire.
+
+    Pinned here: the expiry buckets; the register's roles (ruling Q16-16) and
+    summary; the Issue picker's FEFO order — the SAME order as the server's
+    auto-pick, with an EXPIRED lot last, never the suggestion; a roll item's
+    rolls; the Receive form's MFD (an expiry before it refused, a missing
+    expiry derived from the shelf life); a roll typed `10…` issued against its
+    batch; the one-per-site expiry notice; the item editor's lot switches.
+    """
+    import datetime as _dt
+
+    from fastapi import HTTPException
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from . import entry as EN
+    from .lot_register import lot_status
+    from .services import ledger as LG
+    from .services import lots as LOTS
+    from .services import quality as Q
+
+    SITE = "SV16C-SITE"
+    P, R, X = "SV16C-P", "SV16C-ROL", "SV16C-X"
+    today = _dt.date.today()
+
+    def iso(days):
+        return (today + _dt.timedelta(days=days)).isoformat()
+
+    async with SessionLocal() as s:
+        CAT = await Q.controlled_category(s)
+
+    def tok(user, role, site=SITE):
+        return {"Authorization": f"Bearer {_auth._make_token(user, role, site, _auth.ACCESS_TTL)}"}
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            for q in ('DELETE FROM receipts WHERE "Site_ID" = :site',
+                      'DELETE FROM consumption WHERE "Site_ID" = :site',
+                      'DELETE FROM returns WHERE "Site_ID" = :site',
+                      'DELETE FROM lots WHERE "Site_ID" = :site',
+                      'DELETE FROM lot_units WHERE "Site_ID" = :site',
+                      "DELETE FROM app_notifications WHERE event_key = 'lot_expiry' "
+                      "AND recipient_site = :site",
+                      "DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SV16C-%'"):
+                await s.execute(_t(q), {"site": SITE})
+            await s.commit()
+
+    # ── the buckets ──────────────────────────────────────────────────────────
+    st = {d: lot_status({"Remaining_Qty": 5, "Expiry_Date": iso(d)}, today)[0]
+          for d in (-3, 0, 20, 45, 80, 200)}
+    check("16c-01: expiry buckets — expired, ≤30, ≤60, ≤90, ok; a used-up lot is 'exhausted' "
+          "whatever its date; no date is 'no_expiry'",
+          st == {-3: "expired", 0: "expiring_30", 20: "expiring_30", 45: "expiring_60",
+                 80: "expiring_90", 200: "ok"}
+          and lot_status({"Remaining_Qty": 0, "Expiry_Date": iso(-3)})[0] == "exhausted"
+          and lot_status({"Remaining_Qty": 1, "Expiry_Date": None})[0] == "no_expiry", str(st))
+
+    await _cleanup()
+    try:
+        async with SessionLocal() as s:
+            for sap, uom, life in ((P, "Can", 9), (R, "ROL", None), (X, "EA", None)):
+                await s.execute(_t(
+                    'INSERT INTO inventory ("SAP_Code", "Equipment_Description", "Category", '
+                    '"UOM", "Site_ID", "Shelf_Life_Months") VALUES (:p, :p, :c, :u, :site, :l)'),
+                    {"p": sap, "c": CAT if sap != X else "EQUIPMENTS/TOOLS", "u": uom,
+                     "site": SITE, "l": life})
+            for lot, exp, qty in (("OLD1", iso(-10), 4), ("SOON", iso(20), 6), ("LATE", iso(200), 8)):
+                await s.execute(_t(
+                    'INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID", "Lot_Number") '
+                    'VALUES (:d, :p, :q, :site, :l)'),
+                    {"d": f"{iso(-60)} 00:00:00", "p": P, "q": qty, "site": SITE, "l": lot})
+            await LOTS.sync_lots_from_ledger(s, SITE)
+            for lot, exp in (("OLD1", iso(-10)), ("SOON", iso(20)), ("LATE", iso(200))):
+                await s.execute(_t('UPDATE lots SET "Expiry_Date" = :e WHERE "Site_ID" = :site '
+                                   'AND "Lot_Number" = :l'), {"e": exp, "site": SITE, "l": lot})
+            for unit in ("1O25003382191", "1O25003382192"):
+                await s.execute(_t(
+                    'INSERT INTO lot_units ("Unit_No", "Lot_Number", "SAP_Code", "Site_ID", '
+                    '"Received_Date") VALUES (:u, \'1O25003382\', :p, :site, :d)'),
+                    {"u": unit, "p": R, "site": SITE, "d": iso(-30)})
+            await s.execute(_t(
+                'INSERT INTO lots ("Lot_Number", "SAP_Code", "Site_ID", "Received_Date", '
+                '"Expiry_Date", "Status") VALUES (\'1O25003382\', :p, :site, :d, :e, \'open\')'),
+                {"p": R, "site": SITE, "d": iso(-30), "e": iso(900)})
+            await s.commit()
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            reg = {role: await ac.get("/lot-register", headers=tok("sv16c-" + role, role))
+                   for role in ("store_keeper", "hod", "qc", "supervisor", "logistics")}
+            opts = (await ac.get("/lot-register/options", headers=tok("sv16c-sk", "store_keeper"),
+                                 params={"sap_code": P})).json()
+            ropts = (await ac.get("/lot-register/options", headers=tok("sv16c-sk", "store_keeper"),
+                                  params={"sap_code": R})).json()
+            xopts = (await ac.get("/lot-register/options", headers=tok("sv16c-sk", "store_keeper"),
+                                  params={"sap_code": X})).json()
+        codes = {k: v.status_code for k, v in reg.items()}
+        check("16c-02: the Lot Register is read by the store keeper, HOD and QC (Q16-16); a "
+              "supervisor and logistics are refused",
+              codes == {"store_keeper": 200, "hod": 200, "qc": 200, "supervisor": 403,
+                        "logistics": 403}, str(codes))
+        body = reg["store_keeper"].json()
+        mine = {r["Lot_Number"]: r["status"] for r in body["items"] if r["SAP_Code"] == P}
+        check("16c-03: each lot carries its status — OLD1 expired, SOON ≤30 days, LATE ok — "
+              "and the summary counts them",
+              mine == {"OLD1": "expired", "SOON": "expiring_30", "LATE": "ok"}
+              and body["summary"].get("expired", 0) >= 1, f"{mine} {body['summary']}")
+        check("16c-04: ⚠️ the Issue picker's FEFO order puts the EXPIRED lot LAST — SOON is "
+              "the suggestion, not OLD1 (earliest date, but nobody should use it)",
+              [o["lot"] for o in opts["items"]] == ["SOON", "LATE", "OLD1"]
+              and opts["fefo"] == "SOON" and opts["mode"] == "lot", str(opts))
+        async with SessionLocal() as s:
+            server = await LG.fefo_lot(s, P, SITE)
+        check("16c-05: …and the server's own auto-pick agrees with the picker — a blank Lot "
+              "field and the suggested lot post the same lot", server == opts["fefo"], server)
+        check("16c-06: a roll item lists its rolls (with their batch) and a non-lot item "
+              "offers nothing (the plain box stays)",
+              ropts["mode"] == "roll" and [u["unit"] for u in ropts["units"]]
+              == ["1O25003382191", "1O25003382192"] and xopts["mode"] is None
+              and xopts["items"] == [], f"{ropts} {xopts}")
+
+        async with SessionLocal() as s:
+            res = await LG.post_consumption(s, username="sv16c", data={
+                "Date": iso(0), "SAP_Code": R, "Quantity": 1, "Site_ID": SITE,
+                "Serial_No": "1025003382191"})
+            await s.commit()
+            row = (await s.execute(_t('SELECT "Serial_No", "Lot_Number" FROM consumption '
+                                      'WHERE id = :i'), {"i": res["consumption_id"]})).first()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            left = [u["unit"] for u in (await ac.get(
+                "/lot-register/options", headers=tok("sv16c-sk", "store_keeper"),
+                params={"sap_code": R})).json()["units"]]
+            used = (await ac.get("/lot-register/units", headers=tok("sv16c-hod", "hod"),
+                                 params={"sap_code": R, "lot": "1O25003382"})).json()
+        check("16c-07: a roll issued as typed '10…' is stored as '1O…' against its BATCH, "
+              "and drops off the picker; the roll list shows it issued",
+              tuple(row) == ("1O25003382191", "1O25003382") and left == ["1O25003382192"]
+              and used["used"] == 1 and used["in_stock"] == 1, f"{row} {left} {used}")
+
+        refused = None
+        try:
+            async with SessionLocal() as s:
+                await EN._apply_receipt_guards(s, {"SAP_Code": P, "Quantity": 1,
+                                                   "MFD_Date": iso(-30), "Expiry_Date": iso(-40)})
+        except HTTPException as e:
+            refused = f"{e.status_code} {e.detail}"
+        check("16c-08: the Receive form's dates are checked — an expiry before the MFD is "
+              "refused (Q16-7)", bool(refused) and refused.startswith("422")
+              and "before the manufacture date" in refused, str(refused))
+        async with SessionLocal() as s:
+            await LG.post_receipt(s, username="sv16c", data={
+                "Date": iso(0), "SAP_Code": P, "Quantity": 3, "Site_ID": SITE,
+                "Lot_Number": "NEW1", "MFD_Date": "2026-03-16"})
+            await LG.post_receipt(s, username="sv16c", data={
+                "Date": iso(0), "SAP_Code": P, "Quantity": 2, "Site_ID": SITE,
+                "Lot_Number": "NEW2", "MFD_Date": "2026-03-16", "Expiry_Date": "2026-11-30"})
+            await s.commit()
+            got = {r[0]: tuple(r[1:]) for r in (await s.execute(_t(
+                'SELECT "Lot_Number", "MFD_Date", "Expiry_Date", "Expiry_Source", "Source" FROM lots '
+                'WHERE "Site_ID" = :site AND "Lot_Number" LIKE \'NEW%\''), {"site": SITE})).all()}
+        check("16c-09: a receipt with an MFD and no expiry gets MFD + shelf life (9 months → "
+              "2026-12-16, 'derived'); a typed expiry is kept as 'app'",
+              got == {"NEW1": ("2026-03-16", "2026-12-16", "derived", "app"),
+                      "NEW2": ("2026-03-16", "2026-11-30", "app", "app")}, str(got))
+
+        async with SessionLocal() as s:
+            out = await LOTS.expiry_notices(s)
+            await s.commit()
+            notes = (await s.execute(_t(
+                "SELECT recipient_role, title, body FROM app_notifications WHERE event_key = "
+                "'lot_expiry' AND recipient_site = :site ORDER BY recipient_role"),
+                {"site": SITE})).all()
+        check("16c-10: ONE expiry notice per site, to the store keeper and the HOD — never one "
+              "per lot — naming the expired lot and the one due within 30 days",
+              [n[0] for n in notes] == ["hod", "store_keeper"]
+              and all("OLD1" in n[2] and "SOON" in n[2] and "LATE" not in n[2] for n in notes)
+              and "already expired" in notes[0][1], f"{out} {[tuple(n) for n in notes]}")
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            r1 = await ac.patch(f"/inventory-items/{X}", headers=tok("sv16c-hod", "hod"),
+                                json={"Lot_Tracked": True, "Shelf_Life_Months": 12})
+        async with SessionLocal() as s:
+            flags = (await s.execute(_t(
+                'SELECT "Lot_Tracked", "Shelf_Life_Months" FROM inventory WHERE "SAP_Code" = :x'),
+                {"x": X})).first()
+            tr = await LOTS.tracking(s)
+        check("16c-11: the item editor switches lot tracking on and sets a shelf life; the "
+              "item is then lot-tracked", r1.status_code == 200
+              and tuple(flags) == (True, 12) and tr.get(X) == "lot", f"{r1.status_code} {flags}")
+    finally:
+        await _cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -28355,6 +28548,9 @@ async def main() -> int:
     print("\n 16B. Phase 16b — the Lot Register workbook describes lots and never moves "
           "stock: three layouts, SAP-first matching, every disagreement reported")
     await test_phase16b_lot_file()
+    print("\n 16C. Phase 16c — which lot to issue (FEFO, expired last), what is about to "
+          "expire, and the Receive form's MFD")
+    await test_phase16c_fefo_surfaces()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

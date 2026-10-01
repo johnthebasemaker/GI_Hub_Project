@@ -16,7 +16,7 @@ from typing import Optional
 
 import bcrypt
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -116,6 +116,10 @@ class InventoryCreateIn(BaseModel):
     Expiry_Date: Optional[str] = None
     Unit_Cost: Optional[float] = None
     Opening_Stock: Optional[float] = None
+    # Phase 16c: lot tracking (None = automatic: a Surface Shield is tracked)
+    # and the shelf life a missing expiry is derived from (ruling Q16-5)
+    Lot_Tracked: Optional[bool] = None
+    Shelf_Life_Months: Optional[int] = Field(None, ge=1, le=240)
     # Phase 15a: True = "yes, this Site / Category is NEW" — sent only after the
     # form asked the admin, following a 422 `unknown_site` / `unknown_category`.
     confirm_new: bool = False
@@ -132,6 +136,8 @@ class InventoryUpdateIn(BaseModel):
     Expiry_Date: Optional[str] = None
     Unit_Cost: Optional[float] = None
     Opening_Stock: Optional[float] = None
+    Lot_Tracked: Optional[bool] = None
+    Shelf_Life_Months: Optional[int] = Field(None, ge=1, le=240)
     confirm_new: bool = False
 
 

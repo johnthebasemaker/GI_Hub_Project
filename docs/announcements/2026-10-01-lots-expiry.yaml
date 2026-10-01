@@ -1,0 +1,11 @@
+key: lots-expiry
+title: Lots & Expiry — which batch to issue first
+body: |
+  Surface Shield materials are now tracked by batch. The Issue form lists each
+  material's lots in FEFO order (first expire, first out), with expiry, days left
+  and quantity left; an expired lot is never the suggestion. The new Lots & Expiry
+  page shows every lot and what is about to expire, and the Receive form asks for
+  the batch and manufacture date.
+routes: [/lots]
+roles: [store_keeper, qc, hod, qc_hod, admin]
+manual: "3.10.3"

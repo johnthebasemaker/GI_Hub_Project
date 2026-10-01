@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { App, AutoComplete, Form, Input, InputNumber, Modal, Space, Tag } from 'antd'
+import { App, AutoComplete, Form, Input, InputNumber, Modal, Select, Space, Tag } from 'antd'
 import { useCategories, useCreateInventory, useSites, useUpdateInventory } from '../api/hooks'
 import type { InventoryBase } from '../api/hooks'
 import type { Row } from '../api/client'
@@ -58,6 +58,8 @@ export default function InventoryItemModal({ mode, target, onClose, base, locked
         Material_Code: target.Material_Code, Category: target.Category, UOM: target.UOM,
         Minimum_Qty: target.Minimum_Qty, Unit_Cost: target.Unit_Cost,
         Opening_Stock: target.Opening_Stock, Site_ID: target.Site_ID, Expiry_Date: target.Expiry_Date,
+        Shelf_Life_Months: target.Shelf_Life_Months ?? undefined,
+        Lot_Tracked: target.Lot_Tracked == null ? 'auto' : target.Lot_Tracked ? 'on' : 'off',
       })
     }
   }, [mode, target, form, lockedSite])
@@ -65,7 +67,10 @@ export default function InventoryItemModal({ mode, target, onClose, base, locked
   const close = () => { form.resetFields(); onClose() }
 
   const save = async (confirmNew: boolean) => {
-    const v = await form.validateFields()
+    const raw = await form.validateFields()
+    // Phase 16c: 'auto' (a Surface Shield is lot-tracked) is NULL on the server
+    const { Lot_Tracked: lt, ...rest } = raw
+    const v = { ...rest, ...(lt && lt !== 'auto' ? { Lot_Tracked: lt === 'on' } : {}) }
     if (mode === 'create') {
       await create.mutateAsync({ ...v, confirm_new: confirmNew })
       message.success(`Item ${v.SAP_Code} created`)
@@ -135,6 +140,19 @@ export default function InventoryItemModal({ mode, target, onClose, base, locked
             </Form.Item>
           )}
           <Form.Item name="Expiry_Date" label="Expiry Date"><Input placeholder="YYYY-MM-DD" /></Form.Item>
+        </Space>
+        {/* Phase 16 — lots: who is lot-tracked, and how long a lot keeps */}
+        <Space style={{ display: 'flex' }} align="start">
+          <Form.Item name="Lot_Tracked" label="Lot tracking" initialValue="auto"
+            tooltip="Automatic: every Surface Shield is tracked by lot (batch), except bricks.">
+            <Select style={{ width: 170 }} aria-label="Lot tracking" options={[
+              { value: 'auto', label: 'Automatic' }, { value: 'on', label: 'Tracked by lot' },
+              { value: 'off', label: 'Not tracked' }]} />
+          </Form.Item>
+          <Form.Item name="Shelf_Life_Months" label="Shelf life (months)"
+            tooltip="A lot with a manufacture date but no expiry gets MFD + this many months (shown as derived).">
+            <InputNumber min={1} max={240} style={{ width: 150 }} aria-label="Shelf life" />
+          </Form.Item>
         </Space>
       </Form>
     </Modal>

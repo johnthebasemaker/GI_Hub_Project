@@ -139,6 +139,9 @@ export interface ReceiptMeta {
   base_uom: string | null
   is_rubber: boolean
   conversions: { Pack_UOM: string; Factor: number }[]
+  /** Phase 16c — 'lot' | 'roll' for a lot-tracked item, null otherwise */
+  lot_mode?: 'lot' | 'roll' | null
+  shelf_life_months?: number | null
 }
 export function useReceiptMeta(sap?: string) {
   return useQuery<ReceiptMeta>({
