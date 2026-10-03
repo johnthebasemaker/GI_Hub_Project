@@ -173,3 +173,94 @@ before and after.
 * ⚠️ Risk: the 24 new twins have never run on CI's CPU. Twin false refusal is
   1/82 on Metal; a second CPU-only refusal would make it 0.024 > 0.02 and the
   now-hard gate red. Push the branch and read the scorecard before merging.
+
+---
+
+## 4. Track 3 — the return desk (Store Keeper returnables)
+
+### 4.1 What was there
+
+* A loan was a free-text `material_name` and a status flip. Nothing tied it to
+  a SAP code, serial or asset tag, so **a scanned tool could not find its own
+  loan**. Only the borrower's badge could be scanned, and that only filtered
+  the table.
+* A return had no body: no time, receiver or condition (the testing guide
+  listed *"Damaged on return ❌ not modelled"*).
+* The scanner gave no audio or vibration feedback, only a toast. Its manual
+  field had no autofocus, so a keyboard-wedge scanner (USB/Bluetooth, which
+  types the code + Enter) typed into nothing.
+* ⚠️ **Bug:** overdue was computed against UTC wall-clock
+  (`datetime.now(timezone.utc).replace(tzinfo=None)`) while due times are
+  stored local-naive. On a UTC+3 site every loan went overdue **three hours
+  late**: on the page, in the one-time alert and in the nav badge. The health
+  monitor used local time and disagreed with all three. Proven: suite 18R
+  fails on the old clock.
+
+### 4.2 Built
+
+| Layer | Change |
+|---|---|
+| Schema | `returnable_items` + `SAP_Code`, `Item_Ref`, `returned_time`, `returned_by`, `return_condition`, `return_note`, index (Site_ID, status). Alembic **`a7d3e1f5c829`** (new head); `models.py` the same (rule 15). |
+| API | `GET /entry/returnables/resolve?code=` → `loan` (`#57`) · `item` (Item_Ref first, then SAP; case and spaces ignored; sticker `SAP\|Desc` payloads) · `employee` (badge → every open loan; `/ai/badge`'s site rule) · `material` (not on loan; feeds the Loan form) · `none`. `POST /entry/returnables/return-batch` (per-id skips with reasons). `…/{rid}/return` takes an optional `{condition, note}`; damaged/incomplete also notifies the site's HOD. Local clock everywhere (`entry._local_now`). |
+| UI | `ScanBox` (autofocus, refocus after every scan and on window focus, never steals focus from another field; camera; green/red/blue flash). `scanFeedback` (WebAudio tones + vibration; mute per device). QrScanner: focus after open, a buzz on decode, an aiming frame. ReturnablesPage: KPI tiles, Return desk (condition chips, note, **Enter on the empty box confirms**, *One-scan return* switch), Open/Overdue/Returned views sorted by urgency, due-back presets, **Scan tool** on the loan form. |
+| Perf | AppLayout lazy-loads QrScanner → **jsQR is off the sign-in critical path: −131 KB raw (−45 KB gz)**. |
+| Practice | Overlay v4: four loans (overdue torque wrench `PR-TW-0001`, Tomas Halversen's two-tool kit on badge **900002**, a drill returned **Damaged**). |
+
+### 4.3 ⚖️ Defaults chosen (for a ruling)
+
+* **One-scan return is OFF by default** (per device). On, it returns a
+  single-match tool scan in good order with no second press.
+* **"#57" is the only loan-id syntax.** Bare digits are badge IDs and SAP
+  codes, and guessing between them would return the wrong person's tool.
+* A damaged return **notifies the HOD but does not touch stock**. Writing it
+  off is still a separate adjustment.
+* No partial returns (still whole-loan, as before).
+
+---
+
+## 5. Track 4 — intelligent minimum stock (reorder signals)
+
+### 5.1 Method (`backend/api/services/smart_min.py`, `GET /stock/smart-min`)
+
+| | General items | Surface Shields (category = `mtc_required_category`) |
+|---|---|---|
+| Evidence | Consumption | **The SQM plan** — never past use (operator brief) |
+| Rate | max(30-day avg, 90-day avg) per day | Remaining m² × `For_1_SQM` per (Material_Code, SAP_Code), plus **Garnet** for blasting the same area at the equipment's **Old/New** rate (`services/prep`); higher rate when no answer yet |
+| Horizon | × `min_stock_cover_days` (30) | × min(1, pace × 30 / remaining m²), pace = approved lining m²/day over 30 days, or `ss_planned_sqm_per_day`; **no pace → the whole remaining plan** |
+| Units | packs (ledger) | base → packs via `services/units.factor` (fixes `lining_analytics.py`'s packs-vs-KG comparison in this path) |
+
+* **A manual `Minimum_Qty > 0` wins**; the recommendation is shown beside it.
+* RAG: stock < min → red · < 1.5 × min → amber · else green · no min → none.
+* Suggested order = target − stock − on-order (open `po_items` via
+  `Material_Code`), target = 2 × min, **capped at the remaining plan for
+  Surface Shields**. Without the cap the E2E screenshot showed "order 305,370"
+  AR bricks against a plan of 152,685.
+* **Read-only, computed on every request.** Nothing writes `inventory`
+  (suite 18m-09 hashes it before and after).
+* Rule 1 / 1c: neither SME engine is touched; parity goldens unchanged. A
+  recipe line with no SAP (older workbooks, the test snapshot) resolves
+  through `inventory.Material_Code`, and unresolved lines are listed, not
+  guessed.
+
+### 5.2 Surfaces
+
+* **Stock → Reorder signals** tab (`/stock?tab=reorder`; Stock is open to
+  every operational role incl. Logistics, so no nav-matrix change): colour
+  filter, Surface Shields / General, site picker (unscoped roles), search, a
+  **Why** per row, and per-site notes (pace, plan coverage, Garnet flags).
+* **Dashboard**: the *Stock vs Minimum* card (which said "No minimums set" on
+  every site) now always carries the reorder summary and the five most urgent
+  items.
+* Four admin-editable settings; Practice overlay v5 adds a red/amber/green trio
+  dated from today.
+
+### 5.3 ⚖️ Defaults chosen (for a ruling)
+
+1. **Cover = 30 days** for both kinds (lead time + safety in one number).
+2. **No SQM pace → minimum = whole remaining plan.** That turns most Surface
+   Shields red on a site whose execution entries are not yet approved in GI
+   Hub. Alternative: set `ss_planned_sqm_per_day`.
+3. **Garnet = every m² still to be lined is blasted first**, at the last
+   Old/New answer for that tag, or the higher rate if none.
+4. **On-order is not per site** (`po_items` has no site column).
+5. Amber band = 50 % above the minimum; target = 2 × minimum.

@@ -48,6 +48,7 @@ test('18r: a scanned tool is loaned, then found by the same scan and returned da
   const panel = page.getByTestId('return-panel')
   await expect(panel).toContainText(name)
   await expect(page.getByTestId('return-scan-msg')).toContainText('1 open loan')
+  await page.screenshot({ path: test.info().outputPath('return-desk.png') })
   await panel.getByText('Damaged', { exact: true }).click()
   await panel.getByPlaceholder('Note (optional) — e.g. blade chipped').fill('handle cracked')
   await page.getByTestId('return-confirm').click()

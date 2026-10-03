@@ -869,6 +869,59 @@ Two smaller changes arrived with it:
 | The **Head of Qualities** no longer sees **Reports** or the **Records** ledgers (Receipts, Consumption, Returns, Lots, Purchase Requests) in the menu. They never worked for this role — every one showed an error — and the role's pages are Quality Oversight and Lots & Expiry. | Head of Qualities | §2.2, §2.3.5 |
 | The **Watch it** button appears less often by mistake. A question that merely says "video" or "tutorial", or shares only a word like "many" or "into" with a video, no longer gets a link to the wrong moment. | Everyone | §24.2.3 |
 
+## 3.13 What changed in Phase 18 (October 2026)
+
+| Change | Who | Read |
+|---|---|---|
+| **Reorder signals.** Every item now has a *minimum* the system works out for itself, shown in red / amber / green with a suggested order quantity (Stock → **Reorder signals**, and a summary on the Dashboard). | Everyone who opens Stock; written for Logistics | below |
+| **The Return desk.** Scan a badge or a tool to take tools back; record whether each one came back in good order. | Store Keeper | §4.5.3 |
+| **Overdue tool loans** are flagged as soon as they are due, not three hours later. | Store Keeper | §4.5.3 |
+| The Hub Assistant refuses more trick questions and answers plain how-to questions faster. | Everyone | §3.12 |
+| The sign-in page loads about 45 KB less. | Everyone | — |
+
+### 3.13.1 Reorder signals — what to order, and why
+
+Open **Stock → Reorder signals**. Each row is one item at one site:
+
+| Column | Meaning |
+|---|---|
+| **Status** | 🔴 **Order now**: stock is below the minimum. 🟠 **Order soon**: stock is less than 1½ times the minimum. 🟢 **OK**. ⚪ **No signal**: nothing to base a minimum on. |
+| **Minimum** | Marked **smart** when the system worked it out, or **manual** when someone typed a minimum on the item. A manual minimum always wins, and the system's own figure is shown when you hover. |
+| **Days of cover** | How many days the stock lasts at the expected rate of use. |
+| **On order** | Quantity still to be delivered on open POs (all sites). |
+| **Suggested order** | Brings the stock back to twice the minimum, less what is already on order. For a Surface Shield it never suggests more than the remaining plan needs. |
+| **Why** | The reason in words: *"Uses 2.10/day (30-day average) × 30 days of cover"* or *"Plan: 60 KG for the next 30 days of planned work"*. |
+
+**How the minimum is worked out:**
+
+- **General items**: from what the site **used**. The daily use is the
+  higher of the last 30 days' average and the last 90 days' average, so a
+  recent rise is not hidden by a quiet quarter. The minimum is that daily use
+  × **30 days**.
+- **Surface Shields**: from the **SQM plan**, never from past use. For each
+  material, it is the area still to be lined × the amount per m² in the lining
+  recipe (the same figures as the SME estimator). **Garnet** is added for
+  blasting the same area, at the rate for an **Old** or a **New** surface,
+  using the last answer given for that equipment. When no answer has been
+  given yet, the higher rate is used. The minimum is the share of that need
+  for the next **30 days** of work, at the site's pace in approved m² per day
+  over the last 30 days. **If the site has no pace yet, the minimum is the
+  whole remaining plan**, and a yellow note above the table says so.
+
+Notes above the table tell you what the plan could not count. Examples:
+equipment with no Old/New answer, equipment whose substrate is unknown (no
+Garnet counted), or recipe materials that match no item.
+
+**For admins** (Admin → Console → Settings): `min_stock_cover_days` (default
+30), `min_stock_window_days` (90), `ss_pace_window_days` (30) and
+`ss_planned_sqm_per_day`. Set a planned m² per day to plan Surface Shields by
+your own rate instead of the approved-work pace. Nothing here changes any data.
+The signals are advice, worked out each time the page is opened.
+
+**Practice:** Stock → Reorder signals shows three Practice items, one in each
+colour: *PRACTICE CABLE TIES (red)*, *MASKING TAPE (amber)* and *NITRILE
+GLOVES (green)*. Each is used 3 a day, so its minimum is 90.
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.

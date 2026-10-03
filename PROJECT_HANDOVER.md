@@ -1154,7 +1154,24 @@ originals:
 | **Q17-8** | A `SQL_QUERY` answer is the **template lane's table in the chat** — never the NL→SQL lane, which would load the coder model mid-chat. | `ai/router._assistant_table` |
 | **P17-narrow** | ⚠️ **System One narrows, it never widens.** It may only send a question to a lane the role could already reach; rule 9's fence, `is_safe_select` and `gi_ai_ro` are untouched and must never be simplified because a router exists (P11-4). Suite 17c-03 fails if it imports `manual_qa`, `safety`, `analytics` or `db`. | `system_one.lane_for` |
 | **P17-warm** | ⚠️ **The router is loaded OFF the request path.** A cold load exceeds the 3 s request budget and Ollama cancels it, so it would never warm. Startup + background self-heal. | `system_one.warm` / `ensure_warm` |
-| **P17-D3** | The **0.95 attack-block target is reported, not gated**; the gate is a regression floor (dev ≥ 0.60) and the holdout set is never tuned against. Do not lower the target to pass, and do not add a pattern because a HOLDOUT case missed. | `router_eval.BLOCK_*` |
+| **P17-D3** | The **0.95 attack-block target is reported, not gated**; the gate is a regression floor (dev ≥ 0.60, **0.90 since Phase 18**) and the holdout set is never tuned against. Do not lower the target to pass, and do not add a pattern because a HOLDOUT case missed. | `router_eval.BLOCK_*` |
+
+### Phase 18 — Night Shift (2026-10-03, autonomous; PENDING operator review)
+
+Built overnight on `feat/phase18-night-shift` with no operator present. Plan,
+measurements and every default chosen: `PROPOSED_PHASE18_PLAN.md`; summary and
+open questions: `MORNING_REPORT.md`. **Nothing here is a ruling until the
+operator confirms it.** The decisions the code now depends on:
+
+| # | Decision | Where it lives |
+|---|---|---|
+| **P18-Q17-3** | By operator order (the night brief): **`ai-router-eval` is a hard gate**. The probation ended after 4 of the 10 green runs Q17-3 asked for. | `.github/workflows/postgres-dual-ci.yml` |
+| **P18-combo** | Guard patterns **v3**. Twelve weight-2 combination signals and `encoded.disguised` complete a warn and never act alone. Every warn-tier pattern has warn-tier negative twins (questions AND commands). | `ai/guard_patterns.yaml`, suite 18A |
+| **P18-cache** | `system_one.CACHE` caches the router model's **answer**, never the decision. It is off in L3. | `system_one.py` |
+| **P18-prefix** | ⚠️ **One Ollama prompt cache**: never add a second system prompt for the router model, and `warm()` primes the real one. Three "second look" designs were measured and rejected. | plan §2.3 |
+| **P18-howto** | A plain how-to question is `MANUAL_QA` at stage 0, with no model call. | `system_one.is_howto` |
+| **P18-local-clock** | Tool-loan overdue is computed on **local** naive time, like the stored due times. | `entry._local_now`, `main.py` |
+| **P18-advice** | ⚠️ **Reorder signals are advice, computed on read.** Nothing writes `inventory.Minimum_Qty`; a manual minimum always wins. Surface Shields come from the SQM plan, never consumption (operator brief). | `services/smart_min.py`, suite 18M |
 
 ## PRESENT — current state and baselines
 

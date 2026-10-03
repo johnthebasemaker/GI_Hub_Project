@@ -4559,6 +4559,57 @@ Vibration (on a phone) still works.
 
 Automated: service_tests **18R** (10 checks); E2E `returnables.spec.ts`.
 
+## 18c. Phase 18 Track 4 — reorder signals (intelligent minimum stock)
+
+**Why this exists.** `inventory.Minimum_Qty` is 0 on almost every item, so
+every "below minimum" signal was silent. `services/smart_min.py` recommends a
+minimum per (SAP, site) **on read**. General items use their consumption: the
+higher of the 30-day and 90-day daily average × 30 days of cover. Surface
+Shields use the **SQM plan**: remaining m² × `For_1_SQM` per (Material_Code,
+SAP_Code), plus Garnet at the Old/New prep rate. That need is scaled to the
+next 30 days at the approved-SQM pace, or covers the whole remaining plan when
+there is no pace. A manual minimum wins. Nothing is written.
+`GET /stock/smart-min`. UI: Stock → Reorder signals and the Dashboard card.
+
+**TC-18C-01 — the colours.** Practice, any role with Stock: Reorder signals →
+*PRACTICE CABLE TIES (red)* is **Order now** (stock 20, minimum 90, suggested
+160). *MASKING TAPE (amber)* is **Order soon** (120 against 90). *NITRILE
+GLOVES (green)* is **OK** (300).
+
+**TC-18C-02 — a manual minimum wins.** As admin, set Minimum 200 on *NITRILE
+GLOVES*. It turns **red**, the minimum shows **manual**, and hovering shows
+the system's 90. Set it back to 0.
+
+**TC-18C-03 — Surface Shields come from the plan.** Filter **Surface
+Shields**. Every row's *Why* names the plan or Garnet, never past use. With no
+approved execution work in the last 30 days, the note says *"no SQM pace
+yet — … whole remaining plan"*.
+
+**TC-18C-04 — planned rate.** Admin → Settings → `ss_planned_sqm_per_day` =
+50. Reload: the note reads *"pace 50 m²/day (planned rate)"*, the Surface
+Shield minimums drop to 30 days' share, and *Why* says *"for the next 30 days
+of planned work"*. Delete the setting.
+
+**TC-18C-05 — never more than the plan.** With no pace, a Surface Shield at 0
+stock suggests ordering exactly its remaining plan need, **not twice** it.
+
+**TC-18C-06 — Dashboard.** HOD Dashboard → *Stock vs Minimum · reorder
+signals* shows counts and the five most urgent items. *Open Reorder signals
+→* lands on `/stock?tab=reorder`.
+
+**TC-18C-07 — site wall.** As a CNCEC store keeper, `GET
+/stock/smart-min?site_id=<other>` → **403**. With no site → CNCEC rows only.
+
+**TC-18C-08 — no writes.** Note any item's Minimum in Admin → Inventory. Open
+Reorder signals, change a setting, reload. The item's Minimum is unchanged.
+
+⚠️ **Known limits** (for a ruling, `MORNING_REPORT.md`): on-order is matched
+through `po_items.Material_Code` and is **not per site**. Garnet assumes every
+m² still to be lined is blasted first. The 30-day share spreads the pace
+evenly over all remaining systems.
+
+Automated: service_tests **18M** (10 checks), E2E `reorder-signals.spec.ts`.
+
 ## 15. Do's and Don'ts
 
 ### Do

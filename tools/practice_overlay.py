@@ -51,8 +51,9 @@ os.environ.setdefault("GI_DOTENV", "0")
 
 # Bumped when the OVERLAY's content changes. Reported with the tutorial
 # fixture's own DATASET_VERSION as "<fixture>.<overlay>".
-OVERLAY_VERSION = 4   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
+OVERLAY_VERSION = 5   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
                       # · 4 = Phase 18 return desk loans (2026-10-03)
+                      # · 5 = Phase 18 reorder-signal trio (2026-10-03)
 
 SITE = "CNCEC"
 WAREHOUSE = "WH-01"
@@ -220,6 +221,10 @@ async def seed_queues() -> dict:
                 out["lots"] = await seed_lots(today)
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  lot example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["reorder"] = await seed_reorder_examples()
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  reorder example skipped: {type(e).__name__}: {str(e)[:160]}")
             try:
                 out["loans"] = await seed_returnables()
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
@@ -514,6 +519,52 @@ async def seed_returnables() -> int:
                  "c": cond, "note": note})
         await s.commit()
     return len(loans)
+
+
+REORDER_SAPS = ("899981", "899982", "899983")    # synthetic, Practice-only (P12-5)
+
+
+async def seed_reorder_examples() -> int:
+    """Phase 18 Track 4 — one item per reorder colour (rule 17g).
+
+    The tutorial dataset's consumption has FIXED dates (P12-5), so as the
+    90-day window moves on, its items drift to "no recent use". These three
+    are dated from TODAY so Stock → Reorder signals always shows one of each:
+    each used 3 a day for the last 30 days (minimum 90 at 30 days of cover),
+    holding 20 (red), 120 (amber) and 300 (green). Idempotent; never fatal.
+    """
+    import datetime as _d
+
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+
+    t0 = _d.date.today()
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                'SELECT 1 FROM inventory WHERE "SAP_Code" = :p'), {"p": REORDER_SAPS[0]})).first():
+            return 0
+        for sap, name, hold in zip(REORDER_SAPS, ("PRACTICE CABLE TIES (red)",
+                                                  "PRACTICE MASKING TAPE (amber)",
+                                                  "PRACTICE NITRILE GLOVES (green)"), (20, 120, 300)):
+            await s.execute(text(
+                'INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+                '"Category", "UOM", "Site_ID", "Opening_Stock") VALUES '
+                "(:p, :m, :n, 'R/L Consumables', 'EA', :site, 0) ON CONFLICT DO NOTHING"),
+                {"p": sap, "m": f"MAT-{sap}", "n": name, "site": SITE})
+            await s.execute(text(
+                'INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID", "Supplier", '
+                '"Remarks") VALUES (:d, :p, :q, :site, \'Halcyon Industrial Supply\', '
+                "'Practice seed — reorder example')"),
+                {"d": (t0 - _d.timedelta(days=35)).isoformat(), "p": sap, "q": hold + 90, "site": SITE})
+            for k in range(30):
+                await s.execute(text(
+                    'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                    '"Work_Type", "Issued_To", "Remarks") VALUES (:d, :p, 3, :site, '
+                    "'Maintenance', 'Aria Bellweather', 'Practice seed — reorder example')"),
+                    {"d": (t0 - _d.timedelta(days=k + 1)).isoformat(), "p": sap, "site": SITE})
+        await s.commit()
+    return len(REORDER_SAPS)
 
 
 def fixture_version() -> int:

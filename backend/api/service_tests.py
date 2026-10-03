@@ -29040,6 +29040,144 @@ async def test_phase18r_returnables():
             await s_.commit()
 
 
+async def test_phase18m_smart_min():
+    """Suite 18M — Phase 18 Track 4: intelligent minimum stock.
+
+    Synthetic items on a synthetic site (SVC18M) with known answers: a general
+    item's minimum from its use, a manual minimum winning, a Surface Shield's
+    minimum from the SQM plan (whole plan without a pace; the 30-day share with
+    a planned rate), Garnet from the prep code — and the endpoint writing
+    nothing and respecting the site wall. Cleaned up in `finally`."""
+    import datetime as _dtm
+    from sqlalchemy import text as _t
+
+    from .services import smart_min as SM
+
+    today = _dtm.date.today()
+    d = lambda n: (today - _dtm.timedelta(days=n)).isoformat()    # noqa: E731
+    SITE = "SVC18M"
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+
+    async def cleanup():
+        for sql in ('DELETE FROM consumption WHERE "SAP_Code" LIKE \'SVC18M%\'',
+                    'DELETE FROM receipts WHERE "SAP_Code" LIKE \'SVC18M%\'',
+                    'DELETE FROM sme_recipe WHERE "Material_Code" LIKE \'MAT-SVC18M%\'',
+                    'DELETE FROM sme_equipment WHERE "Site_ID" = \'SVC18M\'',
+                    'DELETE FROM inventory WHERE "SAP_Code" LIKE \'SVC18M%\'',
+                    "DELETE FROM app_settings WHERE key = 'ss_planned_sqm_per_day'"):
+            await ex(sql)
+
+    check("18m-01: the RAG rule — below the minimum is red, within 50 % above it "
+          "amber, beyond green, and no minimum is no signal",
+          (SM.rag(0, 10), SM.rag(9.9, 10), SM.rag(10, 10), SM.rag(14.9, 10),
+           SM.rag(15, 10), SM.rag(5, 0)) == ("red", "red", "amber", "amber", "green", "none"), "")
+    await cleanup()
+    try:
+        ss_cat = "Surface Shields"
+        await ex('INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+                 '"Category", "UOM", "Site_ID", "Minimum_Qty", "Unit_Size") VALUES '
+                 "('SVC18M-GEN', 'MAT-SVC18M-GEN', 'SVC18M general item', 'R/L Consumables', 'EA', :s, 0, NULL),"
+                 "('SVC18M-MAN', 'MAT-SVC18M-MAN', 'SVC18M manual-min item', 'R/L Consumables', 'EA', :s, 50, NULL),"
+                 "('SVC18M-SS', 'MAT-SVC18M-SS', 'SVC18M lining resin', :c, 'DRUM', :s, 0, 20),"
+                 "('SVC18M-GAR', 'MAT-SVC18M-GAR', 'SVC18M garnet', :c, 'BAG', :s, 0, 25)",
+                 s=SITE, c=ss_cat)
+        for sap in ("SVC18M-GEN", "SVC18M-MAN"):
+            await ex('INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES (:d, :p, 100, :s)',
+                     d=d(80), p=sap, s=SITE)
+            await ex('INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES '
+                     '(:a, :p, 30, :s), (:b, :p, 30, :s), (:c, :p, 500, :s)',
+                     a=d(5), b=d(60), c=d(400), p=sap, s=SITE)
+            await ex('INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES (:d, :p, 500, :s)',
+                     d=d(401), p=sap, s=SITE)
+        await ex('INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", "Type", "Substrate", '
+                 '"Lining_System_Code", "Surface_Area_SQM") VALUES '
+                 "(:s, 'SVC18M-T1', 'CV', 'CONCRETE', 'SVC18M-SYS', 100)", s=SITE)
+        await ex('INSERT INTO sme_recipe ("Lining_System_Code", "Material_Code", "SAP_Code", "UOM", '
+                 '"For_1_SQM", "Execution_Sub_Activity_Code") VALUES '
+                 "('SVC18M-SYS', 'MAT-SVC18M-SS', 'SVC18M-SS', 'KG', 2, 'SVC18M-SYS'),"
+                 "('ESC1', 'MAT-SVC18M-GAR', 'SVC18M-GAR', 'KG', 18, 'ESC1')")
+        async with SessionLocal() as s_:
+            inv_before = (await s_.execute(_t(
+                'SELECT md5(string_agg("SAP_Code" || \':\' || COALESCE("Minimum_Qty", 0)::text, \',\' '
+                'ORDER BY "SAP_Code")) FROM inventory'))).scalar()
+            out = await SM.compute(s_, SITE)
+        by = {r["SAP_Code"]: r for r in out["items"]}
+        g, m, ss, gar = (by.get(k) for k in ("SVC18M-GEN", "SVC18M-MAN", "SVC18M-SS", "SVC18M-GAR"))
+        check("18m-02: a general item's minimum is its daily use × 30 days of cover — "
+              "the HIGHER of the 30-day (30/30 = 1.0) and 90-day (60/90) averages, so a "
+              "recent surge is not averaged away; use older than the window is ignored",
+              g is not None and g["Recommended_Min"] == 30 and g["Basis"] == "consumption"
+              and abs(g["Daily_Use"] - 1.0) < 1e-9, str(g)[:300])
+        check("18m-03: …stock 40 against a minimum of 30 is AMBER (within 50 %), and the "
+              "suggested order brings it back to twice the minimum (60 − 40 = 20)",
+              g["Current_Stock"] == 40 and g["Status"] == "amber" and g["Suggested_Order"] == 20
+              and g["Min_Source"] == "smart", str(g)[:300])
+        check("18m-04: a MANUAL minimum wins (50 → stock 40 is red) and the recommendation "
+              "is still shown beside it",
+              m["Effective_Min"] == 50 and m["Min_Source"] == "manual" and m["Status"] == "red"
+              and m["Recommended_Min"] == 30, str(m)[:300])
+        check("18m-05: a Surface Shield's minimum comes from the PLAN, never from past use: "
+              "100 m² × 2 KG/m² = 200 KG = 10 drums of 20 KG — the WHOLE remaining plan "
+              "while the site has no SQM pace (basis plan_all)",
+              ss is not None and ss["Recommended_Min"] == 10 and ss["Basis"] == "plan_all"
+              and ss["Daily_Use"] is None and ss["Status"] == "red"
+              and out["sites"][SITE]["basis"] == "plan_all", str(ss)[:300])
+        check("18m-05b: ⚠️ …and the suggested order for a Surface Shield never exceeds what "
+              "the remaining plan needs: 10 drums, not 2 × 10 (an E2E screenshot caught the "
+              "uncapped rule telling a site to order TWICE the whole project)",
+              ss["Suggested_Order"] == 10, str(ss)[:200])
+        check("18m-06: Garnet for the same 100 m² at the prep code's rate (CV/concrete → "
+              "ESC1; no Old/New answer yet → the higher known rate, here the workbook "
+              "18 KG/m²) = 1,800 KG = 72 bags — and the flag says the state is unknown",
+              gar is not None and gar["Recommended_Min"] == 72
+              and gar["Basis"] == "plan_all_garnet"
+              and any("no Old/New answer" in f for f in out["sites"][SITE]["flags"]), str(gar)[:300])
+        await ex("INSERT INTO app_settings (key, value) VALUES ('ss_planned_sqm_per_day', '1') "
+                 "ON CONFLICT (key) DO UPDATE SET value = '1'")
+        async with SessionLocal() as s_:
+            out2 = await SM.compute(s_, SITE)
+        ss2 = next(r for r in out2["items"] if r["SAP_Code"] == "SVC18M-SS")
+        check("18m-07: with a planned rate (1 m²/day) the minimum is the next 30 days of "
+              "the plan: 30 m² × 2 KG = 60 KG = 3 drums (basis plan_pace)",
+              ss2["Recommended_Min"] == 3 and ss2["Basis"] == "plan_pace"
+              and out2["sites"][SITE]["sqm_per_day"] == 1.0, str(ss2)[:300])
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            ra = await ac.post("/auth/login", headers={"X-Real-IP": "203.0.113.131"},
+                               json={"username": "admin", "password": "admin2026"})
+            HA = {"Authorization": f"Bearer {ra.json()['access_token']}"}
+            rs = await ac.post("/auth/login", headers={"X-Real-IP": "203.0.113.132"},
+                               json={"username": "worker", "password": "floor2026"})
+            HS = {"Authorization": f"Bearer {rs.json()['access_token']}"}
+            a = (await ac.get("/stock/smart-min", headers=HA, params={"site_id": SITE})).json()
+            sk = await ac.get("/stock/smart-min", headers=HS, params={"site_id": SITE})
+            sk_own = (await ac.get("/stock/smart-min", headers=HS)).json()
+            red = (await ac.get("/stock/smart-min", headers=HA,
+                                params={"site_id": SITE, "status": "red"})).json()
+        sk_sites = {r["Site_ID"] for r in sk_own.get("items", [])}
+        check("18m-08: GET /stock/smart-min — an unscoped user reads the site asked for; a "
+              "CNCEC store keeper asking for SVC18M is REFUSED (403, the by-site wall) and "
+              "asking for nothing gets CNCEC only; ?status=red filters",
+              {r["SAP_Code"] for r in a["items"]} >= {"SVC18M-GEN", "SVC18M-SS"}
+              and sk.status_code == 403 and sk_sites <= {"CNCEC"}
+              and red["items"] and all(r["Status"] == "red" for r in red["items"]),
+              f"sk={sk.status_code} sk_sites={sk_sites} red={len(red.get('items', []))} "
+              f"admin={sorted(r['SAP_Code'] for r in a.get('items', []))[:6]} {str(a)[:120]}")
+        async with SessionLocal() as s_:
+            inv_after = (await s_.execute(_t(
+                'SELECT md5(string_agg("SAP_Code" || \':\' || COALESCE("Minimum_Qty", 0)::text, \',\' '
+                'ORDER BY "SAP_Code")) FROM inventory'))).scalar()
+        check("18m-09: ⚠️ ADVICE, NOT DATA — computing and serving the minimums writes "
+              "nothing: every item's Minimum_Qty is byte-identical afterwards",
+              inv_before == inv_after, f"{inv_before} → {inv_after}")
+    finally:
+        await cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -29365,6 +29503,9 @@ async def main() -> int:
     print("\n 18R. Phase 18 Track 3 — the return desk: a scan finds the loan, a return "
           "records when, who and in what condition, overdue on the local clock")
     await test_phase18r_returnables()
+    print("\n 18M. Phase 18 Track 4 — intelligent minimum stock: use for general items, "
+          "the SQM plan for Surface Shields, a manual minimum wins, nothing is written")
+    await test_phase18m_smart_min()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

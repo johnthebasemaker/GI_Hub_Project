@@ -229,6 +229,18 @@ Plan, measurements and deviations: `PROPOSED_PHASE18_PLAN.md`.
   because the login page imports `hooks.ts`. `AppLayout` now lazy-loads
   `QrScanner`, which took jsQR off the sign-in critical path (−131 KB raw,
   baseline re-recorded down).
+- **Reorder signals (Track 4).** `services/smart_min.py` → `GET
+  /stock/smart-min` (site-scoped like `/stock/by-site`; read-only). General
+  items: consumption (max of 30-day and window-day averages) × cover days.
+  Surface Shields: remaining SQM × `For_1_SQM` per (Material_Code, SAP_Code),
+  plus Garnet via `services/prep`. A recipe line with no SAP is resolved
+  through `inventory.Material_Code`. Packs via `services/units.factor`. The
+  result is scaled by the approved-SQM pace (or `ss_planned_sqm_per_day`), and
+  the suggested order is capped at the remaining plan. NEITHER SME engine is
+  touched. Frontend: `components/ReorderSignals.tsx` (lazy from both
+  StockPage and Dashboard, which keeps the entry preload map flat) and
+  `api/smartMinHooks.ts`. Settings: `min_stock_cover_days`,
+  `min_stock_window_days`, `ss_pace_window_days`, `ss_planned_sqm_per_day`.
 
 ## 3. Database facts that bite
 

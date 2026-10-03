@@ -143,7 +143,12 @@ _EDITABLE_SETTINGS = {"maintenance_mode", "low_stock_days", "burn_alert_days",
                       # anything — which is exactly why it is safe to leave an
                       # admin editable, and why the reading is STORED on each
                       # row at submission rather than recomputed on read.
-                      "sme_variance_tolerance_pct"}
+                      "sme_variance_tolerance_pct",
+                      # Phase 18 Track 4 — intelligent minimum stock
+                      # (services/smart_min.py). Read-only advice: changing them
+                      # re-colours the Reorder signals and moves nothing else.
+                      "min_stock_cover_days", "min_stock_window_days",
+                      "ss_pace_window_days", "ss_planned_sqm_per_day"}
 
 
 class SettingIn(BaseModel):

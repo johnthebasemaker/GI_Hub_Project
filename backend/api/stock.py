@@ -271,6 +271,27 @@ async def stock_by_site(limit: int = Query(200, ge=1, le=5000), offset: int = Qu
                         q=q, category=category)
 
 
+@router.get("/smart-min", summary="Recommended minimum stock + red/amber/green per SAP and site")
+async def smart_min(site_id: Optional[str] = Query(None, description="Filter by Site_ID"),
+                    status: Optional[str] = Query(None, pattern="^(red|amber|green|none)$"),
+                    user: dict = Depends(get_current_user),
+                    session: AsyncSession = Depends(get_session)):
+    """Phase 18 Track 4 — `services/smart_min.py` holds the method.
+
+    Read-only and site-scoped exactly like `/stock/by-site`: a site-scoped
+    user sees their own site, an unscoped one every site (or the one asked
+    for). Nothing is written — a manual `Minimum_Qty` stays the operator's."""
+    from .services import smart_min as SM
+    site_id = resolve_site_param(user, site_id)
+    if site_id == "":
+        return {"items": [], "counts": {"red": 0, "amber": 0, "green": 0, "none": 0},
+                "sites": {}, "params": {}}
+    out = await SM.compute(session, site_id or None)
+    if status:
+        out["items"] = [r for r in out["items"] if r["Status"] == status]
+    return out
+
+
 @router.get("/lots", summary="Per-lot remaining quantity — v_lot_balance")
 async def stock_lots(limit: int = Query(200, ge=1, le=5000), offset: int = Query(0, ge=0),
                      site_id: Optional[str] = Query(None, description="Filter by Site_ID"),
