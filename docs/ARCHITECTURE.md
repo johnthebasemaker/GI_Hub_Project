@@ -1677,7 +1677,10 @@ manual-only commit used to trigger nothing although the AI grid is generated
 from it). A third parallel job, **`ai-router-eval`**, installs Ollama 0.20.4,
 verifies `qwen2.5:1.5b` BY DIGEST and runs `runner --router --require-model`
 — on **probation** (`continue-on-error`) until 10 consecutive green runs with 0
-flips (ruling Q17-3), then that one line is deleted. Router L2 (deterministic)
+flips (ruling Q17-3). **Phase 18 (2026-10-03): promoted to a hard gate by
+operator order** after 4/4 green runs, 0 flips; its dev-block floor rose from
+0.60 to 0.90 with guard patterns v3. ⚠️ `main` has no branch protection, so
+no check *blocks* a merge until the operator marks them required. Router L2 (deterministic)
 gates in the existing AI eval step from day one. It went red on all eight Phase 16 runs
 (2026-10-01) at *Derived-view parity* — the lot port gained columns and the
 returns subtraction the frozen SQLite view cannot have — and was fixed on
