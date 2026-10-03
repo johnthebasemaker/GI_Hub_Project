@@ -4365,6 +4365,31 @@ Automated: service_tests suite **17Q** (the menu's oversight list equals the
 server's; every page the menu grants answers; every page removed is refused by
 the server too) and the `qchod` column of `tests/e2e/specs/rbac-matrix.spec.ts`.
 
+## 17d-i. The assistant's "Watch it" link — fewer confident wrong links
+
+**Why this exists.** After an answer, the Hub Assistant may add a **Watch it**
+button that jumps to the moment in a training video. It used to appear for
+questions that had nothing to do with the video, because words like "many" and
+"into" counted as shared topic words. They no longer do.
+
+**TC-17D-I-01** — as an HOD (Practice: `practice.hod`), ask the assistant *"how
+many drums of primer are at CNCEC today?"* — **no** Watch it button appears.
+
+**TC-17D-I-02** — as the HOD, ask *"does what I type into the assistant leave
+the company network?"* — **no** Watch it button.
+
+**TC-17D-I-03 (control)** — as the HOD, ask *"what does not valued mean"* — the
+answer **does** carry a Watch it button, opening *Reading the Executive
+Summary* at the valuation-floor moment.
+
+**Known and accepted:** *"how do I book man-hours for a crew?"* still shows a
+link to the Executive Summary's KPI strip (which shows man-hours booked). It
+shares one real term with that moment, the same shape as the control above, so
+a word rule cannot remove it without removing the control too.
+
+Automated: service_tests **CX-16**; the tutorial-retrieval eval in
+`python -m tests.ai_eval.runner` (false hits ≤ 1).
+
 ## 15. Do's and Don'ts
 
 ### Do

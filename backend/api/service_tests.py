@@ -20620,6 +20620,18 @@ async def test_tutorial_deeplinks():
               "hit — that is the difference between a rule and a threshold",
               bool(hod_floor) and hod_floor["beat"] == "floor",
               f"{hod_floor}")
+        # Phase 17d: what counts as a shared word. Two HOD questions got a
+        # confident wrong link on {many, howmany} and {into, intothe} — one
+        # function word, counted twice through its joined bigram.
+        ev_noise = _t._evidence("how many drums went into the store")
+        ev_real = _t._evidence("what does not valued mean")
+        check("CX-16 ⚠️ a function word, and a bigram made only of function and "
+              "stop words, are NOT evidence for the two-token rule — while a "
+              "stopword joined to a real term still is (CX-15's 'notvalued')",
+              not ({"many", "howmany", "into", "intothe"} & ev_noise)
+              and {"drums", "store"} <= ev_noise
+              and {"valued", "notvalued"} <= ev_real,
+              f"noise={sorted(ev_noise)} real={sorted(ev_real)}")
 
         # ── absence is a supported state ────────────────────────────────────
         _t.TUTORIAL_DIR = _pl.Path(tmp) / "does-not-exist"
