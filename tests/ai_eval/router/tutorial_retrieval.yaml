@@ -112,3 +112,22 @@
    question: "how do I book man-hours for a crew?"}
 - {id: tr.miss.hod_assistant, kind: miss, role: hod, expect: null,
    question: "does what I type into the assistant leave the company network?"}
+
+# ── video REQUESTS, as the TUTORIAL_SEARCH lane sends them (Phase 17e) ───────
+# `request: true` runs the question through system_one.video_topic() first,
+# exactly as the lane does. Sent whole, 8 of 12 such requests landed on the OCR
+# tutorial's beat ABOUT the tutorial gate ("Watch now or Watch later") — the
+# words "video", "tutorial" and "watch" are that beat's own. The media words
+# say THAT a video is wanted; the topic is what is left.
+- {id: tr.req.stage_return, kind: hit, request: true, role: store_keeper,
+   expect: [sk_stage_return_v1, open], question: "is there a video on staging a return?"}
+- {id: tr.req.assistant, kind: hit, request: true, role: store_keeper,
+   expect: [store_keeper_hub_assistant, open_assistant],
+   question: "Is there training footage on the hub assistant?"}
+- {id: tr.req.not_valued, kind: hit, request: true, role: hod,
+   expect: [hod_executive_summary_v1, floor],
+   question: "I'd like a video explaining what Not Valued means"}
+- {id: tr.req.flights, kind: miss, request: true, role: store_keeper, expect: null,
+   question: "is there a video about booking flights?"}
+- {id: tr.req.handwriting, kind: miss, request: true, role: supervisor, expect: null,
+   question: "Video guide for scanning handwritten forms"}

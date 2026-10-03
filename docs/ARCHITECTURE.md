@@ -1489,6 +1489,72 @@ production box has no manifests: the matcher returns `None`, raises nothing, and
 empty index is a visible state rather than a mystery. Deterministic throughout —
 no model, no clock — so the same question returns the same second every time.
 
+### 7l. Phase 17 — System One: a fast lane decision before the slow one
+
+*`backend/api/ai/system_one.py` + `system_one_prompt.md`, wired in
+`ai/router.py` `/ai/assistant`; guard patterns v2; suites 17A–17C, 17E;
+`tests/ai_eval/router_eval.py`; CI job `ai-router-eval`.*
+
+```
+/ai/assistant → flags · greeting
+   └─ System One (span ai.route) — BEFORE the semaphore, never behind the 8B
+        stage 0  guard.scan_input (refusal → today's path refuses it)
+                 "open the lots page" → UI_COMMAND, resolved against the menu
+                 labels in nav_access.json for routes THIS role may open
+                 video vocabulary     → TUTORIAL_SEARCH
+        stage 1  qwen2.5:1.5b via route.call_structured("router"): JSON Schema
+                 `format`, temperature 0 / seed 0 / top_k 1, keep_alive -1,
+                 3 s, no retry, no cloud, NOT behind GEN_SEMAPHORE
+        guard.with_router_signal — is_safe:false refuses with a guard pattern
+                 or on the SQL lane; otherwise traced (`flagged`) and answered
+   └─ lane_for(role) — an intent NEVER widens a lane
+        BLOCKED          refusal sentence, no generation
+        UI_COMMAND       {"navigate": {path, label}}, no generation
+        TUTORIAL_SEARCH  tutorials.match(video_topic(q)) → {"tutorial"}; miss → manual
+        SQL_QUERY        level ≥ 2, not oversight: the /ai/query TEMPLATE lane →
+                         {"table"} (≤ 50 rows), audited `lane=assistant/template`;
+                         no template / other roles → manual
+        MANUAL_QA        today's path, byte for byte (fence, guard, cache)
+```
+
+⚠️ **It narrows; it never widens (P11-4).** Rule 9's fence, `is_safe_select` and
+`gi_ai_ro` are untouched, and suite 17c-03 fails if `system_one.py` ever imports
+`manual_qa`, `safety`, `analytics` or `db`. Every failure — switched off
+(`ai_router_enabled`), Ollama down, timeout, malformed reply, no template, no
+tutorial — falls through to the unchanged manual path.
+
+⚠️ **The model speaks words, the contract speaks codes.** It answers `{"intent":
+"data"|"video"|"open_page"|"question", "is_safe": bool}`; `WIRE_TO_INTENT` maps
+those onto `SQL_QUERY · TUTORIAL_SEARCH · UI_COMMAND · MANUAL_QA`. Measured: the
+codes scored 0.915 routing / 38 % detection, the words 0.95 / 49 %
+(`PROPOSED_PHASE17_PLAN.md` §9).
+
+⚠️ **The router is LOADED off the request path (`system_one.warm`).** A cold load
+(~3 s here, longer on CPU) exceeds the 3 s request budget, and Ollama CANCELS a
+load whose caller gave up (HTTP 499), so without this the router never warms
+after an Ollama restart and every question silently falls back — 133 of 176
+eval calls did exactly that. It warms at startup (lifespan; skipped when the
+router is off or `GI_SCHEDULER=0`) and in the background on any timeout/
+unavailable fallback (suite 17b-10).
+
+⚠️ **Video requests are matched on their topic.** `video_topic()` strips the
+media words before `tutorials.match()` — in the TUTORIAL lane AND the Phase 12f
+post-answer link. Sent whole, "video"/"tutorial"/"watch" matched the OCR
+tutorial's beat ABOUT the tutorial gate for 8 of 12 requests.
+
+**Rulings** (`PROPOSED_PHASE17_PLAN.md`, LOCKED 2026-10-03): Q17-1 one warm
+generation model + one pinned router ≤ 1 GB (⚠️ measured 1.35 GB — deviation D1,
+awaiting the operator) · Q17-2 a signal, a veto only on SQL · Q17-3 P10-7
+amended: the router eval gates after a 10-run probation · Q17-5 `MANUAL_QA` ·
+Q17-7 navigation only · Q17-8 tables in the chat.
+
+**Measured** (qwen2.5:1.5b, Metal): routing 0.95, 0 flips, twins 0 refused,
+dev block 0.667, holdout block 0.316, detection 41 %, p50/p95 360/443 ms, 1.35 GB
+resident beside `llama3.1:8b` (5.46 GB). The 0.95 block target is NOT met
+(deviation D3): with the model a signal, blocking rests on guard v2, which sees
+every dev attack but generalises to under a third of the holdout. It is printed
+as the gap on every run, not tuned away.
+
 ## 8. Testing — the gates
 
 > 🔄 **2026-08-13 — the service tests run against their OWN database.**
@@ -1603,7 +1669,16 @@ frontend build. **History:** the dual-ci job failed on the runner from
 2026-07-07 (always at bug_check) until the July–August fixes; since then
 bug_check re-emits failing ❌ checks as `::error::` annotations and uploads
 `bugcheck_ci.log`/`BUG_REPORT.md`. It was **green on every run from Phase 13
-through Phase 15e** (PRs #83–#98). It went red on all eight Phase 16 runs
+through Phase 15e** (PRs #83–#98).
+**Phase 17 (2026-10-03):** the workflow now fires on path-filtered pushes to
+ANY branch plus PRs (one run per branch via a `concurrency` group), and
+`USER_MANUAL.md`, `tests/ai_eval/**`, `docs/tutorials/**` joined the filters (a
+manual-only commit used to trigger nothing although the AI grid is generated
+from it). A third parallel job, **`ai-router-eval`**, installs Ollama 0.20.4,
+verifies `qwen2.5:1.5b` BY DIGEST and runs `runner --router --require-model`
+— on **probation** (`continue-on-error`) until 10 consecutive green runs with 0
+flips (ruling Q17-3), then that one line is deleted. Router L2 (deterministic)
+gates in the existing AI eval step from day one. It went red on all eight Phase 16 runs
 (2026-10-01) at *Derived-view parity* — the lot port gained columns and the
 returns subtraction the frozen SQLite view cannot have — and was fixed on
 2026-10-03 with `SQL_LOT_BALANCE_PARITY` (§2a). ⚠️ **Lesson: wait for dual-ci

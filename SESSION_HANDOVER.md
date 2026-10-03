@@ -1,4 +1,4 @@
-# SESSION HANDOVER — read this first (rewritten 2026-10-03, end of Phase 16)
+# SESSION HANDOVER — read this first (updated 2026-10-03, end of Phase 17)
 
 > This file is the orientation for a fresh session. It replaces every earlier
 > version (they are in git history). After it, read
@@ -11,16 +11,18 @@
 
 ## 0. State in ten lines
 
-1. **Everything through Phase 16 is merged to `main`** (PRs #78–#102). Branch
-   `chore/phase16-cleanup` (2026-10-03) carries the CI fix, a quarantine bug fix
-   and the documentation sweep. Check whether it is merged: `gh pr list --state all --head chore/phase16-cleanup`.
-2. **Nothing is mid-flight.** No half-done slice, no pending migration.
+1. **Phase 16 is merged (PRs #78–#103). Phase 17 is on FOUR STACKED PRs, not
+   merged:** #104 (17a, base `main`) ← #105 (17c) ← #106 (17d) ← #107 (17e).
+   Merge in that order, each only after its own CI is green. See §4.4.
+2. **One operator decision is open — Phase 17 deviation D1** (§8.0): the router
+   model is 1.35 GB resident, over the 1 GB ruling Q17-1. No pending migration.
 3. **Alembic single head `e5b2c7a9d4f1`** — Live (`gihub`) and both Practice
    databases are on it.
-4. **All gates green** (2026-10-03): service_tests **2,763/0** · E2E **178** ·
-   AI Tier 1 147/147, recall 1.000 / precision 1.000 · grid 72 · parity:sme
-   1,334 · ui-math 33/0 · nav 52 · bug_check 599/0/0 · build + critical path
-   +0 B · **CI derived-view parity 5/5**.
+4. **All gates green** (2026-10-03, branch 17e): service_tests **2,803/0** ·
+   E2E **179** · AI Tier 1 147/147, recall 1.000 / precision 0.994 · **Router
+   L2 pass** · **Router L3 pass** (needs Ollama) · grid 72 · parity:sme 1,334 ·
+   ui-math 33/0 · nav 52 · bug_check 599/0/0 · build + critical path +0 B
+   (re-baselined in 17a and 17e, reasons in the commits).
 5. **CI (`Postgres dual-CI`) was red on all eight Phase 16 runs** at
    *Derived-view parity*; fixed on `chore/phase16-cleanup` (§4.2). Lesson,
    now in RULES.md: **wait for the PR's own `dual-ci` before merging.**
@@ -217,6 +219,23 @@ depends on are tabulated in `PROJECT_HANDOVER.md` → *Phases 14–16 rulings*.
    `build_manual_pdf.py --role all` and `build_sop_pdf.py` (branded, served by
    `/documents/reference`). `⟳` and `〃` added to the PDF character map.
 
+### 4.4 Phase 17 (2026-10-03) — System One router · AI QA pyramid · QC-HOD access
+
+Plan, rulings Q17-0…8 and the spike: `PROPOSED_PHASE17_PLAN.md` (§9 = measured
+results and deviations D1–D5). Rulings tabulated in `PROJECT_HANDOVER.md` →
+*Phase 17 rulings*; the ones agents undo are in `RULES.md`.
+
+| Slice | PR | What |
+|---|---|---|
+| 17a | #104 | QC-HOD's menu follows the API: `nav.tsx` `OVERSIGHT_ROLES` never satisfies a rank check (the leak was frontend-only). Suite 17Q, rbac-matrix `qchod` column. |
+| 17b | — | Spike: qwen2.5:0.5b fails routing; **qwen2.5:1.5b** passes (0.95) at 1.35 GB. Prompt answers in WORDS mapped to codes. |
+| 17c | #105 | `ai/system_one.py` (stage 0 rules → stage 1 model), `guard.with_router_signal` (Q17-2), guard patterns v2, `lane_for` role gate, `ai_router_enabled`. Suites 17A–17C. |
+| 17d | #106 | QA pyramid: `tests/ai_eval/router_eval.py` L2 (every run) + L3 (`--router`), CI job `ai-router-eval` on PROBATION, CI triggers on any branch. Fixed: the router never warmed (cold load cancelled at 3 s) → `system_one.warm`. Tutorial matcher: function words are not evidence (CX-16). |
+| 17e | #107 | Wired into `/ai/assistant`: navigate / tutorial / table / refusal frames, each with NO 8B generation; `HubAssistant` + lazy `AssistantResult`. Video requests matched on their topic (`video_topic`). Suite 17E. USER_MANUAL §3.12. |
+
+Measured (qwen2.5:1.5b, Metal): routing 0.95 · 0 flips · twins 0 refused · dev
+block 0.667 · **holdout block 0.316** · detection 41 % · p50/p95 360/443 ms.
+
 ---
 
 ## 5. The gates — run all before saying "done"
@@ -253,19 +272,24 @@ npm run build --prefix frontend
 ```bash
 cd tests/e2e && npm test
 ```
+```bash
+.venv/bin/python -m tests.ai_eval.runner --router --require-model
+```
+(Router L3 — needs Ollama with `qwen2.5:1.5b`; without it the line says SKIPPED, which is not a pass.)
 
 | Gate | Baseline |
 |---|---|
 | preflight | clean |
-| service_tests | 2,763 / 0 (its own `gihub_svctest`) |
-| AI eval | Tier 1 147/147, 0 leaks; recall 1.000, precision 1.000 |
+| service_tests | 2,803 / 0 (its own `gihub_svctest`) |
+| AI eval | Tier 1 147/147, 0 leaks; recall 1.000, precision 0.994; Router L2 pass |
+| Router L3 | all gates ✅ (schema 1.000, routing 0.950, 0 flips, dev block 0.667 ≥ 0.60); ~1 min |
 | grid | 72 cases, current |
 | parity:sme | 1,334 comparisons |
 | ui-math | 33 / 0 |
 | nav | 52 routes, snapshot current |
 | bug_check | 599 / 0 / 0 |
 | build | ✅, critical path +0 B |
-| E2E | 178 passed |
+| E2E | 179 passed |
 | alembic | single head `e5b2c7a9d4f1` |
 | **CI-only: derived-view parity** | 5/5 — run it after touching `stock.py` (MANUAL_TESTING_GUIDE §16e) |
 
@@ -332,8 +356,17 @@ reads the Lot Register workbook.)
 
 ---
 
-## 8. Open items — none blocking
+## 8. Open items
 
+0. ⚠️ **Phase 17 decisions for the operator** (`PROPOSED_PHASE17_PLAN.md` §9.3):
+   **D1** the router (`qwen2.5:1.5b`) is **1.35 GB** resident, over ruling
+   Q17-1's 1 GB — raise the budget, ship 0.5b knowingly (routing 0.72), or keep
+   `ai_router_enabled = 0` until the CPX42 is sized. **D3** the 0.95 attack-block
+   target is not met (dev 0.667, holdout 0.316) and is reported, not gated.
+   **Probation:** delete `continue-on-error` from the `ai-router-eval` job after
+   10 consecutive green runs with 0 flips. `qwen2.5:0.5b` is still pulled on this
+   Mac (398 MB, unused) — `ollama rm qwen2.5:0.5b` if you want the space back.
+   One tutorial false hit remains by design ("book man-hours" → the KPI beat).
 1. ✅ **Head of Qualities reached Reports — fixed in Phase 17a.** The leak was
    in the FRONTEND only: `auth.require_level` has always refused oversight
    roles, but `nav.tsx`'s `canAccess` let `minLevel: 2` admit `qc_hod`, so the
@@ -377,12 +410,14 @@ reads the Lot Register workbook.)
 
 ## 10. Start here next session — choose ONE track
 
-Nothing is half-finished, so this is a choice, not a queue.
+First, **land Phase 17**: merge #104 → #105 → #106 → #107 in order, each on its
+own green CI, and get the operator's ruling on D1 (§8.0). Then choose:
 
 - **Track A — operator data clean-up support.** Walk the operator through the
   12 unknown lots and any sync report items; re-run the sync dry run with them.
-- **Track B — the qc_hod Reports question** (§8.1): confirm intent, then fix or
-  document, with an rbac-matrix case.
+- **Track B — the router's probation** (§8.0): read each `ai-router-eval`
+  scorecard artifact; after 10 green runs with 0 flips, remove
+  `continue-on-error` in its own commit.
 - **Track C — Tier 1 security hardening** (`SECURITY_SUGGESTIONS.md`): 2FA for
   admin/logistics (enrol two admins first), shared OTP limiter, non-blocking
   dependency scanning in CI.

@@ -354,6 +354,23 @@ machine**, all of them rule 16 in a new domain:
 
 ---
 
+## Phase 17 — the System One router (rulings Q17-1…8, LOCKED 2026-10-03)
+
+Full text: `PROJECT_HANDOVER.md` → *Phase 17 rulings*; the spike and the
+deviations: `PROPOSED_PHASE17_PLAN.md` §9.
+
+| | Do not |
+|---|---|
+| **P17-narrow** | Let an intent WIDEN a lane. `system_one.lane_for` sends a question only where the role could already go; the fence (rule 9), `is_safe_select` and `gi_ai_ro` stay the boundary. Never simplify them because a router exists. |
+| **Q17-2** | Make the router's `is_safe:false` a standalone veto. It refuses only with a guard pattern or on the SQL lane. |
+| **P17-warm** | Load the router on a request's clock. A cold load is cancelled at 3 s and the router then NEVER warms — silently. `system_one.warm()` exists for this. |
+| **P17-D3** | Lower the 0.95 block target to what the model scores, or add a guard pattern because a `security_holdout.yaml` case missed — that turns the holdout into a second dev set. |
+| **Q17-1 / Q17-3** | Forget they AMEND two older rulings: "one warm model" is now one generation model + one pinned router, and P10-7 lets the router eval gate after its 10-run probation. Tier 2 still never gates. |
+
+⚠️ **The prompt's few-shot examples may appear in no eval file** (suite 17a-05).
+⚠️ **A video request is matched on its topic** (`system_one.video_topic`) —
+"video", "tutorial" and "watch" are the training-gate beat's own words.
+
 ## Rulings that look like oversights and are not
 
 Full list in `PROJECT_HANDOVER.md` → *Phase 10 rulings, LOCKED*. The four an
@@ -421,8 +438,15 @@ npm run test:nav --prefix frontend
 ```bash
 # AI eval — Tier 1 (147 cases) AND the deterministic retrieval gates (>= 0.85).
 # Needs no model. The grid is GENERATED; --check fails if the manual moved.
+# Since Phase 17 it also runs Router L2 (stage 0, guard containment, tutorial
+# retrieval) — deterministic, gating.
 .venv/bin/python -m tests.ai_eval.runner
 .venv/bin/python tools/gen_eval_grid.py --check
+```
+```bash
+# Router L3 — the System One model (qwen2.5:1.5b). The CI job ai-router-eval
+# runs this; locally it needs Ollama, and without it L3 SKIPS (not a pass).
+.venv/bin/python -m tests.ai_eval.runner --router --require-model
 ```
 ```bash
 # Frozen Streamlit regression suite — self-rooted, 599 checks.

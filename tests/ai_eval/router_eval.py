@@ -120,7 +120,9 @@ def run_l2() -> dict:
         hits = [c for c in cases if c["kind"] == "hit"]
         got_hits, leaks, false_hits, misses = 0, [], [], []
         for c in cases:
-            h = T.match(c["question"], c["role"])
+            # `request: true` = as the TUTORIAL_SEARCH lane sends it (17e).
+            q = S.video_topic(c["question"]) if c.get("request") else c["question"]
+            h = T.match(q, c["role"])
             key = (h["tutorial_id"], h["beat"]) if h else None
             if key:
                 b = beats.get(key)

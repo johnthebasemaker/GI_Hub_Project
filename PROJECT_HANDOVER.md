@@ -1135,6 +1135,27 @@ default unless noted. These are the ones code depends on:
 | **P16-fefo** | **FEFO puts EXPIRED lots LAST** and stays **allow-and-log** (locked 2026-06-30): a non-FEFO pick asks for a reason, never blocks. The server pick and the picker share one order. | `ledger._FEFO_PICK`, `lot_register._fefo_key` |
 | **P16-parity** | The frozen SQLite `v_lot_balance` is compared on its legacy columns with returns added back (`stock.SQL_LOT_BALANCE_PARITY`); legacy is never edited to match. | `backend/api/stock.py` |
 
+### Phase 17 rulings, LOCKED (2026-10-03)
+
+Full questions, the spike and the deviations: `PROPOSED_PHASE17_PLAN.md`
+(Q17-0…8, §9). The operator approved every recommended option. Two of them
+AMEND earlier standing rulings, and the amendments are as binding as the
+originals:
+
+| # | Ruling | Where it lives |
+|---|---|---|
+| **Q17-1** | ⚠️ **AMENDS "one warm model"**: one warm GENERATION model **plus one pinned router ≤ 1 GB**. ⚠️ Measured `qwen2.5:1.5b` at **1.35 GB** resident (deviation D1) — over this budget, awaiting the operator's ruling; `qwen2.5:0.5b` fits and fails routing (0.72). | `client.MODEL_ROUTER`, `system_one.KEEP_ALIVE` |
+| **Q17-2** | The router's **`is_safe:false` is a scored signal**, folded into the guard: it refuses with any guard pattern or on the SQL lane; alone elsewhere it is traced (`flagged`) and answered. **Never a standalone veto** (§7f's "no LLM judge" stands for every other lane). | `guard.with_router_signal` |
+| **Q17-3** | ⚠️ **AMENDS P10-7** for the router eval only: it may gate the pipeline **after a 10-run probation** — temperature 0, seed, pinned digest and Ollama version, floors on aggregates, a determinism probe on every run. Tier 2 (the 8B's answers) still never gates. | `tests/ai_eval/router_eval.py`, CI `ai-router-eval` |
+| **Q17-4** | The **Head of Qualities has no Reports** (and no Records ledgers) — the menu now follows `require_level`, which always refused oversight roles. | `nav.tsx` `OVERSIGHT_ROLES`, suite 17Q |
+| **Q17-5** | **`MANUAL_QA` is the fourth intent** beside SQL_QUERY, TUTORIAL_SEARCH, UI_COMMAND. | `system_one.INTENTS` |
+| **Q17-6** | CI runs on **path-filtered pushes to any branch + PRs**. | `.github/workflows/postgres-dual-ci.yml` |
+| **Q17-7** | **`UI_COMMAND` is navigation only** — a button to a page the role may open; never an action. | `system_one.resolve_page`, `lane_for` |
+| **Q17-8** | A `SQL_QUERY` answer is the **template lane's table in the chat** — never the NL→SQL lane, which would load the coder model mid-chat. | `ai/router._assistant_table` |
+| **P17-narrow** | ⚠️ **System One narrows, it never widens.** It may only send a question to a lane the role could already reach; rule 9's fence, `is_safe_select` and `gi_ai_ro` are untouched and must never be simplified because a router exists (P11-4). Suite 17c-03 fails if it imports `manual_qa`, `safety`, `analytics` or `db`. | `system_one.lane_for` |
+| **P17-warm** | ⚠️ **The router is loaded OFF the request path.** A cold load exceeds the 3 s request budget and Ollama cancels it, so it would never warm. Startup + background self-heal. | `system_one.warm` / `ensure_warm` |
+| **P17-D3** | The **0.95 attack-block target is reported, not gated**; the gate is a regression floor (dev ≥ 0.60) and the holdout set is never tuned against. Do not lower the target to pass, and do not add a pattern because a HOLDOUT case missed. | `router_eval.BLOCK_*` |
+
 ## PRESENT — current state and baselines
 
 > **Updated 2026-10-03 — Phases 13–16 merged (PRs #78–#102), CI parity fixed on

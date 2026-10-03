@@ -818,6 +818,41 @@ names who it affects and where it is explained in full.
 | A **return** gives back to its lot, so a lot's balance is received − consumed − returned. | Everyone | §3.10.1 |
 | **Practice** has example lots: an expired one, a FEFO one, CHEMOLINE rolls, and a lot used but never received. | Everyone (training) | §3.10.4 |
 
+## 3.12 The Hub Assistant answers some questions directly (Phase 17, October 2026)
+
+The **Hub Assistant** (the round button at the bottom right of every page) now
+takes a quick look at your question before answering it — about half a second
+— and decides what kind of question it is. Four things can happen:
+
+| You ask… | You get |
+|---|---|
+| to **open a page** — *"open the lots page"*, *"go to Reports"* | An **Open …** button for that page. Only pages your role can open are ever offered; a page you cannot open, or a name that fits several pages, gets an ordinary answer instead. It only opens pages — it never does anything for you. |
+| for a **video** — *"is there a video on staging a return?"* | The **Watch it** button, straight to the moment in the training video that shows it. If no video covers it, you get an ordinary written answer. |
+| for **numbers or records** — *"show me the receipts from last week"*, *"which lots expire in the next 30 days?"* | A **small table** in the chat. This is the same data as Reports → 🤖 AI → *Ask your data*, and only the roles that already have that card get it: **HOD, Logistics, Auditor and Admin**. An HOD sees their own site only. Everyone else gets the usual written answer from the manual. |
+| **anything else** — how to do something, what a word means, who can do what | A written answer from **your** section of the manual, exactly as before. |
+
+**A question that tries to trick the assistant** — telling it to ignore its
+rules, asking for its hidden instructions, typing database commands — is
+refused with the usual sentence: *"I can only answer questions about your
+section of the manual."* Ordinary work sentences that happen to use the same
+words (*"drop the damaged drums at bay 3"*, *"ignore the damaged drum and issue
+the rest"*) are answered normally.
+
+**If the quick check is not available** (the AI service is restarting, or an
+admin has switched it off), the assistant simply answers as it always did. You
+lose nothing; only the buttons and tables do not appear.
+
+**For admins:** the quick check can be switched off without a restart —
+Admin → Console → **Settings**, set `ai_router_enabled` to `0` (and back to
+`1`). The AI health line shows whether it is on and ready.
+
+Two smaller changes arrived with it:
+
+| Change | Who | Read |
+|---|---|---|
+| The **Head of Qualities** no longer sees **Reports** or the **Records** ledgers (Receipts, Consumption, Returns, Lots, Purchase Requests) in the menu. They never worked for this role — every one showed an error — and the role's pages are Quality Oversight and Lots & Expiry. | Head of Qualities | §2.2, §2.3.5 |
+| The **Watch it** button appears less often by mistake. A question that merely says "video" or "tutorial", or shares only a word like "many" or "into" with a video, no longer gets a link to the wrong moment. | Everyone | §24.2.3 |
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.
@@ -6852,6 +6887,7 @@ be tried before it is used for real. The current ones:
 | Lots, FEFO and expiry (§3.10.4) | **PRACTICE PU PRIMER (899971)**: `PR-OLD` (expired), `PR-SOON` (the FEFO lot), `PR-LATE`. |
 | CHEMOLINE rolls (§3.10.4) | **PRACTICE CHEMOLINE (899973)**, batch `1O26009999`, three rolls. |
 | Lots used but never received (§3.10.3) | Lot `PR-TYPO`. |
+| The assistant's quick answers (§3.12) | As `practice.hod`, ask the Hub Assistant *"which lots expire in the next 30 days?"* — a table, from Practice's own lots. As `practice.storekeeper`, ask *"open the lots page"* — an **Open Lots & Expiry** button — and *"is there a video on staging a return?"*. Nothing new had to be added: the quick check reads whatever database the Practice process holds (rule 17). |
 
 ## 26.5 What works differently in Practice
 

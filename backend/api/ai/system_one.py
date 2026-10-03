@@ -181,6 +181,25 @@ _TUTORIAL_RX = re.compile(
     r"training\s+(?:film|movie|recording))\b", re.I)
 
 
+# ⚠️ THE WORDS THAT ASK FOR A VIDEO ARE NOT THE TOPIC OF THE VIDEO (17e).
+# "Is there a video on staging a return?" sent whole to tutorials.match()
+# landed on the OCR tutorial's beat ABOUT the tutorial gate ("Watch now or
+# Watch later") — and so did "a video about booking flights" — because
+# "video", "tutorial" and "watch" are that beat's own words. They say THAT the
+# person wants a video, never WHICH; the topic is what is left without them.
+# Only the MEDIA words are removed: the rest of the sentence stays, because
+# the matcher's evidence includes joined bigrams ("staging a return" and
+# "stage a return" share `areturn`) and stripping filler too destroyed them.
+_VIDEO_REQUEST_RX = re.compile(
+    r"\b(videos?|tutorials?|walk-?\s?throughs?|demos?|clips?|footage|screencasts?|"
+    r"recordings?|recorded|lessons?|training|watch(ing)?)\b", re.I)
+
+
+def video_topic(question: str) -> str:
+    """The topic of a video request: the question minus the asking words."""
+    return re.sub(r"\s+", " ", _VIDEO_REQUEST_RX.sub(" ", question or "")).strip(" ?.!,")
+
+
 def _tokens(s: str) -> list[str]:
     s = s.lower().replace("&", " and ")
     out = []
