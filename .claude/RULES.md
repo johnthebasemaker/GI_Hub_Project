@@ -388,7 +388,8 @@ once takes the `daily_job_runs` claim.
 
 ## Gates
 
-Run these before saying anything is done. Baselines as of 2026-09-03.
+Run these before saying anything is done. Baselines as of 2026-10-03: service
+tests 2,762 · E2E 178 · parity:sme 1,334 · nav 52 routes · AI Tier 1 147 · grid 72.
 
 ```bash
 # Harness hygiene — ~1 s, no services. Runs FIRST in CI for a reason: it catches
@@ -458,3 +459,14 @@ cd tests/e2e && npm test
 * `tools/parity_check.py` **fails against the live mirror by design** —
   PostgreSQL is permanently ahead of the frozen SQLite. It is meaningful only on
   CI or a freshly-cutover database.
+* ⚠️ **CI runs one check the list above does not: *Derived-view parity*.** It
+  builds `tools/make_ci_fixture_db.py`, copies it to a fresh Postgres with
+  `tools/dual_ci.py`, and runs `tools/parity_check.py`. After touching
+  `backend/api/stock.py` (or any `DERIVED` view), run it on a scratch database
+  — recipe in `MANUAL_TESTING_GUIDE.md` §16e. A port that has legitimately
+  moved past the frozen SQLite view supplies `parity_sql`; **never edit
+  `legacy/` to make it match.** Phase 16 shipped red here (2026-10-01) because
+  the lot view gained columns; fixed with `stock.SQL_LOT_BALANCE_PARITY`.
+* ⚠️ **Wait for the PR's own `dual-ci` run before merging.** Local gates are
+  necessary, not sufficient: the Phase 16 PRs merged on green local gates while
+  their CI runs had already failed.

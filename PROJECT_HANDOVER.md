@@ -1106,7 +1106,43 @@ of each kind.
 
 ---
 
+### Phases 14–16 rulings, LOCKED (2026-09-26 → 2026-10-01)
+
+The full question lists live in `PROPOSED_PHASE14_PLAN.md` (Q14-1…16),
+`PROPOSED_PHASE15_PLAN.md` (Q15-0…9) and `PROPOSED_PHASE16_PLAN.md` (Q16-1…16,
+with build notes and deviations in its §9). The operator approved every
+default unless noted. These are the ones code depends on:
+
+| # | Ruling | Where it lives |
+|---|---|---|
+| **P14-units** | **Convert at READ.** The ledger, minimums and the workbook stay in packs; kilograms are a display computed from `inventory.Unit_Size`, which is the ONE source of the factor. A missing Unit Size never defaults to 1. | `services/units.py` |
+| **P14-recon** | **One quantity per bucket.** QR form and Excel both recording (site, day, tag, SAP) → the ledger holds `max(QR, Excel)`, never the sum. | `services/reconcile.py` |
+| **P14-groups** | **One job = one tank on one day; area asked once, credited once** (15e: one job per store-keeper note). | `services/sme_groups.py` |
+| **P14-login** | **Zero JS growth on the critical path.** The WebGL scene is two extra Vite entries, never `import()`ed, never precached; `perf/critical-path.json` is re-baselined only deliberately, with the reason in the commit. | `scripts/critical_path_check.mjs` |
+| **Q15-0** | **Practice cannot run behind the schema head** — the process refuses to boot. Both Practice DBs are migrated with `tools/practice_db.py migrate`, keeping trainee data. | `schema_head.py` |
+| **Q15-5/6** | **Garnet is surface preparation.** CV/CONCRETE → ESC1, ME/TANK/VESSEL → ESC2 (blasting norm codes); Garnet credits no area and stays OUT of the estimator. | `services/prep.py` |
+| **Q15-7/8/9** | The HOD answers **Old or New surface per job** (hint = the equipment's last answer); ±10 % band; NEW pre-filled 20/18 kg/m², OLD empty. | job card, `sme_prep_baseline` |
+| **17g** | **Every Live feature ships with its Practice dummy-data example**, applied to the existing Practice DBs too (see rule 17). | `tools/practice_overlay.py` |
+| **Q16-1** | **`Serial No.` is read by the ITEM**: Surface Shield → lot; roll item (UOM `ROL`) → roll + its batch; anything else → asset tag. | `services/lots.py` |
+| **Q16-2** | A cell naming several lots gets **no** lot; the operator splits the row. | `lots.is_multi` |
+| **Q16-3** | A CHEMOLINE **roll is a unit inside its batch** (`lot_units`); the batch is the lot. | `lot_units`, `lots.roll_batch` |
+| **Q16-4** | **Bricks are not lot-tracked** (`Lot_Tracked = FALSE`). | migration d8a3f6c1b2e9 |
+| **Q16-5** | A missing expiry is **MFD + the item's shelf life** (`Expiry_Source = 'derived'`); an expiry typed in the app is never overwritten. | `lot_file.add_months`, `ledger.post_receipt` |
+| **Q16-12 (b)** | A roll typed `10…` is auto-corrected to `1O…` (letter O), and the sync says so. | `lots.norm_roll` |
+| **Q16-14** | The Lot Register workbook has a `SAP` column on every sheet; matching falls back to name + component + pack size only without it, and refuses ambiguity. | `lot_file.resolve_sap` |
+| **Q16-16** | **Lots & Expiry** is for the store keeper, QC, the HOD and the Head of Qualities (admin always). | `lot_register._READERS`, nav |
+| **P16-describe** | ⚠️ **The Lot Register workbook only DESCRIBES lots.** It never writes a quantity; stock comes from the Receipt / Consumption / Return Logs alone. | `services/lot_file.py` |
+| **P16-fefo** | **FEFO puts EXPIRED lots LAST** and stays **allow-and-log** (locked 2026-06-30): a non-FEFO pick asks for a reason, never blocks. The server pick and the picker share one order. | `ledger._FEFO_PICK`, `lot_register._fefo_key` |
+| **P16-parity** | The frozen SQLite `v_lot_balance` is compared on its legacy columns with returns added back (`stock.SQL_LOT_BALANCE_PARITY`); legacy is never edited to match. | `backend/api/stock.py` |
+
 ## PRESENT — current state and baselines
+
+> **Updated 2026-10-03 — Phases 13–16 merged (PRs #78–#102), CI parity fixed on
+> `chore/phase16-cleanup`.** Baselines: **service tests 2,762/0** · **E2E 178** ·
+> AI Tier 1 147/147 · grid 72 · parity:sme 1,334 · UI math 33 · nav 52 · legacy
+> 599 · CI derived-view parity 5/5 · alembic head **`e5b2c7a9d4f1`** (Live and
+> both Practice DBs). The current orientation is `SESSION_HANDOVER.md`; the
+> older notes below are kept for their history.
 
 > **Updated 2026-08-28 — Phase 9 slice 9f (`feat/phase9-naming-docs`).
 > PHASE 9 COMPLETE.** Baselines: **service tests 2,064** · **E2E 125** ·
@@ -2143,6 +2179,11 @@ recovery commands live in [`deploy/cloudflared/README.md`](deploy/cloudflared/RE
 
 | PR | Commit | What |
 |---|---|---|
+| #99-#102 | `79736bb` | **Phase 16 — FEFO lot management (2026-10-01).** 16a `Serial No.` read by the item, lots created from receipts, returns carry a lot (migration `d8a3f6c1b2e9`); 16b the Lot Register workbook (`*Rubber*Brick*CNCEC*.xlsx`) describes lots inside `--erp`; 16c Lots & Expiry page, FEFO lot picker (expired last), Receive MFD (`e5b2c7a9d4f1`), the evening expiry notice; 16d Practice lots. Suites **16A** (13) **16B** (13) **16C** (11); E2E `lots.spec`. ⚠️ CI's derived-view parity went red on these merges and was fixed 2026-10-03. |
+| #94-#98 | `a6002c5` | **Phase 15 (2026-09-28/30).** 15a Practice can't run behind the head (`schema_head.py`), item Site/Category snapping; 15b job-card ticks; 15c static login mark + violet Practice; 15d Garnet as surface prep (`b7e2c4a19d53`); 15e store-keeper note → job card (`c4f1a8d2e6b7`), HOD adds items, one-site users see no Site box, WBS field, rule 17g. Suite **15E** |
+| #87-#93 | — | **Phase 14 (2026-09-26).** Offline replays idempotent; 14a packs ⇄ KG at read (`c41d7e9a2b58`); 14b QR ⇄ Excel (`d7a3f05c1e92`); 14c grouped queue (`e8b4c16d2f03`); 14d What's new + tutorial freshness (`f2c9a7d41b36`); 14e 3D login + critical-path check; stock vs Excel (`a3d5e7f91c24`) |
+| #86 | `25a20bd` | **Practice sandbox — rule 17 (2026-09-24/26).** Second API process on `gihub_training`, CONNECT wall, shared `practice.<role>` accounts, reset |
+| #78-#85 | — | **Phase 13 (2026-09-10/16).** Bulk forms, video UX, SME ⇄ Inventory Surface Shield consumption; the Excel sync became an upsert on a per-row label (`f6b83d1a27c9`, rule 3a) |
 | #73-#76 | `feat/phase12-*` | **Phase 12 — Automated role-based video tutorials (2026-09-06/07).** A tutorial is a Playwright screencast of the real UI + a HeyGen avatar, composited locally into an MP4 for the training hub slice 10b already built. Seven **P12-x** rulings, above. **12a** `tools/make_tutorial_db.py` — the synthetic dataset (real structure, invented everything else; deterministic on a pinned `ANCHOR`), its own database `gihub_tutorial_pw` on :8011/:5184 with **no file under `tests/e2e/` edited**. **12b** the manifest (`script_sha256` is what ruling Q4 keys a compliance version bump on), WebVTT into the `captions_uri` column empty since 10b, and **freeze-padding** inside the composite filtergraph — which is what makes one screencast serve four languages. **12c** a **declarative** recorder (`steps:` in the YAML, one executor, because ~60 bespoke spec files would be 60 places for the harness to drift) plus four tutorials narrated from role-fenced manual chapters, checked against `manual_qa.allowed_sections()` itself. **12f** the assistant answers in text **and** deep-links into the second the step is on screen, behind the same fence rule 9 uses. Suite **CX** (15) |
 | — | `feat/workflow-polish-and-test-isolation` | **Test isolation + four workflow refinements (2026-08-13).** The backend suite stopped writing to the live database (**rule 15**), which immediately exposed two schema defects — see below. **Procurement:** `po_list` now returns the assignment, so the grid replaces `Assign` with the warehouse it went to, and `assign_po` refuses a re-route while treating a repeat of the same warehouse as idempotent. **Shipping:** `ship_dn` demands the number on the PHYSICAL delivery note plus a scan of it (alembic `b4f21c8ea9d7`), surfaced in all five portals through one `DN_DOC_COLUMNS` / `DeliveryDocLink` pair. **Quality:** the inspection queue shows the material NAME and an openable certificate (scoping inherited from the inspection, not re-derived); a rejection mints a **Return No** the SK pastes into Return Stock to fill the form, capped, DN-mandatory regardless of the entry-document switch, and single-use (alembic `c7a93e5d2b18`). **Returns:** the 30-day source-receipt window was measured on the vendor's delivery date rather than on when the row entered the ledger, so goods received that morning were missing from the dropdown — `receipts.posted_at` fixes it without a backfill. **Health:** a ninth Morning Briefing probe for uncertified Surface Shields, routed by location to the people who can act. Suites **BW** (7) + **BX** (21) |
 | #36 | `9f8be2e` | **QSEP slices 1-3 — Quality Control.** The `qc` role at level 1 with **dual scoping** (a site OR a warehouse, never both, and neither means it sees NOTHING); `/qc/accounts` creation by HOD/Warehouse/Logistics inside their own scope; QC site transfers as a REQUEST an **Admin** decides. MTC logic extracted to `services/quality.py`, mandatory at **DN creation**. The `qc_inspections` ledger, and the hard issuance block at **both** `stage_consumption` and `approve_smr` |

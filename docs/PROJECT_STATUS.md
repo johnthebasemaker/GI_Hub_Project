@@ -1,4 +1,35 @@
-# PROJECT STATUS — resume here (updated 2026-09-24 · Practice sandbox shipped · deployment PAUSED)
+# PROJECT STATUS — resume here (updated 2026-10-03 · Phases 13–16 shipped · deployment PAUSED)
+
+> 🆕 **2026-10-03 — Phases 13–16 are merged; read [`SESSION_HANDOVER.md`](../SESSION_HANDOVER.md)
+> first** (it was rewritten for this point). In one breath:
+> - **Phase 13** (PRs #78–#85): bulk forms, video UX, SME ⇄ Inventory Surface
+>   Shield consumption; the Excel sync became an upsert on a per-row label.
+> - **Phase 14** (PRs #87–#93, 2026-09-26): packs ⇄ KG at read, QR ⇄ Excel
+>   one-quantity-per-bucket, the grouped queue, "What's new", the 3D login with a
+>   zero-growth critical-path build check, stock vs the workbook.
+> - **Phase 15** (PRs #94–#98, 2026-09-28/30): Practice can't run behind the
+>   schema head; job-card ticks; violet Practice; Garnet as surface prep; the store
+>   keeper's note drives the job card; HOD adds items; one-site users see no Site
+>   box; WBS field on Receive/Issue.
+> - **Phase 16** (PRs #99–#102, 2026-10-01): lots from the workbooks'
+>   `Serial No.`, the Lot Register workbook (describes, never moves stock), Lots &
+>   Expiry, FEFO picker with expired lots last, Receive MFD, the evening expiry
+>   notice, Practice lots.
+> - **2026-10-03 (`chore/phase16-cleanup`):** CI's derived-view parity fixed for
+>   the lot view (`stock.SQL_LOT_BALANCE_PARITY`); the docs swept (manual §3.11,
+>   Supervisor chapter corrected, access matrix, testing guide §15b/§16e, this
+>   file, ARCHITECTURE §2a/§4h/§5a); SOP v2.0 rewritten by role; PDFs rebuilt.
+>
+> **Baselines:** service_tests 2,762/0 · E2E 178/178 · AI Tier 1 147/147 ·
+> grid 72 · parity:sme 1,334 · ui-math 33/0 · nav 52 · bug_check 599/0/0 · CI
+> parity 5/5 · alembic head **`e5b2c7a9d4f1`** (Live and both Practice DBs).
+>
+> **Live data (2026-10-03):** the operator committed the lot sync — 49 lots
+> (48 from receipts, 1 from the Lot Register workbook), **no expired lot with
+> stock left**, 12 lots used but never received (consumption lines in the SAP
+> 1040–1043 families, e.g. lot 3504 consumed under 1043 but received under 1041). Fixing those is a
+> workbook job, not a code one.
+
 
 > 🆕 **2026-09-24 — Practice sandbox (rule 17).** A **Live | Practice** switch on
 > the sign-in page. Practice is a second API process on its own synthetic
