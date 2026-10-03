@@ -202,6 +202,34 @@ quantity back, because legacy `returns` carry no lot. ⚠️ This step is not in
 local gate list; reproduce it with the recipe in MANUAL_TESTING_GUIDE §16e
 after touching `stock.py`.
 
+## 2b. Phase 18 — Night Shift (2026-10-03)
+
+Plan, measurements and deviations: `PROPOSED_PHASE18_PLAN.md`.
+
+- **Router (Track 1).** `ai/guard_patterns.yaml` **v3**: twelve weight-2
+  combination signals plus `encoded.disguised` (`guard.DISGUISE_HIT`), so the
+  guard alone refuses 36/39 dev attacks. `system_one.is_howto` gives a stage-0
+  `MANUAL_QA` with no model call. `system_one.CACHE` holds the deterministic
+  router's ANSWER (never the decision: the guard and Q17-2 run every request).
+  `warm()` primes the real system prompt, because Ollama keeps ONE prompt cache.
+- **CI (Track 2).** `ai-router-eval` is a hard gate (no `continue-on-error`);
+  its L3 dev-block floor is 0.90.
+- **Return desk (Track 3).** `returnable_items` gains `SAP_Code`, `Item_Ref`,
+  `returned_time`, `returned_by`, `return_condition`, `return_note` (alembic
+  `a7d3e1f5c829`, head). `entry.py`: `GET /entry/returnables/resolve` (a scan
+  resolves to `loan` / `item` / `employee` / `material` / `none`),
+  `POST /entry/returnables/return-batch` (per-id skips), and an optional
+  `LoanReturnIn` body on `…/{rid}/return`. ⚠️ Not `ReturnIn`: that name is the
+  stock-return body, and shadowing it 500'd `/entry/returns`. Overdue is
+  computed on **local** naive time (`entry._local_now`, also in `main.py`'s
+  work-queue badge). Before this it used UTC wall-clock and ran 3 h late.
+  Frontend: `components/ScanBox.tsx` (autofocused, wedge-scanner field),
+  `lib/scanFeedback.ts` (WebAudio tones + vibration, per-viewer mute),
+  `api/returnablesHooks.ts`. That last module is kept out of `api/hooks.ts`
+  because the login page imports `hooks.ts`. `AppLayout` now lazy-loads
+  `QrScanner`, which took jsQR off the sign-in critical path (−131 KB raw,
+  baseline re-recorded down).
+
 ## 3. Database facts that bite
 
 - Mixed-case column names are real (`"SAP_Code"`, `"Site_ID"`) — always quote.

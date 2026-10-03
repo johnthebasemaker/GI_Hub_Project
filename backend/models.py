@@ -2697,6 +2697,17 @@ class ReturnableItems(Base):
     cv_confidence = Column(Float)
     cv_employee_id = Column(Text)
     cv_tool_class = Column(Text)
+    # Phase 18 Track 3 (alembic a7d3e1f5c829): what was lent, how it came back.
+    SAP_Code = Column(Text)
+    Item_Ref = Column(Text)
+    returned_time = Column(DateTime)
+    returned_by = Column(Text)
+    return_condition = Column(Text)
+    return_note = Column(Text)
+
+    __table_args__ = (
+        Index('ix_returnable_items_site_status', 'Site_ID', 'status'),
+    )
 
 class WhatsappQueue(Base):
     __tablename__ = "whatsapp_queue"

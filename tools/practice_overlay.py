@@ -51,7 +51,8 @@ os.environ.setdefault("GI_DOTENV", "0")
 
 # Bumped when the OVERLAY's content changes. Reported with the tutorial
 # fixture's own DATASET_VERSION as "<fixture>.<overlay>".
-OVERLAY_VERSION = 3   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
+OVERLAY_VERSION = 4   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
+                      # · 4 = Phase 18 return desk loans (2026-10-03)
 
 SITE = "CNCEC"
 WAREHOUSE = "WH-01"
@@ -219,6 +220,10 @@ async def seed_queues() -> dict:
                 out["lots"] = await seed_lots(today)
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  lot example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["loans"] = await seed_returnables()
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  loan example skipped: {type(e).__name__}: {str(e)[:160]}")
 
         async with SessionLocal() as s:
             await ledger.stage_return(s, username="practice.storekeeper", data={
@@ -458,6 +463,57 @@ async def seed_lots(today: str) -> int:
                 {"u": f"1O26009999{n:03d}", "p": ROLL_SAP, "site": SITE, "r": day(-30)})
         await s.commit()
     return 4
+
+
+async def seed_returnables() -> int:
+    """Phase 18 Track 3 — tool loans to practise the return desk on (rule 17g).
+
+    Dated from NOW so the buckets never drift: one OVERDUE (due yesterday), one
+    due back at the end of TODAY's shift, one due in three days, and one
+    already returned DAMAGED (the Returned view and its condition tag). Two of
+    the open loans belong to Tomas Halversen — scanning his badge (900002)
+    shows a kit of two — and each carries an `Item_Ref`, so typing PR-TW-0001
+    at the desk finds that loan the way a sticker scan would. Idempotent;
+    never fatal.
+    """
+    import datetime as _d
+
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+
+    now = _d.datetime.now().replace(microsecond=0)
+    d0 = now.replace(hour=17, minute=0, second=0)
+    loans = (
+        # name, Item_Ref, borrower, badge, given, due, status, condition, note
+        ("PRACTICE TORQUE WRENCH", "PR-TW-0001", "Aria Bellweather", "900001",
+         now - _d.timedelta(days=2), d0 - _d.timedelta(days=1), "borrowed", None, None),
+        ("PRACTICE ANGLE GRINDER", "PR-AG-0002", "Tomas Halversen", "900002",
+         now - _d.timedelta(hours=3), d0, "borrowed", None, None),
+        ("PRACTICE SAFETY HARNESS", "PR-SH-0003", "Tomas Halversen", "900002",
+         now - _d.timedelta(hours=3), d0 + _d.timedelta(days=3), "borrowed", None, None),
+        ("PRACTICE IMPACT DRILL", "PR-ID-0004", "Nadia Okonjo", "900003",
+         now - _d.timedelta(days=3), d0 - _d.timedelta(days=1), "returned", "damaged",
+         "Chuck loose — sent for repair (Practice example)"),
+    )
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                "SELECT 1 FROM returnable_items WHERE \"Item_Ref\" = 'PR-TW-0001' LIMIT 1"))).first():
+            return 0
+        for name, ref, who, badge, given, due, st, cond, note in loans:
+            await s.execute(text(
+                'INSERT INTO returnable_items (material_name, uom, qty, borrower_name, '
+                'given_time, expected_return_time, status, "Site_ID", whatsapp_alert_sent, '
+                'cv_detected, cv_employee_id, "Item_Ref", returned_time, returned_by, '
+                'return_condition, return_note) VALUES (:n, \'EA\', 1, :w, :g, :d, :st, :site, '
+                '0, 1, :b, :r, :rt, :rb, :c, :note)'),
+                {"n": name, "w": who, "g": given, "d": due, "st": st, "site": SITE,
+                 "b": badge, "r": ref,
+                 "rt": (due - _d.timedelta(hours=2)) if st == "returned" else None,
+                 "rb": "practice.storekeeper" if st == "returned" else None,
+                 "c": cond, "note": note})
+        await s.commit()
+    return len(loans)
 
 
 def fixture_version() -> int:

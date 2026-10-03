@@ -991,6 +991,7 @@ async def item_snapshot(sap_code: str, site_id: Optional[str] = None,
 # --- Store-keeper toolbox (Phase 4) -------------------------------------------
 # Count sheet → variance → staged adjustments · bin locations · returnables.
 import datetime as _dt  # noqa: E402
+import re as _re  # noqa: E402
 
 from sqlalchemy import func, insert, select, text, update  # noqa: E402
 
@@ -1113,6 +1114,39 @@ class ReturnableIn(BaseModel):
     cv_employee_id: Optional[str] = Field(None, description="badge-scanned ID_Number")
     cv_tool_class: Optional[str] = Field(None, description="vision-identified tool name")
     cv_confidence: Optional[float] = Field(None, ge=0, le=1)
+    # Phase 18 Track 3 — what was lent, so a return scan can find the loan.
+    sap_code: Optional[str] = Field(None, max_length=60,
+                                    description="inventory SAP_Code of the tool")
+    item_ref: Optional[str] = Field(None, max_length=120,
+                                    description="the exact code scanned: serial, asset tag, sticker")
+
+
+RETURN_CONDITIONS = ("ok", "damaged", "incomplete")
+
+
+# ⚠️ NOT `ReturnIn`: that name is the STOCK-return body above (line ~308), and
+# a second class of the same name here silently replaced it module-wide — the
+# bulk endpoint resolves `_BULK_MODEL` at call time and 500'd (Phase 18, caught
+# by E2E W1c). A loan return and a stock return are different things.
+class LoanReturnIn(BaseModel):
+    condition: Literal["ok", "damaged", "incomplete"] = "ok"
+    note: Optional[str] = Field(None, max_length=500)
+
+
+class LoanReturnBatchIn(LoanReturnIn):
+    ids: list[int] = Field(..., min_length=1, max_length=50)
+
+
+def _local_now() -> _dt.datetime:
+    """Now, as naive LOCAL time — the clock every loan column is written in.
+
+    ⚠️ PHASE 18 FIX. `given_time` is the database's CURRENT_TIMESTAMP and
+    `expected_return_time` goes through `_parse_dt` (naive local), but the list
+    and the nav badge compared them with `datetime.now(timezone.utc)` stripped
+    of its zone — UTC wall-clock. On a UTC+3 site every loan turned OVERDUE
+    three hours late, on this page, in the overdue alert and in the badge
+    count, while the health monitor (local) disagreed with all three."""
+    return _dt.datetime.now()
 
 
 def _parse_dt(raw: str) -> _dt.datetime:
@@ -1139,7 +1173,7 @@ async def list_returnables(status: Optional[str] = None, site_id: Optional[str] 
     if site_id == "":
         return {"items": []}
     t = _returnables_t
-    now = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+    now = _local_now()
 
     # One-time overdue notifications, deduped via whatsapp_alert_sent (legacy flag).
     od = select(t.c["id"], t.c["material_name"], t.c["borrower_name"], t.c["Site_ID"],
@@ -1199,6 +1233,8 @@ async def create_returnable(body: ReturnableIn = Body(...),
             cv_employee_id=(body.cv_employee_id or None),
             cv_tool_class=(body.cv_tool_class or None),
             cv_confidence=body.cv_confidence,
+            SAP_Code=((body.sap_code or "").strip() or None),
+            Item_Ref=((body.item_ref or "").strip() or None),
         ).returning(_returnables_t.c["id"]))).scalar_one()
         await ledger.write_audit(session, user["username"], "RETURNABLE_LOAN",
                                  "returnable_items",
@@ -1227,45 +1263,219 @@ async def create_returnable(body: ReturnableIn = Body(...),
     return {"created": True, "id": rid}
 
 
-@router.post("/returnables/{rid}/return", summary="Mark a loaned tool as returned")
-async def mark_returned(rid: int,
-                        user: dict = Depends(require_roles("store_keeper")),
-                        session: AsyncSession = Depends(get_session)):
+_CONDITION_WORDS = {"ok": "in good order", "damaged": "DAMAGED",
+                    "incomplete": "INCOMPLETE (parts missing)"}
+
+
+async def _return_one(session: AsyncSession, user: dict, rid: int,
+                      body: "LoanReturnIn") -> dict:
+    """Close one loan inside the caller's transaction. Raises HTTPException.
+
+    Records WHEN (local), WHO received it and in WHAT condition (Phase 18). A
+    damaged or incomplete return also tells the site's HOD — it is the one
+    return somebody has to act on (repair, replace, charge back)."""
     t = _returnables_t
-    async with session.begin():
-        row = (await session.execute(select(
-            t.c["Site_ID"], t.c["status"], t.c["material_name"],
-            t.c["borrower_name"], t.c["borrower_phone"],
-        ).where(t.c["id"] == rid))).first()
-        if row is None:
-            raise HTTPException(404, f"returnable {rid} not found")
-        scope = resolve_site_param(user, None)
-        if not site_row_visible(scope, row.Site_ID):
-            raise HTTPException(403, "this loan belongs to another site")
-        if row.status == "returned":
-            raise HTTPException(409, "already returned")
-        await session.execute(update(t).where(t.c["id"] == rid).values(status="returned"))
-        await ledger.write_audit(session, user["username"], "RETURNABLE_RETURN",
-                                 "returnable_items", f"id={rid}")
-        await notify(session, event_key="loan_returned", recipient_role="store_keeper",
-                     recipient_site=row.Site_ID, severity="success",
-                     title=f"Tool returned: {row.material_name}",
-                     body=f"{row.borrower_name} returned it — confirmed by {user['username']}.",
+    row = (await session.execute(select(
+        t.c["Site_ID"], t.c["status"], t.c["material_name"],
+        t.c["borrower_name"], t.c["borrower_phone"],
+    ).where(t.c["id"] == rid))).first()
+    if row is None:
+        raise HTTPException(404, f"returnable {rid} not found")
+    scope = resolve_site_param(user, None)
+    if not site_row_visible(scope, row.Site_ID):
+        raise HTTPException(403, "this loan belongs to another site")
+    if row.status == "returned":
+        raise HTTPException(409, "already returned")
+    note = (body.note or "").strip() or None
+    await session.execute(update(t).where(t.c["id"] == rid).values(
+        status="returned", returned_time=_local_now(), returned_by=user["username"],
+        return_condition=body.condition, return_note=note))
+    await ledger.write_audit(session, user["username"], "RETURNABLE_RETURN",
+                             "returnable_items",
+                             f"id={rid} condition={body.condition}"
+                             + (f" note={note}" if note else ""))
+    cond = _CONDITION_WORDS[body.condition]
+    await notify(session, event_key="loan_returned", recipient_role="store_keeper",
+                 recipient_site=row.Site_ID,
+                 severity="success" if body.condition == "ok" else "warning",
+                 title=f"Tool returned: {row.material_name}",
+                 body=(f"{row.borrower_name} returned it {cond} — confirmed by "
+                       f"{user['username']}." + (f" Note: {note}" if note else "")),
+                 link_page="/entry/returnables", related_table="returnable_items",
+                 related_ref=str(rid))
+    if body.condition != "ok":
+        await notify(session, event_key="loan_returned_damaged", recipient_role="hod",
+                     recipient_site=row.Site_ID, severity="warning",
+                     title=f"Tool came back {body.condition}: {row.material_name}",
+                     body=(f"Borrowed by {row.borrower_name}; received by "
+                           f"{user['username']}." + (f" Note: {note}" if note else "")),
                      link_page="/entry/returnables", related_table="returnable_items",
                      related_ref=str(rid))
-    # Confirm to the borrower on WhatsApp — best-effort, post-commit.
-    if row.borrower_phone and wa.enabled():
+    return {"id": rid, "material_name": row.material_name,
+            "borrower_name": row.borrower_name, "borrower_phone": row.borrower_phone,
+            "Site_ID": row.Site_ID}
+
+
+async def _confirm_to_borrowers(session: AsyncSession, user: dict, done: list[dict]) -> None:
+    """WhatsApp each borrower their return — best-effort, post-commit."""
+    if not wa.enabled():
+        return
+    for d in done:
+        if not d.get("borrower_phone"):
+            continue
         try:
             await wa.send_template(
-                session, to=row.borrower_phone, template_key="status_update",
-                variables=[f"Tool return confirmed: {row.material_name}",
-                           f"Received back at {row.Site_ID or 'the'} store. Thank you."],
+                session, to=d["borrower_phone"], template_key="status_update",
+                variables=[f"Tool return confirmed: {d['material_name']}",
+                           f"Received back at {d['Site_ID'] or 'the'} store. Thank you."],
                 event_key="loan_returned", related_table="returnable_items",
-                related_ref=str(rid), created_by=user["username"])
+                related_ref=str(d["id"]), created_by=user["username"])
             await session.commit()
         except Exception:  # noqa: BLE001 — notifications are best-effort
             await session.rollback()
-    return {"returned": True, "id": rid}
+
+
+@router.post("/returnables/{rid}/return", summary="Mark a loaned tool as returned")
+async def mark_returned(rid: int, body: Optional[LoanReturnIn] = Body(None),
+                        user: dict = Depends(require_roles("store_keeper")),
+                        session: AsyncSession = Depends(get_session)):
+    # The body is OPTIONAL so every existing caller (no body) still works and
+    # means "returned in good order", exactly as before Phase 18.
+    body = body or LoanReturnIn()
+    async with session.begin():
+        done = await _return_one(session, user, rid, body)
+    await _confirm_to_borrowers(session, user, [done])
+    return {"returned": True, "id": rid, "condition": body.condition}
+
+
+@router.post("/returnables/return-batch",
+             summary="Return several loans at once (a borrower's whole kit)")
+async def return_batch(body: LoanReturnBatchIn = Body(...),
+                       user: dict = Depends(require_roles("store_keeper")),
+                       session: AsyncSession = Depends(get_session)):
+    """One scan of a badge finds everything that person has out; one press
+    returns the lot. ⚠️ A loan that cannot be returned (another site's, already
+    back, unknown) is SKIPPED with its reason rather than failing the others —
+    the tools on the counter are back whatever the ledger thinks of one id."""
+    done: list[dict] = []
+    skipped: list[dict] = []
+    async with session.begin():
+        for rid in dict.fromkeys(body.ids):            # de-duplicated, ordered
+            try:
+                async with session.begin_nested():
+                    done.append(await _return_one(session, user, rid, body))
+            except HTTPException as e:
+                skipped.append({"id": rid, "status": e.status_code, "reason": e.detail})
+    await _confirm_to_borrowers(session, user, done)
+    return {"returned": [d["id"] for d in done], "skipped": skipped,
+            "condition": body.condition}
+
+
+# ⚠️ "#123" is the only loan-id syntax: bare digits are badge IDs (10-digit
+# Iqama numbers) and SAP codes ("1001"), and guessing between them would return
+# the wrong person's tool.
+_LOAN_ID_RX = _re.compile(r"^\s*#\s*(\d{1,9})\s*$")
+
+
+def _norm_code(v: Optional[str]) -> str:
+    return "".join((v or "").split()).upper()
+
+
+@router.get("/returnables/resolve",
+            summary="A scan at the return desk → the open loans it names")
+async def resolve_scan(code: str, site_id: Optional[str] = None,
+                       user: dict = Depends(require_roles("store_keeper")),
+                       session: AsyncSession = Depends(get_session)):
+    """Turn one scanned or typed code into the loans it is about (Phase 18).
+
+    Tried in order, most specific first:
+
+      `loan`      "#123" — the loan id itself
+      `item`      the code matches an OPEN loan's Item_Ref or SAP_Code (a tool's
+                  sticker, serial or asset tag)
+      `employee`  an employee badge — every open loan of that person
+      `material`  an inventory item / registered unit with NO open loan here:
+                  nothing to return, but the Loan form can use it
+      `none`
+
+    Site-scoped like every loan endpoint, and the badge lookup hides another
+    site's employees exactly as `/ai/badge` does.
+    """
+    from .ai.router import verify_badge
+    from .stock import _resolve_material, _scan_tokens
+
+    site = resolve_site_param(user, site_id)
+    raw = (code or "").strip()
+    out: dict = {"code": raw, "kind": "none", "loans": [], "employee": None,
+                 "material": None, "message": ""}
+    if not raw or site == "":
+        out["message"] = "Nothing to look up."
+        return out
+    t = _returnables_t
+    open_q = select(t).where(t.c["status"] == "borrowed")
+    if site:
+        open_q = open_q.where(t.c["Site_ID"] == site)
+
+    async def loans(*conds) -> list[dict]:
+        rows = (await session.execute(open_q.where(*conds).order_by(
+            t.c["expected_return_time"].asc().nulls_last(), t.c["id"]))).mappings().all()
+        return [dict(r) for r in rows]
+
+    m = _LOAN_ID_RX.match(raw)
+    if m:
+        found = await loans(t.c["id"] == int(m.group(1)))
+        out.update(kind="loan" if found else "none", loans=found,
+                   message="" if found else f"No open loan #{m.group(1)} at this site.")
+        return out
+
+    tokens = list(dict.fromkeys(_norm_code(x) for x in _scan_tokens(raw) if x.strip()))
+    norm_ref = func.upper(func.replace(func.coalesce(t.c["Item_Ref"], ""), " ", ""))
+    norm_sap = func.upper(func.replace(func.coalesce(t.c["SAP_Code"], ""), " ", ""))
+    for tok in tokens:                       # the exact physical item first
+        found = await loans(norm_ref == tok)
+        if found:
+            out.update(kind="item", loans=found)
+            return out
+    for tok in tokens:                       # then any loan of that SAP
+        found = await loans(norm_sap == tok)
+        if found:
+            out.update(kind="item", loans=found)
+            return out
+
+    badge = await verify_badge(raw, user=user, session=session)
+    if badge.get("found"):
+        name = (badge.get("name") or "").strip().lower()
+        found = await loans((func.trim(func.coalesce(t.c["cv_employee_id"], "")) == badge["id_number"])
+                            | (func.lower(func.trim(func.coalesce(t.c["borrower_name"], ""))) == name))
+        out.update(kind="employee", loans=found,
+                   employee={k: badge.get(k) for k in ("id_number", "name", "phone",
+                                                       "department", "active")},
+                   message="" if found else f"{badge['name']} has nothing on loan here.")
+        return out
+
+    mat = await _resolve_material(session, raw)
+    if mat is not None:
+        out.update(kind="material", material={
+            "SAP_Code": mat["SAP_Code"], "description": mat["Equipment_Description"],
+            "uom": mat["UOM"], "item_ref": raw},
+            message=f"{mat['Equipment_Description'] or mat['SAP_Code']} is not on loan here.")
+        return out
+    unit_t = ledger._MD.tables["asset_units"]
+    uq = select(unit_t.c["SAP_Code"], unit_t.c["serial_no"], unit_t.c["asset_tag"]).where(
+        (func.trim(unit_t.c["serial_no"]) == raw) | (func.trim(unit_t.c["asset_tag"]) == raw))
+    if site:
+        uq = uq.where(unit_t.c["Site_ID"] == site)
+    unit = (await session.execute(uq.limit(1))).first()
+    if unit is not None:
+        mat = await _resolve_material(session, unit.SAP_Code or "")
+        out.update(kind="material", material={
+            "SAP_Code": unit.SAP_Code,
+            "description": (mat["Equipment_Description"] if mat else None),
+            "uom": (mat["UOM"] if mat else None), "item_ref": raw},
+            message="That unit is not on loan here.")
+        return out
+    out["message"] = f"Nothing matches {raw!r} — not a loan, a badge, or an item."
+    return out
 
 
 # ─── Surface-Shields issue workflow (2026-07-18) ─────────────────────────────

@@ -28901,6 +28901,145 @@ async def test_phase18a_router_guard():
         S.CACHE.clear()
 
 
+async def test_phase18r_returnables():
+    """Suite 18R — Phase 18 Track 3: the return desk.
+
+    A loan remembers what was lent (SAP_Code / Item_Ref); one scan resolves to
+    the loans it names; a return records when, by whom and in what condition;
+    a borrower's kit returns in one call; and "overdue" is measured on the same
+    LOCAL clock the due times are stored in. Synthetic rows, cleaned up."""
+    import datetime as _dtm
+    from sqlalchemy import delete as _del, select as _sel
+
+    rt = ledger._MD.tables["returnable_items"]
+    emp_t = ledger._MD.tables["employees"]
+    inv_t = ledger._MD.tables["inventory"]
+    appn = ledger._MD.tables["app_notifications"]
+    async with SessionLocal() as s_:
+        base = (await s_.execute(_sel(func.coalesce(func.max(rt.c["id"]), 0)))).scalar_one()
+        base_n = (await s_.execute(_sel(func.coalesce(func.max(appn.c["id"]), 0)))).scalar_one()
+        emp = (await s_.execute(_sel(emp_t.c["ID_Number"], emp_t.c["Name"]).where(
+            emp_t.c["status"] == "active",
+            func.coalesce(func.trim(emp_t.c["Site_ID"]), "").in_(("", "CNCEC")),
+            func.coalesce(func.trim(emp_t.c["ID_Number"]), "") != "").limit(1))).first()
+        inv = (await s_.execute(_sel(inv_t.c["SAP_Code"], inv_t.c["Equipment_Description"]).where(
+            func.coalesce(func.trim(inv_t.c["SAP_Code"]), "") != "").order_by(
+            inv_t.c["SAP_Code"]).limit(1))).first()
+    cols = set(rt.c.keys())
+    check("18r-01: returnable_items carries what was lent and how it came back "
+          "(models.py — alembic a7d3e1f5c829 adds the same, rule 15)",
+          {"SAP_Code", "Item_Ref", "returned_time", "returned_by", "return_condition",
+           "return_note"} <= cols, str(sorted(cols)))
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            r = await ac.post("/auth/login", headers={"X-Real-IP": "203.0.113.118"},
+                              json={"username": "worker", "password": "floor2026"})
+            H = {"Authorization": f"Bearer {r.json()['access_token']}"}
+            now = _dtm.datetime.now()
+            due_soon = (now + _dtm.timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%S")
+            ref = f"SVC18R-SN-{base + 1}"
+
+            async def loan(name, borrower, **kw):
+                rr = await ac.post("/entry/returnables", headers=H, json={
+                    "material_name": name, "borrower_name": borrower, "qty": 1,
+                    "expected_return_time": kw.pop("due", due_soon), "site_id": "CNCEC", **kw})
+                return rr.json().get("id")
+
+            a = await loan("SVC18R Torque Wrench", emp.Name if emp else "Svc 18R",
+                           sap_code=inv.SAP_Code, item_ref=ref,
+                           cv_employee_id=emp.ID_Number if emp else None)
+            b = await loan("SVC18R Grinder", emp.Name if emp else "Svc 18R",
+                           cv_employee_id=emp.ID_Number if emp else None)
+            async with SessionLocal() as s_:
+                row = (await s_.execute(_sel(rt).where(rt.c["id"] == a))).mappings().first()
+            check("18r-02: a loan stores the scanned SAP_Code and the exact code (Item_Ref)",
+                  row["SAP_Code"] == inv.SAP_Code and row["Item_Ref"] == ref, str(dict(row)))
+
+            r1 = (await ac.get("/entry/returnables/resolve", headers=H,
+                               params={"code": f" {ref.lower()} "})).json()
+            r2 = (await ac.get("/entry/returnables/resolve", headers=H,
+                               params={"code": f"#{b}"})).json()
+            r3 = (await ac.get("/entry/returnables/resolve", headers=H,
+                               params={"code": "no-such-code-18r"})).json()
+            check("18r-03: the resolver finds a loan by its scanned code (case and spaces "
+                  "aside), by '#id', and says plainly when nothing matches",
+                  r1["kind"] == "item" and [x["id"] for x in r1["loans"]] == [a]
+                  and r2["kind"] == "loan" and [x["id"] for x in r2["loans"]] == [b]
+                  and r3["kind"] == "none" and r3["message"], f"{r1['kind']} {r2['kind']} {r3}")
+            if emp is not None:
+                r4 = (await ac.get("/entry/returnables/resolve", headers=H,
+                                   params={"code": emp.ID_Number})).json()
+                check("18r-04: a badge resolves to EVERY open loan of that person (badge "
+                      "lookup = /ai/badge, site rules included)",
+                      r4["kind"] == "employee" and {a, b} <= {x["id"] for x in r4["loans"]}
+                      and r4["employee"]["name"] == emp.Name, str(r4)[:200])
+            # the bare SAP of a material with no open loan → kind material
+            async with SessionLocal() as s_:
+                other = (await s_.execute(_sel(inv_t.c["SAP_Code"]).where(
+                    inv_t.c["SAP_Code"] != inv.SAP_Code,
+                    func.coalesce(func.trim(inv_t.c["SAP_Code"]), "") != "").limit(1))).scalar()
+            r5 = (await ac.get("/entry/returnables/resolve", headers=H,
+                               params={"code": f"{other}|some description"})).json()
+            check("18r-05: an item with no open loan resolves to `material` (the Loan "
+                  "form uses it) — sticker 'SAP|Description' payloads included",
+                  r5["kind"] == "material" and r5["material"]["SAP_Code"] == other, str(r5)[:200])
+            hod = await ac.post("/auth/login", headers={"X-Real-IP": "203.0.113.119"},
+                                json={"username": "hod", "password": "hod2026"})
+            HH = {"Authorization": f"Bearer {hod.json().get('access_token', '')}"}
+            r6 = await ac.get("/entry/returnables/resolve", headers=HH, params={"code": ref})
+            check("18r-06: the desk is the store keeper's — the HOD gets 403",
+                  r6.status_code == 403, str(r6.status_code))
+
+            rr = await ac.post(f"/entry/returnables/{a}/return", headers=H,
+                               json={"condition": "damaged", "note": "blade chipped"})
+            async with SessionLocal() as s_:
+                row = (await s_.execute(_sel(rt).where(rt.c["id"] == a))).mappings().first()
+                hod_n = (await s_.execute(_sel(func.count()).select_from(appn).where(
+                    appn.c["id"] > base_n, appn.c["event_key"] == "loan_returned_damaged",
+                    appn.c["related_ref"] == str(a)))).scalar_one()
+            when = row["returned_time"]
+            check("18r-07: a return records WHEN (local clock), WHO and the CONDITION, "
+                  "and a damaged return tells the site's HOD",
+                  rr.status_code == 200 and row["status"] == "returned"
+                  and row["return_condition"] == "damaged" and row["return_note"] == "blade chipped"
+                  and row["returned_by"] == "worker" and when is not None
+                  and abs((when - _dtm.datetime.now()).total_seconds()) < 120 and hod_n >= 1,
+                  f"{rr.status_code} {dict(row)} hod_n={hod_n}")
+            c = await loan("SVC18R Drill", "Svc 18R")
+            rb = await ac.post("/entry/returnables/return-batch", headers=H,
+                               json={"ids": [b, a, c, 999999999], "condition": "ok"})
+            body = rb.json()
+            skipped = {x["id"]: x["status"] for x in body.get("skipped", [])}
+            check("18r-08: a batch returns what it can and SKIPS the rest with a reason "
+                  "(already back → 409, unknown → 404) instead of failing the kit",
+                  rb.status_code == 200 and sorted(body["returned"]) == sorted([b, c])
+                  and skipped == {a: 409, 999999999: 404}, str(body)[:240])
+            r0 = await ac.post(f"/entry/returnables/{c}/return", headers=H)
+            check("18r-09: the old no-body call still works and means 'in good order' "
+                  "(here: already returned → 409)", r0.status_code == 409, str(r0.status_code))
+
+            # overdue on the LOCAL clock: due 30 minutes ago local time
+            past = (_dtm.datetime.now() - _dtm.timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S")
+            d = await loan("SVC18R Overdue Probe", "Svc 18R", due=past)
+            lst = (await ac.get("/entry/returnables", headers=H)).json()
+            srv_now = _dtm.datetime.fromisoformat(lst["now"])
+            wq = (await ac.get("/meta/work-queues", headers=H)).json()
+            async with SessionLocal() as s_:
+                flagged = (await s_.execute(_sel(rt.c["whatsapp_alert_sent"]).where(
+                    rt.c["id"] == d))).scalar_one()
+            check("18r-10: ⚠️ 'overdue' uses the LOCAL clock the due time is stored in — "
+                  "a loan due 30 min ago is overdue NOW (the list's `now`, the one-time "
+                  "alert and the nav badge), not three hours later on a UTC+3 site",
+                  abs((srv_now - _dtm.datetime.now()).total_seconds()) < 120
+                  and flagged == 1 and int(wq.get("returnables_overdue") or 0) >= 1,
+                  f"now={lst['now']} flagged={flagged} wq={wq.get('returnables_overdue')}")
+    finally:
+        async with SessionLocal() as s_:
+            await s_.execute(_del(rt).where(rt.c["id"] > base,
+                                            rt.c["material_name"].like("SVC18R%")))
+            await s_.commit()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -29220,7 +29359,12 @@ async def main() -> int:
     print("\n 17E. Phase 17e — System One wired into the assistant: a page, a video, "
           "a table or a refusal costs no 8B generation, and every fallback is today's path")
     await test_phase17e_router_wiring()
+    print("\n 18A. Phase 18 Track 1 — guard v3 combinations, the how-to shortcut, "
+          "the router's answer cache")
     await test_phase18a_router_guard()
+    print("\n 18R. Phase 18 Track 3 — the return desk: a scan finds the loan, a return "
+          "records when, who and in what condition, overdue on the local clock")
+    await test_phase18r_returnables()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

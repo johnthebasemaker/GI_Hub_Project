@@ -1178,6 +1178,60 @@ Shows all borrowed (not yet returned) items at your site.
   - **Selectbox** of borrowed items
   - **✅ Mark as Returned button** — marks the loan returned, refreshes the figures, and confirms on screen
 
+### 4.5.3 The Return desk — scan to return (Phase 18, October 2026)
+
+The **Returnable Items** page now opens with the cursor already in a scan box
+at the top, the **Return desk**. You do not need to click anything first. A
+handheld barcode scanner, which types like a keyboard, works straight away,
+and so does the 📷 camera button beside the box.
+
+**To take tools back:**
+
+1. Scan **one** of these:
+   - the **borrower's badge** — shows everything that person has out, all ticked;
+   - the **tool's sticker, serial number or asset tag** — shows that loan;
+   - or type **#** and the loan number (e.g. `#57`) and press Enter.
+2. Untick anything they have not brought back.
+3. If a tool is not in good order, choose **Damaged** or **Parts missing** and
+   add a short note (e.g. *"blade chipped"*). The HOD is told about these.
+4. Press **Return** — or simply press **Enter** in the empty scan box.
+
+Each scan **beeps and flashes**: one short high beep and a green edge means
+found, two low beeps and a red edge means nothing matched. The 🔊 button turns
+the sound off on this device. The box keeps the cursor, so you can scan the
+next person straight away.
+
+**One-scan return** (the switch at the top of the desk): when it is on, a tool
+scan that matches exactly **one** loan returns it **in good order** at once, with no
+second press. Leave it off if you want to check the condition of each tool.
+
+**When you lend a tool**, press **Scan tool** on the loan form. The scanned code
+is kept on the loan, so the **same scan** finds it again at the return desk.
+If the code is an item in the item list, its name and unit fill in for you.
+The **due-back** buttons (*End of shift*, *Tomorrow 17:00*, *+3 days*,
+*+1 week*) set the date and time in one press.
+
+**What you see on the page now:**
+
+- Four counters: **On loan**, **Overdue** (press it to list only those),
+  **Due back today** and **Returned today**.
+- **Open / Overdue / Returned / All** above the table. Open loans are listed
+  soonest-due first, each showing *"in 3 h"* or *"2 d overdue"*.
+- Returned loans show their condition, when they came back and who received
+  them (hover over the time).
+- **Returned OK** on a row returns that loan in good order; **…** opens it in
+  the desk so you can record a condition.
+
+> **Fixed in Phase 18:** a loan used to show as **overdue three hours late**.
+> The page compared due times, which are kept in local time, with the server's
+> UTC clock. Overdue now means overdue as soon as the due time passes, on the
+> page, in the alert and in the menu badge.
+
+**Practice:** sign in as `practice.storekeeper`. Scan or type Tomas Halversen's
+badge **900002** to see a kit of two tools, or type **PR-TW-0001** to find the
+overdue torque wrench. The Returned view shows a drill that came back
+**Damaged**.
+
 ---
 
 ## 4.6 Entry Log → 🧮 Stock Count

@@ -740,9 +740,10 @@ so that testing them produces a documented fact rather than a false defect.
 | Borrowed / returned | ✅ | Two statuses, nothing between |
 | Expected return time | ✅ | Free-form date and time |
 | Overdue detection | ✅ | Computed as expected time < now, on read |
-| Borrower | ⚠️ **free text** | A typed name and phone number — **not linked to the employee roster**. Contrast PPE, which is keyed on the employee ID. |
+| Borrower | ⚠️ **free text** | A typed name and phone number. A badge scan also records the employee ID (`cv_employee_id`), and since Phase 18 that ID is how a badge scan at the return desk finds the person's loans. |
+| What was lent | ✅ **since Phase 18** | `SAP_Code` + `Item_Ref` (the exact code scanned). A return scan matches `Item_Ref` first, then `SAP_Code`. |
 | **Partial return** | ❌ **not modelled** | Marking returned returns the **whole** loan regardless of quantity |
-| **Damaged on return** | ❌ **not modelled** | No condition is captured. Record it as a separate adjustment. |
+| **Damaged on return** | ✅ **since Phase 18** | `return_condition` ok / damaged / incomplete + `return_note`, `returned_time`, `returned_by`. A damaged or incomplete return notifies the site's HOD. It does **not** adjust stock: record that separately. |
 | **Stock impact** | ❌ **none** | ⚠️ A loan does **not** decrement stock. The tool is tracked in the loan ledger only. |
 | Extending a due date | ❌ | Not editable after creation |
 
@@ -4507,6 +4508,56 @@ routing-mix p50 0 ms (39 of 60 prompts decided without the model).
 ⚠️ **Never tune a pattern on `security_holdout.yaml`** (P17-D3). The v3 signals
 were designed on the dev set and checked against every twin; the holdout was
 read only as an aggregate.
+
+## 18b. Phase 18 Track 3 — the return desk
+
+**Why this exists.** A return used to mean finding a row in a long table and
+pressing *Mark returned*. Nothing tied a loan to the tool, so a scan could not
+find it, and a return recorded no condition, time or receiver. The page now
+opens with a focused scan box: a keyboard-wedge scanner works without a click.
+A badge, tool code or `#id` resolves to the open loans it names
+(`GET /entry/returnables/resolve`). Returns go through
+`POST /entry/returnables/return-batch` with a condition. Use Practice
+(`practice.storekeeper`).
+
+**TC-18B-01 — focus.** Open Returnable Items. Without clicking, type `#1` and
+Enter. The text went into the Return desk box.
+
+**TC-18B-02 — a badge returns a kit.** Type `900002` + Enter: *"2 open loans —
+Tomas Halversen"*, both ticked, one high beep and a green edge. Untick the
+harness, choose **Damaged**, note *"cord frayed"*, press Enter in the empty box.
+*"Returned 1 item as DAMAGED — the HOD is told"*. The HOD's bell has a
+*Tool came back damaged* notice. The harness is still open.
+
+**TC-18B-03 — a tool code.** Type `pr-tw-0001` (lower case) + Enter: the torque
+wrench loan, overdue tag in red. **Return 1 item**: returned in good order.
+
+**TC-18B-04 — nothing matches.** Type `NO-SUCH-CODE` + Enter: two low beeps, a
+red edge, *"Nothing matches…"*, the box is empty and still focused.
+
+**TC-18B-05 — one-scan return.** Turn **One-scan return** on. Loan a tool and
+use **Scan tool** with code `TEST-QR-1`, then scan `TEST-QR-1` at the desk: it
+returns at once, with no second press. Reload the page: the switch is still on
+(remembered on this device only).
+
+**TC-18B-06 — a scan on the loan form.** **Loan a tool → Scan tool**, type
+the SAP code of any item in the item list. The name and unit fill in, and
+*"Scanned: …"* shows under the field. Scan an item that is **already on
+loan**: you get a warning naming the borrower, and nothing is filled in.
+
+**TC-18B-07 — the local clock (regression).** Loan a tool due **one minute
+from now**, wait two minutes, reload. It is **OVERDUE**, the menu badge counts
+it and the overdue alert fired. Before Phase 18 that took three hours on a
+UTC+3 site.
+
+**TC-18B-08 — site wall.** As a store keeper of another site, `#<id>` of a
+CNCEC loan → *"No open loan #… at this site"*. A batch that includes it skips
+that one (*403 — this loan belongs to another site*) and returns the others.
+
+**TC-18B-09 — sound off.** Press 🔊: the next scan flashes but is silent.
+Vibration (on a phone) still works.
+
+Automated: service_tests **18R** (10 checks); E2E `returnables.spec.ts`.
 
 ## 15. Do's and Don'ts
 
