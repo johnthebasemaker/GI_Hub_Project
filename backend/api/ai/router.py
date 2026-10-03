@@ -38,6 +38,7 @@ from . import client as aic
 from . import handwritten as hw
 from . import jobs as ai_jobs
 from . import manual_qa
+from . import system_one
 from . import tutorials as ai_tutorials
 from . import ocr
 from . import pdf_extract
@@ -57,7 +58,10 @@ _FLAG_DEFAULTS = {"ai_enabled": "1", "ai_assistant_enabled": "1",
                   # QSEP slice 6 — the scanned PR/PO vision lane. Separate
                   # from ai_ocr_enabled so a site can keep handwriting OCR
                   # while turning off the heavier purchase-document lane.
-                  "ocr_purchase_scans": "1"}
+                  "ocr_purchase_scans": "1",
+                  # Phase 17 — the System One router's kill switch. Off means
+                  # every question takes the pre-Phase-17 path, exactly.
+                  "ai_router_enabled": "1"}
 
 
 async def _flags(session: AsyncSession) -> dict[str, bool]:
@@ -80,9 +84,16 @@ async def ai_health(user: dict = Depends(get_current_user),
     # cutover puts the renders in object storage (ruling Q3) a production box
     # has no manifests at all, and "no deep links appeared" should be a visible
     # state rather than a mystery.
+    models = await aic.list_models()
     return {"ok": ok, "enabled": True, "message": msg,
             "model": aic.MODEL_CHAT,
-            "tutorials": ai_tutorials.stats()}
+            "tutorials": ai_tutorials.stats(),
+            # Phase 17: a router that is switched on but not pulled is a
+            # visible state, not a mystery — every question then falls back.
+            "router": {"enabled": flags["ai_router_enabled"],
+                       "model": aic.MODEL_ROUTER,
+                       "pulled": aic.MODEL_ROUTER in models,
+                       "prompt_hash": system_one.prompt_hash()}}
 
 
 class AskIn(BaseModel):

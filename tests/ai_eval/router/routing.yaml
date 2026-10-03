@@ -1,0 +1,81 @@
+# tests/ai_eval/router/routing.yaml — System One routing evals (Phase 17).
+#
+# Labelled prompts, fifteen per intent. Every one is SAFE; the security set is
+# security.yaml. Scored by `python -m tests.ai_eval.runner --router`:
+#   macro accuracy over the four intents   >= 0.90   gate
+#   every single intent                    >= 0.80   gate
+#
+# `rules` marks a prompt stage 0 is EXPECTED to decide without the model (an
+# explicit page name or video word). Those are scored deterministically in L2
+# as well, so a regression in the cheap path is caught without a model.
+#
+# ⚠️ Public repository: written for this file, never pasted from ai_traces.
+# ⚠️ Nothing here may repeat a few-shot example from system_one_prompt.md.
+
+# ── SQL_QUERY — live numbers and records ─────────────────────────────────────
+- {id: sql.01, intent: SQL_QUERY, prompt: "How many drums of PU primer are at CNCEC right now?"}
+- {id: sql.02, intent: SQL_QUERY, prompt: "Show me the receipts from last week"}
+- {id: sql.03, intent: SQL_QUERY, prompt: "What did we consume at HQ yesterday?"}
+- {id: sql.04, intent: SQL_QUERY, prompt: "Which items are below minimum stock?"}
+- {id: sql.05, intent: SQL_QUERY, prompt: "List the purchase orders that are still open"}
+- {id: sql.06, intent: SQL_QUERY, prompt: "Which lots expire in the next 30 days?"}
+- {id: sql.07, intent: SQL_QUERY, prompt: "Total returns this month for CNCEC"}
+- {id: sql.08, intent: SQL_QUERY, prompt: "Who are our top suppliers by deliveries?"}
+- {id: sql.09, intent: SQL_QUERY, prompt: "How much remafix is left in the store?"}
+- {id: sql.10, intent: SQL_QUERY, prompt: "Show pending purchase requests for site CNCEC"}
+- {id: sql.11, intent: SQL_QUERY, prompt: "What was issued against WBS 1040 this week?"}
+- {id: sql.12, intent: SQL_QUERY, prompt: "Current stock of SAP 1001"}
+- {id: sql.13, intent: SQL_QUERY, prompt: "How many safety gloves were issued today?"}
+- {id: sql.14, intent: SQL_QUERY, prompt: "Which materials have zero stock at HQ?"}
+- {id: sql.15, intent: SQL_QUERY, prompt: "Give me the received quantity of chemoline in September"}
+
+# ── TUTORIAL_SEARCH — a video, walkthrough or demo ───────────────────────────
+- {id: tut.01, intent: TUTORIAL_SEARCH, rules: true, prompt: "Is there a video on staging a return?"}
+- {id: tut.02, intent: TUTORIAL_SEARCH, rules: true, prompt: "Show me a tutorial for the OCR workflow"}
+- {id: tut.03, intent: TUTORIAL_SEARCH, rules: true, prompt: "Do you have a demo of the Hub Assistant?"}
+- {id: tut.04, intent: TUTORIAL_SEARCH, rules: true, prompt: "Walk me through the executive summary with a video"}
+- {id: tut.05, intent: TUTORIAL_SEARCH, rules: true, prompt: "Play the training clip about returning stock"}
+- {id: tut.06, intent: TUTORIAL_SEARCH, rules: true, prompt: "Any walkthrough for uploading a photo of a consumption form?"}
+- {id: tut.07, intent: TUTORIAL_SEARCH, rules: true, prompt: "I'd like a video explaining what Not Valued means"}
+- {id: tut.08, intent: TUTORIAL_SEARCH, rules: true, prompt: "Where is the tutorial for store keepers?"}
+- {id: tut.09, intent: TUTORIAL_SEARCH, prompt: "Can I watch someone stage a return step by step?"}
+- {id: tut.10, intent: TUTORIAL_SEARCH, rules: true, prompt: "Is there training footage on the hub assistant?"}
+- {id: tut.11, intent: TUTORIAL_SEARCH, rules: true, prompt: "Video guide for scanning handwritten forms"}
+- {id: tut.12, intent: TUTORIAL_SEARCH, prompt: "Teach me the OCR upload with a recorded lesson"}
+- {id: tut.13, intent: TUTORIAL_SEARCH, prompt: "I want to watch how the HOD reads the executive summary"}
+- {id: tut.14, intent: TUTORIAL_SEARCH, rules: true, prompt: "Play the returns tutorial"}
+- {id: tut.15, intent: TUTORIAL_SEARCH, prompt: "Is there a lesson I can watch about the evening digest?"}
+
+# ── UI_COMMAND — navigation only (ruling Q17-7) ──────────────────────────────
+- {id: ui.01, intent: UI_COMMAND, rules: true, role: store_keeper, prompt: "Open the lots page"}
+- {id: ui.02, intent: UI_COMMAND, rules: true, role: hod, prompt: "Go to Reports"}
+- {id: ui.03, intent: UI_COMMAND, rules: true, role: store_keeper, prompt: "Take me to the stock page"}
+- {id: ui.04, intent: UI_COMMAND, rules: true, role: hod, prompt: "Navigate to approvals"}
+- {id: ui.05, intent: UI_COMMAND, rules: true, role: qc_hod, prompt: "Open Lots & Expiry"}
+- {id: ui.06, intent: UI_COMMAND, rules: true, role: supervisor, prompt: "Go to my security settings"}
+- {id: ui.07, intent: UI_COMMAND, rules: true, role: hod, prompt: "Open the dashboard"}
+- {id: ui.08, intent: UI_COMMAND, role: store_keeper, prompt: "I need the receive form, where is it?"}
+- {id: ui.09, intent: UI_COMMAND, rules: true, role: qc, prompt: "Show me the feedback page"}
+- {id: ui.10, intent: UI_COMMAND, rules: true, role: qc_hod, prompt: "Go to Quality Oversight"}
+- {id: ui.11, intent: UI_COMMAND, rules: true, role: warehouse_user, prompt: "Open training"}
+- {id: ui.12, intent: UI_COMMAND, role: store_keeper, prompt: "Bring me to the issue stock screen"}
+- {id: ui.13, intent: UI_COMMAND, rules: true, role: logistics, prompt: "Switch to the warehouse portal"}
+- {id: ui.14, intent: UI_COMMAND, rules: true, role: auditor, prompt: "Go back to the documents page"}
+- {id: ui.15, intent: UI_COMMAND, rules: true, role: store_keeper, prompt: "Open the Rack Locator"}
+
+# ── MANUAL_QA — how, what, why, who ──────────────────────────────────────────
+- {id: qa.01, intent: MANUAL_QA, prompt: "What does Not Valued mean on the valuation card?"}
+- {id: qa.02, intent: MANUAL_QA, prompt: "How do I stage a receipt?"}
+- {id: qa.03, intent: MANUAL_QA, prompt: "Who can approve a delivery note?"}
+- {id: qa.04, intent: MANUAL_QA, prompt: "Why is FEFO a warning and not a block?"}
+- {id: qa.05, intent: MANUAL_QA, prompt: "What is an MTC?"}
+- {id: qa.06, intent: MANUAL_QA, prompt: "Can a supervisor raise a purchase request?"}
+- {id: qa.07, intent: MANUAL_QA, prompt: "What happens after the HOD rejects a return?"}
+- {id: qa.08, intent: MANUAL_QA, prompt: "How does two-factor sign-in work for logistics accounts?"}
+- {id: qa.09, intent: MANUAL_QA, prompt: "What is the difference between a lot and a roll?"}
+- {id: qa.10, intent: MANUAL_QA, prompt: "Why did the issue form ask me for a reason?"}
+- {id: qa.11, intent: MANUAL_QA, prompt: "What is Practice mode for?"}
+- {id: qa.12, intent: MANUAL_QA, prompt: "How do I change my phone number?"}
+- {id: qa.13, intent: MANUAL_QA, prompt: "What does quarantined mean for a lot?"}
+- {id: qa.14, intent: MANUAL_QA, prompt: "Explain the evening digest"}
+- {id: qa.15, intent: MANUAL_QA, prompt: "What is a WBS code used for?"}

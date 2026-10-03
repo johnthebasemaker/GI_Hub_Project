@@ -189,6 +189,46 @@ def _shape_problem(question: str, shape: dict) -> str:
     return ""
 
 
+# ── de-obfuscation (Phase 17, patterns v2) ──────────────────────────────────
+#
+# "I g n o r e  a l l  p r e v i o u s", "1gn0re y0ur instruct10ns" and a
+# base64 blob that says "ignore all rules" are the same sentence as the plain
+# one, and v1 scored all three 0. Rather than writing a second pattern set for
+# each disguise, the patterns are run over the question AND over one
+# normalised copy of it; a pattern hits if it matches either. The copy is never
+# shown to anyone and never sent to a model.
+#
+# ⚠️ EACH STEP IS NARROW ON PURPOSE, because the normalised text is what the
+# negative twins are scored on too. Leet is undone only inside tokens that MIX
+# letters and digits ("1gn0re"), never in a number ("10 drums", "SAP 1001");
+# letter-spacing is collapsed only for a run of 6+ single characters; base64 is
+# decoded only when it yields printable text.
+_LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s",
+                       "7": "t", "@": "a", "$": "s"})
+_MIXED_RX = re.compile(r"\b(?=[\w@$]*[A-Za-z])(?=[\w@$]*[0-9@$])[\w@$]+\b")
+_SPACED_RX = re.compile(r"(?:\b\w\b[ \t]{1,2}){5,}\b\w\b")
+_B64_RX = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}")
+
+
+def _deobfuscate(q: str) -> str:
+    import base64
+    import binascii
+    # "I g n o r e  a l l" → "Ignore all": a double space separates words.
+    out = _SPACED_RX.sub(lambda m: " ".join(
+        w.replace(" ", "").replace("\t", "")
+        for w in re.split(r"[ \t]{2,}", m.group(0))), q)
+    out = _MIXED_RX.sub(lambda m: m.group(0).translate(_LEET), out)
+    decoded = []
+    for m in _B64_RX.finditer(q):
+        try:
+            text = base64.b64decode(m.group(0), validate=True).decode("utf-8")
+        except (binascii.Error, ValueError, UnicodeDecodeError):
+            continue
+        if text.isprintable() and any(c.isalpha() for c in text):
+            decoded.append(text)
+    return " ".join([out, *decoded])
+
+
 def scan_input(question: str) -> InputVerdict:
     """Shape checks, then the scored jailbreak patterns. Pure; no I/O."""
     cfg = config()
@@ -199,8 +239,10 @@ def scan_input(question: str) -> InputVerdict:
                             reason=problem, patterns_version=cfg.version)
     score = 0
     hits: list[str] = []
+    plain = question or ""
+    norm = _deobfuscate(plain)
     for p in cfg.patterns:
-        if p.rx.search(question or ""):
+        if p.rx.search(plain) or (norm != plain and p.rx.search(norm)):
             hits.append(p.id)
             score += p.weight
     v.score, v.hits = score, hits
@@ -215,6 +257,46 @@ def scan_input(question: str) -> InputVerdict:
     elif score >= cfg.warn:
         v.decision, v.stage = "warn", "patterns"
     return v
+
+
+# ── the System One router's verdict, as ONE MORE SIGNAL (Phase 17) ──────────
+#
+# ⚠️ RULING Q17-2 (2026-10-03): the tiny router model's `is_safe: false` is a
+# scored input to this guard, NOT a standalone veto — because a stochastic
+# judge that can refuse on its own answers the same question on Monday and
+# denies it on Tuesday (§7f), and false refusal at 0 % is the number §7i says
+# is most worth protecting. It refuses in exactly two situations:
+#
+#   * combined with ANY pattern hit — "one pattern warns, a combination
+#     refuses", the rule every weight in guard_patterns.yaml already follows;
+#   * on the SQL lane — the one lane where the stakes are live data and a
+#     false refusal costs a re-phrasing, not a 06:00 store keeper's answer.
+#
+# Otherwise it is recorded (`router.unsafe` on the span) and the question
+# proceeds to the fence, which makes an injection profitless anyway. Living
+# here rather than in system_one.py keeps every refusal decision in one module.
+ROUTER_UNSAFE_HIT = "router.unsafe"
+ROUTER_SQL_INTENT = "SQL_QUERY"
+
+
+def with_router_signal(v: InputVerdict, *, is_safe: Optional[bool],
+                       intent: str) -> InputVerdict:
+    """Fold the router's verdict into an input verdict. Pure; returns a copy.
+
+    `is_safe=None` (router off, down, timed out, malformed) changes nothing:
+    the request proceeds exactly as it did before Phase 17.
+    """
+    if v.refused or is_safe is not False:
+        return v
+    out = InputVerdict(decision=v.decision, score=v.score,
+                       hits=[*v.hits, ROUTER_UNSAFE_HIT], reason=v.reason,
+                       stage=v.stage, patterns_version=v.patterns_version)
+    if v.hits or intent == ROUTER_SQL_INTENT:
+        out.decision, out.stage = "refuse", "router"
+        out.reason = ("I can only answer questions about your section of the "
+                      "manual. Ask me what you need to know and I will look it "
+                      "up.")
+    return out
 
 
 # ── the role-aware topic pre-flight ─────────────────────────────────────────

@@ -465,6 +465,86 @@ existing *Ask your data* card on the Reports → 🤖 AI tab?
 
 ---
 
-## 9. Spike results (17b) — to be filled in after Q17-0
+## 9. Spike results (17b) — measured 2026-10-03, and the deviations they force
 
-*(empty)*
+**Setup.** This Mac (Apple Silicon, Metal), Ollama 0.20.4. Pulled with the
+operator's leave (Q17-0): `qwen2.5:0.5b` (398 MB, digest `a8b0c5157701…`, 27 s)
+and `qwen2.5:1.5b` (986 MB, `65ec06548149…`, 65 s). Data: the files 17d ships —
+`tests/ai_eval/router/routing.yaml` (60 prompts, 15 per intent),
+`security.yaml` (39 attacks + 39 negative twins, the DEV set) and
+`security_holdout.yaml` (19 + 19, written AFTER the patterns and the prompt
+were frozen and never used to tune them). Decoding: temperature 0, seed 0,
+top_k 1, JSON-Schema `format`. Three full runs per model.
+
+### 9.1 The prompt format mattered more than the model size
+
+Same model, same data, one run each (qwen2.5:1.5b / qwen2.5:0.5b):
+
+| Variant | Routing macro | Attack detection (model alone) | Twin false-positive | avg ms |
+|---|---|---|---|---|
+| A — codes (`SQL_QUERY`…), examples in the system text | 0.915 / 0.35 | 38 % / 0 % | 0 / 0 | 612 / 254 |
+| B — A with few-shot as chat turns | 0.78 / 0.38 | 28 % / 3 % | 0 / 0 | 591 / 256 |
+| C — B, `is_safe` decided first | 0.72 / 0.32 | 18 % / 15 % | 0 / 0 | 624 / 333 |
+| D — word labels, key `attack` | **1.00** / 0.67 | 23 % / 0 % | 0 / 0 | 534 / 294 |
+| E — D + more attack shots | 0.90 / 0.57 | 49 % / 74 % | 0 / **82 %** | 489 / 330 |
+| **F — word labels, the brief's keys `intent` / `is_safe`** | **0.95** / — | **49 %** / — | **0** / — | **367** / — |
+
+**F ships** (`backend/api/ai/system_one_prompt.md`): the model answers
+`{"intent": "data" | "video" | "open_page" | "question", "is_safe": bool}` and
+`system_one.WIRE_TO_INTENT` maps the words 1:1 onto the contract's codes.
+Everything downstream sees only the codes.
+
+### 9.2 Final configuration, three runs
+
+| | **qwen2.5:1.5b** | qwen2.5:0.5b |
+|---|---|---|
+| Routing macro (pipeline) | **0.95** — SQL 0.80 · TUTORIAL 1.00 · UI 1.00 · MANUAL 1.00 | 0.72 — MANUAL 0.33 |
+| Misses | `sql.06`, `sql.08` → MANUAL_QA, `sql.10` → UI_COMMAND | 17 |
+| Attack detection, model alone | 49 % | 0 % |
+| Twin false positives (model / pipeline) | 0 % / 0 % | 0 % / 0 % |
+| **Pipeline block — DEV** | 0.72 | 0.49 |
+| **Pipeline block — HOLDOUT** | **0.32** | 0.11 |
+| Run-to-run flips (3 runs) | **0** | 0 |
+| Schema-valid replies | 100 % of model calls | 100 % |
+| Prompt size | 413 tokens | 413 |
+| Warm latency p50 / p95 / max | 539 / 749 / 1,216 ms | 355 / 610 / 856 ms |
+| …with `llama3.1:8b` resident | 573 / 813 ms | 343 / 959 ms |
+| Cold first call | 1.3 s | 1.5 s |
+| **Resident beside the 8B** | **1.35 GB** (8B: 5.46 GB) | 0.73 GB |
+
+### 9.3 Deviations from the approved plan (operator: please rule on D1)
+
+* **D1 — the model is `qwen2.5:1.5b`, and it is 1.35 GB resident, not ≤ 1 GB.**
+  The plan's own fallback (§2.1) was 1.5b, but §2.1 also claimed it would sit
+  under 1 GB at `num_ctx 1024`; measured, the weights and compute buffers alone
+  are ~1.3 GB, so `num_ctx` barely moves it. 0.5b fits the budget and fails
+  routing outright (0.72 macro, MANUAL_QA 0.33). **Ruling Q17-1 says ≤ 1 GB, so
+  this exceeds a locked ruling by 0.35 GB and needs the operator's decision**:
+  raise the budget to 1.5 GB, or ship 0.5b knowingly, or keep the router
+  switched off (`ai_router_enabled = 0`) until the CPX42 box is sized. The
+  default is `GI_AI_ROUTER_MODEL=qwen2.5:1.5b`; nothing else depends on it.
+* **D2 — latency is ~0.55 s p50, not ≤ 250 ms.** Acceptable in context — the
+  answer that follows on the MANUAL_QA lane takes seconds, and the TUTORIAL and
+  UI lanes skip the 8B generation entirely — but the target was missed.
+* **D3 — the 0.95 attack-block floor is not reachable with a ≤ 1.5B model under
+  ruling Q17-2, and it is NOT shipped as a gate.** Q17-2 makes the model a
+  signal (it refuses only with a guard pattern or on the SQL lane), and the
+  model detects about half of attacks, so blocking rests on the deterministic
+  guard. Guard v2 now sees EVERY dev attack (warn or refuse, 0 → 39 of 39 for
+  the brief's two examples) and refuses no twin; the HOLDOUT says how much of
+  that generalises — 0.32 — and that number is printed, not hidden. Per §7i's
+  rule (*a threshold tuned down to whatever today's model scores measures
+  nothing*), the 0.95 target stays in the scorecard as the gap, and the GATE is
+  a regression floor instead: pipeline block on the dev set must not fall below
+  0.60 (measured 0.72 here, margin for CPU-vs-Metal), plus the deterministic
+  properties in 17d's L2 (every dev attack at least warned, no twin refused).
+* **D4 — guard patterns v2 adds two deliberate single-pattern refusals**
+  (`sql.statement`, `sql.injection`: strict SQL grammar, "no innocent phrasing"
+  — the same argument as `extract.system_prompt`), widens
+  `override.ignore_previous` to the terse forms (suite CT-09 caught a first
+  draft that counted one idea twice), and de-obfuscates (leet, spaced letters,
+  base64) before matching.
+* **D5 — `SQL_QUERY` accuracy sits exactly on its 0.80 per-intent floor** on
+  Metal. The probation runs will show whether CPU agrees.
+
+Ollama was kept up through 17d's local eval runs and stopped afterwards (§10).
