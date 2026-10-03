@@ -32,7 +32,7 @@ an Ollama hiccup can never become an assistant outage (P11-3) and never a
 bypass. A TIMEOUT is not retried and never reaches a cloud (P11-9).
 
 Rulings (PROPOSED_PHASE17_PLAN.md, LOCKED 2026-10-03): Q17-1 one pinned router
-<= 1 GB beside the generation model · Q17-2 `is_safe:false` is a signal, a veto
+<= 1.5 GB beside the generation model (raised from 1 GB, deviation D1) · Q17-2 `is_safe:false` is a signal, a veto
 only on the SQL lane · Q17-5 `MANUAL_QA` is the fourth intent · Q17-7
 `UI_COMMAND` is navigation only.
 
@@ -179,6 +179,25 @@ _FILLER = {"the", "my", "a", "an", "page", "pages", "screen", "tab", "portal",
 _TUTORIAL_RX = re.compile(
     r"\b(videos?|tutorials?|walk-?\s?through|demos?|clips?|footage|screencasts?|"
     r"training\s+(?:film|movie|recording))\b", re.I)
+
+
+# ⚠️ THE WORDS THAT ASK FOR A VIDEO ARE NOT THE TOPIC OF THE VIDEO (17e).
+# "Is there a video on staging a return?" sent whole to tutorials.match()
+# landed on the OCR tutorial's beat ABOUT the tutorial gate ("Watch now or
+# Watch later") — and so did "a video about booking flights" — because
+# "video", "tutorial" and "watch" are that beat's own words. They say THAT the
+# person wants a video, never WHICH; the topic is what is left without them.
+# Only the MEDIA words are removed: the rest of the sentence stays, because
+# the matcher's evidence includes joined bigrams ("staging a return" and
+# "stage a return" share `areturn`) and stripping filler too destroyed them.
+_VIDEO_REQUEST_RX = re.compile(
+    r"\b(videos?|tutorials?|walk-?\s?throughs?|demos?|clips?|footage|screencasts?|"
+    r"recordings?|recorded|lessons?|training|watch(ing)?)\b", re.I)
+
+
+def video_topic(question: str) -> str:
+    """The topic of a video request: the question minus the asking words."""
+    return re.sub(r"\s+", " ", _VIDEO_REQUEST_RX.sub(" ", question or "")).strip(" ?.!,")
 
 
 def _tokens(s: str) -> list[str]:

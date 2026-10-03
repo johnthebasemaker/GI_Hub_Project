@@ -28622,6 +28622,163 @@ async def test_phase17c_system_one():
           G._deobfuscate(plain))
 
 
+async def test_phase17e_router_wiring():
+    """Suite 17E — System One wired into POST /ai/assistant, end to end.
+
+    Driven through the real ASGI app with BOTH models stubbed (the router's
+    `aic.generate` and the chat model's `aic.stream`), so each lane is proven
+    by what was — and was not — generated: a navigation, tutorial, data or
+    refused answer must cost NO 8B generation, and every fallback (router off,
+    router down, a role that may not query, no template) must reach today's
+    manual path exactly once.
+    """
+    import json as _json
+    import pathlib as _pl
+    import time as _time
+
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from .ai import client as aic
+    from .ai import system_one as S
+    from .ai import tutorials as T
+
+    root = _pl.Path(__file__).resolve().parents[2]
+    nonce = str(_time.time_ns())[-8:]          # the answer cache persists (P11-7)
+    router_reply = {"text": '{"intent": "question", "is_safe": true}', "exc": None}
+    seen = {"router": 0, "chat": 0}
+
+    async def fake_generate(model, prompt, **kw):
+        seen["router"] += 1
+        if router_reply["exc"] is not None:
+            raise router_reply["exc"]
+        return router_reply["text"]
+
+    async def fake_stream(model, prompt, *, system=None, **kw):
+        seen["chat"] += 1
+        for t in ("From the manual: ", "stage it, then post."):
+            yield t
+
+    async def ok_health():
+        return True
+
+    async def ok_models():
+        return [aic.MODEL_CHAT, aic.MODEL_ROUTER]
+
+    def tok(user, role, site="CNCEC"):
+        return {"Authorization": f"Bearer {_auth._make_token(user, role, site, _auth.ACCESS_TTL)}"}
+
+    async def setting(v: Optional[str]):
+        async with SessionLocal() as s_:
+            if v is None:
+                await s_.execute(_t("DELETE FROM app_settings WHERE key = 'ai_router_enabled'"))
+            else:
+                await s_.execute(_t(
+                    "INSERT INTO app_settings (key, value) VALUES ('ai_router_enabled', :v) "
+                    "ON CONFLICT (key) DO UPDATE SET value = :v"), {"v": v})
+            await s_.commit()
+
+    def frames(r):
+        out = []
+        for line in r.text.split("\n"):
+            if line.startswith("data: "):
+                try:
+                    out.append(_json.loads(line[6:]))
+                except ValueError:
+                    pass
+        return out
+
+    def first(fs, key):
+        return next((f[key] for f in fs if key in f), None)
+
+    saved = (aic.generate, aic.stream, aic.health, aic.list_models, T.TUTORIAL_DIR)
+    try:
+        aic.generate, aic.stream, aic.health, aic.list_models = (
+            fake_generate, fake_stream, ok_health, ok_models)
+        T.TUTORIAL_DIR = root / "tests" / "ai_eval" / "fixtures" / "tutorials"
+        T._CACHE["key"] = None
+        await setting(None)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            async def ask(q, headers, reply=None, exc=None):
+                router_reply["text"] = reply or '{"intent": "question", "is_safe": true}'
+                router_reply["exc"] = exc
+                seen["router"] = seen["chat"] = 0
+                r = await ac.post("/ai/assistant", headers=headers, json={"question": q})
+                return r, frames(r)
+
+            sk, hod = tok("sv17e-sk", "store_keeper"), tok("sv17e-hod", "hod")
+
+            r, fs = await ask("open the lots page", sk)
+            check("17e-01: 'open the lots page' → a navigate frame to /lots, decided at "
+                  "stage 0 — no router call and NO 8B generation (Q17-7: navigation only)",
+                  r.status_code == 200 and first(fs, "navigate") == {"path": "/lots", "label": "Lots & Expiry"}
+                  and seen == {"router": 0, "chat": 0} and any(f.get("done") for f in fs),
+                  f"{r.status_code} {fs} {seen}")
+
+            r, fs = await ask("is there a video on staging a return?", sk)
+            hit = first(fs, "tutorial") or {}
+            check("17e-02: a video request goes straight to the tutorial matcher — the "
+                  "moment in 'Staging a return', with NO 8B generation",
+                  hit.get("tutorial_id") == "sk_stage_return_v1" and seen["chat"] == 0,
+                  f"{fs} {seen}")
+
+            r, fs = await ask(f"is there a video about booking flights {nonce}?", sk)
+            check("17e-03: …and a video request with no matching tutorial falls back to "
+                  "today's manual answer — a wrong video is worse than none",
+                  first(fs, "tutorial") is None and seen["chat"] == 1, f"{fs} {seen}")
+
+            q_data = f"show me the receipts from last week {nonce}"
+            r, fs = await ask(q_data, hod, reply='{"intent": "data", "is_safe": true}')
+            table = first(fs, "table") or {}
+            async with SessionLocal() as s_:
+                audited = (await s_.execute(_t(
+                    "SELECT count(*) FROM system_audit_log WHERE username = 'sv17e-hod' "
+                    "AND action_type = 'AI_QUERY' AND details LIKE 'lane=assistant/template%' "
+                    "AND details LIKE :q"), {"q": f"%{nonce}%"})).scalar()
+            check("17e-04: an HOD's data question renders the TEMPLATE lane's table in the "
+                  "chat (Q17-8) — no 8B generation — and is audited like /ai/query",
+                  table.get("intent") == "receipts" and "columns" in table
+                  and "site CNCEC" in (table.get("message") or "")
+                  and seen["chat"] == 0 and audited == 1,
+                  f"{table.get('intent')} {table.get('message')} chat={seen['chat']} audited={audited}")
+
+            r, fs = await ask(f"show me the receipts from last week {nonce} sk", sk,
+                              reply='{"intent": "data", "is_safe": true}')
+            check("17e-05: ⚠️ the same data question from a STORE KEEPER gets no table — "
+                  "the role gate sends it to the manual (AI-5: an intent never widens a lane)",
+                  first(fs, "table") is None and seen["chat"] == 1, f"{fs} {seen}")
+
+            r, fs = await ask(f"how much primer is at CNCEC {nonce}?", hod,
+                              reply='{"intent": "data", "is_safe": false}')
+            check("17e-06: the router's is_safe:false on the SQL lane REFUSES (Q17-2) — "
+                  "a refusal sentence, no table, no generation",
+                  first(fs, "table") is None and seen["chat"] == 0
+                  and "section of the manual" in "".join(f.get("token", "") for f in fs),
+                  f"{fs} {seen}")
+
+            r, fs = await ask(f"what does quarantined mean for a lot {nonce}?", sk,
+                              reply='{"intent": "question", "is_safe": false}')
+            check("17e-07: …but is_safe:false ALONE on the manual lane is answered (flagged "
+                  "on the trace, not vetoed) — false refusal is the number most worth protecting",
+                  seen["chat"] == 1 and "stage it, then post." in r.text, f"{fs} {seen}")
+
+            r, fs = await ask(f"how do I stage a receipt {nonce} down?", sk,
+                              exc=aic.VisionUnavailable("down"))
+            check("17e-08: router DOWN → today's manual answer, exactly once",
+                  seen["chat"] == 1 and "stage it, then post." in r.text, f"{seen}")
+
+            await setting("0")
+            r, fs = await ask(f"open the lots page {nonce}", sk)
+            check("17e-09: router SWITCHED OFF (ai_router_enabled=0) → not even stage 0 "
+                  "runs a lane: 'open the lots page' is answered from the manual, as before "
+                  "Phase 17", first(fs, "navigate") is None and seen == {"router": 0, "chat": 1},
+                  f"{fs} {seen}")
+    finally:
+        aic.generate, aic.stream, aic.health, aic.list_models, T.TUTORIAL_DIR = saved
+        T._CACHE["key"] = None
+        await setting(None)
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -28938,6 +29095,9 @@ async def main() -> int:
           "contract, the decision (a signal, a veto only on the SQL lane), and "
           "the role gate that stops an intent widening a lane")
     await test_phase17c_system_one()
+    print("\n 17E. Phase 17e — System One wired into the assistant: a page, a video, "
+          "a table or a refusal costs no 8B generation, and every fallback is today's path")
+    await test_phase17e_router_wiring()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

@@ -11,7 +11,7 @@
 > | | Ruling |
 > |---|---|
 > | **Q17-0** | Wake Ollama, pull `qwen2.5:0.5b` + `qwen2.5:1.5b`, run the spike, put Ollama back to sleep. |
-> | **Q17-1** | "One warm model" is AMENDED to **one warm generation model + one pinned router ≤ 1 GB**. |
+> | **Q17-1** | "One warm model" is AMENDED to **one warm generation model + one pinned router ≤ 1 GB** — ⚠️ budget RAISED to **≤ 1.5 GB** by the operator on 2026-10-03 after the spike (deviation D1, §9.3). |
 > | **Q17-2** | `is_safe:false` is a **scored signal** combined with the deterministic guard; a standalone veto **only on the SQL lane** (§2.5). |
 > | **Q17-3** | P10-7 is AMENDED for the router eval: it may gate the pipeline **after a 10-run probation** (§3.4). |
 > | **Q17-4** | The Head of Qualities gets **no Reports at all**, matching the manual. |
@@ -512,17 +512,16 @@ Everything downstream sees only the codes.
 | Cold first call | 1.3 s | 1.5 s |
 | **Resident beside the 8B** | **1.35 GB** (8B: 5.46 GB) | 0.73 GB |
 
-### 9.3 Deviations from the approved plan (operator: please rule on D1)
+### 9.3 Deviations from the approved plan
 
 * **D1 — the model is `qwen2.5:1.5b`, and it is 1.35 GB resident, not ≤ 1 GB.**
   The plan's own fallback (§2.1) was 1.5b, but §2.1 also claimed it would sit
   under 1 GB at `num_ctx 1024`; measured, the weights and compute buffers alone
   are ~1.3 GB, so `num_ctx` barely moves it. 0.5b fits the budget and fails
-  routing outright (0.72 macro, MANUAL_QA 0.33). **Ruling Q17-1 says ≤ 1 GB, so
-  this exceeds a locked ruling by 0.35 GB and needs the operator's decision**:
-  raise the budget to 1.5 GB, or ship 0.5b knowingly, or keep the router
-  switched off (`ai_router_enabled = 0`) until the CPX42 box is sized. The
-  default is `GI_AI_ROUTER_MODEL=qwen2.5:1.5b`; nothing else depends on it.
+  routing outright (0.72 macro, MANUAL_QA 0.33).
+  ✅ **RULED 2026-10-03: the operator raised the Q17-1 router budget to
+  ≤ 1.5 GB.** `qwen2.5:1.5b` (1.35 GB) is the router; `GI_AI_ROUTER_MODEL`
+  and `ai_router_enabled` remain the switches.
 * **D2 — latency is ~0.55 s p50, not ≤ 250 ms.** Acceptable in context — the
   answer that follows on the MANUAL_QA lane takes seconds, and the TUTORIAL and
   UI lanes skip the 8B generation entirely — but the target was missed.

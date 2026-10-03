@@ -1,8 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { Alert, Button, Card, Input, Space, Tooltip, Typography } from 'antd'
 import { CloseOutlined, PlayCircleOutlined, RobotOutlined, SendOutlined } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
 import { apiBase, api, getAuthToken } from '../api/client'
+import type { DataTable, NavTarget } from './AssistantResult'
+
+// Phase 17 — fetched only when a router answer needs it (critical path).
+const AssistantResult = lazy(() => import('./AssistantResult'))
 
 interface Msg { who: 'user' | 'ai'; text: string }
 /** Phase 12f — a pre-rendered tutorial, and the second the step is on screen. */
@@ -21,6 +25,8 @@ export default function HubAssistant() {
   const [health, setHealth] = useState<AiHealth | null>(null)
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [tutorial, setTutorial] = useState<TutorialHit | null>(null)
+  const [nav, setNav] = useState<NavTarget | null>(null)
+  const [table, setTable] = useState<DataTable | null>(null)
   const [q, setQ] = useState('')
   const [busy, setBusy] = useState(false)
   const [queued, setQueued] = useState(false)
@@ -50,6 +56,8 @@ export default function HubAssistant() {
     setBusy(true)
     setQueued(false)
     setTutorial(null)
+    setNav(null)
+    setTable(null)
     setMsgs((m) => [...m, { who: 'user', text: question }, { who: 'ai', text: '' }])
     const ctrl = new AbortController()
     abortRef.current = ctrl
@@ -83,6 +91,8 @@ export default function HubAssistant() {
             if (ev.status === 'queued') setQueued(true)
             if (ev.token) { setQueued(false); appendToLast(ev.token) }
             if (ev.tutorial) setTutorial(ev.tutorial as TutorialHit)
+            if (ev.navigate) setNav(ev.navigate as NavTarget)
+            if (ev.table) setTable(ev.table as DataTable)
             if (ev.error) appendToLast(ev.error)
           } catch { /* ignore malformed frame */ }
         }
@@ -169,6 +179,11 @@ export default function HubAssistant() {
             </Typography.Text>
           </Button>
         </Link>
+      )}
+      {(nav || table) && (
+        <Suspense fallback={null}>
+          <AssistantResult nav={nav} table={table} onNavigate={() => setOpen(false)} />
+        </Suspense>
       )}
       <Space.Compact style={{ width: '100%' }}>
         <Input

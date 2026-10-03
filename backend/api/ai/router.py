@@ -144,6 +144,71 @@ async def assistant(body: AskIn = Body(...),
                 yield _sse({"done": True})
                 return
 
+            # ⚠️ PHASE 17 — SYSTEM ONE, BEFORE THE SEMAPHORE. A fast lane
+            # decision (ai/system_one.py) that NARROWS and never widens: the
+            # role gate (`lane_for`) only ever sends a question to a lane this
+            # role could already reach, and every degradation — router off,
+            # Ollama down, a timeout, no template, no tutorial match — falls
+            # through to the unchanged MANUAL_QA path below, which is fenced
+            # exactly as it was (rule 9). The router never queues behind the
+            # 8B: it is a different, pinned model (Q17-1).
+            with ai_trace.Span("ai.route", trace_id=tid, lane="assistant",
+                               role=role, username=username,
+                               site_id=site_id) as rspan:
+                decision = await system_one.decide(
+                    body.question, role, enabled=flags["ai_router_enabled"])
+                lane, nav = system_one.lane_for(decision, user, body.question)
+                # A refusal by the deterministic guard at stage 0 keeps TODAY's
+                # path: manual_qa refuses it itself, with its own spans and its
+                # own sentence. Only the router's combination refusal (Q17-2)
+                # is new, and only that one is answered here.
+                if lane == "BLOCKED" and decision.guard.get("stage") != "router":
+                    lane = "MANUAL_QA"
+                rspan.attrs(**decision.as_attrs(), lane=lane)
+            req.attrs(route_intent=decision.intent, route_lane=lane,
+                      route_flagged=decision.flagged or None)
+
+            if lane == "BLOCKED":
+                req.outcome("router_refused")
+                yield _sse({"token": decision.reason})
+                yield _sse({"done": True})
+                return
+
+            if lane == "UI_COMMAND" and nav:
+                # Navigation only (Q17-7). A link through the same route guard
+                # as the sidebar; it grants nothing.
+                req.outcome("navigate")
+                yield _sse({"token": f"That is the {nav['label']} page."})
+                yield _sse({"navigate": nav})
+                yield _sse({"done": True})
+                return
+
+            if lane == "TUTORIAL_SEARCH":
+                # Matched on the TOPIC, not the asking words — "video",
+                # "tutorial" and "watch" are the training-gate beat's own words
+                # (system_one.video_topic says why).
+                try:
+                    hit = ai_tutorials.match(system_one.video_topic(body.question), role)
+                except Exception:  # noqa: BLE001 — never break the turn
+                    hit = None
+                if hit:
+                    req.attrs(tutorial=hit["tutorial_id"], tutorial_beat=hit["beat"])
+                    req.outcome("tutorial")
+                    yield _sse({"token": f"Here is the moment in “{hit['title']}” "
+                                         f"that shows this."})
+                    yield _sse({"tutorial": hit})
+                    yield _sse({"done": True})
+                    return
+
+            if lane == "SQL_QUERY":
+                table = await _assistant_table(user, body.question)
+                if table is not None:
+                    req.outcome("data")
+                    yield _sse({"token": table["message"]})
+                    yield _sse({"table": table})
+                    yield _sse({"done": True})
+                    return
+
             # Generation semaphore: emit "queued" only when actually waiting so
             # the UI can say "waiting for a free AI slot…" instead of freezing.
             _q0 = _perf.perf_counter()
@@ -169,8 +234,12 @@ async def assistant(body: AskIn = Body(...),
                 # raises, the turn ends exactly as it did before the feature
                 # existed — P11-3's rule, that an add-on must never convert a
                 # diagnostic into an outage.
+                # Phase 17e: matched on the topic, without the media words —
+                # sent whole, any question saying "video" or "tutorial" was
+                # linked to the OCR tutorial's beat ABOUT the tutorial gate.
+                # A no-op for a question that names no medium.
                 try:
-                    hit = ai_tutorials.match(body.question, role)
+                    hit = ai_tutorials.match(system_one.video_topic(body.question), role)
                 except Exception:  # noqa: BLE001
                     hit = None
                 if hit:
@@ -187,6 +256,39 @@ async def assistant(body: AskIn = Body(...),
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
+
+
+ASSISTANT_TABLE_ROWS = 50
+
+
+async def _assistant_table(user: dict, question: str) -> Optional[dict]:
+    """The SQL_QUERY lane inside the assistant (ruling Q17-8): the SAME
+    template lane `POST /ai/query` runs — bound parameters, the caller's site
+    enforced from the JWT — rendered as a table in the chat. Template lane
+    ONLY: the NL→SQL lane would load the 7B coder model mid-chat, and a
+    question no template understands is answered from the manual instead.
+    Audited exactly like /ai/query. None → the caller falls back to MANUAL_QA.
+    """
+    try:
+        async with SessionLocal() as s:
+            scope = site_scope(user)
+            known: list[str] = []
+            if scope is None:
+                col = inventory_t.c["Site_ID"]
+                res = await s.execute(select(func.distinct(col)).where(col.isnot(None)))
+                known = [r[0] for r in res.all()]
+            out = await qr.run_query(s, question, site_scope=scope, known_sites=known)
+            if not out or not out.get("ok"):
+                return None
+            await _audit_ai_query(s, user, lane="assistant/template",
+                                  question=question, result=out)
+    except Exception:  # noqa: BLE001 — a failed query is a manual answer, not a 500
+        return None
+    rows = out.get("rows") or []
+    return {"intent": out.get("intent"), "message": out.get("message", ""),
+            "columns": out.get("columns") or [],
+            "rows": rows[:ASSISTANT_TABLE_ROWS], "total_rows": len(rows),
+            "metric": out.get("metric")}
 
 
 # --- Phase AI-2: document intelligence (PR/PO PDF extraction) -------------------
