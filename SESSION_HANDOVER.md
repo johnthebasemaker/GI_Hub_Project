@@ -334,12 +334,12 @@ reads the Lot Register workbook.)
 
 ## 8. Open items — none blocking
 
-1. **Head of Qualities reaches Reports** (`/reports` is `minLevel: 2`, and
-   qc_hod is level 2, in both nav and API), while the manual says the role sees
-   only Quality Oversight + Lots & Expiry and only Surface Shield data. Not
-   covered by `rbac-matrix.spec` (no qc_hod role there). Pre-existing since the
-   Quality slice (Aug). A task chip was raised on 2026-10-03; ask the operator
-   before changing access.
+1. ✅ **Head of Qualities reached Reports — fixed in Phase 17a.** The leak was
+   in the FRONTEND only: `auth.require_level` has always refused oversight
+   roles, but `nav.tsx`'s `canAccess` let `minLevel: 2` admit `qc_hod`, so the
+   menu showed Reports and five Records ledgers whose every call 403'd.
+   `canAccess` now applies `OVERSIGHT_ROLES` (suite 17Q, rbac-matrix `qchod`
+   column, MANUAL_TESTING_GUIDE §17a).
 2. **Workbook data** (operator): the 12 unknown lots (§7); the GI-7003055 clash
    (1429 vs 1001) noted in Phase 15 — re-check; Consumption Log duplicate review
    (`CNCEC_Inventory - duplicate review.xlsx`).

@@ -35,6 +35,14 @@ type Matrix = Record<string, Role[]>
 
 // Roles are named by their HARNESS key (see harness/env.ts USERS).
 const ALL: Role[] = ['sk', 'warehouse', 'supervisor', 'qc', 'hod', 'logistics', 'auditor']
+// ⚠️ The Head of Qualities is iterated SEPARATELY from ALL, on purpose. It is
+// an oversight role: level 2 on paper, but it never satisfies a rank check
+// (auth.require_level, nav.tsx OVERSIGHT_ROLES). Until Phase 17a this matrix
+// had no qchod column, so `minLevel: 2` handed it Reports and five Records
+// ledgers in the menu while every API call behind them 403'd — and nothing
+// here could see it. EVERYONE = ALL plus the oversight role, for the rows
+// that genuinely mean every signed-in user.
+const EVERYONE: Role[] = [...ALL, 'qchod']
 
 /**
  * Page → exactly the roles that may open it. Admin is excluded from every row
@@ -53,7 +61,7 @@ const MATRIX: Matrix = {
   '/stock': ALL,
   // Phase 16 (ruling Q16-16) — the roles that hold, inspect or answer for
   // controlled material. Read-only.
-  '/lots': ['sk', 'qc', 'hod'],
+  '/lots': ['sk', 'qc', 'hod', 'qchod'],
   // Only the roles that physically walk to a shelf, plus the racking owner.
   '/locator': ['sk', 'warehouse', 'logistics'],
   // Everyone who might sign out a tool. A QC inspects material, not hammers.
@@ -71,7 +79,7 @@ const MATRIX: Matrix = {
   '/sk/requests': ['sk'],
 
   // ── records ───────────────────────────────────────────────────────────────
-  '/records/inventory': ALL,
+  '/records/inventory': EVERYONE,
   '/records/receipts': ['hod', 'logistics', 'auditor'],
   '/records/consumption': ['hod', 'logistics', 'auditor'],
   '/records/returns': ['hod', 'logistics', 'auditor'],
@@ -99,6 +107,8 @@ const MATRIX: Matrix = {
   // ── planning ──────────────────────────────────────────────────────────────
   '/sme': ['hod', 'auditor'],
   '/manhours': ['hod'],
+  // NOT qchod (Phase 17a, ruling Q17-4): the manual gives the Head of
+  // Qualities no Reports, and /reports/* has always 403'd for them.
   '/reports': ['hod', 'logistics', 'auditor'],
 
   // ── portals ───────────────────────────────────────────────────────────────
@@ -118,6 +128,8 @@ const MATRIX: Matrix = {
   // request material, they do not receive, inspect or issue it.
   '/qc/inspections': ['sk', 'warehouse', 'qc', 'hod', 'logistics', 'auditor'],
   '/qc/accounts': ['warehouse', 'hod', 'logistics'],
+  // The Head of Qualities' own portal — its whole surface (§23).
+  '/qc-hod': ['qchod'],
 
   // ── safety & people ───────────────────────────────────────────────────────
   // Carries names. Narrowed to the store that issues gear, the HOD who owns
@@ -146,9 +158,10 @@ const MATRIX: Matrix = {
   '/admin/console': [],
 
   // ── everybody ─────────────────────────────────────────────────────────────
-  '/documents': ALL,
-  '/security': ALL,
-  '/feedback': ALL,
+  '/documents': EVERYONE,
+  '/security': EVERYONE,
+  '/training': EVERYONE,
+  '/feedback': EVERYONE,
 }
 
 interface NavProbe {
@@ -174,7 +187,7 @@ async function probe(page: Page): Promise<{ pages: string[]; can: Record<string,
   }, Object.keys(MATRIX))
 }
 
-for (const role of ALL) {
+for (const role of EVERYONE) {
   test.describe(`rbac:${role}`, () => {
     test.use({ storageState: storageStatePath(role) })
 

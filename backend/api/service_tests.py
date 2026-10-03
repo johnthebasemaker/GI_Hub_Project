@@ -28267,6 +28267,78 @@ async def test_phase16c_fefo_surfaces():
         await _cleanup()
 
 
+async def test_phase17a_qchod_access():
+    """Suite 17Q — the Head of Qualities' menu and the API agree, from both sides.
+
+    The bug (Phase 17a): `auth.require_level` refuses every oversight role, but
+    the frontend's `canAccess` did not, so `minLevel: 2` showed `qc_hod` the
+    Reports page and five Records ledgers whose every call 403s. Pinned here:
+    the frontend's oversight list IS `auth.QC_OVERSIGHT_ROLES`; every page the
+    nav snapshot grants `qc_hod` has a representative read that is not refused;
+    every page it no longer grants is refused at the API too; and the control —
+    an HOD still opens Reports.
+    """
+    import json as _json
+    import pathlib as _pl
+    import re as _re
+
+    from . import auth as _auth
+
+    root = _pl.Path(__file__).resolve().parents[2]
+    nav_src = (root / "frontend" / "src" / "config" / "nav.tsx").read_text(encoding="utf-8")
+    m = _re.search(r"const OVERSIGHT_ROLE_LIST = \[([^\]]*)\]", nav_src)
+    front = set(_re.findall(r"'([^']+)'", m.group(1))) if m else None
+    check("17q-01: the frontend's OVERSIGHT_ROLE_LIST is auth.QC_OVERSIGHT_ROLES — two "
+          "copies of an access rule that must never drift (rule 12)",
+          front == set(_auth.QC_OVERSIGHT_ROLES), f"nav.tsx={front} auth={set(_auth.QC_OVERSIGHT_ROLES)}")
+
+    snap = _json.loads((root / "backend" / "api" / "data" / "nav_access.json").read_text())
+    routes = snap.get("routes", snap)
+    granted = {k for k, v in routes.items() if isinstance(v, list) and "qc_hod" in v}
+    check("17q-02: the nav snapshot no longer grants qc_hod /reports (ruling Q17-4: the "
+          "manual gives the role no Reports)", "/reports" not in granted, str(sorted(granted)))
+
+    # One representative READ per granted page. The mapping must cover the
+    # snapshot exactly, so a page granted tomorrow without a matching endpoint
+    # check fails here rather than being assumed fine.
+    reads = {
+        "/qc-hod": "/qc-hod/overview",
+        "/lots": "/lot-register",
+        "/documents": "/documents/reference/manual",
+        "/security": "/auth/2fa/status",
+        "/training": "/training/modules",
+        "/feedback": "/feedback/mine",
+    }
+    check("17q-03: every page the snapshot grants qc_hod has a representative read here "
+          "(a new grant must bring its endpoint check with it)",
+          set(reads) == granted, f"snapshot={sorted(granted)} mapped={sorted(reads)}")
+
+    qch = {"Authorization": f"Bearer {_auth._make_token('sv17q-qchod', 'qc_hod', '', _auth.ACCESS_TTL)}"}
+    hod = {"Authorization": f"Bearer {_auth._make_token('sv17q-hod', 'hod', 'CNCEC', _auth.ACCESS_TTL)}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+        refused_reads = []
+        for page, path in sorted(reads.items()):
+            st = (await ac.get(path, headers=qch)).status_code
+            if st == 403:
+                refused_reads.append(f"{page} → {path}")
+        check("17q-04: every page the menu shows a Head of Qualities answers them — no menu "
+              "entry opens onto a 403", not refused_reads, str(refused_reads))
+
+        leaked = []
+        for path in ("/reports", "/reports/stock", "/reports/archive", "/reports/schedules",
+                     "/receipts", "/consumption", "/returns", "/lots", "/purchase-requests"):
+            st = (await ac.get(path, headers=qch)).status_code
+            if st != 403:
+                leaked.append(f"{path} → {st}")
+        check("17q-05: the pages taken out of the menu are refused by the API as well — "
+              "Reports and the five Records ledgers (a menu is not a control, rule 14)",
+              not leaked, str(leaked))
+
+        st = (await ac.get("/reports", headers=hod)).status_code
+        check("17q-06: control — the HOD still opens Reports; the fix narrows the "
+              "oversight role, not the rank check", st == 200, f"got {st}")
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -28576,6 +28648,9 @@ async def main() -> int:
     print("\n 16C. Phase 16c — which lot to issue (FEFO, expired last), what is about to "
           "expire, and the Receive form's MFD")
     await test_phase16c_fefo_surfaces()
+    print("\n 17Q. Phase 17a — the Head of Qualities' menu and the API agree: an "
+          "oversight role never satisfies a rank check, on either side")
+    await test_phase17a_qchod_access()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

@@ -230,7 +230,7 @@ export const NAV: NavGroup[] = [
   {
     id: 'reports',
     label: 'Reports',
-    access: { minLevel: 2 },   // {hod, logistics, admin} — SK/supervisor/warehouse excluded
+    access: { minLevel: 2 },   // {hod, logistics, auditor, admin} — oversight (qc_hod) never satisfies a rank check
     children: [
       { key: '/reports', label: 'Reports', icon: <BarChartOutlined />, access: { minLevel: 2 } },
     ],
@@ -461,6 +461,20 @@ export function roleHome(user: User | null): string {
   return ROLE_HOME[user.role] ?? '/'
 }
 
+// ⚠️ OVERSIGHT ROLES ARE NOT ON THE SENIORITY LADDER — the frontend twin of
+// `auth.QC_OVERSIGHT_ROLES` (service_tests suite 17Q pins the two equal).
+// `qc_hod` carries level 2 so that it inherits nothing, and the backend's
+// `require_level()` refuses it outright. This guard did not, so `minLevel: 2`
+// put Reports and five Records ledgers in the Head of Qualities' menu, each
+// opening onto a page whose every call 403s (Phase 17a). `minLevel: 0` still
+// admits them: in this file it means "every signed-in user" (Documents,
+// Security, Training, Feedback, Records → Inventory), which the backend serves
+// to anyone authenticated.
+// An array literal first so `scripts/nav_access_dump.mjs` (the snapshot's
+// model of this guard) can read the same list rather than restating it.
+const OVERSIGHT_ROLE_LIST = ['qc_hod']
+export const OVERSIGHT_ROLES: ReadonlySet<string> = new Set(OVERSIGHT_ROLE_LIST)
+
 // Route-guard permission: may this user OPEN this page? Admin → always (shadow).
 export function canAccess(user: User | null, rule: AccessRule): boolean {
   if (!user) return false
@@ -471,6 +485,9 @@ export function canAccess(user: User | null, rule: AccessRule): boolean {
   if (rule.writes && isReadOnly(user)) return false
   if (user.role === 'admin') return true
   if ('anyRole' in rule) return rule.anyRole.includes(user.role)
+  // A rank check above 0 is never satisfied by an oversight role: its grants
+  // are enumerated with `anyRole`, exactly as the API uses `require_roles`.
+  if (OVERSIGHT_ROLES.has(user.role) && rule.minLevel > 0) return false
   return (user.level ?? 0) >= rule.minLevel
 }
 

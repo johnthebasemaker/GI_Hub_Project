@@ -100,15 +100,26 @@ function ruleOf(node) {
   return rule
 }
 
+// Oversight roles never satisfy a rank check above 0 (nav.tsx, Phase 17a).
+// Read from nav.tsx's own literal; an absent list is unresolved, not empty.
+const OVERSIGHT = scope.get('OVERSIGHT_ROLE_LIST')
+if (!Array.isArray(OVERSIGHT)) unresolved.push('OVERSIGHT_ROLE_LIST')
+// The view-only roles (src/auth/readOnly.ts READ_ONLY_ROLES).
+const READ_ONLY = new Set(['auditor', 'qc_hod'])
+
 /** The same decision `canAccess` makes, in the same order. */
 function allows(role, rule) {
   if (!rule || rule.unresolved) return null
-  // `auditor` is the read-only account; `writes` is a capability gate checked
-  // BEFORE the admin shadow, exactly as in nav.tsx.
-  if (rule.writes && role === 'auditor') return false
+  // `writes` is a capability gate checked BEFORE the admin shadow, exactly as
+  // in nav.tsx.
+  if (rule.writes && READ_ONLY.has(role)) return false
   if (role === 'admin') return true
   if (rule.anyRole) return rule.anyRole.includes(role)
-  if (rule.minLevel !== undefined) return (roleLevels[role] ?? 0) >= rule.minLevel
+  if (rule.minLevel !== undefined) {
+    if (!Array.isArray(OVERSIGHT)) return null
+    if (OVERSIGHT.includes(role) && rule.minLevel > 0) return false
+    return (roleLevels[role] ?? 0) >= rule.minLevel
+  }
   return true
 }
 
