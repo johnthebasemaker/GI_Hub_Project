@@ -16,6 +16,14 @@
 > DB) · Playwright 128/128 · AI evals Tier 1 147/147 (0 leaks), recall 1.000 /
 > precision 0.994 · parity:sme 1,313 · ui-math 33/0 · bug_check 599/0/0 ·
 > nav 51 routes · build+tsc ✅ · alembic single head a1c9e64b3d70`.
+> **Updated 2026-10-03 (Phases 13–16 — §2a module map, §4f Garnet, §4g lots &
+> FEFO, §4h the Phase 14 ledger rules, §5a the login and the critical path,
+> §6a Practice)** at gates `ci_preflight ✅ · service_tests 2,762/0 · Playwright
+> 178/178 · AI evals Tier 1 147/147 (0 leaks), recall 1.000 / precision 0.994 ·
+> grid 72 cases · parity:sme 1,334 · ui-math 33/0 · nav 52 routes · bug_check
+> 599/0/0 · build ✅ + critical path +0 B · CI derived-view parity 5/5 · alembic
+> single head e5b2c7a9d4f1`. The gate line above is the older 2026-09-07 one,
+> kept for the trend.
 > **The Hetzner deployment is PAUSED by decision.** Locked rules + baselines in
 > one page: [`PROJECT_HANDOVER.md`](../PROJECT_HANDOVER.md).
 
@@ -120,7 +128,9 @@ four copies of everything it sends. `services/dailyjob.py` is that claim and all
 three daily loops now take it — see §7d for the bug it closed.
 
 `models.py` (repo `backend/models.py`) is the single schema contract; alembic
-migrations in `backend/alembic/versions` (single head **`a1c9e64b3d70`** = 11e
+migrations in `backend/alembic/versions` (single head **`e5b2c7a9d4f1`** since
+2026-10-01 — the Phase 13–16 chain after `a1c9e64b3d70` is listed in §2a; the
+history before it, from 2026-09-07: single head `a1c9e64b3d70` = 11e
 `ai_answer_cache`; before it `f8a3c05d1b27` = `ai_traces`, `e7f2a4c916b8` =
 slice 10b's execution `Shift` + `daily_job_runs` + the training registry,
 `d5b8c3f92a41` = `rate_buckets`, `c4a7e2b81f36` = ai_jobs worker heartbeat,
@@ -154,6 +164,43 @@ migration at all** — it fills tables slice 10b created. Modules:
 | `testdb.py` | **the throwaway database the service tests run against (2026-08-13, rule 15).** Provisions `gihub_svctest` from `gi_database.db` via the production cutover script and rewrites `DATABASE_URL` before `db.py` is imported; refuses to run if source and target are the same name. `_apply_fixtures` carries the state a cutover-built database lacks (the AI read-only role, the `employees` site backfill, the nine PPE SAPs, the entry-doc switch) |
 | `service_tests.py` | the **2,328-check** gate (suites A…CX), see §8 |
 | `training.py` | **Track 5 (slice 10b):** the training hub and the SOFT gate. `/training/modules`, `/training/gate/{feature}` (⚠️ `allowed` is unconditionally true — it reports, it never refuses), `/training/progress` (monotonic), `/training/acknowledge` (refused below 90% watched), `/training/defer` (the "Watch later" record), `/training/compliance` (HOD; driven from `users`, not from the compliance table), and the admin asset/version endpoints. See §7d. ⚠️ Phase 12 is what FILLS it: `storage_uri` and the long-empty `captions_uri` are written by `POST /training/assets` from the artefacts `tools/generate_tutorial.py` produces (§7j), and the page honours `?module&lang&t` so the assistant can deep-link a step (§7k) |
+
+## 2a. Phases 13–16 — the modules they added (2026-09-10 → 2026-10-01)
+
+**Migrations after `a1c9e64b3d70`, in order:** `b2d47f6c91ae` form print
+batches · `c3e58a7d24bf` form sheets seen · `d4f61b8e35ca` Phase 12 training
+modules · `e5a72c94f16d` SME consumption-log component identity ·
+`f6b83d1a27c9` ledger workbook row labels (the `XLSX:` sync identity) ·
+`c41d7e9a2b58` 14a Unit Size · `d7a3f05c1e92` 14b reconciliation ·
+`e8b4c16d2f03` 14c attribution groups · `f2c9a7d41b36` 14d announcements ·
+`a3d5e7f91c24` stock-vs-Excel checks · `b7e2c4a19d53` 15d Garnet prep baseline
+· `c4f1a8d2e6b7` 15e job `Work_Area` · `d8a3f6c1b2e9` 16 lots (lot columns,
+`returns.Lot_Number/Serial_No`, `inventory.Lot_Tracked/Shelf_Life_Months`,
+`lot_units`) · **`e5b2c7a9d4f1`** 16c `pending_receipts.MFD_Date`.
+
+| Module | Phase | Owns |
+|---|---|---|
+| `services/units.py` | 14a | The ONE home of the pack ⇄ base-unit factor (`inventory.Unit_Size`). Convert at READ; the ledger stays in packs. A Surface Shield with no Unit Size shows "— (no unit size)", never 1 kg per can. |
+| `services/reconcile.py` | 14b | QR ⇄ Excel: the ledger holds **max(QR, Excel)** per (site, day, resolved tag, SAP) — one quantity per bucket, never the sum. |
+| `services/sme_groups.py` | 14c, 15e | The grouped Surface Shield queue: one job = one tank on one day; SQM credited once. 15e: `parse_note`/`notes_of` read the store keeper's remark (`Floor - 13.37 SQM Done` → area, part, remark); two notes = two jobs; `Work_Area` + notes kept on the group and log rows and shown to the HOD, the Production Log and the Executive Summary. |
+| `announcements.py` + `services/announcements.py` + `services/tutorial_staleness.py` | 14d | "What's new": YAML in `docs/announcements/`; the audience is read from the nav snapshot `backend/api/data/nav_access.json` (refresh with `tools/announcements.py nav`; `npm run test:nav` fails if stale). Tutorial staleness warns admins only. |
+| `stock_excel.py` + `services/stock_excel.py` | 14 follow-up | Stock vs the workbook's Current Stock, with signed causes that sum to the difference; stored in `stock_excel_checks`; `tools/stock_excel_check.py --marked` writes a marked COPY (never the original — openpyxl drops DV extensions). |
+| `schema_head.py` | 15a | Boot guard: a process whose database is behind the alembic head refuses to start (Practice was six migrations behind and 500ed). `tools/practice_db.py migrate` brings both Practice DBs up. |
+| `services/prep.py` | 15d | Garnet = surface preparation (see §4f). |
+| `admin.py` `item_router` (`/inventory-items`) | 15e | HOD + admin add/edit inventory items; the HOD is pinned to their own site; delete stays admin-only. Site / Category snapped to the spelling in use (422 `unknown_*` unless `confirm_new`). |
+| `services/lots.py`, `services/lot_file.py`, `lot_register.py` | 16 | Lots & FEFO (see §4g). |
+| `practice.py` + `tools/practice_overlay.py` (OVERLAY_VERSION 3) | 17g | Every Live feature ships a Practice example: job notes (`seed_job_notes`), lots (`seed_lots`: PR-OLD / PR-SOON / PR-LATE, CHEMOLINE 899973 with rolls, PR-TYPO). |
+
+**`stock.DERIVED` and the CI parity check.** Each derived view has a SQLite
+original (`legacy/`, frozen) and a Postgres port. `tools/parity_check.py`
+(CI step *Derived-view parity*) compares them on the CI fixture. A port whose
+shape has legitimately moved past the frozen view supplies `parity_sql` (and,
+if needed, `parity_source_sql`) so parity is asserted on the invariant both must
+still share: `sme_materials` since 2026-07-30, and **`lots` since 2026-10-03** —
+`SQL_LOT_BALANCE_PARITY` projects the legacy columns and adds the returned
+quantity back, because legacy `returns` carry no lot. ⚠️ This step is not in the
+local gate list; reproduce it with the recipe in MANUAL_TESTING_GUIDE §16e
+after touching `stock.py`.
 
 ## 3. Database facts that bite
 
@@ -447,6 +494,23 @@ lots and FEFO had nothing to choose from.
   notice per site to the store keeper and the HOD (`lots.expiry_notices`).
 - **The estimator is untouched:** the SME engines never read lots (rule 1c).
 
+### 4h. The Phase 14 ledger rules (2026-09-26)
+
+- **Units convert at READ (14a).** The ledger, minimums and the workbook stay in
+  packs; `services/units.py` multiplies by `inventory.Unit_Size` for display
+  (`189 KG · 21 Can`). A consumption form ticked KG is converted to packs
+  before it posts, and refused if the material has no Unit Size.
+- **One quantity per bucket (14b).** When a QR form and the Excel workbook both
+  record the same (site, day, tag, SAP), the ledger holds the larger of the two,
+  never the sum. The HOD sees the comparison under SME → QR ⇄ Excel.
+- **One job, one credit (14c).** A Surface Shield job is one tank on one day;
+  its area is asked once and credited once, however many materials it drew.
+  15e split that further by the store keeper's note (two notes = two jobs).
+- **The Excel sync is an upsert on a per-row label** (`XLSX:<site>:<kind>:<day>
+  :<sap>:<hash ref>:<n>`, migration f6b83d1a27c9). Values are COALESCEd, never
+  erased; `--prune-vanished` removes rows the workbook dropped; rows entered in
+  GI Hub are never touched. Serial and Lot are excluded from the label (16a).
+
 ## 5. Frontend map (`frontend/src/`)
 
 React Router routes in `App.tsx`; **`config/nav.tsx` is the single
@@ -521,6 +585,35 @@ are golden-parity-pinned). New pages/components: `BulkImportPage` (dry-run →
 commit), `sme/SmartCalculator.tsx`, IssuePage Surface-Shields system-first
 flow, OcrImportPage "Validate (handwritten spec)" + TSV export, Admin Console
 feedback triage drawer + 📋 Prompt copy.
+
+### 5a. Phases 14–16 on the client
+
+- **The login (14e, 15c, 15e).** Tier 0 is CSS only. Tier 1 WebGL lives in two
+  extra Vite entries — `src/three/boot.ts` (an async entry injected by the
+  `gi-login-fx` plugin) and `src/three/loginScene.ts` (a module `<script>`) —
+  and is never precached. ⚠️ **Never `import()` the scene:** Vite's shared
+  preload helper re-splits the app chunks. The mark rises in once and then holds
+  still with a slow light sweep, centred in geometry space (Box3 of the intro
+  pose put it half a band too high); the canvas follows `.gi-login-crest`.
+- **The critical-path check.** `npm run build` ends with
+  `scripts/critical_path_check.mjs`: zero growth of raw JS against
+  `perf/critical-path.json` (hashes normalised), the scene not precached.
+  Re-baseline deliberately with `node scripts/critical_path_check.mjs --update`
+  and say why in the commit (16c added +229 B for the lot picker; the lot hooks
+  live in `api/lotHooks.ts` so they are not in the shared chunk).
+- **Duplicate `@keyframes` fail the build** (15c — a `gi-rise` clash once broke
+  the Live dashboard).
+- **Practice theme (15c).** `practiceTheme` (violet) + `PracticeBadge` (amber
+  pulse) when the API reports the training instance.
+- **Site and WBS (15e).** `components/SiteField.tsx` (`lockedSite`,
+  `SiteField`, `SiteFilter`) hides the site picker from a one-site user and
+  shows their site instead. `components/WbsField.tsx` on Receive and Issue shows
+  "None set up" when the site has no WBS numbers. `InventoryItemModal.tsx` is the
+  shared item editor (admin + HOD; Lot tracking and Shelf life fields since 16c).
+- **Lots (16c).** `api/lotHooks.ts`, `components/LotPicker.tsx` (FEFO order,
+  expired last, reason asked for a non-FEFO pick, rolls for CHEMOLINE),
+  `pages/LotRegisterPage.tsx` at `/lots` ("Lots & Expiry": SK, QC, HOD,
+  `qc_hod`), the Receive MFD field.
 
 ## 6. Security & rate limiting
 
@@ -1401,7 +1494,7 @@ no model, no clock — so the same question returns the same second every time.
 bash bin/ci_preflight.sh
 ```
 ```bash
-# 1. service tests (2,328 checks, suites A…CX) — CI mirror, own throwaway DB
+# 1. service tests (2,762 checks on 2026-10-01; 2,328 at suite CX) — CI mirror, own throwaway DB
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
 JWT_SECRET=ci-only-service-test-secret-key-32bytes-min \
 .venv/bin/python -u -m backend.api.service_tests
@@ -1492,13 +1585,18 @@ Manual matrix: [automatic_test.md](automatic_test.md).
 
 **CI/CD:** `postgres-dual-ci.yml` = bug_check + dual_ci + parity +
 **gi_ai_ro provisioning step** + service_tests (with `GI_AI_RO_URL`) +
-frontend build. ⚠️ **The dual-ci job has NEVER passed on the GitHub runner**
-(30/30 failures since 2026-07-07, always at the bug_check step) despite
-599/0 locally under every simulated CI condition (clean tree, latest deps,
-Linux package set, UTC, case-sensitive FS) — since 2026-07-26 the step
-re-emits failing ❌ checks as public `::error::` annotations + uploads
-`bugcheck_ci.log`/`BUG_REPORT.md` artifacts, so the next push names the
-culprit. `deploy.yml` (v1 Streamlit) is **manual-only**; `deploy-v2.yml`
+frontend build. **History:** the dual-ci job failed on the runner from
+2026-07-07 (always at bug_check) until the July–August fixes; since then
+bug_check re-emits failing ❌ checks as `::error::` annotations and uploads
+`bugcheck_ci.log`/`BUG_REPORT.md`. It was **green on every run from Phase 13
+through Phase 15e** (PRs #83–#98). It went red on all eight Phase 16 runs
+(2026-10-01) at *Derived-view parity* — the lot port gained columns and the
+returns subtraction the frozen SQLite view cannot have — and was fixed on
+2026-10-03 with `SQL_LOT_BALANCE_PARITY` (§2a). ⚠️ **Lesson: wait for dual-ci
+on the PR before merging.** The Phase 16 PRs were merged on green LOCAL gates
+while their own CI runs had already failed, and the parity step is not a local
+gate. `service_tests` on the runner is a documented SKIP (no master-data
+snapshot; rule 16 — a SKIP is not a PASS). `deploy.yml` (v1 Streamlit) is **manual-only**; `deploy-v2.yml`
 (manual, gated) is the cutover pipeline (post-restructure `tools/` paths +
 the RO-role step). **Release pipeline (tags `v*` or workflow_dispatch
 ONLY):** `release-desktop.yml` (macos-14 + windows-latest, `npx tauri

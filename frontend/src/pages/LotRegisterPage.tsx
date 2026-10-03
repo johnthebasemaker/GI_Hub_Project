@@ -19,7 +19,7 @@ import { daysLabel, statusColor } from '../components/LotPicker'
 const STATUS_LABEL: Record<string, string> = {
   expired: 'Expired', expiring_30: '≤ 30 days', expiring_60: '≤ 60 days',
   expiring_90: '≤ 90 days', ok: 'OK', no_expiry: 'No expiry', exhausted: 'Used up',
-  disposed: 'Disposed', quarantine: 'Quarantine',
+  disposed: 'Disposed', quarantined: 'Quarantined',
 }
 const ORDER = ['expired', 'expiring_30', 'expiring_60', 'expiring_90', 'ok', 'no_expiry']
 

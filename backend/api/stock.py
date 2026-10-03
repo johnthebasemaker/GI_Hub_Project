@@ -146,6 +146,21 @@ SELECT
 FROM lots l
 """
 
+# Parity projection (tools/parity_check.py). The frozen SQLite `v_lot_balance`
+# predates Phase 16: it has none of the descriptive columns, its `returns` carry
+# no lot and it has no `lot_units`. So parity is asserted on the legacy column
+# set, with the returned quantity added back to Remaining — the ONE place the
+# two balances must differ. The roll register is not adjusted for: the legacy
+# schema has no `lot_units` table, so the GREATEST() is a no-op wherever a
+# SQLite source exists to compare against.
+SQL_LOT_BALANCE_PARITY = f"""
+SELECT lb."Lot_Number", lb."SAP_Code", lb."Site_ID", lb."Received_Date",
+       lb."Expiry_Date", lb."Supplier", lb."PR_Number", lb."Status",
+       lb."Received_Qty", lb."Consumed_Qty",
+       lb."Remaining_Qty" + lb."Returned_Qty" AS "Remaining_Qty"
+FROM ({SQL_LOT_BALANCE}) lb
+"""
+
 # v_expiring_stock — receipts carrying an expiry, with days-to-expiry + status.
 # SQLite date() is lenient (junk -> NULL); PG cast raises, so guard with a regex
 # and cast the first 10 chars (YYYY-MM-DD).
@@ -181,7 +196,8 @@ WHERE r."Expiry_Date" IS NOT NULL
 DERIVED = {
     "live":     {"sql": SQL_LIVE_STOCK, "site": False, "order": '"SAP_Code"',                 "view": "v_live_stock"},
     "by-site":  {"sql": SQL_SITE_STOCK, "site": True,  "order": '"SAP_Code", "Site_ID"',      "view": "v_site_stock"},
-    "lots":     {"sql": SQL_LOT_BALANCE, "site": True, "order": '"Lot_Number", "SAP_Code"',   "view": "v_lot_balance"},
+    "lots":     {"sql": SQL_LOT_BALANCE, "site": True, "order": '"Lot_Number", "SAP_Code"',   "view": "v_lot_balance",
+                 "parity_sql": SQL_LOT_BALANCE_PARITY},
     "expiring": {"sql": SQL_EXPIRING,   "site": True,  "order": '"Days_Until_Expiry"',         "view": "v_expiring_stock"},
 }
 

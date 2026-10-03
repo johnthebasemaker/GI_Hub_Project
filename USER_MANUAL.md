@@ -29,6 +29,15 @@
 19. [Man-Hours & Manpower Tracking Manual (NEW)](#19-man-hours--manpower-tracking-manual)
 20. [Auditor (View-Only) Manual (NEW)](#20-auditor-view-only-manual)
 21. [2026-08 Feature Update — What Changed](#21-2026-08-feature-update--what-changed) — including **§21.12 Phase 9**
+22. [Quality, Safety, Employees & Procurement (QSEP)](#22-quality-safety-employees--procurement-qsep)
+23. [Quality Oversight (Head of Qualities) Manual](#23-quality-oversight-head-of-qualities-manual)
+24. [Phase 10 — Security, Training and the Board Brief](#24-phase-10--security-training-and-the-board-brief)
+25. [Phase 11 — AI Traces](#25-phase-11--ai-traces)
+26. [Practice Mode — learn the system without touching Live](#26-practice-mode--learn-the-system-without-touching-live)
+
+**New in September–October 2026 (Phases 14, 15 and 16):** see **§3.11** for a
+one-page list of what changed and where each change is explained. Lots, FEFO
+and the Lot Register workbook are **§3.10**.
 
 ---
 
@@ -165,6 +174,7 @@ reaches every workspace deliberately, for support.
 |------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | 📦 Live Dashboard | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ |
 | 📊 Stock | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
+| 🧪 Lots & Expiry (§3.10.3) | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ |
 | 📍 Rack Locator | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ |
 | 🎯 Assets | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ |
 | 📝 Entry Log (all tabs) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (shadow) |
@@ -186,7 +196,9 @@ reaches every workspace deliberately, for support.
 | ⏳ Safety & People → PPE Forecast | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ✅ |
 | 🛡️ Safety & People → PPE Usable Time | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ |
 | 👤 Safety & People → Employees | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ |
-| 🗂️ Records (Inventory, ledgers, POs, PRs) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ (read) | ✅ |
+| 🗂️ Records → Inventory | ✅ | ✅ | ✅ | ✅ | ✅ (+ New item / Edit, own site) | ✅ | ✅ | ✅ (read) | ✅ |
+| 🗂️ Records → Receipts, Consumption, Returns, Lots, Purchase Requests | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ (read) | ✅ |
+| 🗂️ Records → Purchase Orders | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ (read) | ✅ |
 | 💰 Valuation & 30-Day Burn (§24.3) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ |
 | 🛡️ Admin Portal | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | 📄 Documents · 🔐 Security · 🎓 Training · 💬 Feedback | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -207,12 +219,13 @@ account can do a thing, read your own entry — each is complete on its own.
 **Can:** open the Entry Log and post every stock movement — receive, issue,
 return, adjust, count, returnable items, OCR import; see Incoming Deliveries
 and Supervisor Requests; open the Dashboard, Stock, Rack Locator, Assets, PPE
-Forecast, PPE Usable Time, Employees and Execution Entries; read quality
-inspections; download documents.
+Forecast, PPE Usable Time, Employees and Execution Entries; open **Lots &
+Expiry** and Records → Inventory; read quality inspections; download documents.
 
 **Cannot:** approve anything (an HOD approves what a Store Keeper stages);
-open the HOD, Supervisor, Logistics or Warehouse portals; open Reports,
-Records, the Material Estimator or Man-Hours; see another site's stock.
+open the HOD, Supervisor, Logistics or Warehouse portals; open Reports, the
+ledger Records (Receipts, Consumption, Returns, Lots), the Material Estimator or
+Man-Hours; see another site's stock.
 
 **Scope:** one site.
 
@@ -222,15 +235,16 @@ Records, the Material Estimator or Man-Hours; see another site's stock.
 Entries; open the Dashboard, Stock, Assets and Employees.
 
 **Cannot:** post stock movements (the Entry Log is the Store Keeper's);
-approve requests; open Reports, Records, the Material Estimator, Man-Hours or
-any other role's portal.
+approve requests; open Reports, the ledger Records, Lots & Expiry, the
+Material Estimator, Man-Hours or any other role's portal.
 
 **Scope:** one site.
 
 ### 2.3.3 Quality Control (QC) — what an inspector can and cannot do
 
 **Can:** decide inspections — pass, fail or hold — from Quality → Inspections;
-open the Stock page to see what is waiting and what their decision released.
+open the Stock page to see what is waiting and what their decision released;
+open **Lots & Expiry** to see each lot's expiry and what is left of it (§3.10.3).
 
 **Cannot:** open the Dashboard, post any stock movement, approve a purchase,
 create QC accounts, or move themselves between sites (that is an Admin
@@ -253,7 +267,8 @@ adjustments, counts); create and submit Purchase Requisitions to Logistics;
 raise Cross-Site Requests; run Reports; open the Executive Summary, Burn Rate,
 Low Stock, Lining Coverage, Document Library and Bulk Excel Import; create QC
 accounts for their site; post Execution Entries; open PPE Forecast, PPE Usable
-Time and Employees.
+Time and Employees; open **Lots & Expiry** (§3.10.3); **add and edit inventory
+items** for their own site from Records → Inventory (deleting stays Admin-only).
 
 **Cannot:** open the Logistics Portal, the Warehouse Portal, the Supervisor
 Portal, the Entry Log, Quality Oversight or the Admin Portal; raise a Purchase
@@ -264,7 +279,8 @@ Order (Logistics does that); see another site's stock — though they may
 
 ### 2.3.5 Head of Qualities (QC-HOD) — what this role can and cannot do
 
-**Can:** open the **Quality Oversight** page and nothing else. Across **every
+**Can:** open the **Quality Oversight** page and, since Phase 16, **Lots &
+Expiry** (§3.10.3) — every lot's expiry and what is left. Across **every
 site and warehouse**, but only for **Surface Shield** material: the controlled
 category is filtered in the database on every query, so it is the boundary of
 the role rather than a filter on a page. Seven views — overview, Surface
@@ -344,7 +360,7 @@ Inventory), because it cannot be undone.
 |------|---|
 | Store Keeper | Their own site only — they cannot view another site's stock. |
 | Warehouse User | Their own warehouse only — POs assigned to them, DNs they've prepared, items received from vendors. Tied to `users.Warehouse_ID`. |
-| Supervisor | Their own site only — Reports, Live Dashboard, Burn Rate all site-locked. |
+| Supervisor | Their own site only — Dashboard, Stock, Material Requests and Execution Entries are all site-locked. |
 | Quality Control (QC) | Whichever single place they were created against: one site, or one warehouse. A site QC sees inspections raised at that site and has no warehouse business at all; a warehouse QC is pinned to its warehouse exactly as a Warehouse User is. An account with no binding, or with both, sees an empty list — it never falls back to seeing everything. Moving a QC to another site is a request, decided by an Admin, not something the QC or their HOD can do alone. |
 | HOD | Their own site only — but they can REQUEST material from other sites (Cross-Site tab) and submit PRs to Logistics. |
 | Logistics | All sites globally for PRs and POs they manage. No site lock — they sit above the site boundary. |
@@ -692,7 +708,10 @@ never expire).
 HOD and the Head of Qualities. It lists every lot of a lot-tracked material, the
 oldest expiry first, with:
 - **MFD and expiry** — an expiry marked *derived* is MFD + the item's shelf life;
-- **status** — *Expired*, *≤ 30 days*, *≤ 60 days*, *≤ 90 days*, *OK*, *No expiry*;
+- **status** — *Expired*, *≤ 30 days*, *≤ 60 days*, *≤ 90 days*, *OK*, *No expiry*,
+  or *Quarantined* / *Disposed* when the Admin has taken the lot out of use
+  (Admin Console → Lots). A quarantined or disposed lot is never offered on the
+  Issue form;
 - **received, consumed, returned and remaining** — worked out from the ledger.
 
 Click a status at the top to show only those lots. **Show used-up lots** adds the
@@ -736,6 +755,17 @@ Inventory → **Edit** has two settings:
   Lot Register workbook fills it in where it is empty, from the item's own MFD →
   expiry pairs (PU 9, Phenacin 6, BC 3004 24…).
 
+**Reading the two warnings — they are different things.**
+
+| You see… | It means… | What to do |
+|---|---|---|
+| a red **Expired** lot with stock left | The lot **was received**, its expiry has passed, and the ledger says some of it is still on the shelf. | Check the shelf. If it is there, ask the Admin to dispose of it or quarantine it. If it is not, an issue or return was never entered — enter it, or correct the workbook. |
+| a lot under **Lots used but never received** | The Consumption or Return Log names a lot that **no receipt of that material** brought in. The lot itself may be fine; usually the lot number or the SAP code on that line was typed wrong. The column *Received under SAP* shows the material that **did** receive a lot with that number. | Correct the line in the workbook (the lot, or the SAP code) and sync again. The stock already counts the line either way. |
+
+An expired lot whose stock is all used shows **Used up**, not *Expired*, and
+appears only with **Show used-up lots** switched on. So when a lot shows
+received 1, consumed 1, remaining 0, there is nothing to dispose of.
+
 ### 3.10.4 Practising with lots
 
 Practice (§26) has lots to try all of this on:
@@ -745,6 +775,48 @@ Practice (§26) has lots to try all of this on:
 - **PRACTICE CHEMOLINE (899973)** has batch `1O26009999` with three rolls to pick.
 - One issue names lot `PR-TYPO`, which no receipt brought in, so the Lots & Expiry
   page has a *used but never received* example.
+
+## 3.11 What changed in September–October 2026 (Phases 14, 15 and 16)
+
+A one-page list for everyone who used GI Hub before September 2026. Each line
+names who it affects and where it is explained in full.
+
+### 3.11.1 Phase 14 — quantities, reconciliation and announcements (26 September)
+
+| Change | Who | Read |
+|---|---|---|
+| Surface Shield quantities are shown **both ways, kilograms first** (`189 KG · 21 Can`). You still enter packs; a consumption form may be written in KG and is converted. | Store Keeper, Supervisor, HOD | §4.11, §4.10.8 |
+| When a QR form and the Excel workbook both record the same drum, the ledger keeps **one** quantity (the larger), never both. | HOD | §6.17 |
+| The Surface Shield queue is **grouped**: one job = one tank on one day, area asked once and credited once. | Store Keeper, HOD | §4.9a.2 |
+| **What's new** notices after an update, and tutorial freshness warnings for admins. | Everyone; Admin | §3.8, §7.14 |
+| The new **3D login** (a still crest on phones and older computers). | Everyone | §3.1 |
+| **Stock vs the Excel workbook**: the Stock page marks materials whose stock differs from the workbook's, and says why. | Store Keeper, HOD, Admin | §3.9 |
+| An entry saved while the signal dropped is sent **once**, however many times it is retried. | Store Keeper | §3.7 |
+
+### 3.11.2 Phase 15 — Practice, Garnet and the store keeper's note (28–30 September)
+
+| Change | Who | Read |
+|---|---|---|
+| **Practice** is violet with a pulsing badge, and refuses to start on an out-of-date database (no more half-working pages). | Everyone | §26.2, §17.9 |
+| **Garnet** is surface preparation: it credits no area of its own; the HOD answers **Old or New surface** per job. | Store Keeper, HOD | §4.9a.7 |
+| The **store keeper's note** fills the job card: `Floor - 13.37 SQM Done` fills the area, the part and the remark. Two notes on one tank and day are **two jobs**. The remark goes to the HOD, the job history and the exports. | Store Keeper, HOD | §4.9a.2 |
+| The **HOD adds and edits inventory items** for their own site (Records → Inventory → New item / Edit). Deleting stays Admin-only. | HOD | §2.3.4, §2.3.8–2.3.9 (Adding an inventory item) |
+| A user who belongs to **one site** no longer sees a Site box on the forms: their site is filled in and shown, not asked. Admins and multi-site users still choose. | Store Keeper, HOD | this section |
+| The **WBS No.** field appears on Receive and Issue. If the HOD has not set up any WBS numbers yet it shows **"None set up"** and the entry still saves. | Store Keeper, HOD | §13.14, §16.5 |
+| Site and Category on a new item are matched to the spelling already in use (`cncec` → `CNCEC`). | Admin, HOD | §2.3.8–2.3.9 (Adding an inventory item) |
+
+### 3.11.3 Phase 16 — lots, FEFO and the Lot Register workbook (1 October)
+
+| Change | Who | Read |
+|---|---|---|
+| The workbooks' `Serial No.` is read **by the item**: the batch for a Surface Shield, the roll for CHEMOLINE, the asset tag for equipment. Live now has real lots. | Everyone | §3.10.1 |
+| The **Lot Register workbook** (`Rubber & Brick Materials - CNCEC.xlsx`) adds each lot's MFD, expiry and rolls. It never changes stock. | Admin | §3.10.2 |
+| **Lots & Expiry** page: every lot, its expiry, and what is left of it. | Store Keeper, QC, HOD, Head of Qualities | §3.10.3 |
+| The Issue form's **Lot** field lists lots in **FEFO** order; an expired lot is listed last and never suggested. Choosing another lot asks for a reason (it never blocks). | Store Keeper | §3.10.3 |
+| The Receive form asks for the **MFD**; a blank expiry becomes MFD + shelf life. | Store Keeper | §3.10.3 |
+| One **evening expiry notice** per site lists lots expiring within 30 days. | Store Keeper, HOD | §3.10.3 |
+| A **return** gives back to its lot, so a lot's balance is received − consumed − returned. | Everyone | §3.10.1 |
+| **Practice** has example lots: an expired one, a FEFO one, CHEMOLINE rolls, and a lot used but never received. | Everyone (training) | §3.10.4 |
 
 # 4. Store Keeper Manual
 
@@ -1722,15 +1794,26 @@ kilograms first**:
 
 # 5. Supervisor Manual
 
-The Supervisor monitors a single site's stock, generates reports, and provides oversight. They cannot approve transactions (that's HOD).
+The Supervisor runs the work in the field at one site. They **request material**
+for their crew, **fill in and file the consumption form** for each job, and keep
+an eye on the site's stock. They cannot approve anything (that is the HOD) and
+they do not post receipts or issues (that is the Store Keeper).
 
 ![Supervisor Portal — New Material Request form for workers](docs/screenshots/supervisor_new_request.png)
 
 ## 5.1 Pages visible
 
-- 📦 Live Dashboard
-- 🛡️ Supervisor Portal — Request Material for workers
-- 📝 Entry Log (same interface as Store Keeper — see §4)
+| Sidebar | What the Supervisor does there |
+|---|---|
+| **Dashboard** and **Stock** | Read the site's stock: what is low, empty or expiring (§5.2). |
+| **Supervisor → Material Requests** | Ask the Store Keeper for material for a worker (§5.3). |
+| **Execution → Execution Entries** | Print the consumption form, then photograph and file it after the job (§4.9, §4.10). |
+| **Assets** | Find a tool or piece of equipment and see who holds it. |
+| **Safety & People → Employees** | Look up a worker's ID number. |
+| **Documents · Security · Training · Feedback** | The same as every role. |
+
+The Supervisor does **not** open the Entry Log, Reports, the HOD Portal or
+Lots & Expiry (§2.2). A supervisor who needs a report asks the HOD.
 
 ![Supervisor Portal — My Requests history with cancel option](docs/screenshots/supervisor_my_requests.png)
 
@@ -1795,9 +1878,34 @@ You can sort by any column — sorting by `Stock_Value` shows your biggest SAR e
 | **🔥 Burn Rate Forecast (30-Day)** | Plotly chart with daily-burn-rate bars + vertical line at the 30-day alert threshold. Colors: red <10 days, amber <30, green >30. |
 | **📊 Top Consumed Items** | Bar chart of top 10 items by 30-day consumption, blue→gold gradient. |
 
-## 5.3 Reports
+## 5.3 Material Requests — raising a material request for a worker
 
-Supervisor sees the full Reports module but with site scope locked to their site (cannot pick "All Sites"). See §8 for the full Reports reference.
+**Where:** Supervisor → **Material Requests**. Three tabs:
+
+| Tab | What it is for |
+|---|---|
+| **New Request** | Ask the Store Keeper to issue material to one worker. |
+| **My Requests** | Every request you raised and its state. A request still *pending* can be cancelled here. |
+| **Intent vs Actual** | What you asked for against what the Store Keeper actually issued. |
+
+**To raise a material request:**
+1. **Worker** — pick the worker by ID number or name (they must be in Employees).
+2. **Job / Tank / Place** — where the material will be used. Required.
+3. **Old PPE returned** — for PPE, tick it when the worker handed back the old
+   item. If you leave it unticked, give the **reason** the old PPE was not
+   returned (§22.2).
+4. **Lines** — one line per material: the material, the quantity, and an
+   optional note. **Add line** for more.
+5. **Submit.** The Store Keeper sees it under **Supervisor Requests** (with a
+   badge) and issues the material, or rejects it with a reason.
+
+A request is a *request*: no stock moves until the Store Keeper issues it, and
+the issue is what the HOD approves.
+
+**Filing what was used.** After the job, the record of what was actually used
+starts with **you**: print the consumption form from Execution Entries before
+the job, fill it in on site, then photograph and file it (§4.10). The Store
+Keeper verifies your quantities and the HOD approves them.
 
 ## 5.4 Supervisor — Use Cases
 
@@ -1809,16 +1917,18 @@ Supervisor sees the full Reports module but with site scope locked to their site
 4. Sort by Status → spot Empty / Below Min items
 5. Open 🔥 Burn Rate Forecast expander → check the next 30 days
 
-### Use Case 2: Generate end-of-month report for management
+### Use Case 2: Material for tomorrow's job, and the form that records it
 
-1. Reports → 📊 Generate Report
-2. Pick **📅 Monthly Summary**
-3. From date: 1st of month; To: today
-4. Site: locked to your site
-5. Format: **PDF**
-6. Click **▶ Generate Report**
-7. Review the preview (includes SAR-value columns: Issued_Value_SAR, Received_Value_SAR, Closing_Value_SAR)
-8. Click **↓ Download PDF**
+1. Supervisor → **Material Requests** → **New Request**: the worker, the tank,
+   one line per material → **Submit** (§5.3).
+2. Execution Entries → **Print a consumption form** for the job (§4.9).
+3. On site: write the quantities, area and crew on the printed form.
+4. After the job: Execution Entries → **Upload a filled form** → check every
+   figure the camera read → **File** (§4.10).
+5. Watch **My Requests** and the entry's status: *With store keeper* → *With
+   HOD* → *Approved*. A rejection comes back with the HOD's reason.
+
+(A month-end report is the HOD's: Reports is not on the Supervisor's menu.)
 
 ### Use Case 3: Investigate why an item ran out
 
@@ -1846,7 +1956,10 @@ A: Those items have `Unit_Cost = 0`. The valuation is correct — they're tracke
 A: Correct. Supervisors monitor; HODs approve. Talk to your HOD.
 
 **Q: Can I export the Live Dashboard grid?**
-A: Yes — every table has a download button for CSV or Excel. For a formal, branded report use Reports and generate one.
+A: Yes — every table has a download button for CSV or Excel. For a formal, branded report ask your HOD: Reports is an HOD page.
+
+**Q: Why can't I see Lots & Expiry?**
+A: Lots & Expiry is for the Store Keeper, QC, the HOD and the Head of Qualities (§3.10.3). When you issue a lot-tracked material, the Store Keeper picks the lot on the Issue form.
 
 ---
 
@@ -6729,6 +6842,16 @@ Demo Gasket Set* (SAP 899001), you can find it in Practice.
 Work is already waiting so every role has something to do: receipts, issues and
 a return waiting for HOD approval, a draft purchase request, and one already
 with Logistics.
+
+**Every new Live feature comes with a Practice example** (rule 17g), so it can
+be tried before it is used for real. The current ones:
+
+| Feature | Try it on |
+|---|---|
+| The store keeper's note filling the job card (§4.9a.2) | One tank and day with **two** notes, `Floor - 12.5 SQM Done` and `Sump Wall - 4.2 SQM Done`: two jobs, each with its area and part filled in. |
+| Lots, FEFO and expiry (§3.10.4) | **PRACTICE PU PRIMER (899971)**: `PR-OLD` (expired), `PR-SOON` (the FEFO lot), `PR-LATE`. |
+| CHEMOLINE rolls (§3.10.4) | **PRACTICE CHEMOLINE (899973)**, batch `1O26009999`, three rolls. |
+| Lots used but never received (§3.10.3) | Lot `PR-TYPO`. |
 
 ## 26.5 What works differently in Practice
 

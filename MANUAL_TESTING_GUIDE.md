@@ -3239,6 +3239,31 @@ is consulted after the guards, so it can never be a way around one.
 "chat with your data" card the same question twice after a receipt is posted;
 the number must change. Only the manual assistant caches.
 
+## 14aa. The AI evaluation gates (Phase 11 · 11f)
+
+Developer-facing. Nothing here is a screen; it is what CI refuses to merge.
+
+**TC-EVL-01** — `python -m tests.ai_eval.runner` passes with no model running.
+It reports Tier 1, the policy pin, and **contextual recall / precision** against
+an 0.85 floor. All of it is deterministic — run it twice, get identical numbers.
+
+**TC-EVL-02** — ⚠️ **make it fail.** Widen a role in `ai/manual_qa._ROLE_ALLOWED`
+(add chapter 7 to `store_keeper`) and re-run. The policy pin fails and canaries
+fire. Put it back; it passes. A gate that cannot be made to fail is decoration.
+
+**TC-EVL-03** — `python tools/gen_eval_grid.py --check` passes. Edit
+`USER_MANUAL.md` enough to move the retrieval ranking and it reports the grid as
+stale. Re-run the generator without `--check` and commit the result.
+
+**TC-EVL-04** — ⚠️ **Tier 2 must never fail the build.** `bash
+bin/ai_eval_tier2.sh` prints scores and, on a regression against
+`baseline.json`, opens a bug row — and still exits 0. If it ever exits non-zero
+on a Tier 2 score alone, that is a bug: ruling P10-7 says a stochastic metric
+does not gate.
+
+**TC-EVL-05** — with Ollama stopped, `bin/ai_eval_tier2.sh` skips cleanly and
+tells you the deterministic half still runs. It never fails for want of a model.
+
 ## 14ab. Tutorial deep links — "Watch it" (Phase 12 · 12f)
 
 **What it is for.** The assistant answers in text, as it always has, and — when
@@ -3911,6 +3936,88 @@ band says `"space"`.
 **TC-3D-08** — the Executive Summary and the Training page show glass cards.
 Print the Executive Summary: the print is unchanged.
 
+## 14ak. Stock vs the Excel workbook, and the /login gap
+
+**What it is for.** The check finds which materials' GI Hub stock differs from
+the workbook's Current Stock, and why. The code is in
+`backend/api/services/stock_excel.py`. Suite SX pins it.
+
+**TC-SX-01** — run `.venv/bin/python tools/stock_excel_check.py`. Every
+differing SAP is listed with causes, and **no** SAP has an *Unexplained* line.
+On 2026-09-26 this was 14 of 505: 13 *Only in GI Hub* and 1 *No longer in
+Excel*.
+
+**TC-SX-02** — ⚠️ the Stock page shows the banner, and those SAPs have red rows
+with a **≠ Excel** tag. **Review the differences** lists each one with the GI Hub
+record number or the Excel row.
+
+**TC-SX-03** — **Get the marked workbook** (or add `--marked` to the tool):
+- the copy opens with the **GI Hub check** sheet first;
+- the Inventory rows are red, with a note on Current Stock;
+- your original file is unchanged (its modified time is the same).
+
+**TC-SX-04** — fix one cause, for example reverse a test receipt with a Stock
+Adjustment, then **Check again**. That SAP leaves the list.
+
+**TC-SX-05** — as the auditor: the banner is visible but there is no upload
+button, and a direct upload gets 403.
+
+**TC-SX-06** — `tools/pg_excel_sync.py --commit` ends with *stored for the Stock
+page*, and the banner shows the new time.
+
+**TC-LOGIN-01** — sign out, open `/login`, and sign in. You land on your home
+page, not a blank screen. Then open `/no-such-page` while signed in: you land on
+your home page.
+
+## 15a. Phase 15a — Practice cannot run migrations-behind; the item editor
+
+**What it is for.** On 2026-09-27 both Practice databases were six migrations
+behind, so Inventory, the HOD portal and the store keeper's Issue/Receipt
+pickers all failed with 500 errors in Practice. An item saved with site `cncec`
+was hidden from the CNCEC store keeper. Suite 15A pins both fixes.
+
+**TC-15A-01** — in Practice as `practice.admin`, add an item with Site `cncec`
+and Category `safety`. It is saved as **CNCEC / Safety**. Sign in as
+`practice.storekeeper`: the item is in the **Issue** and **Receipt** material
+pickers. Sign in to **Live**: it is not there.
+
+**TC-15A-02** — as `practice.hod`, open the HOD portal, Stock and the Surface
+Shield queue. Nothing shows a 500 error.
+
+**TC-15A-03** — add an item with a brand-new site such as `NEWSITE`. You are
+asked **"Create a new site…?"**. Cancel keeps the form open; OK saves it. Leave
+Site empty on a new item: *"Pick the site"*.
+
+**TC-15A-04** — ⚠️ **make it fail.** Stamp a copy of a Practice database
+behind head, or run the Practice API against an old backup. It **refuses to
+start** with *"Practice schema is behind … Fix: tools/practice_db.py
+migrate"*. Run that command; it backs up, migrates the seed and then the
+sandbox, and the API starts. Run it again and it reports both databases *at
+head* without touching them.
+
+**TC-15A-05** — `tools/practice_db.py verify` lists *"… is at the code's
+migration head"* for both databases. `curl localhost:8001/health` shows
+`"schema":"ok"`.
+
+## 15b. Phase 15b — the job card's checkboxes tick, untick and multi-select
+
+**Bug fixed (operator screenshot 2026-09-27):** on the grouped queue's job card
+(Execution Entries → Surface Shield consumption queue → a job), no box ever
+showed ticked — not even the default selection — and the button read *Submit 1
+to the HOD* with every box empty. The card keyed rows by a string and kept the
+selection as numbers. Full case: **TC-GRP-09** in §14ah.
+
+| # | Step | Expected |
+|---|---|---|
+| 1 | Open a job card with several material lines. | The default lines render **ticked**; the button counts them. |
+| 2 | Untick one line, then tick it again. | The box follows each click; the count goes down and back up. |
+| 3 | Clear all with the header checkbox. | Every box empty; the submit button is **disabled**. |
+| 4 | Tick all with the header checkbox, then untick one and submit. | Exactly the ticked lines go to the HOD. |
+| 5 | While the card is open, let a refetch add a line. | Existing ticks survive; the new line arrives **unticked**. |
+
+**Automated:** `tests/e2e/specs/sme-jobs.spec.ts` — *15b: the job card boxes
+tick, untick and multi-select* (verified to fail on the old code).
+
 ## 15c. Phase 15c — the static login mark, and Practice in violet
 
 **What it is for.** The operator's screenshot showed an empty glass pane behind
@@ -3993,130 +4100,6 @@ Q15-6).
 (SAP 899970, ESC2) is in the queue to practise on. It appears after the next
 Practice rebuild; production deploys rebuild Practice on every deploy.
 
-## 16d. Phase 16d — Lots in Practice (rule 17g)
-
-**TC-16D-01** — in Practice, as `practice.storekeeper`, Issue → PRACTICE PU PRIMER
-(899971). The Lot field lists `PR-SOON` (FEFO), `PR-LATE`, then `PR-OLD` (expired,
-red, last).
-
-**TC-16D-02** — Issue → PRACTICE CHEMOLINE (899973): the Roll picker lists
-`1O26009999001`–`003`.
-
-**TC-16D-03** — as `practice.hod`, Lots & Expiry shows:
-- the expired-stock banner (`PR-OLD`);
-- `PR-SOON` under *≤ 30 days*;
-- `PR-TYPO` under *used but never received*.
-
-**TC-16D-04** — ⚠️ rule 17g: these lots exist in BOTH Practice databases, and are
-recreated by a Practice reset (overlay v3). They were applied to the existing
-databases on 2026-10-01, not left for the next rebuild.
-
-## 16c. Phase 16c — Lots & Expiry, the Issue lot picker, the Receive MFD
-
-**What it is for.** The screens: the Lots & Expiry page, the FEFO lot picker on
-Issue, MFD and expiry on Receive, the daily expiry notice, and shelf life and lot
-tracking in the item editor. The code is in `backend/api/lot_register.py`. Suite
-16C and `lots.spec` pin it.
-
-⚠️ Check that **an expired lot is never the suggestion**. The failure to catch is
-FEFO offering the oldest-dated lot when that lot is already past its expiry.
-
-**TC-16C-01** — as the store keeper, Issue → pick PU COMP A. The Lot field lists
-its lots, each with expiry, days left and quantity left; the first is marked
-**FEFO**, and the field's note says *Blank = FEFO: …*. An expired lot is last and
-red.
-
-**TC-16C-02** — pick the FEFO lot: no reason is asked. Pick another lot: *Reason
-for manual lot* appears. Submit, and the HOD sees the reason.
-
-**TC-16C-03** — Issue → CHEMOLINE: a **Roll** picker lists the rolls in stock,
-each with its batch. Pick one: the Batch fills in. After approval, the roll is no
-longer offered.
-
-**TC-16C-04** — Receive → PU COMP A: *Batch / Lot No.* and *Manufacture date
-(MFD)* appear. With an MFD and no expiry, the expiry note shows MFD + 9 months.
-An expiry before the MFD is refused. Approve the receipt: the lot shows the MFD
-and a *derived* expiry.
-
-**TC-16C-05** — Lots & Expiry as HOD: the status counts at the top filter the
-table; COROFLAKE `C 1823` / `D 1823` show **Expired**, and the red banner shows.
-A CHEMOLINE batch expands to its rolls, with tank and date for the used ones.
-As a supervisor or Logistics, the page is not in the sidebar, and
-`/lot-register` returns 403.
-
-**TC-16C-06** — the evening digest run (or `lots.expiry_notices`) gives the store
-keeper and the HOD **one** *lot(s) expire within 30 days* notice per site.
-
-**TC-16C-07** — item editor: set *Lot tracking: Not tracked* on an item. It
-leaves the Issue picker, and a sync gives it no lot. Set *Shelf life* on ECO
-PRIMER A; a lot with an MFD and no expiry now shows a derived expiry.
-
-## 16b. Phase 16b — the Lot Register workbook describes lots
-
-**What it is for.** `Rubber & Brick Materials - CNCEC.xlsx` adds MFD, expiry and
-the roll register to the lots. It never changes stock. The code is in
-`backend/api/services/lot_file.py`. Suite 16B pins it.
-
-⚠️ Check that **stock does not move**. The failure to catch is a quantity, or a
-receipt row, that changed because of this workbook.
-
-**TC-16B-01** — run the ERP sync dry run with the workbook in the folder. The
-**▶ lots** section reports 30 sheets (batch 26, pallet 3, roll 1). Every row is
-resolved to a SAP and matched to a receipt (399 / 399 on 2026-10-01).
-
-**TC-16B-02** — the warnings list exactly the known inconsistencies:
-- 1041-4 0.25 vs 1, and Phenacin A lot 1262 0 vs 20;
-- the two wrong material codes;
-- Carbon Filler `0926` vs `0.926`;
-- the DN 13320 rows with no batch.
-
-**TC-16B-03** — `--commit`. STOCK VERIFICATION is unchanged (all SAPs match). Run
-again: `lots +0 new ~0 changed · rolls +0 new`.
-
-**TC-16B-04** — Stock → Lots: PU COMP A lot 3504 shows MFD 2026-03-16 and expiry
-2026-12-25 (*file*). ECO PRIMER 3441 has no expiry until a shelf life is set; set
-one, sync again, and it shows a *derived* expiry.
-
-**TC-16B-05** — CHEMOLINE: the two batches show 99 and 108 rolls received, and
-16 rolls remaining in total (207 − 191).
-
-**TC-16B-06** — change an expiry on the Receive form (source *app*), then sync
-again: the file does not overwrite it.
-
-**TC-16B-07** — rename the file to anything matching `*Rubber*Brick*CNCEC*.xlsx`:
-it is still found. Remove it: an `--erp` run skips the lot step with a note.
-
-## 16a. Phase 16a — `Serial No.` is read by the item (lots from the ledger)
-
-**What it is for.** A Surface Shield's `Serial No.` is its batch (→ Lot No.), a
-roll's is its roll number (its batch → Lot No.), and anything else keeps an asset
-tag. The code is in `backend/api/services/lots.py`. Suite 16A pins it.
-
-⚠️ Check that **a second sync changes nothing**. The failure to catch is a
-duplicated receipt or consumption row after the lot column was filled in.
-
-**TC-16A-01** — run the ERP sync dry run. The ledger lines show `+0 new` (apart
-from rows you really added) and `~N edited` for the rows gaining a lot, with
-`qty 0`. The `lots` line counts the rows that carry a lot.
-
-**TC-16A-02** — `--commit`, then run the dry run again: **every** ledger line is
-`+0 new ~0 edited`, and **STOCK VERIFICATION** is still all SAPs.
-
-**TC-16A-03** — Stock → Lots: PU COMP A shows lot `3504`, COROFLAKE COMP A shows
-`A 4525`, `B 4525`, `C 1823`, `D 1823`; CHEMOLINE shows its batches (`1O25003382`…).
-No brick, pump or tool appears.
-
-**TC-16A-04** — the sync's *lot(s) used but never received* list names each
-Consumption Log lot no receipt brought in, with the SAP it was received under
-(e.g. Phenacin A `2477`, received under ACP powder 1038).
-
-**TC-16A-05** — a cell like `4525 = 55 Cans; 1823 = 2 Cans` is reported as
-*several lots* and gets no lot; a roll typed `1025…` is reported as corrected to
-`1O25…`.
-
-**TC-16A-06** — post a return in the app with a lot, approve it: the lot's
-Remaining drops by the returned quantity (it used to ignore returns).
-
 ## 15e. Phase 15e — follow-ups: the login crest, the store keeper's note, site and WBS, HOD items
 
 **What it is for.** These are the operator's 2026-09-30 follow-ups. Suite 15E,
@@ -4171,93 +4154,185 @@ Delete. As the store keeper, there is no New item button, and a direct `POST
 two-note job on `PRACTICE-TK-01` is in the queue. It was added to both existing
 Practice databases on 2026-09-30, not left for the next rebuild.
 
-## 14ak. Stock vs the Excel workbook, and the /login gap
+## 16a. Phase 16a — `Serial No.` is read by the item (lots from the ledger)
 
-**What it is for.** The check finds which materials' GI Hub stock differs from
-the workbook's Current Stock, and why. The code is in
-`backend/api/services/stock_excel.py`. Suite SX pins it.
+**What it is for.** A Surface Shield's `Serial No.` is its batch (→ Lot No.), a
+roll's is its roll number (its batch → Lot No.), and anything else keeps an asset
+tag. The code is in `backend/api/services/lots.py`. Suite 16A pins it.
 
-**TC-SX-01** — run `.venv/bin/python tools/stock_excel_check.py`. Every
-differing SAP is listed with causes, and **no** SAP has an *Unexplained* line.
-On 2026-09-26 this was 14 of 505: 13 *Only in GI Hub* and 1 *No longer in
-Excel*.
+⚠️ Check that **a second sync changes nothing**. The failure to catch is a
+duplicated receipt or consumption row after the lot column was filled in.
 
-**TC-SX-02** — ⚠️ the Stock page shows the banner, and those SAPs have red rows
-with a **≠ Excel** tag. **Review the differences** lists each one with the GI Hub
-record number or the Excel row.
+**TC-16A-01** — run the ERP sync dry run. The ledger lines show `+0 new` (apart
+from rows you really added) and `~N edited` for the rows gaining a lot, with
+`qty 0`. The `lots` line counts the rows that carry a lot.
 
-**TC-SX-03** — **Get the marked workbook** (or add `--marked` to the tool):
-- the copy opens with the **GI Hub check** sheet first;
-- the Inventory rows are red, with a note on Current Stock;
-- your original file is unchanged (its modified time is the same).
+**TC-16A-02** — `--commit`, then run the dry run again: **every** ledger line is
+`+0 new ~0 edited`, and **STOCK VERIFICATION** is still all SAPs.
 
-**TC-SX-04** — fix one cause, for example reverse a test receipt with a Stock
-Adjustment, then **Check again**. That SAP leaves the list.
+**TC-16A-03** — Stock → Lots: PU COMP A shows lot `3504`, COROFLAKE COMP A shows
+`A 4525`, `B 4525`, `C 1823`, `D 1823`; CHEMOLINE shows its batches (`1O25003382`…).
+No brick, pump or tool appears.
 
-**TC-SX-05** — as the auditor: the banner is visible but there is no upload
-button, and a direct upload gets 403.
+**TC-16A-04** — the sync's *lot(s) used but never received* list names each
+Consumption Log lot no receipt brought in, with the SAP it was received under
+(e.g. Phenacin A `2477`, received under ACP powder 1038).
 
-**TC-SX-06** — `tools/pg_excel_sync.py --commit` ends with *stored for the Stock
-page*, and the banner shows the new time.
+**TC-16A-05** — a cell like `4525 = 55 Cans; 1823 = 2 Cans` is reported as
+*several lots* and gets no lot; a roll typed `1025…` is reported as corrected to
+`1O25…`.
 
-**TC-LOGIN-01** — sign out, open `/login`, and sign in. You land on your home
-page, not a blank screen. Then open `/no-such-page` while signed in: you land on
-your home page.
+**TC-16A-06** — post a return in the app with a lot, approve it: the lot's
+Remaining drops by the returned quantity (it used to ignore returns).
 
-## 15a. Phase 15a — Practice cannot run migrations-behind; the item editor
+## 16b. Phase 16b — the Lot Register workbook describes lots
 
-**What it is for.** On 2026-09-27 both Practice databases were six migrations
-behind, so Inventory, the HOD portal and the store keeper's Issue/Receipt
-pickers all failed with 500 errors in Practice. An item saved with site `cncec`
-was hidden from the CNCEC store keeper. Suite 15A pins both fixes.
+**What it is for.** `Rubber & Brick Materials - CNCEC.xlsx` adds MFD, expiry and
+the roll register to the lots. It never changes stock. The code is in
+`backend/api/services/lot_file.py`. Suite 16B pins it.
 
-**TC-15A-01** — in Practice as `practice.admin`, add an item with Site `cncec`
-and Category `safety`. It is saved as **CNCEC / Safety**. Sign in as
-`practice.storekeeper`: the item is in the **Issue** and **Receipt** material
-pickers. Sign in to **Live**: it is not there.
+⚠️ Check that **stock does not move**. The failure to catch is a quantity, or a
+receipt row, that changed because of this workbook.
 
-**TC-15A-02** — as `practice.hod`, open the HOD portal, Stock and the Surface
-Shield queue. Nothing shows a 500 error.
+**TC-16B-01** — run the ERP sync dry run with the workbook in the folder. The
+**▶ lots** section reports 30 sheets (batch 26, pallet 3, roll 1). Every row is
+resolved to a SAP and matched to a receipt (399 / 399 on 2026-10-01).
 
-**TC-15A-03** — add an item with a brand-new site such as `NEWSITE`. You are
-asked **"Create a new site…?"**. Cancel keeps the form open; OK saves it. Leave
-Site empty on a new item: *"Pick the site"*.
+**TC-16B-02** — the warnings list exactly the known inconsistencies:
+- 1041-4 0.25 vs 1, and Phenacin A lot 1262 0 vs 20;
+- the two wrong material codes;
+- Carbon Filler `0926` vs `0.926`;
+- the DN 13320 rows with no batch.
 
-**TC-15A-04** — ⚠️ **make it fail.** Stamp a copy of a Practice database
-behind head, or run the Practice API against an old backup. It **refuses to
-start** with *"Practice schema is behind … Fix: tools/practice_db.py
-migrate"*. Run that command; it backs up, migrates the seed and then the
-sandbox, and the API starts. Run it again and it reports both databases *at
-head* without touching them.
+**TC-16B-03** — `--commit`. STOCK VERIFICATION is unchanged (all SAPs match). Run
+again: `lots +0 new ~0 changed · rolls +0 new`.
 
-**TC-15A-05** — `tools/practice_db.py verify` lists *"… is at the code's
-migration head"* for both databases. `curl localhost:8001/health` shows
-`"schema":"ok"`.
+**TC-16B-04** — Stock → Lots: PU COMP A lot 3504 shows MFD 2026-03-16 and expiry
+2026-12-25 (*file*). ECO PRIMER 3441 has no expiry until a shelf life is set; set
+one, sync again, and it shows a *derived* expiry.
 
-## 14aa. The AI evaluation gates (Phase 11 · 11f)
+**TC-16B-05** — CHEMOLINE: the two batches show 99 and 108 rolls received, and
+16 rolls remaining in total (207 − 191).
 
-Developer-facing. Nothing here is a screen; it is what CI refuses to merge.
+**TC-16B-06** — change an expiry on the Receive form (source *app*), then sync
+again: the file does not overwrite it.
 
-**TC-EVL-01** — `python -m tests.ai_eval.runner` passes with no model running.
-It reports Tier 1, the policy pin, and **contextual recall / precision** against
-an 0.85 floor. All of it is deterministic — run it twice, get identical numbers.
+**TC-16B-07** — rename the file to anything matching `*Rubber*Brick*CNCEC*.xlsx`:
+it is still found. Remove it: an `--erp` run skips the lot step with a note.
 
-**TC-EVL-02** — ⚠️ **make it fail.** Widen a role in `ai/manual_qa._ROLE_ALLOWED`
-(add chapter 7 to `store_keeper`) and re-run. The policy pin fails and canaries
-fire. Put it back; it passes. A gate that cannot be made to fail is decoration.
+## 16c. Phase 16c — Lots & Expiry, the Issue lot picker, the Receive MFD
 
-**TC-EVL-03** — `python tools/gen_eval_grid.py --check` passes. Edit
-`USER_MANUAL.md` enough to move the retrieval ranking and it reports the grid as
-stale. Re-run the generator without `--check` and commit the result.
+**What it is for.** The screens: the Lots & Expiry page, the FEFO lot picker on
+Issue, MFD and expiry on Receive, the daily expiry notice, and shelf life and lot
+tracking in the item editor. The code is in `backend/api/lot_register.py`. Suite
+16C and `lots.spec` pin it.
 
-**TC-EVL-04** — ⚠️ **Tier 2 must never fail the build.** `bash
-bin/ai_eval_tier2.sh` prints scores and, on a regression against
-`baseline.json`, opens a bug row — and still exits 0. If it ever exits non-zero
-on a Tier 2 score alone, that is a bug: ruling P10-7 says a stochastic metric
-does not gate.
+⚠️ Check that **an expired lot is never the suggestion**. The failure to catch is
+FEFO offering the oldest-dated lot when that lot is already past its expiry.
 
-**TC-EVL-05** — with Ollama stopped, `bin/ai_eval_tier2.sh` skips cleanly and
-tells you the deterministic half still runs. It never fails for want of a model.
+**TC-16C-01** — as the store keeper, Issue → pick PU COMP A. The Lot field lists
+its lots, each with expiry, days left and quantity left; the first is marked
+**FEFO**, and the field's note says *Blank = FEFO: …*. An expired lot is last and
+red.
+
+**TC-16C-02** — pick the FEFO lot: no reason is asked. Pick another lot: *Reason
+for manual lot* appears. Submit, and the HOD sees the reason.
+
+**TC-16C-03** — Issue → CHEMOLINE: a **Roll** picker lists the rolls in stock,
+each with its batch. Pick one: the Batch fills in. After approval, the roll is no
+longer offered.
+
+**TC-16C-04** — Receive → PU COMP A: *Batch / Lot No.* and *Manufacture date
+(MFD)* appear. With an MFD and no expiry, the expiry note shows MFD + 9 months.
+An expiry before the MFD is refused. Approve the receipt: the lot shows the MFD
+and a *derived* expiry.
+
+**TC-16C-05** — Lots & Expiry as HOD: the status counts at the top filter the
+table; an expired lot that still has stock shows **Expired** and the red banner
+shows (on Live none has since the operator's 2026-10-03 workbook fix — COROFLAKE
+`C 1823` / `D 1823` were received 1 and consumed 1 each, so they are **Used up**
+and appear only with *Show used-up lots*; in Practice use `PR-OLD`).
+A CHEMOLINE batch expands to its rolls, with tank and date for the used ones.
+As a supervisor or Logistics, the page is not in the sidebar, and
+`/lot-register` returns 403.
+
+**TC-16C-06** — the evening digest run (or `lots.expiry_notices`) gives the store
+keeper and the HOD **one** *lot(s) expire within 30 days* notice per site.
+
+**TC-16C-07** — item editor: set *Lot tracking: Not tracked* on an item. It
+leaves the Issue picker, and a sync gives it no lot. Set *Shelf life* on ECO
+PRIMER A; a lot with an MFD and no expiry now shows a derived expiry.
+
+**TC-16C-08** — quarantine (fixed 2026-10-03). In Practice, Admin Console → Lots
+→ **Quarantine** `PR-SOON`. Issue Stock → PRACTICE PU PRIMER: `PR-SOON` is no
+longer listed and **`PR-LATE`** is now marked FEFO; leaving the Lot blank posts
+`PR-LATE` too. Lots & Expiry shows `PR-SOON` as **Quarantined**. **Release** it
+and it returns as the FEFO lot. (Before the fix the console wrote `quarantined`
+and the picker looked for `quarantine`, so the quarantined lot stayed the
+suggestion.) Automated: suite 16C check **16c-06b**.
+
+## 16d. Phase 16d — Lots in Practice (rule 17g)
+
+**TC-16D-01** — in Practice, as `practice.storekeeper`, Issue → PRACTICE PU PRIMER
+(899971). The Lot field lists `PR-SOON` (FEFO), `PR-LATE`, then `PR-OLD` (expired,
+red, last).
+
+**TC-16D-02** — Issue → PRACTICE CHEMOLINE (899973): the Roll picker lists
+`1O26009999001`–`003`.
+
+**TC-16D-03** — as `practice.hod`, Lots & Expiry shows:
+- the expired-stock banner (`PR-OLD`);
+- `PR-SOON` under *≤ 30 days*;
+- `PR-TYPO` under *used but never received*.
+
+**TC-16D-04** — ⚠️ rule 17g: these lots exist in BOTH Practice databases, and are
+recreated by a Practice reset (overlay v3). They were applied to the existing
+databases on 2026-10-01, not left for the next rebuild.
+
+## 16e. Phases 14–16 regression pass, and the parity check CI runs
+
+Run this after any change near stock, lots, the Excel sync or Practice. It
+touches every Phase 14–16 feature once; each line names the section with the
+full steps.
+
+| # | Area | Quick check | Full steps |
+|---|---|---|---|
+| 1 | Packs and KG | A Surface Shield on Stock reads `… KG · … Can`. | §14af |
+| 2 | QR ⇄ Excel | A drum on both a QR form and the workbook is counted once. | §14ag |
+| 3 | Grouped queue | One tank on one day is one job; area credited once. | §14ah |
+| 4 | What's new | A new announcement shows once per user, only to its roles. | §14ai |
+| 5 | Login | Phone: still crest. Desktop GPU: 3D mark, fully visible, card below it. | §14aj, §15c, §15e |
+| 6 | Stock vs Excel | Stock shows ≠ Excel only where the workbook differs, with the cause. | §14ak |
+| 7 | Practice | Practice is violet; refuses to start behind the schema head. | §14ad, §15a, §15c |
+| 8 | Job card ticks | Default lines render ticked; untick, tick and clear all work. | §15b |
+| 9 | Garnet | Garnet credits no area; HOD answers Old / New per job. | §15d |
+| 10 | Store keeper's note | Two notes on one tank and day → two jobs, each pre-filled. | §15e |
+| 11 | Site lock / WBS / HOD items | One-site user sees no Site box; WBS shows "None set up"; HOD adds an item to own site only. | §15e |
+| 12 | Serial No. → lots | A Surface Shield receipt with a batch creates a lot; a return reduces it. | §16a |
+| 13 | Lot Register workbook | The sync prints **▶ lots**; quantities never change. | §16b |
+| 14 | Lots & Expiry / FEFO | Expired lot listed last, never suggested; other lot asks a reason. | §16c |
+| 15 | Practice lots | PR-OLD / PR-SOON / PR-LATE, CHEMOLINE rolls, PR-TYPO all present. | §16d |
+
+**The derived-view parity check (CI's `Derived-view parity` step).** CI builds a
+small SQLite fixture, copies it to a fresh Postgres and compares every derived
+stock view (`v_live_stock`, `v_site_stock`, `v_lot_balance`,
+`v_expiring_stock`, the SME materials view) with the Postgres SQL the API uses.
+It is **not** in the local gate list, so run it yourself after touching
+`backend/api/stock.py` — this is the step that went red after Phase 16, because
+the Postgres lot balance gained columns and subtracts returns that the frozen
+SQLite view cannot see. The lot check now compares on the legacy columns, with
+the returned quantity added back (`stock.SQL_LOT_BALANCE_PARITY`).
+
+```bash
+createdb -h 127.0.0.1 -p 5433 -U postgres gihub_ci_local
+.venv/bin/python tools/make_ci_fixture_db.py --out "$TMPDIR/ci_fixture.db"
+GI_DB_FILE="$TMPDIR/ci_fixture.db" DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub_ci_local .venv/bin/python tools/dual_ci.py
+GI_DB_FILE="$TMPDIR/ci_fixture.db" DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub_ci_local .venv/bin/python tools/parity_check.py
+dropdb -h 127.0.0.1 -p 5433 -U postgres gihub_ci_local
+```
+
+Expected: `== DUAL-CI: ✅ PASS ==` and `== PARITY: ✅ PASS ==` with five ✅ lines.
+⚠️ Never point either tool at `gihub` (Live) or a Practice database (rule 15).
 
 ## 15. Do's and Don'ts
 
