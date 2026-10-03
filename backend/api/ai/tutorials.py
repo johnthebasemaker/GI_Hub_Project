@@ -45,7 +45,7 @@ import pathlib
 import threading
 from dataclasses import dataclass
 
-from .manual_index import Chunk, Index, _tokens
+from .manual_index import _STOP, _WORD_RE, Chunk, Index, expand_aliases
 
 _ROOT = pathlib.Path(__file__).resolve().parents[3]
 TUTORIAL_DIR = pathlib.Path(
@@ -75,6 +75,53 @@ TUTORIAL_DIR = pathlib.Path(
 # shared, not by how hard the winner won.
 MIN_SCORE = 4.0
 MIN_TOKEN_OVERLAP = 2
+
+# ⚠️ WHAT COUNTS AS "SHARING A WORD" — Phase 17d, measured. The overlap rule
+# used to count every token `manual_index._tokens` produces, and that function
+# also emits JOINED BIGRAMS of adjacent raw words (so "log in" can match
+# "login"). Two kinds of token therefore passed the two-token rule while
+# carrying no topic at all, and the Phase 17 tutorial-retrieval eval caught
+# three HOD questions getting a confident wrong link that way:
+#
+#   "how many drums of primer are at CNCEC today?"   shared {many, howmany}   → kpis 4.66
+#   "does what I type into the assistant leave…?"    shared {into, intothe}   → detail 12.75
+#
+# One function word plus the bigram it forms with a stopword is ONE word of
+# evidence counted twice — and a function word is no evidence. So, FOR THE
+# OVERLAP RULE ONLY (BM25 scoring is untouched, so the manual's retrieval and
+# the generated eval grid do not move):
+#   * a word in _FUNCTION_WORDS is not evidence. `manual_index._STOP` is kept
+#     "deliberately short" for BM25's sake; these are the quantifiers,
+#     prepositions and adverbs it leaves in, which never name a topic;
+#   * a joined bigram is evidence only when at least ONE of its two words is a
+#     content word. That keeps CX-15 alive — "what does not valued mean" shares
+#     {valued, notvalued}, a stopword joined to a real term, and that short
+#     honest question must still get its link.
+#
+# ⚠️ WHAT THIS DELIBERATELY DOES NOT FIX: "how do I book man-hours for a crew?"
+# still links to the KPI beat that reads "man-hours booked" — one real domain
+# term in common, the SAME lexical shape as CX-15's "not valued". A token rule
+# cannot tell "explains this term" from "does not teach this action" without
+# killing CX-15, which is exactly the trap RULES.md records for the floor. It
+# stays in the eval's ratchet (tests/ai_eval/router_eval.py) as the measured
+# residue, not hidden by a narrower rule.
+_FUNCTION_WORDS = frozenset("""
+all any both each every few many more most much other some
+into onto upon within without about above below across along among around
+after before between during through toward towards under over
+also just even still yet again
+""".split())
+
+
+def _evidence(text: str) -> set[str]:
+    """The tokens that may count towards MIN_TOKEN_OVERLAP: content words,
+    and joined bigrams with at least one content word in them."""
+    raw = _WORD_RE.findall(expand_aliases(text or "").lower())
+    content = {w for w in raw
+               if len(w) > 1 and w not in _STOP and w not in _FUNCTION_WORDS}
+    pairs = {a + b for a, b in zip(raw, raw[1:])
+             if 5 <= len(a + b) <= 20 and (a in content or b in content)}
+    return content | pairs
 
 _LOCK = threading.Lock()
 _CACHE: dict = {"key": None, "index": None, "beats": []}
@@ -205,7 +252,7 @@ def match(question: str, role: str) -> dict | None:
     if float(top.get("score") or 0.0) < MIN_SCORE:
         return None
     b = beats[int(top["chapter"])]
-    shared = set(_tokens(question)) & set(_tokens(f"{b.note} {b.beat} {b.text}"))
+    shared = _evidence(question) & _evidence(f"{b.note} {b.beat} {b.text}")
     if len(shared) < MIN_TOKEN_OVERLAP:
         return None
     return {

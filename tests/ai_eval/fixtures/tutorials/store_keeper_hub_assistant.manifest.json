@@ -1,0 +1,51 @@
+{
+ "audience": [
+  "store_keeper"
+ ],
+ "beats": [
+  {
+   "id": "title",
+   "note": "Store Keeper dashboard, signed in",
+   "start_s": 0.878,
+   "text": "This is the GI Hub, signed in as a Store Keeper. Everything you can see here is scoped to your site — and so is everything the assistant will tell you."
+  },
+  {
+   "id": "open_assistant",
+   "note": "The assistant opens from any page",
+   "start_s": 10.149,
+   "text": "The Hub Assistant sits on every page, bottom right. Open it whenever you are unsure what a screen expects from you."
+  },
+  {
+   "id": "question",
+   "note": "Asked in the store keeper's own words",
+   "start_s": 18.982,
+   "text": "Ask it in your own words. You do not need to know which chapter of the manual the answer lives in."
+  },
+  {
+   "id": "thinking",
+   "note": "The question goes to the LOCAL model",
+   "start_s": 25.277,
+   "text": "The question is answered by a model running on the company's own server. Nothing you type here leaves the network."
+  },
+  {
+   "id": "answer",
+   "note": "Answered from the Store Keeper chapters only",
+   "start_s": 31.617,
+   "text": "The answer comes from the Store Keeper chapters of the user manual, and only those. Ask about a screen your role cannot open and it will say so rather than guess."
+  },
+  {
+   "id": "close",
+   "note": "Back to work",
+   "start_s": 41.224,
+   "text": "Close it and carry on. Next in this series: receiving stock against a delivery note."
+  }
+ ],
+ "hub_role": "store_keeper",
+ "language": "en",
+ "title": "Asking the Hub Assistant",
+ "training_module_key": "hub_assistant_v1",
+ "tutorial_id": "store_keeper_hub_assistant",
+ "video": {
+  "duration_s": 47.76
+ }
+}

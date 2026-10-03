@@ -1469,6 +1469,20 @@ A candidate must clear `MIN_SCORE = 4.0` **and** share at least
 > the beat that exists to answer it). One word in common is a coincidence; two
 > is a topic. Suite CX-04 is the trap, CX-15 the control.
 
+⚠️ **What counts as a shared token (Phase 17d, measured).** The overlap rule
+first counted every token `manual_index._tokens` emits — including JOINED
+BIGRAMS of adjacent raw words. Phase 17's tutorial-retrieval eval
+(`tests/ai_eval/router/tutorial_retrieval.yaml`) found HOD questions getting a
+confident wrong link on `{many, howmany}` and `{into, intothe}`: one function
+word, counted twice through its bigram. `tutorials._evidence()` now counts only
+content words (not `_STOP`, not `_FUNCTION_WORDS`) and bigrams with at least
+one content word — for the overlap rule only, so BM25 scoring, the manual's
+retrieval and the generated grid do not move. CX-15's `{valued, notvalued}`
+still counts (a stopword joined to a real term), which is the control. One
+miss remains on purpose — "how do I book man-hours" → the KPI beat that reads
+"man-hours booked", one real term in common, CX-15's own shape — held by the
+eval's ratchet (≤ 1) rather than hidden by a narrower rule. Suite CX-16.
+
 **It is allowed to be absent.** Until the renders reach object storage, a
 production box has no manifests: the matcher returns `None`, raises nothing, and
 `/ai/health` reports `tutorials: {present, tutorials, beats, indexed}` so an

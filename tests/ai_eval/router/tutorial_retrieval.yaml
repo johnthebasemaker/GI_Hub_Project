@@ -1,0 +1,114 @@
+# tests/ai_eval/router/tutorial_retrieval.yaml — "video RAG" evals (Phase 17d).
+#
+# The System One router sends TUTORIAL_SEARCH questions straight to
+# `ai/tutorials.match()` — BM25 over one chunk per recorded BEAT, fenced by each
+# tutorial's `audience` BEFORE anything is scored (P12-6), with two floors
+# (score >= 4.0 AND >= 2 shared tokens). This file checks that path from the
+# outside, deterministically, over the committed fixture
+# `tests/ai_eval/fixtures/tutorials/` (4 tutorials, 25 beats — a small corpus,
+# reported as such, not padded).
+#
+# Three kinds of case:
+#   hit   — expect {tutorial, beat}: the right MOMENT, not just the right video
+#   fence — a role outside the tutorial's audience asks; expect null (P12-6)
+#   miss  — an allowed role asks something no tutorial covers; expect null.
+#           "The closest of four videos" is not "a video about this" — a
+#           confidently wrong link costs the reader ninety seconds.
+#
+# Gated by `python -m tests.ai_eval.runner` (no model): hit recall@1 >= 0.85
+# and ZERO fence leaks — a returned beat from a tutorial whose audience excludes
+# the asking role, the same zero tolerance a leak gets in Tier 1. Phrased
+# deliberately unlike the narration ("obscure"), so a pass means retrieval, not
+# string matching.
+#
+# ⚠️ FALSE HITS ON `miss` CASES ARE A RATCHET, NOT ZERO — and that is a measured
+# finding, not a choice. Measured 2026-10-03: 3 of 7 misses got a confident
+# wrong link, every one an HOD question landing on an Executive Summary beat
+# (primer drums → `kpis` 4.66, the assistant → `detail` 12.75, booking
+# man-hours → `kpis` 6.98). The first two shared only function words and the
+# bigrams they form ({many, howmany}, {into, intothe}); ai/tutorials.py
+# `_evidence` stopped those counting, the same day. The man-hours one shares a
+# real domain term — CX-15's own shape — and stays: the gate is "no worse
+# than 1". RULES.md records why the floors are not nudged instead.
+
+# ── hits: HOD — Reading the Executive Summary ────────────────────────────────
+- {id: tr.hit.es_range, kind: hit, role: hod, expect: [hod_executive_summary_v1, range],
+   question: "on the executive summary, which date range should I choose before reading it?"}
+- {id: tr.hit.es_pdf, kind: hit, role: hod, expect: [hod_executive_summary_v1, pdf],
+   question: "can I download the executive summary as a proper PDF document?"}
+- {id: tr.hit.es_kpis, kind: hit, role: hod, expect: [hod_executive_summary_v1, kpis],
+   question: "what does the strip across the top of the summary tell me about material received and issued?"}
+- {id: tr.hit.es_detail, kind: hit, role: hod, expect: [hod_executive_summary_v1, detail],
+   question: "a consumption figure on the summary looks wrong — where are the rows behind it?"}
+- {id: tr.hit.es_procurement, kind: hit, role: hod, expect: [hod_executive_summary_v1, procurement],
+   question: "where does the summary show purchase orders and delivery notes still in flight?"}
+- {id: tr.hit.es_floor, kind: hit, role: hod, expect: [hod_executive_summary_v1, floor],
+   question: "why is a material with no unit cost reported as not valued instead of zero?"}
+
+# ── hits: Store Keeper — Staging a return ────────────────────────────────────
+- {id: tr.hit.ret_open, kind: hit, role: store_keeper, expect: [sk_stage_return_v1, open],
+   question: "where do I stage a return of material going back to the warehouse?"}
+- {id: tr.hit.ret_window, kind: hit, role: store_keeper, expect: [sk_stage_return_v1, window],
+   question: "how old can the receipt be — is there a thirty day limit on returns?"}
+- {id: tr.hit.ret_qc, kind: hit, role: store_keeper, expect: [sk_stage_return_v1, qc],
+   question: "quality rejected a delivery — can I paste the return number so the form fills itself?"}
+- {id: tr.hit.ret_material, kind: hit, role: store_keeper, expect: [sk_stage_return_v1, material],
+   question: "the material I want to send back is not in the list on the return form"}
+- {id: tr.hit.ret_source, kind: hit, role: store_keeper, expect: [sk_stage_return_v1, source],
+   question: "which receipt is the return taken from, and why is that field locked?"}
+- {id: tr.hit.ret_post, kind: hit, role: store_keeper, expect: [sk_stage_return_v1, post],
+   question: "when I post a return does the stock go down straight away or does the HOD approve it?"}
+
+# ── hits: Supervisor / Store Keeper — Filing consumption from paper ──────────
+- {id: tr.hit.ocr_qr, kind: hit, role: supervisor, expect: [ocr_workflow_v1, qr],
+   question: "must the photo of the form include the QR code?"}
+- {id: tr.hit.ocr_blanks, kind: hit, role: store_keeper, expect: [ocr_workflow_v1, blanks],
+   question: "what happens to a box where the handwriting was not certain?"}
+- {id: tr.hit.ocr_order, kind: hit, role: supervisor, expect: [ocr_workflow_v1, order],
+   question: "after I fill the printed form in the field, who verifies my quantities?"}
+- {id: tr.hit.ocr_upload, kind: hit, role: supervisor, expect: [ocr_workflow_v1, upload],
+   question: "where do I print a form listing every material for the lining system?"}
+- {id: tr.hit.ocr_training, kind: hit, role: supervisor, expect: [ocr_workflow_v1, training],
+   question: "the upload offers watch now or watch later — does skipping the tutorial block me?"}
+- {id: tr.hit.ocr_open, kind: hit, role: store_keeper, expect: [ocr_workflow_v1, open],
+   question: "which page turns a form filled in by hand in the plant into an entry?"}
+
+# ── hits: Store Keeper — Asking the Hub Assistant ────────────────────────────
+- {id: tr.hit.ha_local, kind: hit, role: store_keeper, expect: [store_keeper_hub_assistant, thinking],
+   question: "does what I type into the assistant leave the company network?"}
+- {id: tr.hit.ha_where, kind: hit, role: store_keeper, expect: [store_keeper_hub_assistant, open_assistant],
+   question: "where on the page does the hub assistant sit?"}
+- {id: tr.hit.ha_scope, kind: hit, role: store_keeper, expect: [store_keeper_hub_assistant, answer],
+   question: "which chapters of the user manual does the assistant answer from for a store keeper?"}
+
+# ── admin shadow: sees every tutorial ────────────────────────────────────────
+- {id: tr.hit.admin_return, kind: hit, role: admin, expect: [sk_stage_return_v1, post],
+   question: "does posting a return move stock before the head of department approves it?"}
+
+# ── fence: a role outside the audience gets NOTHING (P12-6) ──────────────────
+- {id: tr.fence.sk_es_pdf, kind: fence, role: store_keeper, expect: null,
+   question: "can I download the executive summary as a proper PDF document?"}
+- {id: tr.fence.hod_return, kind: fence, role: hod, expect: null,
+   question: "where do I stage a return of material going back to the warehouse?"}
+- {id: tr.fence.sup_ret_qc, kind: fence, role: supervisor, expect: null,
+   question: "quality rejected a delivery — can I paste the return number so the form fills itself?"}
+- {id: tr.fence.qc_ocr_qr, kind: fence, role: qc, expect: null,
+   question: "must the photo of the form include the QR code?"}
+- {id: tr.fence.log_es_kpis, kind: fence, role: logistics, expect: null,
+   question: "what does the strip across the top of the summary tell me about material received and issued?"}
+
+# ── misses: an allowed role, a topic no tutorial covers ──────────────────────
+- {id: tr.miss.sk_password, kind: miss, role: store_keeper, expect: null,
+   question: "how do I reset my password?"}
+- {id: tr.miss.hod_primer, kind: miss, role: hod, expect: null,
+   question: "how many drums of primer are at CNCEC today?"}
+- {id: tr.miss.sk_valuation, kind: miss, role: store_keeper, expect: null,
+   question: "what is the stock valuation of my store?"}
+- {id: tr.miss.sup_ppe, kind: miss, role: supervisor, expect: null,
+   question: "how do I request PPE for a new worker?"}
+- {id: tr.miss.sk_cycle, kind: miss, role: store_keeper, expect: null,
+   question: "where do I adjust stock after a cycle count?"}
+- {id: tr.miss.hod_mh, kind: miss, role: hod, expect: null,
+   question: "how do I book man-hours for a crew?"}
+- {id: tr.miss.hod_assistant, kind: miss, role: hod, expect: null,
+   question: "does what I type into the assistant leave the company network?"}

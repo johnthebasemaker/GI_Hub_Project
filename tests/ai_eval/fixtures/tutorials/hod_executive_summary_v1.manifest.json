@@ -1,0 +1,57 @@
+{
+ "audience": [
+  "hod"
+ ],
+ "beats": [
+  {
+   "id": "open",
+   "note": "The HOD Executive Summary",
+   "start_s": 2.337,
+   "text": "This is the Executive Summary. It is a read-only view of your own site over a date range you choose, and it is the page to open before a meeting rather than after one. Auditors can see it too. Nobody can change anything from here."
+  },
+  {
+   "id": "range",
+   "note": "Pick the period first",
+   "start_s": 18.504,
+   "text": "Set the date range before you read anything. It opens on today, which is almost never the question being asked. Last seven days and This month are one click, and every figure below moves with it."
+  },
+  {
+   "id": "kpis",
+   "note": "The ledger, in one strip",
+   "start_s": 29.967,
+   "text": "The strip across the top is the ledger for the period. Material received, material issued, material returned, square metres completed, man-hours booked, and how many of your people were present. Each one carries the number of entries behind it, so a large figure made of two entries looks different from the same figure made of two hundred."
+  },
+  {
+   "id": "detail",
+   "note": "Every headline number opens into its rows",
+   "start_s": 50.072,
+   "text": "Underneath, every headline opens into the rows it was built from. If a consumption figure looks wrong, the material that made it wrong is on this page — you do not have to go and run a report to find out."
+  },
+  {
+   "id": "procurement",
+   "note": "What is on order, and what is in flight",
+   "start_s": 62.255,
+   "text": "Further down is the procurement position. Purchase requests, purchase orders, delivery notes in flight and the deliveries expected inside the window. This is the part that answers \"is the material coming\", which is usually the question being asked when somebody calls a meeting."
+  },
+  {
+   "id": "pdf",
+   "note": "Server-rendered, not a printed web page",
+   "start_s": 79.117,
+   "text": "Download PDF gives you the full paginated report, rendered by the server. It is a real document, not a printed screen, so the tables break across pages properly and it looks the same on every machine."
+  },
+  {
+   "id": "floor",
+   "note": "And the one number that must be read carefully",
+   "start_s": 91.952,
+   "text": "And one thing to know before you quote a stock value anywhere. A material with no unit cost on the master is not counted as worth nothing. It is reported separately as not valued, with a count, and the total is labelled a floor. Read it that way. A total that quietly treated missing prices as zero would be arithmetically correct and completely misleading."
+  }
+ ],
+ "hub_role": "hod",
+ "language": "en",
+ "title": "Reading the Executive Summary",
+ "training_module_key": "hod_executive_summary_v1",
+ "tutorial_id": "hod_executive_summary_v1",
+ "video": {
+  "duration_s": 113.28
+ }
+}

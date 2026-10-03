@@ -4,6 +4,7 @@ tests/ai_eval/runner.py — adversarial RAG audit for the Hub Assistant.
     python -m tests.ai_eval.runner              # Tier 1 only (the CI gate)
     python -m tests.ai_eval.runner --tier2      # + generation, needs Ollama
     python -m tests.ai_eval.runner --json out.json
+    python -m tests.ai_eval.runner --router     # + the System One router model (Phase 17)
 
 WHAT THIS EXISTS FOR. Suite CJ already tests the retrieval LAYER: that
 `allowed_sections()` filters chapters before BM25 scores them, that alias
@@ -390,6 +391,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="with --ratchet, open a bug row for each regression")
     ap.add_argument("--record-baseline", action="store_true",
                     help="write today's Tier 2 rates as the new baseline")
+    ap.add_argument("--router", action="store_true",
+                    help="also run Router L3 — the System One model (Phase 17)")
+    ap.add_argument("--require-model", action="store_true",
+                    help="with --router, a missing model FAILS instead of skipping (CI)")
     args = ap.parse_args(argv)
 
     cases = load_cases()
@@ -424,6 +429,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"        → {d}")
     retrieval_ok = (recall["value"] >= RETRIEVAL_MIN_RECALL
                     and precision["value"] >= RETRIEVAL_MIN_PRECISION)
+
+    # ── Phase 17: the router layers of the pyramid ─────────────────────────
+    # L2 is deterministic and gates every run, here and in CI's existing step.
+    # L3 needs the router model; see router_eval.py for what gates and what is
+    # only reported (deviation D3).
+    from tests.ai_eval import router_eval
+    l2 = router_eval.run_l2()
+    l3 = router_eval.run_l3(args.require_model) if args.router else None
 
     t2: list[CaseResult] = []
     if args.tier2:
@@ -467,6 +480,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Retrieval (GATE)    recall {recall['value']:.3f} · "
           f"precision {precision['value']:.3f} "
           f"(min {RETRIEVAL_MIN_RECALL:.2f})")
+    print(f"  Router L2 (GATE)    {'✅ pass' if l2['ok'] else '❌ ' + str(len(l2['failures'])) + ' failure(s)'}")
+    if l3 is not None:
+        print(f"  Router L3           "
+              + ("⏭  SKIPPED — " + l3["reason"] if l3.get("skipped")
+                 else ("✅ pass" if l3["ok"] else "❌ fail")))
 
     # ── the Tier 2 ratchet ─────────────────────────────────────────────────
     regressions = ratchet(sec_rate, fr_rate) if args.ratchet and t2 else []
@@ -489,6 +507,8 @@ def main(argv: list[str] | None = None) -> int:
         "tier2": {"security_rate": sec_rate, "false_refusal_rate": fr_rate,
                   "regressions": regressions,
                   "results": [r.__dict__ for r in t2]},
+        "router_l2": l2,
+        "router_l3": l3,
     }
     if args.json:
         pathlib.Path(args.json).write_text(
@@ -507,7 +527,8 @@ def main(argv: list[str] | None = None) -> int:
     # artefact, ratcheted against a recorded baseline, and — when it regresses —
     # given a bug row somebody has to close. What it is not given is the power
     # to fail a build on a number that can move on its own.
-    ok = (t1_pass == t1_total) and not broken and not policy and retrieval_ok
+    ok = (t1_pass == t1_total) and not broken and not policy and retrieval_ok \
+        and l2["ok"] and (l3 is None or l3["ok"])
     print(f"== AI GUARDRAIL AUDIT: {'✅ PASS' if ok else '❌ FAIL'} ==")
     return 0 if ok else 1
 

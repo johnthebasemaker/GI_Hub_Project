@@ -1,0 +1,51 @@
+{
+ "audience": [
+  "store_keeper"
+ ],
+ "beats": [
+  {
+   "id": "open",
+   "note": "Return Stock",
+   "start_s": 1.672,
+   "text": "This is Return Stock, and this is where you stage a return — material going back to the warehouse. Not returnable tools; those have their own tab."
+  },
+  {
+   "id": "window",
+   "note": "The 30-day window, stated on the page",
+   "start_s": 10.777,
+   "text": "Read the line under the title. A return is made against a receipt from the last thirty days at your site, and the quantity is capped at what that receipt brought in. To go back further you tick the override window and write a justification, and that routes to your Head of Department as an explicit override request."
+  },
+  {
+   "id": "qc",
+   "note": "The shortcut for QC-rejected material",
+   "start_s": 27.502,
+   "text": "If Quality rejected the material, start here instead. Paste the Return Number from the rejection and the form fills itself in — the material, the site, the lot, the quantity rejected and the inspector's own reason. You may return less than was rejected. You cannot return more, and a Return Number can only be used once."
+  },
+  {
+   "id": "material",
+   "note": "Pick the material being sent back",
+   "start_s": 49.339,
+   "text": "Otherwise, pick the material yourself. The list only offers things received at your site inside the window, so a material you cannot see here is usually a material you cannot return here."
+  },
+  {
+   "id": "source",
+   "note": "Which receipt is being returned",
+   "start_s": 62.325,
+   "text": "Then say which receipt it came from. This is the field that matters most. The system shows you that receipt locked — its date, its delivery note, its lot and the quantity it brought in — and everything you enter is measured against it."
+  },
+  {
+   "id": "post",
+   "note": "Staged for the HOD, not committed",
+   "start_s": 76.341,
+   "text": "Post return stages it. It does not move stock. It lands in your Head of Department's Returns tab, and only their approval writes the row that reduces stock and opens the logistics email. If they reject it, you see that in your request history."
+  }
+ ],
+ "hub_role": "store_keeper",
+ "language": "en",
+ "title": "Staging a return",
+ "training_module_key": "sk_stage_return_v1",
+ "tutorial_id": "sk_stage_return_v1",
+ "video": {
+  "duration_s": 91.44
+ }
+}
