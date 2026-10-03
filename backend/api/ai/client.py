@@ -30,10 +30,10 @@ MODEL_CHAT = os.environ.get("GI_AI_CHAT_MODEL", "llama3.1:8b")
 MODEL_CODER = os.environ.get("GI_AI_CODER_MODEL", "qwen2.5-coder:7b")
 MODEL_VISION = os.environ.get("GI_AI_VISION_MODEL", "qwen2.5vl:7b")
 # Phase 17 — the System One router (ai/system_one.py). Ruling Q17-1 amends "one
-# warm model" to one warm GENERATION model plus ONE pinned router of <= 1 GB.
-# ⚠️ The spike (PROPOSED_PHASE17_PLAN.md §9) found 0.5b fails routing (0.72
-# macro) and 1.5b passes (0.95) but sits 1.35 GB resident — deviation D1, over
-# that budget, awaiting the operator's ruling. Switch with this variable or the
+# warm model" to one warm GENERATION model plus ONE pinned router of <= 1.5 GB
+# (raised from 1 GB by the operator after the spike, deviation D1). The spike
+# (PROPOSED_PHASE17_PLAN.md §9) found 0.5b fails routing (0.72 macro) and 1.5b
+# passes (0.95) at 1.35 GB resident. Switch with this variable or the
 # `ai_router_enabled` setting; nothing else depends on which model it is.
 MODEL_ROUTER = os.environ.get("GI_AI_ROUTER_MODEL", "qwen2.5:1.5b")
 

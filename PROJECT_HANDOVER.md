@@ -1144,7 +1144,7 @@ originals:
 
 | # | Ruling | Where it lives |
 |---|---|---|
-| **Q17-1** | ⚠️ **AMENDS "one warm model"**: one warm GENERATION model **plus one pinned router ≤ 1 GB**. ⚠️ Measured `qwen2.5:1.5b` at **1.35 GB** resident (deviation D1) — over this budget, awaiting the operator's ruling; `qwen2.5:0.5b` fits and fails routing (0.72). | `client.MODEL_ROUTER`, `system_one.KEEP_ALIVE` |
+| **Q17-1** | ⚠️ **AMENDS "one warm model"**: one warm GENERATION model **plus one pinned router ≤ 1.5 GB** (budget raised from 1 GB by the operator after the spike, deviation D1). The router is `qwen2.5:1.5b`, measured **1.35 GB** resident; `qwen2.5:0.5b` (0.73 GB) fails routing (0.72). | `client.MODEL_ROUTER`, `system_one.KEEP_ALIVE` |
 | **Q17-2** | The router's **`is_safe:false` is a scored signal**, folded into the guard: it refuses with any guard pattern or on the SQL lane; alone elsewhere it is traced (`flagged`) and answered. **Never a standalone veto** (§7f's "no LLM judge" stands for every other lane). | `guard.with_router_signal` |
 | **Q17-3** | ⚠️ **AMENDS P10-7** for the router eval only: it may gate the pipeline **after a 10-run probation** — temperature 0, seed, pinned digest and Ollama version, floors on aggregates, a determinism probe on every run. Tier 2 (the 8B's answers) still never gates. | `tests/ai_eval/router_eval.py`, CI `ai-router-eval` |
 | **Q17-4** | The **Head of Qualities has no Reports** (and no Records ledgers) — the menu now follows `require_level`, which always refused oversight roles. | `nav.tsx` `OVERSIGHT_ROLES`, suite 17Q |

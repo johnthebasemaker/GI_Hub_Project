@@ -365,7 +365,7 @@ deviations: `PROPOSED_PHASE17_PLAN.md` §9.
 | **Q17-2** | Make the router's `is_safe:false` a standalone veto. It refuses only with a guard pattern or on the SQL lane. |
 | **P17-warm** | Load the router on a request's clock. A cold load is cancelled at 3 s and the router then NEVER warms — silently. `system_one.warm()` exists for this. |
 | **P17-D3** | Lower the 0.95 block target to what the model scores, or add a guard pattern because a `security_holdout.yaml` case missed — that turns the holdout into a second dev set. |
-| **Q17-1 / Q17-3** | Forget they AMEND two older rulings: "one warm model" is now one generation model + one pinned router, and P10-7 lets the router eval gate after its 10-run probation. Tier 2 still never gates. |
+| **Q17-1 / Q17-3** | Forget they AMEND two older rulings: "one warm model" is now one generation model + one pinned router ≤ 1.5 GB (raised from 1 GB, D1), and P10-7 lets the router eval gate after its 10-run probation. Tier 2 still never gates. |
 
 ⚠️ **The prompt's few-shot examples may appear in no eval file** (suite 17a-05).
 ⚠️ **A video request is matched on its topic** (`system_one.video_topic`) —

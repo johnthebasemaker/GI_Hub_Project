@@ -32,7 +32,7 @@ an Ollama hiccup can never become an assistant outage (P11-3) and never a
 bypass. A TIMEOUT is not retried and never reaches a cloud (P11-9).
 
 Rulings (PROPOSED_PHASE17_PLAN.md, LOCKED 2026-10-03): Q17-1 one pinned router
-<= 1 GB beside the generation model · Q17-2 `is_safe:false` is a signal, a veto
+<= 1.5 GB beside the generation model (raised from 1 GB, deviation D1) · Q17-2 `is_safe:false` is a signal, a veto
 only on the SQL lane · Q17-5 `MANUAL_QA` is the fourth intent · Q17-7
 `UI_COMMAND` is navigation only.
 

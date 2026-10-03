@@ -14,8 +14,8 @@
 1. **Phase 16 is merged (PRs #78–#103). Phase 17 is on FOUR STACKED PRs, not
    merged:** #104 (17a, base `main`) ← #105 (17c) ← #106 (17d) ← #107 (17e).
    Merge in that order, each only after its own CI is green. See §4.4.
-2. **One operator decision is open — Phase 17 deviation D1** (§8.0): the router
-   model is 1.35 GB resident, over the 1 GB ruling Q17-1. No pending migration.
+2. **Nothing is mid-flight.** Phase 17's open decision D1 was ruled the same
+   day: the router budget is ≤ 1.5 GB (Q17-1 amended). No pending migration.
 3. **Alembic single head `e5b2c7a9d4f1`** — Live (`gihub`) and both Practice
    databases are on it.
 4. **All gates green** (2026-10-03, branch 17e): service_tests **2,803/0** ·
@@ -359,9 +359,8 @@ reads the Lot Register workbook.)
 ## 8. Open items
 
 0. ⚠️ **Phase 17 decisions for the operator** (`PROPOSED_PHASE17_PLAN.md` §9.3):
-   **D1** the router (`qwen2.5:1.5b`) is **1.35 GB** resident, over ruling
-   Q17-1's 1 GB — raise the budget, ship 0.5b knowingly (routing 0.72), or keep
-   `ai_router_enabled = 0` until the CPX42 is sized. **D3** the 0.95 attack-block
+   **D1 ruled:** the router budget is ≤ 1.5 GB; `qwen2.5:1.5b` (1.35 GB) is
+   the router — size the CPX42 for it beside the 8B. **D3** the 0.95 attack-block
    target is not met (dev 0.667, holdout 0.316) and is reported, not gated.
    **Probation:** delete `continue-on-error` from the `ai-router-eval` job after
    10 consecutive green runs with 0 flips. `qwen2.5:0.5b` is still pulled on this
@@ -411,7 +410,7 @@ reads the Lot Register workbook.)
 ## 10. Start here next session — choose ONE track
 
 First, **land Phase 17**: merge #104 → #105 → #106 → #107 in order, each on its
-own green CI, and get the operator's ruling on D1 (§8.0). Then choose:
+own green CI. Then choose:
 
 - **Track A — operator data clean-up support.** Walk the operator through the
   12 unknown lots and any sync report items; re-run the sync dry run with them.

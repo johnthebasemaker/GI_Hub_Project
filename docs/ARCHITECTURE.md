@@ -1543,8 +1543,8 @@ post-answer link. Sent whole, "video"/"tutorial"/"watch" matched the OCR
 tutorial's beat ABOUT the tutorial gate for 8 of 12 requests.
 
 **Rulings** (`PROPOSED_PHASE17_PLAN.md`, LOCKED 2026-10-03): Q17-1 one warm
-generation model + one pinned router ≤ 1 GB (⚠️ measured 1.35 GB — deviation D1,
-awaiting the operator) · Q17-2 a signal, a veto only on SQL · Q17-3 P10-7
+generation model + one pinned router ≤ 1.5 GB (raised from 1 GB after the spike
+measured 1.35 GB — deviation D1, ruled 2026-10-03) · Q17-2 a signal, a veto only on SQL · Q17-3 P10-7
 amended: the router eval gates after a 10-run probation · Q17-5 `MANUAL_QA` ·
 Q17-7 navigation only · Q17-8 tables in the chat.
 
