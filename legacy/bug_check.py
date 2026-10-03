@@ -1766,7 +1766,18 @@ def check_models_schema_parity() -> None:
                #    variance beside a quantity the ledger no longer holds.
                ("receipts", "Source_Ref"),
                ("returns", "Source_Ref"),
-               ("sme_consumption_log", "Source_Fingerprint")}
+               ("sme_consumption_log", "Source_Fingerprint"),
+               # Phase 18 Track 3 (alembic a7d3e1f5c829) — the return desk.
+               # New-stack only: a loan remembers the code that was scanned so
+               # a return scan finds it, and a return records when, by whom
+               # and in what condition. The frozen portal's loans keep their
+               # two-state model and never read these.
+               ("returnable_items", "SAP_Code"),
+               ("returnable_items", "Item_Ref"),
+               ("returnable_items", "returned_time"),
+               ("returnable_items", "returned_by"),
+               ("returnable_items", "return_condition"),
+               ("returnable_items", "return_note")}
     extra = model_only - allowed
     assert not extra, f"unexpected model-only columns (update models.py or DB): {extra}"
 
