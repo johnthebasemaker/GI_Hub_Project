@@ -368,6 +368,15 @@ deviations: `PROPOSED_PHASE17_PLAN.md` §9.
 | **Q17-1 / Q17-3** | Forget they AMEND two older rulings: "one warm model" is now one generation model + one pinned router ≤ 1.5 GB (raised from 1 GB, D1), and P10-7 lets the router eval gate after its 10-run probation. Tier 2 still never gates. |
 
 ⚠️ **The prompt's few-shot examples may appear in no eval file** (suite 17a-05).
+
+**Phase 18 additions (2026-10-03, `PROPOSED_PHASE18_PLAN.md` §2):**
+
+| | Do not |
+|---|---|
+| **P18-combo** | Give a v3 combination signal (weight 2) more weight, or let one refuse alone. They exist to COMPLETE a warn; suite 18a-05 pins that none can even warn. |
+| **P18-cache** | Cache the router's DECISION. `system_one.CACHE` holds the model's answer only; the guard and Q17-2 run on every request (18a-08). And never leave the cache on in L3 — the determinism probe would test the cache. |
+| **P18-prefix** | Add a second system prompt to the router model. Ollama keeps ONE prompt cache (`NUM_PARALLEL=1`): a second prompt evicts the router's prefix (46 → 510 ms on Metal, seconds on CPU — past the 3 s budget). `warm()` primes the real prompt for the same reason. |
+| **P18-verifier** | Re-try a "second look" by the 1.5B model without re-reading §2.3 — three designs were measured and rejected (cache thrash; a constant answer; 16 → 3 detections on one sentence of wording). |
 ⚠️ **A video request is matched on its topic** (`system_one.video_topic`) —
 "video", "tutorial" and "watch" are the training-gate beat's own words.
 

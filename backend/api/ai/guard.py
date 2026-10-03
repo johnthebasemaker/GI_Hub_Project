@@ -97,7 +97,10 @@ class _Config:
     shape: dict
     patterns: tuple[_Pattern, ...]
     pii: tuple[_PiiRule, ...]
+    disguise_weight: int = 0
 
+
+DISGUISE_HIT = "encoded.disguised"
 
 _FALLBACK_SHAPE = {"max_chars": 2000, "max_lines": 40,
                    "max_repeated_token": 30, "max_encoded_run": 120}
@@ -136,7 +139,8 @@ def config() -> _Config:
     return _Config(int(raw.get("version", 0)), int(th.get("warn", 3)),
                    int(th.get("refuse", 6)),
                    {**_FALLBACK_SHAPE, **(raw.get("shape") or {})},
-                   tuple(pats), tuple(pii))
+                   tuple(pats), tuple(pii),
+                   int(th.get("disguise", 0)))
 
 
 # ── input guard ─────────────────────────────────────────────────────────────
@@ -241,10 +245,24 @@ def scan_input(question: str) -> InputVerdict:
     hits: list[str] = []
     plain = question or ""
     norm = _deobfuscate(plain)
+    disguised = False
     for p in cfg.patterns:
-        if p.rx.search(plain) or (norm != plain and p.rx.search(norm)):
+        if p.rx.search(plain):
             hits.append(p.id)
             score += p.weight
+        elif norm != plain and p.rx.search(norm):
+            hits.append(p.id)
+            score += p.weight
+            disguised = True
+    # ⚠️ Phase 18 (v3): A DISGUISE THAT HIDES A TRIGGER IS ITSELF EVIDENCE.
+    # "1gn0re y0ur instruct10ns" scored exactly what the plain sentence scores,
+    # as if writing it in leet were an accident. Nobody spaces out or leets a
+    # question about drums; a pattern that matches ONLY the de-obfuscated copy
+    # means somebody hid it. The weight is data (guard_patterns.yaml); it is
+    # added once, however many patterns the disguise hid.
+    if disguised and cfg.disguise_weight:
+        hits.append(DISGUISE_HIT)
+        score += cfg.disguise_weight
     v.score, v.hits = score, hits
     if score >= cfg.refuse:
         v.decision, v.stage = "refuse", "patterns"
