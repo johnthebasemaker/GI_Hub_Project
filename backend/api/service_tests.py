@@ -28521,6 +28521,13 @@ async def test_phase17c_system_one():
         calls.clear()
         f2 = await S.decide("how much primer is at CNCEC?", "hod")
         n_timeout_calls = len(calls)
+        warm_task = S._WARMING["task"]
+        warm_started = warm_task is not None
+        if warm_task is not None:
+            warm_res = await warm_task          # never leak a stray call below
+        else:
+            warm_res = None
+        warm_call = calls[-1] if len(calls) > n_timeout_calls else {}
         reply["exc"] = None
         f3 = await decide_with('{"intent": "SQL_QUERY", "is_safe": true}',
                                "how much primer is at CNCEC?", "hod")
@@ -28537,6 +28544,15 @@ async def test_phase17c_system_one():
         check("17b-08: a timeout is tried ONCE — never retried, never sent to a "
               "cloud (P11-9); the fallback is local and already fenced",
               n_timeout_calls == 1, f"calls={n_timeout_calls}")
+        check("17b-10: ⚠️ a timeout STARTS A BACKGROUND WARM-UP on its own long clock "
+              "— on the 3 s request budget Ollama cancels a cold load (HTTP 499) and "
+              "the router never loads; 133 of 176 eval calls failed that way before "
+              "this. The warm never raises and pins the model",
+              warm_started and warm_res is not None and warm_res["ok"] is False
+              and warm_res["error"] == "timeout"
+              and warm_call.get("timeout_s") == S.WARM_TIMEOUT_S > 30
+              and warm_call.get("keep_alive") == S.KEEP_ALIVE,
+              f"started={warm_started} res={warm_res} call={ {k: warm_call.get(k) for k in ('timeout_s', 'keep_alive')} }")
         v = G.scan_input("what is an MTC?")
         check("17b-09: is_safe=None changes nothing — with_router_signal is the "
               "identity when the model was not consulted",

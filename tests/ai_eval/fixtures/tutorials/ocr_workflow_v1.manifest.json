@@ -1,0 +1,52 @@
+{
+ "audience": [
+  "supervisor",
+  "store_keeper"
+ ],
+ "beats": [
+  {
+   "id": "open",
+   "note": "Execution — where a filled form becomes an entry",
+   "start_s": 1.485,
+   "text": "This is the Execution page. It is where a form you filled in by hand, out in the plant, becomes an entry in the system."
+  },
+  {
+   "id": "order",
+   "note": "The order changed — paper first, store keeper second",
+   "start_s": 8.846,
+   "text": "Read the order on this page carefully, because it changed. You fill a printed form in the field. The store keeper verifies your quantities next — not the Head of Department. Their corrections show to the Head of Department in red, and you are told before it is approved."
+  },
+  {
+   "id": "upload",
+   "note": "The upload card",
+   "start_s": 24.562,
+   "text": "Print a form for the lining system you are working on. It lists every material for that system, so nobody has to write a material name by hand — that is the one thing the reader is genuinely bad at. Fill in the date, the equipment and the area at the top, and a quantity and a lot number on every row."
+  },
+  {
+   "id": "qr",
+   "note": "Rule one — the whole page, QR included",
+   "start_s": 41.693,
+   "text": "Then photograph the whole page, including the QR code, and upload it. The code is how the system knows which form this is. Each printed sheet is used once, and a sheet printed before its system's materials changed will be refused."
+  },
+  {
+   "id": "blanks",
+   "note": "Rule two — an uncertain box is left empty",
+   "start_s": 55.453,
+   "text": "Check every figure afterwards. Where the handwriting was not certain, the box is left empty rather than guessed, and those rows are marked. An empty box is the system telling you it does not know — not telling you the number was zero."
+  },
+  {
+   "id": "training",
+   "note": "The soft gate, and why it never blocks",
+   "start_s": 70.414,
+   "text": "One last thing. The first time you press upload without having completed this tutorial, a panel offers you Watch now or Watch later and continue. Nothing is ever blocked. You are standing in a plant holding a filled form, and a video must not stop you filing it — but the deferral is counted, and your Head of Department sees the count next to your name."
+  }
+ ],
+ "hub_role": "supervisor",
+ "language": "en",
+ "title": "Filing consumption from paper",
+ "training_module_key": "ocr_workflow_v1",
+ "tutorial_id": "ocr_workflow_v1",
+ "video": {
+  "duration_s": 91.2
+ }
+}

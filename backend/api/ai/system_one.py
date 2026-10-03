@@ -264,6 +264,50 @@ def classify_rules(question: str, role: str) -> Optional[Decision]:
     return None
 
 
+# ── warming: the load must never run on a request's 3-second clock ──────────
+#
+# ⚠️ FOUND IN 17d, AND IT IS A SILENT, PERMANENT FAILURE. A cold load of the
+# router takes ~3 s on this Mac (Ollama: weights 935 MiB + compute 300 MiB) and
+# longer on a CPU box. The request budget is 3 s, and when the client gives up
+# Ollama CANCELS the load ("Load failed … context canceled", HTTP 499). The next
+# question starts the load again and is cancelled again — so after any Ollama
+# restart the router never loads, every question falls back, and nothing looks
+# wrong except that the fast lanes never fire. 133 of 176 eval calls timed out
+# exactly this way before this existed.
+#
+# So the load happens OFF the request path, with its own generous clock: once
+# at startup (main.py lifespan), and again in the background whenever a request
+# falls back on a timeout or an unavailable engine. One warm per worker at a
+# time; four workers asking at once is still one load inside Ollama.
+WARM_TIMEOUT_S = float(os.environ.get("GI_AI_ROUTER_WARM_TIMEOUT_S", "180"))
+_WARMING: dict = {"task": None}
+
+
+async def warm() -> dict:
+    """Load (and pin) the router model. Never raises."""
+    t0 = time.perf_counter()
+    try:
+        await aic.generate(aic.MODEL_ROUTER, "ok", system=None, temperature=0.0,
+                           num_predict=1, timeout_s=WARM_TIMEOUT_S,
+                           options=OPTIONS, keep_alive=KEEP_ALIVE)
+        return {"ok": True, "ms": int((time.perf_counter() - t0) * 1000), "error": ""}
+    except Exception as e:                              # noqa: BLE001
+        return {"ok": False, "ms": int((time.perf_counter() - t0) * 1000),
+                "error": route.classify(e)}
+
+
+def ensure_warm() -> None:
+    """Start a background warm unless one is already running in this worker."""
+    import asyncio
+    t = _WARMING["task"]
+    if t is not None and not t.done():
+        return
+    try:
+        _WARMING["task"] = asyncio.get_running_loop().create_task(warm())
+    except RuntimeError:                                # no running loop
+        _WARMING["task"] = None
+
+
 # ── stage 1: the model ──────────────────────────────────────────────────────
 
 async def classify_model(question: str) -> Decision:
@@ -277,6 +321,8 @@ async def classify_model(question: str) -> Decision:
     except Exception as e:                              # noqa: BLE001
         d.error = route.classify(e)
         d.ms = int((time.perf_counter() - t0) * 1000)
+        if d.error in (route.TIMEOUT, route.UNAVAILABLE):
+            ensure_warm()       # a cold or restarted engine: load it off-path
         return d
     d.ms = out.ms
     parsed = _validate(out.text)

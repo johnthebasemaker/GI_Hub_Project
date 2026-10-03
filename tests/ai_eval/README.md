@@ -7,6 +7,33 @@ bash bin/ai_eval_tier2.sh                         # the scored half (needs Ollam
 bash bin/ai_eval_tier2.sh --record                # move the baseline, deliberately
 ```
 
+## Phase 17 — the router layers of the QA pyramid
+
+```bash
+python -m tests.ai_eval.runner                            # L1/L2 — no model (also in dual-ci)
+python -m tests.ai_eval.runner --router                   # + L3 — the System One router model
+python -m tests.ai_eval.runner --router --require-model   # CI job ai-router-eval: a missing model FAILS
+python tools/tutorial_fixture.py --check                  # is the committed tutorial corpus current?
+```
+
+| Layer | What | Model? | Gates? |
+|---|---|---|---|
+| L1 | service_tests suites 17A–17C (stub transport) and CX-16 | no | ✅ |
+| L2 | `router_eval.run_l2()`: stage 0 decides exactly its labelled cases; the guard sees every dev attack and refuses no twin; tutorial retrieval over `fixtures/tutorials/` — recall@1 ≥ 0.85, 0 fence leaks, false hits ≤ the ratchet | no | ✅ every run |
+| L3 | `router_eval.run_l3()`: schema 100 %, 0 transport errors, routing macro ≥ 0.90 and each intent ≥ 0.80, twin false refusal ≤ 0.02, dev block ≥ 0.60 (regression floor), 0 flips over 10×3 | router | ✅ after the 10-run probation (Q17-3) |
+| L3 reported | block vs the 0.95 TARGET (the gap), holdout block, model-alone detection, latency | router | ❌ never — deviation D3 |
+| L4 | Tier 2, below | 8B | ❌ never (P10-7) |
+
+**Data** (`router/`): `routing.yaml` (60, 15 per intent), `security.yaml` (39
+attacks + 39 negative twins — the DEV set), `security_holdout.yaml` (19 + 19,
+written after the patterns and prompt were frozen — ⚠️ never tune against it),
+`tutorial_retrieval.yaml` (hit / fence / miss). The router prompt's few-shot
+examples may appear in none of them (suite 17a-05).
+
+**Measured 2026-10-03, qwen2.5:1.5b, Metal:** routing 0.95, schema 100 %, 0
+flips, twins 0 refused, dev block 0.667, holdout block 0.316, model-alone
+detection 41 %, p50/p95 360/443 ms. Full spike: `PROPOSED_PHASE17_PLAN.md` §9.
+
 ## ⚠️ What gates, and the ruling it reconciles (slice 11f)
 
 The Phase 11 brief asked for a CI gate that fails below **0.85**. Ruling

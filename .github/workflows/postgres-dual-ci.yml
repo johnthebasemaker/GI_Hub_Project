@@ -19,8 +19,10 @@
 name: Postgres dual-CI
 
 on:
+  # Phase 17 (ruling Q17-6): path-filtered pushes to ANY branch, plus PRs. It
+  # was `main` only, so a feature branch ran nothing until its PR opened.
   push:
-    branches: [main]
+    branches: ['**']
     paths:
       - 'legacy/**'
       - 'backend/**'
@@ -28,15 +30,41 @@ on:
       - 'tools/**'
       - 'requirements.txt'
       - '.github/workflows/postgres-dual-ci.yml'
+      # ⚠️ Added in Phase 17 (finding F6): the AI grid is GENERATED from the
+      # manual and `gen_eval_grid.py --check` fails when it moves — yet a
+      # commit touching only USER_MANUAL.md triggered nothing, so a stale grid
+      # surfaced on somebody else's later push.
+      - 'USER_MANUAL.md'
+      - 'tests/ai_eval/**'
+      - 'docs/tutorials/**'
       # ⚠️ 'gi_database.db' was here and could never fire — the file is
       # gitignored, so a push can never contain a change to it.
   pull_request:
+    # Same list as `push` (written twice: no YAML anchors in workflow files).
     paths:
       - 'legacy/**'
       - 'backend/**'
       - 'frontend/**'
       - 'tools/**'
+      - 'requirements.txt'
+      - '.github/workflows/postgres-dual-ci.yml'
+      # ⚠️ Added in Phase 17 (finding F6): the AI grid is GENERATED from the
+      # manual and `gen_eval_grid.py --check` fails when it moves — yet a
+      # commit touching only USER_MANUAL.md triggered nothing, so a stale grid
+      # surfaced on somebody else's later push.
+      - 'USER_MANUAL.md'
+      - 'tests/ai_eval/**'
+      - 'docs/tutorials/**'
+      # ⚠️ 'gi_database.db' was here and could never fire — the file is
+      # gitignored, so a push can never contain a change to it.
   workflow_dispatch: {}   # allow manual runs from the Actions tab
+
+# A branch with an open PR fires BOTH events. One run per branch at a time:
+# `head_ref` is the branch on a pull_request event and `ref_name` on a push, so
+# the two share a group and the older is cancelled rather than run twice.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   dual-ci:
@@ -292,6 +320,91 @@ jobs:
             echo "   Run it locally, where the data exists:"
             echo "     GI_DOTENV=0 .venv/bin/python -m backend.api.service_tests"
           fi
+
+  # ⚠️ THE AI QA PYRAMID, L3 — the System One router MODEL (Phase 17d).
+  #
+  # L1 (suites 17A–17C, stub transport) and L2 (deterministic router + guard +
+  # tutorial-retrieval evals) already run in the dual-ci job's AI eval step and
+  # need no model. This job runs the one layer that does: the router model
+  # itself, on CPU, against tests/ai_eval/router/*.yaml.
+  #
+  # ⚠️ IT GATES ON FLOORS, NEVER ON STRINGS, and the determinism is measured:
+  # temperature 0, seed 0, top_k 1, the model pinned BY DIGEST and Ollama by
+  # version; the runner repeats 10 cases 3x and fails on any flip. That is how
+  # ruling Q17-3 amends P10-7 — the flaky-gate concern is answered with a
+  # number on every run, not argued.
+  #
+  # ⚠️ PROBATION (ruling Q17-3): `continue-on-error` until 10 consecutive runs
+  # clear every floor with 0 flips. Then delete that one line, deliberately, in
+  # its own commit. The attack-block TARGET of 0.95 is reported, not gated —
+  # deviation D3 in PROPOSED_PHASE17_PLAN.md §9.3 says why.
+  #
+  # Parallel to dual-ci and frontend-build, so it never lengthens either. The
+  # runner keeps its own 8-minute budget and fails LOUDLY past it; the job
+  # limit below is the backstop, not the plan.
+  ai-router-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true      # ⚠️ PROBATION — see above; remove after 10 green runs
+    env:
+      OLLAMA_VERSION: '0.20.4'
+      GI_AI_ROUTER_MODEL: 'qwen2.5:1.5b'
+      ROUTER_DIGEST: '65ec06548149b04c096a120e4a6da9d4017ea809c91734ea5631e89f96ddc57b'
+      OLLAMA_MODELS: ${{ github.workspace }}/.ollama-models
+      GI_DOTENV: '0'
+      # CPU, not Metal: the 3 s production request budget is a latency
+      # contract for the CPX42; here it would only measure the runner.
+      GI_AI_ROUTER_TIMEOUT_S: '30'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Ollama (pinned version, run as this user — not the service)
+        run: |
+          curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="$OLLAMA_VERSION" sh
+          sudo systemctl stop ollama 2>/dev/null || true
+          sudo systemctl disable ollama 2>/dev/null || true
+          ollama --version
+
+      - name: Cache the router model (keyed by its digest)
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ollama-models
+          key: ollama-${{ env.GI_AI_ROUTER_MODEL }}-${{ env.ROUTER_DIGEST }}
+
+      - name: Start Ollama, pull the router, verify its digest
+        run: |
+          nohup ollama serve > ollama.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:11434/api/version && break; sleep 1; done
+          ollama pull "$GI_AI_ROUTER_MODEL"
+          got=$(curl -s http://127.0.0.1:11434/api/tags | python -c "import sys,json; m=[x for x in json.load(sys.stdin)['models'] if x['name']=='$GI_AI_ROUTER_MODEL']; print(m[0]['digest'] if m else '')")
+          if [ "$got" != "$ROUTER_DIGEST" ]; then
+            echo "::error title=router model::$GI_AI_ROUTER_MODEL resolved to digest '$got', expected $ROUTER_DIGEST — the registry tag moved. Re-run the spike before trusting any number from it."
+            exit 1
+          fi
+
+      - name: Router eval — L3 (the model) + L1/L2 again
+        run: python -m tests.ai_eval.runner --router --require-model --json router_scorecard.json
+
+      - name: Upload router scorecard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-router-scorecard
+          path: |
+            router_scorecard.json
+            ollama.log
+          retention-days: 30
+          if-no-files-found: ignore
 
   # Frontend typecheck + production build — catches TS/build regressions in the
   # React SPA (no DB needed). Runs in parallel with the dual-ci job.

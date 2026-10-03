@@ -201,6 +201,22 @@ async def lifespan(app: FastAPI):
             orphan_task = _aio_orph.create_task(_ai_jobs.orphan_sweep_loop())
     except Exception as e:  # never block startup on the sweep
         print(f"[ai] orphan sweep skipped: {type(e).__name__}: {e}")
+    # Phase 17 — load the System One router OFF the request path. Its request
+    # budget is 3 s and a cold load takes about that, and Ollama cancels a load
+    # whose caller gave up — so without this the router can stay cold forever
+    # (ai/system_one.py, "warming"). Background, never awaited, never fatal;
+    # skipped when the router is switched off, so it never holds memory for a
+    # feature nobody enabled, and under GI_SCHEDULER=0 (tests/CI).
+    if os.environ.get("GI_SCHEDULER", "1") != "0":
+        try:
+            from .ai import system_one as _s1
+            from .ai.router import _flags as _ai_flags
+            async with _SL() as _s:
+                _f = await _ai_flags(_s)
+            if _f["ai_enabled"] and _f["ai_router_enabled"]:
+                _s1.ensure_warm()
+        except Exception as e:  # never block startup on the router
+            print(f"[ai] router warm-up not started: {type(e).__name__}: {e}")
     # AI request tracing (slice 11c). One drain task per worker, writing a
     # BOUNDED queue in batches. ⚠️ Started regardless of GI_SCHEDULER: it is
     # not a scheduled job, it is the writer for spans the request path is
