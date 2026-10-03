@@ -4334,6 +4334,37 @@ dropdb -h 127.0.0.1 -p 5433 -U postgres gihub_ci_local
 Expected: `== DUAL-CI: ✅ PASS ==` and `== PARITY: ✅ PASS ==` with five ✅ lines.
 ⚠️ Never point either tool at `gihub` (Live) or a Practice database (rule 15).
 
+## 17a. Phase 17a — the Head of Qualities sees only their own pages
+
+**Why this exists.** The Head of Qualities (`qc_hod`) is level 2 on paper, but
+it is an *oversight* role: the server refuses it every page that is opened by
+rank, and grants it only what names it. The menu did not apply that rule, so
+it showed them **Reports** and five **Records** ledgers (Receipts, Consumption,
+Returns, Lots, Purchase Requests), each of which opened onto "forbidden"
+errors. The menu now follows the server (ruling Q17-4: no Reports for this
+role, as §2.2 of the manual always said).
+
+**TC-17A-01** — sign in as a Head of Qualities (Practice: `practice.qchod`).
+The sidebar shows **Quality Oversight**, **Lots & Expiry**, **Records →
+Inventory**, **Documents**, **Security**, **Training** and **Feedback** — and
+nothing else. There is **no Reports** group.
+
+**TC-17A-02** — as the same account, type `/reports` in the address bar. You
+are sent to Quality Oversight, not shown the Reports page.
+
+**TC-17A-03** — type `/records/receipts`, then `/records/purchase-requests`.
+Each redirects to Quality Oversight.
+
+**TC-17A-04** — every page in TC-17A-01 opens with data and no red "forbidden"
+message.
+
+**TC-17A-05 (control)** — sign in as an HOD: **Reports** and Records →
+Receipts are still there and still work. Auditor and Logistics likewise.
+
+Automated: service_tests suite **17Q** (the menu's oversight list equals the
+server's; every page the menu grants answers; every page removed is refused by
+the server too) and the `qchod` column of `tests/e2e/specs/rbac-matrix.spec.ts`.
+
 ## 15. Do's and Don'ts
 
 ### Do

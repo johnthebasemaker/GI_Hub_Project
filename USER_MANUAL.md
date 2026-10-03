@@ -197,7 +197,7 @@ reaches every workspace deliberately, for support.
 | 🛡️ Safety & People → PPE Usable Time | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ |
 | 👤 Safety & People → Employees | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ |
 | 🗂️ Records → Inventory | ✅ | ✅ | ✅ | ✅ | ✅ (+ New item / Edit, own site) | ✅ | ✅ | ✅ (read) | ✅ |
-| 🗂️ Records → Receipts, Consumption, Returns, Lots, Purchase Requests | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ (read) | ✅ |
+| 🗂️ Records → Receipts, Consumption, Returns, Lots, Purchase Requests | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ (read) | ✅ |
 | 🗂️ Records → Purchase Orders | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ (read) | ✅ |
 | 💰 Valuation & 30-Day Burn (§24.3) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ |
 | 🛡️ Admin Portal | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |

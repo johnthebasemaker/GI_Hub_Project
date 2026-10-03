@@ -224,8 +224,7 @@
    "admin",
    "logistics",
    "auditor",
-   "hod",
-   "qc_hod"
+   "hod"
   ],
   "/security": [
    "admin",
