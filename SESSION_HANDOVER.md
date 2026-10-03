@@ -11,9 +11,8 @@
 
 ## 0. State in ten lines
 
-1. **Phase 16 is merged (PRs #78–#103). Phase 17 is on FOUR STACKED PRs, not
-   merged:** #104 (17a, base `main`) ← #105 (17c) ← #106 (17d) ← #107 (17e).
-   Merge in that order, each only after its own CI is green. See §4.4.
+1. **Everything through Phase 17 is merged to `main`** (PRs #78–#107; Phase 17
+   = #104 17a · #105 17c · #106 17d · #107 17e, merged 2026-10-03). See §4.4.
 2. **Nothing is mid-flight.** Phase 17's open decision D1 was ruled the same
    day: the router budget is ≤ 1.5 GB (Q17-1 amended). No pending migration.
 3. **Alembic single head `e5b2c7a9d4f1`** — Live (`gihub`) and both Practice
@@ -409,8 +408,7 @@ reads the Lot Register workbook.)
 
 ## 10. Start here next session — choose ONE track
 
-First, **land Phase 17**: merge #104 → #105 → #106 → #107 in order, each on its
-own green CI. Then choose:
+Nothing is half-finished, so this is a choice, not a queue.
 
 - **Track A — operator data clean-up support.** Walk the operator through the
   12 unknown lots and any sync report items; re-run the sync dry run with them.
