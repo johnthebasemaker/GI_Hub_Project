@@ -35,7 +35,11 @@ _READERS = require_roles("store_keeper", "hod", "qc", "qc_hod")
 
 # Expiry buckets, in days. A lot inside the first is "expiring_30", etc.
 BUCKETS = (30, 60, 90)
-_INACTIVE = {"disposed", "quarantine", "expired"}
+# The statuses the Admin Console writes (console._LOT_STATUSES) — `open`,
+# `quarantined`, `disposed`. ⚠️ Spelled as the console spells it: this set once
+# said "quarantine", so a quarantined lot stayed in the Issue picker — even as
+# its FEFO default — while `ledger._FEFO_PICK` (Status = 'open') skipped it.
+_INACTIVE = {"disposed", "quarantined", "expired"}
 
 
 def lot_status(row: dict, today: Optional[_dt.date] = None) -> tuple[str, Optional[int]]:
@@ -129,7 +133,7 @@ async def options(sap_code: str, site_id: Optional[str] = Query(None),
     if mode is None or site is None:
         return {"mode": mode, "items": [], "units": [], "fefo": None}
     rows = [r for r in await _rows(session, site=site, sap=sap)
-            if r["status"] not in ("exhausted", "disposed", "quarantine")]
+            if r["status"] not in ("exhausted", "disposed", "quarantined")]
     rows.sort(key=_fefo_key)
     # ⚠️ THE SAME ORDER AS `ledger._FEFO_PICK` — expiry first (no expiry last),
     # then the oldest receipt. The picker's default and the server's

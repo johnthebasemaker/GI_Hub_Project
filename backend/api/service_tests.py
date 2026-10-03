@@ -28170,6 +28170,31 @@ async def test_phase16c_fefo_surfaces():
               == ["1O25003382191", "1O25003382192"] and xopts["mode"] is None
               and xopts["items"] == [], f"{ropts} {xopts}")
 
+        # 2026-10-03: the Admin Console writes 'quarantined'; the register and the
+        # picker looked for 'quarantine', so a quarantined lot stayed in the picker
+        # — even as its FEFO default — while the server's own pick skipped it.
+        async with SessionLocal() as s:
+            await s.execute(_t('UPDATE lots SET "Status" = \'quarantined\' WHERE "Site_ID" = :site '
+                               'AND "Lot_Number" = \'SOON\''), {"site": SITE})
+            await s.commit()
+            q_server = await LG.fefo_lot(s, P, SITE)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            q_opts = (await ac.get("/lot-register/options", headers=tok("sv16c-sk", "store_keeper"),
+                                   params={"sap_code": P})).json()
+            q_reg = {r["Lot_Number"]: r["status"] for r in (await ac.get(
+                "/lot-register", headers=tok("sv16c-hod", "hod"),
+                params={"sap_code": P})).json()["items"]}
+        async with SessionLocal() as s:
+            await s.execute(_t('UPDATE lots SET "Status" = \'open\' WHERE "Site_ID" = :site '
+                               'AND "Lot_Number" = \'SOON\''), {"site": SITE})
+            await s.commit()
+        check("16c-06b: a lot the Admin QUARANTINED leaves the Issue picker, is never the FEFO "
+              "suggestion, agrees with the server's pick, and the register shows it as "
+              "'quarantined'",
+              [o["lot"] for o in q_opts["items"]] == ["LATE", "OLD1"]
+              and q_opts["fefo"] == "LATE" == q_server and q_reg.get("SOON") == "quarantined",
+              f"{q_opts} server={q_server} {q_reg}")
+
         async with SessionLocal() as s:
             res = await LG.post_consumption(s, username="sv16c", data={
                 "Date": iso(0), "SAP_Code": R, "Quantity": 1, "Site_ID": SITE,
