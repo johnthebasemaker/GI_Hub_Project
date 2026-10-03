@@ -42,7 +42,13 @@ def fresh_snapshot() -> dict:
     d = json.loads(out)
     return {"_generated_by": "tools/announcements.py nav — do not edit by hand",
             "sane": d["sane"], "roleLevels": d["roleLevels"], "publics": d["publics"],
-            "routes": {k: d["routes"][k] for k in sorted(d["routes"])}}
+            "routes": {k: d["routes"][k] for k in sorted(d["routes"])},
+            # Phase 17: the menu label per route, for the assistant's navigation
+            # lane. Only routes the snapshot resolved — a label never grants.
+            "labels": {k: d["labels"][k] for k in sorted(d.get("labels", {}))
+                       if k in d["routes"]},
+            "groupLabels": {k: d["groupLabels"][k] for k in sorted(d.get("groupLabels", {}))
+                            if k in d["routes"]}}
 
 
 def render(d: dict) -> str:

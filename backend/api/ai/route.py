@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -117,6 +118,14 @@ POLICIES: dict[str, LanePolicy] = {
                      timeout_s=aic.GEN_TIMEOUT_S),
     "nl_search":  _p(model=aic.MODEL_CODER, num_predict=400,
                      timeout_s=aic.GEN_TIMEOUT_S),
+    # Phase 17 — System One (ai/system_one.py). One forward pass over a short
+    # question into a 2-key JSON object: 48 tokens is ~3x the longest valid
+    # reply. ⚠️ NO RETRY AND A 3-SECOND BUDGET, because the fallback is not an
+    # error — it is today's fully-fenced path, so a slow router costs the user
+    # nothing but the wait it already spent. No cloud, and no switch for one.
+    "router":     _p(model=aic.MODEL_ROUTER, num_predict=48,
+                     timeout_s=float(os.environ.get("GI_AI_ROUTER_TIMEOUT_S", "3")),
+                     max_retries=0),
     # ── vision. The only lanes with a cloud path at all. ────────────────────
     "ocr_consumption":      _p(model=aic.MODEL_VISION, num_predict=3072,
                                timeout_s=aic.VISION_TIMEOUT_S, vision=True,
@@ -251,6 +260,42 @@ async def call_vision(lane: str, prompt: str, *, system: str, image_b64: str,
             # fallback happened inside it.
             out.fell_back = out.provider != "ollama" and \
                 aic.vision_provider() == "ollama"
+            out.ms = int((time.perf_counter() - t0) * 1000)
+            return out
+        except BaseException as e:                      # noqa: BLE001
+            kind = classify(e)
+            out.error_class = kind
+            if kind == RETRYABLE and attempt < pol.max_retries:
+                attempt += 1
+                out.retries = attempt
+                await asyncio.sleep(_backoff(attempt))
+                continue
+            out.ms = int((time.perf_counter() - t0) * 1000)
+            raise
+
+
+async def call_structured(lane: str, prompt: str, *, system: str, schema: dict,
+                          options: Optional[dict] = None,
+                          keep_alive: Optional[object] = None) -> Outcome:
+    """One schema-constrained completion, under this lane's policy.
+
+    ⚠️ IT DOES NOT TAKE `GEN_SEMAPHORE`, and that is the reason it exists apart
+    from `call_text`. The semaphore guards the GENERATION model; the router is a
+    different, pinned model (ruling Q17-1), and a classification that queued
+    behind a 300-second chat answer would add the whole of someone else's wait
+    to every question. Temperature is fixed at 0 — this lane classifies, and a
+    classifier that samples answers Monday and Tuesday differently (§7f).
+    """
+    pol = policy(lane)
+    t0 = time.perf_counter()
+    out = Outcome(model=pol.model, provider="ollama")
+    attempt = 0
+    while True:
+        try:
+            out.text = await aic.generate(
+                pol.model, prompt, system=system, temperature=0.0,
+                num_predict=pol.num_predict, timeout_s=pol.timeout_s,
+                fmt=schema, options=options, keep_alive=keep_alive)
             out.ms = int((time.perf_counter() - t0) * 1000)
             return out
         except BaseException as e:                      # noqa: BLE001

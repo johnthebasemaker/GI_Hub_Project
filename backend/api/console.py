@@ -122,6 +122,8 @@ _EDITABLE_SETTINGS = {"maintenance_mode", "low_stock_days", "burn_alert_days",
                       "expiry_warn_days", "ai_enabled", "ai_assistant_enabled",
                       "ai_doc_intel_enabled", "ai_ocr_enabled",
                       "ai_nl_search_enabled", "ai_insights_enabled",
+                      # Phase 17 — the System One router's kill switch.
+                      "ai_router_enabled",
                       # Phase 10 Track 1 — mandatory 2FA. Both are settings
                       # rather than constants so widening the net or moving the
                       # deadline is an admin action, not a deploy, matching

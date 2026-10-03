@@ -125,6 +125,13 @@ function allows(role, rule) {
 
 // ── 2. walk NAV: groups carry a gate their children inherit ─────────────────
 const routes = {}
+// The menu label of each route — read by the assistant's navigation lane
+// (backend/api/ai/system_one.py, Phase 17) so "open lots and expiry" resolves
+// against the words the user actually sees, never a second hand-kept list.
+const labels = {}
+// …and the label of the group it sits in ("Warehouse" for /warehouse, whose
+// own label is "Receiving & DN") — what people call a portal out loud.
+const groupLabels = {}
 const navDecl = (() => {
   let found
   walk(nav, (n) => {
@@ -138,8 +145,10 @@ if (navDecl && ts.isArrayLiteralExpression(navDecl)) {
     if (!ts.isObjectLiteralExpression(group)) { unresolved.push('a NAV group'); continue }
     let groupRule = null
     let children = null
+    let groupLabel
     for (const p of group.properties) {
       if (!ts.isPropertyAssignment(p)) continue
+      if (p.name.getText() === 'label') groupLabel = str(p.initializer)
       if (p.name.getText() === 'access') groupRule = ruleOf(p.initializer)
       if (p.name.getText() === 'children') children = p.initializer
     }
@@ -150,13 +159,16 @@ if (navDecl && ts.isArrayLiteralExpression(navDecl)) {
     }
     for (const child of children.elements) {
       if (!ts.isObjectLiteralExpression(child)) { unresolved.push('a NAV child'); continue }
-      let key, rule = null
+      let key, label, rule = null
       for (const p of child.properties) {
         if (!ts.isPropertyAssignment(p)) continue
         if (p.name.getText() === 'key') key = str(p.initializer)
+        if (p.name.getText() === 'label') label = str(p.initializer)
         if (p.name.getText() === 'access') rule = ruleOf(p.initializer)
       }
       if (!key) continue
+      if (label) labels[key] = label
+      if (groupLabel) groupLabels[key] = groupLabel
       const allowed = []
       let unknown = false
       for (const role of ROLES) {
@@ -182,4 +194,4 @@ walk(nav, (n) => {
 // nothing, every downstream check would pass for the wrong reason.
 const sane = Object.keys(routes).length >= 30 && publics.length >= 1
 process.stdout.write(JSON.stringify(
-  { sane, routes, publics, unresolved: [...new Set(unresolved)], roleLevels }, null, 2))
+  { sane, routes, labels, groupLabels, publics, unresolved: [...new Set(unresolved)], roleLevels }, null, 2))

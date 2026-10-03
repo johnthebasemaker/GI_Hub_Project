@@ -29,6 +29,13 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 MODEL_CHAT = os.environ.get("GI_AI_CHAT_MODEL", "llama3.1:8b")
 MODEL_CODER = os.environ.get("GI_AI_CODER_MODEL", "qwen2.5-coder:7b")
 MODEL_VISION = os.environ.get("GI_AI_VISION_MODEL", "qwen2.5vl:7b")
+# Phase 17 — the System One router (ai/system_one.py). Ruling Q17-1 amends "one
+# warm model" to one warm GENERATION model plus ONE pinned router of <= 1 GB.
+# ⚠️ The spike (PROPOSED_PHASE17_PLAN.md §9) found 0.5b fails routing (0.72
+# macro) and 1.5b passes (0.95) but sits 1.35 GB resident — deviation D1, over
+# that budget, awaiting the operator's ruling. Switch with this variable or the
+# `ai_router_enabled` setting; nothing else depends on which model it is.
+MODEL_ROUTER = os.environ.get("GI_AI_ROUTER_MODEL", "qwen2.5:1.5b")
 
 HEALTH_TIMEOUT_S = 2.0
 GEN_TIMEOUT_S = float(os.environ.get("GI_AI_TIMEOUT_S", "300"))  # 7B cold start
@@ -315,18 +322,32 @@ def vision_num_ctx(num_predict: int, image_tokens: Optional[int] = None) -> int:
 
 def _payload(model: str, prompt: str, *, system: Optional[str], temperature: float,
              num_predict: int, images: Optional[list[str]] = None,
-             num_ctx: Optional[int] = None) -> dict:
-    options: dict = {"temperature": temperature, "num_predict": num_predict}
+             num_ctx: Optional[int] = None, fmt: Optional[dict] = None,
+             options: Optional[dict] = None,
+             keep_alive: Optional[object] = None) -> dict:
+    opts: dict = {"temperature": temperature, "num_predict": num_predict}
     if images:
-        options["num_ctx"] = int(num_ctx) if num_ctx else vision_num_ctx(num_predict)
+        opts["num_ctx"] = int(num_ctx) if num_ctx else vision_num_ctx(num_predict)
+    if options:
+        # Text-only extras (seed, top_k, a small num_ctx for the router). A
+        # vision call never passes these: its num_ctx is computed above, and
+        # letting a caller override it is how ggml_abort comes back (§7a).
+        opts.update({k: v for k, v in options.items()
+                     if not (images and k == "num_ctx")})
     body: dict = {
-        "model": model, "prompt": prompt, "keep_alive": KEEP_ALIVE,
-        "options": options,
+        "model": model, "prompt": prompt,
+        "keep_alive": KEEP_ALIVE if keep_alive is None else keep_alive,
+        "options": opts,
     }
     if system:
         body["system"] = system
     if images:
         body["images"] = images  # base64, no data: prefix (Ollama contract)
+    if fmt is not None:
+        # Ollama structured outputs: a JSON Schema here makes decoding
+        # grammar-constrained, so the reply is schema-valid by construction.
+        # Callers still re-validate (system_one._validate).
+        body["format"] = fmt
     return body
 
 
@@ -334,10 +355,13 @@ async def generate(model: str, prompt: str, *, system: Optional[str] = None,
                    temperature: float = 0.2, num_predict: int = 512,
                    images: Optional[list[str]] = None,
                    timeout_s: float = GEN_TIMEOUT_S,
-                   num_ctx: Optional[int] = None) -> str:
+                   num_ctx: Optional[int] = None, fmt: Optional[dict] = None,
+                   options: Optional[dict] = None,
+                   keep_alive: Optional[object] = None) -> str:
     """One blocking completion. Raises RuntimeError on transport failure."""
     body = _payload(model, prompt, system=system, temperature=temperature,
-                    num_predict=num_predict, images=images, num_ctx=num_ctx)
+                    num_predict=num_predict, images=images, num_ctx=num_ctx,
+                    fmt=fmt, options=options, keep_alive=keep_alive)
     body["stream"] = False
     try:
         async with httpx.AsyncClient(timeout=timeout_s) as c:

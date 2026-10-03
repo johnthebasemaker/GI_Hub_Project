@@ -16,7 +16,7 @@
 # legitimate warehouse sentence containing the same trigger, which must NOT be
 # refused.
 
-version: 1
+version: 2
 
 thresholds:
   # ≥ warn: answered normally, recorded on the span. This is the number to
@@ -52,7 +52,12 @@ patterns:
       The canonical prompt-injection opener. Weighted 4 rather than 6 because
       "ignore" is an ordinary warehouse verb — see the negative twin
       `guard.neg.ignore_damaged` in the eval suite.
-    regex: '(?i)\b(ignore|disregard|forget)\b[^.?!]{0,30}\b(previous|prior|above|earlier|all)\b[^.?!]{0,20}\b(instruction|rule|prompt|direction|context|system)'
+    regex: '(?i)(\b(ignore|disregard|forget)\b[^.?!]{0,30}\b(previous|prior|above|earlier|all)\b[^.?!]{0,20}\b(instruction|rule|prompt|direction|context|system)|\b(ignore|disregard|forget|bypass)\b\s+((any|your|the|these|those|my)\s+)*(instructions?|rules|guidelines|guardrails|programming|restrictions)\b|\b(forget|ignore|disregard)\s+everything\s+(you|above|before))'
+    # ⚠️ Phase 17 (v2) widened this ONE pattern to the terse forms v1 scored 0
+    # ("ignore instructions", "disregard your rules", "forget everything you
+    # were told"). It was first written as a SEPARATE pattern and suite CT-09
+    # caught the mistake: "ignore all previous instructions" then fired both
+    # and refused on a single idea counted twice. One signal, one weight.
 
   - id: override.new_instructions
     weight: 4
@@ -72,7 +77,7 @@ patterns:
     why: >-
       Weight 3 alone. "Pretend the tank is full" is a legitimate what-if a
       supervisor asks; it only matters combined with something else.
-    regex: '(?i)\b(pretend|act\s+as\s+if|roleplay|imagine\s+you\s+are|simulate\s+being)\b'
+    regex: '(?i)\b(pretend|act\s+as\s+if|roleplay|role-play|imagine\s+you\s+are|simulate\s+being|let''?s\s+play\s+a\s+game)\b'
 
   # ── prompt / context extraction ───────────────────────────────────────────
   - id: extract.system_prompt
@@ -81,7 +86,7 @@ patterns:
       ⚠️ SINGLE-PATTERN REFUSAL, deliberately. There is no innocent phrasing of
       "show me your system prompt", and what it asks for IS the retrieval
       fence's own description — which chapters this role was given.
-    regex: '(?i)\b(system\s+prompt|initial\s+instructions?|your\s+instructions?|the\s+prompt\s+above)\b'
+    regex: '(?i)\b(system\s+prompt|initial\s+instructions?|your\s+((hidden|secret|original|initial|real|full)\s+)?(instructions?|rules)\b[^.?!]{0,15}\b(word\s+for\s+word|verbatim)|your\s+((hidden|secret|original|initial|real)\s+)?instructions?|the\s+prompt\s+above)\b'
 
   - id: extract.repeat_context
     weight: 5
@@ -102,11 +107,11 @@ patterns:
       A claim of identity in the message body. Identity comes from the JWT and
       nothing a user types can change it — but a model does not know that, and
       the pattern is what stops it being persuaded to act as though it does.
-    regex: '(?i)\b(i\s+am|as|acting\s+as|on\s+behalf\s+of)\s+(the\s+)?(admin|administrator|system\s+admin|root|superuser|owner|developer)\b'
+    regex: '(?i)\b(i\s+am|i''m|as|acting\s+as|on\s+behalf\s+of)\s+(the\s+)?(admin|administrator|system\s+admin(istrator)?|root|superuser|owner|system\s+owner|developer)\b'
 
   - id: elevate.authorised
     weight: 3
-    regex: '(?i)\b(i\s+(am|have\s+been)\s+authoris?zed|management\s+approved|for\s+audit\s+purposes|this\s+is\s+authoris?zed)\b'
+    regex: '(?i)\b(i\s+(am|have\s+been)\s+authori[sz]ed|i\s+authori[sz]e\s+you|management\s+approved|for\s+audit\s+purposes|this\s+is\s+authori[sz]ed)\b'
 
   - id: elevate.override_permission
     weight: 4
@@ -124,6 +129,87 @@ patterns:
   - id: inject.fake_turn
     weight: 4
     regex: '(?i)^\s*(assistant|user)\s*:\s*'
+
+  # ── Phase 17 (version 2): the two attacks the brief named, which v1 let ──
+  # through at score 0 — "Ignore instructions" (now override.ignore_previous,
+  # widened above) and "Drop all tables". Measured 2026-10-03 against
+  # `scan_input`. Each WARNS alone (weight 4 < refuse 6):
+  # a warn plus the System One router's `is_safe: false` refuses (ruling
+  # Q17-2, `guard.with_router_signal`), and two of these together refuse on
+  # their own. Negative twins: tests/ai_eval/router/security.yaml.
+  - id: sql.destructive_intent
+    weight: 4
+    why: >-
+      A destructive verb aimed at the database itself. Harmless on the
+      assistant lane (rule 9: it can only retrieve manual chapters) and
+      impossible on the SQL lane (safety.is_safe_select + the gi_ai_ro role);
+      this is the third wall, and it exists so the attempt is SEEN. "Drop the
+      damaged drums at bay 3" names no table and scores 0.
+    regex: '(?i)\b(drop|truncate|delete|wipe|erase|destroy|purge)\b[^.?!]{0,40}\b(tables?|database|db|schema)\b'
+
+  - id: sql.statement
+    weight: 6
+    why: >-
+      ⚠️ A SECOND DELIBERATE SINGLE-PATTERN REFUSAL (the first is
+      extract.system_prompt), and for the same reason: there is no innocent
+      phrasing of `DROP TABLE`, `DELETE FROM x WHERE`, `UPDATE x SET y =` or
+      `UNION SELECT` in a question about stock. The shapes are STRICT — an
+      English "delete from the list" or "insert into the rack" does not match,
+      because each verb must be followed by SQL's own grammar, not a noun.
+    regex: '(?i)(\b(drop|truncate|alter)\s+table\b|\bdelete\s+from\s+\w+\s*(\bwhere\b|;|$)|\binsert\s+into\s+\w+\s*(\(|\bvalues\b|\bselect\b)|\bupdate\s+\w+\s+set\s+\w+\s*=|\bunion\s+(all\s+)?select\b|\bselect\s+[\w*,\s]{1,60}\bfrom\s+users\b)'
+
+  - id: sql.injection
+    weight: 6
+    why: >-
+      Injection grammar — a quote-closing tautology, a statement terminator
+      followed by a comment, or the password column by name. Single-pattern
+      refusal, deliberately: a store keeper never types `' OR 1=1 --`.
+    regex: '(?i)(''\s*(or|and)\s+[''"]?\w+[''"]?\s*=\s*[''"]?\w+|;\s*--|''\s*;|\bpassword_hash(es)?\b)'
+
+  - id: sql.generate_destructive
+    weight: 4
+    why: >-
+      Asking for SQL that destroys or changes data, rather than typing it.
+    regex: '(?i)\b(write|generate|create|run|execute|give\s+me)\b[^.?!]{0,30}\b(sql|query|statement|script)\b[^.?!]{0,40}\b(delete|drop|truncate|wipe|update|insert|alter)'
+
+  # ── override, by category ─────────────────────────────────────────────────
+  - id: override.no_rules
+    weight: 4
+    why: >-
+      "No restrictions", "without any safety rules", "unrestricted" — the
+      claim that the rules no longer apply, whatever verb carries it. A work
+      sentence names a rule it is asking ABOUT, not the absence of all of them.
+    regex: '(?i)(\b(no|without(\s+any)?|zero)\s+((safety|content)\s+)?(rules|restrictions?|limits|filters?|guardrails|censorship)\b|\bunrestricted\b|\bno\s+longer\s+bound\b)'
+
+  # ── extraction of secrets ─────────────────────────────────────────────────
+  - id: exfil.credentials
+    weight: 4
+    why: >-
+      Asking to be SHOWN credentials. "Where do I change my password" names no
+      verb of disclosure and stays at 0; a reset-link request warns at most.
+    regex: '(?i)\b(show|reveal|dump|list|give|tell|print|export|send|display)\b[^.?!]{0,30}\b(passwords?|password\s+hash(es)?|credentials?|secrets?|api\s+keys?|access\s+tokens?)\b'
+
+  # ── disguise ──────────────────────────────────────────────────────────────
+  - id: encoded.decode_and_follow
+    weight: 4
+    why: >-
+      "Decode this and do what it says" — the instruction to obey hidden text.
+      (The hidden text itself is decoded by guard._deobfuscate and scored too.)
+    regex: '(?i)\b(decode|decrypt|deobfuscate|base64)\b[^.?!]{0,40}\b(follow|execute|run|obey|do\s+(it|what|as))\b'
+
+  # ── the same categories in Arabic and Hindi ───────────────────────────────
+  # The tutorials ship in four languages and the users write in them. These are
+  # the English categories above, translated — not new rules — and each has an
+  # in-language negative twin in tests/ai_eval/router/security.yaml.
+  - id: lang.override
+    weight: 4
+    regex: '((تجاهل|انس|تجاوز|اترك)[^.؟!]{0,30}(التعليمات|الأوامر|القواعد|القيود)|(निर्देशों|नियमों|निर्देश)\s*(को\s*)?(अनदेखा|नज़रअंदाज़|नजरअंदाज|भूल))'
+  - id: lang.extract
+    weight: 4
+    regex: '(موجه\s*النظام|تعليماتك\s*(السرية|المخفية)|(أظهر|اعرض|أعطني)[^.؟!]{0,20}كلم(ة|ات)\s*المرور|सिस्टम\s*प्रॉम्प्ट|(पासवर्ड)[^।?!]{0,20}(दिखा|बता))'
+  - id: lang.destructive
+    weight: 4
+    regex: '((احذف|امسح|أسقط|دمر)[^.؟!]{0,30}(الجداول|الجدول|قاعدة\s*البيانات)|(टेबल|डेटाबेस)[^।?!]{0,30}(हटा|मिटा|डिलीट))'
 
 # ── PII / secret shapes, for the OUTPUT guard ───────────────────────────────
 #
