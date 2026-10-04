@@ -109,6 +109,9 @@ test('19c: a loan of 3 comes back 1 at a time — it stays open, says what is st
   const manual = page.locator('.ant-modal', { hasText: "Scan the tool's sticker" }).getByPlaceholder('…or type the code')
   await manual.fill(code)
   await manual.press('Enter')
+  // the scan is resolved asynchronously — wait until the form HOLDS it, or a
+  // fast "Record loan" saves the loan without its code (seen under load)
+  await expect(loanModal.getByText(`Scanned: ${code}`)).toBeVisible()
   await loanModal.getByPlaceholder('e.g. Torque wrench — or Scan tool ↑').fill(name)
   await loanModal.getByPlaceholder('Employee name — or Scan badge ↑').fill('E2E Borrower')
   await loanModal.getByLabel('Qty', { exact: true }).fill('3')

@@ -847,6 +847,65 @@ async def sme_link_decide_revision(rev_id: int, body: SmeLinkDecideIn = Body(...
             username=user["username"], site_id=site)
 
 
+# ═══ Phase 20b — bulk submit and bulk approve ═════════════════════════════════
+# One loop over the SAME per-item functions (services/bulk_jobs.py): each item
+# in its own savepoint, a bad one skipped with its reason, approve-only, ≤ 50.
+class BulkJobIn(SmeGroupSubmitIn):
+    key: Optional[str] = Field(None, max_length=300)
+
+
+class BulkSubmitIn(BaseModel):
+    jobs: list[BulkJobIn] = Field(..., min_length=1, max_length=50)
+
+
+class BulkIdsIn(BaseModel):
+    ids: list[int] = Field(..., min_length=1, max_length=50)
+    site_id: Optional[str] = None
+
+
+@router.post("/sme-link/groups/bulk-submit",
+             summary="Submit several job cards to the HOD at once (Phase 20b)")
+async def sme_link_groups_bulk_submit(body: BulkSubmitIn = Body(...),
+                                      user: dict = Depends(require_roles(*_LINK_ROLES)),
+                                      session: AsyncSession = Depends(get_session)):
+    """Ruling Q20-9: the store keeper and the supervisor (and the HOD, as for
+    one card). Each card is submitted exactly as `POST /sme-link/groups` would."""
+    from .services import bulk_jobs as B
+    async with session.begin():
+        return await B.submit_jobs(
+            session, jobs=[j.model_dump() for j in body.jobs], username=user["username"],
+            site_for=lambda requested: _write_site(user, requested))
+
+
+@router.post("/sme-link/groups/bulk-approve",
+             summary="HOD: approve several Surface Shield jobs at once (Phase 20b)")
+async def sme_link_groups_bulk_approve(body: BulkIdsIn = Body(...),
+                                       user: dict = Depends(require_roles("hod")),
+                                       session: AsyncSession = Depends(get_session)):
+    """Approve-only (ruling Q20-11): a rejection needs its own reason. Each job
+    is approved as a whole, its SQM credited once; a job already decided is
+    skipped with who decided it."""
+    from .services import bulk_jobs as B
+    site = resolve_site_param(user, body.site_id)
+    async with session.begin():
+        return await B.approve_jobs(session, ids=body.ids, username=user["username"],
+                                    site_id=site or None)
+
+
+@router.post("/entries/bulk-approve",
+             summary="HOD: approve several paper-form execution entries at once (Phase 20b)")
+async def entries_bulk_approve(body: BulkIdsIn = Body(...),
+                               user: dict = Depends(require_roles("hod")),
+                               session: AsyncSession = Depends(get_session)):
+    """Ruling Q20-12: approval POSTS AREA AND STOCK, entry by entry; an entry
+    the QSEP gate blocks, or whose stock posting conflicts, fails alone."""
+    from .services import bulk_jobs as B
+    site = resolve_site_param(user, body.site_id)
+    async with session.begin():
+        return await B.approve_entries(session, ids=body.ids, username=user["username"],
+                                       site_id=site or None)
+
+
 # ═══ Phase 20a — the Surface Shield daily log ══════════════════════════════════
 # ⚠️ WIDER THAN THE REST OF /execution, AND READ-ONLY. The operator asked for
 # management to read it (ruling Q20-1): Logistics, the Auditor and Admin as

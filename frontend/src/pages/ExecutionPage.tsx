@@ -887,6 +887,72 @@ function HodModal({ entry, onClose }: { entry: Row | null; onClose: () => void }
 }
 
 /**
+ * Phase 20b (ruling Q20-12) — the HOD approves several PENDING_HOD entries at
+ * once. One implementation, used by the HOD approval queue (Man-Hours portal)
+ * and the Execution page. Each entry is approved AS FILED through the same
+ * `hod_decide` — posting its area and deducting its material — in its own
+ * savepoint; one blocked by QSEP or by a stock conflict fails alone.
+ */
+function useEntriesBulk(rows: Row[], enabled: boolean) {
+  const { message, modal } = App.useApp()
+  const qc = useQueryClient()
+  const [bulkIds, setBulkIds] = useState<number[]>([])
+  const [bulkConfirm, setBulkConfirm] = useState(false)
+  const pendingIds = new Set(rows.filter((r) => String(r.status) === 'PENDING_HOD').map((r) => Number(r.id)))
+  const bulkPicked = bulkIds.filter((i) => pendingIds.has(i))
+  const bulkApprove = useMutation({
+    mutationFn: async () => (await api.post<{
+      approved: { id: number; entry_no: string }[]
+      skipped: { id: number; status: number; reason: string }[]
+    }>('/execution/entries/bulk-approve', { ids: bulkPicked })).data,
+    onSuccess: (r) => {
+      setBulkConfirm(false)
+      setBulkIds([])
+      qc.invalidateQueries({ queryKey: ['/execution/entries'] })
+      if (r.approved.length) message.success(`Approved ${r.approved.length} entr${r.approved.length === 1 ? 'y' : 'ies'}`)
+      if (r.skipped.length) {
+        modal.warning({
+          title: `${r.skipped.length} entr${r.skipped.length === 1 ? 'y was' : 'ies were'} not approved — still with you`,
+          content: <ul style={{ paddingLeft: 18 }}>{r.skipped.map((x) => {
+            const e = rows.find((y) => Number(y.id) === x.id)
+            return <li key={x.id}><b>{e ? String(e.Entry_No) : `#${x.id}`}</b>: {x.reason}</li>
+          })}</ul>,
+        })
+      }
+    },
+    onError: (e) => message.error(String((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Could not approve')),
+  })
+  const bar = enabled && pendingIds.size > 0 ? (
+    <Space wrap style={{ marginBottom: 8 }} data-testid="entries-bulk-bar">
+      <Button onClick={() => setBulkIds([...pendingIds])}>Select all with the HOD ({pendingIds.size})</Button>
+      {bulkPicked.length > 0 && <Button onClick={() => setBulkIds([])}>Clear</Button>}
+      <Button type="primary" disabled={!bulkPicked.length} data-testid="entries-approve-selected"
+        onClick={() => setBulkConfirm(true)}>Approve selected ({bulkPicked.length})</Button>
+    </Space>
+  ) : null
+  const modal_ = (
+    <Modal open={bulkConfirm} title={`Approve ${bulkPicked.length} execution entr${bulkPicked.length === 1 ? 'y' : 'ies'}`}
+      onCancel={() => setBulkConfirm(false)} okText="Approve" confirmLoading={bulkApprove.isPending}
+      okButtonProps={{ 'data-testid': 'entries-approve-confirm' } as never}
+      onOk={() => bulkApprove.mutate()} destroyOnHidden>
+      <Typography.Paragraph>
+        Each entry is approved <b>as filed</b>: approval posts its area <b>and deducts its
+        material</b>, exactly as approving it on its own does. To correct a figure or reject,
+        open the entry.
+      </Typography.Paragraph>
+      <Alert type="info" showIcon title="One problem never stops the rest"
+        description="An entry blocked by the QC / certificate check, or whose stock posting conflicts, is skipped with its reason and stays with you — the others are approved." />
+    </Modal>
+  )
+  const rowSelection = enabled ? {
+    selectedRowKeys: bulkPicked.map(String),
+    onChange: (keys: React.Key[]) => setBulkIds(keys.map(Number)),
+    getCheckboxProps: (r: Row) => ({ disabled: String(r.status) !== 'PENDING_HOD' }),
+  } : undefined
+  return { bar, modal: modal_, rowSelection }
+}
+
+/**
  * The HOD's approval queue, as a standalone tab.
  *
  * Exported so the Man-Hours portal can host it directly rather than growing a
@@ -897,6 +963,8 @@ export function HodApprovalQueueTab() {
   const { data, isFetching } = useEntries('PENDING_HOD')
   const [row, setRow] = useState<Row | null>(null)
   const rows = data ?? []
+  const { user } = useAuth()
+  const bulk = useEntriesBulk(rows, user?.role === 'hod' || user?.role === 'admin')
   const columns: ColumnsType<Row> = [
     { title: 'Entry', dataIndex: 'Entry_No', width: 165,
       render: (v: string, r: Row) => (
@@ -934,7 +1002,10 @@ export function HodApprovalQueueTab() {
         Entries waiting on you. Approval is what deducts stock — nothing before
         it moves a quantity, which is what makes correcting a figure here safe.
       </Typography.Paragraph>
+      {bulk.bar}
+      {bulk.modal}
       <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching}
+        rowSelection={bulk.rowSelection}
         columns={columns} dataSource={rows} rowKey={(r) => String(r.id)}
         scroll={{ x: 'max-content' }}
         pagination={{ pageSize: 20, showTotal: (t) => `${t} awaiting approval` }} />
@@ -1264,6 +1335,7 @@ export default function ExecutionPage() {
   const [hodRow, setHodRow] = useState<Row | null>(null)
 
   const rows = data ?? []
+  const bulk = useEntriesBulk(rows, isHod)
   const columns: ColumnsType<Row> = [
     { title: 'Entry', dataIndex: 'Entry_No', width: 165,
       render: (v: string, r: Row) => (
@@ -1353,7 +1425,10 @@ export default function ExecutionPage() {
           {isSup ? 'Open a manpower-only entry' : 'Open an entry'}
         </Button>
       )}
+      {bulk.bar}
+      {bulk.modal}
       <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching}
+        rowSelection={bulk.rowSelection}
         columns={columns} dataSource={rows} rowKey={(r) => String(r.id)}
         scroll={{ x: 'max-content' }}
         pagination={{ pageSize: 20, showSizeChanger: true,

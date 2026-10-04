@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import {
-  Alert, App, AutoComplete, Button, Card, Empty, Form, Input, InputNumber, Modal, Radio, Select,
-  Space, Table, Tag, Tooltip, Typography,
+  Alert, App, AutoComplete, Button, Card, Checkbox, Empty, Form, Input, InputNumber, Modal, Radio,
+  Select, Space, Table, Tag, Tooltip, Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -30,6 +30,55 @@ type Row = Record<string, unknown>
 const s = (v: unknown) => (v == null ? '' : String(v))
 const n = (v: unknown) => (v == null ? null : Number(v))
 const r4 = (v: number) => Number(v.toFixed(4))
+
+// ── Phase 20b — bulk submit: every MOUNTED card reports its live payload ─────
+// A card's figures live in the card (the supervisor may have edited the code,
+// the area, the ticks, the part or the remark), so the batch is built from what
+// each card shows NOW — exactly what its own Submit button would send.
+interface BulkPayload {
+  key: string; work_date: string; tag: string; code: string; sqm: number
+  consumption_ids: number[]; notes: string | null; work_area: string | null
+  site_id: string; surface_state?: string
+}
+interface BulkEntry {
+  key: string; label: string; notReady: string | null; sqm: number | null; n: number
+  code: string | null; payload: BulkPayload | null
+}
+interface BulkCtxT {
+  selected: Set<string>
+  toggle: (key: string, on: boolean) => void
+  report: (e: BulkEntry) => void
+  drop: (key: string) => void
+}
+const BulkCtx = createContext<BulkCtxT | null>(null)
+
+function useBulkSlot(entry: BulkEntry): BulkCtxT | null {
+  const ctx = useContext(BulkCtx)
+  const sig = JSON.stringify(entry)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { ctx?.report(entry) }, [sig])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => () => ctx?.drop(entry.key), [entry.key])
+  return ctx
+}
+
+/** The card's box. Ruling Q20-8: a card that is not ready cannot be ticked,
+ *  and says why. */
+function BulkCheck({ ctx, entry }: { ctx: BulkCtxT | null; entry: BulkEntry }) {
+  if (!ctx) return null
+  const box = (
+    <Checkbox aria-label={`Select ${entry.label} for bulk submit`} data-testid={`bulk-pick-${entry.key}`}
+      checked={ctx.selected.has(entry.key)} disabled={!!entry.notReady}
+      onChange={(e) => ctx.toggle(entry.key, e.target.checked)} />
+  )
+  return entry.notReady
+    ? <Tooltip title={`Not ready for bulk submit: ${entry.notReady}`}>
+        <span data-testid={`bulk-notready-${entry.key}`}>{box}
+          <Typography.Text type="secondary" style={{ fontSize: 11, marginInlineStart: 4 }}>{entry.notReady}</Typography.Text>
+        </span>
+      </Tooltip>
+    : box
+}
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } } }
@@ -176,6 +225,24 @@ function JobCard({ job }: { job: Job }) {
     },
     onError: (e) => message.error(errMsg(e)),
   })
+  // Phase 20b — what this card would submit right now, or why it cannot.
+  const entry: BulkEntry = (() => {
+    const notReady = rejected ? 'rejected — correct it on the card'
+      : !code ? 'no system code — pick one'
+        : !sqm ? 'no area — the remark states none; type it'
+          : sel.length === 0 ? 'no material ticked' : null
+    return {
+      key: job.key, label: `${job.work_date} · ${job.tag}`, notReady, sqm, n: sel.length,
+      code: code ?? null,
+      payload: notReady ? null : {
+        key: job.key, work_date: job.work_date, tag: job.tag, code: code!, sqm: sqm!,
+        consumption_ids: sel, notes: remark.trim() || null, work_area: area.trim() || null,
+        site_id: job.site_id,
+      },
+    }
+  })()
+  const bulk = useBulkSlot(entry)
+
   const cols: ColumnsType<Row> = [
     { title: 'Material', key: 'm',
       render: (_: unknown, r: Row) => (
@@ -202,6 +269,7 @@ function JobCard({ job }: { job: Job }) {
     <Card size="small" className="gi-job-card" data-job={job.key}
       style={{ marginBottom: 10, borderColor: rejected ? '#ff4d4f' : undefined }}
       title={<Space wrap>
+        <BulkCheck ctx={bulk} entry={entry} />
         <strong>{job.work_date}</strong>
         <span>·</span>
         <strong>{job.tag}</strong>
@@ -321,6 +389,24 @@ function PrepJobCard({ job }: { job: Job }) {
     },
     onError: (e) => message.error(errMsg(e)),
   })
+  // Phase 20b — what this Garnet card would submit right now, or why it cannot.
+  const entry: BulkEntry = (() => {
+    const notReady = rejected ? 'rejected — correct it on the card'
+      : !code ? 'no substrate code'
+        : !state ? 'say Old or New surface'
+          : !sqm ? 'no area — the remark states none; type it' : null
+    return {
+      key: job.key, label: `${job.work_date} · ${job.tag} (Garnet)`, notReady, sqm,
+      n: job.rows.length, code: code ?? null,
+      payload: notReady ? null : {
+        key: job.key, work_date: job.work_date, tag: job.tag, code: code!, sqm: sqm!,
+        consumption_ids: job.rows.map((r) => Number(r.consumption_id)),
+        notes: remark.trim() || null, work_area: area.trim() || null,
+        site_id: job.site_id, surface_state: state,
+      },
+    }
+  })()
+  const bulk = useBulkSlot(entry)
   const cols: ColumnsType<Row> = [
     { title: 'Material', key: 'm',
       render: (_: unknown, r: Row) => (
@@ -334,6 +420,7 @@ function PrepJobCard({ job }: { job: Job }) {
     <Card size="small" className="gi-job-card gi-prep-card" data-job={job.key}
       style={{ marginBottom: 10, borderColor: rejected ? '#ff4d4f' : '#d4a017' }}
       title={<Space wrap>
+        <BulkCheck ctx={bulk} entry={entry} />
         <strong>{job.work_date}</strong>
         <span>·</span>
         <strong>{job.tag}</strong>
@@ -413,6 +500,52 @@ export function JobQueue() {
   const [shown, setShown] = useState(10)
   const [find, setFind] = useState('')
   const q = useJobQueue()
+  // ── Phase 20b — bulk submit ──────────────────────────────────────────────
+  const { message, modal } = App.useApp()
+  const qc = useQueryClient()
+  const [entries, setEntries] = useState<Record<string, BulkEntry>>({})
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [review, setReview] = useState(false)
+  const bulkCtx = useMemo<BulkCtxT>(() => ({
+    selected,
+    toggle: (k, on) => setSelected((p) => { const n = new Set(p); if (on) n.add(k); else n.delete(k); return n }),
+    report: (e) => setEntries((p) => ({ ...p, [e.key]: e })),
+    drop: (k) => {
+      setEntries((p) => { const n = { ...p }; delete n[k]; return n })
+      setSelected((p) => { if (!p.has(k)) return p; const n = new Set(p); n.delete(k); return n })
+    },
+  }), [selected])
+  // a ticked card that stops being ready (its area cleared) leaves the batch
+  useEffect(() => {
+    setSelected((p) => {
+      const keep = [...p].filter((k) => entries[k] && !entries[k].notReady)
+      return keep.length === p.size ? p : new Set(keep)
+    })
+  }, [entries])
+  const ready = Object.values(entries).filter((e) => !e.notReady)
+  const picked = [...selected].map((k) => entries[k]).filter((e): e is BulkEntry => !!e?.payload)
+  const bulk = useMutation({
+    mutationFn: async () => (await api.post<{
+      submitted: { key: string; group_id: number }[]
+      skipped: { key: string; status: number; reason: string }[]
+    }>('/execution/sme-link/groups/bulk-submit', { jobs: picked.map((e) => e.payload) })).data,
+    onSuccess: (r) => {
+      setReview(false)
+      setSelected(new Set())
+      void qc.invalidateQueries({ queryKey: ['/execution/sme-link/groups'] })
+      void qc.invalidateQueries({ queryKey: ['/execution/sme-link/groups/staged'] })
+      void qc.invalidateQueries({ queryKey: ['/execution/sme-link/assigned'] })
+      if (r.submitted.length) message.success(`Submitted ${r.submitted.length} job(s) to the HOD`)
+      if (r.skipped.length) {
+        modal.warning({
+          title: `${r.skipped.length} job(s) were not submitted`,
+          content: <ul style={{ paddingLeft: 18 }}>{r.skipped.map((x) => (
+            <li key={x.key}><b>{entries[x.key]?.label ?? x.key}</b>: {x.reason}</li>))}</ul>,
+        })
+      }
+    },
+    onError: (e) => message.error(errMsg(e)),
+  })
   const all = q.data?.groups ?? []
   const rejected = all.filter((j) => j.rejected.length).length
   const needle = find.trim().toLowerCase()
@@ -459,18 +592,55 @@ export function JobQueue() {
           {jobs.length} of {all.length} job(s)
         </Typography.Text>
       )}
-      {q.isLoading ? <Card loading size="small" /> : jobs.length === 0
-        ? <Empty description="Nothing waiting for an area" />
-        : <>
-            {jobs.slice(0, shown).map((j) => (j.kind === 'prep'
-              ? <PrepJobCard key={j.key} job={j} />
-              : <JobCard key={j.key} job={j} />))}
-            {jobs.length > shown && (
-              <Button block onClick={() => setShown((x) => x + 10)}>
-                Show more ({jobs.length - shown} more job(s))
-              </Button>
-            )}
-          </>}
+      {jobs.length > 0 && (
+        <Space wrap style={{ marginBottom: 10 }} data-testid="bulk-bar">
+          <Button data-testid="bulk-select-ready" disabled={!ready.length}
+            onClick={() => setSelected(new Set(ready.map((e) => e.key)))}>
+            Select all ready ({ready.length})
+          </Button>
+          {selected.size > 0 && <Button onClick={() => setSelected(new Set())}>Clear</Button>}
+          <Button type="primary" data-testid="bulk-submit" disabled={!picked.length}
+            onClick={() => setReview(true)}>
+            Submit selected to HOD ({picked.length})
+          </Button>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Ready = a system code, an area and at least one material. Of the jobs shown.
+          </Typography.Text>
+        </Space>
+      )}
+      <BulkCtx.Provider value={bulkCtx}>
+        {q.isLoading ? <Card loading size="small" /> : jobs.length === 0
+          ? <Empty description="Nothing waiting for an area" />
+          : <>
+              {jobs.slice(0, shown).map((j) => (j.kind === 'prep'
+                ? <PrepJobCard key={j.key} job={j} />
+                : <JobCard key={j.key} job={j} />))}
+              {jobs.length > shown && (
+                <Button block onClick={() => setShown((x) => x + 10)}>
+                  Show more ({jobs.length - shown} more job(s))
+                </Button>
+              )}
+            </>}
+      </BulkCtx.Provider>
+      <Modal open={review} title={`Submit ${picked.length} job(s) to the HOD`} width={720}
+        onCancel={() => setReview(false)} destroyOnHidden
+        okText={`Submit ${picked.length} job(s)`} okButtonProps={{ 'data-testid': 'bulk-submit-confirm' } as never}
+        confirmLoading={bulk.isPending} onOk={() => bulk.mutate()}>
+        <Typography.Paragraph type="secondary">
+          Each job goes to the HOD exactly as its card shows it — system code, area, ticked
+          materials, part and remark. Check them: a suggested figure is a pre-fill, not the record.
+        </Typography.Paragraph>
+        <Table size="small" pagination={false} rowKey="key" dataSource={picked}
+          columns={[
+            { title: 'Job', dataIndex: 'label' },
+            { title: 'System', dataIndex: 'code', width: 110 },
+            { title: 'Area', dataIndex: 'sqm', align: 'right', width: 90, render: (v) => `${v} m²` },
+            { title: 'Materials', dataIndex: 'n', align: 'right', width: 90 },
+          ]} />
+        <Typography.Paragraph style={{ marginTop: 8 }}>
+          Total: <b>{r4(picked.reduce((a, e) => a + Number(e.sqm ?? 0), 0))} m²</b>
+        </Typography.Paragraph>
+      </Modal>
     </>
   )
 }
@@ -638,14 +808,76 @@ function StagedRows({ rows }: { rows: Row[] }) {
 export function HodJobs({ isHod }: { isHod: boolean }) {
   const [open, setOpen] = useState<StagedJob | null>(null)
   const q = useStagedJobs()
-  const jobs = [...(q.data ?? [])].sort((a, b) =>
+  // ── Phase 20b — select by date / system code, approve in one click ────────
+  const { message, modal } = App.useApp()
+  const qc = useQueryClient()
+  const [dateF, setDateF] = useState<string | undefined>()
+  const [codeF, setCodeF] = useState<string | undefined>()
+  const [picked, setPicked] = useState<Set<number>>(new Set())
+  const [confirm, setConfirm] = useState(false)
+  const all = [...(q.data ?? [])].sort((a, b) =>
     Number(b.high_priority) - Number(a.high_priority) || s(a.Work_Date).localeCompare(s(b.Work_Date)))
-  if (!q.isLoading && jobs.length === 0) return null
+  const jobs = all.filter((j) => (!dateF || j.Work_Date === dateF) && (!codeF || j.Lining_System_Code === codeF))
+  const chosen = all.filter((j) => picked.has(j.id))
+  const risky = chosen.filter((j) => j.high_priority)
+  const sqmTotal = r4(chosen.filter((j) => !j.prep).reduce((a, j) => a + Number(j.SQM_Completed || 0), 0))
+  useEffect(() => {        // a job decided elsewhere leaves the selection
+    const ids = new Set(all.map((j) => j.id))
+    setPicked((p) => { const k = [...p].filter((i) => ids.has(i)); return k.length === p.size ? p : new Set(k) })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q.data])
+  const approve = useMutation({
+    mutationFn: async () => (await api.post<{
+      approved: { id: number; sqm_credited: number | null }[]
+      skipped: { id: number; status: number; reason: string }[]
+    }>('/execution/sme-link/groups/bulk-approve', { ids: chosen.map((j) => j.id) })).data,
+    onSuccess: (r) => {
+      setConfirm(false)
+      setPicked(new Set())
+      void qc.invalidateQueries({ queryKey: ['/execution/sme-link/groups/staged'] })
+      void qc.invalidateQueries({ queryKey: ['/execution/sme-link/assigned'] })
+      if (r.approved.length) message.success(`Approved ${r.approved.length} job(s)`)
+      if (r.skipped.length) {
+        modal.warning({
+          title: `${r.skipped.length} job(s) were not approved`,
+          content: <ul style={{ paddingLeft: 18 }}>{r.skipped.map((x) => {
+            const j = all.find((y) => y.id === x.id)
+            return <li key={x.id}><b>{j ? `${j.Work_Date} · ${j.Equipment_Tag_No}` : `#${x.id}`}</b>: {x.reason}</li>
+          })}</ul>,
+        })
+      }
+    },
+    onError: (e) => message.error(errMsg(e)),
+  })
+  if (!q.isLoading && all.length === 0) return null
+  const toggle = (id: number, on: boolean) =>
+    setPicked((p) => { const n = new Set(p); if (on) n.add(id); else n.delete(id); return n })
   return (
     <>
+      {isHod && (
+        <Space wrap style={{ marginBottom: 10 }} data-testid="hod-bulk-bar">
+          <Select allowClear placeholder="Date" style={{ width: 140 }} value={dateF} onChange={setDateF}
+            aria-label="Filter by date"
+            options={[...new Set(all.map((j) => j.Work_Date))].sort().map((d) => ({ value: d, label: d }))} />
+          <Select allowClear placeholder="System code" style={{ width: 150 }} value={codeF} onChange={setCodeF}
+            aria-label="Filter by system code"
+            options={[...new Set(all.map((j) => j.Lining_System_Code))].sort().map((c) => ({ value: c, label: c }))} />
+          <Button data-testid="hod-select-all" onClick={() => setPicked(new Set([...picked, ...jobs.map((j) => j.id)]))}>
+            Select all{dateF || codeF ? ' shown' : ''} ({jobs.length})
+          </Button>
+          {picked.size > 0 && <Button onClick={() => setPicked(new Set())}>Clear</Button>}
+          <Button type="primary" data-testid="hod-approve-selected" disabled={!picked.size}
+            onClick={() => setConfirm(true)}>
+            Approve selected ({picked.size})
+          </Button>
+        </Space>
+      )}
       {jobs.map((j) => (
         <Card key={j.id} size="small" className="gi-job-card" style={{ marginBottom: 10 }}
           title={<Space wrap>
+            {isHod && <Checkbox aria-label={`Select ${j.Work_Date} ${j.Equipment_Tag_No}`}
+              data-testid={`hod-pick-${j.id}`} checked={picked.has(j.id)}
+              onChange={(e) => toggle(j.id, e.target.checked)} />}
             {j.high_priority ? <Tag color="red">High Priority</Tag> : <Tag>Normal</Tag>}
             <strong>{j.Work_Date} · {j.Equipment_Tag_No}</strong>
             <SystemCode code={j.Lining_System_Code} plain />
@@ -661,6 +893,38 @@ export function HodJobs({ isHod }: { isHod: boolean }) {
         </Card>
       ))}
       <JobDecideModal job={open} onClose={() => setOpen(null)} />
+      <Modal open={confirm} title={`Approve ${chosen.length} job(s)`} width={720} destroyOnHidden
+        onCancel={() => setConfirm(false)} okText={`Approve ${chosen.length} job(s)`}
+        okButtonProps={{ 'data-testid': 'hod-approve-confirm' } as never}
+        confirmLoading={approve.isPending} onOk={() => approve.mutate()}>
+        <Typography.Paragraph>
+          Each job is approved as a whole and its area credited <b>once</b>: <b>{sqmTotal} m²</b> of
+          lining in all{chosen.some((j) => j.prep) ? ' (Garnet jobs credit no lining area)' : ''}.
+          The quantities cannot change here — the material left the store when it was issued.
+          To reject a job, open it: a rejection needs its own reason.
+        </Typography.Paragraph>
+        {/* ⚠️ RULING Q20-10 — a variance above 10 % may be approved in bulk, but
+            never silently: each such job is named here before the click. */}
+        {risky.length > 0 && (
+          <Alert type="warning" showIcon style={{ marginBottom: 8 }} data-testid="hod-risky"
+            title={`${risky.length} of these used materials more than 10 % off the recipe`}
+            description={<ul style={{ paddingLeft: 18, margin: 0 }}>{risky.map((j) => (
+              <li key={j.id}>{j.Work_Date} · {j.Equipment_Tag_No} · {j.Lining_System_Code} — {
+                j.rows.filter((r) => r.Priority_Flag === 'HIGH').map((r) =>
+                  `${s(r.Material_Code)} ${Number(r.Variance_Pct) > 0 ? '+' : ''}${r4(Number(r.Variance_Pct))} %`).join(', ')}</li>
+            ))}</ul>} />
+        )}
+        <Table size="small" pagination={false} rowKey="id" dataSource={chosen}
+          columns={[
+            { title: 'Date', dataIndex: 'Work_Date', width: 110 },
+            { title: 'Equipment', dataIndex: 'Equipment_Tag_No' },
+            { title: 'System', dataIndex: 'Lining_System_Code', width: 110 },
+            { title: 'Area', dataIndex: 'SQM_Completed', align: 'right', width: 90,
+              render: (v: number) => `${r4(Number(v))} m²` },
+            { title: '', key: 'p', width: 110,
+              render: (_: unknown, j: StagedJob) => (j.high_priority ? <Tag color="red">High Priority</Tag> : null) },
+          ]} />
+      </Modal>
     </>
   )
 }

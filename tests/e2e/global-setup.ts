@@ -130,6 +130,22 @@ export default async function globalSetup() {
     + "('2026-09-22','E2EJOB-1',1,'CNCEC','E2E-JOB-TANK','Top of Brick Coving Applied - 4.82 SQM Done')",
     E2E_DB)
 
+  // ── 1b-v-b. Phase 20b: a tank of its OWN for the bulk flows (bulk.spec.ts) ─
+  // sme-jobs.spec files and approves E2E-JOB-TANK in parallel, so bulk works on
+  // E2E-BULK-TANK: 09-25 on the recipe (12.5 m²), 09-26 drawn far over it
+  // (5 m², primer 20 KG against 4) — the HOD's confirmation must name it.
+  psql(
+    "INSERT INTO sme_equipment (\"Site_ID\", \"Equipment_Tag_No\", \"Name\", "
+    + "\"Lining_System_Code\", \"Surface_Area_SQM\") "
+    + "VALUES ('CNCEC','E2E-BULK-TANK','E2E bulk tank','9102',200)", E2E_DB)
+  psql(
+    "INSERT INTO consumption (\"Date\", \"SAP_Code\", \"Quantity\", \"Site_ID\", "
+    + "\"Tank_No\", \"Remarks\") VALUES "
+    + "('2026-09-25','E2EJOB-1',2.5,'CNCEC','E2E-BULK-TANK','Wall - 12.5 SQM Done'), "
+    + "('2026-09-25','E2EJOB-2',2.5,'CNCEC','E2E-BULK-TANK','Wall - 12.5 SQM Done'), "
+    + "('2026-09-26','E2EJOB-1',5,'CNCEC','E2E-BULK-TANK','Floor - 5 SQM Done'), "
+    + "('2026-09-26','E2EJOB-2',1,'CNCEC','E2E-BULK-TANK','Floor - 5 SQM Done')", E2E_DB)
+
   // ── 1b-vi. Phase 16: three lots of one Surface Shield (lots.spec.ts) ─────
   // OLD expired 10 days ago, SOON expires in 20, LATE in 200 — dates relative
   // to today so the buckets never drift. FEFO must suggest SOON, not OLD.
