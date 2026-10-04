@@ -30,7 +30,10 @@ export interface SmartMinRow {
   Daily_Use: number | null
   Plan_Demand_Base: number | null
   Base_UOM: string | null
+  /** open PO quantity raised from THIS site's PRs (Phase 19b) */
   On_Order: number
+  /** open PO quantity on POs not raised from a PR — shown, never subtracted */
+  Global_On_Order: number
   Suggested_Order: number
   Days_Of_Cover: number | null
   Status: RagStatus

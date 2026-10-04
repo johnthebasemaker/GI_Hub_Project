@@ -54,7 +54,8 @@ os.environ.setdefault("GI_DOTENV", "0")
 OVERLAY_VERSION = 6   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
                       # · 4 = Phase 18 return desk loans (2026-10-03)
                       # · 5 = Phase 18 reorder-signal trio (2026-10-03)
-                      # · 6 = Phase 19a accepted-and-changed minimum (2026-10-04)
+                      # · 6 = Phase 19 accepted minimum · per-site / global POs ·
+                      #       a partly returned loan (2026-10-04)
 
 SITE = "CNCEC"
 WAREHOUSE = "WH-01"
@@ -230,6 +231,10 @@ async def seed_queues() -> dict:
                 out["accepted_min"] = await seed_accepted_minimum()
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  accepted-minimum example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["on_order"] = await seed_on_order_examples()
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  on-order example skipped: {type(e).__name__}: {str(e)[:160]}")
             try:
                 out["loans"] = await seed_returnables()
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
@@ -619,6 +624,44 @@ async def seed_accepted_minimum() -> int:
              "at": _d.datetime.combine(t0 - _d.timedelta(days=40), _d.time(9, 0))})
         await s.commit()
     return 1
+
+
+async def seed_on_order_examples() -> int:
+    """Phase 19b — on order per site vs GLOBAL (rule 17g).
+
+    PRACTICE MASKING TAPE (amber) has 25 open on a PO raised from a CNCEC PR:
+    its suggested order drops from 60 to 35. PRACTICE CABLE TIES (red) has 40
+    open on a PO with NO PR: shown as "+ 40 global", while its suggested order
+    stays 160. Idempotent; never fatal."""
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                "SELECT 1 FROM purchase_orders WHERE \"PO_Number\" = 'PRACTICE-PO-19B-1'"))).first():
+            return 0
+        await s.execute(text(
+            'INSERT INTO pr_registry ("PR_Number", "Site_ID", created_by) VALUES '
+            "('PRACTICE-PR-19B', :site, 'practice.hod') ON CONFLICT DO NOTHING"), {"site": SITE})
+        await s.execute(text(
+            'INSERT INTO pr_master ("PR_Number", "SAP_Code", "Requested_Qty", "Site_ID", '
+            '"Material_Code", "Material_Name", status) VALUES (\'PRACTICE-PR-19B\', :p, 25, '
+            ":site, :m, 'PRACTICE MASKING TAPE (amber)', 'approved')"),
+            {"p": REORDER_SAPS[1], "m": f"MAT-{REORDER_SAPS[1]}", "site": SITE})
+        await s.execute(text(
+            'INSERT INTO purchase_orders ("PO_Number", "PR_Number", "Site_ID", "Vendor_Name") VALUES '
+            "('PRACTICE-PO-19B-1', 'PRACTICE-PR-19B', :site, 'Halcyon Industrial Supply'), "
+            "('PRACTICE-PO-19B-2', NULL, NULL, 'Halcyon Industrial Supply')"), {"site": SITE})
+        await s.execute(text(
+            'INSERT INTO po_items ("PO_Number", line_no, "Material_Code", "Description", "Qty", '
+            '"UOM", "PR_Number", line_status) VALUES '
+            "('PRACTICE-PO-19B-1', 1, :m1, 'PRACTICE MASKING TAPE (amber)', 25, 'EA', "
+            "'PRACTICE-PR-19B', 'open'), "
+            "('PRACTICE-PO-19B-2', 1, :m0, 'PRACTICE CABLE TIES (red)', 40, 'EA', NULL, 'open')"),
+            {"m0": f"MAT-{REORDER_SAPS[0]}", "m1": f"MAT-{REORDER_SAPS[1]}"})
+        await s.commit()
+    return 2
 
 
 def fixture_version() -> int:

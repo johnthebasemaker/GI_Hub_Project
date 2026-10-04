@@ -29465,6 +29465,82 @@ async def test_phase19a_min_accept():
         await cleanup()
 
 
+async def test_phase19b_on_order_per_site():
+    """Suite 19B — Phase 19b (ruling Q19-2): on order, per site.
+
+    An open PO line counts against the site of the PR it was raised from (the
+    line's PR, else the PO header's, via pr_registry and then pr_master). A
+    line with no PR, or with a PR the Hub does not know, is GLOBAL: shown, and
+    subtracted from no site. Synthetic SVC19B rows; cleaned up."""
+    import datetime as _dtm
+    from sqlalchemy import text as _t
+
+    from .services import smart_min as SM
+
+    today = _dtm.date.today()
+    d = lambda n: (today - _dtm.timedelta(days=n)).isoformat()    # noqa: E731
+    SITE = "SVC19B"
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+
+    async def cleanup():
+        for sql in ('DELETE FROM po_items WHERE "PO_Number" LIKE \'SVC19B%\'',
+                    'DELETE FROM purchase_orders WHERE "PO_Number" LIKE \'SVC19B%\'',
+                    'DELETE FROM pr_master WHERE "PR_Number" LIKE \'SVC19B%\'',
+                    'DELETE FROM pr_registry WHERE "PR_Number" LIKE \'SVC19B%\'',
+                    'DELETE FROM consumption WHERE "SAP_Code" LIKE \'SVC19B%\'',
+                    'DELETE FROM receipts WHERE "SAP_Code" LIKE \'SVC19B%\'',
+                    'DELETE FROM inventory WHERE "SAP_Code" LIKE \'SVC19B%\''):
+            await ex(sql)
+
+    await cleanup()
+    try:
+        await ex('INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+                 '"Category", "UOM", "Site_ID", "Minimum_Qty") VALUES '
+                 "('SVC19B-GEN', 'MAT-SVC19B-GEN', 'SVC19B general', 'R/L Consumables', 'EA', :s, 0)", s=SITE)
+        # used 1/day → minimum 30; stock 10 → red; target 60
+        await ex('INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES (:d, \'SVC19B-GEN\', 40, :s)',
+                 d=d(40), s=SITE)
+        await ex('INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES (:d, \'SVC19B-GEN\', 30, :s)',
+                 d=d(5), s=SITE)
+        await ex('INSERT INTO pr_registry ("PR_Number", "Site_ID") VALUES (\'SVC19B-PR1\', :s)', s=SITE)
+        await ex('INSERT INTO pr_master ("PR_Number", "SAP_Code", "Requested_Qty", "Site_ID") VALUES '
+                 "('SVC19B-PR1', 'SVC19B-GEN', 50, :s), ('SVC19B-PR2', 'SVC19B-GEN', 7, 'SVC19B-OTHER')", s=SITE)
+        await ex('INSERT INTO purchase_orders ("PO_Number", "PR_Number") VALUES '
+                 "('SVC19B-PO1', NULL), ('SVC19B-PO2', NULL), ('SVC19B-PO3', 'SVC19B-PR1')")
+        await ex('INSERT INTO po_items ("PO_Number", line_no, "Material_Code", "Qty", "Delivered_Qty", '
+                 '"PR_Number", line_status) VALUES '
+                 "('SVC19B-PO1', 1, 'MAT-SVC19B-GEN', 20, 5, 'SVC19B-PR1', 'open'),"      # site: 15
+                 "('SVC19B-PO1', 2, 'MAT-SVC19B-GEN', 7, 0, 'SVC19B-PR2', 'open'),"       # OTHER site: 7
+                 "('SVC19B-PO2', 1, 'MAT-SVC19B-GEN', 100, 0, NULL, 'open'),"             # global: 100
+                 "('SVC19B-PO2', 2, 'MAT-SVC19B-GEN', 4, 0, 'SVC19B-EXT', 'open'),"       # unknown PR → global 4
+                 "('SVC19B-PO2', 3, 'MAT-SVC19B-GEN', 999, 0, 'SVC19B-PR1', 'closed'),"   # closed: ignored
+                 "('SVC19B-PO3', 1, 'MAT-SVC19B-GEN', 3, 0, NULL, 'open')")               # header PR → site: 3
+        async with SessionLocal() as s_:
+            per_site, glob = await SM.open_po_qty(s_)
+            out = await SM.compute(s_, SITE)
+        r = next((x for x in out["items"] if x["SAP_Code"] == "SVC19B-GEN"), {})
+        check("19b-01: open PO lines are attributed through the PR — the line's own PR "
+              "(15 open of 20), else the PO header's (3); a PR known only to pr_master "
+              "lands on ITS site (7 → SVC19B-OTHER)",
+              per_site.get(("MAT-SVC19B-GEN", SITE)) == 18
+              and per_site.get(("MAT-SVC19B-GEN", "SVC19B-OTHER")) == 7, str(
+                  {k: v for k, v in per_site.items() if "SVC19B" in k[0]}))
+        check("19b-02: a line with NO PR (100) or a PR the Hub does not know (4) is GLOBAL "
+              "on order (104); a closed line counts nowhere",
+              glob.get("MAT-SVC19B-GEN") == 104, str(glob.get("MAT-SVC19B-GEN")))
+        check("19b-03: ⚠️ ruling Q19-2 — the site's suggested order subtracts only ITS "
+              "on order: target 60 − stock 10 − 18 = 32, the global 104 shown beside it "
+              "and NOT subtracted (it would have been 0 before Phase 19b)",
+              r.get("On_Order") == 18 and r.get("Global_On_Order") == 104
+              and r.get("Status") == "red" and r.get("Suggested_Order") == 32, str(r)[:300])
+    finally:
+        await cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -29796,6 +29872,9 @@ async def main() -> int:
     print("\n 19A. Phase 19a — the HOD accepts recommended minimums per site: the site's "
           "minimum, flagged when the recommendation moves ±20 %, HOD only")
     await test_phase19a_min_accept()
+    print("\n 19B. Phase 19b — on order per site: a PO counts against the site of its PR; "
+          "a PO with no PR is global and subtracted from no site")
+    await test_phase19b_on_order_per_site()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

@@ -4619,8 +4619,8 @@ signals* shows counts and the five most urgent items. *Open Reorder signals
 **TC-18C-08 — no writes.** Note any item's Minimum in Admin → Inventory. Open
 Reorder signals, change a setting, reload. The item's Minimum is unchanged.
 
-⚠️ **Known limits** (for a ruling, `MORNING_REPORT.md`): on-order is matched
-through `po_items.Material_Code` and is **not per site**. Garnet assumes every
+⚠️ **Known limits** (for a ruling, `MORNING_REPORT.md`): on-order was not per
+site. That was **fixed in Phase 19b** (§19b). Garnet assumes every
 m² still to be lined is blasted first. The 30-day share spreads the pace
 evenly over all remaining systems.
 
@@ -4676,6 +4676,30 @@ accepted by the HOD"*. The item's own Minimum_Qty is unchanged.
 
 Automated: service_tests **19A** (7 checks); E2E `reorder-signals.spec.ts`
 (19a ×2).
+
+## 19b. Phase 19b — on order per site (ruling Q19-2)
+
+**Why this exists.** Phase 18 subtracted EVERY open PO line of a material from
+every site's suggested order, so one PO was counted once per site. Now
+`smart_min.open_po_qty` attributes a line to the site of its PR: the line's
+`PR_Number`, else the PO header's, resolved through `pr_registry` and then
+`pr_master`. A line with no PR, or with a PR the Hub does not know, is
+**global**: shown, and subtracted from no site.
+
+**TC-19B-01 — a PR's PO.** Practice: *PRACTICE MASKING TAPE (amber)*: On order
+**25**, suggested **35** (target 180 − 120 − 25).
+
+**TC-19B-02 — a global PO.** *PRACTICE CABLE TIES (red)*: On order **—** with
+**+ 40 global** under it (hover explains). Suggested stays **160**.
+
+**TC-19B-03 — one PR, several POs.** Raise two POs from the same CNCEC PR for
+one item (10 and 5). That item's On order is 15 at CNCEC and 0 at every other
+site.
+
+**TC-19B-04 — delivered and closed lines.** Receive 5 of a 10 line → On order
+5. Close the line → it drops out.
+
+Automated: service_tests **19B** (3 checks).
 
 ## 15. Do's and Don'ts
 

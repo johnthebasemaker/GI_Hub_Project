@@ -161,8 +161,22 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
     }] : []),
     { title: 'Days of cover', dataIndex: 'Days_Of_Cover', align: 'right', width: 110,
       render: (v) => (v == null ? '—' : fmt(v, 1)) },
-    { title: 'On order', dataIndex: 'On_Order', align: 'right', width: 90,
-      render: (v) => (v ? fmt(v, 2) : '—') },
+    {
+      title: 'On order', dataIndex: 'On_Order', align: 'right', width: 120,
+      render: (v, r) => (
+        <span>
+          {v ? fmt(v, 2) : '—'}
+          {r.Global_On_Order ? (
+            <Tooltip title={`${fmt(r.Global_On_Order, 2)} more is on POs not raised from any site's PR. `
+              + "It is not subtracted from this site's suggested order, so one PO is never counted twice."}>
+              <div data-testid="global-on-order" style={{ fontSize: 11, opacity: 0.75, cursor: 'help' }}>
+                + {fmt(r.Global_On_Order, 2)} global
+              </div>
+            </Tooltip>
+          ) : null}
+        </span>
+      ),
+    },
     {
       title: 'Suggested order', dataIndex: 'Suggested_Order', align: 'right', width: 130,
       render: (v, r) => (v ? <Typography.Text strong>{fmt(v)} {r.UOM ?? ''}</Typography.Text> : '—'),
@@ -190,7 +204,8 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
         New surface rate) — never past use. <span style={{ color: statusColors.critical }}>Red</span>{' '}
         = below the minimum, <span style={{ color: statusColors.low }}>amber</span> = within{' '}
         {fmt(((p.amber_factor ?? 1.5) - 1) * 100)} % of it. The suggested order brings stock back to
-        twice the minimum, less what is already on open POs.
+        twice the minimum, less what is already on open POs raised from this site's PRs (POs not
+        raised from a PR are shown as <i>global</i> and subtracted from no site).
       </Typography.Paragraph>
 
       {error ? <Note tone="error">Could not load reorder signals.</Note> : null}

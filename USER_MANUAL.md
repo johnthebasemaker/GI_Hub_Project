@@ -890,8 +890,8 @@ Open **Stock → Reorder signals**. Each row is one item at one site:
 | **Status** | 🔴 **Order now**: stock is below the minimum. 🟠 **Order soon**: stock is less than 1½ times the minimum. 🟢 **OK**. ⚪ **No signal**: nothing to base a minimum on. |
 | **Minimum** | Marked **smart** when the system worked it out, or **manual** when someone typed a minimum on the item. A manual minimum always wins, and the system's own figure is shown when you hover. |
 | **Days of cover** | How many days the stock lasts at the expected rate of use. |
-| **On order** | Quantity still to be delivered on open POs (all sites). |
-| **Suggested order** | Brings the stock back to twice the minimum, less what is already on order. For a Surface Shield it never suggests more than the remaining plan needs. |
+| **On order** | Quantity still to be delivered on open POs raised from **this site's** PRs. POs not raised from any PR show underneath as **+ N global** (see §3.14.2). |
+| **Suggested order** | Brings the stock back to twice the minimum, less what this site already has on order. For a Surface Shield it never suggests more than the remaining plan needs. |
 | **Why** | The reason in words: *"Uses 2.10/day (30-day average) × 30 days of cover"* or *"Plan: 60 KG for the next 30 days of planned work"*. |
 
 **How the minimum is worked out:**
@@ -941,6 +941,7 @@ GLOVES (green)*. Each is used 3 a day, so its minimum is 90.
 
 | Change | Who | Read |
 |---|---|---|
+| **On order per site.** A PO counts towards the site whose PR it was raised from. A PO raised without a PR is shown as *global* and is not taken off any site's suggested order. | Logistics, HOD | §3.14.2 |
 | **Accept minimums for your site.** The HOD ticks the system's recommended minimums (or types their own), and they become the site's minimum. When the recommendation later moves by more than 20 %, the row says **changed**. | HOD (Logistics sees the result) | §3.14.1 |
 
 ### 3.14.1 Accepting minimums for your site (HOD)
@@ -972,7 +973,21 @@ yours.
 notified when an HOD accepts some, but cannot accept. Every acceptance is in
 the audit log with the recommendation it came from.
 
-**Practice:** *PRACTICE SAFETY GLASSES (accepted, changed)* was accepted at 60
+### 3.14.2 On order: your site's POs and global POs
+
+A PO raised from a **PR** counts as *on order* for the site that raised the PR.
+One PR can lead to several POs, and they all count for that site. A PO
+**raised without a PR** (a global purchase) does not belong to any one site.
+It is shown under the site's figure as **+ N global** but is **not**
+subtracted from any site's suggested order, so one PO is never counted against
+several sites. Hover over it for the explanation. A PO whose PR number is not
+in the Hub (raised outside it) is treated as global.
+
+**Practice:** *PRACTICE MASKING TAPE (amber)* has 25 on order from a CNCEC
+PR, so its suggested order is 35 instead of 60. *PRACTICE CABLE TIES (red)*
+shows **+ 40 global**, and its suggested order stays 160.
+
+**Practice (minimums):** *PRACTICE SAFETY GLASSES (accepted, changed)* was accepted at 60
 by practice.hod. It is used 3 a day, so the system now recommends 90, 50 %
 more, and the row shows **accepted** + **changed**.
 

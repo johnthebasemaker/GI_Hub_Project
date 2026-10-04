@@ -49,7 +49,9 @@ set it, and suite 18M pins that.
 The RAG rule, one place:  min ≤ 0 → none (grey, no demand signal) ·
 stock < min → red · stock < min × AMBER_FACTOR → amber · else green.
 Suggested order = max(target − stock − on order, 0), rounded up, for red and
-amber rows, where target = 2 × min (one full cover period above the minimum) —
+amber rows. "On order" is the open PO quantity raised from THIS site's PRs
+(Phase 19b); a global PO is shown beside it and subtracted from no site.
+For red and amber rows, target = 2 × min (one full cover period above the minimum) —
 ⚠️ but for a Surface Shield never more than the REMAINING PLAN needs. Without
 that cap, a site with no SQM pace (minimum = the whole remaining plan) was
 told to order TWICE the project (found in the Phase 18 E2E screenshot: 305,370
@@ -123,6 +125,45 @@ async def accepted_minimums(session: AsyncSession, site_id: Optional[str]) -> di
     return {(_norm(r["sap"]), r["site"]): {"qty": _num(r["qty"]), "by": r["by"],
                                           "at": r["at"].isoformat() if r["at"] else None}
             for r in (await session.execute(text(sql), params)).mappings().all()}
+
+
+# Phase 19b, ruling Q19-2. An open PO line belongs to the site of the PR it
+# was raised from: the line's own PR_Number, else the PO header's, resolved
+# through pr_registry (one row per PR) and then pr_master. A line with no PR,
+# or a PR the Hub does not know (one raised outside it), is GLOBAL: it is shown
+# on every site's row and subtracted from none, so one PO is never counted
+# against several sites.
+_OPEN_PO_SQL = """
+WITH lines AS (
+    SELECT UPPER(REPLACE(COALESCE(pi."Material_Code", ''), ' ', '')) AS mat,
+           GREATEST(pi."Qty" - COALESCE(pi."Delivered_Qty", 0), 0) AS open_qty,
+           COALESCE(NULLIF(TRIM(pi."PR_Number"), ''), NULLIF(TRIM(po."PR_Number"), '')) AS pr
+    FROM po_items pi
+    LEFT JOIN purchase_orders po ON po."PO_Number" = pi."PO_Number"
+    WHERE COALESCE(pi.line_status, 'open') = 'open'
+)
+SELECT l.mat,
+       COALESCE(r."Site_ID", (SELECT MIN(m."Site_ID") FROM pr_master m
+                              WHERE m."PR_Number" = l.pr)) AS site,
+       SUM(l.open_qty) AS qty
+FROM lines l
+LEFT JOIN pr_registry r ON r."PR_Number" = l.pr
+GROUP BY 1, 2
+"""
+
+
+async def open_po_qty(session: AsyncSession) -> tuple[dict, dict]:
+    """({(material, site): open qty}, {material: GLOBAL open qty})."""
+    per_site: dict[tuple, float] = {}
+    glob: dict[str, float] = {}
+    for mat, site, qty in (await session.execute(text(_OPEN_PO_SQL))).all():
+        if not mat:
+            continue
+        if site:
+            per_site[(mat, site)] = per_site.get((mat, site), 0.0) + _num(qty)
+        else:
+            glob[mat] = glob.get(mat, 0.0) + _num(qty)
+    return per_site, glob
 
 
 def rag(stock: float, minimum: float) -> str:
@@ -320,9 +361,7 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
         'SELECT "SAP_Code", "Material_Code", "Equipment_Description", "Category", "UOM", '
         '"Unit_Size", "Base_UOM", COALESCE("Minimum_Qty", 0) AS "Minimum_Qty" '
         'FROM inventory'))).mappings().all()}
-    on_order = {_norm(r[0]).upper(): _num(r[1]) for r in (await session.execute(text(
-        "SELECT \"Material_Code\", SUM(GREATEST(\"Qty\" - COALESCE(\"Delivered_Qty\", 0), 0)) "
-        "FROM po_items WHERE COALESCE(line_status, 'open') = 'open' GROUP BY 1"))).all()}
+    on_order, global_on_order = await open_po_qty(session)
 
     accepted = await accepted_minimums(session, site_id)
 
@@ -384,7 +423,9 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
                "UOM": i["UOM"], "Surface_Shield": is_ss, "Current_Stock": round(st, 3),
                "Manual_Min": manual or None, "Recommended_Min": 0.0, "Basis": "no_use",
                "Daily_Use": None, "Plan_Demand_Base": None, "Base_UOM": None,
-               "Why": "", "On_Order": round(on_order.get(_norm(i["Material_Code"]).upper(), 0.0), 3)}
+               "Why": "",
+               "On_Order": round(on_order.get((_norm(i["Material_Code"]).upper(), s), 0.0), 3),
+               "Global_On_Order": round(global_on_order.get(_norm(i["Material_Code"]).upper(), 0.0), 3)}
         if is_ss:
             p = plan_saps.get((sap, s))
             if p is None:
