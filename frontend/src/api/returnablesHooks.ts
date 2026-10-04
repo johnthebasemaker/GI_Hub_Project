@@ -50,3 +50,31 @@ export interface ReturnScan {
 export async function resolveReturnScan(code: string): Promise<ReturnScan> {
   return (await api.get<ReturnScan>('/entry/returnables/resolve', { params: { code } })).data
 }
+
+/** The borrower's loan slip (ruling Q12): a small PDF whose QR is `#<id>`,
+ *  opened in a new tab to print. The tab is opened BEFORE the fetch — after an
+ *  `await` the click no longer counts as a user gesture and pop-up blockers
+ *  eat it — and a blocked tab falls back to a download. */
+export async function printLoanSlip(id: number | string): Promise<void> {
+  const tab = window.open('', '_blank')
+  let res
+  try {
+    res = await api.get(`/entry/returnables/${id}/slip`, { responseType: 'blob' })
+  } catch (e) {
+    tab?.close()
+    throw e
+  }
+  const url = URL.createObjectURL(res.data as Blob)
+  if (tab) {
+    tab.location.href = url
+  } else {
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `loan-slip-${id}.pdf`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  }
+  // the tab has loaded the blob long before a minute is up
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}

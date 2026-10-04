@@ -7,7 +7,8 @@
  * whatever is focused), a tool's code scanned on the Loan form is remembered,
  * and scanning that same code at the desk finds the loan and returns it with
  * a condition. No camera in headless Chromium: the scanner modal's manual
- * field (autofocused since Phase 18) stands in for the wedge.
+ * field (autofocused since Phase 18) stands in for the wedge. The loan's
+ * Slip button (ruling Q12) prints the borrower's QR slip.
  */
 import { test, expect } from '@playwright/test'
 import { storageStatePath } from '../harness/env'
@@ -38,8 +39,20 @@ test('18r: a scanned tool is loaned, then found by the same scan and returned da
   await loanModal.getByPlaceholder('Employee name — or Scan badge ↑').fill('E2E Borrower')
   await loanModal.getByRole('button', { name: '+3 days' }).click()
   await loanModal.getByRole('button', { name: 'Record loan' }).click()
-  await expect(page.getByText('Loan recorded')).toBeVisible()
-  await expect(page.locator('.ant-table-row', { hasText: name })).toContainText('on loan')
+  await expect(page.getByText(/Loan recorded/)).toBeVisible()
+  const loanRow = page.locator('.ant-table-row', { hasText: name })
+  await expect(loanRow).toContainText('on loan')
+
+  // ── ruling Q12: the borrower's slip — a PDF in a new tab, its QR '#id' ──
+  const [slip, tab] = await Promise.all([
+    page.waitForResponse((r) => /\/entry\/returnables\/\d+\/slip$/.test(r.url())),
+    ctx.waitForEvent('page'),
+    loanRow.getByRole('button', { name: /print slip/i }).click(),
+  ])
+  expect(slip.status()).toBe(200)
+  expect(slip.headers()['content-type']).toContain('application/pdf')
+  expect((await slip.body()).subarray(0, 5).toString()).toBe('%PDF-')
+  await tab.close()
 
   // ── return it: the same code at the desk, lower-case as a sloppy scan ───
   await desk.click()

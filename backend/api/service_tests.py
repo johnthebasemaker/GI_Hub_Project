@@ -29087,6 +29087,28 @@ async def test_phase18r_returnables():
                   abs((srv_now - _dtm.datetime.now()).total_seconds()) < 120
                   and flagged == 1 and int(wq.get("returnables_overdue") or 0) >= 1,
                   f"now={lst['now']} flagged={flagged} wq={wq.get('returnables_overdue')}")
+
+            # ruling Q12 — the borrower's slip
+            import pypdfium2 as _pdfium
+            sl = await ac.get(f"/entry/returnables/{d}/slip", headers=H)
+            txt = ""
+            if sl.status_code == 200:
+                doc = _pdfium.PdfDocument(sl.content)
+                txt = doc[0].get_textpage().get_text_range()
+                size = doc[0].get_size()
+                doc.close()
+            check("18r-11: ruling Q12 — a loan prints an 80 mm slip (PDF) naming the loan "
+                  "#id, the item, the borrower and the due time; its QR is '#id', the one "
+                  "syntax the desk resolves",
+                  sl.status_code == 200 and sl.headers["content-type"] == "application/pdf"
+                  and f"#{d}" in txt and "SVC18R Overdue Probe" in txt and "DUE BACK" in txt
+                  and abs(size[0] - 80 / 25.4 * 72) < 1, f"{sl.status_code} {txt[:160]!r}")
+            s_hod = await ac.get(f"/entry/returnables/{d}/slip", headers=HH)
+            s_404 = await ac.get("/entry/returnables/999999999/slip", headers=H)
+            check("18r-12: …the slip is the store keeper's like every loan endpoint (HOD 403) "
+                  "and an unknown loan is 404",
+                  s_hod.status_code == 403 and s_404.status_code == 404,
+                  f"{s_hod.status_code} {s_404.status_code}")
     finally:
         async with SessionLocal() as s_:
             await s_.execute(_del(rt).where(rt.c["id"] > base,
@@ -29122,7 +29144,9 @@ async def test_phase18m_smart_min():
                     'DELETE FROM sme_recipe WHERE "Material_Code" LIKE \'MAT-SVC18M%\'',
                     'DELETE FROM sme_equipment WHERE "Site_ID" = \'SVC18M\'',
                     'DELETE FROM inventory WHERE "SAP_Code" LIKE \'SVC18M%\'',
-                    "DELETE FROM app_settings WHERE key = 'ss_planned_sqm_per_day'"):
+                    "DELETE FROM sme_execution_entry WHERE \"Site_ID\" = 'SVC18M'",
+                    "DELETE FROM app_settings WHERE key IN ('ss_planned_sqm_per_day', "
+                    "'ss_planned_sqm_per_day@SVC18M')"):
             await ex(sql)
 
     check("18m-01: the RAG rule — below the minimum is red, within 50 % above it "
@@ -29228,6 +29252,63 @@ async def test_phase18m_smart_min():
         check("18m-09: ⚠️ ADVICE, NOT DATA — computing and serving the minimums writes "
               "nothing: every item's Minimum_Qty is byte-identical afterwards",
               inv_before == inv_after, f"{inv_before} → {inv_after}")
+
+        # ── ruling Q6 option B: a site plans its own pace ─────────────────────
+        # 15 m² approved 3 days ago → the site's own pace is 15 / 30 = 0.5 m²/day
+        # (and the remaining plan drops to 85 m²).
+        await ex('INSERT INTO sme_execution_entry ("Site_ID", "Entry_No", "Work_Date", '
+                 '"Equipment_Tag_No", "Lining_System_Code", "Execution_Sub_Activity_Code", '
+                 'status, "Actual_SQM") VALUES (:s, \'SVC18M-E1\', :d, \'SVC18M-T1\', '
+                 '\'SVC18M-SYS\', \'SVC18M-SYS\', \'APPROVED\', 15)', s=SITE, d=d(3))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            ra = await ac.post("/auth/login", headers={"X-Real-IP": "203.0.113.133"},
+                               json={"username": "admin", "password": "admin2026"})
+            HA = {"Authorization": f"Bearer {ra.json()['access_token']}"}
+            rs = await ac.post("/auth/login", headers={"X-Real-IP": "203.0.113.134"},
+                               json={"username": "worker", "password": "floor2026"})
+            HS = {"Authorization": f"Bearer {rs.json()['access_token']}"}
+            rh = await ac.post("/auth/login", headers={"X-Real-IP": "203.0.113.135"},
+                               json={"username": "hod", "password": "hod2026"})
+            HH = {"Authorization": f"Bearer {rh.json().get('access_token', '')}"}
+            before = (await ac.get("/stock/smart-min", headers=HA, params={"site_id": SITE})).json()
+            put = await ac.put("/stock/smart-min/pace", headers=HA,
+                               json={"site_id": SITE, "sqm_per_day": 2})
+            after = (await ac.get("/stock/smart-min", headers=HA, params={"site_id": SITE})).json()
+            p_sk = await ac.put("/stock/smart-min/pace", headers=HS,
+                                json={"site_id": SITE, "sqm_per_day": 9})
+            p_hod = await ac.put("/stock/smart-min/pace", headers=HH,
+                                 json={"site_id": SITE, "sqm_per_day": 9})
+            p_bad = await ac.put("/stock/smart-min/pace", headers=HA,
+                                 json={"site_id": "SVC18M-NOPLAN", "sqm_per_day": 9})
+            clr = await ac.put("/stock/smart-min/pace", headers=HA,
+                               json={"site_id": SITE, "sqm_per_day": None})
+            cleared = (await ac.get("/stock/smart-min", headers=HA, params={"site_id": SITE})).json()
+        b_site, a_site, c_site = (x["sites"][SITE] for x in (before, after, cleared))
+        ss3 = next(r for r in after["items"] if r["SAP_Code"] == "SVC18M-SS")
+        check("18m-10: every site carries a SUGGESTED pace — its own approved lining SQM "
+              "per day over 30 days (15 m² → 0.5), even while a planned rate overrides it",
+              b_site["suggested_sqm_per_day"] == 0.5 and b_site["pace_source"] == "planned"
+              and b_site["sqm_per_day"] == 1.0, str(b_site))
+        check("18m-11: a site's OWN planned pace beats the global one: 2 m²/day × 30 days "
+              "= 60 m² of the remaining 85 → 120 KG = 6 drums (pace_source site_plan)",
+              put.status_code == 200 and a_site["pace_source"] == "site_plan"
+              and a_site["sqm_per_day"] == 2.0 and a_site["site_planned_sqm_per_day"] == 2.0
+              and ss3["Recommended_Min"] == 6 and ss3["Basis"] == "plan_pace",
+              f"{put.status_code} {a_site} min={ss3['Recommended_Min']}")
+        check("18m-12: only the HOD (own site) or admin sets it — a store keeper 403, a "
+              "CNCEC HOD naming SVC18M 403, a site with no SQM plan 422",
+              p_sk.status_code == 403 and p_hod.status_code == 403 and p_bad.status_code == 422,
+              f"{p_sk.status_code} {p_hod.status_code} {p_bad.status_code}")
+        async with SessionLocal() as s_:
+            left = (await s_.execute(_t("SELECT count(*) FROM app_settings WHERE key = "
+                                        "'ss_planned_sqm_per_day@SVC18M'"))).scalar()
+            audited = (await s_.execute(_t(
+                "SELECT count(*) FROM system_audit_log WHERE action_type = 'SS_PACE_SET' "
+                "AND details LIKE 'ss_planned_sqm_per_day@SVC18M%'"))).scalar()
+        check("18m-13: clearing it deletes the site's row and falls back to the global "
+              "rate; every change is audited",
+              clr.status_code == 200 and left == 0 and c_site["pace_source"] == "planned"
+              and audited >= 2, f"{clr.status_code} left={left} {c_site} audited={audited}")
     finally:
         await cleanup()
 

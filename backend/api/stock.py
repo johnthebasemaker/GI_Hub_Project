@@ -18,11 +18,13 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import get_current_user, resolve_site_param, site_scope
+from .auth import (get_current_user, require_roles, resolve_site_param, resolve_site_write,
+                   site_scope)
 from .db import get_session
 
 
@@ -290,6 +292,47 @@ async def smart_min(site_id: Optional[str] = Query(None, description="Filter by 
     if status:
         out["items"] = [r for r in out["items"] if r["Status"] == status]
     return out
+
+
+class SitePaceIn(BaseModel):
+    site_id: Optional[str] = None
+    # null or 0 clears the site's rate (back to the global rate / approved work)
+    sqm_per_day: Optional[float] = Field(None, ge=0, le=100_000)
+
+
+@router.put("/smart-min/pace",
+            summary="Set (or clear) one site's planned SQM per day for Surface Shield minimums")
+async def smart_min_pace(body: SitePaceIn = Body(...),
+                         user: dict = Depends(require_roles("hod")),
+                         session: AsyncSession = Depends(get_session)):
+    """Ruling Q6 option B: a site plans its own lining rate. The Reorder
+    signals tab suggests the site's approved SQM per day over the last 30 days
+    and the HOD keeps it or types their own. A site HOD may only set their own
+    site (`resolve_site_write`); admin names the site. Audited."""
+    from .services import smart_min as SM
+    from .services.ledger import write_audit
+    site = resolve_site_write(user, body.site_id)
+    if not site:
+        raise HTTPException(422, "site_id is required")
+    known = (await session.execute(text(
+        'SELECT 1 FROM sme_equipment WHERE "Site_ID" = :s LIMIT 1'), {"s": site})).first()
+    if known is None:
+        raise HTTPException(422, f"{site} has no SQM plan — there is nothing to pace")
+    key = SM.SITE_PACE_PREFIX + site
+    rate = body.sqm_per_day or 0
+    if rate > 0:
+        val = f"{rate:g}"
+        res = await session.execute(text("UPDATE app_settings SET value = :v WHERE key = :k"),
+                                    {"k": key, "v": val})
+        if res.rowcount == 0:
+            await session.execute(text("INSERT INTO app_settings (key, value) VALUES (:k, :v)"),
+                                  {"k": key, "v": val})
+    else:
+        await session.execute(text("DELETE FROM app_settings WHERE key = :k"), {"k": key})
+    await write_audit(session, user["username"], "SS_PACE_SET", "app_settings",
+                      f"{key}={rate:g}" if rate > 0 else f"{key} cleared")
+    await session.commit()
+    return {"site_id": site, "sqm_per_day": rate or None}
 
 
 @router.get("/lots", summary="Per-lot remaining quantity — v_lot_balance")

@@ -49,3 +49,31 @@ test('18m: the Dashboard summarises the reorder signals and links to them', asyn
   await expect(page.getByTestId('reorder-signals')).toBeVisible({ timeout: 20_000 })
   await ctx.close()
 })
+
+test('18m: the HOD plans the site\'s SQM pace (ruling Q6 B) — set, seen in the note, cleared', async ({ browser }) => {
+  const ctx = await browser.newContext({ storageState: storageStatePath('hod') })
+  const page = await ctx.newPage()
+  await page.goto('/stock?tab=reorder')
+  const note = page.getByTestId('pace-note-CNCEC')
+  await expect(note).toBeVisible({ timeout: 20_000 })
+  await page.screenshot({ path: test.info().outputPath('reorder-pace-before.png') })
+
+  await page.getByTestId('pace-set-CNCEC').click()
+  const dlg = page.locator('.ant-modal', { hasText: 'Planned SQM pace — CNCEC' })
+  // a suggestion from the site's own approved work — or the plain "nothing to suggest"
+  await expect(dlg.getByTestId('pace-suggestion')).toContainText(/Suggested: .* m²\/day|nothing to suggest/)
+  await dlg.getByRole('spinbutton').fill('1000')
+  await page.screenshot({ path: test.info().outputPath('reorder-pace-dialog.png') })
+  await dlg.getByTestId('pace-save').click()
+  await expect(page.getByText(/CNCEC: planned pace 1,000/)).toBeVisible()
+  await expect(note).toContainText("this site's planned rate")
+  await expect(note).toContainText('1,000 m²/day')
+
+  // clear it again — back to the global rate / approved work
+  await page.getByTestId('pace-set-CNCEC').click()
+  await page.locator('.ant-modal', { hasText: 'Planned SQM pace — CNCEC' })
+    .getByRole('button', { name: 'Clear' }).click()
+  await expect(page.getByText('CNCEC: planned pace cleared')).toBeVisible()
+  await expect(note).not.toContainText("this site's planned rate")
+  await ctx.close()
+})

@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
-import { Empty, Input, Segmented, Select, Space, Tag, Tooltip, Typography } from 'antd'
+import { App, Button, Empty, Input, InputNumber, Modal, Segmented, Select, Space, Tag, Tooltip, Typography } from 'antd'
 import { Link } from 'react-router-dom'
 import type { ColumnsType } from 'antd/es/table'
 import { Table } from '../lib/smartTable'
-import { useSmartMin } from '../api/smartMinHooks'
-import type { RagStatus, SmartMinRow } from '../api/smartMinHooks'
+import { useSetSitePace, useSmartMin } from '../api/smartMinHooks'
+import type { RagStatus, SmartMin, SmartMinRow, SmartMinSite } from '../api/smartMinHooks'
+import { useAuth } from '../auth/AuthContext'
 import { status as statusColors } from '../theme/tokens'
 const status = statusColors
 
@@ -21,6 +22,12 @@ const RAG: Record<RagStatus, { color: string; label: string }> = {
   none: { color: '#9CA3AF', label: 'No signal' },
 }
 
+const PACE_SOURCE: Record<SmartMinSite['pace_source'], string> = {
+  site_plan: "this site's planned rate",
+  planned: 'global planned rate',
+  approved_entries: 'approved work, last 30 days',
+}
+
 const BASIS: Record<string, string> = {
   consumption: 'Past use',
   plan_pace: 'SQM plan',
@@ -32,6 +39,12 @@ const BASIS: Record<string, string> = {
   garnet_pool: 'Garnet pool',
   no_pack_size: 'No pack size',
 }
+
+// Ruling Q6 option A: with no SQM pace the minimum IS the whole remaining
+// plan — kept, but never left unexplained next to the number.
+const WHOLE_PLAN_TIP = 'Whole remaining plan: this site has no SQM pace yet — no planned rate and '
+  + 'no approved lining work in the last 30 days — so the minimum is everything the remaining plan '
+  + 'still needs. Set the site\'s pace (the yellow note above) and it drops to the next 30 days of work.'
 
 function fmt(n: number | null | undefined, dp = 0): string {
   if (n == null) return '—'
@@ -65,6 +78,9 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
 
   const counts = data?.counts ?? { red: 0, amber: 0, green: 0, none: 0 }
   const p = data?.params ?? {}
+  const { user, readOnly } = useAuth()
+  const canSetPace = !readOnly && (user?.role === 'hod' || user?.role === 'admin')
+  const [paceSite, setPaceSite] = useState<string | null>(null)
 
   const columns: ColumnsType<SmartMinRow> = [
     {
@@ -88,7 +104,12 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
           : 'Recommended by the system — see Why.'}>
           <span>{fmt(v, 2)} {r.Min_Source === 'manual'
             ? <Tag style={{ marginLeft: 4 }}>manual</Tag>
-            : r.Min_Source === 'smart' ? <Tag color="blue" style={{ marginLeft: 4 }}>smart</Tag> : null}</span>
+            : r.Min_Source === 'smart' ? <Tag color="blue" style={{ marginLeft: 4 }}>smart</Tag> : null}
+            {r.Surface_Shield && r.Basis.startsWith('plan_all') ? (
+              <Tooltip color="gold" title={<span style={{ color: '#111' }}>{WHOLE_PLAN_TIP}</span>}>
+                <Tag color="gold" data-testid="whole-plan-tag" style={{ marginLeft: 4, cursor: 'help' }}>whole plan</Tag>
+              </Tooltip>
+            ) : null}</span>
         </Tooltip>
       ),
     },
@@ -130,13 +151,19 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
 
       {siteNotes.map(([s, info]) => (
         <Note key={s} tone={info.basis === 'plan_all' ? 'warning' : 'info'}>
-          <span>
+          <span data-testid={`pace-note-${s}`}>
             <b>{s}</b>: {fmt(info.remaining_sqm)} m² still to line ·{' '}
             {info.sqm_per_day > 0
-              ? <>pace {fmt(info.sqm_per_day, 1)} m²/day ({info.pace_source === 'planned' ? 'planned rate' : 'approved work, last 30 days'})
+              ? <>pace {fmt(info.sqm_per_day, 1)} m²/day ({PACE_SOURCE[info.pace_source]})
                 {' '}— Surface Shield minimums cover the next {fmt(p.cover_days)} days</>
-              : <>no SQM pace yet — Surface Shield minimums cover the <b>whole remaining plan</b> (set{' '}
-                <code>ss_planned_sqm_per_day</code> under Admin → Settings to plan by rate)</>}
+              : <>no SQM pace yet — Surface Shield minimums cover the <b>whole remaining plan</b>.
+                {' '}Set the site&apos;s pace to plan by rate instead</>}
+            {canSetPace && info.remaining_sqm > 0 ? (
+              <Button size="small" type="link" data-testid={`pace-set-${s}`}
+                onClick={() => setPaceSite(s)}>
+                {info.site_planned_sqm_per_day ? 'Change pace' : 'Set pace'}
+              </Button>
+            ) : null}
           </span>
           {info.flags.length ? <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>{info.flags.map((f) => <li key={f}>{f}</li>)}</ul> : null}
         </Note>
@@ -169,6 +196,11 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
           onSearch={setQ} onChange={(e) => !e.target.value && setQ('')} />
       </Space>
 
+      {paceSite && data?.sites[paceSite] ? (
+        <PaceDialog site={paceSite} info={data.sites[paceSite]} params={p}
+          onClose={() => setPaceSite(null)} />
+      ) : null}
+
       <Table<SmartMinRow>
         size="small"
         loading={isFetching}
@@ -179,6 +211,56 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
         pagination={{ pageSize: 50, showTotal: (t) => `${t} items` }}
       />
     </div>
+  )
+}
+
+/** Ruling Q6 option B: a site plans its own lining rate. The suggestion is the
+ *  site's own approved SQM per day over the pace window; the HOD keeps it or
+ *  types another, and Clear goes back to the global rate / approved work. */
+function PaceDialog({ site, info, params, onClose }: {
+  site: string; info: SmartMinSite; params: SmartMin['params']; onClose: () => void
+}) {
+  const { message } = App.useApp()
+  const save = useSetSitePace()
+  const suggested = info.suggested_sqm_per_day
+  const [rate, setRate] = useState<number | null>(
+    info.site_planned_sqm_per_day ?? (suggested > 0 ? suggested : null))
+  const submit = async (value: number | null) => {
+    try {
+      await save.mutateAsync({ site_id: site, sqm_per_day: value })
+      message.success(value ? `${site}: planned pace ${fmt(value, 1)} m²/day` : `${site}: planned pace cleared`)
+      onClose()
+    } catch (e) {
+      const d = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+      message.error(typeof d === 'string' ? d : 'Could not save the pace')
+    }
+  }
+  return (
+    <Modal open title={`Planned SQM pace — ${site}`} onCancel={onClose} destroyOnHidden
+      footer={[
+        info.site_planned_sqm_per_day ? (
+          <Button key="clear" danger onClick={() => submit(null)} loading={save.isPending}>Clear</Button>
+        ) : null,
+        <Button key="cancel" onClick={onClose}>Cancel</Button>,
+        <Button key="save" type="primary" data-testid="pace-save" disabled={!rate}
+          loading={save.isPending} onClick={() => submit(rate)}>Save</Button>,
+      ]}>
+      <Typography.Paragraph>
+        How many m² of lining does <b>{site}</b> plan to finish per day? Surface Shield minimums then
+        cover the next {fmt(params.cover_days)} days of that work instead of the whole remaining plan
+        ({fmt(info.remaining_sqm)} m²).
+      </Typography.Paragraph>
+      <Typography.Paragraph type="secondary" data-testid="pace-suggestion">
+        {suggested > 0
+          ? <>Suggested: <b>{fmt(suggested, 1)} m²/day</b> — {site}&apos;s approved lining work over the
+            last {fmt(params.pace_window_days)} days.{' '}
+            <Button size="small" type="link" onClick={() => setRate(suggested)}>Use it</Button></>
+          : <>No approved lining work at {site} in the last {fmt(params.pace_window_days)} days, so there
+            is nothing to suggest — enter the rate you plan.</>}
+      </Typography.Paragraph>
+      <InputNumber min={0.1} max={100000} step={1} value={rate} suffix="m²/day"
+        data-testid="pace-input" style={{ width: 220 }} onChange={(v) => setRate(v ?? null)} />
+    </Modal>
   )
 }
 

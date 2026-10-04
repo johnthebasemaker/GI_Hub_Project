@@ -1371,6 +1371,84 @@ async def return_batch(body: LoanReturnBatchIn = Body(...),
             "condition": body.condition}
 
 
+@router.get("/returnables/{rid}/slip",
+            summary="A small printable loan slip with the loan's QR (Phase 18, ruling Q12)")
+async def loan_slip(rid: int, user: dict = Depends(require_roles("store_keeper")),
+                    session: AsyncSession = Depends(get_session)):
+    """80 mm wide — a receipt printer's paper, and it scales onto A4 too.
+
+    The QR encodes `#<id>`, the one loan-id syntax the return desk resolves
+    (`_LOAN_ID_RX` below), so the borrower hands the slip back and a single
+    scan finds the loan. Site-scoped like every loan endpoint; a returned loan
+    still prints (a re-print for the file) and says so."""
+    import io
+
+    from fastapi.responses import StreamingResponse
+    from fpdf import FPDF
+
+    from .documents import _qr_png
+    from .reports import _latin
+
+    t = _returnables_t
+    row = (await session.execute(select(t).where(t.c["id"] == rid))).mappings().first()
+    if row is None:
+        raise HTTPException(404, f"returnable {rid} not found")
+    if not site_row_visible(resolve_site_param(user, None), row["Site_ID"]):
+        raise HTTPException(403, "this loan belongs to another site")
+
+    def when(v) -> str:
+        return v.strftime("%Y-%m-%d %H:%M") if isinstance(v, _dt.datetime) else str(v or "-")
+
+    pdf = FPDF(unit="mm", format=(80, 132))
+    pdf.set_auto_page_break(False)
+    pdf.set_margins(5, 5, 5)
+    pdf.add_page()
+    pdf.set_font("helvetica", "B", 12)
+    pdf.cell(70, 6, "TOOL LOAN SLIP", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("helvetica", "", 8)
+    pdf.set_text_color(110, 110, 110)
+    pdf.cell(70, 4, _latin(f"{row['Site_ID'] or ''} store"), align="C",
+             new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(20, 20, 20)
+    pdf.image(_qr_png(f"#{rid}", box=8), x=20, y=17, w=40, h=40)
+    pdf.set_xy(5, 58)
+    pdf.set_font("helvetica", "B", 16)
+    pdf.cell(70, 8, f"#{rid}", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("helvetica", "", 7.5)
+    pdf.cell(70, 4, "Scan this code at the store counter to return", align="C",
+             new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+    qty = f"{row['qty']:g}" if isinstance(row["qty"], (int, float)) else str(row["qty"] or "")
+    lines = [("Item", row["material_name"]),
+             ("Ref", row["Item_Ref"] or row["SAP_Code"]),
+             ("Qty", f"{qty} {row['uom'] or ''}".strip()),
+             ("Borrower", row["borrower_name"]),
+             ("Phone", row["borrower_phone"]),
+             ("Given", when(row["given_time"])),
+             ("DUE BACK", when(row["expected_return_time"]))]
+    for label, val in lines:
+        if not val:
+            continue
+        pdf.set_font("helvetica", "B", 8.5)
+        pdf.cell(20, 5.2, label)
+        pdf.set_font("helvetica", "B" if label == "DUE BACK" else "", 8.5)
+        pdf.multi_cell(50, 5.2, _latin(str(val))[:120], new_x="LMARGIN", new_y="NEXT")
+    if row["status"] == "returned":
+        pdf.ln(1)
+        pdf.set_font("helvetica", "B", 9)
+        pdf.cell(70, 5, _latin(f"RETURNED {when(row['returned_time'])}"), align="C",
+                 new_x="LMARGIN", new_y="NEXT")
+    pdf.set_xy(5, 120)
+    pdf.set_font("helvetica", "", 6.5)
+    pdf.set_text_color(110, 110, 110)
+    pdf.multi_cell(70, 3.2, _latin(f"Printed {when(_local_now())} by {user['username']}. "
+                                   "Keep this slip until the tool is back."), align="C")
+    data = bytes(pdf.output())
+    return StreamingResponse(io.BytesIO(data), media_type="application/pdf",
+                             headers={"Content-Disposition":
+                                      f'inline; filename="loan-slip-{rid}.pdf"'})
+
+
 # ⚠️ "#123" is the only loan-id syntax: bare digits are badge IDs (10-digit
 # Iqama numbers) and SAP codes ("1001"), and guessing between them would return
 # the wrong person's tool.

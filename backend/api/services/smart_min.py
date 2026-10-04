@@ -22,9 +22,11 @@ TWO KINDS OF ITEM, TWO KINDS OF EVIDENCE
                       New rate (`services/prep`). The minimum is the share of
                       that demand the next `cover days` of work will draw:
                       remaining × min(1, pace × cover days / remaining SQM),
-                      where pace is the approved SQM per day over the last
-                      30 days — or the operator's planned rate
-                      (`ss_planned_sqm_per_day`) when set. With no pace at all
+                      where pace is, first found: the SITE's planned rate
+                      (`ss_planned_sqm_per_day@<site>`, set on the Reorder
+                      signals tab — ruling Q6 option B), the global planned
+                      rate (`ss_planned_sqm_per_day`), or the approved SQM per
+                      day over the last 30 days. With no pace at all
                       the minimum is the WHOLE remaining plan, and the row
                       says so (`basis = plan_all`).
 
@@ -235,6 +237,20 @@ async def sqm_pace(session: AsyncSession, site: str, days: float) -> float:
     return done / days if days > 0 else 0.0
 
 
+# One app_settings row per site — `ss_planned_sqm_per_day@<Site_ID>` — so the
+# per-site rate needs no schema change; the bare key stays the global fallback.
+SITE_PACE_PREFIX = "ss_planned_sqm_per_day@"
+
+
+async def site_paces(session: AsyncSession) -> dict[str, float]:
+    """{Site_ID: planned SQM per day} for every site that set its own rate."""
+    rows = (await session.execute(text(
+        "SELECT key, value FROM app_settings WHERE key LIKE :p"),
+        {"p": SITE_PACE_PREFIX + "%"})).all()
+    out = {str(k)[len(SITE_PACE_PREFIX):]: _num(v) for k, v in rows}
+    return {k: v for k, v in out.items() if k and v > 0}
+
+
 # ── the whole table ──────────────────────────────────────────────────────────
 
 async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
@@ -249,6 +265,7 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
     pace_days = await _setting(session, "ss_pace_window_days", DEFAULTS["ss_pace_window_days"])
     planned = _num((await session.execute(text(
         "SELECT value FROM app_settings WHERE key = 'ss_planned_sqm_per_day'"))).scalar())
+    site_plans = await site_paces(session)
     ss_cat = (await quality.controlled_category(session)).strip().lower()
     today = _dt.date.today()
     c_long = (today - _dt.timedelta(days=int(window))).isoformat()
@@ -293,14 +310,26 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
     plan_saps: dict[tuple, dict] = {}
     for s in sites:
         plan = await plan_demand(session, s)
-        pace = planned if planned > 0 else await sqm_pace(session, s, pace_days)
+        # Precedence (ruling Q6, option B): the site's own planned rate, then
+        # the global one, then what the site actually got approved lately.
+        # The approved rate is computed EVERY time — it is the suggestion the
+        # Set-pace dialog offers even when a plan overrides it.
+        approved = await sqm_pace(session, s, pace_days)
+        if site_plans.get(s, 0) > 0:
+            pace, source = site_plans[s], "site_plan"
+        elif planned > 0:
+            pace, source = planned, "planned"
+        else:
+            pace, source = approved, "approved_entries"
         rem = plan["remaining_sqm"]
         if rem > 0 and pace > 0:
             share, basis = min(1.0, pace * cover / rem), "plan_pace"
         else:
             share, basis = 1.0, "plan_all"
         site_info[s] = {"remaining_sqm": round(rem, 2), "sqm_per_day": round(pace, 2),
-                        "pace_source": "planned" if planned > 0 else "approved_entries",
+                        "pace_source": source,
+                        "suggested_sqm_per_day": round(approved, 2),
+                        "site_planned_sqm_per_day": site_plans.get(s) or None,
                         "plan_share": round(share, 4), "basis": basis,
                         "flags": plan["garnet_flags"]}
         for sap, d in plan["by_sap"].items():

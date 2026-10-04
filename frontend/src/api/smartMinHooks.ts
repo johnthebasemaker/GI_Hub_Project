@@ -1,6 +1,6 @@
 // Reorder signals — intelligent minimum stock (Phase 18 Track 4).
 // Its own module: `api/hooks.ts` is on the login critical path (zero growth).
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 
 export type RagStatus = 'red' | 'amber' | 'green' | 'none'
@@ -32,7 +32,11 @@ export interface SmartMinRow {
 export interface SmartMinSite {
   remaining_sqm: number
   sqm_per_day: number
-  pace_source: 'planned' | 'approved_entries'
+  pace_source: 'site_plan' | 'planned' | 'approved_entries'
+  /** the site's approved SQM per day over the pace window — the suggestion */
+  suggested_sqm_per_day: number
+  /** the rate the site set for itself (ruling Q6 option B), if any */
+  site_planned_sqm_per_day: number | null
   plan_share: number
   basis: 'plan_pace' | 'plan_all'
   flags: string[]
@@ -52,5 +56,15 @@ export function useSmartMin(siteId?: string) {
     queryFn: async () =>
       (await api.get<SmartMin>('/stock/smart-min', { params: siteId ? { site_id: siteId } : {} })).data,
     staleTime: 60_000,
+  })
+}
+
+/** Set (sqm_per_day > 0) or clear (null) one site's planned SQM per day. */
+export function useSetSitePace() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { site_id: string; sqm_per_day: number | null }) =>
+      api.put('/stock/smart-min/pace', body).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/stock/smart-min'] }),
   })
 }

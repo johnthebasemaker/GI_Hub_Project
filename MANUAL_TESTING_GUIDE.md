@@ -4509,6 +4509,15 @@ routing-mix p50 0 ms (39 of 60 prompts decided without the model).
 were designed on the dev set and checked against every twin; the holdout was
 read only as an aggregate.
 
+**TC-18A-06 — no holdout id in any log (ruling Q5).** Run `python -m
+tests.ai_eval.runner --json /tmp/s.json` (or open a CI run's *ai-router-eval*
+log and its scorecard artifact). Search both for `ho.`. There are no matches:
+holdout results are counts only. The L2 block prints a `holdout v2` line. It
+reads *"not provided here"* locally, and in CI, once the operator has added
+the `GI_ROUTER_HOLDOUT_V2` secret (guide: `docs/HOLDOUT_V2_GUIDE.md`), shows
+its case counts and a `block_holdout_v2` score. It never shows a prompt or an
+id, and it never fails the build.
+
 ## 18b. Phase 18 Track 3 — the return desk
 
 **Why this exists.** A return used to mean finding a row in a long table and
@@ -4557,7 +4566,14 @@ that one (*403 — this loan belongs to another site*) and returns the others.
 **TC-18B-09 — sound off.** Press 🔊: the next scan flashes but is silent.
 Vibration (on a phone) still works.
 
-Automated: service_tests **18R** (10 checks); E2E `returnables.spec.ts`.
+**TC-18B-10 — the loan slip (ruling Q12).** On an open loan press **🖨 Slip**.
+A new tab shows an 80 mm slip with the loan number, item, borrower, due time
+and a QR code. Print it, then scan the slip's QR at the Return desk (or type
+the `#<id>` printed under it): that loan opens. Recording a new loan shows
+*Loan recorded — #N* with a **Print slip** button. The HOD gets 403 on
+`/entry/returnables/<id>/slip`.
+
+Automated: service_tests **18R** (12 checks); E2E `returnables.spec.ts`.
 
 ## 18c. Phase 18 Track 4 — reorder signals (intelligent minimum stock)
 
@@ -4608,7 +4624,21 @@ through `po_items.Material_Code` and is **not per site**. Garnet assumes every
 m² still to be lined is blasted first. The 30-day share spreads the pace
 evenly over all remaining systems.
 
-Automated: service_tests **18M** (10 checks), E2E `reorder-signals.spec.ts`.
+**TC-18C-09 — the "whole plan" tag (ruling Q6 A).** With no pace at a site,
+every Surface Shield minimum based on the whole plan carries a yellow **whole
+plan** tag. Hovering explains that no pace exists yet and how to set one.
+
+**TC-18C-10 — the site's own pace (ruling Q6 B).** As the CNCEC HOD, press
+**Set pace** in the CNCEC note. The dialog either suggests the site's approved
+m²/day over the last 30 days, or says there is nothing to suggest. Enter 50 →
+**Save**. The note reads *"pace 50 m²/day (this site's planned rate)"* and the
+minimums drop to a 30-day share. A site rate beats the admin's company-wide
+`ss_planned_sqm_per_day`. **Change pace → Clear** goes back to the company-wide
+rate, or else to approved work. As a store keeper there is no button, and
+`PUT /stock/smart-min/pace` → 403. The CNCEC HOD naming another site gets 403,
+and a site with no SQM plan gets 422. Admin → Audit shows `SS_PACE_SET`.
+
+Automated: service_tests **18M** (14 checks), E2E `reorder-signals.spec.ts`.
 
 ## 15. Do's and Don'ts
 

@@ -9,7 +9,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { useQuery } from '@tanstack/react-query'
 import dayjs from 'dayjs'
 import { useCreateReturnable, useReturnables } from '../api/hooks'
-import { resolveReturnScan, useReturnBatch, useReturnOne } from '../api/returnablesHooks'
+import { printLoanSlip, resolveReturnScan, useReturnBatch, useReturnOne } from '../api/returnablesHooks'
 import type { ReturnCondition, ReturnScan } from '../api/returnablesHooks'
 import { useAuth } from '../auth/AuthContext'
 import { api } from '../api/client'
@@ -253,7 +253,7 @@ export default function ReturnablesPage() {
   const submit = async () => {
     const v = await form.validateFields()
     try {
-      await create.mutateAsync({
+      const made = await create.mutateAsync({
         material_name: v.material_name,
         borrower_name: v.borrower_name,
         borrower_phone: v.borrower_phone || undefined,
@@ -273,7 +273,20 @@ export default function ReturnablesPage() {
         item_ref: v.item_ref || undefined,
       })
       scanFeedback('ok')
-      message.success('Loan recorded')
+      message.success({
+        key: 'loan-recorded', duration: 8,
+        content: (
+          <span>
+            Loan recorded{made?.id ? ` — #${made.id}` : ''}
+            {made?.id ? (
+              <Button size="small" type="link" data-testid="loan-slip-after"
+                onClick={() => { message.destroy('loan-recorded'); slip(made.id) }}>
+                🖨 Print slip
+              </Button>
+            ) : null}
+          </span>
+        ),
+      })
       setOpen(false)
       form.resetFields()
     } catch (e) {
@@ -281,6 +294,9 @@ export default function ReturnablesPage() {
       message.error(errMsg(e))
     }
   }
+
+  const slip = (id: unknown) =>
+    printLoanSlip(String(id)).catch((e) => message.error(errMsg(e)))
 
   const returnOne = async (r: Row) => {
     try {
@@ -358,10 +374,17 @@ export default function ReturnablesPage() {
         ),
     },
     {
-      title: 'Action', key: '__a', width: 170,
+      title: 'Action', key: '__a', width: 250,
       render: (_: unknown, r: Row) =>
         r.status === 'borrowed' ? (
           <Space size={4}>
+            {/* ⚠️ a glyph, not PrinterOutlined: a second importer made Rollup
+                split that icon into a shared chunk named in the entry's
+                preload map — +47 B on the sign-in critical path (Phase 18) */}
+            <Tooltip title="Print the borrower's loan slip — its QR returns this loan in one scan">
+              <Button size="small" aria-label={`Print slip #${r.id}`}
+                data-testid={`loan-slip-${r.id}`} onClick={() => slip(r.id)}>🖨 Slip</Button>
+            </Tooltip>
             <Button size="small" type="primary" loading={ret.isPending}
               data-testid={`return-row-${r.id}`} onClick={() => returnOne(r)}>
               Returned OK

@@ -878,6 +878,8 @@ Two smaller changes arrived with it:
 | **Overdue tool loans** are flagged as soon as they are due, not three hours later. | Store Keeper | §4.5.3 |
 | The Hub Assistant refuses more trick questions and answers plain how-to questions faster. | Everyone | §3.12 |
 | The sign-in page loads about 45 KB less. | Everyone | — |
+| **Loan slips.** Print a small slip with a QR code for the borrower; scanning it at the desk finds the loan. | Store Keeper | §4.5.3 |
+| **Your site's SQM pace.** The HOD sets how many m² a day the site plans to line; the page suggests a figure from the site's own approved work. | HOD | below |
 
 ### 3.13.1 Reorder signals — what to order, and why
 
@@ -905,8 +907,20 @@ Open **Stock → Reorder signals**. Each row is one item at one site:
   using the last answer given for that equipment. When no answer has been
   given yet, the higher rate is used. The minimum is the share of that need
   for the next **30 days** of work, at the site's pace in approved m² per day
-  over the last 30 days. **If the site has no pace yet, the minimum is the
-  whole remaining plan**, and a yellow note above the table says so.
+  (see *Your site's pace* below). **If the site has no pace at all, the
+  minimum is the whole remaining plan.** A yellow note above the table says
+  so, and each affected minimum carries a yellow **whole plan** tag. Hover
+  over it for the explanation.
+
+**Your site's pace (HOD).** In the yellow or blue note for your site, press
+**Set pace** (or **Change pace**). The dialog suggests a figure: the m² of
+lining your site had approved per day over the last 30 days. Press **Use it**,
+or type the rate you plan, then **Save**. Surface Shield minimums then cover
+the next 30 days of that work. **Clear** removes your site's rate. The page
+then uses the company-wide rate if an admin set one, or else your approved
+work. Admins can set the pace for any site. Every change is recorded in the
+audit log. The pace is used in this order: your site's own rate, the
+company-wide rate, then the approved-work pace.
 
 Notes above the table tell you what the plan could not count. Examples:
 equipment with no Old/New answer, equipment whose substrate is unknown (no
@@ -914,8 +928,9 @@ Garnet counted), or recipe materials that match no item.
 
 **For admins** (Admin → Console → Settings): `min_stock_cover_days` (default
 30), `min_stock_window_days` (90), `ss_pace_window_days` (30) and
-`ss_planned_sqm_per_day`. Set a planned m² per day to plan Surface Shields by
-your own rate instead of the approved-work pace. Nothing here changes any data.
+`ss_planned_sqm_per_day`. The last one is a **company-wide** planned m² per
+day, used for every site that has not set its own pace. Apart from the pace,
+nothing here changes any data.
 The signals are advice, worked out each time the page is opened.
 
 **Practice:** Stock → Reorder signals shows three Practice items, one in each
@@ -1274,6 +1289,12 @@ The **due-back** buttons (*End of shift*, *Tomorrow 17:00*, *+3 days*,
   them (hover over the time).
 - **Returned OK** on a row returns that loan in good order; **…** opens it in
   the desk so you can record a condition.
+- **🖨 Slip** on a row prints a small **loan slip** for the borrower: the loan
+  number, the item, who has it and when it is due back, with a QR code. The
+  slip is sized for a receipt printer and also prints on A4. When the
+  borrower brings the tool back, scan the slip's QR at the desk to find the
+  loan at once. Right after you record a loan, the *Loan recorded* message
+  also has a **Print slip** button.
 
 > **Fixed in Phase 18:** a loan used to show as **overdue three hours late**.
 > The page compared due times, which are kept in local time, with the server's
