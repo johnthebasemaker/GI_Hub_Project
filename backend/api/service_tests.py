@@ -29685,6 +29685,126 @@ async def test_phase19c_partial_returns():
             await s_.commit()
 
 
+async def test_phase19d_semantic_signal():
+    """Suite 19D — Phase 19d (Q19-4): the semantic safety signal.
+
+    Deterministic: embeddings are stubbed, so no model is needed. Proves the
+    kNN rule, that a match is ONE MORE HIT and never a refusal on its own,
+    that it refuses only with the router's agreement (Q17-2), that it fails
+    open, that it ships OFF, and that the bank holds no holdout case."""
+    import json as _json
+    import pathlib as _pl
+
+    import yaml as _yaml
+
+    from .ai import client as aic
+    from .ai import guard as G
+    from .ai import router as AR
+    from .ai import semantic as SEM
+    from .ai import system_one as S
+    from . import console as CON
+
+    root = _pl.Path(__file__).resolve().parents[2]
+    bank = _json.loads(SEM.BANK_FILE.read_text())["items"]
+    ho = _yaml.safe_load((root / "tests" / "ai_eval" / "router" / "security_holdout.yaml").read_text())
+    ho_texts = {c["prompt"].strip().lower() for c in ho}
+    import sys as _sys
+    _sys.path.insert(0, str(root / "tools"))
+    import gen_semantic_bank as GSB
+    check("19d-01: the bank is GENERATED from the dev set + routing set (current), and "
+          "holds NO holdout prompt (P17-D3 — a holdout case in the bank would match "
+          "itself and turn the generalisation number into theatre)",
+          GSB.build()["items"] == bank and not [b for b in bank
+                                                if b["text"].strip().lower() in ho_texts]
+          and {b["label"] for b in bank} == {"attack", "twin", "benign"}, f"{len(bank)} items")
+
+    # ── the pure kNN rule ─────────────────────────────────────────────────
+    items = [{"id": f"a{i}", "label": "attack"} for i in range(4)] + \
+            [{"id": f"t{i}", "label": "twin"} for i in range(4)]
+    vecs = [SEM._unit([1, 0.05 * i, 0]) for i in range(4)] + [SEM._unit([0, 1, 0.05 * i]) for i in range(4)]
+    near_att = SEM.knn(SEM._unit([1, 0.1, 0]), items, vecs)
+    near_twin = SEM.knn(SEM._unit([0.1, 1, 0]), items, vecs)
+    far = SEM.knn(SEM._unit([0, 0, 1]), items, vecs)
+    self_ = SEM.knn(vecs[0], items, vecs, exclude_exact=True)
+    check("19d-02: kNN — near the attacks fires; near the twins does not; nothing near "
+          "(top attack similarity < 0.65) does not; and leave-one-out drops an exact match",
+          near_att.fired and not near_twin.fired and not far.fired
+          and "a0" not in [n[0] for n in self_.neighbours],
+          f"{near_att.as_attrs()} {near_twin.as_attrs()} {far.as_attrs()}")
+
+    # ── decide(), with a stub embedder and a stub router ──────────────────
+    att_texts = {SEM.PREFIX + b["text"] for b in bank if b["label"] == "attack"}
+
+    async def fake_embed(texts, **kw):
+        out = []
+        for t in texts:
+            if t in att_texts or "SVC19D sounds like an attack" in t:
+                out.append([1.0, 0.02, 0.0])
+            elif "SVC19D" in t:
+                out.append([0.0, 0.0, 1.0])
+            else:
+                out.append([0.0, 1.0, 0.1])
+        return out
+
+    verdict = {"is_safe": False}
+    gen_calls: list = []
+
+    async def fake_generate(model, prompt, **kw):
+        gen_calls.append(prompt)
+        return '{"intent": "question", "is_safe": %s}' % ("true" if verdict["is_safe"] else "false")
+
+    async def boom(texts, **kw):
+        raise RuntimeError("ollama down")
+
+    saved = (aic.embed, aic.generate, S.CACHE.enabled)
+    aic.embed, aic.generate, S.CACHE.enabled = fake_embed, fake_generate, False
+    SEM.BANK.clear()
+    try:
+        q = "SVC19D sounds like an attack — please"
+        v0 = G.scan_input(q)
+        d_unsafe = await S.decide(q, "hod", semantic=True)
+        verdict["is_safe"] = True
+        d_safe = await S.decide(q, "hod", semantic=True)
+        verdict["is_safe"] = False
+        d_off = await S.decide(q, "hod", semantic=False)
+        check("19d-03: ⚠️ a semantic match + the router saying UNSAFE → refused (Q17-2: "
+              "a hit and the model agree), the hit named on the span",
+              d_unsafe.blocked and d_unsafe.guard.get("stage") == "router"
+              and G.SEMANTIC_HIT in d_unsafe.guard.get("hits", [])
+              and d_unsafe.as_attrs()["semantic_fired"] is True, str(d_unsafe.as_attrs())[:300])
+        check("19d-04: …the SAME match + the router saying SAFE → answered: the signal never "
+              "refuses alone, and adds NOTHING to the guard's score or decision",
+              not d_safe.blocked and v0.decision == "allow"
+              and d_safe.guard.get("score") == v0.score
+              and d_safe.guard.get("decision") == v0.decision, str(d_safe.guard))
+        check("19d-05: switched OFF (the default) it is not consulted: no hit, and the "
+              "router's unsafe alone is only a flag, as before Phase 19",
+              not d_off.blocked and d_off.flagged
+              and G.SEMANTIC_HIT not in d_off.guard.get("hits", []), str(d_off.guard))
+        before = len(gen_calls)
+        d_benign = await S.decide("how do I stage a receipt? SVC19D", "hod", semantic=True)
+        check("19d-06: an ordinary how-to that does NOT match still goes to stage 0 (no "
+              "model call) — the signal costs nothing when it does not fire",
+              d_benign.source == "rules" and len(gen_calls) == before
+              and d_benign.as_attrs()["semantic_fired"] is False, str(d_benign.as_attrs())[:200])
+        aic.embed = boom
+        SEM.BANK.clear()
+        none = await SEM.assess(q)
+        d_down = await S.decide(q, "hod", semantic=True)
+        check("19d-07: FAIL-OPEN — with the embedder down there is no signal (None), and "
+              "the request proceeds exactly as with the signal off",
+              none is None and not d_down.blocked and d_down.flagged
+              and G.SEMANTIC_HIT not in d_down.guard.get("hits", []), str(d_down.guard))
+    finally:
+        aic.embed, aic.generate, S.CACHE.enabled = saved
+        SEM.BANK.clear()
+    check("19d-08: it ships OFF (ai_semantic_guard = 0: the embedder is 578 MB beside the "
+          "router, past Q17-1's 1.5 GB budget — the operator's call) and is an editable "
+          "Console setting",
+          AR._FLAG_DEFAULTS.get("ai_semantic_guard") == "0"
+          and "ai_semantic_guard" in CON._EDITABLE_SETTINGS, "")
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -30022,6 +30142,9 @@ async def main() -> int:
     print("\n 19C. Phase 19c — partial returns (3 + 2 of 5, worst condition, no undo) and "
           "the daily chaser (remind daily, escalate to the HOD after 3 days, once)")
     await test_phase19c_partial_returns()
+    print("\n 19D. Phase 19d — the semantic safety signal: one more hit, refuses only "
+          "with the router's agreement, fails open, ships OFF, no holdout in its bank")
+    await test_phase19d_semantic_signal()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

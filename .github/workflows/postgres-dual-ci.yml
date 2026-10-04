@@ -345,6 +345,10 @@ jobs:
       OLLAMA_VERSION: '0.20.4'
       GI_AI_ROUTER_MODEL: 'qwen2.5:1.5b'
       ROUTER_DIGEST: '65ec06548149b04c096a120e4a6da9d4017ea809c91734ea5631e89f96ddc57b'
+      # Phase 19d — the semantic safety signal's embedder. REPORTED only (the
+      # "semantic_shadow" line), so a moved tag warns instead of failing.
+      GI_AI_EMBED_MODEL: 'nomic-embed-text'
+      EMBED_DIGEST: '0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f'
       OLLAMA_MODELS: ${{ github.workspace }}/.ollama-models
       GI_DOTENV: '0'
       # CPU, not Metal: the 3 s production request budget is a latency
@@ -374,7 +378,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.ollama-models
-          key: ollama-${{ env.GI_AI_ROUTER_MODEL }}-${{ env.ROUTER_DIGEST }}
+          key: ollama-${{ env.GI_AI_ROUTER_MODEL }}-${{ env.ROUTER_DIGEST }}-${{ env.EMBED_DIGEST }}
 
       - name: Start Ollama, pull the router, verify its digest
         run: |
@@ -386,6 +390,14 @@ jobs:
             echo "::error title=router model::$GI_AI_ROUTER_MODEL resolved to digest '$got', expected $ROUTER_DIGEST — the registry tag moved. Re-run the spike before trusting any number from it."
             exit 1
           fi
+          ollama pull "$GI_AI_EMBED_MODEL" || echo "::warning title=embed model::could not pull $GI_AI_EMBED_MODEL — the semantic shadow will say skipped"
+          got=$(curl -s http://127.0.0.1:11434/api/tags | python -c "import sys,json; m=[x for x in json.load(sys.stdin)['models'] if x['name'].split(':')[0]=='$GI_AI_EMBED_MODEL']; print(m[0]['digest'] if m else '')")
+          if [ "$got" != "$EMBED_DIGEST" ]; then
+            echo "::warning title=embed model::$GI_AI_EMBED_MODEL is '$got', expected $EMBED_DIGEST — the semantic shadow numbers are not comparable with earlier runs"
+          fi
+
+      - name: Semantic bank is current (generated from the dev + routing sets)
+        run: python tools/gen_semantic_bank.py --check
 
       - name: Router eval — L3 (the model) + L1/L2 again
         env:

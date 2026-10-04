@@ -36,6 +36,12 @@ MODEL_VISION = os.environ.get("GI_AI_VISION_MODEL", "qwen2.5vl:7b")
 # passes (0.95) at 1.35 GB resident. Switch with this variable or the
 # `ai_router_enabled` setting; nothing else depends on which model it is.
 MODEL_ROUTER = os.environ.get("GI_AI_ROUTER_MODEL", "qwen2.5:1.5b")
+# Phase 19d — the semantic safety signal (ai/semantic.py). An EMBEDDING model,
+# not a generation model, so it never takes the router's prompt cache — but it
+# is 578 MB resident beside the router's 1.35 GB, past Q17-1's 1.5 GB router
+# budget. That is why `ai_semantic_guard` ships OFF (ruling pending, Q19-4).
+MODEL_EMBED = os.environ.get("GI_AI_EMBED_MODEL", "nomic-embed-text")
+EMBED_TIMEOUT_S = float(os.environ.get("GI_AI_EMBED_TIMEOUT_S", "2.0"))
 
 HEALTH_TIMEOUT_S = 2.0
 GEN_TIMEOUT_S = float(os.environ.get("GI_AI_TIMEOUT_S", "300"))  # 7B cold start
@@ -250,6 +256,22 @@ async def health() -> bool:
             return r.status_code == 200
     except Exception:
         return False
+
+
+async def embed(texts: list[str], *, model: Optional[str] = None,
+                timeout_s: Optional[float] = None) -> list[list[float]]:
+    """Embedding vectors for `texts`, one per text, via Ollama /api/embed.
+
+    Raises on any failure. The one caller (ai/semantic.py) turns every failure
+    into "no signal", so the request goes on exactly as it would without it."""
+    async with httpx.AsyncClient(timeout=timeout_s or EMBED_TIMEOUT_S) as c:
+        r = await c.post(f"{OLLAMA_HOST}/api/embed",
+                         json={"model": model or MODEL_EMBED, "input": texts})
+        r.raise_for_status()
+        out = r.json().get("embeddings") or []
+    if len(out) != len(texts):
+        raise RuntimeError(f"embed: {len(out)} vectors for {len(texts)} texts")
+    return out
 
 
 async def list_models() -> list[str]:

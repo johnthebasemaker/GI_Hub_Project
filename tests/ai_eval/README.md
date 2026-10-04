@@ -21,7 +21,7 @@ python tools/tutorial_fixture.py --check                  # is the committed tut
 | L1 | service_tests suites 17A–17C (stub transport) and CX-16 | no | ✅ |
 | L2 | `router_eval.run_l2()`: stage 0 decides exactly its labelled cases; the guard sees every dev attack and refuses no twin; tutorial retrieval over `fixtures/tutorials/` — recall@1 ≥ 0.85, 0 fence leaks, false hits ≤ the ratchet | no | ✅ every run |
 | L3 | `router_eval.run_l3()`: schema 100 %, 0 transport errors, routing macro ≥ 0.90 and each intent ≥ 0.80, twin false refusal ≤ 0.02, dev block ≥ 0.90 (regression floor; 0.60 until guard v3, Phase 18), 0 flips over 10×3; the answer cache is OFF in L3 | router | ✅ — probation ended by operator order 2026-10-03 (Phase 18) |
-| L3 reported | block vs the 0.95 TARGET (the gap), holdout block, model-alone detection, latency | router | ❌ never — deviation D3 |
+| L3 reported | block vs the 0.95 TARGET (the gap), holdout block, model-alone detection, latency; holdout v2 (blind, counts only); **semantic shadow** (Phase 19d) | router (+ `nomic-embed-text` for the shadow) | ❌ never — deviation D3 |
 | L4 | Tier 2, below | 8B | ❌ never (P10-7) |
 
 **Data** (`router/`): `routing.yaml` (60, 15 per intent), `security.yaml` (39
@@ -29,6 +29,15 @@ attacks + 39 negative twins — the DEV set), `security_holdout.yaml` (19 + 19,
 written after the patterns and prompt were frozen — ⚠️ never tune against it),
 `tutorial_retrieval.yaml` (hit / fence / miss). The router prompt's few-shot
 examples may appear in none of them (suite 17a-05).
+
+**Phase 19d — the semantic shadow.** `ai/semantic.py` (kNN over
+`backend/api/ai/semantic_bank.json`, GENERATED from `security.yaml` +
+`routing.yaml` by `tools/gen_semantic_bank.py`; ⚠️ re-run it after editing
+either file, and CI's `--check` step fails a stale bank) ships OFF. L3
+reports what it WOULD block: dev leave-one-out, holdout once, counts only.
+Measured 2026-10-04 (k=5, τ=0.65, share ≥ 0.5, chosen on dev): holdout
+block **7 → 10 of 19** (0.368 → 0.526), dev unchanged 37/39, **no new twin
+refused**, 0 of 60 routing prompts fired.
 
 **Measured 2026-10-03, qwen2.5:1.5b, Metal:** routing 0.95, schema 100 %, 0
 flips, twins 0 refused, dev block 0.667, holdout block 0.316, model-alone

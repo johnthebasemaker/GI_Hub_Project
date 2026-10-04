@@ -378,6 +378,7 @@ deviations: `PROPOSED_PHASE17_PLAN.md` §9.
 | **P18-prefix** | Add a second system prompt to the router model. Ollama keeps ONE prompt cache (`NUM_PARALLEL=1`): a second prompt evicts the router's prefix (46 → 510 ms on Metal, seconds on CPU — past the 3 s budget). `warm()` primes the real prompt for the same reason. |
 | **P18-verifier** | Re-try a "second look" by the 1.5B model without re-reading §2.3 — three designs were measured and rejected (cache thrash; a constant answer; 16 → 3 detections on one sentence of wording). |
 | **P18-blind** | Read, print, request or reconstruct the operator's blind holdout — the `GI_ROUTER_HOLDOUT_V2` secret or the gitignored `tests/ai_eval/router/security_holdout_v2.yaml` — or print ANY holdout case id (v1 or v2) in a log or scorecard (ruling Q5; `router_eval._withheld`, suite 18a-11..15). v2 is reported, never gated: tune on a NEW dev case for the category the operator names, never on a v2 result. Guide: `docs/HOLDOUT_V2_GUIDE.md`. |
+| **P19-semantic** | Let the semantic signal (`ai/semantic.py`) refuse or warn on its own, add a holdout case to `semantic_bank.json`, edit that file by hand, or tune `K`/`TAU`/`SHARE` on a holdout number. It is ONE MORE HIT: it refuses only with the router's `is_safe:false` (Q17-2), fails open, and ships OFF (`ai_semantic_guard` = 0: 578 MB beside the router is past Q17-1's budget). Suite 19D. |
 | **P18-pr-ci** | Put a path filter back on the `pull_request` trigger of `postgres-dual-ci.yml`. Its three jobs are REQUIRED checks on `main`; a filtered-out PR waits for them for ever (ruling Q1). |
 ⚠️ **A video request is matched on its topic** (`system_one.video_topic`) —
 "video", "tutorial" and "watch" are the training-gate beat's own words.
@@ -453,6 +454,8 @@ npm run test:nav --prefix frontend
 # retrieval) — deterministic, gating.
 .venv/bin/python -m tests.ai_eval.runner
 .venv/bin/python tools/gen_eval_grid.py --check
+# Phase 19d: the semantic bank is GENERATED from the router's dev + routing sets
+.venv/bin/python tools/gen_semantic_bank.py --check
 ```
 ```bash
 # Router L3 — the System One model (qwen2.5:1.5b). The CI job ai-router-eval

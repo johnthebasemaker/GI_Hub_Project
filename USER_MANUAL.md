@@ -869,6 +869,19 @@ Two smaller changes arrived with it:
 | The **Head of Qualities** no longer sees **Reports** or the **Records** ledgers (Receipts, Consumption, Returns, Lots, Purchase Requests) in the menu. They never worked for this role — every one showed an error — and the role's pages are Quality Oversight and Lots & Expiry. | Head of Qualities | §2.2, §2.3.5 |
 | The **Watch it** button appears less often by mistake. A question that merely says "video" or "tutorial", or shares only a word like "many" or "into" with a video, no longer gets a link to the wrong moment. | Everyone | §24.2.3 |
 
+### 3.12.1 The semantic safety signal (admins, Phase 19)
+
+**Admin → Console → Settings → Assistant — semantic safety signal** is a
+switch, **off** by default. When it is on, the assistant also compares each
+question with known trick questions **by meaning**, not only by wording, so a
+reworded attempt to misuse it is recognised more often. It never refuses a
+question on its own: a question is refused only when this signal **and** the
+assistant's router both judge it unsafe, so normal questions are answered as
+before. It needs the `nomic-embed-text` model in Ollama, about 578 MB of extra
+memory beside the router. That is above the router's agreed 1.5 GB budget,
+which is why it ships switched off. In testing it caught 3 more of 19 unseen
+trick questions (10 instead of 7) and refused no extra normal ones.
+
 ## 3.13 What changed in Phase 18 (October 2026)
 
 | Change | Who | Read |

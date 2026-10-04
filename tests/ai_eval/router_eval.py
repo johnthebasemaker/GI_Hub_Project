@@ -444,6 +444,8 @@ async def _run_l3_body(aic, S, routing, dev, holdout, v2, t_start, over_budget) 
             f"twin false refusal {rate([c for c in v2 if c['safe']], lambda r: r['blocked']):.3f} "
             f"— blind, ids withheld" + ("" if v2_scored == len(v2) else
                                         f" (PARTLY scored: {v2_scored}/{len(v2)}, out of time)"))
+    if not over_budget():
+        reported["semantic_shadow"] = await _semantic_shadow(S, routing, dev, holdout, v2, rows)
     return {"ok": all(v[0] for v in gates.values()), "skipped": False,
             "model": aic.MODEL_ROUTER, "prompt_hash": S.prompt_hash(),
             "gates": {k: {"ok": v[0], "detail": v[1]} for k, v in gates.items()},
@@ -457,6 +459,57 @@ async def _run_l3_body(aic, S, routing, dev, holdout, v2, t_start, over_budget) 
                                         if c["id"] in rows and rows[c["id"]]["blocked"]], secret),
             "errors": errors,
             "rows": {k: v for k, v in rows.items() if k not in secret}}
+
+
+async def _semantic_shadow(S, routing, dev, holdout, v2, rows) -> str:
+    """Phase 19d — what the router WOULD block with `ai_semantic_guard` on.
+
+    REPORTED, NEVER GATED, and it moves no gated number: the gated rows above
+    ran with the signal OFF, as production ships. For every security case
+    the semantic verdict is computed (dev LEAVE-ONE-OUT: a dev case is in the
+    bank and must not vote for itself), and a case counts as blocked when it
+    already was, or when the signal fired AND the model calls it unsafe (the
+    Q17-2 rule a hit enables). A case stage 0 decided never asked the model,
+    so the model is asked here. Counts only (ruling Q5)."""
+    from backend.api.ai import semantic as SEM
+    try:
+        await SEM.BANK.ensure()
+    except Exception as e:  # noqa: BLE001
+        return (f"skipped — the embedding model is unavailable ({type(e).__name__}). "
+                "Reported only, not a gate.")
+
+    async def would_block(c) -> Optional[bool]:
+        r = rows.get(c["id"])
+        if r is None:
+            return None
+        if r["blocked"]:
+            return True
+        sv = await SEM.assess(c["prompt"], exclude_exact=True)
+        if sv is None or not sv.fired:
+            return False
+        unsafe = r["is_safe"] if r["source"] == "model" else (
+            await S.classify_model(c["prompt"])).is_safe
+        return unsafe is False
+
+    async def rate_of(cases) -> tuple[int, int]:
+        got = [await would_block(c) for c in cases]
+        got = [g for g in got if g is not None]
+        return sum(got), len(got)
+
+    fires = 0
+    for c in routing:
+        sv = await SEM.assess(c["prompt"], exclude_exact=True)
+        fires += bool(sv and sv.fired)
+    parts = []
+    for name, cases in (("dev", dev), ("holdout", holdout), ("holdout v2", v2)):
+        if not cases:
+            continue
+        b, n = await rate_of([c for c in cases if not c["safe"]])
+        tb, tn = await rate_of([c for c in cases if c["safe"]])
+        parts.append(f"{name} block {b}/{n}, twins refused {tb}/{tn}")
+    return (" · ".join(parts)
+            + f" · fires on {fires}/{len(routing)} ordinary routing prompts "
+              f"(k={SEM.K}, τ={SEM.TAU}, share≥{SEM.SHARE}; reported only, OFF in production)")
 
 
 def run_l3(require_model: bool) -> dict:

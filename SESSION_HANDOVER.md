@@ -1,4 +1,4 @@
-# SESSION HANDOVER — read this first (updated 2026-10-04, Phase 19a–c shipping)
+# SESSION HANDOVER — read this first (updated 2026-10-04, Phase 19 complete)
 
 > This file is the orientation for a fresh session. It replaces every earlier
 > version (they are in git history). After it, read
@@ -11,12 +11,11 @@
 
 ## 0. State in ten lines
 
-1. **Phase 18 is on `main`** (PR #109). **Phase 19a–c ships in the PR for
-   `feat/phase19-reorder-returns`**: HOD-accepted per-site minimums (19a),
-   on-order per site with global POs subtracted from no site (19b), and
-   partial returns with a daily chaser and HOD escalation (19c). Rulings
-   **Q19-1..4** are in `PROJECT_HANDOVER.md` → *Phase 19*. 19d (the semantic
-   safety signal) follows on its own branch.
+1. **Phases 18 and 19a–c are on `main`** (PRs #109, #110). **19d** (the
+   semantic safety signal) ships in the PR for `feat/phase19d-semantic-guard`.
+   It is OFF by default: switching it on needs the operator to raise Q17-1's
+   router memory budget (+578 MB). Rulings **Q19-1..4** are in
+   `PROJECT_HANDOVER.md` → *Phase 19*.
 2. ⚠️ **Standing order (CLAUDE.md §5):** every change goes branch → PR →
    green checks → auto-merge → `git pull` on local `main`, without waiting to
    be asked. Rollback is a revert PR, never a history rewrite.
@@ -24,7 +23,7 @@
    `returnable_returns`). **Live must be migrated** (backup, then
    `cd backend && ../.venv/bin/alembic upgrade head`), or the Live API
    refuses to boot. Both Practice DBs are migrated, with overlay v6 applied.
-4. **All gates green** (2026-10-04, 19a–c): service_tests **2,862 / 0** · E2E
+4. **All gates green** (2026-10-04, through 19d): service_tests **2,870 / 0** · E2E
    **187** · AI Tier 1 147/147 · Router L2 pass · grid 72 · parity:sme 1,334
    · ui-math 33/0 · nav 52 · bug_check 599/0/0 · build ✅ (+0 B) · single head
    `c4e9b2a7f613`.
@@ -309,7 +308,7 @@ cd tests/e2e && npm test
 | Gate | Baseline (`main` after Phase 18, 2026-10-04) |
 |---|---|
 | preflight | clean |
-| service_tests | **2,862 / 0** (its own `gihub_svctest`) |
+| service_tests | **2,870 / 0** (its own `gihub_svctest`) |
 | AI eval | Tier 1 147/147, 0 leaks; recall 1.000, precision 0.994; Router L2 pass (guard refuses 36/39 dev attacks, 0 of 63 + 19 twins) |
 | Router L3 | all gates ✅ (schema 1.000, routing 0.950, 0 flips, dev block 0.949 ≥ **0.90**, twin false refusal 0.012 ≤ 0.02); ~1 min |
 | grid | 72 cases, current |
@@ -387,15 +386,22 @@ reads the Lot Register workbook.)
 
 ## 8. Open items
 
-**Phase 18 — after the rulings:**
+**Open after Phase 19:**
 
-- **A. The operator writes holdout v2** into the `GI_ROUTER_HOLDOUT_V2` secret
-  (`docs/HOLDOUT_V2_GUIDE.md`). Never read it (P18-blind).
-- **B. Phase 19** (`PROPOSED_PHASE19_PLAN.md`): HOD-accepted per-site minimums
-  (Q18-10), per-site on-order (Q18-9), partial returns with reminders
-  (Q18-11). Each lists its ⚖️ open points.
-- **C. `lining_analytics.py`** compares ledger packs with recipe KG and keys by
-  Material_Code alone (rule 1). Found while mapping Track 4, not fixed.
+- **A. ⚖️ Semantic signal on or off** (Q19-4): switching `ai_semantic_guard`
+  on needs Q17-1's router budget raised from 1.5 GB to about 2 GB (the
+  embedder's 578 MB). The shadow says holdout 7 → 10 of 19 with no new twin
+  refused.
+- **B. The operator writes holdout v2** into the `GI_ROUTER_HOLDOUT_V2` secret
+  (`docs/HOLDOUT_V2_GUIDE.md`). Never read it (P18-blind). The semantic
+  shadow scores it too.
+- **C. Live migration `c4e9b2a7f613`** (19c), if not yet done: backup, then
+  `alembic upgrade head`.
+- **D. `lining_analytics.py`** compares ledger packs with recipe KG and keys by
+  Material_Code alone (rule 1). Found in Phase 18, not fixed.
+- **E. Practice figures drift**: the reorder examples are dated from the build,
+  so their minimums slip a little each day until `tools/practice_db.py build`
+  (which wipes trainee data, so it is the operator's call).
 
 **Carried over from Phase 17:**
 
@@ -450,12 +456,12 @@ reads the Lot Register workbook.)
 
 ## 10. Start here next session
 
-1. `git pull` on `main`, then read `PROPOSED_PHASE19_PLAN.md` with the operator
-   and get the ⚖️ points ruled.
-2. Branch (`feat/phase19-…`). `main` is protected, so only a PR with three green
-   checks merges.
-3. Or pick the morning report's §4 ideas (4.1, the embedding safety signal, is
-   the one that can be scored against the operator's blind holdout v2).
+1. `git pull` on `main`. Phase 19 is complete. Ask the operator about §8 A
+   (the semantic signal's memory budget) and whether holdout v2 is in place.
+2. Remaining idea from the Phase 18 morning report: **§4.3 one scan service +
+   `GI1|…` sticker payloads**. Also the `stock_balance` table, which would make
+   the reorder signals O(items).
+3. Every change: branch → PR → auto-merge → pull (CLAUDE.md §5).
 
 - **Track C — Tier 1 security hardening** (`SECURITY_SUGGESTIONS.md`).
 - **Track D — Hetzner deployment** when the operator lifts the pause.

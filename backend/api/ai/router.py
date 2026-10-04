@@ -61,7 +61,11 @@ _FLAG_DEFAULTS = {"ai_enabled": "1", "ai_assistant_enabled": "1",
                   "ocr_purchase_scans": "1",
                   # Phase 17 — the System One router's kill switch. Off means
                   # every question takes the pre-Phase-17 path, exactly.
-                  "ai_router_enabled": "1"}
+                  "ai_router_enabled": "1",
+                  # Phase 19d — the semantic safety signal (ai/semantic.py).
+                  # OFF by default: the embedder is 578 MB resident beside the
+                  # router, past Q17-1's 1.5 GB budget — the operator's call.
+                  "ai_semantic_guard": "0"}
 
 
 async def _flags(session: AsyncSession) -> dict[str, bool]:
@@ -156,7 +160,8 @@ async def assistant(body: AskIn = Body(...),
                                role=role, username=username,
                                site_id=site_id) as rspan:
                 decision = await system_one.decide(
-                    body.question, role, enabled=flags["ai_router_enabled"])
+                    body.question, role, enabled=flags["ai_router_enabled"],
+                    semantic=flags["ai_semantic_guard"])
                 lane, nav = system_one.lane_for(decision, user, body.question)
                 # A refusal by the deterministic guard at stage 0 keeps TODAY's
                 # path: manual_qa refuses it itself, with its own spans and its

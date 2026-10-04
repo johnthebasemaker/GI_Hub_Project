@@ -143,7 +143,9 @@ class Decision:
                 "error": self.error or None, "prompt_hash": prompt_hash(),
                 "nav": (self.nav or {}).get("path"),
                 "guard_decision": self.guard.get("decision"),
-                "guard_hits": self.guard.get("hits")}
+                "guard_hits": self.guard.get("hits"),
+                "semantic_fired": self.guard.get("semantic_fired"),
+                "semantic_nn": self.guard.get("semantic_nn")}
 
 
 def _validate(text: str) -> Optional[tuple[str, bool]]:
@@ -472,28 +474,43 @@ async def classify_model(question: str) -> Decision:
     return d
 
 
-async def decide(question: str, role: str, *, enabled: bool = True) -> Decision:
-    """Stage 0, then stage 1 if needed, then the guard's combination rule."""
+async def decide(question: str, role: str, *, enabled: bool = True,
+                 semantic: bool = False) -> Decision:
+    """Stage 0, then stage 1 if needed, then the guard's combination rule.
+
+    `semantic` (Phase 19d, setting `ai_semantic_guard`, OFF by default): ask
+    ai/semantic.py whether the question sounds like the attack bank. A match
+    is one more guard HIT (never a refusal on its own), and it sends the
+    question past stage 0 to the model, as a warn does."""
     v = guard.scan_input(question or "")
     if v.refused:
         return Decision(source="rules", blocked=True, reason=v.reason,
                         guard=v.as_attrs())
     if not enabled:
         return Decision(source="fallback", error="disabled", guard=v.as_attrs())
-    # A question that already WARNS goes to the model even when the wording
-    # names a page: a warn plus the model's `is_safe:false` is a refusal, and
-    # stage 0 deciding first would skip the one check that could make it one.
-    if v.decision == "allow":
+    sem_attrs: dict = {}
+    if semantic:
+        from . import semantic as _sem
+        sv = await _sem.assess(question)
+        if sv is not None:
+            sem_attrs = sv.as_attrs()
+            if sv.fired:
+                v = guard.with_semantic_signal(v)
+    # A question that already WARNS (or sounds like an attack) goes to the
+    # model even when the wording names a page: a warn plus the model's
+    # `is_safe:false` is a refusal, and stage 0 deciding first would skip the
+    # one check that could make it one.
+    if v.decision == "allow" and guard.SEMANTIC_HIT not in v.hits:
         d = classify_rules(question, role)
         if d is not None:
-            d.guard = v.as_attrs()
+            d.guard = {**v.as_attrs(), **sem_attrs}
             return d
     d = await classify_model(question)
     if d.source != "model":
-        d.guard = v.as_attrs()
+        d.guard = {**v.as_attrs(), **sem_attrs}
         return d
     combined = guard.with_router_signal(v, is_safe=d.is_safe, intent=d.intent)
-    d.guard = combined.as_attrs()
+    d.guard = {**combined.as_attrs(), **sem_attrs}
     if combined.refused:
         d.blocked, d.reason = True, combined.reason
     elif d.is_safe is False:
