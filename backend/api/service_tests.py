@@ -29313,6 +29313,158 @@ async def test_phase18m_smart_min():
         await cleanup()
 
 
+async def test_phase19a_min_accept():
+    """Suite 19A — Phase 19a (ruling Q19-1): the HOD accepts recommended
+    minimums per site.
+
+    An accepted minimum (inventory_site_overrides) beats the item's global
+    Minimum_Qty and the recommendation, everywhere SQL_SITE_STOCK is read. It
+    is flagged "changed" when the fresh recommendation moves more than ±20 %
+    from it, never expires, and only the HOD (admin admitted) may accept.
+    Synthetic site SVC19A; cleaned up."""
+    import datetime as _dtm
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from .services import smart_min as SM
+    from .stock import SQL_SITE_STOCK, SQL_SITE_STOCK_PARITY
+
+    today = _dtm.date.today()
+    d = lambda n: (today - _dtm.timedelta(days=n)).isoformat()    # noqa: E731
+    SITE = "SVC19A"
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+
+    async def cleanup():
+        for sql in ("DELETE FROM inventory_site_overrides WHERE \"SAP_Code\" LIKE 'SVC19A%'",
+                    'DELETE FROM consumption WHERE "SAP_Code" LIKE \'SVC19A%\'',
+                    'DELETE FROM receipts WHERE "SAP_Code" LIKE \'SVC19A%\'',
+                    'DELETE FROM inventory WHERE "SAP_Code" LIKE \'SVC19A%\''):
+            await ex(sql)
+
+    def tok(user, role, site):
+        return {"Authorization": f"Bearer {_auth._make_token(user, role, site, _auth.ACCESS_TTL)}"}
+
+    await cleanup()
+    try:
+        # two general items used 1/day for 30 days → recommended 30 each
+        await ex('INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+                 '"Category", "UOM", "Site_ID", "Minimum_Qty") VALUES '
+                 "('SVC19A-GEN', 'MAT-SVC19A-GEN', 'SVC19A general', 'R/L Consumables', 'EA', :s, 0),"
+                 "('SVC19A-MAN', 'MAT-SVC19A-MAN', 'SVC19A manual', 'R/L Consumables', 'EA', :s, 50),"
+                 "('SVC19A-CN', 'MAT-SVC19A-CN', 'SVC19A cncec', 'R/L Consumables', 'EA', 'CNCEC', 0)", s=SITE)
+        for sap, site in (("SVC19A-GEN", SITE), ("SVC19A-MAN", SITE), ("SVC19A-CN", "CNCEC")):
+            await ex('INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES (:d, :p, 100, :s)',
+                     d=d(40), p=sap, s=site)
+            await ex('INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES (:d, :p, 30, :s)',
+                     d=d(5), p=sap, s=site)
+        async with SessionLocal() as s_:
+            inv_before = (await s_.execute(_t(
+                'SELECT md5(string_agg("SAP_Code" || \':\' || COALESCE("Minimum_Qty", 0)::text, \',\' '
+                'ORDER BY "SAP_Code")) FROM inventory'))).scalar()
+        HA = tok("admin", "admin", None)
+        HH = tok("hod", "hod", "CNCEC")
+        HS = tok("worker", "store_keeper", "CNCEC")
+        HL = tok("svc19a_log", "logistics", None)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            a1 = await ac.post("/stock/smart-min/accept", headers=HA, json={"items": [
+                {"site_id": SITE, "sap_code": "SVC19A-GEN", "minimum_qty": 45},
+                {"site_id": SITE, "sap_code": "SVC19A-MAN", "minimum_qty": 20}]})
+            out = (await ac.get("/stock/smart-min", headers=HA, params={"site_id": SITE})).json()
+            by = {r["SAP_Code"]: r for r in out.get("items", [])}
+            g, m = by.get("SVC19A-GEN", {}), by.get("SVC19A-MAN", {})
+            check("19a-01: an ACCEPTED minimum is the site's minimum — 45 against a "
+                  "recommendation of 30 (source accepted, who and when kept; stock 70 is "
+                  "green against 45), and the 33 % move is flagged CHANGED (band ±20 %)",
+                  a1.status_code == 200 and g.get("Effective_Min") == 45
+                  and g.get("Min_Source") == "accepted" and g.get("Accepted_By") == "admin"
+                  and g.get("Recommended_Min") == 30 and g.get("Changed") == 0.333
+                  and g.get("Status") == "green", f"{a1.status_code} {str(g)[:300]}")
+            check("19a-02: …and it beats the item's GLOBAL manual minimum (50 → the "
+                  "site's accepted 20)",
+                  m.get("Effective_Min") == 20 and m.get("Min_Source") == "accepted"
+                  and m.get("Manual_Min") == 50, str(m)[:300])
+            async with SessionLocal() as s_:
+                live = (await s_.execute(_t(
+                    f'SELECT "Minimum_Qty" FROM ({SQL_SITE_STOCK}) s WHERE "SAP_Code" = '
+                    "'SVC19A-MAN' AND \"Site_ID\" = :s"), {"s": SITE})).scalar()
+                par = (await s_.execute(_t(
+                    f'SELECT "Minimum_Qty" FROM ({SQL_SITE_STOCK_PARITY}) s WHERE "SAP_Code" = '
+                    "'SVC19A-MAN' AND \"Site_ID\" = :s"), {"s": SITE})).scalar()
+            check("19a-03: SQL_SITE_STOCK carries the site's accepted minimum (20) to every "
+                  "consumer, while the parity twin keeps the frozen view's shape (50)",
+                  live == 20 and par == 50, f"live={live} parity={par}")
+            await ac.post("/stock/smart-min/accept", headers=HA, json={"items": [
+                {"site_id": SITE, "sap_code": "SVC19A-GEN", "minimum_qty": 33}]})
+            g2 = next(r for r in (await ac.get("/stock/smart-min", headers=HA,
+                      params={"site_id": SITE})).json()["items"] if r["SAP_Code"] == "SVC19A-GEN")
+            await ac.post("/stock/smart-min/accept", headers=HA, json={"items": [
+                {"site_id": SITE, "sap_code": "SVC19A-GEN", "minimum_qty": 0}]})
+            g3 = next(r for r in (await ac.get("/stock/smart-min", headers=HA,
+                      params={"site_id": SITE})).json()["items"] if r["SAP_Code"] == "SVC19A-GEN")
+            async with SessionLocal() as s_:
+                n_rows = (await s_.execute(_t(
+                    "SELECT count(*) FROM inventory_site_overrides WHERE \"SAP_Code\" = 'SVC19A-GEN'"))).scalar()
+            check("19a-04: accepting again REPLACES (one row per item and site): 33 is within "
+                  "±20 % of 30 → not changed; an accepted 0 ('no minimum here') is changed by "
+                  "any recommendation",
+                  g2["Effective_Min"] == 33 and g2["Changed"] is None
+                  and g3["Effective_Min"] == 0 and g3["Changed"] == 1.0 and n_rows == 1,
+                  f"{g2['Changed']} {g3['Changed']} rows={n_rows}")
+            r_sk = await ac.post("/stock/smart-min/accept", headers=HS, json={"items": [
+                {"sap_code": "SVC19A-CN", "minimum_qty": 5}]})
+            r_lg = await ac.post("/stock/smart-min/accept", headers=HL, json={"items": [
+                {"site_id": "CNCEC", "sap_code": "SVC19A-CN", "minimum_qty": 5}]})
+            r_fh = await ac.post("/stock/smart-min/accept", headers=HH, json={"items": [
+                {"site_id": SITE, "sap_code": "SVC19A-GEN", "minimum_qty": 5}]})
+            r_uk = await ac.post("/stock/smart-min/accept", headers=HH, json={"items": [
+                {"sap_code": "SVC19A-CN", "minimum_qty": 5},
+                {"sap_code": "SVC19A-NO-SUCH", "minimum_qty": 5}]})
+            async with SessionLocal() as s_:
+                cn_rows = (await s_.execute(_t(
+                    "SELECT count(*) FROM inventory_site_overrides WHERE \"SAP_Code\" = 'SVC19A-CN'"))).scalar()
+            check("19a-05: ⚠️ ruling Q19-1 — only the HOD accepts: a store keeper 403, "
+                  "LOGISTICS 403 (it reads, it does not accept), a CNCEC HOD naming another "
+                  "site 403, and one unknown SAP rejects the WHOLE submission (422, nothing "
+                  "written)",
+                  (r_sk.status_code, r_lg.status_code, r_fh.status_code, r_uk.status_code)
+                  == (403, 403, 403, 422) and cn_rows == 0,
+                  f"{r_sk.status_code} {r_lg.status_code} {r_fh.status_code} {r_uk.status_code} rows={cn_rows}")
+            r_h = await ac.post("/stock/smart-min/accept", headers=HH, json={"items": [
+                {"sap_code": "SVC19A-CN", "minimum_qty": 12}]})
+            lg_view = (await ac.get("/stock/smart-min", headers=HL,
+                                    params={"site_id": "CNCEC"})).json()
+            cn = next((r for r in lg_view.get("items", []) if r["SAP_Code"] == "SVC19A-CN"), {})
+        async with SessionLocal() as s_:
+            ov = (await s_.execute(_t(
+                "SELECT \"Site_ID\", \"Minimum_Qty\", updated_by FROM inventory_site_overrides "
+                "WHERE \"SAP_Code\" = 'SVC19A-CN'"))).first()
+            aud = (await s_.execute(_t(
+                "SELECT details FROM system_audit_log WHERE action_type = 'MIN_ACCEPT' "
+                "AND details LIKE 'SVC19A-CN@CNCEC%' ORDER BY id DESC LIMIT 1"))).scalar()
+            note = (await s_.execute(_t(
+                "SELECT count(*) FROM app_notifications WHERE event_key = 'min_accepted' "
+                "AND recipient_role = 'logistics' AND title LIKE 'CNCEC:%'"))).scalar()
+            inv_after = (await s_.execute(_t(
+                'SELECT md5(string_agg("SAP_Code" || \':\' || COALESCE("Minimum_Qty", 0)::text, \',\' '
+                'ORDER BY "SAP_Code")) FROM inventory'))).scalar()
+        check("19a-06: the HOD accepts for their OWN site with no site named (CNCEC, by "
+              "'hod'); the audit row keeps the recommendation it came from; Logistics is "
+              "told and SEES it as accepted",
+              r_h.status_code == 200 and ov is not None and tuple(ov) == ("CNCEC", 12.0, "hod")
+              and aud is not None and "recommended 30" in aud and note >= 1
+              and cn.get("Min_Source") == "accepted" and cn.get("Effective_Min") == 12,
+              f"{r_h.status_code} {ov} {aud} note={note} {str(cn)[:160]}")
+        check("19a-07: the item's GLOBAL Minimum_Qty is never written — an accepted "
+              "minimum lives only in the site table",
+              inv_before == inv_after, f"{inv_before} → {inv_after}")
+    finally:
+        await cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -29641,6 +29793,9 @@ async def main() -> int:
     print("\n 18M. Phase 18 Track 4 — intelligent minimum stock: use for general items, "
           "the SQM plan for Surface Shields, a manual minimum wins, nothing is written")
     await test_phase18m_smart_min()
+    print("\n 19A. Phase 19a — the HOD accepts recommended minimums per site: the site's "
+          "minimum, flagged when the recommendation moves ±20 %, HOD only")
+    await test_phase19a_min_accept()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

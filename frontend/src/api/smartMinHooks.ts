@@ -17,7 +17,14 @@ export interface SmartMinRow {
   Manual_Min: number | null
   Recommended_Min: number
   Effective_Min: number
-  Min_Source: 'manual' | 'smart' | null
+  Min_Source: 'accepted' | 'manual' | 'smart' | null
+  /** the site's minimum as the HOD accepted it (Phase 19a), if any */
+  Accepted_Min: number | null
+  Accepted_By: string | null
+  Accepted_At: string | null
+  /** the recommendation's move away from the accepted minimum, as a fraction,
+   *  when beyond the ±20 % band — else null */
+  Changed: number | null
   Basis: string
   Why: string
   Daily_Use: number | null
@@ -44,10 +51,11 @@ export interface SmartMinSite {
 
 export interface SmartMin {
   items: SmartMinRow[]
-  counts: Record<RagStatus, number>
+  counts: Record<RagStatus, number> & { changed?: number; accepted?: number }
   sites: Record<string, SmartMinSite>
   params: { cover_days?: number; window_days?: number; surge_window_days?: number;
-    pace_window_days?: number; planned_sqm_per_day?: number | null; amber_factor?: number }
+    pace_window_days?: number; planned_sqm_per_day?: number | null; amber_factor?: number
+    changed_band?: number }
 }
 
 export function useSmartMin(siteId?: string) {
@@ -65,6 +73,16 @@ export function useSetSitePace() {
   return useMutation({
     mutationFn: (body: { site_id: string; sqm_per_day: number | null }) =>
       api.put('/stock/smart-min/pace', body).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/stock/smart-min'] }),
+  })
+}
+
+/** The HOD accepts (or edits) recommended minimums — Phase 19a. */
+export function useAcceptMinimums() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (items: { site_id: string; sap_code: string; minimum_qty: number }[]) =>
+      api.post<{ accepted: number }>('/stock/smart-min/accept', { items }).then((r) => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['/stock/smart-min'] }),
   })
 }

@@ -51,9 +51,10 @@ os.environ.setdefault("GI_DOTENV", "0")
 
 # Bumped when the OVERLAY's content changes. Reported with the tutorial
 # fixture's own DATASET_VERSION as "<fixture>.<overlay>".
-OVERLAY_VERSION = 5   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
+OVERLAY_VERSION = 6   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
                       # · 4 = Phase 18 return desk loans (2026-10-03)
                       # · 5 = Phase 18 reorder-signal trio (2026-10-03)
+                      # · 6 = Phase 19a accepted-and-changed minimum (2026-10-04)
 
 SITE = "CNCEC"
 WAREHOUSE = "WH-01"
@@ -225,6 +226,10 @@ async def seed_queues() -> dict:
                 out["reorder"] = await seed_reorder_examples()
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  reorder example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["accepted_min"] = await seed_accepted_minimum()
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  accepted-minimum example skipped: {type(e).__name__}: {str(e)[:160]}")
             try:
                 out["loans"] = await seed_returnables()
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
@@ -565,6 +570,55 @@ async def seed_reorder_examples() -> int:
                     {"d": (t0 - _d.timedelta(days=k + 1)).isoformat(), "p": sap, "site": SITE})
         await s.commit()
     return len(REORDER_SAPS)
+
+
+ACCEPTED_SAP = "899984"                          # synthetic, Practice-only (P12-5)
+
+
+async def seed_accepted_minimum() -> int:
+    """Phase 19a — an HOD-accepted minimum the system now flags CHANGED
+    (rule 17g).
+
+    PRACTICE SAFETY GLASSES are used 3 a day (recommended 90). practice.hod
+    accepted 60 for CNCEC weeks ago. 90 is 50 % above 60, beyond the ±20 %
+    band, so the row shows **accepted** + **changed**, and with 80 in stock
+    against 60 it is amber. Idempotent; never fatal."""
+    import datetime as _d
+
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+
+    t0 = _d.date.today()
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                'SELECT 1 FROM inventory WHERE "SAP_Code" = :p'), {"p": ACCEPTED_SAP})).first():
+            return 0
+        await s.execute(text(
+            'INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+            '"Category", "UOM", "Site_ID", "Opening_Stock") VALUES '
+            "(:p, :m, 'PRACTICE SAFETY GLASSES (accepted, changed)', 'R/L Consumables', 'EA', "
+            ":site, 0) ON CONFLICT DO NOTHING"),
+            {"p": ACCEPTED_SAP, "m": f"MAT-{ACCEPTED_SAP}", "site": SITE})
+        await s.execute(text(
+            'INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID", "Supplier", '
+            '"Remarks") VALUES (:d, :p, 170, :site, \'Halcyon Industrial Supply\', '
+            "'Practice seed — accepted minimum')"),
+            {"d": (t0 - _d.timedelta(days=35)).isoformat(), "p": ACCEPTED_SAP, "site": SITE})
+        for k in range(30):
+            await s.execute(text(
+                'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                '"Work_Type", "Issued_To", "Remarks") VALUES (:d, :p, 3, :site, '
+                "'Maintenance', 'Aria Bellweather', 'Practice seed — accepted minimum')"),
+                {"d": (t0 - _d.timedelta(days=k + 1)).isoformat(), "p": ACCEPTED_SAP, "site": SITE})
+        await s.execute(text(
+            'INSERT INTO inventory_site_overrides ("SAP_Code", "Site_ID", "Minimum_Qty", '
+            "updated_by, updated_at) VALUES (:p, :site, 60, 'practice.hod', :at) "
+            'ON CONFLICT ("SAP_Code", "Site_ID") DO NOTHING'),
+            {"p": ACCEPTED_SAP, "site": SITE,
+             "at": _d.datetime.combine(t0 - _d.timedelta(days=40), _d.time(9, 0))})
+        await s.commit()
+    return 1
 
 
 def fixture_version() -> int:

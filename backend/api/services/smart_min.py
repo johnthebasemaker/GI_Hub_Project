@@ -69,6 +69,9 @@ from . import quality
 from . import units as U
 
 AMBER_FACTOR = 1.5
+# Ruling Q19-1 (Phase 19a): an ACCEPTED minimum is flagged "changed" when the
+# fresh recommendation has moved more than this fraction away from it.
+CHANGED_BAND = 0.20
 DEFAULTS = {
     "min_stock_cover_days": 30,     # days of use a minimum must cover (lead time + safety)
     "min_stock_window_days": 90,    # the long consumption window
@@ -93,6 +96,33 @@ async def _setting(session: AsyncSession, key: str, default: float) -> float:
 
 def _norm(s) -> str:
     return "".join(str(s or "").split())
+
+
+def changed(accepted: Optional[float], recommended: float) -> Optional[float]:
+    """The recommendation's move away from an accepted minimum, as a fraction
+    of it, when that move is beyond CHANGED_BAND. Otherwise None.
+
+    An accepted 0 ("no minimum here") is changed by any recommendation above
+    0, and the move is reported as 1.0."""
+    if accepted is None:
+        return None
+    if accepted <= 0:
+        return 1.0 if recommended > 0 else None
+    move = abs(recommended - accepted) / accepted
+    return round(move, 3) if move > CHANGED_BAND else None
+
+
+async def accepted_minimums(session: AsyncSession, site_id: Optional[str]) -> dict:
+    """{(SAP, site): {qty, by, at}} from inventory_site_overrides (Phase 19a)."""
+    sql = ('SELECT TRIM("SAP_Code") AS sap, "Site_ID" AS site, "Minimum_Qty" AS qty, '
+           'updated_by AS by, updated_at AS at FROM inventory_site_overrides')
+    params = {}
+    if site_id:
+        sql += ' WHERE "Site_ID" = :s'
+        params["s"] = site_id
+    return {(_norm(r["sap"]), r["site"]): {"qty": _num(r["qty"]), "by": r["by"],
+                                          "at": r["at"].isoformat() if r["at"] else None}
+            for r in (await session.execute(text(sql), params)).mappings().all()}
 
 
 def rag(stock: float, minimum: float) -> str:
@@ -294,6 +324,8 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
         "SELECT \"Material_Code\", SUM(GREATEST(\"Qty\" - COALESCE(\"Delivered_Qty\", 0), 0)) "
         "FROM po_items WHERE COALESCE(line_status, 'open') = 'open' GROUP BY 1"))).all()}
 
+    accepted = await accepted_minimums(session, site_id)
+
     stock: dict[tuple, float] = {}
     for r in stock_rows:
         stock[(_norm(r["SAP_Code"]), r["Site_ID"])] = _num(r["Current_Stock"])
@@ -336,7 +368,8 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
             plan_saps[(sap, s)] = {**d, "share": share, "basis": basis}
 
     garnet_saps = await PREP.garnet_saps(session)
-    keys = set(stock) | set(plan_saps)
+    # an accepted minimum shows even where the item has no stock movement yet
+    keys = set(stock) | set(plan_saps) | set(accepted)
     for (sap, s) in sorted(keys, key=lambda k: (k[1], k[0])):
         i = inv.get(sap)
         if i is None:
@@ -391,9 +424,22 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
                 row["Why"] = (f"Uses {daily:.2f}/day ({lead} average) × {int(cover)} days of cover")
             else:
                 row["Why"] = f"No use in the last {int(window)} days"
-        eff = manual if manual > 0 else _num(row["Recommended_Min"])
+        # Precedence (Phase 19a): the site's ACCEPTED minimum, then the item's
+        # global manual minimum, then the recommendation.
+        acc = accepted.get((sap, s))
+        row["Accepted_Min"] = acc["qty"] if acc else None
+        row["Accepted_By"] = acc["by"] if acc else None
+        row["Accepted_At"] = acc["at"] if acc else None
+        row["Changed"] = changed(row["Accepted_Min"], _num(row["Recommended_Min"]))
+        if acc is not None:
+            eff, src = acc["qty"], "accepted"
+        elif manual > 0:
+            eff, src = manual, "manual"
+        else:
+            eff = _num(row["Recommended_Min"])
+            src = "smart" if eff > 0 else None
         row["Effective_Min"] = eff
-        row["Min_Source"] = "manual" if manual > 0 else ("smart" if eff > 0 else None)
+        row["Min_Source"] = src
         row["Status"] = rag(st, eff)
         if row["Status"] in ("red", "amber"):
             target = 2 * eff
@@ -410,7 +456,10 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
     order = {"red": 0, "amber": 1, "green": 2, "none": 3}
     rows.sort(key=lambda r: (order[r["Status"]], r["Site_ID"], -(r["Suggested_Order"] or 0), r["SAP_Code"]))
     counts = {k: sum(1 for r in rows if r["Status"] == k) for k in order}
+    counts["changed"] = sum(1 for r in rows if r["Changed"] is not None)
+    counts["accepted"] = sum(1 for r in rows if r["Min_Source"] == "accepted")
     return {"items": rows, "counts": counts, "sites": site_info,
             "params": {"cover_days": cover, "window_days": window,
                        "surge_window_days": SURGE_WINDOW_DAYS, "pace_window_days": pace_days,
-                       "planned_sqm_per_day": planned or None, "amber_factor": AMBER_FACTOR}}
+                       "planned_sqm_per_day": planned or None, "amber_factor": AMBER_FACTOR,
+                       "changed_band": CHANGED_BAND}}

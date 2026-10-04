@@ -77,3 +77,39 @@ test('18m: the HOD plans the site\'s SQM pace (ruling Q6 B) — set, seen in the
   await expect(note).not.toContainText("this site's planned rate")
   await ctx.close()
 })
+
+test('19a: the HOD reviews minimums — ticks a row, edits the number, accepts; it shows as accepted', async ({ browser }) => {
+  const ctx = await browser.newContext({ storageState: storageStatePath('hod') })
+  const page = await ctx.newPage()
+  await page.goto('/stock?tab=reorder')
+  const panel = page.getByTestId('reorder-signals')
+  const rows = panel.locator('.ant-table-row')
+  await expect(rows.first()).toBeVisible({ timeout: 20_000 })
+  // the row's SAP, so we can find it again after the table re-sorts
+  const sap = (await rows.first().locator('td').nth(1).innerText()).trim()
+  expect(sap).not.toBe('')
+
+  await page.getByTestId('min-review').click()
+  const row = panel.locator('.ant-table-row', { has: page.getByRole('cell', { name: sap, exact: true }) }).first()
+  await row.getByRole('checkbox').check()
+  const input = row.getByRole('spinbutton', { name: `Accept minimum for ${sap}` })
+  await input.fill('7')
+  await page.screenshot({ path: test.info().outputPath('reorder-review.png') })
+  await page.getByTestId('min-accept').click()
+  await expect(page.getByText('Accepted 1 minimum')).toBeVisible()
+
+  await page.getByTestId('min-review').click()          // done reviewing
+  const after = panel.locator('.ant-table-row', { has: page.getByRole('cell', { name: sap, exact: true }) }).first()
+  await expect(after.getByTestId('min-accepted')).toBeVisible()
+  await expect(after).toContainText('7')
+  await ctx.close()
+})
+
+test('19a: Logistics sees accepted minimums but has no Review button', async ({ browser }) => {
+  const ctx = await browser.newContext({ storageState: storageStatePath('logistics') })
+  const page = await ctx.newPage()
+  await page.goto('/stock?tab=reorder')
+  await expect(page.getByTestId('reorder-signals').locator('.ant-table-row').first()).toBeVisible({ timeout: 20_000 })
+  await expect(page.getByTestId('min-review')).toHaveCount(0)
+  await ctx.close()
+})

@@ -4640,6 +4640,43 @@ and a site with no SQM plan gets 422. Admin → Audit shows `SS_PACE_SET`.
 
 Automated: service_tests **18M** (14 checks), E2E `reorder-signals.spec.ts`.
 
+## 19a. Phase 19a — the HOD accepts minimums per site (ruling Q19-1)
+
+**Why this exists.** Phase 18's reorder signals were advice only. Phase 19a
+lets the HOD turn a recommendation into the **site's** minimum
+(`inventory_site_overrides`, `POST /stock/smart-min/accept`). The order is
+**accepted → the item's global Minimum_Qty → the recommendation**, applied in
+`SQL_SITE_STOCK`, so the Dashboard, low stock, HOD auto-draft, reports and the
+WhatsApp STOCK reply all use it. The parity checker runs
+`SQL_SITE_STOCK_PARITY`, the frozen view's shape.
+
+**TC-19A-01 — accept.** As practice.hod: Stock → Reorder signals → **Review
+minimums**. Tick *PRACTICE CABLE TIES (red)*, set **Accept as** 50 → **Accept
+1 minimum**. The row's minimum is 50 with a green **accepted** tag; hovering
+shows practice.hod and today. The Dashboard's reorder card counts it against
+50.
+
+**TC-19A-02 — changed (±20 %).** *PRACTICE SAFETY GLASSES* shows
+**accepted** (60) + **changed** (recommendation 90). **Changed (1)** above the
+table lists only that row. Accept 80 for it: the changed tag disappears (90 is
+12.5 % from 80).
+
+**TC-19A-03 — beats a global minimum.** As admin, give *NITRILE GLOVES* a
+Minimum of 200 on the item. As the HOD, accept 40 for CNCEC. CNCEC uses 40 (tag
+**accepted**). Another site, if any, still uses 200.
+
+**TC-19A-04 — who may accept.** Logistics has no **Review minimums** button,
+and `POST /stock/smart-min/accept` → 403. Store keeper → 403. The CNCEC HOD
+naming another site → 403. One unknown SAP in a submission → 422, and nothing
+from it is saved.
+
+**TC-19A-05 — trail.** Admin → Audit: `MIN_ACCEPT` rows read *"SAP@CNCEC: old
+-> new (recommended R, basis …)"*. Logistics' bell has *"CNCEC: N minimum(s)
+accepted by the HOD"*. The item's own Minimum_Qty is unchanged.
+
+Automated: service_tests **19A** (7 checks); E2E `reorder-signals.spec.ts`
+(19a ×2).
+
 ## 15. Do's and Don'ts
 
 ### Do

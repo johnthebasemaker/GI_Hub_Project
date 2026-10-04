@@ -937,6 +937,45 @@ The signals are advice, worked out each time the page is opened.
 colour: *PRACTICE CABLE TIES (red)*, *MASKING TAPE (amber)* and *NITRILE
 GLOVES (green)*. Each is used 3 a day, so its minimum is 90.
 
+## 3.14 What changed in Phase 19 (October 2026)
+
+| Change | Who | Read |
+|---|---|---|
+| **Accept minimums for your site.** The HOD ticks the system's recommended minimums (or types their own), and they become the site's minimum. When the recommendation later moves by more than 20 %, the row says **changed**. | HOD (Logistics sees the result) | §3.14.1 |
+
+### 3.14.1 Accepting minimums for your site (HOD)
+
+On **Stock → Reorder signals**, press **Review minimums**. Each row gets a
+tick box and an **Accept as** number, already filled with the system's
+recommendation.
+
+1. Tick the rows you agree with. Change **Accept as** where you want a
+   different number (0 means "no minimum at this site").
+2. Press **Accept N minimums**.
+
+The accepted number becomes **your site's minimum**. The **Minimum** column
+shows it with a green **accepted** tag; hover to see who accepted it and when.
+It applies everywhere the Hub compares stock with a minimum, including the
+Dashboard and low-stock lists. It wins over a minimum typed on the item itself
+and over the system's recommendation. It applies **only to your site**: other
+sites keep their own.
+
+An accepted minimum **never expires**. It stays until you accept another. The
+system keeps recommending, though: when its recommendation moves **more than
+20 %** away from what you accepted (for example, use rose from 1 a day to 1.5
+a day), the row gets an orange **changed** tag. Pick **Changed** above the
+table to list only those rows, review them, and accept the new figure or keep
+yours.
+
+**Who can do what:** only the **HOD** accepts minimums, for their own site
+(admins can for any site). **Logistics** sees the accepted minimums and is
+notified when an HOD accepts some, but cannot accept. Every acceptance is in
+the audit log with the recommendation it came from.
+
+**Practice:** *PRACTICE SAFETY GLASSES (accepted, changed)* was accepted at 60
+by practice.hod. It is used 3 a day, so the system now recommends 90, 50 %
+more, and the row shows **accepted** + **changed**.
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.
