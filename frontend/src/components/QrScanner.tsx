@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Button, Input, Modal, Space, Typography } from 'antd'
+import type { InputRef } from 'antd'
 import jsQR from 'jsqr'
 
 // Live QR badge scanner — Phase AI-4 Smart Scan tier 1.
@@ -29,6 +30,7 @@ export default function QrScanner({
   const streamRef = useRef<MediaStream | null>(null)
   const rafRef = useRef<number>(0)
   const doneRef = useRef(false)
+  const manualRef = useRef<InputRef>(null)
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [manual, setManual] = useState('')
 
@@ -42,6 +44,9 @@ export default function QrScanner({
     if (doneRef.current) return
     doneRef.current = true
     stop()
+    // Phase 18: a decode is felt, not only seen — the caller plays the
+    // ok/error tone once it knows what the code was (lib/scanFeedback).
+    try { navigator.vibrate?.(30) } catch { /* optional */ }
     onDecode(text.trim())
   }, [onDecode, stop])
 
@@ -104,13 +109,25 @@ export default function QrScanner({
 
   return (
     <Modal open={open} title={title} footer={null}
-      onCancel={() => { stop(); onClose() }} destroyOnHidden>
+      onCancel={() => { stop(); onClose() }} destroyOnHidden
+      // The Modal moves focus to itself once it has opened, overriding the
+      // input's autoFocus — so the field is focused AFTER the open.
+      afterOpenChange={(o) => { if (o) manualRef.current?.focus() }}>
       {cameraError ? (
         <Alert type="info" showIcon title={cameraError} style={{ marginBottom: 12 }} />
       ) : (
         <>
-          <video ref={videoRef} muted playsInline
-            style={{ width: '100%', borderRadius: 8, background: '#000' }} />
+          <div style={{ position: 'relative' }}>
+            <video ref={videoRef} muted playsInline
+              style={{ width: '100%', borderRadius: 8, background: '#000', display: 'block' }} />
+            {/* Aiming frame (Phase 18): where to hold the code. Decoding still
+                reads the whole frame — this only tells the eye where to aim. */}
+            <div aria-hidden style={{
+              position: 'absolute', inset: '18% 22%', borderRadius: 10,
+              border: '3px solid rgba(255,255,255,0.85)',
+              boxShadow: '0 0 0 9999px rgba(0,0,0,0.28)', pointerEvents: 'none',
+            }} />
+          </div>
           <canvas ref={canvasRef} style={{ display: 'none' }} />
           <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
             Hold the badge QR in front of the camera — it scans continuously.
@@ -119,7 +136,9 @@ export default function QrScanner({
         </>
       )}
       <Space.Compact style={{ width: '100%' }}>
-        <Input placeholder={manualPlaceholder} value={manual}
+        {/* Focused on open (Phase 18): a keyboard-wedge scanner types into
+            whatever has focus — without it a wedge scan here went nowhere. */}
+        <Input ref={manualRef} placeholder={manualPlaceholder} value={manual} autoFocus
           onChange={(e) => setManual(e.target.value)}
           onPressEnter={() => manual.trim() && finish(manual)} />
         <Button type="primary" disabled={!manual.trim()} onClick={() => finish(manual)}>

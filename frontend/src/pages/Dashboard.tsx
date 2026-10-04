@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { Card, Col, Empty, Row, Tag, Tooltip, Typography } from 'antd'
 import { Table } from '../lib/smartTable'
 import { DollarOutlined, EnvironmentOutlined, InboxOutlined, WarningOutlined } from '@ant-design/icons'
@@ -34,6 +35,10 @@ function catColumnsFor(total: number): ColumnsType<CatRow> {
     },
   ]
 }
+
+// Phase 18 Track 4 — lazy, so the reorder module never reaches the entry
+// chunk's preload map (the login critical path may not grow by a byte).
+const ReorderMini = lazy(() => import('../components/ReorderSignals').then((m) => ({ default: m.ReorderMini })))
 
 export default function Dashboard() {
   const { data: summary } = useInventorySummary()
@@ -87,7 +92,7 @@ export default function Dashboard() {
       {/* Phase 5 — legacy visual parity: stock-vs-min, burn forecast, top-consumed. */}
       <Row gutter={[16, 16]} style={{ marginTop: 16 }} className="gi-cascade">
         <Col xs={24} lg={8}>
-          <Card title="Stock vs Minimum (lowest coverage)" size="small">
+          <Card title="Stock vs Minimum · reorder signals" size="small">
             {metrics?.stock_vs_min?.length ? (
               <ResponsiveContainer width="100%" height={240}>
                 <BarChart data={metrics.stock_vs_min} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
@@ -100,7 +105,10 @@ export default function Dashboard() {
                   <Bar dataKey="minimum" name="Minimum" fill={status.critical} />
                 </BarChart>
               </ResponsiveContainer>
-            ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No minimums set" />}
+            ) : null}
+            {/* Phase 18: the system's own minimums, always — the chart above
+                only knows the handful set by hand. */}
+            <div style={{ marginTop: metrics?.stock_vs_min?.length ? 12 : 0 }}><Suspense fallback={null}><ReorderMini /></Suspense></div>
           </Card>
         </Col>
         <Col xs={24} lg={8}>

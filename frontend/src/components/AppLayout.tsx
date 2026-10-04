@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Alert, App, Badge, Button, ConfigProvider, Drawer, Grid, Layout, Menu, Modal, Skeleton, Space, Switch, Tag, Tooltip, Typography } from 'antd'
 import type { MenuProps } from 'antd'
@@ -16,7 +16,11 @@ import { practiceTheme, siderTheme } from '../theme/themes'
 import { isPractice } from '../api/environment'
 import CommandPalette from './CommandPalette'
 import HubAssistant from './HubAssistant'
-import QrScanner from './QrScanner'
+// ⚠️ LAZY (Phase 18): the header scanner (and jsQR inside it) was on the login
+// critical path although nothing renders it until somebody presses the scan
+// button. Loaded on first open instead — the critical-path check re-baselined
+// DOWN, deliberately.
+const QrScanner = lazy(() => import('./QrScanner'))
 import { BARCODE_FORMATS, parseScanPayload } from '../lib/barcode'
 import NotificationBell from './NotificationBell'
 import WhatsNew from './WhatsNew'
@@ -324,13 +328,17 @@ export default function AppLayout() {
       </Layout>
       <CommandPalette />
       <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
-      <QrScanner open={scanOpen} title="Scan a material QR / barcode"
-        formats={BARCODE_FORMATS} manualPlaceholder="…or type the SAP code"
-        onClose={() => setScanOpen(false)}
-        onDecode={(text) => {
-          setScanOpen(false)
-          navigate(`/stock/material/${encodeURIComponent(parseScanPayload(text))}`)
-        }} />
+      {scanOpen && (
+        <Suspense fallback={null}>
+          <QrScanner open={scanOpen} title="Scan a material QR / barcode"
+            formats={BARCODE_FORMATS} manualPlaceholder="…or type the SAP code"
+            onClose={() => setScanOpen(false)}
+            onDecode={(text) => {
+              setScanOpen(false)
+              navigate(`/stock/material/${encodeURIComponent(parseScanPayload(text))}`)
+            }} />
+        </Suspense>
+      )}
       <Modal
         open={idle.warning}
         title="Still there?"

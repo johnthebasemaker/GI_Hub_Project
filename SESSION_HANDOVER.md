@@ -1,4 +1,4 @@
-# SESSION HANDOVER — read this first (updated 2026-10-03, end of Phase 17)
+# SESSION HANDOVER — read this first (updated 2026-10-04, Phase 18 RULED, closed out and merged)
 
 > This file is the orientation for a fresh session. It replaces every earlier
 > version (they are in git history). After it, read
@@ -11,29 +11,34 @@
 
 ## 0. State in ten lines
 
-1. **Everything through Phase 17 is merged to `main`** (PRs #78–#107; Phase 17
-   = #104 17a · #105 17c · #106 17d · #107 17e, merged 2026-10-03). See §4.4.
-2. **Nothing is mid-flight.** Phase 17's open decision D1 was ruled the same
-   day: the router budget is ≤ 1.5 GB (Q17-1 amended). No pending migration.
-3. **Alembic single head `e5b2c7a9d4f1`** — Live (`gihub`) and both Practice
-   databases are on it.
-4. **All gates green** (2026-10-03, branch 17e): service_tests **2,803/0** ·
-   E2E **179** · AI Tier 1 147/147, recall 1.000 / precision 0.994 · **Router
-   L2 pass** · **Router L3 pass** (needs Ollama) · grid 72 · parity:sme 1,334 ·
-   ui-math 33/0 · nav 52 · bug_check 599/0/0 · build + critical path +0 B
-   (re-baselined in 17a and 17e, reasons in the commits).
-5. **CI (`Postgres dual-CI`) was red on all eight Phase 16 runs** at
-   *Derived-view parity*; fixed on `chore/phase16-cleanup` (§4.2). Lesson,
-   now in RULES.md: **wait for the PR's own `dual-ci` before merging.**
-6. **Live data:** the operator committed the Phase 16 lot sync on 2026-10-03 —
-   49 lots, 207 CHEMOLINE rolls, no expired lot with stock, 12 lots *used but
-   never received* (workbook typing slips — the operator's to fix).
+1. **Phase 18 ("Night Shift") is MERGED to `main`** through the PR for
+   `feat/phase18-night-shift`, after its own CI run went green. The operator
+   ruled on all twelve questions on 2026-10-04 (**Q18-1…12**,
+   `PROJECT_HANDOVER.md` → *Phase 18*). The close-out commit built the slip,
+   the per-site SQM pace, the whole-plan tag, holdout secrecy and the CI fix.
+   **Next: `PROPOSED_PHASE19_PLAN.md`** (HOD-accepted minimums, per-site
+   on-order, partial returns).
+2. **Everything through Phase 18 is on `main`.**
+3. **Alembic head `a7d3e1f5c829`** (returnable_items gains six columns). **Live
+   was migrated by the operator on 2026-10-04**, and both Practice DBs are
+   migrated and seeded (overlay v5). The close-out added NO migration (the
+   site pace lives in `app_settings` as `ss_planned_sqm_per_day@<site>`).
+4. **All gates green** (2026-10-04): service_tests **2,845 / 0** · E2E
+   **184** · AI Tier 1 147/147 · Router L2 pass · grid 72 · parity:sme 1,334 ·
+   ui-math 33/0 · nav 52 · bug_check 599/0/0 · build ✅ (critical path +0 B) ·
+   single head `a7d3e1f5c829`. Router L3 ran on the PR's CI (CPU).
+5. ⚠️ **`main` is BRANCH-PROTECTED** (Q18-1): `dual-ci`, `ai-router-eval` and
+   `frontend-build` are required and strict, admins included. Nothing reaches
+   `main` except through a PR whose three checks are green. The payload and the
+   command are in `tools/github/`. ⚠️ Never put a path filter back on the
+   workflow's `pull_request` trigger (P18-pr-ci).
+6. **CI lesson stands:** wait for the PR's own `dual-ci` before merging.
 7. **Deployment to Hetzner is PAUSED by decision.** Runbook ready
    (`tools/migration/README.md`).
 8. The operator works on a battery-powered Mac: **Postgres may be asleep**
-   (`./bin/power.sh wake`). Ask before starting or stopping shared services.
-9. The operator has **limited internet**: do not download anything large (Docker
-   images, models) without asking.
+   (`./bin/power.sh wake`). Ollama was started for the router evals and
+   **stopped again** (it was off at the start of the night).
+9. The operator has **limited internet**: do not download anything large.
 10. Do not commit or push unless asked; branch first if on `main`.
 
 ---
@@ -232,10 +237,34 @@ results and deviations D1–D5). Rulings tabulated in `PROJECT_HANDOVER.md` →
 | 17d | #106 | QA pyramid: `tests/ai_eval/router_eval.py` L2 (every run) + L3 (`--router`), CI job `ai-router-eval` on PROBATION, CI triggers on any branch. Fixed: the router never warmed (cold load cancelled at 3 s) → `system_one.warm`. Tutorial matcher: function words are not evidence (CX-16). |
 | 17e | #107 | Wired into `/ai/assistant`: navigate / tutorial / table / refusal frames, each with NO 8B generation; `HubAssistant` + lazy `AssistantResult`. Video requests matched on their topic (`video_topic`). Suite 17E. USER_MANUAL §3.12. |
 
+**Close-out (2026-10-04, after the rulings):** loan **slip** PDF
+(`GET /entry/returnables/{id}/slip`, QR `#id`; Q18-12) · **per-site SQM pace**
+(`PUT /stock/smart-min/pace`, suggestion = the site's approved SQM/day; Q18-6
+B) + yellow **whole plan** tag (Q18-6 A) · **holdout secrecy** — no holdout id
+in any log or scorecard, blind v2 from the `GI_ROUTER_HOLDOUT_V2` secret
+(Q18-5, `docs/HOLDOUT_V2_GUIDE.md`) · `pull_request` path filter removed +
+branch protection on `main` (Q18-1). Suites 18a-11..15, 18r-11..12,
+18m-10..13; E2E slip + pace.
+
 Measured (qwen2.5:1.5b, Metal): routing 0.95 · 0 flips · twins 0 refused · dev
 block 0.667 · **holdout block 0.316** · detection 41 % · p50/p95 360/443 ms.
 
 ---
+
+### 4.5 Phase 18 (2026-10-03 night → 04) — Night Shift, ruled and merged
+
+| Commit | Track | What |
+|---|---|---|
+| `fdc2025` | 1 | Guard patterns **v3**: twelve weight-2 combination signals + `encoded.disguised`. Guard alone refuses 36/39 dev attacks (was 17). 24 warn-tier twins. Fixed a shipped false refusal ("wipe the column filters on the receipts table"). Router latency: `warm()` primes the real prompt (Ollama keeps ONE prompt cache), stage-0 `is_howto` → MANUAL_QA without the model, a deterministic answer cache. Suite 18A. |
+| `c2bf6db` | 2 | `ai-router-eval`: `continue-on-error` removed; L3 dev-block floor 0.60 → 0.90. |
+| `a6f0918` | 3 | **Return desk**: scan a badge/tool/`#id` → its loans (`GET /entry/returnables/resolve`), return with condition (`return-batch`), `ScanBox` + `scanFeedback`, KPI tiles, presets. **Fix:** overdue on the LOCAL clock (was UTC wall-clock, 3 h late). jsQR off the login critical path (−131 KB raw). Migration `a7d3e1f5c829`. Suite 18R, `returnables.spec.ts`. |
+| `e5c5f42` | 3 | bug_check allowlist for the six new-stack-only columns (red in a6f0918 — bug_check was not in that commit's gate pass). |
+| `a7d0699` | 4 | **Reorder signals**: `services/smart_min.py`, `GET /stock/smart-min`, Stock → Reorder signals tab + Dashboard summary. General items from consumption; Surface Shields from the SQM plan (+ Garnet Old/New); manual minimum wins; nothing written. Suite 18M, `reorder-signals.spec.ts`. |
+
+Measured (qwen2.5:1.5b, Metal): routing 0.95 · dev block **0.949** · holdout
+**0.368** · twin false refusal 1/82 (the model's SQL-lane veto on "Wipe the
+saved filters on my stock table" — Q17-2, for a ruling) · model p50 353 ms ·
+routing-mix p50 **0 ms** (39/60 decided without the model).
 
 ## 5. The gates — run all before saying "done"
 
@@ -276,21 +305,21 @@ cd tests/e2e && npm test
 ```
 (Router L3 — needs Ollama with `qwen2.5:1.5b`; without it the line says SKIPPED, which is not a pass.)
 
-| Gate | Baseline |
+| Gate | Baseline (`main` after Phase 18, 2026-10-04) |
 |---|---|
 | preflight | clean |
-| service_tests | 2,803 / 0 (its own `gihub_svctest`) |
-| AI eval | Tier 1 147/147, 0 leaks; recall 1.000, precision 0.994; Router L2 pass |
-| Router L3 | all gates ✅ (schema 1.000, routing 0.950, 0 flips, dev block 0.667 ≥ 0.60); ~1 min |
+| service_tests | **2,845 / 0** (its own `gihub_svctest`) |
+| AI eval | Tier 1 147/147, 0 leaks; recall 1.000, precision 0.994; Router L2 pass (guard refuses 36/39 dev attacks, 0 of 63 + 19 twins) |
+| Router L3 | all gates ✅ (schema 1.000, routing 0.950, 0 flips, dev block 0.949 ≥ **0.90**, twin false refusal 0.012 ≤ 0.02); ~1 min |
 | grid | 72 cases, current |
 | parity:sme | 1,334 comparisons |
 | ui-math | 33 / 0 |
 | nav | 52 routes, snapshot current |
 | bug_check | 599 / 0 / 0 |
-| build | ✅, critical path +0 B |
-| E2E | 179 passed |
-| alembic | single head `e5b2c7a9d4f1` |
-| **CI-only: derived-view parity** | 5/5 — run it after touching `stock.py` (MANUAL_TESTING_GUIDE §16e) |
+| build | ✅, critical path baseline 379.20 KB gz (re-recorded down in Phase 18) |
+| E2E | **184** passed |
+| alembic | single head **`a7d3e1f5c829`** |
+| **CI-only: derived-view parity** | 5/5 — run it after touching `stock.py` (MANUAL_TESTING_GUIDE §16e). ⚠️ Phase 18 added an endpoint to `stock.py` but no DERIVED view; not re-run locally. |
 
 ⚠️ The service-tests step on GitHub is a documented SKIP (no master-data
 snapshot on the runner). CI's real coverage is preflight, bug_check, the AI
@@ -357,7 +386,19 @@ reads the Lot Register workbook.)
 
 ## 8. Open items
 
-0. ⚠️ **Phase 17 decisions for the operator** (`PROPOSED_PHASE17_PLAN.md` §9.3):
+**Phase 18 — after the rulings:**
+
+- **A. The operator writes holdout v2** into the `GI_ROUTER_HOLDOUT_V2` secret
+  (`docs/HOLDOUT_V2_GUIDE.md`). Never read it (P18-blind).
+- **B. Phase 19** (`PROPOSED_PHASE19_PLAN.md`): HOD-accepted per-site minimums
+  (Q18-10), per-site on-order (Q18-9), partial returns with reminders
+  (Q18-11). Each lists its ⚖️ open points.
+- **C. `lining_analytics.py`** compares ledger packs with recipe KG and keys by
+  Material_Code alone (rule 1). Found while mapping Track 4, not fixed.
+
+**Carried over from Phase 17:**
+
+0. Phase 17 decisions (D3 still open; probation ENDED in Phase 18) (`PROPOSED_PHASE17_PLAN.md` §9.3):
    **D1 ruled:** the router budget is ≤ 1.5 GB; `qwen2.5:1.5b` (1.35 GB) is
    the router — size the CPX42 for it beside the 8B. **D3** the 0.95 attack-block
    target is not met (dev 0.667, holdout 0.316) and is reported, not gated.
@@ -406,18 +447,16 @@ reads the Lot Register workbook.)
 
 ---
 
-## 10. Start here next session — choose ONE track
+## 10. Start here next session
 
-Nothing is half-finished, so this is a choice, not a queue.
+1. `git pull` on `main`, then read `PROPOSED_PHASE19_PLAN.md` with the operator
+   and get the ⚖️ points ruled.
+2. Branch (`feat/phase19-…`). `main` is protected, so only a PR with three green
+   checks merges.
+3. Or pick the morning report's §4 ideas (4.1, the embedding safety signal, is
+   the one that can be scored against the operator's blind holdout v2).
 
-- **Track A — operator data clean-up support.** Walk the operator through the
-  12 unknown lots and any sync report items; re-run the sync dry run with them.
-- **Track B — the router's probation** (§8.0): read each `ai-router-eval`
-  scorecard artifact; after 10 green runs with 0 flips, remove
-  `continue-on-error` in its own commit.
-- **Track C — Tier 1 security hardening** (`SECURITY_SUGGESTIONS.md`): 2FA for
-  admin/logistics (enrol two admins first), shared OTP limiter, non-blocking
-  dependency scanning in CI.
+- **Track C — Tier 1 security hardening** (`SECURITY_SUGGESTIONS.md`).
 - **Track D — Hetzner deployment** when the operator lifts the pause.
 
 Whatever the track: branch first, keep Practice in step (rule 17g), update both

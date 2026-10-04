@@ -51,7 +51,9 @@ os.environ.setdefault("GI_DOTENV", "0")
 
 # Bumped when the OVERLAY's content changes. Reported with the tutorial
 # fixture's own DATASET_VERSION as "<fixture>.<overlay>".
-OVERLAY_VERSION = 3   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
+OVERLAY_VERSION = 5   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
+                      # · 4 = Phase 18 return desk loans (2026-10-03)
+                      # · 5 = Phase 18 reorder-signal trio (2026-10-03)
 
 SITE = "CNCEC"
 WAREHOUSE = "WH-01"
@@ -219,6 +221,14 @@ async def seed_queues() -> dict:
                 out["lots"] = await seed_lots(today)
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  lot example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["reorder"] = await seed_reorder_examples()
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  reorder example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["loans"] = await seed_returnables()
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  loan example skipped: {type(e).__name__}: {str(e)[:160]}")
 
         async with SessionLocal() as s:
             await ledger.stage_return(s, username="practice.storekeeper", data={
@@ -458,6 +468,103 @@ async def seed_lots(today: str) -> int:
                 {"u": f"1O26009999{n:03d}", "p": ROLL_SAP, "site": SITE, "r": day(-30)})
         await s.commit()
     return 4
+
+
+async def seed_returnables() -> int:
+    """Phase 18 Track 3 — tool loans to practise the return desk on (rule 17g).
+
+    Dated from NOW so the buckets never drift: one OVERDUE (due yesterday), one
+    due back at the end of TODAY's shift, one due in three days, and one
+    already returned DAMAGED (the Returned view and its condition tag). Two of
+    the open loans belong to Tomas Halversen — scanning his badge (900002)
+    shows a kit of two — and each carries an `Item_Ref`, so typing PR-TW-0001
+    at the desk finds that loan the way a sticker scan would. Idempotent;
+    never fatal.
+    """
+    import datetime as _d
+
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+
+    now = _d.datetime.now().replace(microsecond=0)
+    d0 = now.replace(hour=17, minute=0, second=0)
+    loans = (
+        # name, Item_Ref, borrower, badge, given, due, status, condition, note
+        ("PRACTICE TORQUE WRENCH", "PR-TW-0001", "Aria Bellweather", "900001",
+         now - _d.timedelta(days=2), d0 - _d.timedelta(days=1), "borrowed", None, None),
+        ("PRACTICE ANGLE GRINDER", "PR-AG-0002", "Tomas Halversen", "900002",
+         now - _d.timedelta(hours=3), d0, "borrowed", None, None),
+        ("PRACTICE SAFETY HARNESS", "PR-SH-0003", "Tomas Halversen", "900002",
+         now - _d.timedelta(hours=3), d0 + _d.timedelta(days=3), "borrowed", None, None),
+        ("PRACTICE IMPACT DRILL", "PR-ID-0004", "Nadia Okonjo", "900003",
+         now - _d.timedelta(days=3), d0 - _d.timedelta(days=1), "returned", "damaged",
+         "Chuck loose — sent for repair (Practice example)"),
+    )
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                "SELECT 1 FROM returnable_items WHERE \"Item_Ref\" = 'PR-TW-0001' LIMIT 1"))).first():
+            return 0
+        for name, ref, who, badge, given, due, st, cond, note in loans:
+            await s.execute(text(
+                'INSERT INTO returnable_items (material_name, uom, qty, borrower_name, '
+                'given_time, expected_return_time, status, "Site_ID", whatsapp_alert_sent, '
+                'cv_detected, cv_employee_id, "Item_Ref", returned_time, returned_by, '
+                'return_condition, return_note) VALUES (:n, \'EA\', 1, :w, :g, :d, :st, :site, '
+                '0, 1, :b, :r, :rt, :rb, :c, :note)'),
+                {"n": name, "w": who, "g": given, "d": due, "st": st, "site": SITE,
+                 "b": badge, "r": ref,
+                 "rt": (due - _d.timedelta(hours=2)) if st == "returned" else None,
+                 "rb": "practice.storekeeper" if st == "returned" else None,
+                 "c": cond, "note": note})
+        await s.commit()
+    return len(loans)
+
+
+REORDER_SAPS = ("899981", "899982", "899983")    # synthetic, Practice-only (P12-5)
+
+
+async def seed_reorder_examples() -> int:
+    """Phase 18 Track 4 — one item per reorder colour (rule 17g).
+
+    The tutorial dataset's consumption has FIXED dates (P12-5), so as the
+    90-day window moves on, its items drift to "no recent use". These three
+    are dated from TODAY so Stock → Reorder signals always shows one of each:
+    each used 3 a day for the last 30 days (minimum 90 at 30 days of cover),
+    holding 20 (red), 120 (amber) and 300 (green). Idempotent; never fatal.
+    """
+    import datetime as _d
+
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+
+    t0 = _d.date.today()
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                'SELECT 1 FROM inventory WHERE "SAP_Code" = :p'), {"p": REORDER_SAPS[0]})).first():
+            return 0
+        for sap, name, hold in zip(REORDER_SAPS, ("PRACTICE CABLE TIES (red)",
+                                                  "PRACTICE MASKING TAPE (amber)",
+                                                  "PRACTICE NITRILE GLOVES (green)"), (20, 120, 300)):
+            await s.execute(text(
+                'INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+                '"Category", "UOM", "Site_ID", "Opening_Stock") VALUES '
+                "(:p, :m, :n, 'R/L Consumables', 'EA', :site, 0) ON CONFLICT DO NOTHING"),
+                {"p": sap, "m": f"MAT-{sap}", "n": name, "site": SITE})
+            await s.execute(text(
+                'INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID", "Supplier", '
+                '"Remarks") VALUES (:d, :p, :q, :site, \'Halcyon Industrial Supply\', '
+                "'Practice seed — reorder example')"),
+                {"d": (t0 - _d.timedelta(days=35)).isoformat(), "p": sap, "q": hold + 90, "site": SITE})
+            for k in range(30):
+                await s.execute(text(
+                    'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                    '"Work_Type", "Issued_To", "Remarks") VALUES (:d, :p, 3, :site, '
+                    "'Maintenance', 'Aria Bellweather', 'Practice seed — reorder example')"),
+                    {"d": (t0 - _d.timedelta(days=k + 1)).isoformat(), "p": sap, "site": SITE})
+        await s.commit()
+    return len(REORDER_SAPS)
 
 
 def fixture_version() -> int:

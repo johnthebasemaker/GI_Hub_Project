@@ -644,7 +644,9 @@ async def work_queues(user: dict = Depends(get_current_user),
     if user["role"] in ("store_keeper", "admin"):
         import datetime as _dt
         t = _MD.tables["returnable_items"]
-        now = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+        # Naive LOCAL, like the stored due times (Phase 18 fix — was UTC
+        # wall-clock, 3 h late on a UTC+3 site; see entry._local_now).
+        now = _dt.datetime.now()
         out["returnables_overdue"] = await _cnt(
             "returnable_items", t.c["status"] == "borrowed",
             t.c["expected_return_time"] < now, *_site("returnable_items"))

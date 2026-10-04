@@ -39,24 +39,12 @@ on:
       - 'docs/tutorials/**'
       # ⚠️ 'gi_database.db' was here and could never fire — the file is
       # gitignored, so a push can never contain a change to it.
-  pull_request:
-    # Same list as `push` (written twice: no YAML anchors in workflow files).
-    paths:
-      - 'legacy/**'
-      - 'backend/**'
-      - 'frontend/**'
-      - 'tools/**'
-      - 'requirements.txt'
-      - '.github/workflows/postgres-dual-ci.yml'
-      # ⚠️ Added in Phase 17 (finding F6): the AI grid is GENERATED from the
-      # manual and `gen_eval_grid.py --check` fails when it moves — yet a
-      # commit touching only USER_MANUAL.md triggered nothing, so a stale grid
-      # surfaced on somebody else's later push.
-      - 'USER_MANUAL.md'
-      - 'tests/ai_eval/**'
-      - 'docs/tutorials/**'
-      # ⚠️ 'gi_database.db' was here and could never fire — the file is
-      # gitignored, so a push can never contain a change to it.
+  # ⚠️ NO PATH FILTER ON PULL REQUESTS (Phase 18 close-out, ruling Q1).
+  # `dual-ci`, `ai-router-eval` and `frontend-build` are REQUIRED checks on
+  # `main`. A required check that never starts is "Expected — waiting" for
+  # ever, so a docs-only PR filtered out here could never be merged. Every PR
+  # runs all three; pushes keep the filter above (nothing is required of them).
+  pull_request: {}
   workflow_dispatch: {}   # allow manual runs from the Actions tab
 
 # A branch with an open PR fires BOTH events. One run per branch at a time:
@@ -334,10 +322,15 @@ jobs:
   # ruling Q17-3 amends P10-7 — the flaky-gate concern is answered with a
   # number on every run, not argued.
   #
-  # ⚠️ PROBATION (ruling Q17-3): `continue-on-error` until 10 consecutive runs
-  # clear every floor with 0 flips. Then delete that one line, deliberately, in
-  # its own commit. The attack-block TARGET of 0.95 is reported, not gated —
-  # deviation D3 in PROPOSED_PHASE17_PLAN.md §9.3 says why.
+  # ✅ PROBATION ENDED 2026-10-03 (ruling Q17-3, by operator order in Phase
+  # 18): `continue-on-error` is gone and this job now FAILS the workflow. The
+  # record at promotion: 4 of 4 completed runs green on every floor, 0 flips
+  # (Q17-3 asked for 10 — the operator waived the remainder; push runs
+  # cancelled by the concurrency group do not count either way). The
+  # attack-block TARGET of 0.95 is still reported, not gated — deviation D3 in
+  # PROPOSED_PHASE17_PLAN.md §9.3 — and the gated floor is the DEV regression
+  # floor (0.90 since guard v3). ⚠️ "Blocks merges" also needs `main`'s branch
+  # protection to list this check as required; see MORNING_REPORT.md.
   #
   # Parallel to dual-ci and frontend-build, so it never lengthens either. The
   # runner keeps its own 8-minute budget and fails LOUDLY past it; the job
@@ -345,7 +338,6 @@ jobs:
   ai-router-eval:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: true      # ⚠️ PROBATION — see above; remove after 10 green runs
     env:
       OLLAMA_VERSION: '0.20.4'
       GI_AI_ROUTER_MODEL: 'qwen2.5:1.5b'
@@ -393,6 +385,12 @@ jobs:
           fi
 
       - name: Router eval — L3 (the model) + L1/L2 again
+        env:
+          # The operator's BLIND holdout (ruling Q5): a repository secret, never
+          # in git, scored and REPORTED by count only — the runner prints no
+          # holdout id or prompt. Unset (a fork's PR, or not written yet) = the
+          # v2 line says "not provided". See docs/HOLDOUT_V2_GUIDE.md.
+          GI_ROUTER_HOLDOUT_V2: ${{ secrets.GI_ROUTER_HOLDOUT_V2 }}
         run: python -m tests.ai_eval.runner --router --require-model --json router_scorecard.json
 
       - name: Upload router scorecard

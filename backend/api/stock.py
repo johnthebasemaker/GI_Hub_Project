@@ -18,11 +18,13 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import get_current_user, resolve_site_param, site_scope
+from .auth import (get_current_user, require_roles, resolve_site_param, resolve_site_write,
+                   site_scope)
 from .db import get_session
 
 
@@ -269,6 +271,68 @@ async def stock_by_site(limit: int = Query(200, ge=1, le=5000), offset: int = Qu
         return _empty_page(limit, offset)
     return await _paged(session, "by-site", site_id=site_id, limit=limit, offset=offset,
                         q=q, category=category)
+
+
+@router.get("/smart-min", summary="Recommended minimum stock + red/amber/green per SAP and site")
+async def smart_min(site_id: Optional[str] = Query(None, description="Filter by Site_ID"),
+                    status: Optional[str] = Query(None, pattern="^(red|amber|green|none)$"),
+                    user: dict = Depends(get_current_user),
+                    session: AsyncSession = Depends(get_session)):
+    """Phase 18 Track 4 — `services/smart_min.py` holds the method.
+
+    Read-only and site-scoped exactly like `/stock/by-site`: a site-scoped
+    user sees their own site, an unscoped one every site (or the one asked
+    for). Nothing is written — a manual `Minimum_Qty` stays the operator's."""
+    from .services import smart_min as SM
+    site_id = resolve_site_param(user, site_id)
+    if site_id == "":
+        return {"items": [], "counts": {"red": 0, "amber": 0, "green": 0, "none": 0},
+                "sites": {}, "params": {}}
+    out = await SM.compute(session, site_id or None)
+    if status:
+        out["items"] = [r for r in out["items"] if r["Status"] == status]
+    return out
+
+
+class SitePaceIn(BaseModel):
+    site_id: Optional[str] = None
+    # null or 0 clears the site's rate (back to the global rate / approved work)
+    sqm_per_day: Optional[float] = Field(None, ge=0, le=100_000)
+
+
+@router.put("/smart-min/pace",
+            summary="Set (or clear) one site's planned SQM per day for Surface Shield minimums")
+async def smart_min_pace(body: SitePaceIn = Body(...),
+                         user: dict = Depends(require_roles("hod")),
+                         session: AsyncSession = Depends(get_session)):
+    """Ruling Q6 option B: a site plans its own lining rate. The Reorder
+    signals tab suggests the site's approved SQM per day over the last 30 days
+    and the HOD keeps it or types their own. A site HOD may only set their own
+    site (`resolve_site_write`); admin names the site. Audited."""
+    from .services import smart_min as SM
+    from .services.ledger import write_audit
+    site = resolve_site_write(user, body.site_id)
+    if not site:
+        raise HTTPException(422, "site_id is required")
+    known = (await session.execute(text(
+        'SELECT 1 FROM sme_equipment WHERE "Site_ID" = :s LIMIT 1'), {"s": site})).first()
+    if known is None:
+        raise HTTPException(422, f"{site} has no SQM plan — there is nothing to pace")
+    key = SM.SITE_PACE_PREFIX + site
+    rate = body.sqm_per_day or 0
+    if rate > 0:
+        val = f"{rate:g}"
+        res = await session.execute(text("UPDATE app_settings SET value = :v WHERE key = :k"),
+                                    {"k": key, "v": val})
+        if res.rowcount == 0:
+            await session.execute(text("INSERT INTO app_settings (key, value) VALUES (:k, :v)"),
+                                  {"k": key, "v": val})
+    else:
+        await session.execute(text("DELETE FROM app_settings WHERE key = :k"), {"k": key})
+    await write_audit(session, user["username"], "SS_PACE_SET", "app_settings",
+                      f"{key}={rate:g}" if rate > 0 else f"{key} cleared")
+    await session.commit()
+    return {"site_id": site, "sqm_per_day": rate or None}
 
 
 @router.get("/lots", summary="Per-lot remaining quantity — v_lot_balance")

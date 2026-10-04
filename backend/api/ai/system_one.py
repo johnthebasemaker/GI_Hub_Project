@@ -132,12 +132,14 @@ class Decision:
     valid_json: Optional[bool] = None
     error: str = ""
     guard: dict = field(default_factory=dict)
+    cached: bool = False                 # the model's answer came from CACHE
 
     def as_attrs(self) -> dict:
         return {"intent": self.intent, "is_safe": self.is_safe,
                 "source": self.source, "blocked": self.blocked,
                 "flagged": self.flagged, "model": self.model or None,
-                "router_ms": self.ms, "valid_json": self.valid_json,
+                "router_ms": self.ms, "router_cached": self.cached,
+                "valid_json": self.valid_json,
                 "error": self.error or None, "prompt_hash": prompt_hash(),
                 "nav": (self.nav or {}).get("path"),
                 "guard_decision": self.guard.get("decision"),
@@ -270,6 +272,43 @@ def resolve_page(text: str, role: str) -> Optional[dict]:
     return {"path": path, "label": labels[path]}
 
 
+# ⚠️ PHASE 18: A HOW-TO QUESTION IS DECIDED WITHOUT THE MODEL. MANUAL_QA is
+# the default lane — today's fully-fenced path — so routing a question there is
+# never a widening, and for a question the guard ALLOWS the model's is_safe
+# could not have refused it anyway (Q17-2: alone, off the SQL lane, it only
+# flags). Skipping the call therefore changes no outcome and saves the whole
+# of it (~350 ms on Metal, ~0.9-1.6 s on CI's CPU). Measured on routing.yaml:
+# all 15 MANUAL_QA prompts match and none of the other 45 does.
+#
+# The shapes are the unambiguous openings of a question about HOW the app
+# works. Anything that also asks for a number, a list or a period ("how do I
+# see how many drums…", "…this week") or for a video is left to the model.
+_HOWTO_RX = re.compile(
+    r"^\s*(?:please\s+)?(?:"
+    r"how\s+(?:do|does|can|should|would)\s+\S+"
+    r"|what\s+(?:does|do)\s+.+\s+mean\b"
+    r"|what\s+is\s+(?:a|an)\s+\w+"
+    r"|what\s+is\s+the\s+(?:difference|meaning|purpose|point)\b"
+    r"|what\s+(?:is|are)\s+.+\s+(?:for|used\s+for)\s*[?.!]*\s*$"
+    r"|what\s+happens\s+(?:when|after|if|to)\b"
+    r"|why\s+(?:is|are|does|do|did|was|were|can'?t|cannot|won'?t|isn'?t|doesn'?t)\b"
+    r"|who\s+(?:can|may|should|approves|is\s+allowed|are\s+allowed)\b"
+    r"|can\s+(?:a|an)\s+\w+"
+    r"|explain\b)", re.I)
+_DATA_WORDS_RX = re.compile(
+    r"\b(how\s+many|how\s+much|quantit(?:y|ies)|qty|stock\s+(?:of|level|at|for)|"
+    r"current\s+stock|balance|totals?|list|lists|report|count|"
+    r"last\s+(?:week|month|year)|this\s+(?:week|month|year)|yesterday|today|"
+    r"expir\w*\s+in|sap\s*\d+)\b|\d{3,}", re.I)
+
+
+def is_howto(question: str) -> bool:
+    """True when `question` is plainly a how/what/why/who question about the app."""
+    q = question or ""
+    return bool(_HOWTO_RX.match(q)) and not _DATA_WORDS_RX.search(q) \
+        and not _VIDEO_REQUEST_RX.search(q)
+
+
 def classify_rules(question: str, role: str) -> Optional[Decision]:
     """Stage 0. A lane only when the wording leaves no doubt; else None."""
     q = question or ""
@@ -280,6 +319,8 @@ def classify_rules(question: str, role: str) -> Optional[Decision]:
                             nav=page)
     if _TUTORIAL_RX.search(q):
         return Decision(intent="TUTORIAL_SEARCH", is_safe=True, source="rules")
+    if is_howto(q):
+        return Decision(intent="MANUAL_QA", is_safe=True, source="rules")
     return None
 
 
@@ -303,10 +344,19 @@ _WARMING: dict = {"task": None}
 
 
 async def warm() -> dict:
-    """Load (and pin) the router model. Never raises."""
+    """Load (and pin) the router model, and prime its prompt cache. Never raises.
+
+    ⚠️ THE SYSTEM PROMPT IS SENT (Phase 18). Ollama keeps ONE prompt cache per
+    loaded model (`OLLAMA_NUM_PARALLEL=1` here), and a request reuses only the
+    longest prefix it shares with the previous one. v17 warmed with `system=None`,
+    so the first real question after every warm paid the whole ~415-token
+    prompt again: measured 46 ms with the prefix cached, 510 ms without, on
+    Metal — seconds on a CPU box. Sending the real prompt leaves exactly the
+    prefix every question starts with in the cache.
+    """
     t0 = time.perf_counter()
     try:
-        await aic.generate(aic.MODEL_ROUTER, "ok", system=None, temperature=0.0,
+        await aic.generate(aic.MODEL_ROUTER, "ok", system=prompt(), temperature=0.0,
                            num_predict=1, timeout_s=WARM_TIMEOUT_S,
                            options=OPTIONS, keep_alive=KEEP_ALIVE)
         return {"ok": True, "ms": int((time.perf_counter() - t0) * 1000), "error": ""}
@@ -327,11 +377,78 @@ def ensure_warm() -> None:
         _WARMING["task"] = None
 
 
+# ── the decision cache (Phase 18) ───────────────────────────────────────────
+#
+# The router is DETERMINISTIC by construction (temperature 0, seed 0, top_k 1,
+# a pinned prompt), so the same question on the same model and prompt gets the
+# same answer — and asking the model again is pure latency. Warehouse questions
+# repeat ("how much primer is at CNCEC?" is asked every morning), so a hit
+# turns ~350 ms (Metal) / ~1 s (CPU) into microseconds.
+#
+# ⚠️ WHAT IS CACHED IS THE MODEL'S ANSWER, NEVER THE DECISION. The guard runs
+# on every request and the combination rule (Q17-2) is applied afresh, so a
+# pattern-set change takes effect at once. The key carries the prompt hash and
+# the model name, so a prompt edit or a model swap never serves an old answer.
+# Only VALID replies are cached — a timeout, an outage or a malformed reply is
+# retried by the next question, exactly as before.
+#
+# Per worker and in memory (four workers = four caches): that only lowers the
+# hit rate, it cannot make an answer wrong — nothing here is shared state.
+CACHE_MAX = int(os.environ.get("GI_AI_ROUTER_CACHE", "512"))
+CACHE_TTL_S = float(os.environ.get("GI_AI_ROUTER_CACHE_TTL_S", "3600"))
+
+
+class _AnswerCache:
+    def __init__(self, maxsize: int, ttl_s: float) -> None:
+        self.maxsize, self.ttl_s = maxsize, ttl_s
+        self.enabled = maxsize > 0
+        self._d: "dict[tuple, tuple[float, str, bool]]" = {}
+        self.hits = self.misses = 0
+
+    @staticmethod
+    def key(question: str) -> tuple:
+        q = re.sub(r"\s+", " ", (question or "")[:MAX_QUESTION_CHARS]).strip().lower()
+        return (aic.MODEL_ROUTER, prompt_hash(), q)
+
+    def get(self, question: str) -> Optional[tuple[str, bool]]:
+        if not self.enabled:
+            return None
+        k = self.key(question)
+        hit = self._d.get(k)
+        if hit is None or time.monotonic() - hit[0] > self.ttl_s:
+            self._d.pop(k, None)
+            self.misses += 1
+            return None
+        self._d[k] = self._d.pop(k)              # most recently used goes last
+        self.hits += 1
+        return hit[1], hit[2]
+
+    def put(self, question: str, intent: str, is_safe: bool) -> None:
+        if not self.enabled:
+            return
+        self._d[self.key(question)] = (time.monotonic(), intent, is_safe)
+        while len(self._d) > self.maxsize:
+            self._d.pop(next(iter(self._d)))     # least recently used
+
+    def clear(self) -> None:
+        self._d.clear()
+        self.hits = self.misses = 0
+
+
+CACHE = _AnswerCache(CACHE_MAX, CACHE_TTL_S)
+
+
 # ── stage 1: the model ──────────────────────────────────────────────────────
 
 async def classify_model(question: str) -> Decision:
     """One call to the router model. Never raises: a failure is a fallback."""
     d = Decision(model=aic.MODEL_ROUTER, source="fallback")
+    cached = CACHE.get(question)
+    if cached is not None:
+        d.intent, d.is_safe = cached
+        d.source, d.valid_json, d.error = "model", True, ""
+        d.cached = True
+        return d
     t0 = time.perf_counter()
     try:
         out = await route.call_structured(
@@ -351,6 +468,7 @@ async def classify_model(question: str) -> Decision:
         return d
     d.intent, d.is_safe = parsed
     d.source = "model"
+    CACHE.put(question, d.intent, d.is_safe)
     return d
 
 
