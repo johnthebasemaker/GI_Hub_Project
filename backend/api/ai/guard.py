@@ -297,6 +297,25 @@ ROUTER_UNSAFE_HIT = "router.unsafe"
 ROUTER_SQL_INTENT = "SQL_QUERY"
 
 
+SEMANTIC_HIT = "semantic.attack"
+
+
+def with_semantic_signal(v: InputVerdict) -> InputVerdict:
+    """Phase 19d: the question SOUNDS like the attacks (ai/semantic.py). Pure;
+    returns a copy carrying one more HIT and nothing else.
+
+    ⚠️ The score and the decision are UNCHANGED. A semantic match can never
+    refuse, and cannot even warn, on its own (P18-combo). What the hit does
+    is make Q17-2's rule apply below: hits plus the router saying `is_safe:
+    false` refuse. A paraphrased attack that no pattern matches had no hit, so
+    the model's "unsafe" was only ever a flag on it."""
+    if v.refused or SEMANTIC_HIT in v.hits:
+        return v
+    return InputVerdict(decision=v.decision, score=v.score, hits=[*v.hits, SEMANTIC_HIT],
+                        reason=v.reason, stage=v.stage,
+                        patterns_version=v.patterns_version)
+
+
 def with_router_signal(v: InputVerdict, *, is_safe: Optional[bool],
                        intent: str) -> InputVerdict:
     """Fold the router's verdict into an input verdict. Pure; returns a copy.

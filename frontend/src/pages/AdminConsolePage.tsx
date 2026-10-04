@@ -104,6 +104,18 @@ function SettingsTab() {
           <Switch checked={s.maintenance_mode === '1'} checkedChildren="ON" unCheckedChildren="OFF"
             onChange={(v) => put.mutate({ key: 'maintenance_mode', value: v ? '1' : '0' })} />
         </Card>
+        {/* Phase 19d — the semantic safety signal (backend/api/ai/semantic.py) */}
+        <Card size="small" title="Assistant — semantic safety signal" style={{ marginTop: 16 }}>
+          <Typography.Paragraph type="secondary">
+            Compares each assistant question with known trick questions by meaning, not just
+            wording, and lets the router refuse a reworded attack it judges unsafe. It never
+            refuses on its own. Needs the <code>nomic-embed-text</code> model in Ollama (about
+            578 MB of extra memory beside the router), so it is off until you switch it on.
+          </Typography.Paragraph>
+          <Switch data-testid="semantic-guard-switch" checked={s.ai_semantic_guard === '1'}
+            checkedChildren="ON" unCheckedChildren="OFF"
+            onChange={(v) => put.mutate({ key: 'ai_semantic_guard', value: v ? '1' : '0' })} />
+        </Card>
         <Card size="small" title="Backup" style={{ marginTop: 16 }}>
           <Typography.Paragraph type="secondary">
             Runs pg_dump (custom format) into the backups directory now.
