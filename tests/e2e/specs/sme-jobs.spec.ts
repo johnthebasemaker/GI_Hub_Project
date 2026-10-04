@@ -100,9 +100,12 @@ test('the HOD approves the job as a whole', async ({ browser }) => {
     .filter({ has: page.getByRole('button', { name: 'Review job' }) })
   await expect(card).toBeVisible({ timeout: 20_000 })
   await expect(card.getByText('12.5 m²')).toBeVisible()
-  // Phase 15e: the part and the remark it was filed with
+  // Phase 15e: the part and the remark it was filed with. Phase 20a: the
+  // store keeper's EXCEL remark first, verbatim (Q20-3); the job note is shown
+  // only when it differs — here it does not.
   await expect(card.getByTestId('job-remark')).toContainText('Shell')
-  await expect(card.getByTestId('job-remark')).toContainText('Remark: “Shell - 12.5 SQM Done”')
+  await expect(card.getByTestId('job-remark')).toContainText('Excel: “Shell - 12.5 SQM Done”')
+  await expect(card.getByTestId('job-remark')).not.toContainText('Job note')
   await card.getByRole('button', { name: 'Review job' }).click()
   await expect(page.getByText('One decision for the whole job')).toBeVisible()
   await page.getByRole('button', { name: 'Approve the job' }).click()
@@ -140,12 +143,22 @@ test('15e: two store-keeper notes on one day are offered as two jobs', async ({ 
   expect(body.consumption_ids).toHaveLength(1)
   expect(body.sqm).toBe(4.82)
   expect(body.work_area).toBe('Top of Brick Coving')
+  await expect(page.getByText(/Submitted 1 material\(s\)/)).toBeVisible()
   // the Floor note's two materials stay, now with no choice left to make
   await expect(card.locator('tbody .ant-checkbox-input')).toHaveCount(2)
   await expect(card.getByTestId('job-notes')).toHaveCount(0)
   await expect(card.getByLabel('Area covered')).toHaveValue('9.25')
   await expect(card.getByLabel('Part of the equipment')).toHaveValue('Floor')
-  await expect(card.getByRole('button', { name: /^Submit 2 to the HOD$/ })).toBeVisible()
+  // ⚠️ By TEXT, not by an anchored accessible name (Phase 20). After a submit,
+  // antd keeps its loading icon in the DOM while the icon's exit animation runs
+  // — `aria-label="loading"` — so the button's accessible NAME reads "loading
+  // Submit 2 to the HOD" although it is not loading (no ant-btn-loading class,
+  // enabled, the right text: measured). `^Submit…` then failed ~1 run in 4 with
+  // a parallel suite, and every time once the test waited for the toast.
+  const next = card.locator('button.ant-btn-primary', { hasText: /^Submit 2 to the HOD$/ })
+  await expect(next).toBeVisible()
+  await expect(next).not.toHaveClass(/ant-btn-loading/)
+  await expect(next).toBeEnabled()
   await ctx.close()
 })
 

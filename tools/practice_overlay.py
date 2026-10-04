@@ -51,11 +51,13 @@ os.environ.setdefault("GI_DOTENV", "0")
 
 # Bumped when the OVERLAY's content changes. Reported with the tutorial
 # fixture's own DATASET_VERSION as "<fixture>.<overlay>".
-OVERLAY_VERSION = 6   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
+OVERLAY_VERSION = 7   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
                       # · 4 = Phase 18 return desk loans (2026-10-03)
                       # · 5 = Phase 18 reorder-signal trio (2026-10-03)
                       # · 6 = Phase 19 accepted minimum · per-site / global POs ·
                       #       a partly returned loan (2026-10-04)
+                      # · 7 = Phase 20 a week of Surface Shield jobs in every
+                      #       status — the daily log and the bulk flows (2026-10-04)
 
 SITE = "CNCEC"
 WAREHOUSE = "WH-01"
@@ -219,6 +221,10 @@ async def seed_queues() -> dict:
                 out["note_jobs"] = await seed_job_notes(today)
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  job-note example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["log_jobs"] = await seed_daily_log_jobs(today)
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  daily-log example skipped: {type(e).__name__}: {str(e)[:160]}")
             try:
                 out["lots"] = await seed_lots(today)
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
@@ -399,6 +405,87 @@ async def seed_job_notes(today: str) -> int:
                 {"d": today, "p": sap, "q": qty, "site": SITE, "t": JOB_TAG, "r": remark})
         await s.commit()
     return 2
+
+
+async def seed_daily_log_jobs(today: str) -> int:
+    """Phase 20 — a week of Surface Shield jobs, one of each status (rule 17g).
+
+    On the Practice sump tank (PRACTICE-TK-01, PRL1: primer 0.35 + topcoat 0.6
+    KG/m²), filed and decided THROUGH THE REAL SERVICES (`sme_groups.submit` /
+    `decide_group`), so every figure is what Live would hold:
+
+      D-6  "Floor - 10 SQM Done"          approved
+      D-5  "Bottom Wall - 8 SQM Done"     approved, the HOD corrected it to 7.5
+                                          with a justification (the remark and
+                                          the approved SQM differ — the log says so)
+      D-4  "Dyke wall patch work"         rejected: no area in the remark
+      D-3  "Floor - 6 SQM Done"           pending
+      D-2  "Sump Wall - 5 SQM Done"       pending, HIGH variance (primer +71 %)
+      D-1  "Coving - 4 SQM Done"          not yet filed, and READY (the remark
+                                          gives the SQM): the bulk-submit example
+
+    Idempotent and never fatal; Practice-only data (P12-5)."""
+    import datetime as _d
+
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+    from backend.api.services import sme_groups as G
+
+    t0 = _d.date.fromisoformat(today)
+    day = lambda n: (t0 - _d.timedelta(days=n)).isoformat()      # noqa: E731
+    jobs = (  # days back, remark, primer KG, topcoat KG, filed SQM, decision
+        (6, "Floor - 10 SQM Done", 3.5, 6.0, 10.0, "approve"),
+        (5, "Bottom Wall - 8 SQM Done", 2.8, 4.8, 8.0, "approve-edit"),
+        (4, "Dyke wall patch work", 1.0, 1.8, 3.0, "reject"),
+        (3, "Floor - 6 SQM Done", 2.1, 3.6, 6.0, "pending"),
+        (2, "Sump Wall - 5 SQM Done", 3.0, 3.0, 5.0, "pending"),
+        (1, "Coving - 4 SQM Done", 1.4, 2.4, None, "unfiled"),
+    )
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                'SELECT 1 FROM consumption WHERE "Tank_No" = :t AND "Remarks" = :r LIMIT 1'),
+                {"t": JOB_TAG, "r": jobs[0][1]})).first():
+            return 0
+        if not (await s.execute(text(
+                'SELECT 1 FROM sme_equipment WHERE "Equipment_Tag_No" = :t'), {"t": JOB_TAG})).first():
+            return 0        # seed_job_notes builds the tank; nothing to file against
+        made = 0
+        for back, remark, primer, top, sqm, what in jobs:
+            ids = []
+            for sap, qty in ((JOB_SAPS[0][0], primer), (JOB_SAPS[1][0], top)):
+                ids.append((await s.execute(text(
+                    'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                    '"Tank_No", "Work_Type", "Issued_To", "Remarks") VALUES '
+                    "(:d, :p, :q, :site, :t, 'Lining', 'Aria Bellweather', :r) RETURNING id"),
+                    {"d": day(back), "p": sap, "q": qty, "site": SITE, "t": JOB_TAG,
+                     "r": remark})).scalar_one())
+            await s.commit()
+            if sqm is None:
+                made += 1
+                continue
+            async with s.begin():
+                out = await G.submit(s, site_id=SITE, work_date=day(back), tag=JOB_TAG,
+                                     code=JOB_CODE, sqm=sqm, consumption_ids=ids,
+                                     notes=remark, username="practice.supervisor")
+            gid = out["group_id"]
+            if what.startswith("approve"):
+                edit = what == "approve-edit"
+                async with s.begin():
+                    await G.decide_group(
+                        s, group_id=gid, approve=True,
+                        edits={"SQM_Completed": 7.5} if edit else None,
+                        justification=("Re-measured on site: 7.5 m2 - the remark "
+                                       "rounded up." if edit else ""),
+                        reject_reason="", username="practice.hod", site_id=SITE)
+            elif what == "reject":
+                async with s.begin():
+                    await G.decide_group(
+                        s, group_id=gid, approve=False, edits=None, justification="",
+                        reject_reason="No area in the remark - measure it and file again.",
+                        username="practice.hod", site_id=SITE)
+            made += 1
+    return made
 
 
 ROLL_SAP = "899973"

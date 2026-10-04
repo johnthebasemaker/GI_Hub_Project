@@ -29,6 +29,7 @@ from sqlalchemy import text as sqt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .auth import require_roles, site_scope
+from .services.sme_history import EXPORT_COLUMNS as SH_COLUMNS
 from .db import get_session
 from . import sme_engine
 from .sme import _snapshot_rows
@@ -353,8 +354,21 @@ async def _build_summary(session: AsyncSession, *, site: str | None,
         WHERE (status = 'pending' OR updated_at::date BETWEEN :d0 AND :d1)
         {xsite_frag} ORDER BY id DESC LIMIT {detail_limit}''', d0=d0, d1=d1, **sp)
 
+    # ── Phase 20a — the Surface Shield daily log, same period (ruling Q20-7:
+    # the weekly Executive Summary email carries it, because the email is this
+    # payload rendered by exec_pdf). Never fatal: a summary without it beats
+    # no summary.
+    from .services import sme_history as SH
+    try:
+        ss = await SH.history(session, site_id=site, dfrom=dfrom, dto=dto)
+        surface_shield = {"kpis": ss["kpis"],
+                          "rows": SH.export_rows(ss)[:detail_limit]}
+    except HTTPException:
+        surface_shield = {"kpis": None, "rows": []}
+
     return {
         "site_id": site, "date_from": dfrom, "date_to": dto, "days": span,
+        "surface_shield": surface_shield,
         "generated_at": _dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "kpis": {
             **kpis,
@@ -456,6 +470,8 @@ async def executive_summary_xlsx(date_from: str | None = Query(None),
          ["Date", "SAP_Code", "Equipment_Description", "Quantity", "UOM", "Site_ID"])),
         ("SQM Done", *tab(d["sqm_detail"],
          ["Work_Date", "Equipment_Tag", "System_Code", "SQM_Done", "Remarks"])),
+        # Phase 20a — the Surface Shield daily log (status + the Excel remark)
+        ("Surface Shield Log", SH_COLUMNS, d["surface_shield"]["rows"]),
         ("Manpower Present", *tab(d["manpower"]["present"],
          ["Employee_Code", "Name", "Designation", "Worker_Type", "Hours", "OT_Hours", "Allocated_SQM"])),
         ("Manpower Absent", *tab(d["manpower"]["absent"],

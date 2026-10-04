@@ -29805,6 +29805,195 @@ async def test_phase19d_semantic_signal():
           and "ai_semantic_guard" in CON._EDITABLE_SETTINGS, "")
 
 
+async def test_phase20a_surface_shield_log():
+    """Suite 20A — Phase 20a: the Surface Shield daily log.
+
+    Synthetic site SVC20A: one tank, a two-material system, jobs filed and
+    decided THROUGH the real services (sme_groups.submit / decide_group) in
+    every status. Proves the grouping, the five statuses, the Excel remark
+    returned as typed, the remark-vs-filed SQM flag, packs × Unit_Size = KG,
+    a re-filed rejection shown once, the read roles, the exports, the weekly
+    Executive Summary payload, and that nothing is written. Cleaned up."""
+    import datetime as _dtm
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from .services import sme_groups as G
+    from .services import sme_history as H
+
+    SITE, TAG, CODE = "SVC20A", "SVC20A-TK1", "SVC20A-SYS"
+    today = _dtm.date.today()
+    d = lambda n: (today - _dtm.timedelta(days=n)).isoformat()    # noqa: E731
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            r = await s_.execute(_t(sql), kw)
+            await s_.commit()
+            return r
+
+    async def cleanup():
+        for sql in ('DELETE FROM sme_consumption_log WHERE "Site_ID" = \'SVC20A\'',
+                    'DELETE FROM sme_attribution_group WHERE "Site_ID" = \'SVC20A\'',
+                    'DELETE FROM consumption WHERE "Site_ID" = \'SVC20A\'',
+                    'DELETE FROM sme_sqm_progress WHERE "Site_ID" = \'SVC20A\'',
+                    'DELETE FROM sme_equipment WHERE "Site_ID" = \'SVC20A\'',
+                    'DELETE FROM sme_recipe WHERE "Lining_System_Code" = \'SVC20A-SYS\'',
+                    'DELETE FROM inventory WHERE "SAP_Code" LIKE \'SVC20A%\''):
+            await ex(sql)
+
+    def tok(user, role, site):
+        return {"Authorization": f"Bearer {_auth._make_token(user, role, site, _auth.ACCESS_TTL)}"}
+
+    async def draw(day, remark, a_qty, b_qty):
+        ids = []
+        for sap, q in (("SVC20A-A", a_qty), ("SVC20A-B", b_qty)):
+            ids.append((await ex('INSERT INTO consumption ("Date", "SAP_Code", "Quantity", '
+                                 '"Site_ID", "Tank_No", "Work_Type", "Remarks") VALUES '
+                                 "(:d, :p, :q, :s, :t, 'Lining', :r) RETURNING id",
+                                 d=day, p=sap, q=q, s=SITE, t=TAG, r=remark)).scalar_one())
+        return ids
+
+    async def file(day, ids, sqm, note):
+        async with SessionLocal() as s_:
+            async with s_.begin():
+                return (await G.submit(s_, site_id=SITE, work_date=day, tag=TAG, code=CODE,
+                                       sqm=sqm, consumption_ids=ids, notes=note,
+                                       username="svc_sup"))["group_id"]
+
+    async def decide(gid, approve, **kw):
+        async with SessionLocal() as s_:
+            async with s_.begin():
+                await G.decide_group(s_, group_id=gid, approve=approve,
+                                     edits=kw.get("edits"), justification=kw.get("why", ""),
+                                     reject_reason=kw.get("reason", ""), username="svc_hod",
+                                     site_id=SITE)
+
+    await cleanup()
+    try:
+        # A: a CAN of 4 KG (packs ⇄ KG at read, P14-units); B: KG itself
+        await ex('INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+                 '"Category", "UOM", "Site_ID", "Unit_Size", "Base_UOM") VALUES '
+                 "('SVC20A-A', 'MAT-SVC20A-A', 'SVC20A primer', 'Surface Shields', 'CAN', :s, 4, 'KG'),"
+                 "('SVC20A-B', 'MAT-SVC20A-B', 'SVC20A topcoat', 'Surface Shields', 'KG', :s, 1, 'KG')", s=SITE)
+        await ex('INSERT INTO sme_recipe ("Lining_System_Code", "Execution_Sub_Activity_Code", '
+                 '"Lining_System_Name", "Material_Code", "SAP_Code", "UOM", "For_1_SQM") VALUES '
+                 "(:c, :c, 'SVC20A lining', 'MAT-SVC20A-A', 'SVC20A-A', 'KG', 0.4),"
+                 "(:c, :c, 'SVC20A lining', 'MAT-SVC20A-B', 'SVC20A-B', 'KG', 0.6)", c=CODE)
+        await ex('INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", "Type", "Substrate", '
+                 '"Lining_System_Code", "Surface_Area_SQM") VALUES (:s, :t, \'CV\', '
+                 "'CONCRETE', :c, 200)", s=SITE, t=TAG, c=CODE)
+        await ex('INSERT INTO sme_sqm_progress ("Site_ID", "Equipment_Tag_No", "Lining_System_Code", '
+                 '"Original_SQM", "Done_SQM") VALUES (:s, :t, :c, 200, 0)', s=SITE, t=TAG, c=CODE)
+        # 10 m²: A 1 can (4 KG) + B 6 KG — on the recipe exactly
+        g_ok = await file(d(6), await draw(d(6), "Floor – 10 SQM Done (“east”)", 1, 6), 10, None)
+        await decide(g_ok, True)
+        g_ed = await file(d(5), await draw(d(5), "Wall - 8 SQM Done", 0.8, 4.8), 8, None)
+        await decide(g_ed, True, edits={"SQM_Completed": 7.5}, why="re-measured on site")
+        rej_ids = await draw(d(4), "Dyke patch work", 0.3, 1.8)
+        g_rj = await file(d(4), rej_ids, 3, "patch, 3 m2")
+        await decide(g_rj, False, reason="No area in the remark")
+        g_pd = await file(d(3), await draw(d(3), "Floor - 6 SQM Done", 0.6, 3.6), 6, None)
+        await draw(d(2), "Coving - 4 SQM Done", 0.4, 2.4)                    # never filed
+        async with SessionLocal() as s_:
+            n_before = (await s_.execute(_t('SELECT (SELECT count(*) FROM sme_attribution_group), '
+                                            '(SELECT count(*) FROM sme_consumption_log)'))).first()
+            h = await H.history(s_, site_id=SITE)
+        jobs = [j for day in h["days"] for j in day["jobs"]]
+        by_date = {j["work_date"]: j for j in jobs}
+        check("20a-01: DATE → JOB, newest day first, and every job in its plain status — "
+              "approved, approved, rejected, pending, not yet filed",
+              [x["date"] for x in h["days"]] == [d(2), d(3), d(4), d(5), d(6)]
+              and [by_date[d(n)]["status"] for n in (6, 5, 4, 3, 2)]
+              == ["approved", "approved", "rejected", "pending", "not_filed"],
+              str([(j["work_date"], j["status"]) for j in jobs]))
+        j6 = by_date[d(6)]
+        check("20a-02: ⚠️ the Excel remark comes back AS TYPED (en dash, curly quotes) — "
+              "the words the SQM came from, never paraphrased (ruling Q20-3)",
+              j6["excel_remarks"] == ["Floor – 10 SQM Done (“east”)"]
+              and j6["sqm_from_remark"] == 10.0 and not j6["sqm_differs"], str(j6["excel_remarks"]))
+        j5 = by_date[d(5)]
+        check("20a-03: the HOD corrected 8 → 7.5 — the log shows the filed SQM, the remark's "
+              "8, flags the difference and carries the HOD's justification",
+              j5["sqm"] == 7.5 and j5["sqm_from_remark"] == 8.0 and j5["sqm_differs"]
+              and j5["hod_justification"] == "re-measured on site" and j5["original_sqm"] == 8.0
+              and j5["decided_by"] == "svc_hod", str({k: j5[k] for k in ("sqm", "sqm_from_remark", "hod_justification", "original_sqm")}))
+        j4 = by_date[d(4)]
+        check("20a-04: a rejected job carries its reason; the job note is shown SECOND and "
+              "only because it differs from the Excel remark",
+              j4["rejected_reason"] == "No area in the remark"
+              and j4["excel_remarks"] == ["Dyke patch work"] and j4["job_note"] == "patch, 3 m2",
+              str(j4))
+        a6 = next(m for m in j6["materials"] if m["sap"] == "SVC20A-A")
+        check("20a-05: packs AND kilograms together — 1 CAN of the primer is 4 KG "
+              "(packs × Unit_Size, converted at read: P14-units)",
+              a6["pack_qty"] == 1 and a6["pack_uom"] == "CAN" and a6["base_qty"] == 4.0
+              and a6["base_uom"] == "KG" and j6["drawn"]["base"] == {"KG": 10.0}, str(a6))
+        k = h["kpis"]
+        check("20a-06: the window's KPIs — 17.5 m² approved (10 + 7.5), 6 pending, 3 "
+              "rejected, 1 job not yet filed, 1 differs from its remark",
+              k["sqm_approved"] == 17.5 and k["sqm_pending"] == 6.0 and k["sqm_rejected"] == 3.0
+              and k["jobs"]["not_filed"] == 1 and k["remark_differs"] == 1, str(k))
+        # re-file the rejected job: it must appear ONCE, as the new pending job
+        await file(d(4), rej_ids, 3, "Dyke patch work")
+        async with SessionLocal() as s_:
+            h2 = await H.history(s_, site_id=SITE, status=None)
+        day4 = next(x for x in h2["days"] if x["date"] == d(4))
+        check("20a-07: ⚠️ a rejected job that was RE-FILED is shown once — as the new "
+              "pending job, not also as the old rejection (its rows moved)",
+              [j["status"] for j in day4["jobs"]] == ["pending"], str([j["status"] for j in day4["jobs"]]))
+        async with SessionLocal() as s_:
+            hp = await H.history(s_, site_id=SITE, status="approved")
+        check("20a-08: filters — status=approved returns only the two approved jobs",
+              sorted(j["work_date"] for x in hp["days"] for j in x["jobs"]) == [d(6), d(5)], "")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            got = {}
+            for name, hdr, params in (
+                    ("logistics", tok("svc_log20", "logistics", None), {"site_id": SITE}),
+                    ("auditor", tok("svc_aud20", "auditor", None), {"site_id": SITE}),
+                    ("hod_own", tok("hod", "hod", "CNCEC"), {}),
+                    ("sk_foreign", tok("worker", "store_keeper", "CNCEC"), {"site_id": SITE}),
+                    ("qc", tok("svc_qc20", "qc", "CNCEC"), {})):
+                got[name] = (await ac.get("/execution/sme-link/history", headers=hdr,
+                                          params=params)).status_code
+            xl = await ac.get("/execution/sme-link/history/export", headers=tok("svc_log20", "logistics", None),
+                              params={"site_id": SITE, "format": "xlsx"})
+            pdf = await ac.get("/execution/sme-link/history/export", headers=tok("svc_log20", "logistics", None),
+                               params={"site_id": SITE, "format": "pdf"})
+            staged = (await ac.get("/execution/sme-link/groups/staged",
+                                   headers=tok("svc_hod", "hod", SITE))).json()["items"]
+        check("20a-09: ruling Q20-1 — Logistics and the Auditor read the log, the HOD reads "
+              "their own site; a CNCEC store keeper naming SVC20A is refused (403) and QC, "
+              "outside the read set, is refused (403)",
+              got == {"logistics": 200, "auditor": 200, "hod_own": 200, "sk_foreign": 403, "qc": 403},
+              str(got))
+        check("20a-10: Excel and PDF exports of what is on screen (ruling Q20-7)",
+              xl.status_code == 200 and xl.content[:2] == b"PK"
+              and pdf.status_code == 200 and pdf.content[:5] == b"%PDF-",
+              f"{xl.status_code} {pdf.status_code}")
+        pend = next((g for g in staged if g["Work_Date"] == d(3)), {})
+        check("20a-11: the HOD's approval card now carries the store keeper's Excel remark "
+              "verbatim (excel_remarks), not only the note it was filed with",
+              pend.get("excel_remarks") == ["Floor - 6 SQM Done"], str(pend.get("excel_remarks")))
+        from . import exec_summary as ES
+        from .exec_pdf import render_exec_pdf
+        async with SessionLocal() as s_:
+            es = await ES._build_summary(s_, site=SITE, dfrom=d(7), dto=today.isoformat())
+        blob = render_exec_pdf(es, site=SITE, username="svc")
+        check("20a-12: ruling Q20-7 — the Executive Summary (and so the WEEKLY EMAIL, which "
+              "renders it) carries the Surface Shield log for its period, and the PDF renders",
+              es["surface_shield"]["kpis"]["sqm_approved"] == 17.5
+              and len(es["surface_shield"]["rows"]) >= 5 and blob[:5] == b"%PDF-"
+              and len(H.EXPORT_COLUMNS) == 15, str(es["surface_shield"]["kpis"])[:200])
+        async with SessionLocal() as s_:
+            n_after = (await s_.execute(_t('SELECT (SELECT count(*) FROM sme_attribution_group), '
+                                           '(SELECT count(*) FROM sme_consumption_log)'))).first()
+        check("20a-13: READ-ONLY — reading the log, exporting it and building the summary "
+              "add no job and no attribution row (the one new job is the re-file above)",
+              n_after[0] == n_before[0] + 1 and n_after[1] == n_before[1], f"{n_before} → {n_after}")
+    finally:
+        await cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -30145,6 +30334,9 @@ async def main() -> int:
     print("\n 19D. Phase 19d — the semantic safety signal: one more hit, refuses only "
           "with the router's agreement, fails open, ships OFF, no holdout in its bank")
     await test_phase19d_semantic_signal()
+    print("\n 20A. Phase 20a — the Surface Shield daily log: date → job → materials, plain "
+          "statuses, the Excel remark as typed, read by management, exported, in the weekly summary")
+    await test_phase20a_surface_shield_log()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

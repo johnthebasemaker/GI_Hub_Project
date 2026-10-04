@@ -1330,6 +1330,7 @@ export default function ExecutionPage() {
         store keeper verifies the quantities against what left the shelf, and
         the HOD approves — approval is what posts the area <em>and</em> deducts
         the material, so nothing before it moves a figure or a quantity.
+        {' '}<Link to="/surface-shield/log" data-testid="link-ss-log">Surface Shield daily log →</Link>
       </Typography.Paragraph>
       <FormPrintCard />
       {/* ⚠️ TRACK 3 (Phase 13). Surface Shield material issued from the general

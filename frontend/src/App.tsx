@@ -33,6 +33,7 @@ const WarehousePage = lazy(() => import('./pages/WarehousePage'))
 const IncomingDeliveriesPage = lazy(() => import('./pages/IncomingDeliveriesPage'))
 const SupervisorPage = lazy(() => import('./pages/SupervisorPage'))
 const ExecutionPage = lazy(() => import('./pages/ExecutionPage'))
+const SurfaceShieldLogPage = lazy(() => import('./pages/SurfaceShieldLogPage'))
 const SkRequestsPage = lazy(() => import('./pages/SkRequestsPage'))
 const QcInspectionsPage = lazy(() => import('./pages/QcInspectionsPage'))
 const QcAccountsPage = lazy(() => import('./pages/QcAccountsPage'))
@@ -84,6 +85,7 @@ export default function App() {
         <Route path="site/incoming" element={<IncomingDeliveriesPage />} />
         <Route path="supervisor" element={<SupervisorPage />} />
         <Route path="execution" element={<ExecutionPage />} />
+        <Route path="surface-shield/log" element={<SurfaceShieldLogPage />} />
         <Route path="sk/requests" element={<SkRequestsPage />} />
         <Route path="qc/inspections" element={<QcInspectionsPage />} />
         <Route path="qc/accounts" element={<QcAccountsPage />} />
