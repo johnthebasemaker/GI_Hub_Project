@@ -29994,6 +29994,191 @@ async def test_phase20a_surface_shield_log():
         await cleanup()
 
 
+async def test_phase20b_bulk():
+    """Suite 20B — Phase 20b: bulk submit and bulk approve.
+
+    Each item goes through the per-item service in its OWN SAVEPOINT: a bad one
+    fails alone with its reason. Approve-only, ≤ 50, idempotent (SQM credited
+    once), HOD-only for decisions, one notification per batch / submitter.
+    Synthetic site SVC20B; cleaned up."""
+    import datetime as _dtm
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+
+    SITE, TAG, CODE = "SVC20B", "SVC20B-TK1", "SVC20B-SYS"
+    today = _dtm.date.today()
+    d = lambda n: (today - _dtm.timedelta(days=n)).isoformat()    # noqa: E731
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            r = await s_.execute(_t(sql), kw)
+            await s_.commit()
+            return r
+
+    async def q(sql, **kw):
+        async with SessionLocal() as s_:
+            return (await s_.execute(_t(sql), kw)).scalar()
+
+    async def rows(sql, **kw):
+        async with SessionLocal() as s_:
+            return (await s_.execute(_t(sql), kw)).all()
+
+    async def cleanup():
+        for sql in ('DELETE FROM sme_execution_entry WHERE "Site_ID" = \'SVC20B\'',
+                    'DELETE FROM sme_consumption_log WHERE "Site_ID" = \'SVC20B\'',
+                    'DELETE FROM sme_attribution_group WHERE "Site_ID" = \'SVC20B\'',
+                    'DELETE FROM consumption WHERE "Site_ID" = \'SVC20B\'',
+                    'DELETE FROM sme_sqm_progress WHERE "Site_ID" = \'SVC20B\'',
+                    'DELETE FROM sme_equipment WHERE "Site_ID" = \'SVC20B\'',
+                    'DELETE FROM sme_recipe WHERE "Lining_System_Code" = \'SVC20B-SYS\'',
+                    'DELETE FROM inventory WHERE "SAP_Code" LIKE \'SVC20B%\''):
+            await ex(sql)
+
+    def tok(user, role, site):
+        return {"Authorization": f"Bearer {_auth._make_token(user, role, site, _auth.ACCESS_TTL)}"}
+
+    async def draw(day, remark, a, b):
+        return [(await ex('INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                          '"Tank_No", "Work_Type", "Remarks") VALUES (:d, :p, :q, :s, :t, '
+                          "'Lining', :r) RETURNING id", d=day, p=sap, q=qty, s=SITE, t=TAG,
+                          r=remark)).scalar_one()
+                for sap, qty in (("SVC20B-A", a), ("SVC20B-B", b))]
+
+    def job(day, ids, sqm, key):
+        return {"key": key, "work_date": day, "tag": TAG, "code": CODE, "sqm": sqm,
+                "consumption_ids": ids, "notes": f"{key} - {sqm} SQM Done", "site_id": SITE}
+
+    await cleanup()
+    try:
+        await ex('INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+                 '"Category", "UOM", "Site_ID", "Unit_Size", "Base_UOM") VALUES '
+                 "('SVC20B-A', 'MAT-SVC20B-A', 'SVC20B primer', 'Surface Shields', 'KG', :s, 1, 'KG'),"
+                 "('SVC20B-B', 'MAT-SVC20B-B', 'SVC20B topcoat', 'Surface Shields', 'KG', :s, 1, 'KG')", s=SITE)
+        await ex('INSERT INTO sme_recipe ("Lining_System_Code", "Execution_Sub_Activity_Code", '
+                 '"Lining_System_Name", "Material_Code", "SAP_Code", "UOM", "For_1_SQM") VALUES '
+                 "(:c, :c, 'SVC20B lining', 'MAT-SVC20B-A', 'SVC20B-A', 'KG', 0.4),"
+                 "(:c, :c, 'SVC20B lining', 'MAT-SVC20B-B', 'SVC20B-B', 'KG', 0.6)", c=CODE)
+        await ex('INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", "Type", "Substrate", '
+                 '"Lining_System_Code", "Surface_Area_SQM") VALUES (:s, :t, \'CV\', '
+                 "'CONCRETE', :c, 500)", s=SITE, t=TAG, c=CODE)
+        await ex('INSERT INTO sme_sqm_progress ("Site_ID", "Equipment_Tag_No", "Lining_System_Code", '
+                 '"Original_SQM", "Done_SQM") VALUES (:s, :t, :c, 500, 0)', s=SITE, t=TAG, c=CODE)
+        j1 = await draw(d(5), "J1", 2.0, 3.0)
+        j2 = await draw(d(4), "J2", 4.0, 6.0)
+        j3 = await draw(d(3), "J3", 0.8, 1.2)
+        HS = tok("svc_sup20", "supervisor", SITE)
+        HH = tok("svc_hod20", "hod", SITE)
+        base_n = await q("SELECT COALESCE(max(id), 0) FROM app_notifications")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            bad = job(d(3), j3 + [j1[0]], 2, "J3-bad")     # a row from another DAY
+            rs = await ac.post("/execution/sme-link/groups/bulk-submit", headers=HS, json={"jobs": [
+                job(d(5), j1, 5, "J1"), job(d(4), j2, 10, "J2"), bad]})
+            body = rs.json()
+            subm = {x["key"]: x["group_id"] for x in body.get("submitted", [])}
+            skip = {x["key"]: x for x in body.get("skipped", [])}
+            n_hod = await q("SELECT count(*) FROM app_notifications WHERE id > :b AND "
+                            "event_key = 'sme_group_submitted' AND recipient_site = :s", b=base_n, s=SITE)
+            check("20b-01: bulk SUBMIT — two ready jobs filed, the third (a row from another "
+                  "day) SKIPPED with its reason while the others land; the HOD is told ONCE "
+                  "for the batch, not once per job",
+                  rs.status_code == 200 and set(subm) == {"J1", "J2"}
+                  and skip.get("J3-bad", {}).get("status") == 422
+                  and "one day" in skip["J3-bad"]["reason"].lower() and n_hod == 1,
+                  f"{rs.status_code} {str(body)[:300]} n_hod={n_hod}")
+            # J3 filed alone, then approved one-by-one: "already approved" in the batch
+            g3 = (await ac.post("/execution/sme-link/groups", headers=HS,
+                                json=job(d(3), j3, 2, "J3"))).json()["group_id"]
+            await ac.post(f"/execution/sme-link/groups/{g3}/decide", headers=HH,
+                          json={"approve": True})
+            done0 = await q('SELECT "Done_SQM" FROM sme_sqm_progress WHERE "Site_ID" = :s', s=SITE)
+            ra = await ac.post("/execution/sme-link/groups/bulk-approve", headers=HH,
+                               json={"ids": [subm["J1"], subm["J2"], g3, 999999999]})
+            ab = ra.json()
+            done1 = await q('SELECT "Done_SQM" FROM sme_sqm_progress WHERE "Site_ID" = :s', s=SITE)
+            sk = {x["id"]: x for x in ab.get("skipped", [])}
+            check("20b-02: bulk APPROVE — the two staged jobs approved and their SQM credited "
+                  "ONCE each (5 + 10 = 15 m²); an already-approved job and an unknown id are "
+                  "skipped with their reasons (409 'already approved by …', 404)",
+                  ra.status_code == 200 and sorted(x["id"] for x in ab["approved"])
+                  == sorted([subm["J1"], subm["J2"]]) and float(done1) - float(done0) == 15
+                  and sk.get(g3, {}).get("status") == 409 and "already approved by svc_hod20" in sk[g3]["reason"]
+                  and sk.get(999999999, {}).get("status") == 404,
+                  f"{ra.status_code} {str(ab)[:300]} done {done0}→{done1}")
+            again = (await ac.post("/execution/sme-link/groups/bulk-approve", headers=HH,
+                                   json={"ids": [subm["J1"], subm["J2"]]})).json()
+            done2 = await q('SELECT "Done_SQM" FROM sme_sqm_progress WHERE "Site_ID" = :s', s=SITE)
+            check("20b-03: ⚠️ IDEMPOTENT — the same ids again approve nothing and credit "
+                  "nothing (a double click can never credit a job twice)",
+                  again.get("approved") == [] and len(again.get("skipped", [])) == 2
+                  and float(done2) == float(done1), f"{again} {done1}→{done2}")
+            n_sub = await q("SELECT count(*) FROM app_notifications WHERE id > :b AND "
+                            "event_key = 'sme_group_approved' AND recipient_user = 'svc_sup20'", b=base_n)
+            check("20b-04: the submitter is told ONCE about the batch approved for them",
+                  n_sub == 1, f"n_sub={n_sub}")
+            r_sk = await ac.post("/execution/sme-link/groups/bulk-approve",
+                                 headers=tok("worker", "store_keeper", "CNCEC"), json={"ids": [1]})
+            r_lg = await ac.post("/execution/sme-link/groups/bulk-submit",
+                                 headers=tok("svc_log20b", "logistics", None),
+                                 json={"jobs": [job(d(5), j1, 5, "x")]})
+            j4 = await draw(d(2), "J4", 0.4, 0.6)
+            g4 = (await ac.post("/execution/sme-link/groups", headers=HS,
+                                json=job(d(2), j4, 1, "J4"))).json()["group_id"]
+            r_fx = (await ac.post("/execution/sme-link/groups/bulk-approve",
+                                  headers=tok("hod", "hod", "CNCEC"), json={"ids": [g4]})).json()
+            r_big = await ac.post("/execution/sme-link/groups/bulk-approve", headers=HH,
+                                  json={"ids": list(range(1, 52))})
+            r_rej = await ac.post("/execution/sme-link/groups/bulk-approve", headers=HH,
+                                  json={"ids": [g4], "approve": False})
+            g4_status = await q("SELECT status FROM sme_attribution_group WHERE id = :g", g=g4)
+            check("20b-05: decisions are the HOD's — a store keeper 403, Logistics cannot even "
+                  "submit (403); a CNCEC HOD's bulk skips another site's job (404); more than "
+                  "50 ids → 422; and there is NO bulk reject (Q20-11: the payload cannot say "
+                  "approve=false — the job stays staged)",
+                  r_sk.status_code == 403 and r_lg.status_code == 403
+                  and r_fx.get("approved") == [] and r_fx["skipped"][0]["status"] == 404
+                  and r_big.status_code == 422 and g4_status in ("staged", "committed"),
+                  f"{r_sk.status_code} {r_lg.status_code} {r_fx} {r_big.status_code} {g4_status}")
+
+            # ── paper-form execution entries (Q20-12) ─────────────────────────
+            await ex('INSERT INTO sme_execution_entry ("Site_ID", "Entry_No", "Work_Date", '
+                     '"Equipment_Tag_No", "Lining_System_Code", "Execution_Sub_Activity_Code", '
+                     'status, "Actual_SQM") VALUES '
+                     "(:s, 'SVC20B-E1', :d, :t, :c, :c, 'PENDING_HOD', 4),"
+                     "(:s, 'SVC20B-E2', :d, :t, :c, :c, 'PENDING_HOD', 3),"
+                     "(:s, 'SVC20B-E3', :d, :t, :c, :c, 'APPROVED', 2)",
+                     s=SITE, d=d(1), t=TAG, c=CODE)
+            ids = {r[0]: r[1] for r in await rows(
+                'SELECT "Entry_No", id FROM sme_execution_entry WHERE "Site_ID" = \'SVC20B\'')}
+            # E2 draws an uncertified Surface Shield → the QSEP gate blocks it
+            await ex('INSERT INTO sme_execution_entry_material ("Entry_ID", "Material_Code", '
+                     '"SAP_Code", "Actual_Qty", "UOM") VALUES (:e, \'MAT-SVC20B-A\', '
+                     "'SVC20B-A', 1.2, 'KG')", e=ids["SVC20B-E2"])
+            re_ = await ac.post("/execution/entries/bulk-approve", headers=HH,
+                                json={"ids": [ids["SVC20B-E1"], ids["SVC20B-E2"], ids["SVC20B-E3"]]})
+            eb = re_.json()
+            st = {r[0]: r[1] for r in await rows(
+                'SELECT "Entry_No", status FROM sme_execution_entry WHERE "Site_ID" = \'SVC20B\'')}
+            esk = {x["id"]: x for x in eb.get("skipped", [])}
+        check("20b-06: ruling Q20-12 — paper-form entries approve in bulk, each POSTING as "
+              "one approval does; the one the QSEP gate blocks (an uncertified Surface "
+              "Shield) fails ALONE and stays PENDING_HOD, and an already-approved one is "
+              "skipped",
+              re_.status_code == 200 and [x["id"] for x in eb["approved"]] == [ids["SVC20B-E1"]]
+              and st == {"SVC20B-E1": "APPROVED", "SVC20B-E2": "PENDING_HOD", "SVC20B-E3": "APPROVED"}
+              and esk.get(ids["SVC20B-E2"], {}).get("status") == 422
+              and "not cleared for issue" in esk[ids["SVC20B-E2"]]["reason"]
+              and esk.get(ids["SVC20B-E3"], {}).get("status") == 409,
+              f"{re_.status_code} {str(eb)[:400]} {st}")
+        aud = await q("SELECT count(*) FROM system_audit_log WHERE action_type IN "
+                      "('SME_GROUP_BULK_SUBMIT', 'SME_GROUP_BULK_APPROVE', 'SME_EXEC_BULK_APPROVE') "
+                      "AND details LIKE 'batch=%'")
+        check("20b-07: every bulk action leaves one batch audit row beside the per-item ones",
+              aud >= 3, f"aud={aud}")
+    finally:
+        await cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -30337,6 +30522,9 @@ async def main() -> int:
     print("\n 20A. Phase 20a — the Surface Shield daily log: date → job → materials, plain "
           "statuses, the Excel remark as typed, read by management, exported, in the weekly summary")
     await test_phase20a_surface_shield_log()
+    print("\n 20B. Phase 20b — bulk submit and approve: per-item savepoints, a bad item "
+          "fails alone, approve-only, idempotent, HOD-only, one notice per batch")
+    await test_phase20b_bulk()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

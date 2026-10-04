@@ -4828,6 +4828,50 @@ note differs.
 Automated: service_tests **20A** (13 checks); E2E `surface-shield-log.spec.ts`
 (2) and `sme-jobs.spec.ts`.
 
+## 20b. Phase 20b — bulk submit and bulk approve
+
+**Why this exists.** Submitting and approving one card at a time took too many
+clicks. `services/bulk_jobs.py` loops over the SAME per-item functions
+(`sme_groups.submit`, `decide_group`, `execution.hod_decide`), each in its own
+savepoint. The endpoints are `POST /execution/sme-link/groups/bulk-submit`,
+`/sme-link/groups/bulk-approve` and `/entries/bulk-approve`: approve-only,
+≤ 50, idempotent.
+
+**TC-20B-01 — ready and not ready.** Practice as practice.supervisor, Needs an
+area. The *Coving - 4 SQM Done* card can be ticked. Clear its Area: the box
+greys out and reads *"no area — the remark states none; type it"*, and if it
+was ticked it leaves the batch.
+
+**TC-20B-02 — submit selected.** *Select all ready* → *Submit selected to HOD*.
+The summary lists each job with its area and the total. *Submit*: the cards
+leave the queue, and the HOD's bell has ONE "N Surface Shield job(s) to
+approve" message, not one per job.
+
+**TC-20B-03 — one fails alone.** Open the same queue in two tabs. Submit a
+card in tab A, then bulk-submit it with another in tab B. One is submitted;
+the other is listed "not submitted" with its reason.
+
+**TC-20B-04 — approve selected, warned.** As practice.hod, Awaiting the HOD →
+Date filter → tick → *Approve selected*. The confirmation shows the total m²
+and lists *Sump Wall - 5 SQM Done* (primer +71 %) under "more than 10 % off
+the recipe". Approve: the jobs move to Approved in the Daily Log, and each
+area is credited once. Approve the same jobs again (second tab) → *"already
+approved by practice.hod"*.
+
+**TC-20B-05 — no bulk reject.** There is no reject in the bulk bar;
+`POST …/bulk-approve` with `approve: false` still only approves. Reject from
+*Review job*.
+
+**TC-20B-06 — paper-form entries.** Two PENDING_HOD entries, one carrying an
+uncertified Surface Shield line. *Approve selected* on the Execution page:
+the clean one is APPROVED (area posted, stock deducted). The other is listed
+"not cleared for issue …" and stays PENDING_HOD.
+
+**TC-20B-07 — roles and limits.** A store keeper or Logistics → 403 on
+bulk-approve. Logistics → 403 on bulk-submit. 51 ids → 422.
+
+Automated: service_tests **20B** (7 checks); E2E `bulk.spec.ts`.
+
 ## 15. Do's and Don'ts
 
 ### Do

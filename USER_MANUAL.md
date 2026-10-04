@@ -1051,6 +1051,51 @@ every status:
 - two pending jobs, one of them high-variance;
 - a job not yet filed.
 
+## 3.16 Submitting and approving in bulk (Phase 20, October 2026)
+
+**Store keepers and supervisors — "Submit selected to HOD".** On Execution →
+*Surface Shield consumption* → **Needs an area**, every job card has a tick
+box. A card can be ticked when it is **ready**: it has a system code, an area,
+and at least one material ticked (and, for Garnet, Old or New surface). A card
+that is not ready has its box greyed out and says why, for example *"no area —
+the remark states none; type it"*.
+
+1. Check the cards: the system code and area are pre-filled from the remarks.
+   Correct anything that is wrong on the card itself.
+2. Press **Select all ready**, or tick the cards you want.
+3. Press **Submit selected to HOD**. A summary lists each job with its system,
+   area and number of materials, and the total m². Press **Submit**.
+
+Each job is sent exactly as its card shows it, as if you had pressed its own
+Submit button. If one cannot be sent (for example, somebody else filed it a
+moment ago), it is listed with the reason and the rest still go. The HOD gets
+one message for the whole batch. *Select all ready* covers the cards on
+screen; use *Show more* to bring more into view.
+
+**HODs — "Approve selected".** On **Awaiting the HOD**, narrow the list by
+**Date** or **System code** if you like. Tick jobs, or press **Select all**,
+then **Approve selected**. Before anything is approved you see:
+- how many jobs there are;
+- the total area that will be credited (each job's area **once**);
+- every job that drew more than **10 % off the recipe**, listed by name with
+  its variance (*High Priority*).
+
+Read it, then press **Approve**. To **reject** a job, open it with *Review
+job*: a rejection needs its own written reason, so there is no bulk reject. A
+job someone already decided is skipped with who decided it. Each person who
+filed jobs gets one message for their approved batch.
+
+**HODs — paper-form execution entries.** The same **Approve selected** button
+appears above the execution entries (on the Execution page and in the HOD
+approval queue) for entries waiting for you. Each is approved **as filed**: its
+area is posted **and its material deducted**, exactly as approving it on its
+own does. An entry blocked by the QC/certificate check, or by a stock problem,
+is skipped with its reason and stays with you; the others are approved. To
+correct a figure, open the entry instead.
+
+At most **50** at a time. Every bulk action is in the audit log, with each
+item.
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.

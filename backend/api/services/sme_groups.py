@@ -299,8 +299,11 @@ async def submit(session: AsyncSession, *, site_id: str, work_date: str, tag: st
                  code: str, sqm: float, consumption_ids: list[int],
                  notes: Optional[str], username: str,
                  surface_state: Optional[str] = None,
-                 work_area: Optional[str] = None) -> dict:
+                 work_area: Optional[str] = None, notify: bool = True) -> dict:
     """One system code and one SQM for the chosen materials of one job.
+
+    Phase 20b: `notify=False` for a BULK submission, which tells the HOD once
+    for the whole batch instead of once per job.
 
     Phase 15e: `notes` is the job's remark (pre-filled from the store keeper's,
     kept as submitted) and `work_area` the part of the equipment; both land on
@@ -367,8 +370,9 @@ async def submit(session: AsyncSession, *, site_id: str, work_date: str, tag: st
         gid = None
     else:
         await _share_expected(session, gid, sqm)
-        await _notify_hod_group(session, site_id=site_id, gid=gid, tag=tag, code=code,
-                                sqm=sqm, n=joined, username=username)
+        if notify:
+            await _notify_hod_group(session, site_id=site_id, gid=gid, tag=tag, code=code,
+                                    sqm=sqm, n=joined, username=username)
     await write_audit(session, username, "SME_GROUP_SUBMIT", "sme_attribution_group",
                       f"group={gid} {_day(work_date)} {tag}/{code} sqm={sqm:g} "
                       f"rows={len(ids)} joined={joined}"
