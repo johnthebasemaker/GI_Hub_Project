@@ -4687,10 +4687,13 @@ every site's suggested order, so one PO was counted once per site. Now
 **global**: shown, and subtracted from no site.
 
 **TC-19B-01 — a PR's PO.** Practice: *PRACTICE MASKING TAPE (amber)*: On order
-**25**, suggested **35** (target 180 − 120 − 25).
+**25**, and the suggested order is target − stock − 25 (35 = 180 − 120 − 25 on
+a freshly built sandbox; the example's use is dated from the build, so the
+figures drift by a few a day until the next `practice_db.py build`).
 
 **TC-19B-02 — a global PO.** *PRACTICE CABLE TIES (red)*: On order **—** with
-**+ 40 global** under it (hover explains). Suggested stays **160**.
+**+ 40 global** under it (hover explains). The suggested order is target −
+stock, with the 40 NOT subtracted (160 on a fresh sandbox).
 
 **TC-19B-03 — one PR, several POs.** Raise two POs from the same CNCEC PR for
 one item (10 and 5). That item's On order is 15 at CNCEC and 0 at every other
@@ -4700,6 +4703,47 @@ site.
 5. Close the line → it drops out.
 
 Automated: service_tests **19B** (3 checks).
+
+## 19c. Phase 19c — partial returns and the daily chaser (ruling Q19-3)
+
+**Why this exists.** A loan was all-or-nothing and was chased once. Now
+(alembic `c4e9b2a7f613`): `returnable_items.qty_returned`, `last_reminded_at`
+and `hod_escalated_at`, plus one `returnable_returns` row per part handed back.
+`POST /entry/returnables/{id}/return` takes an optional `qty`, and
+`/return-batch` an optional `qtys` map. The daily chase (`services/
+loan_chaser.py`) runs inside the 07:00 morning-briefing claim
+(`daily_job_runs`), so one worker sends.
+
+**TC-19C-01 — part of a loan.** Practice store keeper: lend 5 of anything with
+code `TEST-PART-1`. Scan `TEST-PART-1`, set **back** to 3, Return. The message
+reads *"#N 3 back, 2 still out"*. The row shows **partly returned · 2 still
+out** and *3 back* under Qty. The loan is still under **Open**.
+
+**TC-19C-02 — too many.** Scan it again and set **back** to 3 → *"only 2 of #N
+is still out"* (422).
+
+**TC-19C-03 — close with the worst condition.** Scan again, choose
+**Damaged**, Return (no number = the 2 still out). The loan moves to
+**Returned** with **Damaged**, and the HOD's bell has the damaged-part notice.
+Returning it again → 409: there is no undo.
+
+**TC-19C-04 — the kit.** Scan a badge with two open loans. Set one loan's
+**back** below its count and leave the other: the first stays open (partly),
+the second closes.
+
+**TC-19C-05 — the chase.** Practice *PR-SC-0005* (4 clamps, 1 back, 4 days
+overdue). The next 07:00 run (or `loan_chaser.run` from a shell) WhatsApps
+the borrower *"3 of 4 EA still to return"*, posts ONE *"N tool loan(s)
+overdue, M partly returned"* to the CNCEC store keepers, and escalates to the
+CNCEC HOD *"Tool 4 days overdue"*. The next day's run reminds again but does
+not escalate again.
+
+**TC-19C-06 — the slip.** Re-print *PR-SC-0005*'s slip: *Back so far 1 of 4*.
+
+⚠️ **Live needs `alembic upgrade head`** (backup first) before running this
+build: the API refuses to boot on a schema behind `c4e9b2a7f613`.
+
+Automated: service_tests **19C** (7 checks); E2E `returnables.spec.ts` (19c).
 
 ## 15. Do's and Don'ts
 

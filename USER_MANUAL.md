@@ -942,6 +942,7 @@ GLOVES (green)*. Each is used 3 a day, so its minimum is 90.
 | Change | Who | Read |
 |---|---|---|
 | **On order per site.** A PO counts towards the site whose PR it was raised from. A PO raised without a PR is shown as *global* and is not taken off any site's suggested order. | Logistics, HOD | §3.14.2 |
+| **Partial returns.** A loan of 5 can come back 3 now and 2 later. It stays open, and the borrower is reminded **every day** until the rest is back. After 3 days overdue the HOD is told. | Store Keeper, HOD | §4.5.3 |
 | **Accept minimums for your site.** The HOD ticks the system's recommended minimums (or types their own), and they become the site's minimum. When the recommendation later moves by more than 20 %, the row says **changed**. | HOD (Logistics sees the result) | §3.14.1 |
 
 ### 3.14.1 Accepting minimums for your site (HOD)
@@ -984,8 +985,9 @@ several sites. Hover over it for the explanation. A PO whose PR number is not
 in the Hub (raised outside it) is treated as global.
 
 **Practice:** *PRACTICE MASKING TAPE (amber)* has 25 on order from a CNCEC
-PR, so its suggested order is 35 instead of 60. *PRACTICE CABLE TIES (red)*
-shows **+ 40 global**, and its suggested order stays 160.
+PR, so its suggested order is 25 lower than it would otherwise be (35 instead
+of 60 on a freshly built sandbox). *PRACTICE CABLE TIES (red)* shows **+ 40
+global**, and its suggested order is not reduced by it.
 
 **Practice (minimums):** *PRACTICE SAFETY GLASSES (accepted, changed)* was accepted at 60
 by practice.hod. It is used 3 a day, so the system now recommends 90, 50 %
@@ -1350,10 +1352,34 @@ The **due-back** buttons (*End of shift*, *Tomorrow 17:00*, *+3 days*,
   loan at once. Right after you record a loan, the *Loan recorded* message
   also has a **Print slip** button.
 
+**Taking back part of a loan (Phase 19).** When a loan is for more than one
+(for example 5 clamps), ticking it at the desk shows a **back** number,
+already set to everything still out. Lower it to what was actually handed
+over (3) and press **Return**. The loan stays **open**:
+
+- the table shows **partly returned · 2 still out**, and *3 back* under the
+  quantity;
+- the next scan of the same tool or badge offers the remaining 2;
+- a re-printed slip says *Back so far 3 of 5*.
+
+Each part can have its own condition (3 good now, 2 damaged later). When the
+last part is back the loan closes, showing the **worst** condition of its
+parts. A part handed back **cannot be undone**. If you took back too many,
+record a new loan for them.
+
+**Reminders (Phase 19).** Every morning, the borrower of every overdue loan is
+reminded on WhatsApp of exactly what is still out (*"2 of 5 EA still to
+return"*). The store keepers get one daily summary for the site. When a loan,
+partly returned or not, is **more than 3 days overdue**, the site's HOD is
+told, once.
+
 > **Fixed in Phase 18:** a loan used to show as **overdue three hours late**.
 > The page compared due times, which are kept in local time, with the server's
 > UTC clock. Overdue now means overdue as soon as the due time passes, on the
 > page, in the alert and in the menu badge.
+
+**Practice (partial):** type **PR-SC-0005**. The 4 scaffold clamps lent to
+Aria Bellweather have **1 back, 3 still out**, and the loan is 4 days overdue.
 
 **Practice:** sign in as `practice.storekeeper`. Scan or type Tomas Halversen's
 badge **900002** to see a kit of two tools, or type **PR-TW-0001** to find the

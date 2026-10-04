@@ -29541,6 +29541,150 @@ async def test_phase19b_on_order_per_site():
         await cleanup()
 
 
+async def test_phase19c_partial_returns():
+    """Suite 19C — Phase 19c (ruling Q19-3): partial returns and the daily chaser.
+
+    A loan of 5 can come back 3 + 2; it stays open (and overdue, and chased)
+    until the last part is back, then closes with its WORST part's condition.
+    No undo. The daily chaser reminds every overdue borrower of what is still
+    out, sends the store keepers one summary per site, and escalates a loan
+    more than 3 days overdue to the HOD, once. Synthetic rows; cleaned up."""
+    import datetime as _dtm
+    import inspect as _insp
+
+    from sqlalchemy import delete as _del, select as _sel
+
+    from . import health_monitor as HM
+    from .services import loan_chaser as LC
+    from .services import whatsapp as WA
+
+    rt = ledger._MD.tables["returnable_items"]
+    rr = ledger._MD.tables["returnable_returns"]
+    appn = ledger._MD.tables["app_notifications"]
+    async with SessionLocal() as s_:
+        base = (await s_.execute(_sel(func.coalesce(func.max(rt.c["id"]), 0)))).scalar_one()
+        base_n = (await s_.execute(_sel(func.coalesce(func.max(appn.c["id"]), 0)))).scalar_one()
+    sent: list = []
+    saved = (WA.enabled, WA.send_template)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            r = await ac.post("/auth/login", headers={"X-Real-IP": "203.0.113.191"},
+                              json={"username": "worker", "password": "floor2026"})
+            H = {"Authorization": f"Bearer {r.json()['access_token']}"}
+            now = _dtm.datetime.now()
+
+            async def loan(name, qty, due):
+                rr_ = await ac.post("/entry/returnables", headers=H, json={
+                    "material_name": name, "borrower_name": "Svc 19C", "qty": qty, "uom": "EA",
+                    "borrower_phone": "+966500000019",
+                    "expected_return_time": due.strftime("%Y-%m-%dT%H:%M:%S"), "site_id": "CNCEC"})
+                return rr_.json().get("id")
+
+            a = await loan("SVC19C Spanner set", 5, now + _dtm.timedelta(days=2))
+            p1 = await ac.post(f"/entry/returnables/{a}/return", headers=H,
+                               json={"qty": 3, "condition": "ok"})
+            async with SessionLocal() as s_:
+                row = (await s_.execute(_sel(rt).where(rt.c["id"] == a))).mappings().first()
+                parts = (await s_.execute(_sel(func.count()).select_from(rr).where(
+                    rr.c["loan_id"] == a))).scalar_one()
+            check("19c-01: 3 of a loan of 5 come back — the loan stays OPEN with 3 back and "
+                  "2 still out, and the part is its own returnable_returns row",
+                  p1.status_code == 200 and p1.json()["returned"] is False
+                  and p1.json()["left"] == 2 and row["status"] == "borrowed"
+                  and row["qty_returned"] == 3 and parts == 1, f"{p1.status_code} {p1.text[:200]}")
+            too = await ac.post(f"/entry/returnables/{a}/return", headers=H, json={"qty": 3})
+            sl = await ac.get(f"/entry/returnables/{a}/slip", headers=H)
+            import pypdfium2 as _pdfium
+            doc = _pdfium.PdfDocument(sl.content)
+            txt = doc[0].get_textpage().get_text_range()
+            doc.close()
+            check("19c-02: taking back more than is out is refused (422 'only 2 … still out'), "
+                  "and a re-printed slip says 'Back so far 3 of 5'",
+                  too.status_code == 422 and "only 2" in too.text and "3 of 5" in txt,
+                  f"{too.status_code} {too.text[:120]} {txt[:200]!r}")
+            p2 = await ac.post(f"/entry/returnables/{a}/return", headers=H,
+                               json={"condition": "damaged", "note": "one jaw cracked"})
+            undo = await ac.post(f"/entry/returnables/{a}/return", headers=H, json={"qty": 1})
+            async with SessionLocal() as s_:
+                row = (await s_.execute(_sel(rt).where(rt.c["id"] == a))).mappings().first()
+                parts = (await s_.execute(_sel(rr.c["qty"], rr.c["condition"]).where(
+                    rr.c["loan_id"] == a).order_by(rr.c["id"]))).all()
+            check("19c-03: the rest (no qty = all still out) closes the loan with its WORST "
+                  "part's condition (ok + damaged → damaged); a closed loan takes nothing "
+                  "more — there is no undo (409)",
+                  p2.status_code == 200 and p2.json()["returned"] is True
+                  and row["status"] == "returned" and row["qty_returned"] == 5
+                  and row["return_condition"] == "damaged"
+                  and [tuple(x) for x in parts] == [(3.0, "ok"), (2.0, "damaged")]
+                  and undo.status_code == 409, f"{p2.text[:120]} {dict(row)} {parts} {undo.status_code}")
+
+            b = await loan("SVC19C Torch", 4, now + _dtm.timedelta(days=1))
+            c = await loan("SVC19C Meter", 1, now + _dtm.timedelta(days=1))
+            rb = await ac.post("/entry/returnables/return-batch", headers=H,
+                               json={"ids": [b, c], "condition": "ok", "qtys": {str(b): 1}})
+            body = rb.json()
+            check("19c-04: a kit returns in one call with a part named per loan — the torch "
+                  "1 of 4 (partial, 3 left), the meter in full",
+                  rb.status_code == 200 and body["returned"] == [c]
+                  and body["partial"] == [{"id": b, "qty": 1.0, "left": 3.0}], str(body)[:240])
+
+            # ── the daily chaser ────────────────────────────────────────────
+            d = await loan("SVC19C Overdue drill", 5, now - _dtm.timedelta(days=5))
+            e = await loan("SVC19C Overdue level", 1, now - _dtm.timedelta(days=1))
+            await ac.post(f"/entry/returnables/{d}/return", headers=H, json={"qty": 2})
+
+        async def fake_send(session, *, to, template_key, variables, **kw):
+            sent.append((to, template_key, variables, kw.get("related_ref")))
+            return {"queued": True}
+        WA.enabled, WA.send_template = (lambda: True), fake_send
+        async with SessionLocal() as s_:
+            res = await LC.run(s_)
+        async with SessionLocal() as s_:
+            dr = (await s_.execute(_sel(rt).where(rt.c["id"] == d))).mappings().first()
+            er = (await s_.execute(_sel(rt).where(rt.c["id"] == e))).mappings().first()
+            esc = (await s_.execute(_sel(func.count()).select_from(appn).where(
+                appn.c["id"] > base_n, appn.c["event_key"] == "returnable_escalated",
+                appn.c["related_ref"] == str(d)))).scalar_one()
+            esc_e = (await s_.execute(_sel(func.count()).select_from(appn).where(
+                appn.c["id"] > base_n, appn.c["event_key"] == "returnable_escalated",
+                appn.c["related_ref"] == str(e)))).scalar_one()
+            summ = (await s_.execute(_sel(appn.c["title"], appn.c["body"]).where(
+                appn.c["id"] > base_n, appn.c["event_key"] == "returnable_daily_overdue",
+                appn.c["recipient_site"] == "CNCEC"))).all()
+        to_d = [v for (to, k, v, ref) in sent if ref == str(d) and k == "critical_alert"]
+        check("19c-05: the chaser reminds EVERY overdue borrower of what is STILL OUT — "
+              "the drill's 3 of 5 (2 came back), the level's 1 — and stamps last_reminded_at",
+              any("3 of 5 EA still to return" in " ".join(v) for v in to_d)
+              and any(ref == str(e) for (_t, _k, _v, ref) in sent)
+              and dr["last_reminded_at"] is not None and er["last_reminded_at"] is not None,
+              f"{res} {sent[:3]}")
+        check("19c-06: ⚠️ ruling Q19-3 — more than 3 days overdue (the drill, 5 days) "
+              "escalates to the HOD ONCE (hod_escalated_at); 1 day overdue does not; the "
+              "store keepers get ONE summary for the site, naming the partly returned",
+              esc == 1 and esc_e == 0 and dr["hod_escalated_at"] is not None
+              and er["hod_escalated_at"] is None and len(summ) == 1
+              and "partly returned" in summ[0][0] and "SVC19C Overdue drill" in summ[0][1],
+              f"esc={esc} esc_e={esc_e} summ={summ}")
+        async with SessionLocal() as s_:
+            res2 = await LC.run(s_)
+        async with SessionLocal() as s_:
+            esc2 = (await s_.execute(_sel(func.count()).select_from(appn).where(
+                appn.c["id"] > base_n, appn.c["event_key"] == "returnable_escalated",
+                appn.c["related_ref"] == str(d)))).scalar_one()
+        src = _insp.getsource(HM.briefing_loop)
+        check("19c-07: the next day's run reminds again but never re-escalates; the chase "
+              "runs INSIDE the 07:00 briefing's daily_job_runs claim (one worker of four)",
+              esc2 == 1 and res2["escalated"] == 0 and res2["overdue"] >= 2
+              and 'dailyjob.claim(s, "morning_briefing"' in src and "loan_chaser.run(s)" in src,
+              f"{res2} esc2={esc2}")
+    finally:
+        WA.enabled, WA.send_template = saved
+        async with SessionLocal() as s_:
+            await s_.execute(_del(rt).where(rt.c["id"] > base,
+                                            rt.c["material_name"].like("SVC19C%")))
+            await s_.commit()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -29875,6 +30019,9 @@ async def main() -> int:
     print("\n 19B. Phase 19b — on order per site: a PO counts against the site of its PR; "
           "a PO with no PR is global and subtracted from no site")
     await test_phase19b_on_order_per_site()
+    print("\n 19C. Phase 19c — partial returns (3 + 2 of 5, worst condition, no undo) and "
+          "the daily chaser (remind daily, escalate to the HOD after 3 days, once)")
+    await test_phase19c_partial_returns()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

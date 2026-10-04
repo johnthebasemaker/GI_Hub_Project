@@ -239,6 +239,10 @@ async def seed_queues() -> dict:
                 out["loans"] = await seed_returnables()
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  loan example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["partial_loan"] = await seed_partial_return()
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  partial-return example skipped: {type(e).__name__}: {str(e)[:160]}")
 
         async with SessionLocal() as s:
             await ledger.stage_return(s, username="practice.storekeeper", data={
@@ -529,6 +533,43 @@ async def seed_returnables() -> int:
                  "c": cond, "note": note})
         await s.commit()
     return len(loans)
+
+
+async def seed_partial_return() -> int:
+    """Phase 19c — a loan that came back IN PART (rule 17g).
+
+    4 PRACTICE SCAFFOLD CLAMPS lent to Aria Bellweather (badge 900001), due 4
+    days ago; 1 came back 2 days ago. The row shows **partly returned · 3 still
+    out** and OVERDUE, and its slip reads "Back so far 1 of 4". It is more than
+    3 days overdue, so the next morning's chase escalates it to the HOD. The
+    desk returns any part of the remaining 3 (`PR-SC-0005`). Idempotent; never
+    fatal."""
+    import datetime as _d
+
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+
+    now = _d.datetime.now().replace(microsecond=0)
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                "SELECT 1 FROM returnable_items WHERE \"Item_Ref\" = 'PR-SC-0005' LIMIT 1"))).first():
+            return 0
+        lid = (await s.execute(text(
+            'INSERT INTO returnable_items (material_name, uom, qty, qty_returned, borrower_name, '
+            'given_time, expected_return_time, status, "Site_ID", whatsapp_alert_sent, '
+            'cv_detected, cv_employee_id, "Item_Ref") VALUES (\'PRACTICE SCAFFOLD CLAMPS\', '
+            "'EA', 4, 1, 'Aria Bellweather', :g, :d, 'borrowed', :site, 1, 1, '900001', "
+            "'PR-SC-0005') RETURNING id"),
+            {"g": now - _d.timedelta(days=6), "d": now - _d.timedelta(days=4),
+             "site": SITE})).scalar_one()
+        await s.execute(text(
+            'INSERT INTO returnable_returns (loan_id, qty, condition, note, returned_by, '
+            'returned_time, "Site_ID") VALUES (:l, 1, \'ok\', \'Practice example — 1 of 4 back\', '
+            "'practice.storekeeper', :t, :site)"),
+            {"l": lid, "t": now - _d.timedelta(days=2), "site": SITE})
+        await s.commit()
+    return 1
 
 
 REORDER_SAPS = ("899981", "899982", "899983")    # synthetic, Practice-only (P12-5)

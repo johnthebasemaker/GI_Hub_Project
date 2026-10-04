@@ -21,6 +21,11 @@ import { BARCODE_FORMATS } from '../lib/barcode'
 import { scanFeedback } from '../lib/scanFeedback'
 import { status as statusColors } from '../theme/tokens'
 
+/** What is still out on a loan (Phase 19c: loans can come back in parts). */
+function outOf(r: Row): number {
+  return Math.max(Number(r.qty ?? 1) - Number(r.qty_returned ?? 0), 0)
+}
+
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
   return x?.response?.data?.detail ?? x?.message ?? 'Action failed'
@@ -103,23 +108,37 @@ export default function ReturnablesPage() {
   const [note, setNote] = useState('')
   const [quick, setQuick] = useState(readQuick())
 
-  const clearDesk = () => { setScan(null); setPicked([]); setCondition('ok'); setNote('') }
+  // Phase 19c: how many of each picked loan came back (default: all still out)
+  const [parts, setParts] = useState<Record<number, number | null>>({})
+  const clearDesk = () => { setScan(null); setPicked([]); setCondition('ok'); setNote(''); setParts({}) }
 
-  const doReturn = async (ids: number[], cond: ReturnCondition, n: string): Promise<ScanResult> => {
+  const doReturn = async (ids: number[], cond: ReturnCondition, n: string,
+    qtys?: Record<number, number>): Promise<ScanResult> => {
     if (!ids.length) return { tone: 'error', message: 'Tick at least one loan to return.' }
-    const r = await batch.mutateAsync({ ids, condition: cond, note: n.trim() || undefined })
+    const r = await batch.mutateAsync({ ids, condition: cond, note: n.trim() || undefined,
+      qtys: qtys && Object.keys(qtys).length ? qtys : undefined })
     const okN = r.returned.length
+    const part = (r.partial ?? []).map((p) => `#${p.id} ${p.qty} back, ${p.left} still out`).join(' · ')
     const bad = r.skipped.map((s) => `#${s.id}: ${s.reason}`).join(' · ')
     clearDesk()
-    if (!okN) return { tone: 'error', message: bad || 'Nothing was returned.' }
+    if (!okN && !part) return { tone: 'error', message: bad || 'Nothing was returned.' }
     const words = cond === 'ok' ? 'in good order' : cond === 'damaged' ? 'as DAMAGED — the HOD is told' : 'with parts missing — the HOD is told'
-    return { tone: bad ? 'info' : 'ok', message: `Returned ${okN} item${okN === 1 ? '' : 's'} ${words}.${bad ? ` Skipped ${bad}` : ''}` }
+    const head = okN ? `Returned ${okN} item${okN === 1 ? '' : 's'} ${words}.` : `Partly returned ${words}.`
+    return { tone: bad ? 'info' : 'ok',
+      message: `${head}${part ? ` Partly: ${part}.` : ''}${bad ? ` Skipped ${bad}` : ''}` }
   }
 
   const confirmDesk = async () => {
     if (!scan || !picked.length) return
+    // only the loans coming back IN PART are named; the rest return in full
+    const qtys: Record<number, number> = {}
+    for (const id of picked) {
+      const l = (scan.loans ?? []).find((x) => Number(x.id) === id)
+      const p = parts[id]
+      if (l && p != null && p < outOf(l)) qtys[id] = p
+    }
     try {
-      const res = await doReturn(picked, condition, note)
+      const res = await doReturn(picked, condition, note, qtys)
       scanFeedback(res.tone)
       if (res.tone === 'error') message.error(res.message)
       else message.success(res.message)
@@ -329,7 +348,17 @@ export default function ReturnablesPage() {
         </span>
       ),
     },
-    { title: 'Qty', dataIndex: 'qty', align: 'right', width: 90, render: (v, r) => `${v ?? ''} ${r.uom ?? ''}`.trim() },
+    {
+      title: 'Qty', dataIndex: 'qty', align: 'right', width: 110,
+      render: (v, r) => (
+        <span>
+          {`${v ?? ''} ${r.uom ?? ''}`.trim()}
+          {r.status === 'borrowed' && Number(r.qty_returned ?? 0) > 0 ? (
+            <div style={{ fontSize: 11, opacity: 0.75 }}>{String(r.qty_returned)} back</div>
+          ) : null}
+        </span>
+      ),
+    },
     { title: 'Borrower', dataIndex: 'borrower_name', width: 150 },
     // dayjs parses naive DB timestamps as local and tz-suffixed ones as UTC →
     // local, so both render in the user's local time (UTC+3 on site).
@@ -367,10 +396,15 @@ export default function ReturnablesPage() {
               </Tooltip>
             ) : null}
           </Space>
-        ) : isOverdue(r) ? (
-          <Tag color="red">OVERDUE</Tag>
         ) : (
-          <Tag color="gold">on loan</Tag>
+          <Space size={4} wrap>
+            {isOverdue(r) ? <Tag color="red">OVERDUE</Tag> : <Tag color="gold">on loan</Tag>}
+            {Number(r.qty_returned ?? 0) > 0 ? (
+              <Tag color="blue" data-testid={`loan-partial-${r.id}`}>
+                partly returned · {outOf(r)} still out
+              </Tag>
+            ) : null}
+          </Space>
         ),
     },
     {
@@ -481,11 +515,26 @@ export default function ReturnablesPage() {
                 {deskLoans.map((l) => {
                   const due = l.expected_return_time ? dayjs(String(l.expected_return_time)) : null
                   const late = !!due && due.isBefore(now)
+                  const out = outOf(l)
+                  const id = Number(l.id)
                   return (
-                    <Checkbox key={String(l.id)} value={Number(l.id)}>
+                    <Checkbox key={String(l.id)} value={id}>
                       <Space size={6} wrap>
                         <Typography.Text>#{String(l.id)} {String(l.material_name)}</Typography.Text>
-                        <Typography.Text type="secondary">× {String(l.qty ?? 1)} {String(l.uom ?? '')}</Typography.Text>
+                        <Typography.Text type="secondary">
+                          {Number(l.qty_returned ?? 0) > 0
+                            ? `${out} of ${String(l.qty ?? 1)} ${String(l.uom ?? '')} still out`
+                            : `× ${String(l.qty ?? 1)} ${String(l.uom ?? '')}`}
+                        </Typography.Text>
+                        {out > 1 && picked.includes(id) ? (
+                          // stop the click reaching the Checkbox, or typing toggles it
+                          <span onClick={(e) => e.preventDefault()}>
+                            <InputNumber size="small" min={1} max={out} value={parts[id] ?? out}
+                              aria-label={`Quantity back for #${id}`} data-testid={`return-qty-${id}`}
+                              style={{ width: 120 }} prefix="back"
+                              onChange={(v) => setParts((m) => ({ ...m, [id]: v ?? null }))} />
+                          </span>
+                        ) : null}
                         {!scan?.employee && <Typography.Text type="secondary">— {String(l.borrower_name ?? '')}</Typography.Text>}
                         {due && <Tag color={late ? 'red' : 'default'}>{dueText(due, now)}</Tag>}
                       </Space>

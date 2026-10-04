@@ -30,8 +30,12 @@ export function useReturnOne() {
 export function useReturnBatch() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: { ids: number[]; condition: ReturnCondition; note?: string }) =>
-      api.post<{ returned: number[]; skipped: { id: number; status: number; reason: string }[] }>(
+    // `qtys` (Phase 19c): {loan id: how many came back} for loans returned
+    // only in part; any loan not named returns everything still out.
+    mutationFn: (body: { ids: number[]; condition: ReturnCondition; note?: string;
+      qtys?: Record<number, number> }) =>
+      api.post<{ returned: number[]; partial: { id: number; qty: number; left: number }[];
+        skipped: { id: number; status: number; reason: string }[] }>(
         '/entry/returnables/return-batch', body).then((r) => r.data),
     onSuccess: () => invalidate(qc),
   })
