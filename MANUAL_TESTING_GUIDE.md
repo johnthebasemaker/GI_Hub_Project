@@ -4779,6 +4779,55 @@ counts with the signal on, and twins refused. It is reported only.
 Automated: service_tests **19D** (8 checks, embeddings stubbed); Router L3
 `semantic_shadow` (reported).
 
+## 20a. Phase 20a — the Surface Shield daily log
+
+**Why this exists.** Management could not see, in one place, what was drawn,
+what the field wrote (the Excel Remarks, where the SQM comes from), the m²
+done, and the HOD's decision. Those facts sat in three tables.
+`services/sme_history.py` joins them read-only:
+`GET /execution/sme-link/history` (+ `/export?format=xlsx|pdf`). The roles
+are store_keeper, supervisor, hod, logistics, auditor and admin (ruling
+Q20-1), and the page is `/surface-shield/log`.
+
+**TC-20A-01 — every status.** Practice as practice.hod, Surface Shield → Daily
+Log. *PRACTICE-TK-01* shows over the last week:
+- Approved (Floor, 10 m²);
+- Approved with "⚠ remark says 8" (hover: *Re-measured on site…*);
+- Rejected with "No area in the remark…";
+- Pending ×2, one tagged **high variance**;
+- Not yet filed (Coving, "remark says 4 m²").
+
+**TC-20A-02 — remarks as typed.** Each job's remark is in quotes, character
+for character as in the consumption log. When a job was filed with a different
+note, it appears below as *Job note*.
+
+**TC-20A-03 — units.** Expand a job: each material shows packs and its base
+unit (e.g. 2 Can = 8 KG). The day header totals the base units.
+
+**TC-20A-04 — management access.** As practice.logistics and practice.auditor
+(which cannot open Execution), the Daily Log opens and shows every site. As
+QC → no menu entry, and the API returns 403. A store keeper naming another
+site → 403.
+
+**TC-20A-05 — a re-filed rejection is shown once.** Correct and resubmit the
+rejected job. The log shows one pending job that day, not the rejection as
+well.
+
+**TC-20A-06 — Garnet.** A Garnet job appears under "Garnet — surface
+preparation", and its area is not in "SQM approved (lining)".
+
+**TC-20A-07 — exports and the weekly summary.** Excel/PDF download what is on
+screen. HOD → Executive Summary shows the *Surface Shield — daily log* card,
+whose link opens the log on the same period. Its PDF and Excel include the
+log, and the Friday email carries it.
+
+**TC-20A-08 — the approval card.** On *Awaiting the HOD*, a job shows
+*Excel: "…"* (the store keeper's remark) first, then *Job note* only when the
+note differs.
+
+Automated: service_tests **20A** (13 checks); E2E `surface-shield-log.spec.ts`
+(2) and `sme-jobs.spec.ts`.
+
 ## 15. Do's and Don'ts
 
 ### Do

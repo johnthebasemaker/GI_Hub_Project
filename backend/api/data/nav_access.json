@@ -264,6 +264,14 @@
    "admin",
    "supervisor"
   ],
+  "/surface-shield/log": [
+   "admin",
+   "logistics",
+   "auditor",
+   "hod",
+   "supervisor",
+   "store_keeper"
+  ],
   "/training": [
    "admin",
    "logistics",
@@ -329,6 +337,7 @@
   "/sme": "Estimator",
   "/stock": "Stock",
   "/supervisor": "Material Requests",
+  "/surface-shield/log": "Daily Log",
   "/training": "Training",
   "/warehouse": "Receiving & DN"
  },
@@ -375,6 +384,7 @@
   "/sk/requests": "Data Entry",
   "/sme": "SME Estimator",
   "/supervisor": "Supervisor",
+  "/surface-shield/log": "Surface Shield",
   "/training": "Account",
   "/warehouse": "Warehouse"
  }

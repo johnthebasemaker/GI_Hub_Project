@@ -847,6 +847,83 @@ async def sme_link_decide_revision(rev_id: int, body: SmeLinkDecideIn = Body(...
             username=user["username"], site_id=site)
 
 
+# ═══ Phase 20a — the Surface Shield daily log ══════════════════════════════════
+# ⚠️ WIDER THAN THE REST OF /execution, AND READ-ONLY. The operator asked for
+# management to read it (ruling Q20-1): Logistics, the Auditor and Admin as
+# well as the three field roles. It writes nothing, so widening the READ is
+# safe; every decision endpoint above stays exact-locked. Site-scoped like
+# every read: a site-bound user sees their own site.
+_LOG_READ_ROLES = ("store_keeper", "supervisor", "hod", "logistics", "auditor")
+
+
+@router.get("/sme-link/history",
+            summary="Surface Shield daily log: date → job → materials, with status and remarks")
+async def sme_link_history(date_from: Optional[str] = Query(None),
+                           date_to: Optional[str] = Query(None),
+                           status: Optional[str] = Query(
+                               None, pattern="^(approved|pending|rejected|not_filed|edited)$"),
+                           kind: Optional[str] = Query(None, pattern="^(lining|prep)$"),
+                           tag: Optional[str] = Query(None, max_length=128),
+                           code: Optional[str] = Query(None, max_length=64),
+                           site_id: Optional[str] = Query(None),
+                           user: dict = Depends(require_roles(*_LOG_READ_ROLES)),
+                           session: AsyncSession = Depends(get_session)):
+    """`services/sme_history.py` holds the method; the last 30 days by default."""
+    from .services import sme_history as H
+    site = resolve_site_param(user, site_id)
+    if site == "":
+        a, b = H.window(date_from, date_to)
+        return {"date_from": a, "date_to": b, "site_id": None, "kpis": None, "days": []}
+    return await H.history(session, site_id=site or None, dfrom=date_from, dto=date_to,
+                           status=status, kind=kind, tag=tag, code=code)
+
+
+@router.get("/sme-link/history/export",
+            summary="The Surface Shield daily log as Excel or PDF (what is on screen)")
+async def sme_link_history_export(format: str = Query("xlsx", pattern="^(xlsx|pdf)$"),
+                                  date_from: Optional[str] = Query(None),
+                                  date_to: Optional[str] = Query(None),
+                                  status: Optional[str] = Query(
+                                      None, pattern="^(approved|pending|rejected|not_filed|edited)$"),
+                                  kind: Optional[str] = Query(None, pattern="^(lining|prep)$"),
+                                  tag: Optional[str] = Query(None, max_length=128),
+                                  code: Optional[str] = Query(None, max_length=64),
+                                  site_id: Optional[str] = Query(None),
+                                  user: dict = Depends(require_roles(*_LOG_READ_ROLES)),
+                                  session: AsyncSession = Depends(get_session)):
+    from .reports import to_pdf_sheets, to_xlsx_sheets
+    from .services import sme_history as H
+    site = resolve_site_param(user, site_id)
+    if site == "":
+        raise HTTPException(403, "no site is assigned to your account")
+    h = await H.history(session, site_id=site or None, dfrom=date_from, dto=date_to,
+                        status=status, kind=kind, tag=tag, code=code)
+    k = h["kpis"]
+    summary = [["SQM approved (lining)", k["sqm_approved"]],
+               ["SQM pending HOD (lining)", k["sqm_pending"]],
+               ["SQM rejected (lining)", k["sqm_rejected"]],
+               ["Garnet area approved (surface prep, not lining)", k["garnet_sqm_approved"]],
+               ["Jobs approved / pending / rejected / not yet filed",
+                " / ".join(str(k["jobs"][x]) for x in H.STATUSES)],
+               ["Approved jobs edited in Excel since", k["edited_in_excel"]],
+               ["Pending jobs with a high variance", k["high_priority_pending"]],
+               ["Jobs whose remark states a different SQM", k["remark_differs"]],
+               ["Surface Shield drawn (packs)", H._fmt_units(k["drawn"]["packs"])],
+               ["Surface Shield drawn (base units)", H._fmt_units(k["drawn"]["base"])]]
+    title = (f"Surface Shield daily log {h['date_from']} to {h['date_to']}"
+             + (f" - {site}" if site else ""))
+    sheets = [("Summary", ["Measure", "Value"], summary),
+              ("Daily log", H.EXPORT_COLUMNS, H.export_rows(h))]
+    if format == "pdf":
+        blob, media = to_pdf_sheets(title, sheets, user["username"]), "application/pdf"
+    else:
+        blob = to_xlsx_sheets(sheets, user["username"])
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    fname = f"surface_shield_log_{h['date_from']}_{h['date_to']}.{format}"
+    return Response(blob, media_type=media,
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 # ── the OCR lane (Phase 9d) ──────────────────────────────────────────────────
 # ⚠️ A JOB, NOT AN INLINE AWAIT. Vision OCR takes 5–120 s on a 7B model with a
 # cold start — longer than proxy timeouts and far longer than a supervisor

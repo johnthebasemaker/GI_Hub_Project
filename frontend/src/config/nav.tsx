@@ -272,6 +272,20 @@ export const NAV: NavGroup[] = [
     ],
   },
   {
+    // Phase 20a — the Surface Shield daily log: READ-ONLY, and wider than
+    // /execution on purpose (ruling Q20-1): management (Logistics, Auditor,
+    // Admin) reads it beside the three field roles. The endpoint is
+    // `require_roles(store_keeper, supervisor, hod, logistics, auditor)`, the
+    // same set; no write lives behind it.
+    id: 'surface-shield',
+    label: 'Surface Shield',
+    access: { anyRole: ['store_keeper', 'supervisor', 'hod', 'logistics', 'auditor'] },
+    children: [
+      { key: '/surface-shield/log', label: 'Daily Log', icon: <SolutionOutlined />,
+        access: { anyRole: ['store_keeper', 'supervisor', 'hod', 'logistics', 'auditor'] } },
+    ],
+  },
+  {
     // GRANTED TO LOGISTICS 2026-08-12 (operator ruling). `/warehouse/*` has
     // always been `require_roles("warehouse_user", "logistics")` on the
     // server, so Logistics could already receive goods and cut delivery notes

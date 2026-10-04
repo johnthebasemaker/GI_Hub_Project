@@ -1006,6 +1006,51 @@ global**, and its suggested order is not reduced by it.
 by practice.hod. It is used 3 a day, so the system now recommends 90, 50 %
 more, and the row shows **accepted** + **changed**.
 
+## 3.15 The Surface Shield daily log (Phase 20, October 2026)
+
+**Surface Shield → Daily Log** shows, day by day, everything about Surface
+Shield work in one place, written for managers who have never opened the SME
+portal. You can also reach it from the Execution page, the SME Estimator, and
+the Executive Summary ("Open the daily log →", which opens on the summary's
+own period).
+
+**Who can open it:** store keepers, supervisors and HODs (their own site), and
+Logistics, the Auditor and Admin (every site). It is read-only: nothing here
+changes a figure.
+
+**What each day shows.** Each date opens to its **jobs**. A job is one piece of
+equipment and one lining system on that day. For each job:
+
+| Column | Meaning |
+|---|---|
+| **Status** | ✅ **Approved**: the HOD approved it and its m² counts. 🟡 **Pending HOD**: filed and waiting. 🔴 **Rejected**: sent back with the HOD's reason, and in the field queue to correct. ⚪ **Not yet filed**: material was drawn, but nobody has stated the area yet. A blue **edited in Excel** tag means the workbook line changed after approval; the approved figures still count until the HOD decides. |
+| **Remarks** | The store keeper's words from the Excel consumption log, **exactly as typed**, in quotes. The m² comes from these words. If the job was filed with a different note, it is shown underneath as *Job note*. |
+| **SQM done** | The area filed or approved. If it differs from the figure in the remark, an amber **⚠ remark says …** appears; hover for the HOD's reason. For an unfiled job it shows what the remark says. |
+| **Drawn** | Packs **and** kilograms (for example *2 Can · 8 KG*). Expand the row to see each material, its lot and its variance against the recipe. |
+| **Decision** | Who approved or rejected it, when, and the reason. |
+
+**Garnet** (blasting) appears in its own section under each day. It is surface
+preparation, so its area is never added to lining m².
+
+**Across the top:** m² approved and pending, jobs not yet filed, and the total
+drawn, plus warnings for rejected area, high-variance jobs waiting for the HOD,
+and jobs whose filed m² differs from the remark.
+
+**Filters and export:** period (last 7 or 30 days, this or last month, or any
+range; the default is the last 30 days), status, Lining or Garnet, equipment,
+system code, and site (for all-site roles). **Excel** and **PDF** export
+exactly what is on screen. The weekly **Executive Summary** email carries the
+same log for its week.
+
+**Practice:** the Practice sump tank *PRACTICE-TK-01* has a week of jobs in
+every status:
+- an approved job;
+- an approved job the HOD corrected from 8 to 7.5 m², which shows "⚠ remark
+  says 8";
+- a rejected job, "No area in the remark";
+- two pending jobs, one of them high-variance;
+- a job not yet filed.
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.

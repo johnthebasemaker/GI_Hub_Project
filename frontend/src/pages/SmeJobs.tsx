@@ -176,7 +176,6 @@ function JobCard({ job }: { job: Job }) {
     },
     onError: (e) => message.error(errMsg(e)),
   })
-
   const cols: ColumnsType<Row> = [
     { title: 'Material', key: 'm',
       render: (_: unknown, r: Row) => (
@@ -482,15 +481,25 @@ interface StagedJob extends Row {
   rows: Row[]; high_priority: boolean
   prep?: boolean; Surface_State?: string | null
   Work_Area?: string | null; notes?: string | null
+  /** Phase 20a — the store keeper's words from the Excel log, verbatim */
+  excel_remarks?: string[]
 }
 
-/** Phase 15e: the part and the remark the job was filed with. */
+/** Phase 15e: the part and the remark the job was filed with. Phase 20a: the
+ *  Excel remark FIRST, as typed (ruling Q20-3), then the job note when it
+ *  differs from it. */
 function JobNote({ job }: { job: StagedJob }) {
-  if (!job.Work_Area && !job.notes) return null
+  const excel = job.excel_remarks ?? []
+  const noteDiffers = !!job.notes && !excel.some((x) => x.toLowerCase() === s(job.notes).trim().toLowerCase())
+  if (!job.Work_Area && !excel.length && !job.notes) return null
   return (
     <Typography.Paragraph style={{ margin: '0 0 8px' }} data-testid="job-remark">
       {job.Work_Area && <Tag color="blue">{job.Work_Area}</Tag>}
-      {job.notes && <Typography.Text type="secondary">Remark: “{job.notes}”</Typography.Text>}
+      {excel.map((x) => (
+        <Typography.Text key={x} style={{ fontStyle: 'italic', marginRight: 8 }}>Excel: “{x}”</Typography.Text>
+      ))}
+      {(noteDiffers || (!excel.length && job.notes)) && (
+        <Typography.Text type="secondary">Job note: “{job.notes}”</Typography.Text>)}
     </Typography.Paragraph>
   )
 }

@@ -267,6 +267,21 @@ def render_exec_pdf(d: dict, *, site: str | None, username: str) -> bytes:
            ["Work_Date", "Equipment_Tag", "System_Code", "SQM_Done", "Remarks"],
            rows_of(d["sqm_detail"], ["Work_Date", "Equipment_Tag", "System_Code", "SQM_Done",
                                      "Remarks"]))
+    # Phase 20a — the Surface Shield daily log: what was drawn, the remark as
+    # typed in Excel, the SQM, and the HOD's decision (ruling Q20-7).
+    ss = d.get("surface_shield") or {}
+    sk = ss.get("kpis")
+    if sk:
+        # the indices below are sme_history.EXPORT_COLUMNS' layout (suite 20A pins it)
+        _table(pdf, "Surface Shield Daily Log",
+               ["Date", "Section", "Equipment", "System", "Status", "SQM", "SQM in remark",
+                "Excel remark", "Decided by", "Reason / justification"],
+               [[r[0], r[1], r[2], r[3], r[5], r[6], r[7], r[8], r[12], r[14]]
+                for r in ss.get("rows", [])],
+               sub=(f'{sk["sqm_approved"]:g} m2 approved · {sk["sqm_pending"]:g} m2 pending HOD · '
+                    f'{sk["jobs"]["rejected"]} rejected · {sk["jobs"]["not_filed"]} not yet filed'
+                    + (f' · {sk["high_priority_pending"]} high-variance pending'
+                       if sk["high_priority_pending"] else "")))
     _table(pdf, "Manpower Present",
            ["Employee_Code", "Name", "Designation", "Worker_Type",
             "Hours", "OT_Hours", "Allocated_SQM"],

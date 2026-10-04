@@ -532,9 +532,21 @@ async def staged_groups(session: AsyncSession, *, site_id: Optional[str]) -> lis
             "id", "Consumption_ID", "SAP_Code", "Material_Code", "Pack_Qty",
             "Unit_Size_Used", "Actual_Qty", "Expected_Qty", "Variance_Pct",
             "Priority_Flag", "Bench_For_1_SQM")})
+    # Phase 20a: the store keeper's own words from the Excel log, verbatim —
+    # the HOD reads what the SQM came from, not only the note it was filed with.
+    cids = [int(r["Consumption_ID"]) for r in rows if r["Consumption_ID"] is not None]
+    remark_of = {int(i): rem for i, rem in (await session.execute(text(
+        'SELECT id, "Remarks" FROM consumption WHERE id = ANY(:i)'), {"i": cids})).all()} \
+        if cids else {}
+    excel: dict[int, list] = defaultdict(list)
+    for r in rows:
+        t = " ".join(str(remark_of.get(int(r["Consumption_ID"] or 0)) or "").split())
+        if t and t.lower() not in {x.lower() for x in excel[int(r["group_id"])]}:
+            excel[int(r["group_id"])].append(t)
     from . import prep as PR
     prep = await PR.prep_codes(session)
     for g in groups:
+        g["excel_remarks"] = excel.get(int(g["id"]), [])
         g["rows"] = by.get(int(g["id"]), [])
         g["high_priority"] = any(r["Priority_Flag"] == "HIGH" for r in g["rows"])
         g["prep"] = str(g["Lining_System_Code"] or "").strip() in prep

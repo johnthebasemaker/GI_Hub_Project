@@ -1446,6 +1446,10 @@ export interface ExecSummaryKpi {
   delta_pct: number | null; daily_avg_7d: number
 }
 export interface ExecSummary {
+  /** Phase 20a — the Surface Shield daily log for the same period (types only). */
+  surface_shield?: { kpis: { sqm_approved: number; sqm_pending: number; sqm_rejected: number
+    jobs: Record<string, number>; high_priority_pending: number; remark_differs: number } | null
+    rows: unknown[][] }
   site_id: string | null; date_from: string; date_to: string; days: number
   generated_at: string
   kpis: {

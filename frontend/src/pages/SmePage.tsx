@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { App, Button, Space, Tabs, Typography, theme } from 'antd'
 import { Table } from '../lib/smartTable'
+import { Link } from 'react-router-dom'
 import { FileExcelOutlined } from '@ant-design/icons'
 import {
   downloadDocument, useSmeComparison, useSmeDemandMatrix, useSmeEquipment,
@@ -153,6 +154,7 @@ function SmePageBody({ siteId, setSiteId }: {
         <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
           Estimator data (equipment, recipes/BOM, SQM progress, materials with
           derived available quantity) — masters editable in 🗄️ Master Data (S6).
+          {' '}<Link to="/surface-shield/log">Surface Shield daily log →</Link>
         </Typography.Paragraph>
         <Space style={{ marginBottom: 12 }}>
           <SiteFilter style={{ width: 180 }} value={siteId} onChange={setSiteId} />

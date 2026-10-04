@@ -14,6 +14,7 @@ import {
   type ExecSummaryKpi,
 } from '../api/hooks'
 import KpiRow from '../components/KpiRow'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { SiteFilter } from '../components/SiteField'
 
@@ -182,6 +183,24 @@ export default function ExecutiveSummaryPage() {
                     col('UOM', 'UOM'), col('Site', 'Site_ID')]} />
               </Card>
             </Col>
+            {/* Phase 20a — the Surface Shield daily log, same period (Q20-2/Q20-7) */}
+            {d.surface_shield?.kpis && (
+              <Col span={24}>
+                <Card size="small" title="Surface Shield — daily log" data-testid="exec-ss-log"
+                  extra={<Link to={`/surface-shield/log?date_from=${d.date_from}&date_to=${d.date_to}`}>Open the daily log →</Link>}>
+                  <Space wrap>
+                    <Tag color="green">{d.surface_shield.kpis.sqm_approved} m² approved</Tag>
+                    <Tag color="gold">{d.surface_shield.kpis.sqm_pending} m² pending HOD</Tag>
+                    <Tag color="red">{d.surface_shield.kpis.jobs.rejected ?? 0} rejected</Tag>
+                    <Tag>{d.surface_shield.kpis.jobs.not_filed ?? 0} not yet filed</Tag>
+                    {d.surface_shield.kpis.high_priority_pending > 0 && (
+                      <Tag color="volcano">{d.surface_shield.kpis.high_priority_pending} high-variance pending</Tag>)}
+                    {d.surface_shield.kpis.remark_differs > 0 && (
+                      <Tag color="gold">{d.surface_shield.kpis.remark_differs} differ from the Excel remark</Tag>)}
+                  </Space>
+                </Card>
+              </Col>
+            )}
             <Col xs={24} xl={12}>
               <Card size="small" title="SQM done (per equipment × system)">
                 <SectionTable rows={d.sqm_detail} empty="No production logged in this period"
