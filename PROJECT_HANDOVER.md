@@ -1204,6 +1204,22 @@ green checks → merge → local pull, unasked (`CLAUDE.md` §5).
 | **Q19-3** | **Partial returns**: a loan stays open until the last part is back, then closes with the worst part's condition. **No undo** (a mistake is a new loan). The borrower is reminded **daily** (the 07:00 `daily_job_runs` claim), and the HOD is told **once** when a loan is more than **3 days** overdue. | alembic `c4e9b2a7f613`, `services/loan_chaser.py`, suite 19C |
 | **Q19-4** | Optional: a `nomic-embed-text` kNN **semantic safety signal**, additive to guard v3. **Built (19d)** as ONE MORE HIT (never refuses alone; refuses only with the router's `is_safe:false`), fail-open, **shipped OFF** (`ai_semantic_guard`): the embedder is 578 MB beside the router's 1.35 GB, past Q17-1's 1.5 GB budget, so **switching it on needs the operator to raise that budget** (⚖️ open). Shadow measured 2026-10-04: holdout block 7 → 10 of 19, no new twin refused. | `ai/semantic.py`, suite 19D, Router L3 `semantic_shadow` |
 
+### Phase 20 — pre-presentation polish & bulk workflows (2026-10-04, RULED)
+
+`PROPOSED_PHASE20_PLAN.md` was approved whole. Rulings:
+
+| # | Ruling | Where it lives |
+|---|---|---|
+| **Q20-1** | The daily log is READ by Logistics, Auditor and Admin, beside the field roles. There is no Finance role yet. | `GET /execution/sme-link/history`, nav group `surface-shield` |
+| **Q20-2/4** | One master view (`/surface-shield/log`) linked from Execution, SME and the Executive Summary. Grouped Date → Job, last 30 days by default. | `SurfaceShieldLogPage.tsx` |
+| **Q20-3** | The Excel remark is shown FIRST and verbatim; the job note only when it differs. | `sme_history`, `JobNote` |
+| **Q20-5/6** | Packs and KG together; Garnet in its own section, never lining SQM. | `sme_history` |
+| **Q20-7** | Excel and PDF export, plus the weekly Executive Summary email (it renders the summary payload, which now carries the log). | `exec_summary.surface_shield` |
+| **Q20-8/9** | A card that is not ready cannot be ticked and says why. Store keeper and supervisor bulk-submit (HOD too, as for one card). | `bulk-submit`, `useBulkSlot` |
+| **Q20-10/11** | The HOD bulk-approves, and every job more than 10 % off the recipe is NAMED in the confirmation. Approve-only: a rejection keeps its own reason. | `bulk-approve`, `hod-risky` |
+| **Q20-12/13** | Paper-form PENDING_HOD entries bulk-approve, each posting stock in its own savepoint; QSEP blocks or stock conflicts fail alone. At most 50. | `bulk_jobs.approve_entries` |
+| **Q20-14..17** | Pitch numbers use `[operator]` placeholders except published figures (sourced). A 10-minute talk plus a deck. The demo runs on localhost Practice. No supplier prices or site names. | `FINANCE_PITCH.md`, the Slides artifact |
+
 ## PRESENT — current state and baselines
 
 > **Updated 2026-10-03 — Phases 13–16 merged (PRs #78–#102), CI parity fixed on

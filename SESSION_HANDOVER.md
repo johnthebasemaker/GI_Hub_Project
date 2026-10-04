@@ -1,4 +1,4 @@
-# SESSION HANDOVER — read this first (updated 2026-10-04, Phase 19 complete)
+# SESSION HANDOVER — read this first (updated 2026-10-04, Phase 20 complete)
 
 > This file is the orientation for a fresh session. It replaces every earlier
 > version (they are in git history). After it, read
@@ -11,20 +11,24 @@
 
 ## 0. State in ten lines
 
-1. **Phases 18 and 19a–c are on `main`** (PRs #109, #110). **19d** (the
-   semantic safety signal) ships in the PR for `feat/phase19d-semantic-guard`.
-   It is OFF by default: switching it on needs the operator to raise Q17-1's
-   router memory budget (+578 MB). Rulings **Q19-1..4** are in
-   `PROJECT_HANDOVER.md` → *Phase 19*.
+1. **Phases 18–20 are on `main`**:
+   - PRs #109–#111: Phases 18–19;
+   - PR #113 (20a): the Surface Shield daily log;
+   - PR #114 (20b): bulk submit and approve;
+   - the PR for 20c: `FINANCE_PITCH.md` plus the slide deck
+     <https://claude.ai/artifact/FZRtKrYqn6e5zoD8Mx3TVn>.
+   Rulings Q20-1..17 are in `PROJECT_HANDOVER.md` → *Phase 20*. The operator
+   presents to the Finance Manager next: fill the `[operator]` figures and
+   rebuild Practice the night before.
 2. ⚠️ **Standing order (CLAUDE.md §5):** every change goes branch → PR →
    green checks → auto-merge → `git pull` on local `main`, without waiting to
    be asked. Rollback is a revert PR, never a history rewrite.
-3. ⚠️ **NEW MIGRATION `c4e9b2a7f613`** (returnable_items +3 columns, new
-   `returnable_returns`). **Live must be migrated** (backup, then
-   `cd backend && ../.venv/bin/alembic upgrade head`), or the Live API
-   refuses to boot. Both Practice DBs are migrated, with overlay v6 applied.
-4. **All gates green** (2026-10-04, through 19d): service_tests **2,870 / 0** · E2E
-   **187** · AI Tier 1 147/147 · Router L2 pass · grid 72 · parity:sme 1,334
+3. **Alembic head `c4e9b2a7f613`. Live was migrated by the operator on
+   2026-10-04**, with a backup at 17:55. Phase 20 added no migration. Both
+   Practice DBs are at head, with overlay **v7** (a week of Surface Shield jobs
+   in every status).
+4. **All gates green** (2026-10-04, through 20b): service_tests **2,890 / 0** · E2E
+   **190** · AI Tier 1 147/147 · Router L2 pass · grid 72 · parity:sme 1,334
    · ui-math 33/0 · nav 52 · bug_check 599/0/0 · build ✅ (+0 B) · single head
    `c4e9b2a7f613`.
 5. ⚠️ **`main` is BRANCH-PROTECTED** (Q18-1): `dual-ci`, `ai-router-eval`,
@@ -308,7 +312,7 @@ cd tests/e2e && npm test
 | Gate | Baseline (`main` after Phase 18, 2026-10-04) |
 |---|---|
 | preflight | clean |
-| service_tests | **2,870 / 0** (its own `gihub_svctest`) |
+| service_tests | **2,890 / 0** (its own `gihub_svctest`) |
 | AI eval | Tier 1 147/147, 0 leaks; recall 1.000, precision 0.994; Router L2 pass (guard refuses 36/39 dev attacks, 0 of 63 + 19 twins) |
 | Router L3 | all gates ✅ (schema 1.000, routing 0.950, 0 flips, dev block 0.949 ≥ **0.90**, twin false refusal 0.012 ≤ 0.02); ~1 min |
 | grid | 72 cases, current |
@@ -317,7 +321,7 @@ cd tests/e2e && npm test
 | nav | 52 routes, snapshot current |
 | bug_check | 599 / 0 / 0 |
 | build | ✅, critical path baseline 379.20 KB gz (re-recorded down in Phase 18) |
-| E2E | **187** passed |
+| E2E | **190** passed |
 | alembic | single head **`c4e9b2a7f613`** |
 | **CI-only: derived-view parity** | 5/5 — run it after touching `stock.py` (MANUAL_TESTING_GUIDE §16e). ⚠️ Phase 18 added an endpoint to `stock.py` but no DERIVED view; not re-run locally. |
 
@@ -386,6 +390,18 @@ reads the Lot Register workbook.)
 
 ## 8. Open items
 
+**Phase 20 findings:**
+- **F20-1, antd loading icon:** after a submit, antd keeps the button's
+  loading icon (`aria-label="loading"`) in the DOM during its exit animation.
+  So the button's accessible NAME reads "loading Submit…" although it is
+  enabled and not loading. In E2E, assert a button by text plus
+  `not.toHaveClass(/ant-btn-loading/)`, never by an anchored `^name`.
+- **F20-2, Postgres restarts kill an E2E run:** a mid-run restart (operator
+  maintenance, 22:14–22:16) failed 46 tests with ECONNREFUSED. Re-run; do not
+  debug the code.
+- **F20-3, the Practice site code:** it is a real site name. The pitch says
+  "Site A"; consider a neutral Practice site code before external demos.
+
 **Open after Phase 19:**
 
 - **A. ⚖️ Semantic signal on or off** (Q19-4): switching `ai_semantic_guard`
@@ -395,8 +411,8 @@ reads the Lot Register workbook.)
 - **B. The operator writes holdout v2** into the `GI_ROUTER_HOLDOUT_V2` secret
   (`docs/HOLDOUT_V2_GUIDE.md`). Never read it (P18-blind). The semantic
   shadow scores it too.
-- **C. Live migration `c4e9b2a7f613`** (19c), if not yet done: backup, then
-  `alembic upgrade head`.
+- **C. ✅ Live migration `c4e9b2a7f613`** was done by the operator on
+  2026-10-04 (backup at 17:55).
 - **D. `lining_analytics.py`** compares ledger packs with recipe KG and keys by
   Material_Code alone (rule 1). Found in Phase 18, not fixed.
 - **E. Practice figures drift**: the reorder examples are dated from the build,
