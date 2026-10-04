@@ -91,3 +91,52 @@ test('18r: a code that names nothing says so at the desk — and the box keeps f
   await expect(desk).toBeFocused()
   await ctx.close()
 })
+
+test('19c: a loan of 3 comes back 1 at a time — it stays open, says what is still out, then closes', async ({ browser }) => {
+  const ctx = await browser.newContext({ storageState: storageStatePath('sk') })
+  const page = await ctx.newPage()
+  const code = `E2E-PART-${Date.now().toString().slice(-6)}`
+  const name = `E2E Clamp set ${code.slice(-6)}`
+
+  await page.goto('/entry/returnables')
+  const desk = page.getByTestId('return-scan-input')
+  await expect(desk).toBeFocused({ timeout: 20_000 })
+
+  // lend 3, scanning the code onto the loan
+  await page.getByRole('button', { name: 'Loan a tool' }).click()
+  const loanModal = page.locator('.ant-modal', { hasText: 'Loan a tool to an employee' })
+  await loanModal.getByRole('button', { name: 'Scan tool' }).click()
+  const manual = page.locator('.ant-modal', { hasText: "Scan the tool's sticker" }).getByPlaceholder('…or type the code')
+  await manual.fill(code)
+  await manual.press('Enter')
+  await loanModal.getByPlaceholder('e.g. Torque wrench — or Scan tool ↑').fill(name)
+  await loanModal.getByPlaceholder('Employee name — or Scan badge ↑').fill('E2E Borrower')
+  await loanModal.getByLabel('Qty', { exact: true }).fill('3')
+  await loanModal.getByRole('button', { name: '+3 days' }).click()
+  await loanModal.getByRole('button', { name: 'Record loan' }).click()
+  await expect(page.getByText(/Loan recorded/)).toBeVisible()
+
+  // 1 of 3 back
+  await desk.click()
+  await desk.fill(code)
+  await desk.press('Enter')
+  const panel = page.getByTestId('return-panel')
+  await expect(panel).toContainText(name)
+  const id = (await panel.locator('[data-testid^="return-qty-"]').getAttribute('data-testid'))!.replace('return-qty-', '')
+  await panel.getByTestId(`return-qty-${id}`).fill('1')
+  await page.getByTestId('return-confirm').click()
+  await expect(page.getByText(new RegExp(`#${id} 1 back, 2 still out`))).toBeVisible()
+  const row = page.locator('.ant-table-row', { hasText: name })
+  await expect(row.getByTestId(`loan-partial-${id}`)).toContainText('2 still out')
+  await page.screenshot({ path: test.info().outputPath('partial-return.png') })
+
+  // the rest — no number: everything still out
+  await desk.click()
+  await desk.fill(`#${id}`)
+  await desk.press('Enter')
+  await expect(panel).toContainText('2 of 3')
+  await page.getByTestId('return-confirm').click()
+  await expect(page.getByText(/Returned 1 item in good order/)).toBeVisible()
+  await expect(page.locator('.ant-table-row', { hasText: name })).toHaveCount(0)
+  await ctx.close()
+})

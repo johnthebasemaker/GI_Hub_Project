@@ -3,7 +3,7 @@ import { App, Button, Empty, Input, InputNumber, Modal, Segmented, Select, Space
 import { Link } from 'react-router-dom'
 import type { ColumnsType } from 'antd/es/table'
 import { Table } from '../lib/smartTable'
-import { useSetSitePace, useSmartMin } from '../api/smartMinHooks'
+import { useAcceptMinimums, useSetSitePace, useSmartMin } from '../api/smartMinHooks'
 import type { RagStatus, SmartMin, SmartMinRow, SmartMinSite } from '../api/smartMinHooks'
 import { useAuth } from '../auth/AuthContext'
 import { status as statusColors } from '../theme/tokens'
@@ -67,12 +67,13 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
   const [site, setSite] = useState<string | undefined>(undefined)
   const { data, isFetching, error } = useSmartMin(site)
   const [rag, setRag] = useState<RagStatus | 'all'>('all')
-  const [kind, setKind] = useState<'all' | 'ss' | 'general'>('all')
+  const [kind, setKind] = useState<'all' | 'ss' | 'general' | 'changed'>('all')
   const [q, setQ] = useState('')
 
   const rows = useMemo(() => (data?.items ?? []).filter((r) =>
     (rag === 'all' || r.Status === rag)
-    && (kind === 'all' || (kind === 'ss' ? r.Surface_Shield : !r.Surface_Shield))
+    && (kind === 'all' || (kind === 'changed' ? r.Changed != null
+      : kind === 'ss' ? r.Surface_Shield : !r.Surface_Shield))
     && (!q || `${r.SAP_Code} ${r.Description ?? ''} ${r.Material_Code ?? ''}`.toLowerCase().includes(q.toLowerCase()))),
   [data, rag, kind, q])
 
@@ -81,6 +82,32 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
   const { user, readOnly } = useAuth()
   const canSetPace = !readOnly && (user?.role === 'hod' || user?.role === 'admin')
   const [paceSite, setPaceSite] = useState<string | null>(null)
+  // Phase 19a — the HOD's review: tick rows, edit the number, accept.
+  const { message } = App.useApp()
+  const accept = useAcceptMinimums()
+  const [review, setReview] = useState(false)
+  const [picked, setPicked] = useState<React.Key[]>([])
+  const [edits, setEdits] = useState<Record<string, number | null>>({})
+  const rowKey = (r: SmartMinRow) => `${r.Site_ID}|${r.SAP_Code}`
+  const proposed = (r: SmartMinRow) => {
+    const e = edits[rowKey(r)]
+    return e !== undefined ? e : r.Recommended_Min
+  }
+  const submitAccept = async () => {
+    const byKey = new Map((data?.items ?? []).map((r) => [rowKey(r), r]))
+    const items = picked.map((k) => byKey.get(String(k))).filter((r): r is SmartMinRow => !!r)
+      .filter((r) => proposed(r) != null)
+      .map((r) => ({ site_id: r.Site_ID, sap_code: r.SAP_Code, minimum_qty: Number(proposed(r)) }))
+    if (!items.length) return
+    try {
+      const res = await accept.mutateAsync(items)
+      message.success(`Accepted ${res.accepted} minimum${res.accepted === 1 ? '' : 's'}`)
+      setPicked([]); setEdits({})
+    } catch (e) {
+      const d = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+      message.error(typeof d === 'string' ? d : 'Could not accept the minimums')
+    }
+  }
 
   const columns: ColumnsType<SmartMinRow> = [
     {
@@ -99,12 +126,23 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
     {
       title: 'Minimum', dataIndex: 'Effective_Min', align: 'right', width: 130,
       render: (v, r) => (
-        <Tooltip title={r.Min_Source === 'manual'
+        <Tooltip title={r.Min_Source === 'accepted'
+          ? `Accepted for ${r.Site_ID} by ${r.Accepted_By ?? '—'}${r.Accepted_At ? ` on ${r.Accepted_At.slice(0, 10)}` : ''}. `
+            + `The system now recommends ${fmt(r.Recommended_Min)}.`
+          : r.Min_Source === 'manual'
           ? `Set by hand on the item (${fmt(r.Manual_Min, 2)}). The system would recommend ${fmt(r.Recommended_Min)}.`
           : 'Recommended by the system — see Why.'}>
-          <span>{fmt(v, 2)} {r.Min_Source === 'manual'
+          <span>{fmt(v, 2)} {r.Min_Source === 'accepted'
+            ? <Tag color="green" data-testid="min-accepted" style={{ marginLeft: 4 }}>accepted</Tag>
+            : r.Min_Source === 'manual'
             ? <Tag style={{ marginLeft: 4 }}>manual</Tag>
             : r.Min_Source === 'smart' ? <Tag color="blue" style={{ marginLeft: 4 }}>smart</Tag> : null}
+            {r.Changed != null ? (
+              <Tooltip title={`The recommendation (${fmt(r.Recommended_Min)}) has moved more than `
+                + `${fmt((p.changed_band ?? 0.2) * 100)} % from the accepted ${fmt(r.Accepted_Min)} — review it.`}>
+                <Tag color="orange" data-testid="min-changed" style={{ marginLeft: 4, cursor: 'help' }}>changed</Tag>
+              </Tooltip>
+            ) : null}
             {r.Surface_Shield && r.Basis.startsWith('plan_all') ? (
               <Tooltip color="gold" title={<span style={{ color: '#111' }}>{WHOLE_PLAN_TIP}</span>}>
                 <Tag color="gold" data-testid="whole-plan-tag" style={{ marginLeft: 4, cursor: 'help' }}>whole plan</Tag>
@@ -113,10 +151,32 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
         </Tooltip>
       ),
     },
+    ...(review ? [{
+      title: 'Accept as', key: 'accept_as', width: 140,
+      render: (_: unknown, r: SmartMinRow) => (
+        <InputNumber size="small" min={0} value={proposed(r)} style={{ width: 120 }}
+          aria-label={`Accept minimum for ${r.SAP_Code}`}
+          onChange={(v) => setEdits((m) => ({ ...m, [rowKey(r)]: v ?? null }))} />
+      ),
+    }] : []),
     { title: 'Days of cover', dataIndex: 'Days_Of_Cover', align: 'right', width: 110,
       render: (v) => (v == null ? '—' : fmt(v, 1)) },
-    { title: 'On order', dataIndex: 'On_Order', align: 'right', width: 90,
-      render: (v) => (v ? fmt(v, 2) : '—') },
+    {
+      title: 'On order', dataIndex: 'On_Order', align: 'right', width: 120,
+      render: (v, r) => (
+        <span>
+          {v ? fmt(v, 2) : '—'}
+          {r.Global_On_Order ? (
+            <Tooltip title={`${fmt(r.Global_On_Order, 2)} more is on POs not raised from any site's PR. `
+              + "It is not subtracted from this site's suggested order, so one PO is never counted twice."}>
+              <div data-testid="global-on-order" style={{ fontSize: 11, opacity: 0.75, cursor: 'help' }}>
+                + {fmt(r.Global_On_Order, 2)} global
+              </div>
+            </Tooltip>
+          ) : null}
+        </span>
+      ),
+    },
     {
       title: 'Suggested order', dataIndex: 'Suggested_Order', align: 'right', width: 130,
       render: (v, r) => (v ? <Typography.Text strong>{fmt(v)} {r.UOM ?? ''}</Typography.Text> : '—'),
@@ -144,7 +204,8 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
         New surface rate) — never past use. <span style={{ color: statusColors.critical }}>Red</span>{' '}
         = below the minimum, <span style={{ color: statusColors.low }}>amber</span> = within{' '}
         {fmt(((p.amber_factor ?? 1.5) - 1) * 100)} % of it. The suggested order brings stock back to
-        twice the minimum, less what is already on open POs.
+        twice the minimum, less what is already on open POs raised from this site's PRs (POs not
+        raised from a PR are shown as <i>global</i> and subtracted from no site).
       </Typography.Paragraph>
 
       {error ? <Note tone="error">Could not load reorder signals.</Note> : null}
@@ -184,9 +245,10 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
               ),
             })),
           ]} />
-        <Segmented value={kind} onChange={(v) => setKind(v as typeof kind)}
+        <Segmented value={kind} onChange={(v) => setKind(v as typeof kind)} data-testid="kind-filter"
           options={[{ value: 'all', label: 'All items' }, { value: 'ss', label: 'Surface Shields' },
-            { value: 'general', label: 'General' }]} />
+            { value: 'general', label: 'General' },
+            { value: 'changed', label: `Changed (${counts.changed ?? 0})` }]} />
         {canPickSite && (
           <Select allowClear placeholder="All sites" style={{ width: 160 }} value={site}
             onChange={(v) => setSite(v || undefined)}
@@ -201,9 +263,31 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
           onClose={() => setPaceSite(null)} />
       ) : null}
 
+      {canSetPace ? (
+        <Space wrap style={{ marginBottom: 8 }}>
+          <Button data-testid="min-review" type={review ? 'primary' : 'default'}
+            onClick={() => { setReview(!review); setPicked([]); setEdits({}) }}>
+            {review ? 'Done reviewing' : 'Review minimums'}
+          </Button>
+          {review ? (
+            <>
+              <Button type="primary" data-testid="min-accept" disabled={!picked.length}
+                loading={accept.isPending} onClick={submitAccept}>
+                Accept {picked.length || ''} minimum{picked.length === 1 ? '' : 's'}
+              </Button>
+              <Typography.Text type="secondary">
+                Tick the rows to accept; edit <b>Accept as</b> to set your own number. An accepted
+                minimum is your site&apos;s until you accept another.
+              </Typography.Text>
+            </>
+          ) : null}
+        </Space>
+      ) : null}
+
       <Table<SmartMinRow>
         size="small"
         loading={isFetching}
+        rowSelection={review ? { selectedRowKeys: picked, onChange: setPicked } : undefined}
         columns={columns}
         dataSource={rows}
         rowKey={(r) => `${r.Site_ID}|${r.SAP_Code}`}

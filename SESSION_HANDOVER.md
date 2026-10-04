@@ -1,4 +1,4 @@
-# SESSION HANDOVER — read this first (updated 2026-10-04, Phase 18 RULED, closed out and merged)
+# SESSION HANDOVER — read this first (updated 2026-10-04, Phase 19a–c shipping)
 
 > This file is the orientation for a fresh session. It replaces every earlier
 > version (they are in git history). After it, read
@@ -11,27 +11,28 @@
 
 ## 0. State in ten lines
 
-1. **Phase 18 ("Night Shift") is MERGED to `main`** through the PR for
-   `feat/phase18-night-shift`, after its own CI run went green. The operator
-   ruled on all twelve questions on 2026-10-04 (**Q18-1…12**,
-   `PROJECT_HANDOVER.md` → *Phase 18*). The close-out commit built the slip,
-   the per-site SQM pace, the whole-plan tag, holdout secrecy and the CI fix.
-   **Next: `PROPOSED_PHASE19_PLAN.md`** (HOD-accepted minimums, per-site
-   on-order, partial returns).
-2. **Everything through Phase 18 is on `main`.**
-3. **Alembic head `a7d3e1f5c829`** (returnable_items gains six columns). **Live
-   was migrated by the operator on 2026-10-04**, and both Practice DBs are
-   migrated and seeded (overlay v5). The close-out added NO migration (the
-   site pace lives in `app_settings` as `ss_planned_sqm_per_day@<site>`).
-4. **All gates green** (2026-10-04): service_tests **2,845 / 0** · E2E
-   **184** · AI Tier 1 147/147 · Router L2 pass · grid 72 · parity:sme 1,334 ·
-   ui-math 33/0 · nav 52 · bug_check 599/0/0 · build ✅ (critical path +0 B) ·
-   single head `a7d3e1f5c829`. Router L3 ran on the PR's CI (CPU).
-5. ⚠️ **`main` is BRANCH-PROTECTED** (Q18-1): `dual-ci`, `ai-router-eval` and
-   `frontend-build` are required and strict, admins included. Nothing reaches
-   `main` except through a PR whose three checks are green. The payload and the
-   command are in `tools/github/`. ⚠️ Never put a path filter back on the
-   workflow's `pull_request` trigger (P18-pr-ci).
+1. **Phase 18 is on `main`** (PR #109). **Phase 19a–c ships in the PR for
+   `feat/phase19-reorder-returns`**: HOD-accepted per-site minimums (19a),
+   on-order per site with global POs subtracted from no site (19b), and
+   partial returns with a daily chaser and HOD escalation (19c). Rulings
+   **Q19-1..4** are in `PROJECT_HANDOVER.md` → *Phase 19*. 19d (the semantic
+   safety signal) follows on its own branch.
+2. ⚠️ **Standing order (CLAUDE.md §5):** every change goes branch → PR →
+   green checks → auto-merge → `git pull` on local `main`, without waiting to
+   be asked. Rollback is a revert PR, never a history rewrite.
+3. ⚠️ **NEW MIGRATION `c4e9b2a7f613`** (returnable_items +3 columns, new
+   `returnable_returns`). **Live must be migrated** (backup, then
+   `cd backend && ../.venv/bin/alembic upgrade head`), or the Live API
+   refuses to boot. Both Practice DBs are migrated, with overlay v6 applied.
+4. **All gates green** (2026-10-04, 19a–c): service_tests **2,862 / 0** · E2E
+   **187** · AI Tier 1 147/147 · Router L2 pass · grid 72 · parity:sme 1,334
+   · ui-math 33/0 · nav 52 · bug_check 599/0/0 · build ✅ (+0 B) · single head
+   `c4e9b2a7f613`.
+5. ⚠️ **`main` is BRANCH-PROTECTED** (Q18-1): `dual-ci`, `ai-router-eval`,
+   `frontend-build` required and strict, admins included; the repo allows
+   auto-merge. CI concurrency is per EVENT since Phase 19, because a
+   cancelled push run's checks blocked PR #109. The payload is in
+   `tools/github/`.
 6. **CI lesson stands:** wait for the PR's own `dual-ci` before merging.
 7. **Deployment to Hetzner is PAUSED by decision.** Runbook ready
    (`tools/migration/README.md`).
@@ -308,7 +309,7 @@ cd tests/e2e && npm test
 | Gate | Baseline (`main` after Phase 18, 2026-10-04) |
 |---|---|
 | preflight | clean |
-| service_tests | **2,845 / 0** (its own `gihub_svctest`) |
+| service_tests | **2,862 / 0** (its own `gihub_svctest`) |
 | AI eval | Tier 1 147/147, 0 leaks; recall 1.000, precision 0.994; Router L2 pass (guard refuses 36/39 dev attacks, 0 of 63 + 19 twins) |
 | Router L3 | all gates ✅ (schema 1.000, routing 0.950, 0 flips, dev block 0.949 ≥ **0.90**, twin false refusal 0.012 ≤ 0.02); ~1 min |
 | grid | 72 cases, current |
@@ -317,8 +318,8 @@ cd tests/e2e && npm test
 | nav | 52 routes, snapshot current |
 | bug_check | 599 / 0 / 0 |
 | build | ✅, critical path baseline 379.20 KB gz (re-recorded down in Phase 18) |
-| E2E | **184** passed |
-| alembic | single head **`a7d3e1f5c829`** |
+| E2E | **187** passed |
+| alembic | single head **`c4e9b2a7f613`** |
 | **CI-only: derived-view parity** | 5/5 — run it after touching `stock.py` (MANUAL_TESTING_GUIDE §16e). ⚠️ Phase 18 added an endpoint to `stock.py` but no DERIVED view; not re-run locally. |
 
 ⚠️ The service-tests step on GitHub is a documented SKIP (no master-data

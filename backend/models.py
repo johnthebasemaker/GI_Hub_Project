@@ -2704,9 +2704,33 @@ class ReturnableItems(Base):
     returned_by = Column(Text)
     return_condition = Column(Text)
     return_note = Column(Text)
+    # Phase 19c (alembic c4e9b2a7f613): partial returns + the daily chaser.
+    qty_returned = Column(Float, nullable=False, server_default=text('0'))
+    last_reminded_at = Column(DateTime)
+    hod_escalated_at = Column(DateTime)
 
     __table_args__ = (
         Index('ix_returnable_items_site_status', 'Site_ID', 'status'),
+    )
+
+
+class ReturnableReturns(Base):
+    """One row per part of a loan handed back (Phase 19c, ruling Q19-3).
+
+    Append-only: a partial return is never undone — a mistake is a new loan."""
+    __tablename__ = "returnable_returns"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    loan_id = Column(Integer, ForeignKey("returnable_items.id", ondelete="CASCADE"),
+                     nullable=False)
+    qty = Column(Float, nullable=False)
+    condition = Column(Text, nullable=False)
+    note = Column(Text)
+    returned_by = Column(Text)
+    returned_time = Column(DateTime)
+    Site_ID = Column(Text)
+
+    __table_args__ = (
+        Index('ix_returnable_returns_loan', 'loan_id'),
     )
 
 class WhatsappQueue(Base):

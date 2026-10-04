@@ -47,11 +47,14 @@ on:
   pull_request: {}
   workflow_dispatch: {}   # allow manual runs from the Actions tab
 
-# A branch with an open PR fires BOTH events. One run per branch at a time:
-# `head_ref` is the branch on a pull_request event and `ref_name` on a push, so
-# the two share a group and the older is cancelled rather than run twice.
+# A branch with an open PR fires BOTH events. ⚠️ ONE GROUP PER EVENT (Phase 19).
+# The two used to share a group, so the PR run CANCELLED the push run — and a
+# cancelled `dual-ci` / `ai-router-eval` / `frontend-build` check on the PR's
+# head commit BLOCKS the merge now that those three are required checks
+# (PR #109 sat "blocked" with all three green on its pull_request run). Each
+# event now only cancels its own older run on the same branch.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:

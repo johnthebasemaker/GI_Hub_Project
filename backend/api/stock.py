@@ -63,7 +63,14 @@ LEFT JOIN (
 """
 
 # v_site_stock — per (SAP_Code, Site_ID) current stock.
-SQL_SITE_STOCK = """
+# ⚠️ PHASE 19a: a site's ACCEPTED minimum (inventory_site_overrides, written
+# when the HOD accepts a recommendation — POST /stock/smart-min/accept) beats
+# the item's global Minimum_Qty, exactly as legacy's get_min_qty_for resolved
+# it: COALESCE(site override, inventory default, 0). Every consumer of this
+# SQL (Dashboard, low-stock, HOD auto-draft, reports, WhatsApp STOCK) sees the
+# per-site minimum with no change of its own. The frozen SQLite v_site_stock
+# never had the join, so the parity checker runs SQL_SITE_STOCK_PARITY below.
+_SITE_STOCK_TMPL = """
 WITH activity AS (
     SELECT TRIM("SAP_Code") AS "SAP_Code", COALESCE("Site_ID",'HQ') AS "Site_ID",
            SUM("Quantity") AS rec, 0 AS con, 0 AS ret
@@ -83,16 +90,23 @@ SELECT
     i."Equipment_Description"            AS "Equipment_Description",
     i."Material_Code"                    AS "Material_Code",
     i."UOM"                              AS "UOM",
-    COALESCE(i."Minimum_Qty", 0)         AS "Minimum_Qty",
+    {min_expr}                           AS "Minimum_Qty",
     SUM(a.rec)                           AS "Total_Received",
     SUM(a.con)                           AS "Total_Consumed",
     SUM(a.ret)                           AS "Total_Returned",
     SUM(a.rec) - SUM(a.con) - SUM(a.ret) AS "Current_Stock"
 FROM activity a
-LEFT JOIN inventory i ON TRIM(i."SAP_Code") = a."SAP_Code"
+LEFT JOIN inventory i ON TRIM(i."SAP_Code") = a."SAP_Code"{join}
 GROUP BY a."SAP_Code", a."Site_ID",
-         i."Equipment_Description", i."Material_Code", i."UOM", i."Minimum_Qty"
+         i."Equipment_Description", i."Material_Code", i."UOM", i."Minimum_Qty"{group}
 """
+SQL_SITE_STOCK = _SITE_STOCK_TMPL.format(
+    min_expr='COALESCE(o."Minimum_Qty", i."Minimum_Qty", 0)',
+    join=('\nLEFT JOIN inventory_site_overrides o\n'
+          '       ON TRIM(o."SAP_Code") = a."SAP_Code" AND o."Site_ID" = a."Site_ID"'),
+    group=', o."Minimum_Qty"')
+SQL_SITE_STOCK_PARITY = _SITE_STOCK_TMPL.format(
+    min_expr='COALESCE(i."Minimum_Qty", 0)', join="", group="")
 
 # v_lot_balance — per-lot remaining quantity.
 # Phase 16: remaining = received − consumed − RETURNED ± transfers. A returned
@@ -197,7 +211,8 @@ WHERE r."Expiry_Date" IS NOT NULL
 # parity checker (which maps each back to its SQLite v_* view).
 DERIVED = {
     "live":     {"sql": SQL_LIVE_STOCK, "site": False, "order": '"SAP_Code"',                 "view": "v_live_stock"},
-    "by-site":  {"sql": SQL_SITE_STOCK, "site": True,  "order": '"SAP_Code", "Site_ID"',      "view": "v_site_stock"},
+    "by-site":  {"sql": SQL_SITE_STOCK, "site": True,  "order": '"SAP_Code", "Site_ID"',      "view": "v_site_stock",
+                 "parity_sql": SQL_SITE_STOCK_PARITY},
     "lots":     {"sql": SQL_LOT_BALANCE, "site": True, "order": '"Lot_Number", "SAP_Code"',   "view": "v_lot_balance",
                  "parity_sql": SQL_LOT_BALANCE_PARITY},
     "expiring": {"sql": SQL_EXPIRING,   "site": True,  "order": '"Days_Until_Expiry"',         "view": "v_expiring_stock"},
@@ -333,6 +348,77 @@ async def smart_min_pace(body: SitePaceIn = Body(...),
                       f"{key}={rate:g}" if rate > 0 else f"{key} cleared")
     await session.commit()
     return {"site_id": site, "sqm_per_day": rate or None}
+
+
+class MinAcceptItem(BaseModel):
+    site_id: Optional[str] = None
+    sap_code: str = Field(..., min_length=1, max_length=60)
+    minimum_qty: float = Field(..., ge=0, le=10_000_000)
+
+
+class MinAcceptIn(BaseModel):
+    items: list[MinAcceptItem] = Field(..., min_length=1, max_length=500)
+
+
+@router.post("/smart-min/accept",
+             summary="The HOD accepts (or edits) recommended minimums for their site")
+async def smart_min_accept(body: MinAcceptIn = Body(...),
+                           user: dict = Depends(require_roles("hod")),
+                           session: AsyncSession = Depends(get_session)):
+    """Phase 19a, ruling Q19-1: only the HOD accepts (admin, as everywhere, is
+    admitted by `require_roles`). Logistics reads the result and cannot accept.
+
+    Each ticked row becomes the site's minimum in `inventory_site_overrides`.
+    It beats the item's global Minimum_Qty everywhere SQL_SITE_STOCK is read,
+    and it never expires: it stays until the HOD accepts another. The audit
+    row keeps the recommendation it came from, so "why is the minimum 90?" has
+    an answer. All or nothing: one row for a foreign site (403) or an unknown
+    SAP (422) rejects the whole submission."""
+    from .services import smart_min as SM
+    from .services.ledger import write_audit
+    from .services.notifications import notify
+
+    rows = []
+    for it in body.items:
+        site = resolve_site_write(user, it.site_id)
+        if not site:
+            raise HTTPException(422, "site_id is required")
+        rows.append((site, it.sap_code.strip(), float(it.minimum_qty)))
+    saps = sorted({sap for _, sap, _ in rows})
+    known = {r[0] for r in (await session.execute(text(
+        'SELECT TRIM("SAP_Code") FROM inventory WHERE TRIM("SAP_Code") = ANY(:s)'),
+        {"s": saps})).all()}
+    unknown = [sap for sap in saps if sap not in known]
+    if unknown:
+        raise HTTPException(422, f"not in the item list: {', '.join(unknown[:10])}")
+
+    recs: dict[tuple, dict] = {}
+    for site in sorted({r[0] for r in rows}):
+        for r in (await SM.compute(session, site))["items"]:
+            recs[(r["SAP_Code"].strip(), site)] = r
+    old = await SM.accepted_minimums(session, None)
+    for site, sap, qty in rows:
+        await session.execute(text(
+            'INSERT INTO inventory_site_overrides ("SAP_Code", "Site_ID", "Minimum_Qty", '
+            'updated_by, updated_at) VALUES (:p, :s, :q, :u, CURRENT_TIMESTAMP) '
+            'ON CONFLICT ("SAP_Code", "Site_ID") DO UPDATE SET "Minimum_Qty" = :q, '
+            'updated_by = :u, updated_at = CURRENT_TIMESTAMP'),
+            {"p": sap, "s": site, "q": qty, "u": user["username"]})
+        rec = recs.get((sap, site)) or {}
+        was = old.get((SM._norm(sap), site))
+        await write_audit(session, user["username"], "MIN_ACCEPT", "inventory_site_overrides",
+                          f"{sap}@{site}: {was['qty'] if was else '-'} -> {qty:g} "
+                          f"(recommended {rec.get('Recommended_Min', '-')}, "
+                          f"basis {rec.get('Basis', '-')})")
+    for site in sorted({r[0] for r in rows}):
+        n = sum(1 for r in rows if r[0] == site)
+        await notify(session, event_key="min_accepted", recipient_role="logistics",
+                     title=f"{site}: {n} minimum(s) accepted by the HOD",
+                     body=f"{user['username']} set {n} site minimum(s) on Reorder signals.",
+                     link_page="/stock?tab=reorder")
+    await session.commit()
+    return {"accepted": len(rows),
+            "items": [{"site_id": s_, "sap_code": p_, "minimum_qty": q_} for s_, p_, q_ in rows]}
 
 
 @router.get("/lots", summary="Per-lot remaining quantity — v_lot_balance")

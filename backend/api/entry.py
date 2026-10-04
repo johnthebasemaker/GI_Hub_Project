@@ -1131,10 +1131,15 @@ RETURN_CONDITIONS = ("ok", "damaged", "incomplete")
 class LoanReturnIn(BaseModel):
     condition: Literal["ok", "damaged", "incomplete"] = "ok"
     note: Optional[str] = Field(None, max_length=500)
+    # Phase 19c: how many came back. None = everything still out.
+    qty: Optional[float] = Field(None, gt=0)
 
 
 class LoanReturnBatchIn(LoanReturnIn):
     ids: list[int] = Field(..., min_length=1, max_length=50)
+    # Phase 19c: {loan id: qty} for the loans coming back only in part; a
+    # loan not named here returns everything it still has out.
+    qtys: Optional[dict[int, float]] = None
 
 
 def _local_now() -> _dt.datetime:
@@ -1265,20 +1270,34 @@ async def create_returnable(body: ReturnableIn = Body(...),
 
 _CONDITION_WORDS = {"ok": "in good order", "damaged": "DAMAGED",
                     "incomplete": "INCOMPLETE (parts missing)"}
+# A loan returned in parts is closed with its WORST part's condition.
+_CONDITION_RANK = {"ok": 0, "incomplete": 1, "damaged": 2}
+_returns_t = ledger._MD.tables["returnable_returns"]
+
+
+def _fmt_q(x: float) -> str:
+    return f"{x:g}"
 
 
 async def _return_one(session: AsyncSession, user: dict, rid: int,
-                      body: "LoanReturnIn") -> dict:
-    """Close one loan inside the caller's transaction. Raises HTTPException.
+                      body: "LoanReturnIn", qty: Optional[float] = None) -> dict:
+    """Take back all or part of one loan inside the caller's transaction.
+    Raises HTTPException.
 
     Records WHEN (local), WHO received it and in WHAT condition (Phase 18). A
-    damaged or incomplete return also tells the site's HOD — it is the one
-    return somebody has to act on (repair, replace, charge back)."""
+    damaged or incomplete part also tells the site's HOD — it is the one
+    return somebody has to act on (repair, replace, charge back).
+
+    Phase 19c, ruling Q19-3: `qty` (default: everything still out) may be
+    less than what is out. Every part is a `returnable_returns` row. The loan
+    stays OPEN (status 'borrowed', overdue rules and the daily chaser included)
+    until the last part is back, and then closes with its worst part's
+    condition. There is no undo: a part handed back by mistake is a new loan."""
     t = _returnables_t
     row = (await session.execute(select(
-        t.c["Site_ID"], t.c["status"], t.c["material_name"],
-        t.c["borrower_name"], t.c["borrower_phone"],
-    ).where(t.c["id"] == rid))).first()
+        t.c["Site_ID"], t.c["status"], t.c["material_name"], t.c["qty"], t.c["uom"],
+        t.c["qty_returned"], t.c["borrower_name"], t.c["borrower_phone"],
+    ).where(t.c["id"] == rid).with_for_update())).first()
     if row is None:
         raise HTTPException(404, f"returnable {rid} not found")
     scope = resolve_site_param(user, None)
@@ -1286,34 +1305,58 @@ async def _return_one(session: AsyncSession, user: dict, rid: int,
         raise HTTPException(403, "this loan belongs to another site")
     if row.status == "returned":
         raise HTTPException(409, "already returned")
+    lent = float(row.qty or 1)
+    out = max(lent - float(row.qty_returned or 0), 0.0)
+    q = out if qty is None else float(qty)
+    if q <= 0 or q > out + 1e-9:
+        raise HTTPException(422, f"only {_fmt_q(out)} of #{rid} is still out — cannot take back {_fmt_q(q)}")
     note = (body.note or "").strip() or None
-    await session.execute(update(t).where(t.c["id"] == rid).values(
-        status="returned", returned_time=_local_now(), returned_by=user["username"],
-        return_condition=body.condition, return_note=note))
+    now = _local_now()
+    await session.execute(insert(_returns_t).values(
+        loan_id=rid, qty=q, condition=body.condition, note=note,
+        returned_by=user["username"], returned_time=now, Site_ID=row.Site_ID))
+    back = float(row.qty_returned or 0) + q
+    left = max(lent - back, 0.0)
+    closed = left <= 1e-9
+    if closed:
+        conds = [c for (c,) in (await session.execute(select(_returns_t.c["condition"]).where(
+            _returns_t.c["loan_id"] == rid))).all()]
+        worst = max(conds or [body.condition], key=lambda c: _CONDITION_RANK.get(c, 0))
+        await session.execute(update(t).where(t.c["id"] == rid).values(
+            status="returned", qty_returned=lent, returned_time=now,
+            returned_by=user["username"], return_condition=worst, return_note=note))
+    else:
+        await session.execute(update(t).where(t.c["id"] == rid).values(qty_returned=back))
+    unit = f" {row.uom}" if row.uom else ""
+    part = "" if closed and back == q else f" {_fmt_q(q)} of {_fmt_q(lent)}{unit}"
     await ledger.write_audit(session, user["username"], "RETURNABLE_RETURN",
                              "returnable_items",
-                             f"id={rid} condition={body.condition}"
-                             + (f" note={note}" if note else ""))
+                             f"id={rid} qty={_fmt_q(q)} left={_fmt_q(left)} "
+                             f"condition={body.condition}" + (f" note={note}" if note else ""))
     cond = _CONDITION_WORDS[body.condition]
     await notify(session, event_key="loan_returned", recipient_role="store_keeper",
                  recipient_site=row.Site_ID,
-                 severity="success" if body.condition == "ok" else "warning",
-                 title=f"Tool returned: {row.material_name}",
-                 body=(f"{row.borrower_name} returned it {cond} — confirmed by "
-                       f"{user['username']}." + (f" Note: {note}" if note else "")),
+                 severity="success" if body.condition == "ok" and closed else "warning",
+                 title=(f"Tool returned: {row.material_name}" if closed else
+                        f"Partly returned: {row.material_name} ({_fmt_q(back)} of {_fmt_q(lent)})"),
+                 body=(f"{row.borrower_name} returned{part} {cond} — confirmed by "
+                       f"{user['username']}."
+                       + ("" if closed else f" {_fmt_q(left)}{unit} still out.")
+                       + (f" Note: {note}" if note else "")),
                  link_page="/entry/returnables", related_table="returnable_items",
                  related_ref=str(rid))
     if body.condition != "ok":
         await notify(session, event_key="loan_returned_damaged", recipient_role="hod",
                      recipient_site=row.Site_ID, severity="warning",
                      title=f"Tool came back {body.condition}: {row.material_name}",
-                     body=(f"Borrowed by {row.borrower_name}; received by "
+                     body=(f"Borrowed by {row.borrower_name};{part or ' all'} received by "
                            f"{user['username']}." + (f" Note: {note}" if note else "")),
                      link_page="/entry/returnables", related_table="returnable_items",
                      related_ref=str(rid))
     return {"id": rid, "material_name": row.material_name,
             "borrower_name": row.borrower_name, "borrower_phone": row.borrower_phone,
-            "Site_ID": row.Site_ID}
+            "Site_ID": row.Site_ID, "qty": q, "left": left, "closed": closed,
+            "uom": row.uom}
 
 
 async def _confirm_to_borrowers(session: AsyncSession, user: dict, done: list[dict]) -> None:
@@ -1324,10 +1367,15 @@ async def _confirm_to_borrowers(session: AsyncSession, user: dict, done: list[di
         if not d.get("borrower_phone"):
             continue
         try:
+            unit = f" {d['uom']}" if d.get("uom") else ""
             await wa.send_template(
                 session, to=d["borrower_phone"], template_key="status_update",
-                variables=[f"Tool return confirmed: {d['material_name']}",
-                           f"Received back at {d['Site_ID'] or 'the'} store. Thank you."],
+                variables=([f"Tool return confirmed: {d['material_name']}",
+                            f"Received back at {d['Site_ID'] or 'the'} store. Thank you."]
+                           if d.get("closed", True) else
+                           [f"Part of your loan returned: {d['material_name']}",
+                            f"Received {_fmt_q(d['qty'])}{unit} at {d['Site_ID'] or 'the'} "
+                            f"store — {_fmt_q(d['left'])}{unit} still to return."]),
                 event_key="loan_returned", related_table="returnable_items",
                 related_ref=str(d["id"]), created_by=user["username"])
             await session.commit()
@@ -1343,9 +1391,10 @@ async def mark_returned(rid: int, body: Optional[LoanReturnIn] = Body(None),
     # means "returned in good order", exactly as before Phase 18.
     body = body or LoanReturnIn()
     async with session.begin():
-        done = await _return_one(session, user, rid, body)
+        done = await _return_one(session, user, rid, body, body.qty)
     await _confirm_to_borrowers(session, user, [done])
-    return {"returned": True, "id": rid, "condition": body.condition}
+    return {"returned": done["closed"], "id": rid, "condition": body.condition,
+            "qty": done["qty"], "left": done["left"]}
 
 
 @router.post("/returnables/return-batch",
@@ -1363,12 +1412,15 @@ async def return_batch(body: LoanReturnBatchIn = Body(...),
         for rid in dict.fromkeys(body.ids):            # de-duplicated, ordered
             try:
                 async with session.begin_nested():
-                    done.append(await _return_one(session, user, rid, body))
+                    done.append(await _return_one(session, user, rid, body,
+                                                  (body.qtys or {}).get(rid)))
             except HTTPException as e:
                 skipped.append({"id": rid, "status": e.status_code, "reason": e.detail})
     await _confirm_to_borrowers(session, user, done)
-    return {"returned": [d["id"] for d in done], "skipped": skipped,
-            "condition": body.condition}
+    return {"returned": [d["id"] for d in done if d["closed"]],
+            "partial": [{"id": d["id"], "qty": d["qty"], "left": d["left"]}
+                        for d in done if not d["closed"]],
+            "skipped": skipped, "condition": body.condition}
 
 
 @router.get("/returnables/{rid}/slip",
@@ -1422,6 +1474,10 @@ async def loan_slip(rid: int, user: dict = Depends(require_roles("store_keeper")
     lines = [("Item", row["material_name"]),
              ("Ref", row["Item_Ref"] or row["SAP_Code"]),
              ("Qty", f"{qty} {row['uom'] or ''}".strip()),
+             # Phase 19c: a loan coming back in parts says how much is back
+             ("Back so far", (f"{float(row['qty_returned']):g} of {qty}"
+                              if row["status"] != "returned" and (row["qty_returned"] or 0) > 0
+                              else None)),
              ("Borrower", row["borrower_name"]),
              ("Phone", row["borrower_phone"]),
              ("Given", when(row["given_time"])),

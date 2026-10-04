@@ -29313,6 +29313,378 @@ async def test_phase18m_smart_min():
         await cleanup()
 
 
+async def test_phase19a_min_accept():
+    """Suite 19A — Phase 19a (ruling Q19-1): the HOD accepts recommended
+    minimums per site.
+
+    An accepted minimum (inventory_site_overrides) beats the item's global
+    Minimum_Qty and the recommendation, everywhere SQL_SITE_STOCK is read. It
+    is flagged "changed" when the fresh recommendation moves more than ±20 %
+    from it, never expires, and only the HOD (admin admitted) may accept.
+    Synthetic site SVC19A; cleaned up."""
+    import datetime as _dtm
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from .services import smart_min as SM
+    from .stock import SQL_SITE_STOCK, SQL_SITE_STOCK_PARITY
+
+    today = _dtm.date.today()
+    d = lambda n: (today - _dtm.timedelta(days=n)).isoformat()    # noqa: E731
+    SITE = "SVC19A"
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+
+    async def cleanup():
+        for sql in ("DELETE FROM inventory_site_overrides WHERE \"SAP_Code\" LIKE 'SVC19A%'",
+                    'DELETE FROM consumption WHERE "SAP_Code" LIKE \'SVC19A%\'',
+                    'DELETE FROM receipts WHERE "SAP_Code" LIKE \'SVC19A%\'',
+                    'DELETE FROM inventory WHERE "SAP_Code" LIKE \'SVC19A%\''):
+            await ex(sql)
+
+    def tok(user, role, site):
+        return {"Authorization": f"Bearer {_auth._make_token(user, role, site, _auth.ACCESS_TTL)}"}
+
+    await cleanup()
+    try:
+        # two general items used 1/day for 30 days → recommended 30 each
+        await ex('INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+                 '"Category", "UOM", "Site_ID", "Minimum_Qty") VALUES '
+                 "('SVC19A-GEN', 'MAT-SVC19A-GEN', 'SVC19A general', 'R/L Consumables', 'EA', :s, 0),"
+                 "('SVC19A-MAN', 'MAT-SVC19A-MAN', 'SVC19A manual', 'R/L Consumables', 'EA', :s, 50),"
+                 "('SVC19A-CN', 'MAT-SVC19A-CN', 'SVC19A cncec', 'R/L Consumables', 'EA', 'CNCEC', 0)", s=SITE)
+        for sap, site in (("SVC19A-GEN", SITE), ("SVC19A-MAN", SITE), ("SVC19A-CN", "CNCEC")):
+            await ex('INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES (:d, :p, 100, :s)',
+                     d=d(40), p=sap, s=site)
+            await ex('INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES (:d, :p, 30, :s)',
+                     d=d(5), p=sap, s=site)
+        async with SessionLocal() as s_:
+            inv_before = (await s_.execute(_t(
+                'SELECT md5(string_agg("SAP_Code" || \':\' || COALESCE("Minimum_Qty", 0)::text, \',\' '
+                'ORDER BY "SAP_Code")) FROM inventory'))).scalar()
+        HA = tok("admin", "admin", None)
+        HH = tok("hod", "hod", "CNCEC")
+        HS = tok("worker", "store_keeper", "CNCEC")
+        HL = tok("svc19a_log", "logistics", None)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            a1 = await ac.post("/stock/smart-min/accept", headers=HA, json={"items": [
+                {"site_id": SITE, "sap_code": "SVC19A-GEN", "minimum_qty": 45},
+                {"site_id": SITE, "sap_code": "SVC19A-MAN", "minimum_qty": 20}]})
+            out = (await ac.get("/stock/smart-min", headers=HA, params={"site_id": SITE})).json()
+            by = {r["SAP_Code"]: r for r in out.get("items", [])}
+            g, m = by.get("SVC19A-GEN", {}), by.get("SVC19A-MAN", {})
+            check("19a-01: an ACCEPTED minimum is the site's minimum — 45 against a "
+                  "recommendation of 30 (source accepted, who and when kept; stock 70 is "
+                  "green against 45), and the 33 % move is flagged CHANGED (band ±20 %)",
+                  a1.status_code == 200 and g.get("Effective_Min") == 45
+                  and g.get("Min_Source") == "accepted" and g.get("Accepted_By") == "admin"
+                  and g.get("Recommended_Min") == 30 and g.get("Changed") == 0.333
+                  and g.get("Status") == "green", f"{a1.status_code} {str(g)[:300]}")
+            check("19a-02: …and it beats the item's GLOBAL manual minimum (50 → the "
+                  "site's accepted 20)",
+                  m.get("Effective_Min") == 20 and m.get("Min_Source") == "accepted"
+                  and m.get("Manual_Min") == 50, str(m)[:300])
+            async with SessionLocal() as s_:
+                live = (await s_.execute(_t(
+                    f'SELECT "Minimum_Qty" FROM ({SQL_SITE_STOCK}) s WHERE "SAP_Code" = '
+                    "'SVC19A-MAN' AND \"Site_ID\" = :s"), {"s": SITE})).scalar()
+                par = (await s_.execute(_t(
+                    f'SELECT "Minimum_Qty" FROM ({SQL_SITE_STOCK_PARITY}) s WHERE "SAP_Code" = '
+                    "'SVC19A-MAN' AND \"Site_ID\" = :s"), {"s": SITE})).scalar()
+            check("19a-03: SQL_SITE_STOCK carries the site's accepted minimum (20) to every "
+                  "consumer, while the parity twin keeps the frozen view's shape (50)",
+                  live == 20 and par == 50, f"live={live} parity={par}")
+            await ac.post("/stock/smart-min/accept", headers=HA, json={"items": [
+                {"site_id": SITE, "sap_code": "SVC19A-GEN", "minimum_qty": 33}]})
+            g2 = next(r for r in (await ac.get("/stock/smart-min", headers=HA,
+                      params={"site_id": SITE})).json()["items"] if r["SAP_Code"] == "SVC19A-GEN")
+            await ac.post("/stock/smart-min/accept", headers=HA, json={"items": [
+                {"site_id": SITE, "sap_code": "SVC19A-GEN", "minimum_qty": 0}]})
+            g3 = next(r for r in (await ac.get("/stock/smart-min", headers=HA,
+                      params={"site_id": SITE})).json()["items"] if r["SAP_Code"] == "SVC19A-GEN")
+            async with SessionLocal() as s_:
+                n_rows = (await s_.execute(_t(
+                    "SELECT count(*) FROM inventory_site_overrides WHERE \"SAP_Code\" = 'SVC19A-GEN'"))).scalar()
+            check("19a-04: accepting again REPLACES (one row per item and site): 33 is within "
+                  "±20 % of 30 → not changed; an accepted 0 ('no minimum here') is changed by "
+                  "any recommendation",
+                  g2["Effective_Min"] == 33 and g2["Changed"] is None
+                  and g3["Effective_Min"] == 0 and g3["Changed"] == 1.0 and n_rows == 1,
+                  f"{g2['Changed']} {g3['Changed']} rows={n_rows}")
+            r_sk = await ac.post("/stock/smart-min/accept", headers=HS, json={"items": [
+                {"sap_code": "SVC19A-CN", "minimum_qty": 5}]})
+            r_lg = await ac.post("/stock/smart-min/accept", headers=HL, json={"items": [
+                {"site_id": "CNCEC", "sap_code": "SVC19A-CN", "minimum_qty": 5}]})
+            r_fh = await ac.post("/stock/smart-min/accept", headers=HH, json={"items": [
+                {"site_id": SITE, "sap_code": "SVC19A-GEN", "minimum_qty": 5}]})
+            r_uk = await ac.post("/stock/smart-min/accept", headers=HH, json={"items": [
+                {"sap_code": "SVC19A-CN", "minimum_qty": 5},
+                {"sap_code": "SVC19A-NO-SUCH", "minimum_qty": 5}]})
+            async with SessionLocal() as s_:
+                cn_rows = (await s_.execute(_t(
+                    "SELECT count(*) FROM inventory_site_overrides WHERE \"SAP_Code\" = 'SVC19A-CN'"))).scalar()
+            check("19a-05: ⚠️ ruling Q19-1 — only the HOD accepts: a store keeper 403, "
+                  "LOGISTICS 403 (it reads, it does not accept), a CNCEC HOD naming another "
+                  "site 403, and one unknown SAP rejects the WHOLE submission (422, nothing "
+                  "written)",
+                  (r_sk.status_code, r_lg.status_code, r_fh.status_code, r_uk.status_code)
+                  == (403, 403, 403, 422) and cn_rows == 0,
+                  f"{r_sk.status_code} {r_lg.status_code} {r_fh.status_code} {r_uk.status_code} rows={cn_rows}")
+            r_h = await ac.post("/stock/smart-min/accept", headers=HH, json={"items": [
+                {"sap_code": "SVC19A-CN", "minimum_qty": 12}]})
+            lg_view = (await ac.get("/stock/smart-min", headers=HL,
+                                    params={"site_id": "CNCEC"})).json()
+            cn = next((r for r in lg_view.get("items", []) if r["SAP_Code"] == "SVC19A-CN"), {})
+        async with SessionLocal() as s_:
+            ov = (await s_.execute(_t(
+                "SELECT \"Site_ID\", \"Minimum_Qty\", updated_by FROM inventory_site_overrides "
+                "WHERE \"SAP_Code\" = 'SVC19A-CN'"))).first()
+            aud = (await s_.execute(_t(
+                "SELECT details FROM system_audit_log WHERE action_type = 'MIN_ACCEPT' "
+                "AND details LIKE 'SVC19A-CN@CNCEC%' ORDER BY id DESC LIMIT 1"))).scalar()
+            note = (await s_.execute(_t(
+                "SELECT count(*) FROM app_notifications WHERE event_key = 'min_accepted' "
+                "AND recipient_role = 'logistics' AND title LIKE 'CNCEC:%'"))).scalar()
+            inv_after = (await s_.execute(_t(
+                'SELECT md5(string_agg("SAP_Code" || \':\' || COALESCE("Minimum_Qty", 0)::text, \',\' '
+                'ORDER BY "SAP_Code")) FROM inventory'))).scalar()
+        check("19a-06: the HOD accepts for their OWN site with no site named (CNCEC, by "
+              "'hod'); the audit row keeps the recommendation it came from; Logistics is "
+              "told and SEES it as accepted",
+              r_h.status_code == 200 and ov is not None and tuple(ov) == ("CNCEC", 12.0, "hod")
+              and aud is not None and "recommended 30" in aud and note >= 1
+              and cn.get("Min_Source") == "accepted" and cn.get("Effective_Min") == 12,
+              f"{r_h.status_code} {ov} {aud} note={note} {str(cn)[:160]}")
+        check("19a-07: the item's GLOBAL Minimum_Qty is never written — an accepted "
+              "minimum lives only in the site table",
+              inv_before == inv_after, f"{inv_before} → {inv_after}")
+    finally:
+        await cleanup()
+
+
+async def test_phase19b_on_order_per_site():
+    """Suite 19B — Phase 19b (ruling Q19-2): on order, per site.
+
+    An open PO line counts against the site of the PR it was raised from (the
+    line's PR, else the PO header's, via pr_registry and then pr_master). A
+    line with no PR, or with a PR the Hub does not know, is GLOBAL: shown, and
+    subtracted from no site. Synthetic SVC19B rows; cleaned up."""
+    import datetime as _dtm
+    from sqlalchemy import text as _t
+
+    from .services import smart_min as SM
+
+    today = _dtm.date.today()
+    d = lambda n: (today - _dtm.timedelta(days=n)).isoformat()    # noqa: E731
+    SITE = "SVC19B"
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+
+    async def cleanup():
+        for sql in ('DELETE FROM po_items WHERE "PO_Number" LIKE \'SVC19B%\'',
+                    'DELETE FROM purchase_orders WHERE "PO_Number" LIKE \'SVC19B%\'',
+                    'DELETE FROM pr_master WHERE "PR_Number" LIKE \'SVC19B%\'',
+                    'DELETE FROM pr_registry WHERE "PR_Number" LIKE \'SVC19B%\'',
+                    'DELETE FROM consumption WHERE "SAP_Code" LIKE \'SVC19B%\'',
+                    'DELETE FROM receipts WHERE "SAP_Code" LIKE \'SVC19B%\'',
+                    'DELETE FROM inventory WHERE "SAP_Code" LIKE \'SVC19B%\''):
+            await ex(sql)
+
+    await cleanup()
+    try:
+        await ex('INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+                 '"Category", "UOM", "Site_ID", "Minimum_Qty") VALUES '
+                 "('SVC19B-GEN', 'MAT-SVC19B-GEN', 'SVC19B general', 'R/L Consumables', 'EA', :s, 0)", s=SITE)
+        # used 1/day → minimum 30; stock 10 → red; target 60
+        await ex('INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES (:d, \'SVC19B-GEN\', 40, :s)',
+                 d=d(40), s=SITE)
+        await ex('INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES (:d, \'SVC19B-GEN\', 30, :s)',
+                 d=d(5), s=SITE)
+        await ex('INSERT INTO pr_registry ("PR_Number", "Site_ID") VALUES (\'SVC19B-PR1\', :s)', s=SITE)
+        await ex('INSERT INTO pr_master ("PR_Number", "SAP_Code", "Requested_Qty", "Site_ID") VALUES '
+                 "('SVC19B-PR1', 'SVC19B-GEN', 50, :s), ('SVC19B-PR2', 'SVC19B-GEN', 7, 'SVC19B-OTHER')", s=SITE)
+        await ex('INSERT INTO purchase_orders ("PO_Number", "PR_Number") VALUES '
+                 "('SVC19B-PO1', NULL), ('SVC19B-PO2', NULL), ('SVC19B-PO3', 'SVC19B-PR1')")
+        await ex('INSERT INTO po_items ("PO_Number", line_no, "Material_Code", "Qty", "Delivered_Qty", '
+                 '"PR_Number", line_status) VALUES '
+                 "('SVC19B-PO1', 1, 'MAT-SVC19B-GEN', 20, 5, 'SVC19B-PR1', 'open'),"      # site: 15
+                 "('SVC19B-PO1', 2, 'MAT-SVC19B-GEN', 7, 0, 'SVC19B-PR2', 'open'),"       # OTHER site: 7
+                 "('SVC19B-PO2', 1, 'MAT-SVC19B-GEN', 100, 0, NULL, 'open'),"             # global: 100
+                 "('SVC19B-PO2', 2, 'MAT-SVC19B-GEN', 4, 0, 'SVC19B-EXT', 'open'),"       # unknown PR → global 4
+                 "('SVC19B-PO2', 3, 'MAT-SVC19B-GEN', 999, 0, 'SVC19B-PR1', 'closed'),"   # closed: ignored
+                 "('SVC19B-PO3', 1, 'MAT-SVC19B-GEN', 3, 0, NULL, 'open')")               # header PR → site: 3
+        async with SessionLocal() as s_:
+            per_site, glob = await SM.open_po_qty(s_)
+            out = await SM.compute(s_, SITE)
+        r = next((x for x in out["items"] if x["SAP_Code"] == "SVC19B-GEN"), {})
+        check("19b-01: open PO lines are attributed through the PR — the line's own PR "
+              "(15 open of 20), else the PO header's (3); a PR known only to pr_master "
+              "lands on ITS site (7 → SVC19B-OTHER)",
+              per_site.get(("MAT-SVC19B-GEN", SITE)) == 18
+              and per_site.get(("MAT-SVC19B-GEN", "SVC19B-OTHER")) == 7, str(
+                  {k: v for k, v in per_site.items() if "SVC19B" in k[0]}))
+        check("19b-02: a line with NO PR (100) or a PR the Hub does not know (4) is GLOBAL "
+              "on order (104); a closed line counts nowhere",
+              glob.get("MAT-SVC19B-GEN") == 104, str(glob.get("MAT-SVC19B-GEN")))
+        check("19b-03: ⚠️ ruling Q19-2 — the site's suggested order subtracts only ITS "
+              "on order: target 60 − stock 10 − 18 = 32, the global 104 shown beside it "
+              "and NOT subtracted (it would have been 0 before Phase 19b)",
+              r.get("On_Order") == 18 and r.get("Global_On_Order") == 104
+              and r.get("Status") == "red" and r.get("Suggested_Order") == 32, str(r)[:300])
+    finally:
+        await cleanup()
+
+
+async def test_phase19c_partial_returns():
+    """Suite 19C — Phase 19c (ruling Q19-3): partial returns and the daily chaser.
+
+    A loan of 5 can come back 3 + 2; it stays open (and overdue, and chased)
+    until the last part is back, then closes with its WORST part's condition.
+    No undo. The daily chaser reminds every overdue borrower of what is still
+    out, sends the store keepers one summary per site, and escalates a loan
+    more than 3 days overdue to the HOD, once. Synthetic rows; cleaned up."""
+    import datetime as _dtm
+    import inspect as _insp
+
+    from sqlalchemy import delete as _del, select as _sel
+
+    from . import health_monitor as HM
+    from .services import loan_chaser as LC
+    from .services import whatsapp as WA
+
+    rt = ledger._MD.tables["returnable_items"]
+    rr = ledger._MD.tables["returnable_returns"]
+    appn = ledger._MD.tables["app_notifications"]
+    async with SessionLocal() as s_:
+        base = (await s_.execute(_sel(func.coalesce(func.max(rt.c["id"]), 0)))).scalar_one()
+        base_n = (await s_.execute(_sel(func.coalesce(func.max(appn.c["id"]), 0)))).scalar_one()
+    sent: list = []
+    saved = (WA.enabled, WA.send_template)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            r = await ac.post("/auth/login", headers={"X-Real-IP": "203.0.113.191"},
+                              json={"username": "worker", "password": "floor2026"})
+            H = {"Authorization": f"Bearer {r.json()['access_token']}"}
+            now = _dtm.datetime.now()
+
+            async def loan(name, qty, due):
+                rr_ = await ac.post("/entry/returnables", headers=H, json={
+                    "material_name": name, "borrower_name": "Svc 19C", "qty": qty, "uom": "EA",
+                    "borrower_phone": "+966500000019",
+                    "expected_return_time": due.strftime("%Y-%m-%dT%H:%M:%S"), "site_id": "CNCEC"})
+                return rr_.json().get("id")
+
+            a = await loan("SVC19C Spanner set", 5, now + _dtm.timedelta(days=2))
+            p1 = await ac.post(f"/entry/returnables/{a}/return", headers=H,
+                               json={"qty": 3, "condition": "ok"})
+            async with SessionLocal() as s_:
+                row = (await s_.execute(_sel(rt).where(rt.c["id"] == a))).mappings().first()
+                parts = (await s_.execute(_sel(func.count()).select_from(rr).where(
+                    rr.c["loan_id"] == a))).scalar_one()
+            check("19c-01: 3 of a loan of 5 come back — the loan stays OPEN with 3 back and "
+                  "2 still out, and the part is its own returnable_returns row",
+                  p1.status_code == 200 and p1.json()["returned"] is False
+                  and p1.json()["left"] == 2 and row["status"] == "borrowed"
+                  and row["qty_returned"] == 3 and parts == 1, f"{p1.status_code} {p1.text[:200]}")
+            too = await ac.post(f"/entry/returnables/{a}/return", headers=H, json={"qty": 3})
+            sl = await ac.get(f"/entry/returnables/{a}/slip", headers=H)
+            import pypdfium2 as _pdfium
+            doc = _pdfium.PdfDocument(sl.content)
+            txt = doc[0].get_textpage().get_text_range()
+            doc.close()
+            check("19c-02: taking back more than is out is refused (422 'only 2 … still out'), "
+                  "and a re-printed slip says 'Back so far 3 of 5'",
+                  too.status_code == 422 and "only 2" in too.text and "3 of 5" in txt,
+                  f"{too.status_code} {too.text[:120]} {txt[:200]!r}")
+            p2 = await ac.post(f"/entry/returnables/{a}/return", headers=H,
+                               json={"condition": "damaged", "note": "one jaw cracked"})
+            undo = await ac.post(f"/entry/returnables/{a}/return", headers=H, json={"qty": 1})
+            async with SessionLocal() as s_:
+                row = (await s_.execute(_sel(rt).where(rt.c["id"] == a))).mappings().first()
+                parts = (await s_.execute(_sel(rr.c["qty"], rr.c["condition"]).where(
+                    rr.c["loan_id"] == a).order_by(rr.c["id"]))).all()
+            check("19c-03: the rest (no qty = all still out) closes the loan with its WORST "
+                  "part's condition (ok + damaged → damaged); a closed loan takes nothing "
+                  "more — there is no undo (409)",
+                  p2.status_code == 200 and p2.json()["returned"] is True
+                  and row["status"] == "returned" and row["qty_returned"] == 5
+                  and row["return_condition"] == "damaged"
+                  and [tuple(x) for x in parts] == [(3.0, "ok"), (2.0, "damaged")]
+                  and undo.status_code == 409, f"{p2.text[:120]} {dict(row)} {parts} {undo.status_code}")
+
+            b = await loan("SVC19C Torch", 4, now + _dtm.timedelta(days=1))
+            c = await loan("SVC19C Meter", 1, now + _dtm.timedelta(days=1))
+            rb = await ac.post("/entry/returnables/return-batch", headers=H,
+                               json={"ids": [b, c], "condition": "ok", "qtys": {str(b): 1}})
+            body = rb.json()
+            check("19c-04: a kit returns in one call with a part named per loan — the torch "
+                  "1 of 4 (partial, 3 left), the meter in full",
+                  rb.status_code == 200 and body["returned"] == [c]
+                  and body["partial"] == [{"id": b, "qty": 1.0, "left": 3.0}], str(body)[:240])
+
+            # ── the daily chaser ────────────────────────────────────────────
+            d = await loan("SVC19C Overdue drill", 5, now - _dtm.timedelta(days=5))
+            e = await loan("SVC19C Overdue level", 1, now - _dtm.timedelta(days=1))
+            await ac.post(f"/entry/returnables/{d}/return", headers=H, json={"qty": 2})
+
+        async def fake_send(session, *, to, template_key, variables, **kw):
+            sent.append((to, template_key, variables, kw.get("related_ref")))
+            return {"queued": True}
+        WA.enabled, WA.send_template = (lambda: True), fake_send
+        async with SessionLocal() as s_:
+            res = await LC.run(s_)
+        async with SessionLocal() as s_:
+            dr = (await s_.execute(_sel(rt).where(rt.c["id"] == d))).mappings().first()
+            er = (await s_.execute(_sel(rt).where(rt.c["id"] == e))).mappings().first()
+            esc = (await s_.execute(_sel(func.count()).select_from(appn).where(
+                appn.c["id"] > base_n, appn.c["event_key"] == "returnable_escalated",
+                appn.c["related_ref"] == str(d)))).scalar_one()
+            esc_e = (await s_.execute(_sel(func.count()).select_from(appn).where(
+                appn.c["id"] > base_n, appn.c["event_key"] == "returnable_escalated",
+                appn.c["related_ref"] == str(e)))).scalar_one()
+            summ = (await s_.execute(_sel(appn.c["title"], appn.c["body"]).where(
+                appn.c["id"] > base_n, appn.c["event_key"] == "returnable_daily_overdue",
+                appn.c["recipient_site"] == "CNCEC"))).all()
+        to_d = [v for (to, k, v, ref) in sent if ref == str(d) and k == "critical_alert"]
+        check("19c-05: the chaser reminds EVERY overdue borrower of what is STILL OUT — "
+              "the drill's 3 of 5 (2 came back), the level's 1 — and stamps last_reminded_at",
+              any("3 of 5 EA still to return" in " ".join(v) for v in to_d)
+              and any(ref == str(e) for (_t, _k, _v, ref) in sent)
+              and dr["last_reminded_at"] is not None and er["last_reminded_at"] is not None,
+              f"{res} {sent[:3]}")
+        check("19c-06: ⚠️ ruling Q19-3 — more than 3 days overdue (the drill, 5 days) "
+              "escalates to the HOD ONCE (hod_escalated_at); 1 day overdue does not; the "
+              "store keepers get ONE summary for the site, naming the partly returned",
+              esc == 1 and esc_e == 0 and dr["hod_escalated_at"] is not None
+              and er["hod_escalated_at"] is None and len(summ) == 1
+              and "partly returned" in summ[0][0] and "SVC19C Overdue drill" in summ[0][1],
+              f"esc={esc} esc_e={esc_e} summ={summ}")
+        async with SessionLocal() as s_:
+            res2 = await LC.run(s_)
+        async with SessionLocal() as s_:
+            esc2 = (await s_.execute(_sel(func.count()).select_from(appn).where(
+                appn.c["id"] > base_n, appn.c["event_key"] == "returnable_escalated",
+                appn.c["related_ref"] == str(d)))).scalar_one()
+        src = _insp.getsource(HM.briefing_loop)
+        check("19c-07: the next day's run reminds again but never re-escalates; the chase "
+              "runs INSIDE the 07:00 briefing's daily_job_runs claim (one worker of four)",
+              esc2 == 1 and res2["escalated"] == 0 and res2["overdue"] >= 2
+              and 'dailyjob.claim(s, "morning_briefing"' in src and "loan_chaser.run(s)" in src,
+              f"{res2} esc2={esc2}")
+    finally:
+        WA.enabled, WA.send_template = saved
+        async with SessionLocal() as s_:
+            await s_.execute(_del(rt).where(rt.c["id"] > base,
+                                            rt.c["material_name"].like("SVC19C%")))
+            await s_.commit()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -29641,6 +30013,15 @@ async def main() -> int:
     print("\n 18M. Phase 18 Track 4 — intelligent minimum stock: use for general items, "
           "the SQM plan for Surface Shields, a manual minimum wins, nothing is written")
     await test_phase18m_smart_min()
+    print("\n 19A. Phase 19a — the HOD accepts recommended minimums per site: the site's "
+          "minimum, flagged when the recommendation moves ±20 %, HOD only")
+    await test_phase19a_min_accept()
+    print("\n 19B. Phase 19b — on order per site: a PO counts against the site of its PR; "
+          "a PO with no PR is global and subtracted from no site")
+    await test_phase19b_on_order_per_site()
+    print("\n 19C. Phase 19c — partial returns (3 + 2 of 5, worst condition, no undo) and "
+          "the daily chaser (remind daily, escalate to the HOD after 3 days, once)")
+    await test_phase19c_partial_returns()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

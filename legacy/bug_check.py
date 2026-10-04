@@ -1777,7 +1777,13 @@ def check_models_schema_parity() -> None:
                ("returnable_items", "returned_time"),
                ("returnable_items", "returned_by"),
                ("returnable_items", "return_condition"),
-               ("returnable_items", "return_note")}
+               ("returnable_items", "return_note"),
+               # Phase 19c (alembic c4e9b2a7f613) — partial returns and the
+               # daily chaser. New-stack only: the frozen portal's loans are
+               # all-or-nothing and chased once.
+               ("returnable_items", "qty_returned"),
+               ("returnable_items", "last_reminded_at"),
+               ("returnable_items", "hod_escalated_at")}
     extra = model_only - allowed
     assert not extra, f"unexpected model-only columns (update models.py or DB): {extra}"
 

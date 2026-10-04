@@ -51,9 +51,11 @@ os.environ.setdefault("GI_DOTENV", "0")
 
 # Bumped when the OVERLAY's content changes. Reported with the tutorial
 # fixture's own DATASET_VERSION as "<fixture>.<overlay>".
-OVERLAY_VERSION = 5   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
+OVERLAY_VERSION = 6   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
                       # · 4 = Phase 18 return desk loans (2026-10-03)
                       # · 5 = Phase 18 reorder-signal trio (2026-10-03)
+                      # · 6 = Phase 19 accepted minimum · per-site / global POs ·
+                      #       a partly returned loan (2026-10-04)
 
 SITE = "CNCEC"
 WAREHOUSE = "WH-01"
@@ -226,9 +228,21 @@ async def seed_queues() -> dict:
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  reorder example skipped: {type(e).__name__}: {str(e)[:160]}")
             try:
+                out["accepted_min"] = await seed_accepted_minimum()
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  accepted-minimum example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["on_order"] = await seed_on_order_examples()
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  on-order example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
                 out["loans"] = await seed_returnables()
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  loan example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["partial_loan"] = await seed_partial_return()
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  partial-return example skipped: {type(e).__name__}: {str(e)[:160]}")
 
         async with SessionLocal() as s:
             await ledger.stage_return(s, username="practice.storekeeper", data={
@@ -521,6 +535,43 @@ async def seed_returnables() -> int:
     return len(loans)
 
 
+async def seed_partial_return() -> int:
+    """Phase 19c — a loan that came back IN PART (rule 17g).
+
+    4 PRACTICE SCAFFOLD CLAMPS lent to Aria Bellweather (badge 900001), due 4
+    days ago; 1 came back 2 days ago. The row shows **partly returned · 3 still
+    out** and OVERDUE, and its slip reads "Back so far 1 of 4". It is more than
+    3 days overdue, so the next morning's chase escalates it to the HOD. The
+    desk returns any part of the remaining 3 (`PR-SC-0005`). Idempotent; never
+    fatal."""
+    import datetime as _d
+
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+
+    now = _d.datetime.now().replace(microsecond=0)
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                "SELECT 1 FROM returnable_items WHERE \"Item_Ref\" = 'PR-SC-0005' LIMIT 1"))).first():
+            return 0
+        lid = (await s.execute(text(
+            'INSERT INTO returnable_items (material_name, uom, qty, qty_returned, borrower_name, '
+            'given_time, expected_return_time, status, "Site_ID", whatsapp_alert_sent, '
+            'cv_detected, cv_employee_id, "Item_Ref") VALUES (\'PRACTICE SCAFFOLD CLAMPS\', '
+            "'EA', 4, 1, 'Aria Bellweather', :g, :d, 'borrowed', :site, 1, 1, '900001', "
+            "'PR-SC-0005') RETURNING id"),
+            {"g": now - _d.timedelta(days=6), "d": now - _d.timedelta(days=4),
+             "site": SITE})).scalar_one()
+        await s.execute(text(
+            'INSERT INTO returnable_returns (loan_id, qty, condition, note, returned_by, '
+            'returned_time, "Site_ID") VALUES (:l, 1, \'ok\', \'Practice example — 1 of 4 back\', '
+            "'practice.storekeeper', :t, :site)"),
+            {"l": lid, "t": now - _d.timedelta(days=2), "site": SITE})
+        await s.commit()
+    return 1
+
+
 REORDER_SAPS = ("899981", "899982", "899983")    # synthetic, Practice-only (P12-5)
 
 
@@ -565,6 +616,93 @@ async def seed_reorder_examples() -> int:
                     {"d": (t0 - _d.timedelta(days=k + 1)).isoformat(), "p": sap, "site": SITE})
         await s.commit()
     return len(REORDER_SAPS)
+
+
+ACCEPTED_SAP = "899984"                          # synthetic, Practice-only (P12-5)
+
+
+async def seed_accepted_minimum() -> int:
+    """Phase 19a — an HOD-accepted minimum the system now flags CHANGED
+    (rule 17g).
+
+    PRACTICE SAFETY GLASSES are used 3 a day (recommended 90). practice.hod
+    accepted 60 for CNCEC weeks ago. 90 is 50 % above 60, beyond the ±20 %
+    band, so the row shows **accepted** + **changed**, and with 80 in stock
+    against 60 it is amber. Idempotent; never fatal."""
+    import datetime as _d
+
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+
+    t0 = _d.date.today()
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                'SELECT 1 FROM inventory WHERE "SAP_Code" = :p'), {"p": ACCEPTED_SAP})).first():
+            return 0
+        await s.execute(text(
+            'INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+            '"Category", "UOM", "Site_ID", "Opening_Stock") VALUES '
+            "(:p, :m, 'PRACTICE SAFETY GLASSES (accepted, changed)', 'R/L Consumables', 'EA', "
+            ":site, 0) ON CONFLICT DO NOTHING"),
+            {"p": ACCEPTED_SAP, "m": f"MAT-{ACCEPTED_SAP}", "site": SITE})
+        await s.execute(text(
+            'INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID", "Supplier", '
+            '"Remarks") VALUES (:d, :p, 170, :site, \'Halcyon Industrial Supply\', '
+            "'Practice seed — accepted minimum')"),
+            {"d": (t0 - _d.timedelta(days=35)).isoformat(), "p": ACCEPTED_SAP, "site": SITE})
+        for k in range(30):
+            await s.execute(text(
+                'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                '"Work_Type", "Issued_To", "Remarks") VALUES (:d, :p, 3, :site, '
+                "'Maintenance', 'Aria Bellweather', 'Practice seed — accepted minimum')"),
+                {"d": (t0 - _d.timedelta(days=k + 1)).isoformat(), "p": ACCEPTED_SAP, "site": SITE})
+        await s.execute(text(
+            'INSERT INTO inventory_site_overrides ("SAP_Code", "Site_ID", "Minimum_Qty", '
+            "updated_by, updated_at) VALUES (:p, :site, 60, 'practice.hod', :at) "
+            'ON CONFLICT ("SAP_Code", "Site_ID") DO NOTHING'),
+            {"p": ACCEPTED_SAP, "site": SITE,
+             "at": _d.datetime.combine(t0 - _d.timedelta(days=40), _d.time(9, 0))})
+        await s.commit()
+    return 1
+
+
+async def seed_on_order_examples() -> int:
+    """Phase 19b — on order per site vs GLOBAL (rule 17g).
+
+    PRACTICE MASKING TAPE (amber) has 25 open on a PO raised from a CNCEC PR:
+    its suggested order drops from 60 to 35. PRACTICE CABLE TIES (red) has 40
+    open on a PO with NO PR: shown as "+ 40 global", while its suggested order
+    stays 160. Idempotent; never fatal."""
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                "SELECT 1 FROM purchase_orders WHERE \"PO_Number\" = 'PRACTICE-PO-19B-1'"))).first():
+            return 0
+        await s.execute(text(
+            'INSERT INTO pr_registry ("PR_Number", "Site_ID", created_by) VALUES '
+            "('PRACTICE-PR-19B', :site, 'practice.hod') ON CONFLICT DO NOTHING"), {"site": SITE})
+        await s.execute(text(
+            'INSERT INTO pr_master ("PR_Number", "SAP_Code", "Requested_Qty", "Site_ID", '
+            '"Material_Code", "Material_Name", status) VALUES (\'PRACTICE-PR-19B\', :p, 25, '
+            ":site, :m, 'PRACTICE MASKING TAPE (amber)', 'approved')"),
+            {"p": REORDER_SAPS[1], "m": f"MAT-{REORDER_SAPS[1]}", "site": SITE})
+        await s.execute(text(
+            'INSERT INTO purchase_orders ("PO_Number", "PR_Number", "Site_ID", "Vendor_Name") VALUES '
+            "('PRACTICE-PO-19B-1', 'PRACTICE-PR-19B', :site, 'Halcyon Industrial Supply'), "
+            "('PRACTICE-PO-19B-2', NULL, NULL, 'Halcyon Industrial Supply')"), {"site": SITE})
+        await s.execute(text(
+            'INSERT INTO po_items ("PO_Number", line_no, "Material_Code", "Description", "Qty", '
+            '"UOM", "PR_Number", line_status) VALUES '
+            "('PRACTICE-PO-19B-1', 1, :m1, 'PRACTICE MASKING TAPE (amber)', 25, 'EA', "
+            "'PRACTICE-PR-19B', 'open'), "
+            "('PRACTICE-PO-19B-2', 1, :m0, 'PRACTICE CABLE TIES (red)', 40, 'EA', NULL, 'open')"),
+            {"m0": f"MAT-{REORDER_SAPS[0]}", "m1": f"MAT-{REORDER_SAPS[1]}"})
+        await s.commit()
+    return 2
 
 
 def fixture_version() -> int:

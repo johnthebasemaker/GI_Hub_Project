@@ -1,8 +1,11 @@
 # PROPOSED PHASE 19 — closing the reorder loop and partial returns
 
 *Drafted 2026-10-04 from the operator's rulings on `MORNING_REPORT.md` §3
-(Q18-9, Q18-10, Q18-11). Nothing here is built yet. Each slice lists the
-decisions it needs before code starts.*
+(Q18-9, Q18-10, Q18-11). **APPROVED in its entirety the same day**, with the
+⚖️ points ruled as Q19-1..4 (`PROJECT_HANDOVER.md` → *Phase 19*): ±20 % band,
+HOD only, never expires · global POs subtract from no site · daily reminder,
+HOD after 3 days, no undo · the semantic layer optional. Built as slices
+19a–19c (+19d).*
 
 **Why these three were not built into Phase 18's close-out.** The operator had
 just migrated Live and tested the branch. The close-out added only what needs

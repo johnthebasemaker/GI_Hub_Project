@@ -890,8 +890,8 @@ Open **Stock → Reorder signals**. Each row is one item at one site:
 | **Status** | 🔴 **Order now**: stock is below the minimum. 🟠 **Order soon**: stock is less than 1½ times the minimum. 🟢 **OK**. ⚪ **No signal**: nothing to base a minimum on. |
 | **Minimum** | Marked **smart** when the system worked it out, or **manual** when someone typed a minimum on the item. A manual minimum always wins, and the system's own figure is shown when you hover. |
 | **Days of cover** | How many days the stock lasts at the expected rate of use. |
-| **On order** | Quantity still to be delivered on open POs (all sites). |
-| **Suggested order** | Brings the stock back to twice the minimum, less what is already on order. For a Surface Shield it never suggests more than the remaining plan needs. |
+| **On order** | Quantity still to be delivered on open POs raised from **this site's** PRs. POs not raised from any PR show underneath as **+ N global** (see §3.14.2). |
+| **Suggested order** | Brings the stock back to twice the minimum, less what this site already has on order. For a Surface Shield it never suggests more than the remaining plan needs. |
 | **Why** | The reason in words: *"Uses 2.10/day (30-day average) × 30 days of cover"* or *"Plan: 60 KG for the next 30 days of planned work"*. |
 
 **How the minimum is worked out:**
@@ -936,6 +936,62 @@ The signals are advice, worked out each time the page is opened.
 **Practice:** Stock → Reorder signals shows three Practice items, one in each
 colour: *PRACTICE CABLE TIES (red)*, *MASKING TAPE (amber)* and *NITRILE
 GLOVES (green)*. Each is used 3 a day, so its minimum is 90.
+
+## 3.14 What changed in Phase 19 (October 2026)
+
+| Change | Who | Read |
+|---|---|---|
+| **On order per site.** A PO counts towards the site whose PR it was raised from. A PO raised without a PR is shown as *global* and is not taken off any site's suggested order. | Logistics, HOD | §3.14.2 |
+| **Partial returns.** A loan of 5 can come back 3 now and 2 later. It stays open, and the borrower is reminded **every day** until the rest is back. After 3 days overdue the HOD is told. | Store Keeper, HOD | §4.5.3 |
+| **Accept minimums for your site.** The HOD ticks the system's recommended minimums (or types their own), and they become the site's minimum. When the recommendation later moves by more than 20 %, the row says **changed**. | HOD (Logistics sees the result) | §3.14.1 |
+
+### 3.14.1 Accepting minimums for your site (HOD)
+
+On **Stock → Reorder signals**, press **Review minimums**. Each row gets a
+tick box and an **Accept as** number, already filled with the system's
+recommendation.
+
+1. Tick the rows you agree with. Change **Accept as** where you want a
+   different number (0 means "no minimum at this site").
+2. Press **Accept N minimums**.
+
+The accepted number becomes **your site's minimum**. The **Minimum** column
+shows it with a green **accepted** tag; hover to see who accepted it and when.
+It applies everywhere the Hub compares stock with a minimum, including the
+Dashboard and low-stock lists. It wins over a minimum typed on the item itself
+and over the system's recommendation. It applies **only to your site**: other
+sites keep their own.
+
+An accepted minimum **never expires**. It stays until you accept another. The
+system keeps recommending, though: when its recommendation moves **more than
+20 %** away from what you accepted (for example, use rose from 1 a day to 1.5
+a day), the row gets an orange **changed** tag. Pick **Changed** above the
+table to list only those rows, review them, and accept the new figure or keep
+yours.
+
+**Who can do what:** only the **HOD** accepts minimums, for their own site
+(admins can for any site). **Logistics** sees the accepted minimums and is
+notified when an HOD accepts some, but cannot accept. Every acceptance is in
+the audit log with the recommendation it came from.
+
+### 3.14.2 On order: your site's POs and global POs
+
+A PO raised from a **PR** counts as *on order* for the site that raised the PR.
+One PR can lead to several POs, and they all count for that site. A PO
+**raised without a PR** (a global purchase) does not belong to any one site.
+It is shown under the site's figure as **+ N global** but is **not**
+subtracted from any site's suggested order, so one PO is never counted against
+several sites. Hover over it for the explanation. A PO whose PR number is not
+in the Hub (raised outside it) is treated as global.
+
+**Practice:** *PRACTICE MASKING TAPE (amber)* has 25 on order from a CNCEC
+PR, so its suggested order is 25 lower than it would otherwise be (35 instead
+of 60 on a freshly built sandbox). *PRACTICE CABLE TIES (red)* shows **+ 40
+global**, and its suggested order is not reduced by it.
+
+**Practice (minimums):** *PRACTICE SAFETY GLASSES (accepted, changed)* was accepted at 60
+by practice.hod. It is used 3 a day, so the system now recommends 90, 50 %
+more, and the row shows **accepted** + **changed**.
 
 # 4. Store Keeper Manual
 
@@ -1296,10 +1352,34 @@ The **due-back** buttons (*End of shift*, *Tomorrow 17:00*, *+3 days*,
   loan at once. Right after you record a loan, the *Loan recorded* message
   also has a **Print slip** button.
 
+**Taking back part of a loan (Phase 19).** When a loan is for more than one
+(for example 5 clamps), ticking it at the desk shows a **back** number,
+already set to everything still out. Lower it to what was actually handed
+over (3) and press **Return**. The loan stays **open**:
+
+- the table shows **partly returned · 2 still out**, and *3 back* under the
+  quantity;
+- the next scan of the same tool or badge offers the remaining 2;
+- a re-printed slip says *Back so far 3 of 5*.
+
+Each part can have its own condition (3 good now, 2 damaged later). When the
+last part is back the loan closes, showing the **worst** condition of its
+parts. A part handed back **cannot be undone**. If you took back too many,
+record a new loan for them.
+
+**Reminders (Phase 19).** Every morning, the borrower of every overdue loan is
+reminded on WhatsApp of exactly what is still out (*"2 of 5 EA still to
+return"*). The store keepers get one daily summary for the site. When a loan,
+partly returned or not, is **more than 3 days overdue**, the site's HOD is
+told, once.
+
 > **Fixed in Phase 18:** a loan used to show as **overdue three hours late**.
 > The page compared due times, which are kept in local time, with the server's
 > UTC clock. Overdue now means overdue as soon as the due time passes, on the
 > page, in the alert and in the menu badge.
+
+**Practice (partial):** type **PR-SC-0005**. The 4 scaffold clamps lent to
+Aria Bellweather have **1 back, 3 still out**, and the loan is 4 days overdue.
 
 **Practice:** sign in as `practice.storekeeper`. Scan or type Tomas Halversen's
 badge **900002** to see a kit of two tools, or type **PR-TW-0001** to find the

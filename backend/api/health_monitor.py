@@ -1011,6 +1011,15 @@ async def briefing_loop() -> None:
                 # apart trains people to ignore both, and a separate loop would
                 # need its own claim to avoid the 4x it was written to prevent.
                 res["day_shift"] = await dispatch_day_shift_mtc(s)
+                # Phase 19c: the daily chase of overdue tool loans rides the
+                # same claim, for the same reason (services/loan_chaser.py).
+                from .services import loan_chaser
+                try:
+                    res["loan_chaser"] = await loan_chaser.run(s)
+                except Exception as e:  # noqa: BLE001 — never costs the briefing
+                    await s.rollback()
+                    res["loan_chaser"] = f"failed: {type(e).__name__}"
+                    log.exception("loan chaser failed")
                 await dailyjob.note_result(s, "morning_briefing", str(res))
             log.info("morning briefing run: %s", res)
         except Exception:  # noqa: BLE001 — one bad run must not kill the loop

@@ -4619,8 +4619,8 @@ signals* shows counts and the five most urgent items. *Open Reorder signals
 **TC-18C-08 — no writes.** Note any item's Minimum in Admin → Inventory. Open
 Reorder signals, change a setting, reload. The item's Minimum is unchanged.
 
-⚠️ **Known limits** (for a ruling, `MORNING_REPORT.md`): on-order is matched
-through `po_items.Material_Code` and is **not per site**. Garnet assumes every
+⚠️ **Known limits** (for a ruling, `MORNING_REPORT.md`): on-order was not per
+site. That was **fixed in Phase 19b** (§19b). Garnet assumes every
 m² still to be lined is blasted first. The 30-day share spreads the pace
 evenly over all remaining systems.
 
@@ -4639,6 +4639,111 @@ rate, or else to approved work. As a store keeper there is no button, and
 and a site with no SQM plan gets 422. Admin → Audit shows `SS_PACE_SET`.
 
 Automated: service_tests **18M** (14 checks), E2E `reorder-signals.spec.ts`.
+
+## 19a. Phase 19a — the HOD accepts minimums per site (ruling Q19-1)
+
+**Why this exists.** Phase 18's reorder signals were advice only. Phase 19a
+lets the HOD turn a recommendation into the **site's** minimum
+(`inventory_site_overrides`, `POST /stock/smart-min/accept`). The order is
+**accepted → the item's global Minimum_Qty → the recommendation**, applied in
+`SQL_SITE_STOCK`, so the Dashboard, low stock, HOD auto-draft, reports and the
+WhatsApp STOCK reply all use it. The parity checker runs
+`SQL_SITE_STOCK_PARITY`, the frozen view's shape.
+
+**TC-19A-01 — accept.** As practice.hod: Stock → Reorder signals → **Review
+minimums**. Tick *PRACTICE CABLE TIES (red)*, set **Accept as** 50 → **Accept
+1 minimum**. The row's minimum is 50 with a green **accepted** tag; hovering
+shows practice.hod and today. The Dashboard's reorder card counts it against
+50.
+
+**TC-19A-02 — changed (±20 %).** *PRACTICE SAFETY GLASSES* shows
+**accepted** (60) + **changed** (recommendation 90). **Changed (1)** above the
+table lists only that row. Accept 80 for it: the changed tag disappears (90 is
+12.5 % from 80).
+
+**TC-19A-03 — beats a global minimum.** As admin, give *NITRILE GLOVES* a
+Minimum of 200 on the item. As the HOD, accept 40 for CNCEC. CNCEC uses 40 (tag
+**accepted**). Another site, if any, still uses 200.
+
+**TC-19A-04 — who may accept.** Logistics has no **Review minimums** button,
+and `POST /stock/smart-min/accept` → 403. Store keeper → 403. The CNCEC HOD
+naming another site → 403. One unknown SAP in a submission → 422, and nothing
+from it is saved.
+
+**TC-19A-05 — trail.** Admin → Audit: `MIN_ACCEPT` rows read *"SAP@CNCEC: old
+-> new (recommended R, basis …)"*. Logistics' bell has *"CNCEC: N minimum(s)
+accepted by the HOD"*. The item's own Minimum_Qty is unchanged.
+
+Automated: service_tests **19A** (7 checks); E2E `reorder-signals.spec.ts`
+(19a ×2).
+
+## 19b. Phase 19b — on order per site (ruling Q19-2)
+
+**Why this exists.** Phase 18 subtracted EVERY open PO line of a material from
+every site's suggested order, so one PO was counted once per site. Now
+`smart_min.open_po_qty` attributes a line to the site of its PR: the line's
+`PR_Number`, else the PO header's, resolved through `pr_registry` and then
+`pr_master`. A line with no PR, or with a PR the Hub does not know, is
+**global**: shown, and subtracted from no site.
+
+**TC-19B-01 — a PR's PO.** Practice: *PRACTICE MASKING TAPE (amber)*: On order
+**25**, and the suggested order is target − stock − 25 (35 = 180 − 120 − 25 on
+a freshly built sandbox; the example's use is dated from the build, so the
+figures drift by a few a day until the next `practice_db.py build`).
+
+**TC-19B-02 — a global PO.** *PRACTICE CABLE TIES (red)*: On order **—** with
+**+ 40 global** under it (hover explains). The suggested order is target −
+stock, with the 40 NOT subtracted (160 on a fresh sandbox).
+
+**TC-19B-03 — one PR, several POs.** Raise two POs from the same CNCEC PR for
+one item (10 and 5). That item's On order is 15 at CNCEC and 0 at every other
+site.
+
+**TC-19B-04 — delivered and closed lines.** Receive 5 of a 10 line → On order
+5. Close the line → it drops out.
+
+Automated: service_tests **19B** (3 checks).
+
+## 19c. Phase 19c — partial returns and the daily chaser (ruling Q19-3)
+
+**Why this exists.** A loan was all-or-nothing and was chased once. Now
+(alembic `c4e9b2a7f613`): `returnable_items.qty_returned`, `last_reminded_at`
+and `hod_escalated_at`, plus one `returnable_returns` row per part handed back.
+`POST /entry/returnables/{id}/return` takes an optional `qty`, and
+`/return-batch` an optional `qtys` map. The daily chase (`services/
+loan_chaser.py`) runs inside the 07:00 morning-briefing claim
+(`daily_job_runs`), so one worker sends.
+
+**TC-19C-01 — part of a loan.** Practice store keeper: lend 5 of anything with
+code `TEST-PART-1`. Scan `TEST-PART-1`, set **back** to 3, Return. The message
+reads *"#N 3 back, 2 still out"*. The row shows **partly returned · 2 still
+out** and *3 back* under Qty. The loan is still under **Open**.
+
+**TC-19C-02 — too many.** Scan it again and set **back** to 3 → *"only 2 of #N
+is still out"* (422).
+
+**TC-19C-03 — close with the worst condition.** Scan again, choose
+**Damaged**, Return (no number = the 2 still out). The loan moves to
+**Returned** with **Damaged**, and the HOD's bell has the damaged-part notice.
+Returning it again → 409: there is no undo.
+
+**TC-19C-04 — the kit.** Scan a badge with two open loans. Set one loan's
+**back** below its count and leave the other: the first stays open (partly),
+the second closes.
+
+**TC-19C-05 — the chase.** Practice *PR-SC-0005* (4 clamps, 1 back, 4 days
+overdue). The next 07:00 run (or `loan_chaser.run` from a shell) WhatsApps
+the borrower *"3 of 4 EA still to return"*, posts ONE *"N tool loan(s)
+overdue, M partly returned"* to the CNCEC store keepers, and escalates to the
+CNCEC HOD *"Tool 4 days overdue"*. The next day's run reminds again but does
+not escalate again.
+
+**TC-19C-06 — the slip.** Re-print *PR-SC-0005*'s slip: *Back so far 1 of 4*.
+
+⚠️ **Live needs `alembic upgrade head`** (backup first) before running this
+build: the API refuses to boot on a schema behind `c4e9b2a7f613`.
+
+Automated: service_tests **19C** (7 checks); E2E `returnables.spec.ts` (19c).
 
 ## 15. Do's and Don'ts
 
