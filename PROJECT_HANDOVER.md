@@ -1191,6 +1191,19 @@ The decisions the code now depends on:
 | **Q18-11** | One-scan return stays **OFF** by default. A damaged return notifies the HOD and does **not** adjust stock. **Partial returns are needed**, with reminders until the rest comes back: **Phase 19**. | `PROPOSED_PHASE19_PLAN.md` §3 |
 | **Q18-12** | A loan prints a **QR slip** (`#id`, 80 mm). | `GET /entry/returnables/{id}/slip`, suite 18r-11..12 |
 
+### Phase 19 — closing the reorder loop & partial returns (2026-10-04, RULED)
+
+The operator approved `PROPOSED_PHASE19_PLAN.md` and ruled its open points on
+2026-10-04. Standing order the same day: every change ships branch → PR →
+green checks → merge → local pull, unasked (`CLAUDE.md` §5).
+
+| # | Ruling | Where it lives |
+|---|---|---|
+| **Q19-1** | The **HOD** accepts recommended minimums per site (tick, edit, submit); Logistics views but does not accept. Stored in `inventory_site_overrides`, which beats the item's global `Minimum_Qty` (legacy `get_min_qty_for` semantics) everywhere `SQL_SITE_STOCK` is read. It **never expires** and is flagged **changed** when the recommendation moves more than **±20 %** (`CHANGED_BAND`). | `POST /stock/smart-min/accept`, `smart_min.accepted_minimums`, suite 19A |
+| **Q19-2** | On order is **per site**: an open PO line counts for the site of the PR it came from (line PR, else header PR → `pr_registry` → `pr_master`). A PO with no PR (or a PR the Hub does not know) is **global**: shown, and subtracted from **no** site. | `smart_min.open_po_qty`, suite 19B |
+| **Q19-3** | **Partial returns**: a loan stays open until the last part is back, then closes with the worst part's condition. **No undo** (a mistake is a new loan). The borrower is reminded **daily** (the 07:00 `daily_job_runs` claim), and the HOD is told **once** when a loan is more than **3 days** overdue. | alembic `c4e9b2a7f613`, `services/loan_chaser.py`, suite 19C |
+| **Q19-4** | Optional: a `nomic-embed-text` kNN **semantic safety signal**, additive to guard v3. | slice 19d |
+
 ## PRESENT — current state and baselines
 
 > **Updated 2026-10-03 — Phases 13–16 merged (PRs #78–#102), CI parity fixed on
