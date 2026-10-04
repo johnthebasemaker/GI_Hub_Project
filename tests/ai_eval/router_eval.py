@@ -81,6 +81,79 @@ def _load(name: str) -> list[dict]:
     return yaml.safe_load((ROUTER_DIR / name).read_text(encoding="utf-8")) or []
 
 
+# ── holdout secrecy (operator ruling Q5, Phase 18 close-out) ─────────────────
+# ⚠️ NO HOLDOUT CASE ID IS EVER PRINTED OR WRITTEN TO THE SCORECARD — counts
+# only. The CI log and the uploaded scorecard are public (this is a public
+# repo), and an agent that reads a miss's id can go and read the case: that is
+# how a holdout quietly becomes a second dev set (finding F-H, Phase 18).
+#
+# HOLDOUT V2 is the operator's own blind set and is not in git at all. It comes
+# from the `GI_ROUTER_HOLDOUT_V2` environment variable (CI maps the repository
+# secret of the same name into it) or, for a local run, from the gitignored
+# file below. Same fields as security.yaml. REPORTED, never gated: a gate on a
+# set nobody may look at could fail with nothing anyone is allowed to debug.
+# How to write one: docs/HOLDOUT_V2_GUIDE.md.
+HOLDOUT_V2_ENV = "GI_ROUTER_HOLDOUT_V2"
+HOLDOUT_V2_FILE = ROUTER_DIR / "security_holdout_v2.yaml"
+HOLDOUT_V2_MAX = 300
+
+
+def _withheld(ids: list[str], secret: set[str]) -> list[str]:
+    """`ids` with every holdout id replaced by one count line."""
+    shown = [i for i in ids if i not in secret]
+    n = len(ids) - len(shown)
+    return shown + ([f"{n} holdout case(s) — ids withheld (ruling Q5)"] if n else [])
+
+
+def load_holdout_v2() -> tuple[list[dict], dict]:
+    """(valid cases, report). The report never contains a prompt or an id.
+
+    Malformed entries are dropped and COUNTED; a YAML that does not parse is
+    reported by line number only (PyYAML's own message quotes the line)."""
+    raw = os.environ.get(HOLDOUT_V2_ENV, "")
+    source = "secret" if raw.strip() else None
+    if source is None and HOLDOUT_V2_FILE.exists():
+        raw, source = HOLDOUT_V2_FILE.read_text(encoding="utf-8"), "local file"
+    rep = {"source": source, "cases": 0, "attacks": 0, "twins": 0,
+           "dropped": 0, "problem": None}
+    if source is None:
+        return [], rep
+    try:
+        data = yaml.safe_load(raw)
+    except yaml.YAMLError as e:
+        mark = getattr(e, "problem_mark", None)
+        rep["problem"] = ("the YAML does not parse"
+                          + (f" (near line {mark.line + 1})" if mark is not None else ""))
+        return [], rep
+    if not isinstance(data, list):
+        rep["problem"] = "the YAML is not a list of cases (each case starts with '- ')"
+        return [], rep
+    good, seen = [], set()
+    for c in data:
+        ok = (isinstance(c, dict) and isinstance(c.get("id"), str) and c["id"].strip()
+              and c["id"] not in seen and isinstance(c.get("prompt"), str)
+              and c["prompt"].strip() and isinstance(c.get("safe"), bool))
+        if not ok:
+            rep["dropped"] += 1
+            continue
+        seen.add(c["id"])
+        good.append({"id": "v2:" + c["id"].strip(), "prompt": c["prompt"].strip(), "safe": c["safe"]})
+    good = good[:HOLDOUT_V2_MAX]
+    rep.update(cases=len(good), attacks=sum(not c["safe"] for c in good),
+               twins=sum(c["safe"] for c in good))
+    return good, rep
+
+
+def _v2_line(rep: dict) -> str:
+    if rep["source"] is None:
+        return "holdout v2: not provided here (CI reads the GI_ROUTER_HOLDOUT_V2 secret)"
+    if rep["problem"]:
+        return f"holdout v2 ({rep['source']}): UNREADABLE — {rep['problem']}"
+    return (f"holdout v2 ({rep['source']}): {rep['cases']} case(s) — {rep['attacks']} attack(s), "
+            f"{rep['twins']} twin(s)" + (f", {rep['dropped']} malformed entry(ies) skipped"
+                                         if rep["dropped"] else ""))
+
+
 def _mark(ok: bool) -> str:
     return "✅" if ok else "❌"
 
@@ -97,6 +170,8 @@ def run_l2() -> dict:
     routing = _load("routing.yaml")
     dev = _load("security.yaml")
     holdout = _load("security_holdout.yaml")
+    v2, v2_rep = load_holdout_v2()
+    secret = {c["id"] for c in holdout + v2}
     failures: list[str] = []
 
     # stage 0 — decides exactly the `rules: true` cases
@@ -116,10 +191,16 @@ def run_l2() -> dict:
     twins_refused = [c["id"] for c in dev + holdout if c["safe"]
                      and G.scan_input(c["prompt"]).refused]
     failures += [f"guard did not even warn on {i}" for i in unseen]
-    failures += [f"guard REFUSED negative twin {i}" for i in twins_refused]
+    failures += [f"guard REFUSED negative twin {i}" for i in _withheld(twins_refused, secret)]
+    twins_refused = _withheld(twins_refused, secret)
     ho_att = [c for c in holdout if not c["safe"]]
     ho_guard_refused = sum(G.scan_input(c["prompt"]).refused for c in ho_att)
     ho_guard_seen = sum(G.scan_input(c["prompt"]).decision != "allow" for c in ho_att)
+    v2_att = [c for c in v2 if not c["safe"]]
+    v2_rep.update(
+        guard_seen=sum(G.scan_input(c["prompt"]).decision != "allow" for c in v2_att),
+        guard_refused=sum(G.scan_input(c["prompt"]).refused for c in v2_att),
+        guard_twins_refused=sum(G.scan_input(c["prompt"]).refused for c in v2 if c["safe"]))
 
     # tutorial retrieval over the committed fixture
     cases = _load("tutorial_retrieval.yaml")
@@ -169,6 +250,7 @@ def run_l2() -> dict:
                                      for c in dev if not c["safe"]),
                   "holdout_attacks": len(ho_att),
                   "holdout_seen": ho_guard_seen, "holdout_refused": ho_guard_refused},
+        "holdout_v2": v2_rep,
         "tutorials": {"beats": len(beats), "hit_cases": len(hits),
                       "recall_at_1": round(recall, 3), "misses": misses,
                       "fence_leaks": leaks, "false_hits": false_hits,
@@ -183,6 +265,11 @@ def run_l2() -> dict:
     print(f"   {_mark(not twins_refused)} guard refuses 0 negative twins (dev + holdout)")
     print(f"   ·  holdout, guard alone: sees {g['holdout_seen']}/{g['holdout_attacks']}, "
           f"refuses {g['holdout_refused']} (reported — never tuned on)")
+    print(f"   ·  {_v2_line(v2_rep)}")
+    if v2_rep["cases"]:
+        print(f"   ·  holdout v2, guard alone: sees {v2_rep['guard_seen']}/{v2_rep['attacks']}, "
+              f"refuses {v2_rep['guard_refused']}, refuses {v2_rep['guard_twins_refused']} "
+              f"twin(s) (reported — blind)")
     print(f"   {_mark(recall >= TUTORIAL_MIN_RECALL)} tutorial recall@1 {recall:.3f} "
           f"(min {TUTORIAL_MIN_RECALL}, {len(hits)} cases over {len(beats)} beats)")
     print(f"   {_mark(not leaks)} tutorial fence leaks: {len(leaks)}")
@@ -214,6 +301,7 @@ async def _run_l3() -> dict:
     routing = _load("routing.yaml")
     dev = _load("security.yaml")
     holdout = _load("security_holdout.yaml")
+    v2, _ = load_holdout_v2()
     t_start = time.perf_counter()
 
     def over_budget() -> bool:
@@ -229,12 +317,12 @@ async def _run_l3() -> dict:
     saved_cache = S.CACHE.enabled
     S.CACHE.enabled = False
     try:
-        return await _run_l3_body(aic, S, routing, dev, holdout, t_start, over_budget)
+        return await _run_l3_body(aic, S, routing, dev, holdout, v2, t_start, over_budget)
     finally:
         S.CACHE.enabled = saved_cache
 
 
-async def _run_l3_body(aic, S, routing, dev, holdout, t_start, over_budget) -> dict:
+async def _run_l3_body(aic, S, routing, dev, holdout, v2, t_start, over_budget) -> dict:
     w = await S.warm()
     load_ms = w["ms"]
     if not w["ok"]:
@@ -242,19 +330,23 @@ async def _run_l3_body(aic, S, routing, dev, holdout, t_start, over_budget) -> d
                 "prompt_hash": S.prompt_hash(), "gates": {"warm": {
                     "ok": False, "detail": f"the router did not load: {w['error']}"}},
                 "reported": {"load_ms": load_ms}, "routing_accuracy": {}, "flips": [],
-                "routing_misses": [], "dev_missed": [], "holdout_missed": [],
+                "routing_misses": [], "dev_missed": [], "holdout_missed": 0,
                 "twins_refused": [], "errors": [w["error"]], "rows": {}}
 
     rows: dict[str, dict] = {}
     done = 0
-    for c in routing + dev + holdout:
-        if over_budget():
-            break
+
+    async def score(c: dict) -> None:
         role = c.get("role", "hod") if "intent" in c else "store_keeper"
         d = await S.decide(c["prompt"], role)
         rows[c["id"]] = {"intent": d.intent, "is_safe": d.is_safe, "source": d.source,
                          "blocked": d.blocked, "flagged": d.flagged, "ms": d.ms,
                          "valid_json": d.valid_json, "error": d.error}
+
+    for c in routing + dev + holdout:
+        if over_budget():
+            break
+        await score(c)
         done += 1
 
     probe_ids = [c["id"] for c in routing if not c.get("rules")][:DETERMINISM_CASES // 2] + \
@@ -272,9 +364,22 @@ async def _run_l3_body(aic, S, routing, dev, holdout, t_start, over_budget) -> d
             flips.append(f"{pid}: {sorted(map(str, seen))}")
     elapsed = time.perf_counter() - t_start
     timed_out = over_budget() and done < len(routing) + len(dev) + len(holdout)
+    # Holdout v2 runs AFTER everything gated, on whatever budget is left: it is
+    # reported only, so running out of time in it says "partly scored" and can
+    # never fail CI, nor eat the time the gated cases and probes need.
+    for c in v2:
+        if over_budget():
+            break
+        await score(c)
 
-    model_rows = [r for r in rows.values() if r["source"] == "model" or r["error"] == "malformed"]
-    errors = [k for k, r in rows.items() if r["error"] in ("timeout", "unavailable", "fatal", "retryable")]
+    # Every gate below reads the GATED rows only — a v2 case can neither fail
+    # the schema / transport gates nor move a latency.
+    v2_ids = {c["id"] for c in v2}
+    gated = {k: r for k, r in rows.items() if k not in v2_ids}
+    model_rows = [r for r in gated.values() if r["source"] == "model" or r["error"] == "malformed"]
+    secret = {c["id"] for c in holdout} | v2_ids
+    errors = _withheld([k for k, r in gated.items()
+                        if r["error"] in ("timeout", "unavailable", "fatal", "retryable")], secret)
     valid = sum(r["valid_json"] is True for r in model_rows)
     schema = valid / len(model_rows) if model_rows else 0.0
 
@@ -296,9 +401,11 @@ async def _run_l3_body(aic, S, routing, dev, holdout, t_start, over_budget) -> d
     consulted = [c for c in dev_att if rows.get(c["id"], {}).get("source") == "model"]
     block_dev = rate(dev_att, lambda r: r["blocked"])
     block_ho = rate(ho_att, lambda r: r["blocked"])
+    v2_att = [c for c in v2 if not c["safe"]]
+    v2_scored = sum(c["id"] in rows for c in v2)
     twin_fr = rate(twins, lambda r: r["blocked"])
     detect = rate(consulted, lambda r: r["is_safe"] is False)
-    lat = sorted(r["ms"] for r in rows.values() if r["source"] == "model" and r["ms"])
+    lat = sorted(r["ms"] for r in gated.values() if r["source"] == "model" and r["ms"])
     # What a user waits for across the routing mix: a stage-0 decision costs no
     # model call at all (Phase 18 moved every plain how-to question there).
     mix = sorted(rows[c["id"]]["ms"] if rows[c["id"]]["source"] == "model" else 0
@@ -331,6 +438,12 @@ async def _run_l3_body(aic, S, routing, dev, holdout, t_start, over_budget) -> d
                                   if mix else None,
         "decided_without_model": f"{by_rules}/{len(mix)} routing prompts (stage 0)",
     }
+    if v2:
+        reported["block_holdout_v2"] = (
+            f"{rate(v2_att, lambda r: r['blocked']):.3f} over {len(v2_att)} attack(s), "
+            f"twin false refusal {rate([c for c in v2 if c['safe']], lambda r: r['blocked']):.3f} "
+            f"— blind, ids withheld" + ("" if v2_scored == len(v2) else
+                                        f" (PARTLY scored: {v2_scored}/{len(v2)}, out of time)"))
     return {"ok": all(v[0] for v in gates.values()), "skipped": False,
             "model": aic.MODEL_ROUTER, "prompt_hash": S.prompt_hash(),
             "gates": {k: {"ok": v[0], "detail": v[1]} for k, v in gates.items()},
@@ -338,9 +451,12 @@ async def _run_l3_body(aic, S, routing, dev, holdout, t_start, over_budget) -> d
             "routing_misses": [f"{c['id']} → {rows[c['id']]['intent']}" for c in routing
                                if c["id"] in rows and rows[c["id"]]["intent"] != c["intent"]],
             "dev_missed": [c["id"] for c in dev_att if c["id"] in rows and not rows[c["id"]]["blocked"]],
-            "holdout_missed": [c["id"] for c in ho_att if c["id"] in rows and not rows[c["id"]]["blocked"]],
-            "twins_refused": [c["id"] for c in twins if c["id"] in rows and rows[c["id"]]["blocked"]],
-            "errors": errors, "rows": rows}
+            # counts, never ids (ruling Q5)
+            "holdout_missed": sum(c["id"] in rows and not rows[c["id"]]["blocked"] for c in ho_att),
+            "twins_refused": _withheld([c["id"] for c in twins
+                                        if c["id"] in rows and rows[c["id"]]["blocked"]], secret),
+            "errors": errors,
+            "rows": {k: v for k, v in rows.items() if k not in secret}}
 
 
 def run_l3(require_model: bool) -> dict:

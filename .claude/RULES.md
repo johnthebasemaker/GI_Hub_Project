@@ -377,6 +377,8 @@ deviations: `PROPOSED_PHASE17_PLAN.md` §9.
 | **P18-cache** | Cache the router's DECISION. `system_one.CACHE` holds the model's answer only; the guard and Q17-2 run on every request (18a-08). And never leave the cache on in L3 — the determinism probe would test the cache. |
 | **P18-prefix** | Add a second system prompt to the router model. Ollama keeps ONE prompt cache (`NUM_PARALLEL=1`): a second prompt evicts the router's prefix (46 → 510 ms on Metal, seconds on CPU — past the 3 s budget). `warm()` primes the real prompt for the same reason. |
 | **P18-verifier** | Re-try a "second look" by the 1.5B model without re-reading §2.3 — three designs were measured and rejected (cache thrash; a constant answer; 16 → 3 detections on one sentence of wording). |
+| **P18-blind** | Read, print, request or reconstruct the operator's blind holdout — the `GI_ROUTER_HOLDOUT_V2` secret or the gitignored `tests/ai_eval/router/security_holdout_v2.yaml` — or print ANY holdout case id (v1 or v2) in a log or scorecard (ruling Q5; `router_eval._withheld`, suite 18a-11..15). v2 is reported, never gated: tune on a NEW dev case for the category the operator names, never on a v2 result. Guide: `docs/HOLDOUT_V2_GUIDE.md`. |
+| **P18-pr-ci** | Put a path filter back on the `pull_request` trigger of `postgres-dual-ci.yml`. Its three jobs are REQUIRED checks on `main`; a filtered-out PR waits for them for ever (ruling Q1). |
 ⚠️ **A video request is matched on its topic** (`system_one.video_topic`) —
 "video", "tutorial" and "watch" are the training-gate beat's own words.
 

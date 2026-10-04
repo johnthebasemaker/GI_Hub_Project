@@ -39,24 +39,12 @@ on:
       - 'docs/tutorials/**'
       # ⚠️ 'gi_database.db' was here and could never fire — the file is
       # gitignored, so a push can never contain a change to it.
-  pull_request:
-    # Same list as `push` (written twice: no YAML anchors in workflow files).
-    paths:
-      - 'legacy/**'
-      - 'backend/**'
-      - 'frontend/**'
-      - 'tools/**'
-      - 'requirements.txt'
-      - '.github/workflows/postgres-dual-ci.yml'
-      # ⚠️ Added in Phase 17 (finding F6): the AI grid is GENERATED from the
-      # manual and `gen_eval_grid.py --check` fails when it moves — yet a
-      # commit touching only USER_MANUAL.md triggered nothing, so a stale grid
-      # surfaced on somebody else's later push.
-      - 'USER_MANUAL.md'
-      - 'tests/ai_eval/**'
-      - 'docs/tutorials/**'
-      # ⚠️ 'gi_database.db' was here and could never fire — the file is
-      # gitignored, so a push can never contain a change to it.
+  # ⚠️ NO PATH FILTER ON PULL REQUESTS (Phase 18 close-out, ruling Q1).
+  # `dual-ci`, `ai-router-eval` and `frontend-build` are REQUIRED checks on
+  # `main`. A required check that never starts is "Expected — waiting" for
+  # ever, so a docs-only PR filtered out here could never be merged. Every PR
+  # runs all three; pushes keep the filter above (nothing is required of them).
+  pull_request: {}
   workflow_dispatch: {}   # allow manual runs from the Actions tab
 
 # A branch with an open PR fires BOTH events. One run per branch at a time:
@@ -397,6 +385,12 @@ jobs:
           fi
 
       - name: Router eval — L3 (the model) + L1/L2 again
+        env:
+          # The operator's BLIND holdout (ruling Q5): a repository secret, never
+          # in git, scored and REPORTED by count only — the runner prints no
+          # holdout id or prompt. Unset (a fork's PR, or not written yet) = the
+          # v2 line says "not provided". See docs/HOLDOUT_V2_GUIDE.md.
+          GI_ROUTER_HOLDOUT_V2: ${{ secrets.GI_ROUTER_HOLDOUT_V2 }}
         run: python -m tests.ai_eval.runner --router --require-model --json router_scorecard.json
 
       - name: Upload router scorecard

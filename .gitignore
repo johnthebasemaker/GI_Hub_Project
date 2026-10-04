@@ -125,3 +125,7 @@ backups/
 /tests/video_gen/.runtime/
 /tests/video_gen/.results/
 /tutorial_fixture.db
+
+# Phase 18 (ruling Q5): the operator's BLIND router holdout — lives in the
+# GI_ROUTER_HOLDOUT_V2 repository secret, never in git (docs/HOLDOUT_V2_GUIDE.md)
+tests/ai_eval/router/security_holdout_v2.yaml
