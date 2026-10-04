@@ -1,4 +1,4 @@
-# MORNING REPORT — Phase 18 "Night Shift" (2026-10-03 → 04)
+# MORNING REPORT — Phase 18 "Night Shift" (2026-10-03 → 04) — RULED, closed out 2026-10-04
 
 > Good morning. All four tracks are **built, tested and committed** on
 > `feat/phase18-night-shift`: 5 commits on top of `main` 45ddff2.
@@ -7,6 +7,27 @@
 > what was built, §2 is what I found, §3 is what I need you to decide, and §4
 > is three ideas for today. The full design and every measurement are in
 > `PROPOSED_PHASE18_PLAN.md`.
+
+---
+
+## 0. Rulings received (2026-10-04) and the close-out
+
+The operator answered all twelve questions; they are recorded as **Q18-1 …
+Q18-12** in `PROJECT_HANDOVER.md` → *Phase 18*. Built in the close-out commit,
+with no schema change:
+
+| Ruling | Done |
+|---|---|
+| Q1 branch protection | `main` requires `dual-ci`, `ai-router-eval` and `frontend-build`, strict. Applied with a typed JSON body: the `gh api -f` form sends `"true"` and `"null"` as strings, which is what produced the 422. ⚠️ The `pull_request` trigger lost its path filter, or a docs-only PR would wait for ever for a required check that never starts. |
+| Q5 blind holdout | No holdout case id is printed or written to the scorecard; counts only (v1 too). Holdout v2 is read from the `GI_ROUTER_HOLDOUT_V2` secret, scored and reported by count. Guide for writing it, no coding needed: `docs/HOLDOUT_V2_GUIDE.md`. |
+| Q6 A + B | A yellow **whole plan** tag and tooltip on every Surface Shield minimum that is the whole remaining plan. **Set pace** per site (HOD own site / admin), suggesting the site's approved SQM per day over 30 days. Precedence: site → global → approved work. |
+| Q12 slip | **🖨 Slip** on every open loan, plus **Print slip** right after a loan is recorded: an 80 mm PDF whose QR is `#id`. |
+| Q9, Q10, Q11-partial | Designed, not built: `PROPOSED_PHASE19_PLAN.md`. They change what the minimum, the on-order and a loan's open quantity *mean*, so each gets its own slice. |
+
+Gates after the close-out: service_tests **2,845 / 0** (+11: 18a-11..15,
+18r-11..12, 18m-10..13), E2E (see the PR), bug_check 599/0/0, critical path
++0 B (a 🖨 glyph instead of `PrinterOutlined`, whose second importer would
+have added 47 B to the sign-in page).
 
 ---
 
