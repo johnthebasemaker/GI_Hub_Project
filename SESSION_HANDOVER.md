@@ -1,4 +1,4 @@
-# SESSION HANDOVER — read this first (updated 2026-10-04, Phase 20 complete)
+# SESSION HANDOVER — read this first (updated 2026-10-07, Phase 21 complete)
 
 > This file is the orientation for a fresh session. It replaces every earlier
 > version (they are in git history). After it, read
@@ -11,39 +11,59 @@
 
 ## 0. State in ten lines
 
-1. **Phases 18–20 are on `main`**:
-   - PRs #109–#111: Phases 18–19;
-   - PR #113 (20a): the Surface Shield daily log;
-   - PR #114 (20b): bulk submit and approve;
-   - the PR for 20c: `FINANCE_PITCH.md` plus the slide deck
-     <https://claude.ai/artifact/FZRtKrYqn6e5zoD8Mx3TVn>.
-   Rulings Q20-1..17 are in `PROJECT_HANDOVER.md` → *Phase 20*. The operator
-   presents to the Finance Manager next: fill the `[operator]` figures and
-   rebuild Practice the night before.
+1. **Phase 21 is on `main`**, PRs #116–#126. What was done, what is left and
+   what the operator does are in **[`PHASE21_SUMMARY.md`](PHASE21_SUMMARY.md)**.
+   - Lots by balance, plus bad workbook lots with their sheet and row (21a).
+   - Reorder maths counting approved jobs (21b).
+   - The Drive sync (21c), waiting for the operator's token.
+   - OCR in three colours, learned names, and the paper-date check (21d).
+   - The design contract (21e).
+   - The self-driving Practice demo: 6 flows and 52 page tours (21f/21g).
+   - Rulings Q21-1..24 plus Q21-1a are in `PROJECT_HANDOVER.md` → *Phase 21*.
 2. ⚠️ **Standing order (CLAUDE.md §5):** every change goes branch → PR →
    green checks → auto-merge → `git pull` on local `main`, without waiting to
    be asked. Rollback is a revert PR, never a history rewrite.
-3. **Alembic head `c4e9b2a7f613`. Live was migrated by the operator on
-   2026-10-04**, with a backup at 17:55. Phase 20 added no migration. Both
-   Practice DBs are at head, with overlay **v7** (a week of Surface Shield jobs
-   in every status).
-4. **All gates green** (2026-10-04, through 20b): service_tests **2,890 / 0** · E2E
-   **190** · AI Tier 1 147/147 · Router L2 pass · grid 72 · parity:sme 1,334
-   · ui-math 33/0 · nav 52 · bug_check 599/0/0 · build ✅ (+0 B) · single head
-   `c4e9b2a7f613`.
-5. ⚠️ **`main` is BRANCH-PROTECTED** (Q18-1): `dual-ci`, `ai-router-eval`,
-   `frontend-build` required and strict, admins included; the repo allows
-   auto-merge. CI concurrency is per EVENT since Phase 19, because a
-   cancelled push run's checks blocked PR #109. The payload is in
-   `tools/github/`.
-6. **CI lesson stands:** wait for the PR's own `dual-ci` before merging.
-7. **Deployment to Hetzner is PAUSED by decision.** Runbook ready
-   (`tools/migration/README.md`).
-8. The operator works on a battery-powered Mac: **Postgres may be asleep**
-   (`./bin/power.sh wake`). Ollama was started for the router evals and
-   **stopped again** (it was off at the start of the night).
+3. **Alembic head `e2a8c4f6b1d9`.** Live was migrated on 2026-10-06 at the
+   operator's instruction. The backup is
+   `.backups/gihub_2026-10-06_230148_before_phase21_migrate.sql.gz`. Both
+   Practice DBs are at head with overlay **v10** (`DEMO-TANK-1` for the
+   demo).
+4. **All gates green** (2026-10-07):
+
+   | Gate | Result |
+   |---|---|
+   | service_tests | **2,951 / 0** |
+   | E2E | **202** |
+   | AI Tier 1 | 147/147 |
+   | Router L2 | pass |
+   | grid | 72 |
+   | parity:sme | 1,334 |
+   | ui-math | 33/0 |
+   | nav | 53 routes, plus **page tours 52** |
+   | bug_check | 599/0/0 |
+   | build | design contract green (raw hex ratchet **153**); critical path green at its lowered baseline |
+5. ⚠️ **`main` is BRANCH-PROTECTED** (Q18-1). `dual-ci`, `ai-router-eval` and
+   `frontend-build` are required and strict, admins included. A PR that falls
+   behind `main` needs `gh pr update-branch` before auto-merge can land it.
+   **CI does not run Playwright**, so E2E is a local gate.
+6. **The operator owes four things:**
+   - the Drive token (`docs/GDRIVE_SETUP.md`);
+   - one ERP **Commit** (the dry run is clean apart from 35 bad-lot rows and
+     SAP 1004 at 4 vs 3);
+   - a review of the 11 proposed OCR names (2 look wrong);
+   - checking OCR staging with a real photo on Live (TC-21G-06).
+7. **Next work, waiting for go-ahead** (`PHASE21_SUMMARY.md` §3):
+   - DN / follow-up / MTC ingestion from Drive (plan §11);
+   - the SME chart colours;
+   - tank-number learning for OCR.
+8. The operator works on a battery-powered Mac, so **Postgres may be asleep**
+   (`./bin/power.sh wake`). Ollama is started only when needed and stopped
+   again.
 9. The operator has **limited internet**: do not download anything large.
-10. Do not commit or push unless asked; branch first if on `main`.
+10. **The demo** lives only in the Practice process (`/practice/demo/*`; Live
+    returns 404). Reset demo data restores everything it changed. Test logins
+    are limited to 10 a minute per IP, so a spec that signs in often gives
+    each login its own `X-Real-IP` bucket.
 
 ---
 
