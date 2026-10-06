@@ -35,6 +35,10 @@ export interface SmartMinRow {
   /** open PO quantity on POs not raised from a PR — shown, never subtracted */
   Global_On_Order: number
   Suggested_Order: number
+  /** Phase 21b: why there is no order (no SQM pace → set one), else null */
+  Order_Hint?: string | null
+  /** Phase 21b: how a Surface Shield minimum was worked out, one step a line */
+  Trail?: string[] | null
   Days_Of_Cover: number | null
   Status: RagStatus
 }

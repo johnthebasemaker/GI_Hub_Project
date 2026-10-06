@@ -4925,6 +4925,44 @@ no longer appears as stagnant or expired stock.
 
 Automated: service_tests **21A** (12 checks); E2E `lots.spec.ts` (21a test).
 
+## 21b. Phase 21b — Surface Shield reorder calibration (ruling Q21-20)
+
+**Why this exists.** The operator reported Surface Shield reorder quantities too
+high and days of cover too low. Reading `services/smart_min.py` found:
+- **D0:** the SQM pace counted only paper-form execution entries, never the
+  approved **jobs** (`sme_attribution_group`, committed), which is how most area
+  is approved since Phase 14c. A site approving jobs had a pace near 0, and fell
+  to the whole plan.
+- **D1:** with no pace, days of cover = stock ÷ (whole plan ÷ 30).
+- **D2:** with no pace, the order was the whole remaining plan.
+- **D3:** days of cover used the rounded-up minimum ÷ 30, not the exact pack rate.
+
+`Unit_Size` = base units per pack (Q21-20). The recipe and pack sizes in the
+operator's workbook were checked and are consistent.
+
+**TC-21B-01 — the pace counts jobs.** Practice as practice.hod, Stock → Reorder
+signals. The site note says *pace … m²/day (approved work, last 30 days)*.
+Set pace → the suggestion equals the approved job m² of the last 30 days ÷ 30.
+
+**TC-21B-02 — the working.** On a Surface Shield row, hover **how?**: three
+lines (m² × rate = KG; × the next 30 days at the pace = KG; ÷ pack size =
+packs). Check one by hand.
+
+**TC-21B-03 — no pace, no order.** As admin, on a site with no plan and no
+approvals, a Surface Shield row shows:
+- the yellow **whole plan** tag;
+- **set pace** in *Suggested order*;
+- **—** in *Days of cover*.
+
+Type a manual minimum on the item: the order comes back (2 × min − stock).
+
+**TC-21B-04 — on Live (operator).** Open Reorder signals for CNCEC and confirm
+the figures look right. If one does not, read its **how?** lines and note which
+one is wrong.
+
+Automated: service_tests **21B** (7 checks); 18m-05b updated (no-pace order is
+0, not the whole plan).
+
 ## 15. Do's and Don'ts
 
 ### Do

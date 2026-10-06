@@ -930,10 +930,10 @@ Open **Stock → Reorder signals**. Each row is one item at one site:
 |---|---|
 | **Status** | 🔴 **Order now**: stock is below the minimum. 🟠 **Order soon**: stock is less than 1½ times the minimum. 🟢 **OK**. ⚪ **No signal**: nothing to base a minimum on. |
 | **Minimum** | Marked **smart** when the system worked it out, or **manual** when someone typed a minimum on the item. A manual minimum always wins, and the system's own figure is shown when you hover. |
-| **Days of cover** | How many days the stock lasts at the expected rate of use. |
+| **Days of cover** | How many days the stock lasts at the expected rate of use. A Surface Shield with no SQM pace shows **—**: the whole plan is a total, not a rate (Phase 21). |
 | **On order** | Quantity still to be delivered on open POs raised from **this site's** PRs. POs not raised from any PR show underneath as **+ N global** (see §3.14.2). |
-| **Suggested order** | Brings the stock back to twice the minimum, less what this site already has on order. For a Surface Shield it never suggests more than the remaining plan needs. |
-| **Why** | The reason in words: *"Uses 2.10/day (30-day average) × 30 days of cover"* or *"Plan: 60 KG for the next 30 days of planned work"*. |
+| **Suggested order** | Brings the stock back to twice the minimum, less what this site already has on order. For a Surface Shield it never suggests more than the remaining plan needs. When a Surface Shield's minimum is the **whole plan** (no SQM pace), it shows a yellow **set pace** tag instead of a quantity (Phase 21): a project total is not a reorder point. A minimum someone accepted or typed still orders as usual. |
+| **Why** | The reason in words: *"Uses 2.10/day (30-day average) × 30 days of cover"* or *"Plan: 60 KG for the next 30 days of planned work"*. For a Surface Shield, hover **how?** to see the working step by step: *100 m² still to do × 2.1 KG/m² = 210 KG* · *× the next 30 days at 1 m²/day of the site's 100 m² left (30 %) = 63 KG* · *÷ 20 KG per DRUM = 3.15 → 4 DRUM*. If a number looks wrong, the line that is wrong tells you which figure to fix: the area, the recipe rate, the pace or the pack size (`Unit Size`). |
 
 **How the minimum is worked out:**
 
@@ -955,7 +955,12 @@ Open **Stock → Reorder signals**. Each row is one item at one site:
 
 **Your site's pace (HOD).** In the yellow or blue note for your site, press
 **Set pace** (or **Change pace**). The dialog suggests a figure: the m² of
-lining your site had approved per day over the last 30 days. Press **Use it**,
+lining your site had approved per day over the last 30 days. Since Phase 21
+that counts **both** ways an area is approved: Surface Shield **jobs**
+approved on the Execution page, and paper-form entries. (It used to count only
+the paper forms, so a site that approves jobs showed almost no pace, and its
+Surface Shield minimums fell back to the whole plan: order quantities far too
+high, days of cover far too low.) Press **Use it**,
 or type the rate you plan, then **Save**. Surface Shield minimums then cover
 the next 30 days of that work. **Clear** removes your site's rate. The page
 then uses the company-wide rate if an admin set one, or else your approved
@@ -976,7 +981,9 @@ The signals are advice, worked out each time the page is opened.
 
 **Practice:** Stock → Reorder signals shows three Practice items, one in each
 colour: *PRACTICE CABLE TIES (red)*, *MASKING TAPE (amber)* and *NITRILE
-GLOVES (green)*. Each is used 3 a day, so its minimum is 90.
+GLOVES (green)*. Each is used 3 a day, so its minimum is 90. Practice's week of
+approved Surface Shield jobs (§3.15) gives the Practice site its pace, so its
+Surface Shield rows show **how?** with the working.
 
 ## 3.14 What changed in Phase 19 (October 2026)
 
