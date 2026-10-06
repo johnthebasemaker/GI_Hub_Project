@@ -3,7 +3,10 @@ import type { ThemeConfig } from 'antd'
 import { brand, dark, light, status } from './tokens'
 
 // Motion discipline ("subtle-premium"): fast, ease-out, nothing theatrical.
+// Phase 21e: the UI face is IBM Plex Sans (self-hosted, index.css); AntD's
+// components read the font from this token, not from the page.
 const motion = {
+  fontFamily: "'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
   motionDurationFast: '0.1s',
   motionDurationMid: '0.15s',
   motionDurationSlow: '0.2s',

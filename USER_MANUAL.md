@@ -1172,6 +1172,23 @@ Aria, 12 inch fan, Nos, 1
 goggls* is a gold **check** (did you mean *Safety Goggles 6MM*?), and *12 inch fan*
 is red.
 
+## 3.18 A cleaner look (Phase 21, October 2026)
+
+GI Hub now has one written design contract (`docs/DESIGN_SYSTEM.md`), and the
+first part of it is live:
+- **Type.** The interface is set in **IBM Plex Sans**, and page titles in **Source
+  Serif 4**. Both are served by GI Hub itself, so nothing is fetched from another
+  site. The page appears at once in your device's own font and switches as soon
+  as the font arrives.
+- **Numbers line up.** Every table, statistic and number box uses figures of equal
+  width, so quantities in a column align digit for digit.
+- **Buttons answer a press.** A button gives slightly under your finger or click.
+- **Keyboard focus is always visible.** A gold outline shows where you are.
+- **Less motion if you prefer it.** If your phone or computer is set to *reduce
+  motion*, GI Hub turns its animations off.
+
+The colours (navy and gold), the pages and the buttons are where they were.
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.
