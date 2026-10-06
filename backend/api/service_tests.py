@@ -35,6 +35,17 @@ import sys
 # BEFORE the .db/.main imports below trigger the config loader.
 os.environ.setdefault("GI_DOTENV", "0")
 
+# Hermetic AI: no suite talks to a developer's real Ollama. Every model call in
+# this file is stubbed, but a fallback path can still fire a REAL background
+# call (system_one.ensure_warm() → warm()); against a busy local Ollama that
+# call hangs for minutes and wedges `_WARMING`, so suite 17c went red only on
+# machines where Ollama was up and serving something else. Port 9 refuses at
+# once, which is exactly what CI (no Ollama) sees. OVERRIDE, not setdefault — a
+# shell that exports OLLAMA_HOST would otherwise defeat it. Must precede the
+# `.ai.client` import, which reads it at import time. A deliberate live run can
+# opt in with GI_TEST_OLLAMA_HOST=<url>; nothing here skips when it is absent.
+os.environ["OLLAMA_HOST"] = os.environ.get("GI_TEST_OLLAMA_HOST") or "http://127.0.0.1:9"
+
 # ⚠️ ORDER IS THE WHOLE MECHANISM. `db.py` builds its engine at import time from
 # whatever DATABASE_URL says at that instant, so the swap has to happen on the
 # line BEFORE it — not in main(), not in a fixture. Everything below this point
@@ -28439,6 +28450,19 @@ async def test_phase17c_system_one():
         if reply["exc"] is not None:
             raise reply["exc"]
         return reply["text"]
+
+    # ⚠️ An earlier suite may have left a warm-up task behind (ensure_warm() is
+    # called on every fallback). If it is still in flight, ensure_warm() below
+    # declines to start a new one and 17b-10/18b-01 never see the stubbed call.
+    # Cancel it so the warm this suite provokes is this suite's own.
+    stale = S._WARMING["task"]
+    if stale is not None and not stale.done():
+        stale.cancel()
+        try:
+            await stale
+        except BaseException:                           # noqa: BLE001
+            pass
+    S._WARMING["task"] = None
 
     saved = aic.generate
     aic.generate = fake_generate
