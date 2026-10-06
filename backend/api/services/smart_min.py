@@ -26,9 +26,12 @@ TWO KINDS OF ITEM, TWO KINDS OF EVIDENCE
                       (`ss_planned_sqm_per_day@<site>`, set on the Reorder
                       signals tab — ruling Q6 option B), the global planned
                       rate (`ss_planned_sqm_per_day`), or the approved SQM per
-                      day over the last 30 days. With no pace at all
+                      day over the last 30 days — paper-form entries AND
+                      approved jobs (Phase 21b, D0). With no pace at all
                       the minimum is the WHOLE remaining plan, and the row
-                      says so (`basis = plan_all`).
+                      says so (`basis = plan_all`) — shown, never ORDERED
+                      (Phase 21b, D2: ruling Q21-20), and with no days of
+                      cover (a total is not a rate, D1).
 
 ⚠️ A MANUAL MINIMUM WINS. An item with `Minimum_Qty > 0` keeps it as the
 effective minimum (`source = manual`); the recommendation is shown beside it.
@@ -236,6 +239,7 @@ async def plan_demand(session: AsyncSession, site: str) -> dict:
         total += rem
         tag = str(e["Equipment_Tag_No"])
         remaining_by_tag[tag] = remaining_by_tag.get(tag, 0.0) + rem
+        seen_saps: set[str] = set()
         for r in recipes.get(code, []):
             d = rem * _num(r["For_1_SQM"])
             if d <= 0:
@@ -244,8 +248,13 @@ async def plan_demand(session: AsyncSession, site: str) -> dict:
             if not sap:
                 continue
             row = by_sap.setdefault(sap, {"base": 0.0, "keys": [], "uom": r["UOM"],
-                                          "garnet": False, "notes": []})
+                                          "garnet": False, "notes": [], "sqm": 0.0})
             row["base"] += d
+            # the m² of work that draws this SAP — once per equipment, even
+            # where its system lists the SAP on two lines (primer + screed)
+            if sap not in seen_saps:
+                row["sqm"] = row.get("sqm", 0.0) + rem
+                seen_saps.add(sap)
             k = E.mat_key(r["Material_Code"], r["SAP_Code"])
             if k not in row["keys"]:
                 row["keys"].append(k)
@@ -278,9 +287,10 @@ async def plan_demand(session: AsyncSession, site: str) -> dict:
         if not rate:
             continue
         row = by_sap.setdefault(prep_sap[code], {"base": 0.0, "keys": [], "uom": "KG",
-                                                 "garnet": True, "notes": []})
+                                                 "garnet": True, "notes": [], "sqm": 0.0})
         row["garnet"] = True
         row["base"] += area * rate
+        row["sqm"] = row.get("sqm", 0.0) + area
     if unknown_state:
         flags.append(f"{unknown_state} equipment tag(s) have no Old/New answer yet — "
                      "Garnet uses the higher rate for them")
@@ -297,12 +307,27 @@ async def plan_demand(session: AsyncSession, site: str) -> dict:
 
 
 async def sqm_pace(session: AsyncSession, site: str, days: float) -> float:
-    """Approved LINING SQM per day over the last `days` (prep codes excluded)."""
+    """Approved LINING SQM per day over the last `days` (prep codes excluded).
+
+    ⚠️ PHASE 21b (D0) — BOTH WAYS AN AREA IS APPROVED. Since Phase 14c most
+    Surface Shield m² is approved as a JOB (`sme_attribution_group`, credited
+    ONCE per job on approval, `Done_SQM_Credited`), not as a paper-form
+    execution entry. This read only the entries, so a site that approves
+    through the job queue showed a pace near 0 — the reorder fell back to
+    "the whole remaining plan" (`plan_all`): the order far too high and the
+    days of cover far too low, which is what the operator reported. A job
+    and an entry are separate paths, so adding them never counts an area
+    twice; Garnet (prep) jobs credit 0 and are excluded by code as well."""
     cutoff = (_dt.date.today() - _dt.timedelta(days=int(days))).isoformat()
     prep_codes = await PREP.prep_codes(session)
     rows = (await session.execute(text(
         'SELECT "Lining_System_Code", SUM("Actual_SQM") FROM sme_execution_entry '
         'WHERE "Site_ID" = :s AND status = \'APPROVED\' AND "Work_Date" >= :c '
+        'GROUP BY 1 '
+        'UNION ALL '
+        'SELECT "Lining_System_Code", SUM(COALESCE("Done_SQM_Credited", "SQM_Completed")) '
+        'FROM sme_attribution_group '
+        'WHERE "Site_ID" = :s AND status = \'committed\' AND "Work_Date" >= :c '
         'GROUP BY 1'), {"s": site, "c": cutoff})).all()
     done = sum(_num(v) for c, v in rows if str(c or "").strip() not in prep_codes)
     return done / days if days > 0 else 0.0
@@ -320,6 +345,33 @@ async def site_paces(session: AsyncSession) -> dict[str, float]:
         {"p": SITE_PACE_PREFIX + "%"})).all()
     out = {str(k)[len(SITE_PACE_PREFIX):]: _num(v) for k, v in rows}
     return {k: v for k, v in out.items() if k and v > 0}
+
+
+def _g(v: float) -> str:
+    """A number as a person writes it: 1,234.5 · 0.85 · 12."""
+    v = round(float(v), 2)
+    return f"{v:,.2f}".rstrip("0").rstrip(".") if v != int(v) else f"{int(v):,}"
+
+
+def _trail(p: dict, fac: float, cover: float, base_min: float, base_uom: str,
+           pack_uom: str, packs: float) -> list[str]:
+    """Phase 21b — HOW a Surface Shield minimum was worked out, one step per
+    line, so a wrong number shows WHICH factor is wrong (the m², the recipe
+    rate, the pace or the pack size)."""
+    sqm = float(p.get("sqm") or 0)
+    per = (p["base"] / sqm) if sqm else 0.0
+    what = "Garnet for" if p.get("garnet") else "Plan:"
+    out = [f"{what} {_g(sqm)} m² still to do × {_g(per)} {base_uom}/m² = "
+           f"{_g(p['base'])} {base_uom} for the whole remaining plan"]
+    if p["basis"] == "plan_pace":
+        out.append(f"× the next {_g(cover)} days at {_g(p['pace'])} m²/day of the site's "
+                   f"{_g(p['site_rem'])} m² left ({_g(p['share'] * 100)} %) = {_g(base_min)} {base_uom}")
+    else:
+        out.append("No SQM pace yet, so this is the WHOLE plan — set the site's pace to "
+                   "plan by rate")
+    out.append(f"÷ {_g(fac)} {base_uom} per {pack_uom} = {_g(base_min / fac)} → "
+               f"{_g(packs)} {pack_uom}")
+    return out
 
 
 # ── the whole table ──────────────────────────────────────────────────────────
@@ -404,7 +456,8 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
                         "plan_share": round(share, 4), "basis": basis,
                         "flags": plan["garnet_flags"]}
         for sap, d in plan["by_sap"].items():
-            plan_saps[(sap, s)] = {**d, "share": share, "basis": basis}
+            plan_saps[(sap, s)] = {**d, "share": share, "basis": basis, "pace": pace,
+                                   "site_rem": rem}
 
     garnet_saps = await PREP.garnet_saps(session)
     # an accepted minimum shows even where the item has no stock movement yet
@@ -418,12 +471,13 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
         manual = _num(i["Minimum_Qty"])
         fac = U.factor(is_surface_shield=is_ss, unit_size=i["Unit_Size"], pack_uom=i["UOM"])
         plan_packs: Optional[float] = None
+        ss_rate: Optional[float] = None
         row = {"SAP_Code": i["SAP_Code"], "Site_ID": s, "Material_Code": i["Material_Code"],
                "Description": i["Equipment_Description"], "Category": i["Category"],
                "UOM": i["UOM"], "Surface_Shield": is_ss, "Current_Stock": round(st, 3),
                "Manual_Min": manual or None, "Recommended_Min": 0.0, "Basis": "no_use",
                "Daily_Use": None, "Plan_Demand_Base": None, "Base_UOM": None,
-               "Why": "",
+               "Why": "", "Trail": None,
                "On_Order": round(on_order.get((_norm(i["Material_Code"]).upper(), s), 0.0), 3),
                "Global_On_Order": round(global_on_order.get(_norm(i["Material_Code"]).upper(), 0.0), 3)}
         if is_ss:
@@ -441,6 +495,14 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
                 if fac:
                     row["Recommended_Min"] = math.ceil(round(base_min / fac, 6))
                     plan_packs = math.ceil(round(p["base"] / fac, 6))
+                    # D3 — the daily rate in EXACT packs. It used to be the
+                    # rounded-up minimum ÷ 30, so a slow mover needing 0.2 of a
+                    # pack a month read as 1 pack a month: 5× the true rate and
+                    # a fifth of the true days of cover.
+                    if p["basis"] == "plan_pace":
+                        ss_rate = p["base"] * p["pace"] / p["site_rem"] / fac if p["site_rem"] else 0.0
+                    row["Trail"] = _trail(p, fac, cover, base_min, row["Base_UOM"] or p["uom"] or "",
+                                          i["UOM"] or "packs", row["Recommended_Min"])
                     days = int(cover)
                     row["Why"] = ((f"{'Garnet for' if p['garnet'] else 'Plan:'} "
                                    f"{round(base_min, 1):g} {row['Base_UOM'] or ''} for the next "
@@ -482,15 +544,27 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
         row["Effective_Min"] = eff
         row["Min_Source"] = src
         row["Status"] = rag(st, eff)
-        if row["Status"] in ("red", "amber"):
+        row["Order_Hint"] = None
+        if is_ss and row["Basis"].startswith("plan_all") and src == "smart":
+            # D2 (ruling Q21-20) — with no SQM pace the system's minimum is the
+            # WHOLE remaining plan (kept, with the yellow "whole plan" tag, so
+            # the HOD can see it and accept a figure). It no longer orders: a
+            # minimum that is a project total is not a reorder point, and
+            # ordering against it told a site to buy the entire project now.
+            # An accepted or manual minimum still orders as usual.
+            row["Suggested_Order"] = 0
+            row["Order_Hint"] = "Set the site's SQM pace to get an order quantity"
+        elif row["Status"] in ("red", "amber"):
             target = 2 * eff
             if plan_packs is not None:
                 target = min(target, max(plan_packs, eff))   # never past the plan
             row["Suggested_Order"] = math.ceil(max(target - st - row["On_Order"], 0))
         else:
             row["Suggested_Order"] = 0
-        rate = (row["Daily_Use"] if not is_ss else
-                ((row["Recommended_Min"] / cover) if row["Recommended_Min"] else 0))
+        # D1 — days of cover need a RATE. Without an SQM pace there is none: the
+        # "whole plan" is a total, not a speed, and dividing it by 30 days
+        # (as this did) made every lining item look nearly out of cover.
+        rate = row["Daily_Use"] if not is_ss else ss_rate
         row["Days_Of_Cover"] = round(st / rate, 1) if rate and rate > 0 and st > 0 else (0.0 if rate else None)
         rows.append(row)
 

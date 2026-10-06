@@ -43,8 +43,9 @@ const BASIS: Record<string, string> = {
 // Ruling Q6 option A: with no SQM pace the minimum IS the whole remaining
 // plan — kept, but never left unexplained next to the number.
 const WHOLE_PLAN_TIP = 'Whole remaining plan: this site has no SQM pace yet — no planned rate and '
-  + 'no approved lining work in the last 30 days — so the minimum is everything the remaining plan '
-  + 'still needs. Set the site\'s pace (the yellow note above) and it drops to the next 30 days of work.'
+  + 'no approved lining work (jobs or paper forms) in the last 30 days — so the minimum is everything '
+  + 'the remaining plan still needs. It is shown, not ordered: set the site\'s pace (the yellow note '
+  + 'above) and it drops to the next 30 days of work, with an order quantity and days of cover.'
 
 function fmt(n: number | null | undefined, dp = 0): string {
   if (n == null) return '—'
@@ -179,7 +180,12 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
     },
     {
       title: 'Suggested order', dataIndex: 'Suggested_Order', align: 'right', width: 130,
-      render: (v, r) => (v ? <Typography.Text strong>{fmt(v)} {r.UOM ?? ''}</Typography.Text> : '—'),
+      render: (v, r) => (v ? <Typography.Text strong>{fmt(v)} {r.UOM ?? ''}</Typography.Text>
+        : r.Order_Hint ? (
+          <Tooltip title={r.Order_Hint}>
+            <Tag color="gold" data-testid="order-set-pace" style={{ cursor: 'help' }}>set pace</Tag>
+          </Tooltip>
+        ) : '—'),
     },
     {
       title: 'Why', key: 'why', width: 380,
@@ -187,6 +193,12 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
         <Space size={4} wrap>
           <Tag>{BASIS[r.Basis] ?? r.Basis}</Tag>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.Why}</Typography.Text>
+          {r.Trail?.length ? (
+            <Tooltip title={<ol data-testid="math-trail-steps" style={{ margin: 0, paddingLeft: 18 }}>
+              {r.Trail.map((t) => <li key={t}>{t}</li>)}</ol>}>
+              <Typography.Link data-testid="math-trail" style={{ fontSize: 12 }}>how?</Typography.Link>
+            </Tooltip>
+          ) : null}
         </Space>
       ),
     },

@@ -29204,10 +29204,11 @@ async def test_phase18m_smart_min():
               ss is not None and ss["Recommended_Min"] == 10 and ss["Basis"] == "plan_all"
               and ss["Daily_Use"] is None and ss["Status"] == "red"
               and out["sites"][SITE]["basis"] == "plan_all", str(ss)[:300])
-        check("18m-05b: ⚠️ …and the suggested order for a Surface Shield never exceeds what "
-              "the remaining plan needs: 10 drums, not 2 × 10 (an E2E screenshot caught the "
-              "uncapped rule telling a site to order TWICE the whole project)",
-              ss["Suggested_Order"] == 10, str(ss)[:200])
+        check("18m-05b: ⚠️ …and with NO pace the system's whole-plan minimum is SHOWN, never "
+              "ORDERED (ruling Q21-20, Phase 21b D2 — it used to order the whole project, "
+              "first 2× it, then 1× it): order 0, a 'set the pace' hint, no days of cover",
+              ss["Suggested_Order"] == 0 and bool(ss.get("Order_Hint"))
+              and ss["Days_Of_Cover"] is None, str(ss)[:200])
         check("18m-06: Garnet for the same 100 m² at the prep code's rate (CV/concrete → "
               "ESC1; no Old/New answer yet → the higher known rate, here the workbook "
               "18 KG/m²) = 1,800 KG = 72 bags — and the flag says the state is unknown",
@@ -30355,6 +30356,120 @@ async def test_phase21a_lots():
         await _cleanup()
 
 
+async def test_phase21b_reorder():
+    """Suite 21B — Phase 21b: Surface Shield reorder calibration (ruling Q21-20).
+
+    D0: the SQM pace counts approved JOBS (sme_attribution_group, committed),
+    not only paper-form entries — a site approving through the job queue had a
+    pace near 0 and fell to "the whole plan". D1: no pace → no days of cover (a
+    total is not a rate). D2: no pace → the whole-plan minimum is shown, never
+    ordered; an accepted / manual minimum still orders. D3: days of cover use
+    the EXACT pack rate, not the rounded-up minimum ÷ 30. And every Surface
+    Shield row carries its working (`Trail`). Synthetic site SVC21B."""
+    from sqlalchemy import text as _t
+
+    from .services import smart_min as SM
+
+    SITE, SAP, CODE, TAG = "SVC21B", "SVC21B-SS", "SVC21B-SYS", "SVC21B-T1"
+    import datetime as _dtm
+    d = lambda n: (_dtm.date.today() - _dtm.timedelta(days=n)).isoformat()   # noqa: E731
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+
+    async def q(sql, **kw):
+        async with SessionLocal() as s_:
+            return (await s_.execute(_t(sql), kw)).scalar()
+
+    saved = await q("SELECT value FROM app_settings WHERE key = 'ss_planned_sqm_per_day'")
+
+    async def cleanup():
+        for sql in ('DELETE FROM sme_attribution_group WHERE "Site_ID" = \'SVC21B\'',
+                    'DELETE FROM sme_execution_entry WHERE "Site_ID" = \'SVC21B\'',
+                    'DELETE FROM receipts WHERE "Site_ID" = \'SVC21B\'',
+                    'DELETE FROM sme_equipment WHERE "Site_ID" = \'SVC21B\'',
+                    'DELETE FROM sme_sqm_progress WHERE "Site_ID" = \'SVC21B\'',
+                    'DELETE FROM sme_recipe WHERE "Lining_System_Code" = \'SVC21B-SYS\'',
+                    'DELETE FROM inventory WHERE "SAP_Code" LIKE \'SVC21B%\'',
+                    "DELETE FROM app_settings WHERE key = 'ss_planned_sqm_per_day@SVC21B'"):
+            await ex(sql)
+
+    async def row():
+        async with SessionLocal() as s_:
+            out = await SM.compute(s_, SITE)
+        return next((r for r in out["items"] if r["SAP_Code"] == SAP), {}), out["sites"].get(SITE, {})
+
+    await cleanup()
+    await ex("DELETE FROM app_settings WHERE key = 'ss_planned_sqm_per_day'")
+    try:
+        await ex('INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", '
+                 '"Category", "UOM", "Site_ID", "Minimum_Qty", "Unit_Size") VALUES '
+                 "('SVC21B-SS', 'MAT-SVC21B-SS', 'SVC21B lining resin', 'Surface Shields', 'DRUM', "
+                 ":s, 0, 20)", s=SITE)
+        # 100 m² left × 2.1 KG/m² = 210 KG = 10.5 drums for the whole plan
+        await ex('INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", "Type", "Substrate", '
+                 '"Lining_System_Code", "Surface_Area_SQM") VALUES (:s, :t, \'CV\', \'CONCRETE\', '
+                 ':c, 100)', s=SITE, t=TAG, c=CODE)
+        await ex('INSERT INTO sme_recipe ("Lining_System_Code", "Material_Code", "SAP_Code", "UOM", '
+                 '"For_1_SQM", "Execution_Sub_Activity_Code") VALUES '
+                 "(:c, 'MAT-SVC21B-SS', 'SVC21B-SS', 'KG', 2.1, :c)", c=CODE)
+        await ex('INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES (:d, :p, 3, :s)',
+                 d=d(40), p=SAP, s=SITE)
+
+        r0, site0 = await row()
+        check("21b-01: no pace at all → the WHOLE plan (11 drums) is shown as the minimum, "
+              "red against 3 in stock — and NOT ordered (D2): order 0 with a 'set the pace' "
+              "hint, no days of cover (D1: a total is not a rate)",
+              site0.get("basis") == "plan_all" and r0.get("Recommended_Min") == 11
+              and r0.get("Status") == "red" and r0.get("Suggested_Order") == 0
+              and "pace" in str(r0.get("Order_Hint")) and r0.get("Days_Of_Cover") is None,
+              str(r0)[:300])
+
+        await ex('UPDATE inventory SET "Minimum_Qty" = 5 WHERE "SAP_Code" = :p', p=SAP)
+        r1, _ = await row()
+        check("21b-02: …a MANUAL (or accepted) minimum still orders as before: 2 × 5 − 3 = 7",
+              r1.get("Min_Source") == "manual" and r1.get("Suggested_Order") == 7
+              and not r1.get("Order_Hint"), str(r1)[:300])
+        await ex('UPDATE inventory SET "Minimum_Qty" = 0 WHERE "SAP_Code" = :p', p=SAP)
+
+        # D0 — approved JOBS make the pace: 30 m² committed in the last 30 days.
+        # A staged job and a Garnet (prep) job do not count.
+        await ex('INSERT INTO sme_attribution_group ("Site_ID", "Work_Date", "Equipment_Tag_No", '
+                 '"Lining_System_Code", "SQM_Completed", status, "Done_SQM_Credited") VALUES '
+                 "(:s, :d1, :t, :c, 30, 'committed', 30), (:s, :d2, :t, :c, 50, 'staged', NULL), "
+                 "(:s, :d1, :t, 'ESC1', 40, 'committed', 0), (:s, :old, :t, :c, 90, 'committed', 90)",
+                 s=SITE, d1=d(2), d2=d(1), t=TAG, c=CODE, old=d(45))
+        r2, site2 = await row()
+        check("21b-03: ⚠️ D0 — the pace counts APPROVED JOBS: 30 m² in 30 days = 1 m²/day "
+              "(the staged job, the Garnet job and the 45-day-old job are not counted); it "
+              "used to read only paper-form entries and found 0",
+              abs(float(site2.get("sqm_per_day") or 0) - 1.0) < 1e-9
+              and site2.get("pace_source") == "approved_entries" and site2.get("basis") == "plan_pace",
+              str(site2)[:300])
+        check("21b-04: …so the minimum is the next 30 days of work: 210 KG × 30 % = 63 KG "
+              "= 3.15 → 4 drums; order min(2 × 4, the plan's 11) − 3 = 5",
+              r2.get("Recommended_Min") == 4 and r2.get("Suggested_Order") == 5
+              and r2.get("Basis") == "plan_pace", str(r2)[:300])
+        check("21b-05: D3 — days of cover use the EXACT rate (210 KG × 1/100 ÷ 20 = 0.105 drum "
+              "a day → 3 drums last 28.6 days); the rounded minimum ÷ 30 said 22.5",
+              r2.get("Days_Of_Cover") == 28.6, str(r2.get("Days_Of_Cover")))
+        trail = r2.get("Trail") or []
+        check("21b-06: the row shows its working — m² × recipe rate, the share the pace "
+              "covers, ÷ pack size → packs — so a wrong number shows which factor is wrong",
+              len(trail) == 3 and "100 m²" in trail[0] and "2.1 KG/m²" in trail[0]
+              and "210 KG" in trail[0] and "1 m²/day" in trail[1] and "30 %" in trail[1]
+              and "÷ 20 KG per DRUM = 3.15 → 4 DRUM" in trail[2], str(trail))
+        check("21b-07: and a whole-plan row says so in its working",
+              any("No SQM pace" in t for t in (r0.get("Trail") or [])), str(r0.get("Trail")))
+    finally:
+        await cleanup()
+        if saved is not None:
+            await ex("INSERT INTO app_settings (key, value) VALUES ('ss_planned_sqm_per_day', :v) "
+                     "ON CONFLICT (key) DO UPDATE SET value = :v", v=saved)
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -30704,6 +30819,9 @@ async def main() -> int:
     print("\n 21A. Phase 21a — lots: Top 5 Expiring by balance, bad lots with sheet and "
           "row (dry run and after), positions are provenance, QC stagnation net of returns")
     await test_phase21a_lots()
+    print("\n 21B. Phase 21b — Surface Shield reorder: the pace counts approved jobs, no "
+          "pace is shown not ordered, exact days of cover, the working on every row")
+    await test_phase21b_reorder()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()
