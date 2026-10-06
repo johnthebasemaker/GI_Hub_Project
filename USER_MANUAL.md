@@ -1155,6 +1155,19 @@ Bag*); the inventory names them the way the PR did (*DUST Mask*, *TRASH BAG
   Every lesson and every removal is in the audit log.
 - **Received by.** The paper's *Name* column fills **Received by (name)** on each
   row (the workbook's *Received by*). Check it like any other field.
+- **The paper's date.** The date written at the top of the paper becomes the
+  date of every row (day first: `01/10/26` is 1 October). The reader sometimes
+  gets it wrong: in our test it read `01/07/26` and `01/01/26` for `01/10/26`, and
+  `09/10/26` for `04/10/26`. So a date that is **more than 14 days old, or later
+  than tomorrow,** is not taken. A gold box asks *The paper's date reads
+  "01/07/26" — 97 days ago. Which day is this sheet?* and offers the likely dates
+  (**01/10/26** first). Press the right one, press **Keep** if the paper really is
+  that old, or pick the date in the date box. **Stage** says *Confirm the paper's
+  date first* until you do. A date inside the window is taken and shown as
+  *Paper date "03/10/26" → 03 Oct 2026*.
+- **Work type.** The paper's *Remarks* is the row's **Work type**, written the way
+  the workbook writes it: *PV* becomes *PU*, *RIL* *R/L*, *BLL* *B/L*, *Blaster*
+  *Blast*. You can edit it in the **Work type** column.
 
 The photos never leave this Mac. The reader is the local AI, and the photos of
 the papers used to measure it are kept only on the office computer.
@@ -1171,6 +1184,10 @@ Aria, 12 inch fan, Nos, 1
 *Nitril glovs* is **learned ×3** (the Practice store keeper taught it), *Safty
 goggls* is a gold **check** (did you mean *Safety Goggles 6MM*?), and *12 inch fan*
 is red.
+
+To see the date check, put a date line first, for example `Date: 01/07/26`
+(an old date), then the rows. The gold date box appears; pressing a suggested
+date lets you stage.
 
 ## 3.18 A cleaner look (Phase 21, October 2026)
 

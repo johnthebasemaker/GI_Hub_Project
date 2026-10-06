@@ -6,6 +6,8 @@ learned (Phase 21d, rulings Q21-3..5).
     POST   /ai/ocr/aliases             the store keeper confirmed what a name means
     GET    /ai/ocr/aliases             what this site has learned
     DELETE /ai/ocr/aliases/{id}        HOD / Admin remove a wrong one (audited)
+    POST   /ai/ocr/paper-check         the paper's date (plausible? did you mean…)
+                                       and its work types in the workbook's spelling
 
 The review grid calls `consumption-match` after a photo is read (or text is
 pasted) and colours each row: green only for an EXACT or LEARNED match, gold
@@ -26,6 +28,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .ai import consumption_match as CM
+from .ai import paper_fields as PF
 from .auth import require_roles, resolve_site_param
 from .db import get_session
 from .services.ledger import write_audit
@@ -40,6 +43,11 @@ _DELETE = require_roles("hod")
 class MatchIn(BaseModel):
     names: list[str] = Field(..., max_length=200)
     site_id: Optional[str] = None
+
+
+class PaperIn(BaseModel):
+    date_text: Optional[str] = Field(None, max_length=80)
+    work_types: list[Optional[str]] = Field(default_factory=list, max_length=200)
 
 
 class LearnIn(BaseModel):
@@ -81,6 +89,15 @@ async def consumption_match(body: MatchIn, user: dict = Depends(_SK),
     al = await aliases_for(session, site)
     return {"site_id": site,
             "matches": [CM.match(n, inv, aliases=al, stock=stock) for n in body.names]}
+
+
+@router.post("/paper-check", summary="The paper's date and work types, checked")
+async def paper_check(body: PaperIn, user: dict = Depends(_SK)):
+    """Phase 21d follow-up. Never changes anything by itself: an implausible
+    date comes back with the dates it most likely is, and the store keeper
+    confirms one before the sheet can be staged."""
+    return {"date": PF.check_paper_date(body.date_text),
+            "work_types": [PF.norm_work_type(w) for w in body.work_types]}
 
 
 @router.post("/aliases", summary="Learn what a written name means at this site")

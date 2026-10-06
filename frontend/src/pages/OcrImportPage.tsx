@@ -68,6 +68,13 @@ interface HwSummary {
   blocked: number; substituted: number; struck_through_excluded: number
 }
 
+// Phase 21d follow-up — the paper's date box, checked (POST /ai/ocr/paper-check).
+interface PaperDate {
+  read: string; date_iso: string | null; shift: string | null; plausible: boolean
+  days_from_today: number | null
+  candidates: { date_iso: string; label: string; cost: number }[]
+}
+
 interface DnHeader { DN_No: string; Date: string; Mob_From: string; Driver_Name: string; Vehicle_No: string; Prepared_by: string; Mob_To: string }
 
 const MATCH_COLOR = { auto: 'green', pick: 'gold', unknown: 'red', suggested: 'gold' } as const
@@ -92,6 +99,11 @@ export default function OcrImportPage() {
   const [tsv, setTsv] = useState<string | null>(null)
   const [hwSummary, setHwSummary] = useState<HwSummary | null>(null)
   const [date, setDate] = useState<Dayjs>(dayjs())
+  // The paper's date as read, and whether the store keeper has settled it. A
+  // date outside the last two weeks holds the sheet back until one is chosen:
+  // 3 of the operator's 11 test pages were read with the wrong month or day.
+  const [paperDate, setPaperDate] = useState<PaperDate | null>(null)
+  const [dateConfirmed, setDateConfirmed] = useState(true)
   const [site, setSite] = useState<string | undefined>(user?.site_id || undefined)
   const [staging, setStaging] = useState(false)
   const [retrying, setRetrying] = useState(false)
@@ -171,11 +183,46 @@ export default function OcrImportPage() {
     api.post('/ai/ocr/aliases', { written, SAP_Code: sap, site_id: site }).catch(() => undefined)
   }
 
+  // The paper's date (plausible, or which dates it most likely says) and its
+  // work types in the workbook's spelling (PV → PU, RIL → R/L, Blaster → Blast).
+  const checkPaper = async (rs: OcrRow[], dt: string | null | undefined, withDate = true) => {
+    try {
+      const r = await api.post('/ai/ocr/paper-check', {
+        date_text: dt || null, work_types: rs.map((x) => x.work_type ?? ''),
+      })
+      const d = r.data.date as PaperDate
+      const wts = (r.data.work_types ?? []) as string[]
+      if (withDate && dt && dt.trim()) {
+        setPaperDate(d)
+        if (d.plausible && d.date_iso) {
+          setDate(dayjs(d.date_iso))
+          setDateConfirmed(true)
+        } else {
+          setDateConfirmed(false)
+        }
+      }
+      return rs.map((x, i) => (wts[i] != null ? { ...x, work_type: wts[i] } : x))
+    } catch {
+      return rs
+    }
+  }
+
+  const confirmDate = (iso: string) => {
+    setDate(dayjs(iso))
+    setDateConfirmed(true)
+  }
+
   const adopt = (result: { rows?: OcrRow[]; items?: OcrRow[]; header?: DnHeader; date_text?: string }) => {
     // Stable per-row keys (rowKey by index is deprecated and reorders badly).
     const fresh = (result.rows ?? result.items ?? []).map((r, i) => ({ ...r, _key: `r${i}` }))
     setRows(fresh)
-    void rematch(fresh).then(setRows)
+    setPaperDate(null)
+    setDateConfirmed(true)
+    void (async () => {
+      let rs = await rematch(fresh)
+      if (isConsumption) rs = await checkPaper(rs, result.date_text)
+      setRows(rs)
+    })()
     setHeader(result.header ?? null)
     setDateText(result.date_text ?? null)
     setTsv(null)
@@ -209,8 +256,11 @@ export default function OcrImportPage() {
         })),
         markers: p.markers, blocked: p.blocked,
       } as OcrRow))
-      setRows(await rematch(specRows))
-      if (d.rows[0]?.date_iso) setDate(dayjs(d.rows[0].date_iso))
+      // the spec pass keeps the remark as written (its TSV is the spec); the
+      // grid shows and stages it in the workbook's spelling
+      setRows(await checkPaper(await rematch(specRows), null, false))
+      // a checked paper date (or the one the store keeper chose) wins
+      if (d.rows[0]?.date_iso && !paperDate) setDate(dayjs(d.rows[0].date_iso))
       setTsv(d.tsv ?? '')
       setHwSummary(d.summary)
       message.success('Validated against the handwritten-form spec')
@@ -350,6 +400,14 @@ export default function OcrImportPage() {
             <Input size="small" value={r.issued_to}
               onChange={(e) => patch(i, { issued_to: e.target.value })} />
           ),
+        }, {
+          // the paper's Remarks — the workbook's Work Type, in its spelling
+          // (PV → PU, RIL → R/L, Blaster → Blast); staged with the row
+          title: 'Work type', key: 'wt', width: 110,
+          render: (_: unknown, r: OcrRow, i: number) => (
+            <Input size="small" value={r.work_type} data-testid="ocr-work-type"
+              onChange={(e) => patch(i, { work_type: e.target.value })} />
+          ),
         }]
       : []),
     {
@@ -415,7 +473,9 @@ export default function OcrImportPage() {
 
       <Space style={{ marginBottom: 16 }} wrap>
         <Radio.Group value={kind} buttonStyle="solid"
-          onChange={(e) => { setKind(e.target.value); setRows([]); setHeader(null) }}
+          onChange={(e) => {
+            setKind(e.target.value); setRows([]); setHeader(null); setPaperDate(null); setDateConfirmed(true)
+          }}
           options={[
             { value: 'ocr_consumption', label: '📝 Consumption log' },
             { value: 'ocr_delivery_note', label: '🚚 Delivery note' },
@@ -458,7 +518,7 @@ export default function OcrImportPage() {
         <Card size="small" title="📋 Paste (offline)" style={{ width: 420 }}>
           <Input.TextArea rows={6} value={pasteText} onChange={(e) => setPasteText(e.target.value)}
             placeholder={isConsumption
-              ? 'Imran\t6m pipe\tNos\t45\tsite work\nAli, double clamp, PCS, 12'
+              ? 'Date: 01/10/26\nImran\t6m pipe\tNos\t45\tsite work\nAli, double clamp, PCS, 12'
               : 'DN_No: 15668\nMob_From: GI - ABU HADRIYAH\n6m pipe, Nos, 45'} />
           <Button style={{ marginTop: 8 }} onClick={doPaste} disabled={!pasteText.trim()}>
             Parse
@@ -487,6 +547,36 @@ export default function OcrImportPage() {
             + `${hwSummary.blocked} blocked · ${hwSummary.struck_through_excluded} struck-through excluded`} />
       )}
 
+      {rows.length > 0 && isConsumption && paperDate && !paperDate.plausible && !dateConfirmed && (
+        <Alert type="warning" showIcon style={{ marginBottom: 12 }} data-testid="ocr-date-check"
+          title={`The paper's date reads “${paperDate.read}”${paperDate.days_from_today != null
+            ? ` — ${Math.abs(paperDate.days_from_today)} days ${paperDate.days_from_today < 0 ? 'ago' : 'ahead'}`
+            : ' — not a real date'}. Which day is this sheet?`}
+          description={
+            <Space wrap size={8}>
+              {paperDate.candidates.length > 0 && <span>Did you mean</span>}
+              {paperDate.candidates.map((c, k) => (
+                // gold for the likeliest only (docs/DESIGN_SYSTEM.md: gold once per view)
+                <Button key={c.date_iso} size="small" type={k === 0 ? 'primary' : 'default'}
+                  data-testid="ocr-date-candidate"
+                  onClick={() => confirmDate(c.date_iso)}>
+                  {c.label}
+                </Button>
+              ))}
+              {paperDate.date_iso && (
+                <Button size="small" data-testid="ocr-date-keep" onClick={() => confirmDate(paperDate.date_iso!)}>
+                  Keep {paperDate.read.replace(/\s*\(.*\)\s*$/, '')}
+                </Button>
+              )}
+              <span>or pick the date below.</span>
+            </Space>
+          } />
+      )}
+      {rows.length > 0 && isConsumption && paperDate?.plausible && (
+        <Typography.Paragraph type="secondary" data-testid="ocr-paper-date-ok" style={{ marginBottom: 8 }}>
+          Paper date “{paperDate.read}” → {date.format('DD MMM YYYY')}
+        </Typography.Paragraph>
+      )}
       {rows.length > 0 && (
         <>
           <Table sticky={{ offsetHeader: 64 }} size="small" columns={columns} dataSource={rows}
@@ -503,7 +593,9 @@ export default function OcrImportPage() {
                 TSV export
               </Button>
             )}
-            <DatePicker value={date} onChange={(d) => d && setDate(d)} allowClear={false} />
+            <DatePicker value={date} allowClear={false} data-testid="ocr-date"
+              status={isConsumption && !dateConfirmed ? 'warning' : undefined}
+              onChange={(d) => { if (d) { setDate(d); setDateConfirmed(true) } }} />
             {isAdmin ? (
               <Select placeholder="Site" style={{ width: 150 }} value={site} onChange={setSite}
                 options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
@@ -517,12 +609,16 @@ export default function OcrImportPage() {
             )}
             <Popconfirm title={`Stage ${readyCount} row(s) as ${isConsumption ? 'consumption' : 'receipt'} drafts?`}
               onConfirm={stage}>
-              <Button type="primary" disabled={readyCount === 0 || !site || unresolved > 0} loading={staging}
-                data-testid="ocr-stage">
-                {unresolved > 0 ? `Resolve ${unresolved} row(s) first` : `Stage ${readyCount} row(s) for HOD approval`}
+              <Button type="primary" loading={staging} data-testid="ocr-stage"
+                disabled={readyCount === 0 || !site || unresolved > 0 || (isConsumption && !dateConfirmed)}>
+                {unresolved > 0 ? `Resolve ${unresolved} row(s) first`
+                  : isConsumption && !dateConfirmed ? "Confirm the paper's date first"
+                    : `Stage ${readyCount} row(s) for HOD approval`}
               </Button>
             </Popconfirm>
-            <Button onClick={() => { setRows([]); setHeader(null) }}>Discard</Button>
+            <Button onClick={() => { setRows([]); setHeader(null); setPaperDate(null); setDateConfirmed(true) }}>
+              Discard
+            </Button>
           </Space>
         </>
       )}

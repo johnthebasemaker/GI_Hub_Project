@@ -30810,6 +30810,83 @@ async def test_phase21d_ocr_match():
         await ex_("DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SV21D-%'")
 
 
+
+async def test_phase21d2_paper_fields():
+    """Suite 21D2 — Phase 21d follow-up: the paper's DATE and WORK TYPE.
+
+    Measured on the operator's 11 photos: 3 pages were read with the wrong date
+    (01/01/26 and 01/07/26 for 01/10/26; 09/10/26 for 04/10/26 — the operator
+    confirmed the papers follow 1–4 Oct, 2026-10-06), so every row of those
+    pages fell on the wrong day. An implausible date is NEVER changed by
+    itself — the store keeper confirms one of the suggestions. Day first
+    (Q21-11). The photo lane used to DROP the paper's date entirely."""
+    import datetime as _dt
+
+    from .ai import handwritten as HW
+    from .ai import ocr as O
+    from .ai import paper_fields as PF
+
+    today = _dt.date(2026, 10, 6)
+    first = {t: (PF.check_paper_date(t, today)["candidates"] or [{}])[0].get("label")
+             for t in ("01/01/26 (Night)", "01/07/26 (Night)", "09/10/26")}
+    check("21d2-01: ⚠️ the three real misreads — each is flagged and its FIRST suggestion is "
+          "the true date (a swapped month, a misread month with the day intact, 9 for 4)",
+          first == {"01/01/26 (Night)": "01/10/26", "01/07/26 (Night)": "01/10/26",
+                    "09/10/26": "04/10/26"}, str(first))
+    ok = PF.check_paper_date("03/10/26 (Night)", today)
+    tmr = PF.check_paper_date("07/10/26", today)
+    old = PF.check_paper_date("21/09/26", today)
+    check("21d2-02: inside the window (14 days back, tomorrow for a night sheet) a date is "
+          "plausible and offers nothing; 15 days back is a question; day first; shift kept",
+          ok["plausible"] and ok["date_iso"] == "2026-10-03" and ok["candidates"] == []
+          and ok["shift"] and tmr["plausible"] and not old["plausible"]
+          and old["date_iso"] == "2026-09-21", f"{ok} {old['plausible']}")
+    bad, none = PF.check_paper_date("31/02/26", today), PF.check_paper_date("", today)
+    check("21d2-03: an impossible date (31/02) is not a date but still gets suggestions; a "
+          "blank date box is simply unread — no suggestions, nothing guessed",
+          bad["date_iso"] is None and not bad["plausible"] and len(bad["candidates"]) >= 1
+          and none["date_iso"] is None and none["candidates"] == [] and not none["plausible"])
+    check("21d2-04: digit confusions are cheap, other changes are not — 9↔4 costs half a "
+          "stroke, a swapped pair one, a different digit one",
+          PF.digit_distance("09", "04") == 0.5 and PF.digit_distance("01", "10") == 1.0
+          and PF.digit_distance("02", "05") == 1.0)
+    wts = [PF.norm_work_type(w) for w in ("PV", "RIL", "BLL", "Blaster", "R.L", "B / L",
+                                          "blasting", "House Keeping", "")]
+    check("21d2-05: the work types the model produced map onto the workbook's own spelling "
+          "(a correct 'Blasting' stays — the workbook uses both); anything else stays as "
+          "written (never blanked)",
+          wts == ["PU", "R/L", "B/L", "Blast", "R/L", "B/L", "Blasting", "House Keeping", ""], str(wts))
+    paste = O.parse_consumption_paste("Date: 01/07/26 (Night)\nAria, Nitril glovs, Pair, 2, PV")
+    hw = HW.process_batch([{"form_id": "f", "date_text": "01/10/26",
+                            "rows": [{"product_name_raw": "Dust Mask", "qty": "2", "work_type": "RIL"}]}],
+                          [{"SAP_Code": "1", "Equipment_Description": "Dust Mask", "UOM": "EA",
+                            "Material_Code": None}], {"1": 5}, today=today)
+    check("21d2-06: the paste lane reads a 'Date:' line as the paper's date box; the "
+          "handwritten-spec pass keeps the remark AS WRITTEN (its TSV is the locked spec — "
+          "the page normalises through paper-check)",
+          paste["date_text"] == "01/07/26 (Night)" and len(paste["rows"]) == 1
+          and hw["rows"][0]["work_type"] == "RIL", str(paste))
+
+    from . import auth as _auth
+    SK = {"Authorization": f"Bearer {_auth._make_token('sv21d2_sk', 'store_keeper', 'SV21D2', _auth.ACCESS_TTL)}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+        pc = await ac.post("/ai/ocr/paper-check", headers=SK,
+                           json={"date_text": "01/07/26", "work_types": ["PV", "Blaster", None]})
+        pp = await ac.post("/ai/paste/ocr_consumption", headers=SK,
+                           json={"text": "Date: 09/10/26\nAria, Dust Mask, EA, 2, RIL"})
+        anon = await ac.post("/ai/ocr/paper-check", json={"date_text": "01/10/26"})
+    j = pc.json() if pc.status_code == 200 else {}
+    check("21d2-07: POST /ai/ocr/paper-check (store keeper) — the date checked against TODAY, "
+          "the work types normalised; signed out → 401",
+          pc.status_code == 200 and "plausible" in j.get("date", {})
+          and j.get("work_types") == ["PU", "Blast", ""] and anon.status_code == 401,
+          f"{pc.status_code} {j} {anon.status_code}")
+    check("21d2-08: ⚠️ the OCR lane (photo AND paste) now carries the paper's date to the page "
+          "— before this, a photographed page always opened on today",
+          pp.status_code == 200 and pp.json().get("date_text") == "09/10/26"
+          and pp.json()["rows"][0].get("work_type") == "RIL",
+          f"{pp.status_code} {str(pp.json())[:160]}")
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -31168,6 +31245,9 @@ async def main() -> int:
     print("\n 21D. Phase 21d — consumption-paper matcher: exact/learned green, fuzzy gold "
           "(never auto), red when nothing is close; learned per site; day-total scoring")
     await test_phase21d_ocr_match()
+    print("\n 21D2. Phase 21d follow-up — the paper's date (implausible → did you mean…, the "
+          "store keeper confirms) and its work types in the workbook's spelling")
+    await test_phase21d2_paper_fields()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

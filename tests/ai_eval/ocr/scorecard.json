@@ -1,0 +1,166 @@
+{
+ "at": "2026-10-06T23:15:47",
+ "pages": 11,
+ "pages_dated": 11,
+ "dates_used": [
+  "2026-10-01",
+  "2026-10-03",
+  "2026-10-04"
+ ],
+ "rows": 248,
+ "states": {
+  "auto": 154,
+  "suggested": 93,
+  "unknown": 1
+ },
+ "sources": {
+  "exact": 154,
+  "fuzzy": 93
+ },
+ "aliases_applied": false,
+ "semantic": false,
+ "day_totals_raw": {
+  "fine": {
+   "pred": 127,
+   "truth": 110,
+   "hit": 15,
+   "precision": 0.118,
+   "recall": 0.136,
+   "qty_exact": 9,
+   "qty_abs_err": 25.0
+  },
+  "date_sap": {
+   "pred": 72,
+   "truth": 65,
+   "hit": 30,
+   "precision": 0.417,
+   "recall": 0.462,
+   "qty_exact": 13,
+   "qty_abs_err": 102.0
+  }
+ },
+ "day_totals_date_checked": {
+  "fine": {
+   "pred": 124,
+   "truth": 110,
+   "hit": 20,
+   "precision": 0.161,
+   "recall": 0.182,
+   "qty_exact": 11,
+   "qty_abs_err": 28.0
+  },
+  "date_sap": {
+   "pred": 57,
+   "truth": 65,
+   "hit": 35,
+   "precision": 0.614,
+   "recall": 0.538,
+   "qty_exact": 19,
+   "qty_abs_err": 38.0
+  }
+ },
+ "pages_date_implausible": 3,
+ "date_table": [
+  {
+   "page": "page01",
+   "read": "01/01/26 (Night)",
+   "read_iso": "2026-01-01",
+   "plausible": false,
+   "suggested": [
+    "01/10/26",
+    "07/10/26",
+    "04/10/26"
+   ],
+   "used": "2026-10-01"
+  },
+  {
+   "page": "page02",
+   "read": "01/10/26",
+   "read_iso": "2026-10-01",
+   "plausible": true,
+   "suggested": [],
+   "used": "2026-10-01"
+  },
+  {
+   "page": "page03",
+   "read": "01/07/26 (Night)",
+   "read_iso": "2026-07-01",
+   "plausible": false,
+   "suggested": [
+    "01/10/26",
+    "07/10/26",
+    "04/10/26"
+   ],
+   "used": "2026-10-01"
+  },
+  {
+   "page": "page04",
+   "read": "03/10/26",
+   "read_iso": "2026-10-03",
+   "plausible": true,
+   "suggested": [],
+   "used": "2026-10-03"
+  },
+  {
+   "page": "page05",
+   "read": "03/10/26 (Night)",
+   "read_iso": "2026-10-03",
+   "plausible": true,
+   "suggested": [],
+   "used": "2026-10-03"
+  },
+  {
+   "page": "page06",
+   "read": "03/10/26 (Night)",
+   "read_iso": "2026-10-03",
+   "plausible": true,
+   "suggested": [],
+   "used": "2026-10-03"
+  },
+  {
+   "page": "page07",
+   "read": "09/10/26",
+   "read_iso": "2026-10-09",
+   "plausible": false,
+   "suggested": [
+    "04/10/26",
+    "06/10/26",
+    "05/10/26"
+   ],
+   "used": "2026-10-04"
+  },
+  {
+   "page": "page08",
+   "read": "03/10/26 (Night)",
+   "read_iso": "2026-10-03",
+   "plausible": true,
+   "suggested": [],
+   "used": "2026-10-03"
+  },
+  {
+   "page": "page09",
+   "read": "04/10/26(Night)",
+   "read_iso": "2026-10-04",
+   "plausible": true,
+   "suggested": [],
+   "used": "2026-10-04"
+  },
+  {
+   "page": "page10",
+   "read": "04/10/26 (Night)",
+   "read_iso": "2026-10-04",
+   "plausible": true,
+   "suggested": [],
+   "used": "2026-10-04"
+  },
+  {
+   "page": "page11",
+   "read": "04/10/26",
+   "read_iso": "2026-10-04",
+   "plausible": true,
+   "suggested": [],
+   "used": "2026-10-04"
+  }
+ ],
+ "vision_seconds": []
+}
