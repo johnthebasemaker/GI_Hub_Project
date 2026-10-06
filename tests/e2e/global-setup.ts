@@ -171,6 +171,14 @@ export default async function globalSetup() {
     + "\"Source_Sheet\", \"Source_Row\") VALUES (to_char(current_date - 3, 'YYYY-MM-DD'), "
     + "'E2ELOT-1', 1, 'CNCEC', 'E2EBAD', 'Consumption Log', 777)", E2E_DB)
 
+  // Phase 21d: two safety items for the OCR name-matcher spec (ocr-match.spec.ts)
+  psql(
+    "INSERT INTO inventory (\"SAP_Code\", \"Material_Code\", \"Equipment_Description\", "
+    + "\"Category\", \"UOM\", \"Site_ID\") VALUES "
+    + "('E2EOCR-1','E2EOCR-A','E2EOCR DUST Mask','Safety','EA','CNCEC'), "
+    + "('E2EOCR-2','E2EOCR-B','E2EOCR LEATHER GLOVES','Safety','Pair','CNCEC') "
+    + "ON CONFLICT (\"SAP_Code\") DO NOTHING", E2E_DB)
+
   // ── 1c. the SME tier-segregation fixture (sme-tiers.spec.ts) ─────────────
   // A purpose-built copy of the PHENACIN ACP POWDER shape that produced the
   // 2026-08-03 bug report: a material with ZERO stock on the shelf and MORE

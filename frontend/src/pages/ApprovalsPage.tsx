@@ -14,6 +14,7 @@ import type { Row } from '../api/client'
 import { buildColumns } from '../lib/columns'
 import SubmissionInsight from '../components/SubmissionInsight'
 import DnApprovalQueue from '../components/DnApprovalQueue'
+import LearnedNamesCard from '../components/LearnedNamesCard'
 import { useEntryDocs } from '../api/hooks'
 import type { EntryDocRow } from '../api/hooks'
 import { DocPreviewDrawer } from './DocumentLibraryPage'
@@ -339,6 +340,8 @@ export default function ApprovalsPage() {
           })),
           // Phase 6 — HOD content stage of the DN two-stage approval.
           { key: 'dns', label: 'Delivery Notes', children: <DnApprovalQueue scope="hod" /> },
+          // Phase 21d (Q21-3) — the names the OCR matcher learned; HOD removes a wrong one.
+          { key: 'ocr-names', label: 'Learned OCR names', children: <LearnedNamesCard siteId={siteId} /> },
         ]}
       />
     </div>

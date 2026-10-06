@@ -2758,6 +2758,25 @@ class WhatsappQueue(Base):
 # 6. Lot tracking
 # ==========================================================================
 
+class OcrAliases(Base):
+    """Phase 21d (alembic e2a8c4f6b1d9) — a handwritten product name a store
+    keeper taught the matcher, per site (rulings Q21-3/5). Matched GREEN next
+    time; HOD / Admin delete a wrong one. `written_key` is
+    `ai/consumption_match.written_key` of the written form."""
+    __tablename__ = "ocr_aliases"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    Site_ID = Column(Text, nullable=False)
+    written_key = Column(Text, nullable=False)
+    written_example = Column(Text)
+    SAP_Code = Column(Text, nullable=False)
+    confirmations = Column(Integer, nullable=False, server_default=text("1"))
+    created_by = Column(Text)
+    created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    updated_by = Column(Text)
+    updated_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    __table_args__ = (UniqueConstraint("Site_ID", "written_key", name="ux_ocr_aliases_site_key"),)
+
+
 class LotTransfers(Base):
     __tablename__ = "lot_transfers"
     id = Column(Integer, primary_key=True, autoincrement=True)

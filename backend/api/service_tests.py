@@ -30649,6 +30649,143 @@ async def test_phase21c_drive_sync():
           f"{st.status_code} {hod.status_code} {aud.status_code} {runp.status_code} {runp.text[:120]}")
 
 
+async def test_phase21d_ocr_match():
+    """Suite 21D — Phase 21d: the consumption-paper matcher and what it learns
+    (rulings Q21-1..6), on FROZEN data (the vision model never runs here, P10-7).
+
+    Only an EXACT or LEARNED match is green; a fuzzy one is a gold suggestion
+    however high it scores (Q21-5); nothing close is red. A confirmed name is
+    learned per site, a different item confirmed later replaces it, HOD/Admin
+    delete a wrong one (Q21-3). The harness compares DAY TOTALS — the workbook
+    is aggregated per (date, item, work type, tank), PV = PU (Q21-2)."""
+    import importlib.util as _ilu
+    from pathlib import Path as _P
+
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from .ai import consumption_match as CM
+
+    spec = _ilu.spec_from_file_location("_ocr_eval", str(_P(__file__).resolve().parents[2] / "tools" / "ocr_eval.py"))
+    OE = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(OE)
+
+    inv = [{"SAP_Code": "9101", "Equipment_Description": "DUST Mask", "UOM": "EA"},
+           {"SAP_Code": "9102", "Equipment_Description": "LEATHER GLOVES", "UOM": "Pair"},
+           {"SAP_Code": "9103", "Equipment_Description": "Tyvek Coverall", "UOM": "EA"},
+           {"SAP_Code": "9104", "Equipment_Description": "TRASH BAG (BLACK)", "UOM": "PAC"},
+           {"SAP_Code": "9105", "Equipment_Description": "TRASH BAG (WHITE)", "UOM": "PAC"}]
+    stock = {"9101": 40, "9102": 12, "9103": 5, "9104": 0, "9105": 9}
+
+    check("21d-01: one key per written form — case, punctuation and spacing collapse, and "
+          "the spec's known OCR corrections apply first ('Tywek' → Tyvek)",
+          CM.written_key("Dust  Mash.") == "dust mash"
+          and CM.written_key("Tywek coverall") == "tyvek coverall", CM.written_key("Tywek coverall"))
+    ex = CM.match("dust mask", inv, stock=stock)
+    fz = CM.match("Dust Mash", inv, stock=stock)
+    unk = CM.match("12\" Fan", inv, stock=stock)
+    check("21d-02: ⚠️ Q21-5 — an EXACT name is green; a near miss ('Dust Mash') is a GOLD "
+          "suggestion with NO SAP filled in, however high it scores; nothing close is red",
+          ex["state"] == "auto" and ex["source"] == "exact" and ex["sap"] == "9101"
+          and fz["state"] == "suggested" and fz["sap"] == "9101" and fz["score"] >= 0.8
+          and unk["state"] == "unknown" and unk["sap"] is None,
+          f"{ex['state']} {fz['state']}/{fz['score']} {unk['state']}")
+    lr = CM.match("Dust Mash", inv, stock=stock,
+                  aliases={"dust mash": {"SAP_Code": "9101", "confirmations": 3}})
+    check("21d-03: a LEARNED name is green, says it was learned and how often",
+          lr["state"] == "auto" and lr["source"] == "learned" and lr["learned_count"] == 3)
+    tb = CM.match("Trash Bag", inv, stock=stock)
+    check("21d-04: stock-aware, never stock-hiding — of two equal 'Trash Bag' items the one "
+          "WITH stock is suggested first; the empty one stays listed, marked",
+          tb["candidates"][0]["SAP_Code"] == "9105"
+          and any(c["SAP_Code"] == "9104" and not c["in_stock"] for c in tb["candidates"]),
+          str([(c["SAP_Code"], c["in_stock"]) for c in tb["candidates"]]))
+
+    check("21d-05: the harness speaks the workbook's language — PV is PU, R / L is R/L; "
+          "'K-TNK-071' is the workbook's '522-8k80-TNK-071'; 'J050' stays a J-sump",
+          OE.norm_work_type("PV") == "PU" and OE.norm_work_type("R / L") == "R/L"
+          and OE.norm_work_type("Blasting") == "Blast"
+          and OE.tank_key("K-TNK-071") == OE.tank_key("522-8k80-TNK-071") == "071"
+          and OE.tank_key("J050") == "J050" != OE.tank_key("TNK-050"))
+    lines = [{"date": "2026-10-01", "sap": "9101", "qty": 1, "work_type": "R/L", "tank": "K-TNK-071"},
+             {"date": "2026-10-01", "sap": "9101", "qty": 2, "work_type": "R/L", "tank": "K-TNK-071"},
+             {"date": "2026-10-01", "sap": "9101", "qty": 1, "work_type": "PV", "tank": "J050"}]
+    truth = [{"date": "2026-10-01", "sap": "9101", "qty": 3, "work_type": "R/L", "tank": "522-8k80-TNK-071"},
+             {"date": "2026-10-01", "sap": "9101", "qty": 13, "work_type": "PU", "tank": "J050"},
+             {"date": "2026-10-01", "sap": "9102", "qty": 6, "work_type": "R/L", "tank": "522-8k80-TNK-071"}]
+    sc = OE.score(OE.aggregate(lines), OE.aggregate(truth))
+    check("21d-06: ⚠️ Q21-1 — the comparison is per DAY TOTAL: three paper lines become two "
+          "(date, item, work type, tank) totals; both are in the workbook (precision 1.0), "
+          "the leather gloves were not read (recall 2/3), one total matches exactly",
+          sc["fine"]["hit"] == 2 and sc["fine"]["precision"] == 1.0
+          and abs(sc["fine"]["recall"] - 0.667) < 1e-3 and sc["fine"]["qty_exact"] == 1, str(sc["fine"]))
+    recs = [{"date": "2026-10-01", "written": "Dust Mash", "work_type": "R/L", "tank": "K-TNK-071"},
+            {"date": "2026-10-01", "written": "dust mash", "work_type": "PV", "tank": "J050"},
+            {"date": "2026-10-01", "written": "Lether glows", "work_type": "R/L", "tank": "K-TNK-071"}]
+    prop = {x["written_key"]: x["SAP_Code"] for x in OE.propose_aliases(recs, truth, inv)}
+    check("21d-07: the papers TEACH aliases — each written name is paired with the workbook "
+          "item of the same (date, work type, tank) it most resembles",
+          prop.get("dust mash") == "9101" and prop.get("lether glows") == "9102", str(prop))
+
+    SITE = "SV21D"
+
+    async def ex_(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+    await ex_('DELETE FROM ocr_aliases WHERE "Site_ID" = :s', s=SITE)
+    await ex_("DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SV21D-%'")
+    try:
+        await ex_('INSERT INTO inventory ("SAP_Code", "Equipment_Description", "Category", "UOM", '
+                  '"Site_ID") VALUES (\'SV21D-M\', \'SV21D DUST Mask\', \'Safety\', \'EA\', :s), '
+                  '(\'SV21D-G\', \'SV21D LEATHER GLOVES\', \'Safety\', \'Pair\', :s)', s=SITE)
+
+        def tok(u, r):
+            return {"Authorization": f"Bearer {_auth._make_token(u, r, SITE, _auth.ACCESS_TTL)}"}
+        SK, HOD = tok("sv21d_sk", "store_keeper"), tok("sv21d_hod", "hod")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            m1 = (await ac.post("/ai/ocr/consumption-match", headers=SK,
+                                json={"names": ["SV21D dust mash"]})).json()["matches"][0]
+            l1 = await ac.post("/ai/ocr/aliases", headers=SK,
+                               json={"written": "SV21D dust mash", "SAP_Code": "SV21D-M"})
+            l2 = await ac.post("/ai/ocr/aliases", headers=SK,
+                               json={"written": "SV21D  Dust Mash!", "SAP_Code": "SV21D-M"})
+            m2 = (await ac.post("/ai/ocr/consumption-match", headers=SK,
+                                json={"names": ["SV21D dust mash"]})).json()["matches"][0]
+            bad = await ac.post("/ai/ocr/aliases", headers=SK,
+                                json={"written": "x", "SAP_Code": "NOPE-404"})
+            l3 = await ac.post("/ai/ocr/aliases", headers=SK,
+                               json={"written": "SV21D dust mash", "SAP_Code": "SV21D-G"})
+            lst = (await ac.get("/ai/ocr/aliases", headers=HOD)).json()["items"]
+            sk_del = await ac.delete(f"/ai/ocr/aliases/{l1.json()['id']}", headers=SK)
+            hod_del = await ac.delete(f"/ai/ocr/aliases/{l1.json()['id']}", headers=HOD)
+            m3 = (await ac.post("/ai/ocr/consumption-match", headers=SK,
+                                json={"names": ["SV21D dust mash"]})).json()["matches"][0]
+        check("21d-08: through the API — gold first; the store keeper confirms it; the same "
+              "written form (any spacing or case) is then GREEN, learned ×2",
+              m1["state"] == "suggested" and l1.status_code == 200
+              and l2.json().get("confirmations") == 2 and m2["state"] == "auto"
+              and m2["source"] == "learned" and m2["learned_count"] == 2,
+              f"{m1['state']} {l2.json()} {m2['state']}/{m2.get('source')}")
+        check("21d-09: an unknown SAP cannot be learned (422); confirming a DIFFERENT item "
+              "replaces the meaning and restarts the count",
+              bad.status_code == 422 and l3.json().get("confirmations") == 1
+              and l3.json().get("SAP_Code") == "SV21D-G", f"{bad.status_code} {l3.json()}")
+        n_audit = 0
+        async with SessionLocal() as s_:
+            n_audit = (await s_.execute(_t(
+                "SELECT count(*) FROM system_audit_log WHERE action_type LIKE 'OCR_ALIAS_%' "
+                "AND details LIKE 'site=SV21D%'"))).scalar()
+        check("21d-10: the HOD lists and removes a wrong one; a store keeper cannot (403); "
+              "removed, it is a suggestion again; learn + delete are audited",
+              any(x["SAP_Code"] == "SV21D-G" for x in lst) and sk_del.status_code == 403
+              and hod_del.status_code == 200 and m3["state"] == "suggested" and n_audit >= 4,
+              f"{sk_del.status_code} {hod_del.status_code} {m3['state']} audit={n_audit}")
+    finally:
+        await ex_('DELETE FROM ocr_aliases WHERE "Site_ID" = :s', s=SITE)
+        await ex_("DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SV21D-%'")
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -31004,6 +31141,9 @@ async def main() -> int:
     print("\n 21C. Phase 21c — Google Drive → workbooks: day-first dates, structural "
           ".xlsm conversion (cached values kept), atomic swaps, SME commit / ERP dry run")
     await test_phase21c_drive_sync()
+    print("\n 21D. Phase 21d — consumption-paper matcher: exact/learned green, fuzzy gold "
+          "(never auto), red when nothing is close; learned per site; day-total scoring")
+    await test_phase21d_ocr_match()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

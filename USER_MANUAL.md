@@ -1131,6 +1131,47 @@ correct a figure, open the entry instead.
 At most **50** at a time. Every bulk action is in the audit log, with each
 item.
 
+## 3.17 OCR Import: matching the names on the paper (Phase 21, October 2026)
+
+**Where:** Entry → OCR Import → *Consumption log* (store keeper). Photo or Paste.
+
+People write items the way they say them (*Dust Mash*, *Tyvek coverall*, *Trash
+Bag*); the inventory names them the way the PR did (*DUST Mask*, *TRASH BAG
+(BLACK)*). After the paper is read, every row is coloured:
+
+| Colour | Means | What you do |
+|---|---|---|
+| 🟢 **matched** | The name is exactly an item's name. | Nothing. |
+| 🟢 **learned ×N** | You (or another store keeper at your site) confirmed this written name before, N times. | Nothing. |
+| 🟡 **check** | The closest item, shown as *Paper says "Dust Mash" — did you mean **DUST Mask** (94 %)?* An item with **no stock** at your site is listed lower and says so. | Press **Accept**, or choose a different item in the box. It is **never** filled in by itself. |
+| 🔴 **not found** | Nothing is close: *"12" Fan" is not in stock — choose the item, or type its SAP.* | Choose the item, or remove the row. |
+
+- **Staging waits for you.** **Stage** stays disabled until no row is gold or red
+  (it says *Resolve N row(s) first*). **Next to check** jumps to the next one.
+- **It learns.** When you **Accept**, or choose an item by hand, that written name
+  is remembered for your site and is green the next time it appears on a paper.
+- **Wrong learned names.** If a name was taught wrongly, the HOD removes it under
+  **Approvals → Learned OCR names**. The next paper shows it as *check* again.
+  Every lesson and every removal is in the audit log.
+- **Received by.** The paper's *Name* column fills **Received by (name)** on each
+  row (the workbook's *Received by*). Check it like any other field.
+
+The photos never leave this Mac. The reader is the local AI, and the photos of
+the papers used to measure it are kept only on the office computer.
+
+**Practice:** paste these three lines (Name, Product, UOM, Qty) into OCR Import → Paste (Consumption log),
+press **Parse**, and you see all three colours:
+
+```
+Aria, Nitril glovs, Pair, 2
+Aria, Safty goggls, Nos, 1
+Aria, 12 inch fan, Nos, 1
+```
+
+*Nitril glovs* is **learned ×3** (the Practice store keeper taught it), *Safty
+goggls* is a gold **check** (did you mean *Safety Goggles 6MM*?), and *12 inch fan*
+is red.
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.

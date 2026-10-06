@@ -51,7 +51,7 @@ os.environ.setdefault("GI_DOTENV", "0")
 
 # Bumped when the OVERLAY's content changes. Reported with the tutorial
 # fixture's own DATASET_VERSION as "<fixture>.<overlay>".
-OVERLAY_VERSION = 8   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
+OVERLAY_VERSION = 9   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
                       # · 4 = Phase 18 return desk loans (2026-10-03)
                       # · 5 = Phase 18 reorder-signal trio (2026-10-03)
                       # · 6 = Phase 19 accepted minimum · per-site / global POs ·
@@ -60,6 +60,8 @@ OVERLAY_VERSION = 8   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry
                       #       status — the daily log and the bulk flows (2026-10-04)
                       # · 8 = Phase 21a an empty lot the dashboard must skip and
                       #       workbook lot problems with a sheet and row (2026-10-06)
+                      # · 9 = Phase 21d learned OCR names — the paste lane shows
+                      #       green (learned), gold (suggested) and red (2026-10-06)
 
 SITE = "CNCEC"
 WAREHOUSE = "WH-01"
@@ -235,6 +237,10 @@ async def seed_queues() -> dict:
                 out["lot_problems"] = await seed_lot_problems(today)
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  lot-problem example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["ocr_names"] = await seed_ocr_names()
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  learned-name example skipped: {type(e).__name__}: {str(e)[:160]}")
             try:
                 out["reorder"] = await seed_reorder_examples()
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
@@ -631,6 +637,39 @@ async def seed_lot_problems(today: str) -> int:
                 {"m": day(-200), "e": exp, "l": lot, "site": SITE})
         await s.commit()
     return 2
+
+
+# Phase 21d — paste this into OCR Import → Paste (Consumption log) to see all
+# three states (USER_MANUAL §3.17, MANUAL_TESTING_GUIDE TC-21D-*):
+#     Aria, Nitril glovs, Pair, 2   → green  "learned ×3"
+#     Aria, Safty goggls, Nos, 1    → gold   "did you mean Safety Goggles …?"
+#     Aria, 12 inch fan, Nos, 1     → red    "not in stock — choose the item"
+# (the paste lane reads Name, Product, UOM, Qty — Aria is an invented Practice name)
+PRACTICE_OCR_NAMES = (("nitril glovs", "Nitril glovs", "800140", 3),
+                      ("safty boots", "Safty boots", "800153", 2))
+
+
+async def seed_ocr_names() -> int:
+    """Phase 21d — names a store keeper 'already taught' the matcher (rule
+    17g). Idempotent; never fatal."""
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+    n = 0
+    async with SessionLocal() as s:
+        for key, example, sap, times in PRACTICE_OCR_NAMES:
+            if not (await s.execute(text('SELECT 1 FROM inventory WHERE "SAP_Code" = :p'),
+                                    {"p": sap})).first():
+                continue
+            res = await s.execute(text(
+                'INSERT INTO ocr_aliases ("Site_ID", written_key, written_example, "SAP_Code", '
+                'confirmations, created_by, updated_by) VALUES (:s, :k, :w, :p, :n, '
+                "'practice.storekeeper', 'practice.storekeeper') "
+                'ON CONFLICT ("Site_ID", written_key) DO NOTHING'),
+                {"s": SITE, "k": key, "w": example, "p": sap, "n": times})
+            n += res.rowcount or 0
+        await s.commit()
+    return n
 
 
 async def seed_returnables() -> int:
