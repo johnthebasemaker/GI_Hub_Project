@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .auth import require_level, resolve_site_param, site_filter_applies
 from .db import get_session
-from .stock import SQL_SITE_STOCK
+from .stock import SQL_LOT_BALANCE, SQL_SITE_STOCK
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -82,24 +82,29 @@ async def metrics(site_id: Optional[str] = None,
         WHERE b.daily > 0
         ORDER BY days_remaining ASC NULLS LAST LIMIT 10''', pc)
 
-    # ── Top 5 Expiring (2026-08-05) ───────────────────────────────────────────
-    # From `lots`, which already carries the FEFO expiry data. Consistent with
-    # the standing rule that FEFO is ALLOW-AND-LOG: this is a WARNING widget,
-    # never a block, and it deliberately includes lots that have already
-    # expired (negative days) because those are the ones somebody needs to look
-    # at today. Open lots only — a closed lot is not on a shelf.
-    lsite = ' AND COALESCE(l."Site_ID", \'HQ\') = :site' if scoped else ''
+    # ── Top 5 Expiring (2026-08-05; Phase 21a) ───────────────────────────────
+    # A WARNING widget, never a block (FEFO is allow-and-log), and it keeps lots
+    # that have already expired (negative days): those need a decision today.
+    # ⚠️ Phase 21a: it reads the ONE lot balance (`SQL_LOT_BALANCE`: received −
+    # consumed − returned ± transfers) and shows only lots with stock LEFT. It
+    # used to rank every `Status = 'open'` lot by date, and a lot whose stock
+    # was all issued stays 'open' (ruling Q21-19: lots are never auto-closed at
+    # zero — a return can bring one back), so empty lots filled the widget.
+    lsite = ' AND lb."Site_ID" = :site' if scoped else ''
     top_expiring = await rows(f'''
-        SELECT l."Lot_Number" AS lot, TRIM(l."SAP_Code") AS sap,
-               COALESCE(MAX(i."Equipment_Description"), '') AS name,
-               l."Expiry_Date" AS expiry_date,
-               (l."Expiry_Date"::date - CURRENT_DATE) AS days_left
-        FROM lots l
-        LEFT JOIN inventory i ON TRIM(i."SAP_Code") = TRIM(l."SAP_Code")
-        WHERE l."Expiry_Date" IS NOT NULL AND l."Expiry_Date" <> ''
-          AND COALESCE(l."Status", 'open') = 'open' {lsite}
-        GROUP BY l."Lot_Number", TRIM(l."SAP_Code"), l."Expiry_Date"
-        ORDER BY l."Expiry_Date"::date ASC
+        SELECT lb."Lot_Number" AS lot, lb."SAP_Code" AS sap, lb."Site_ID" AS site,
+               COALESCE(i."Equipment_Description", '') AS name,
+               lb."Expiry_Date" AS expiry_date,
+               (CAST(substring(lb."Expiry_Date" FROM 1 FOR 10) AS date) - CURRENT_DATE) AS days_left,
+               ROUND(CAST(lb."Remaining_Qty" AS numeric), 3) AS remaining,
+               COALESCE(i."UOM", '') AS uom
+        FROM ({SQL_LOT_BALANCE}) lb
+        LEFT JOIN LATERAL (SELECT x."Equipment_Description", x."UOM" FROM inventory x
+                           WHERE TRIM(x."SAP_Code") = lb."SAP_Code" LIMIT 1) i ON TRUE
+        WHERE substring(COALESCE(lb."Expiry_Date", '') FROM 1 FOR 10) ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$'
+          AND COALESCE(lb."Status", 'open') = 'open'
+          AND lb."Remaining_Qty" > 1e-9 {lsite}
+        ORDER BY CAST(substring(lb."Expiry_Date" FROM 1 FOR 10) AS date) ASC, lb."Lot_Number"
         LIMIT 5''', p)
 
     # ── Highest Value (2026-08-05) ────────────────────────────────────────────

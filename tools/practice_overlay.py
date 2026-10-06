@@ -51,13 +51,15 @@ os.environ.setdefault("GI_DOTENV", "0")
 
 # Bumped when the OVERLAY's content changes. Reported with the tutorial
 # fixture's own DATASET_VERSION as "<fixture>.<overlay>".
-OVERLAY_VERSION = 7   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
+OVERLAY_VERSION = 8   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
                       # · 4 = Phase 18 return desk loans (2026-10-03)
                       # · 5 = Phase 18 reorder-signal trio (2026-10-03)
                       # · 6 = Phase 19 accepted minimum · per-site / global POs ·
                       #       a partly returned loan (2026-10-04)
                       # · 7 = Phase 20 a week of Surface Shield jobs in every
                       #       status — the daily log and the bulk flows (2026-10-04)
+                      # · 8 = Phase 21a an empty lot the dashboard must skip and
+                      #       workbook lot problems with a sheet and row (2026-10-06)
 
 SITE = "CNCEC"
 WAREHOUSE = "WH-01"
@@ -229,6 +231,10 @@ async def seed_queues() -> dict:
                 out["lots"] = await seed_lots(today)
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  lot example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["lot_problems"] = await seed_lot_problems(today)
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  lot-problem example skipped: {type(e).__name__}: {str(e)[:160]}")
             try:
                 out["reorder"] = await seed_reorder_examples()
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
@@ -569,6 +575,62 @@ async def seed_lots(today: str) -> int:
                 {"u": f"1O26009999{n:03d}", "p": ROLL_SAP, "site": SITE, "r": day(-30)})
         await s.commit()
     return 4
+
+
+async def seed_lot_problems(today: str) -> int:
+    """Phase 21a — the lot fixes, to practise on (rule 17g).
+
+    `PR-EMPTY` (899971): 4 received, 4 issued, expires in 5 days. Before 21a it
+    topped the dashboard's *Top 5 expiring lots*; now it must NOT appear there
+    (nothing is left on the shelf), and it shows on the Lots page only with
+    *show used-up lots*. `PR-OVER`: 2 received, three issues of 1 — the third
+    draws a lot that was already used up, so the Lots page lists it under *Lot
+    problems from the workbook* with its sheet and row. The Phase 16 `PR-TYPO`
+    consumption gets a sheet and row too. Rows are as the Excel sync writes
+    them (`Source_Sheet` / `Source_Row`). Idempotent; never fatal."""
+    import datetime as _d
+
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+    from backend.api.services import lots as LOTS
+
+    t0 = _d.date.fromisoformat(today)
+
+    def day(n):
+        return (t0 + _d.timedelta(days=n)).isoformat()
+
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                "SELECT 1 FROM lots WHERE \"Lot_Number\" = 'PR-EMPTY' LIMIT 1"))).first():
+            return 0
+        for lot, qty in (("PR-EMPTY", 4), ("PR-OVER", 2)):
+            await s.execute(text(
+                'INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID", "Supplier", '
+                '"Lot_Number", "Remarks") VALUES (:d, \'899971\', :q, :site, '
+                "'Halcyon Industrial Supply', :l, 'Practice seed — a lot (Phase 21a)')"),
+                {"d": day(-40), "q": qty, "site": SITE, "l": lot})
+        draws = [("PR-EMPTY", 4, day(-10), 402), ("PR-OVER", 1, day(-9), 405),
+                 ("PR-OVER", 1, day(-8), 409), ("PR-OVER", 1, day(-6), 414)]
+        for lot, qty, d, row in draws:
+            await s.execute(text(
+                'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", "Lot_Number", '
+                '"Work_Type", "Issued_To", "Remarks", "Source_Sheet", "Source_Row") VALUES '
+                "(:d, '899971', :q, :site, :l, 'Lining', 'Aria Bellweather', "
+                "'Practice seed — Phase 21a', 'Consumption Log', :r)"),
+                {"d": d, "q": qty, "site": SITE, "l": lot, "r": row})
+        await s.execute(text(
+            'UPDATE consumption SET "Source_Sheet" = \'Consumption Log\', "Source_Row" = 418 '
+            'WHERE "Lot_Number" = \'PR-TYPO\' AND "Site_ID" = :site AND "Source_Row" IS NULL'),
+            {"site": SITE})
+        await LOTS.sync_lots_from_ledger(s, SITE)
+        for lot, exp in (("PR-EMPTY", day(5)), ("PR-OVER", day(60))):
+            await s.execute(text(
+                'UPDATE lots SET "MFD_Date" = :m, "Expiry_Date" = :e, "Expiry_Source" = \'file\' '
+                'WHERE "Lot_Number" = :l AND "SAP_Code" = \'899971\' AND "Site_ID" = :site'),
+                {"m": day(-200), "e": exp, "l": lot, "site": SITE})
+        await s.commit()
+    return 2
 
 
 async def seed_returnables() -> int:

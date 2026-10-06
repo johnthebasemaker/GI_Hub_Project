@@ -39,10 +39,16 @@ export interface LotRow extends Row {
   status: string
   days_left: number | null
 }
+/** Phase 21a — one workbook row naming a bad lot, with where to fix it. */
+export interface LotProblem extends Row {
+  sheet: string | null; row: number | null; date: string; sap: string; lot: string
+  qty: number; kind: string; site: string; id: number | null
+  problem: 'unknown_lot' | 'lot_used_up'; problem_text: string; hint: string
+}
 export function useLotRegister(params: { site_id?: string; q?: string; status?: string;
                                           include_exhausted?: boolean }) {
   return useQuery<{ items: LotRow[]; summary: Record<string, number>; exceptions: Row[];
-                    buckets: number[] }>({
+                    problems?: LotProblem[]; buckets: number[] }>({
     queryKey: ['/lot-register', params],
     queryFn: async () => (await api.get('/lot-register', { params })).data,
   })

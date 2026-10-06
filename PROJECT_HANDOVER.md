@@ -1220,6 +1220,22 @@ green checks → merge → local pull, unasked (`CLAUDE.md` §5).
 | **Q20-12/13** | Paper-form PENDING_HOD entries bulk-approve, each posting stock in its own savepoint; QSEP blocks or stock conflicts fail alone. At most 50. | `bulk_jobs.approve_entries` |
 | **Q20-14..17** | Pitch numbers use `[operator]` placeholders except published figures (sourced). A 10-minute talk plus a deck. The demo runs on localhost Practice. No supplier prices or site names. | `FINANCE_PITCH.md`, the Slides artifact |
 
+### Phase 21 — Auto-Pilot, OCR fine-tuning & Enterprise UI (2026-10-06, RULED)
+
+`PROPOSED_PHASE21_PLAN.md` was approved whole. Rulings:
+
+| # | Ruling | Where it lives |
+|---|---|---|
+| **Q21-1/2** | The 11 consumption photos of 1–4 Oct are the COMPLETE baseline set. Paper *Remarks* = workbook *Work Type*; handwritten `PV` = `PU`; a night-shift paper dated `01/10` is booked on 1 Oct. Surface Shield items are not on these papers (the operator enters them directly). | `tools/ocr_eval.py` (21d) |
+| **Q21-3/5** | A store keeper's confirmed match is LEARNED (alias); HOD/Admin delete mistakes. A gold suggestion is NEVER auto-accepted — only exact or learned matches go green. | `ocr_aliases` (21d) |
+| **Q21-4** | The embedding layer (`nomic-embed-text`) is MEASURED first and built only if it beats string + alias significantly. | 21d scorecard |
+| **Q21-6** | Photos stay on this Mac, git-ignored. OCR fills the workbook's *Received by* with the worker's name as an EDITABLE field the store keeper confirms (interpretation of the operator's answer — revisit if wrong). | 21d |
+| **Q21-7..11** | Drive via a read-only Drive API token the operator creates (`deploy/gdrive_token.json`, git-ignored). ERP ledgers: dry-run + notify, the operator commits; SME-only files auto-commit. On demand + daily 07:30. Only the six sync workbooks for now; DN / Pending Material Follow-up / MTC folders are PLANNED (`PROPOSED_PHASE21_PLAN.md` §11). Dates in file names are day-first. | `tools/gdrive_sync.py` (21c) |
+| **Q21-12..17** | On-device browser speech + pre-recorded Mac-voice clips; no paid cloud voice. A Practice-only, audited role-switch endpoint that does not exist in Live. Flows first (1–2, then 3–6), then tours. The assistant shows **▶ Run this demo**; unsupported requests go to Feedback + the admin bell. English, 1×. Demo entries tagged `DEMO-`, reset by HOD/Admin. | 21f / 21g |
+| **Q21-18/19** | A bad lot in the workbook WARNS and is still pushed. Lots are never auto-closed at zero; lists filter by balance. | `services/lots.plan_lot_problems` / `lot_problems`, `dashboard.py` (21a) |
+| **Q21-20** | `Unit_Size` = base units per pack (20 = 20 kg per pail). Ship the D1/D2 maths fix; the operator verifies on Live. | `smart_min.py` (21b) |
+| **Q21-21..24** | Industrial luxury corporate (navy/gold) for the product; a minimalist-brutalism VIEW (PDF/image) for comparison only. Install frontend-design, webapp-testing, Emil Kowalski's skills and Vercel's guidelines into the project. Self-hosted IBM Plex Sans (UI) + a serif for titles. Screenshot baselines are a REPORT, not a gate. | `docs/DESIGN_SYSTEM.md`, `.claude/skills/` (21e) |
+
 ## PRESENT — current state and baselines
 
 > **Updated 2026-10-03 — Phases 13–16 merged (PRs #78–#102), CI parity fixed on

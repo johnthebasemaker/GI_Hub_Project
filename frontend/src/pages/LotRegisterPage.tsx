@@ -1,6 +1,8 @@
 import { useState } from 'react'
-import { Alert, Card, Empty, Input, Space, Switch, Table, Tag, Typography } from 'antd'
-import type { ColumnsType } from 'antd/es/table'
+import { useSearchParams } from 'react-router-dom'
+import { Alert, Card, Empty, Input, Space, Switch, Tag, Typography } from 'antd'
+import type { ColumnsType, SortOrder } from 'antd/es/table/interface'
+import { Table } from '../lib/smartTable'
 import { useLotRegister, useLotUnits } from '../api/lotHooks'
 import type { LotRow } from '../api/lotHooks'
 import type { Row } from '../api/client'
@@ -25,6 +27,28 @@ const ORDER = ['expired', 'expiring_30', 'expiring_60', 'expiring_90', 'ok', 'no
 
 const n = (v: unknown) => (v == null ? '—' : Number(Number(v).toFixed(3)))
 
+// Phase 21a — every header sorts. Status sorts by URGENCY, not alphabet.
+const STATUS_RANK: Record<string, number> = {
+  expired: 0, expiring_30: 1, expiring_60: 2, expiring_90: 3, ok: 4, no_expiry: 5,
+  quarantined: 6, disposed: 7, exhausted: 8,
+}
+/** A date sorter that keeps EMPTY dates last in BOTH directions. antd negates
+ *  the comparator for a descending sort, so a blank must answer the opposite
+ *  way there — otherwise "newest expiry first" opens on a page of dashes. */
+function datesEmptyLast(get: (r: LotRow) => unknown) {
+  return (a: LotRow, b: LotRow, order?: SortOrder) => {
+    const x = String(get(a) ?? '').slice(0, 10)
+    const y = String(get(b) ?? '').slice(0, 10)
+    if (!x || !y) {
+      if (!x && !y) return 0
+      const blankLast = order === 'descend' ? -1 : 1
+      return !x ? blankLast : -blankLast
+    }
+    return x < y ? -1 : x > y ? 1 : 0
+  }
+}
+const SORT_KEYS = ['m', 'lot', 'mfd', 'exp', 'st', 'rq', 'cq', 'tq', 'left', 'site'] as const
+
 function Rolls({ r }: { r: LotRow }) {
   const { data, isLoading } = useLotUnits(r.SAP_Code, r.Lot_Number, String(r.Site_ID ?? ''))
   const cols: ColumnsType<Row> = [
@@ -46,6 +70,13 @@ function Rolls({ r }: { r: LotRow }) {
 }
 
 export default function LotRegisterPage() {
+  // The chosen sort lives in the URL (?sort=exp&dir=desc), so a shared link
+  // opens the same view. Default: oldest expiry first, as the page promises.
+  const [params, setParams] = useSearchParams()
+  const sortKey = (SORT_KEYS as readonly string[]).includes(params.get('sort') ?? '')
+    ? String(params.get('sort')) : 'exp'
+  const sortDir: SortOrder = params.get('dir') === 'desc' ? 'descend' : 'ascend'
+  const order = (key: string): SortOrder => (key === sortKey ? sortDir : null)
   const [site, setSite] = useState<string | undefined>()
   const [q, setQ] = useState('')
   const [status, setStatus] = useState<string | undefined>()
@@ -56,27 +87,33 @@ export default function LotRegisterPage() {
   const summary = data?.summary ?? {}
 
   const cols: ColumnsType<LotRow> = [
-    { title: 'Material', key: 'm', fixed: 'left', width: 260,
+    { title: 'Material', key: 'm', fixed: 'left', width: 260, sortOrder: order('m'),
+      sorter: (a, b) => String(a.Equipment_Description ?? a.SAP_Code)
+        .localeCompare(String(b.Equipment_Description ?? b.SAP_Code)),
       render: (_: unknown, r) => (
         <Space direction="vertical" size={0}>
           <span>{String(r.Equipment_Description ?? r.SAP_Code)}</span>
           <Typography.Text type="secondary" style={{ fontSize: 11 }}>SAP {r.SAP_Code}</Typography.Text>
         </Space>) },
-    { title: 'Lot', dataIndex: 'Lot_Number', key: 'lot', width: 150,
+    { title: 'Lot', dataIndex: 'Lot_Number', key: 'lot', width: 150, sortOrder: order('lot'),
       render: (v, r) => <><strong>{v}</strong>{Number(r.Units) > 0 && <Tag style={{ marginInlineStart: 6 }}>{String(r.Units)} rolls</Tag>}</> },
-    { title: 'MFD', dataIndex: 'MFD_Date', key: 'mfd', width: 105, render: (v) => v ?? '—' },
-    { title: 'Expiry', dataIndex: 'Expiry_Date', key: 'exp', width: 140,
+    { title: 'MFD', dataIndex: 'MFD_Date', key: 'mfd', width: 105, sortOrder: order('mfd'),
+      sorter: datesEmptyLast((r) => r.MFD_Date), render: (v) => v ?? '—' },
+    { title: 'Expiry', dataIndex: 'Expiry_Date', key: 'exp', width: 140, sortOrder: order('exp'),
+      sorter: datesEmptyLast((r) => r.Expiry_Date),
       render: (v, r) => (v ? <>{String(v).slice(0, 10)}{r.Expiry_Source === 'derived' &&
         <Tag style={{ marginInlineStart: 4 }}>derived</Tag>}</> : '—') },
-    { title: 'Status', key: 'st', width: 150,
+    { title: 'Status', key: 'st', width: 150, sortOrder: order('st'),
+      sorter: (a, b) => (STATUS_RANK[a.status] ?? 9) - (STATUS_RANK[b.status] ?? 9)
+        || (a.days_left ?? 1e9) - (b.days_left ?? 1e9),
       render: (_: unknown, r) => <Tag color={statusColor(r.status)}>
         {STATUS_LABEL[r.status] ?? r.status}{r.days_left != null ? ` · ${daysLabel(r)}` : ''}</Tag> },
-    { title: 'Received', dataIndex: 'Received_Qty', key: 'rq', align: 'right', width: 90, render: n },
-    { title: 'Consumed', dataIndex: 'Consumed_Qty', key: 'cq', align: 'right', width: 90, render: n },
-    { title: 'Returned', dataIndex: 'Returned_Qty', key: 'tq', align: 'right', width: 90, render: n },
-    { title: 'Remaining', dataIndex: 'Remaining_Qty', key: 'left', align: 'right', width: 100,
+    { title: 'Received', dataIndex: 'Received_Qty', key: 'rq', align: 'right', width: 90, render: n, sortOrder: order('rq') },
+    { title: 'Consumed', dataIndex: 'Consumed_Qty', key: 'cq', align: 'right', width: 90, render: n, sortOrder: order('cq') },
+    { title: 'Returned', dataIndex: 'Returned_Qty', key: 'tq', align: 'right', width: 90, render: n, sortOrder: order('tq') },
+    { title: 'Remaining', dataIndex: 'Remaining_Qty', key: 'left', align: 'right', width: 100, sortOrder: order('left'),
       render: (v, r) => <strong>{n(v)} {String(r.UOM ?? '')}</strong> },
-    { title: 'Site', dataIndex: 'Site_ID', key: 'site', width: 80 },
+    { title: 'Site', dataIndex: 'Site_ID', key: 'site', width: 80, sortOrder: order('site') },
   ]
 
   return (
@@ -106,32 +143,53 @@ export default function LotRegisterPage() {
           title={`${summary.expired} lot(s) are past their expiry and still have stock`}
           description="They are never the FEFO suggestion. Check them, then dispose of them or put them in quarantine (Admin Console → Lots)." />
       )}
+      <div data-testid="lot-table">
       <Table size="small" loading={isFetching} columns={cols} dataSource={data?.items ?? []}
         rowKey={(r) => `${r.SAP_Code}|${r.Lot_Number}|${String(r.Site_ID)}`}
         scroll={{ x: 1300 }} pagination={{ pageSize: 25, showTotal: (t) => `${t} lot(s)` }}
+        showSorterTooltip={false}
+        onChange={(_p, _f, sorter) => {
+          const one = Array.isArray(sorter) ? sorter[0] : sorter
+          const next = new URLSearchParams(params)
+          if (one?.order && one.columnKey) {
+            next.set('sort', String(one.columnKey))
+            next.set('dir', one.order === 'descend' ? 'desc' : 'asc')
+          } else {
+            next.delete('sort'); next.delete('dir')
+          }
+          setParams(next, { replace: true })
+        }}
         locale={{ emptyText: <Empty description="No lots match" /> }}
         expandable={{
           rowExpandable: (r) => Number(r.Units) > 0,
           expandedRowRender: (r) => <Rolls r={r} />,
         }} />
-      {!!data?.exceptions?.length && (
-        <Card size="small" style={{ marginTop: 16 }}
-          title={`Lots used but never received (${data.exceptions.length})`}>
+      </div>
+      {!!data?.problems?.length && (
+        <Card size="small" style={{ marginTop: 16 }} data-testid="lot-problems"
+          title={<span style={{ color: 'var(--ant-color-error, #cf1322)' }}>
+            Lot problems from the workbook ({data.problems.length})</span>}>
           <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-            The Consumption or Return Log names these lots, but no receipt of that material
-            brought them in — usually a typing slip. The stock still counts; correct the
-            workbook and sync again.
+            These rows name a lot that no receipt brought in, or a lot that was already used up.
+            The stock still counts — fix the row in the workbook, then sync again. <b>Row</b> is the
+            Excel row at the last sync: inserting rows above it moves it.
           </Typography.Paragraph>
-          <Table size="small" pagination={false} dataSource={data.exceptions}
-            rowKey={(r) => `${String(r.kind)}|${String(r.sap)}|${String(r.lot)}`}
+          <Table size="small" pagination={{ pageSize: 20, hideOnSinglePage: true }}
+            dataSource={data.problems}
+            rowKey={(r) => `${r.kind}|${r.id ?? ''}|${r.sheet ?? ''}|${r.row ?? ''}|${r.lot}`}
             columns={[
-              { title: 'Log', dataIndex: 'kind', key: 'k', width: 110 },
-              { title: 'SAP', dataIndex: 'sap', key: 's', width: 100 },
-              { title: 'Lot as typed', dataIndex: 'lot', key: 'l' },
-              { title: 'Rows', dataIndex: 'n', key: 'n', width: 70 },
-              { title: 'Qty', dataIndex: 'qty', key: 'q', width: 80 },
-              { title: 'Received under SAP', dataIndex: 'received_under', key: 'r',
-                render: (v) => v ?? '—' },
+              { title: 'Sheet', dataIndex: 'sheet', key: 'sh', width: 140,
+                render: (v) => v ?? <Typography.Text type="secondary">entered in the app</Typography.Text> },
+              { title: 'Row', dataIndex: 'row', key: 'rw', width: 80, align: 'right',
+                render: (v) => (v ? <strong data-testid="lot-problem-row">{Number(v).toLocaleString()}</strong> : '—') },
+              { title: 'Date', dataIndex: 'date', key: 'd', width: 105 },
+              { title: 'SAP', dataIndex: 'sap', key: 's', width: 90 },
+              { title: 'Lot as written', dataIndex: 'lot', key: 'l', width: 140 },
+              { title: 'Qty', dataIndex: 'qty', key: 'q', width: 70, align: 'right' },
+              { title: 'Problem', dataIndex: 'problem', key: 'p', width: 170,
+                render: (v) => <Tag color={v === 'unknown_lot' ? 'red' : 'orange'}>
+                  {v === 'unknown_lot' ? 'Lot not received' : 'Lot already used up'}</Tag> },
+              { title: 'Hint', dataIndex: 'hint', key: 'h' },
             ]} />
         </Card>
       )}

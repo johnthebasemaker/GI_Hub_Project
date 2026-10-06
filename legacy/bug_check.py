@@ -1783,7 +1783,15 @@ def check_models_schema_parity() -> None:
                # all-or-nothing and chased once.
                ("returnable_items", "qty_returned"),
                ("returnable_items", "last_reminded_at"),
-               ("returnable_items", "hod_escalated_at")}
+               ("returnable_items", "hod_escalated_at"),
+               # Phase 21a (alembic d1f7a3c9e2b4) — where in the workbook a
+               # synced ledger row is (sheet + Excel row), so a bad lot is
+               # reported as "Consumption Log, row 5,581". New-stack only:
+               # the frozen portal never syncs the workbook.
+               ("consumption", "Source_Sheet"),
+               ("consumption", "Source_Row"),
+               ("returns", "Source_Sheet"),
+               ("returns", "Source_Row")}
     extra = model_only - allowed
     assert not extra, f"unexpected model-only columns (update models.py or DB): {extra}"
 

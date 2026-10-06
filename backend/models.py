@@ -74,6 +74,12 @@ class Consumption(Base):
     # so recategorising a material later cannot retroactively rewrite what
     # past consumption "was".
     Item_Type = Column(Text)
+    # ── Phase 21a (alembic d1f7a3c9e2b4): WHERE in the workbook this row is.
+    # Provenance only, refreshed by every Excel sync ("the row at the last
+    # sync"): never part of `Source_Ref`, never a key, never compared when the
+    # sync decides whether a line changed. App-written rows leave it NULL.
+    Source_Sheet = Column(Text)
+    Source_Row = Column(Integer)
     # ── 2026-09-16: the WORKBOOK-ROW LABEL (alembic f6b83d1a27c9) ────────────
     # ⚠️ A PROVENANCE LABEL, NOT A MOVEMENT KEY — and the difference is the
     # whole design. `XLSX:<site>:<kind>:<date>:<sap>:<ref-hash>:<n>` names ONE
@@ -615,6 +621,9 @@ class Returns(Base):
     # its asset tag. It used to be dropped.
     Lot_Number = Column(Text)
     Serial_No = Column(Text)
+    # Phase 21a (alembic d1f7a3c9e2b4) — see Consumption.Source_Row.
+    Source_Sheet = Column(Text)
+    Source_Row = Column(Integer)
     __table_args__ = (
         Index("ux_returns_xlsx_ref", "Site_ID", "Source_Ref", unique=True,
               postgresql_where=text("\"Source_Ref\" LIKE 'XLSX:%'")),

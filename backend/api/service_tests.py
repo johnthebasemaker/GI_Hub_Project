@@ -30179,6 +30179,182 @@ async def test_phase20b_bulk():
         await cleanup()
 
 
+async def test_phase21a_lots():
+    """Suite 21A — Phase 21a: lot fixes (brief Track 4).
+
+    Top 5 Expiring reads the ONE lot balance and skips empty lots (Q21-19: lots
+    are never auto-closed at zero); the QC stagnation report subtracts returns;
+    a workbook row naming a lot that does not exist, or one already used up, is
+    reported with its SHEET and EXCEL ROW — before the sync (dry run) and after
+    it (the Lots page) — and pushed anyway (Q21-18). A ledger row remembers its
+    sheet and row; a row that only MOVED is not an update. Synthetic site SV21A."""
+    import datetime as _dtm
+
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from . import bulk_import as bi
+    from .services import lots as LOTS
+    from .services import qc_oversight as QO
+    from .services import quality as Q
+
+    SITE, P, Qs = "SV21A", "SV21A-P", "SV21A-Q"
+    today = _dtm.date.today()
+    dd = lambda n: (today + _dtm.timedelta(days=n)).isoformat()    # noqa: E731
+    async with SessionLocal() as s:
+        CAT = await Q.controlled_category(s)
+
+    async def _cleanup():
+        async with SessionLocal() as s:
+            for q in ('DELETE FROM receipts WHERE "Site_ID" = :site',
+                      'DELETE FROM consumption WHERE "Site_ID" = :site',
+                      'DELETE FROM returns WHERE "Site_ID" = :site',
+                      'DELETE FROM lots WHERE "Site_ID" = :site',
+                      "DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SV21A-%'"):
+                await s.execute(_t(q), {"site": SITE})
+            await s.commit()
+
+    RH = ["Date", "SAP CODE", "Material Code", "Equipment Description", "UOM", "Qty.",
+          "Serial No.", "PR#", "WBS#", "Location", "Vehicle No.", "Driver Name",
+          "DN. No.", "Pallet No.", "Mob. From", "Prepared by", "Mob. To",
+          "Received by", "DN. Copy", "Remarks"]
+    CH = ["Date", "SAP CODE", "Material Code", "Equipment Description", "UOM", "Qty.",
+          "Serial No.", "PR#", "Work Type", "Tank No.", "WBS#", "Approved By",
+          "Cons. Paper No.", "Pallet No.", "Received by", "Prepared by", "Location",
+          "Remarks", "Current Stock", "type"]
+
+    def rec(d, sap, q, ser):
+        return [f"{d} 00:00:00", sap, None, None, "Can", q, ser] + [None] * 13
+
+    def con(d, sap, q, ser):
+        return [f"{d} 00:00:00", sap, None, None, "Can", q, ser, None, "Lining", "T1"] \
+            + [None] * 10
+
+    receipts = [rec(dd(-60), P, 4, "L-EMPTY"), rec(dd(-60), P, 2, "L-OVER"),
+                rec(dd(-59), P, 5, "L-GOOD"), rec(dd(-59), P, 3, "L-EXP"),
+                rec(dd(-59), Qs, 3, "L-ELSE")]
+    cons = [con(dd(-30), P, 4, "L-EMPTY"),          # row 3: L-EMPTY now empty
+            con(dd(-29), P, 1, "L-OVER"),           # row 4
+            con(dd(-28), P, 1, "L-OVER"),           # row 5: exactly used up
+            con(dd(-27), P, 1, "L-OVER"),           # row 6: ⚠️ already used up
+            con(dd(-26), P, 1, "L-ELSE"),           # row 7: ⚠️ a lot of ANOTHER SAP
+            con(dd(-25), P, 1, "L-GOD")]            # row 8: ⚠️ a typo of L-GOOD
+
+    def book(extra_top=None):
+        rows = ([extra_top] if extra_top else []) + cons
+        return _xlsx({"Receipt Log": [["CNCEC"], RH, *receipts],
+                      "Consumption Log": [["CNCEC"], CH, *rows],
+                      "Return Log": [["CNCEC"], ["Date", "SAP CODE", "Qty.", "Serial No."]]})
+
+    await _cleanup()
+    try:
+        async with SessionLocal() as s:
+            for sap in (P, Qs):
+                await s.execute(_t(
+                    'INSERT INTO inventory ("SAP_Code", "Equipment_Description", "Category", '
+                    '"UOM", "Site_ID") VALUES (:p, :d, :c, \'Can\', :site)'),
+                    {"p": sap, "d": f"{sap} PU COMP A", "c": CAT, "site": SITE})
+            await s.commit()
+
+        hdr, rows_, first = bi._sheet_rows_xl(book(), "Consumption Log", ("sap code", "qty."))
+        check("21a-01: a banner above the header — the first data row is EXCEL ROW 3 "
+              "(the reject/lot row used to be the index under the header)",
+              first == 3 and len(rows_) == 6, f"first={first} n={len(rows_)}")
+
+        async with SessionLocal() as s:
+            plan = await bi.plan_ledger(s, book(), SITE)
+        got = [(p_["sheet"], p_["row"], p_["lot"], p_["problem"]) for p_ in plan["lot_problems"]]
+        want = [("Consumption Log", 6, "L-OVER", "lot_used_up"),
+                ("Consumption Log", 7, "L-ELSE", "unknown_lot"),
+                ("Consumption Log", 8, "L-GOD", "unknown_lot")]
+        hints = {p_["row"]: p_["hint"] for p_ in plan["lot_problems"]}
+        check("21a-02: the DRY RUN names each bad lot with its sheet and Excel row — row 6 "
+              "draws L-OVER after it was used up (row 5 used it up exactly, so 5 is fine), "
+              "row 7 names a lot of another SAP, row 8 a typo",
+              got == want, str(got))
+        check("21a-03: the hint says what to fix — the SAP that does carry the lot, the "
+              "closest lot of this material, how much over",
+              Qs in hints.get(7, "") and "L-GOOD" in hints.get(8, "")
+              and hints.get(6, "").startswith("1 Can more"), str(hints))
+        check("21a-04: it WARNS and still plans the rows (ruling Q21-18: never blocked)",
+              any("row 6" in w and "Pushed anyway" in w for w in plan["warnings"])
+              and len(plan["sections"]["consumption"]["inserts"]) == 6
+              and "_file_rows" not in plan["sections"]["consumption"],
+              str(plan["warnings"])[:300])
+
+        async with SessionLocal() as s:
+            c1 = await bi.apply_ledger(s, plan, "sv21a")
+            await LOTS.sync_lots_from_ledger(s, SITE)
+            await s.commit()
+            pos = {r[0]: (r[1], r[2]) for r in (await s.execute(_t(
+                'SELECT "Lot_Number" || \':\' || "Date", "Source_Sheet", "Source_Row" '
+                'FROM consumption WHERE "Site_ID" = :site'), {"site": SITE})).all()}
+        check("21a-05: a synced row REMEMBERS its sheet and row",
+              pos.get(f"L-GOD:{dd(-25)} 00:00:00", pos.get(f"L-GOD:{dd(-25)}")) == ("Consumption Log", 8)
+              or ("Consumption Log", 8) in pos.values(), str(pos)[:300])
+
+        # The operator inserts a line ABOVE the others: every row moves down one.
+        async with SessionLocal() as s:
+            plan2 = await bi.plan_ledger(s, book(con(dd(-40), P, 1, "L-GOOD")), SITE)
+            c2 = await bi.apply_ledger(s, plan2, "sv21a")
+            await s.commit()
+            rows_after = sorted(r[0] for r in (await s.execute(_t(
+                'SELECT "Source_Row" FROM consumption WHERE "Site_ID" = :site'),
+                {"site": SITE})).all())
+        check("21a-06: a row that only MOVED gets its new row number and is NOT counted as an "
+              "update (a position is provenance, not data) — 1 inserted, 0 updated",
+              c2["inserted"] == 1 and c2["updated"] == 0 and rows_after == [3, 4, 5, 6, 7, 8, 9],
+              f"{c2} rows={rows_after}")
+
+        async with SessionLocal() as s:
+            after = [(p_["sheet"], p_["row"], p_["problem"]) for p_ in await LOTS.lot_problems(s, SITE)]
+        check("21a-07: AFTER the sync the database tells the same story, at the NEW rows",
+              after == [("Consumption Log", 7, "lot_used_up"), ("Consumption Log", 8, "unknown_lot"),
+                        ("Consumption Log", 9, "unknown_lot")], str(after))
+
+        # ── Top 5 Expiring ────────────────────────────────────────────────────
+        async with SessionLocal() as s:
+            for lot, exp in (("L-EMPTY", dd(3)), ("L-GOOD", dd(10)), ("L-EXP", dd(-5)),
+                             ("L-OVER", dd(1))):
+                await s.execute(_t('UPDATE lots SET "Expiry_Date" = :e WHERE "Site_ID" = :site '
+                                   'AND "Lot_Number" = :l'), {"e": exp, "site": SITE, "l": lot})
+            await s.commit()
+        H = {"Authorization": f"Bearer {_auth._make_token('sv21a_hod', 'hod', SITE, _auth.ACCESS_TTL)}"}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            m = (await ac.get("/dashboard/metrics", headers=H, params={"site_id": SITE})).json()
+            reg = (await ac.get("/lot-register", headers=H, params={"site_id": SITE})).json()
+        top = [(x["lot"], x["days_left"]) for x in m.get("top_expiring", [])]
+        check("21a-08: Top 5 Expiring shows only lots with stock LEFT — L-EMPTY (3 days, "
+              "nothing left) and L-OVER (over-drawn) are gone; the EXPIRED lot with stock "
+              "stays, overdue first",
+              top == [("L-EXP", -5), ("L-GOOD", 10)], str(top))
+        left = {x["lot"]: x["remaining"] for x in m.get("top_expiring", [])}
+        check("21a-09: each row says how much is left (received − consumed − returned)",
+              float(left.get("L-GOOD", 0)) == 4.0 and float(left.get("L-EXP", 0)) == 3.0, str(left))
+        check("21a-10: the Lots page carries the same problems, row by row",
+              [(p_["row"], p_["problem"]) for p_ in reg.get("problems", [])]
+              == [(7, "lot_used_up"), (8, "unknown_lot"), (9, "unknown_lot")],
+              str(reg.get("problems"))[:300])
+
+        # ── QC stagnation: the one balance, so a RETURNED lot is not on the shelf
+        async with SessionLocal() as s:
+            before = {r["Lot_Number"] for b in ("stagnant", "expiring", "expired")
+                      for r in (await QO.stagnation(s))[b] if r["Site_ID"] == SITE}
+            await s.execute(_t('INSERT INTO returns ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                               '"Lot_Number") VALUES (:d, :p, 3, :site, \'L-EXP\')'),
+                            {"d": dd(-1), "p": P, "site": SITE})
+            await s.commit()
+            after_q = {r["Lot_Number"] for b in ("stagnant", "expiring", "expired")
+                       for r in (await QO.stagnation(s))[b] if r["Site_ID"] == SITE}
+        check("21a-11: QC's stagnation report subtracts RETURNS — L-EXP sent back in full "
+              "leaves the report (it used to stay as 'expired stock on the shelf')",
+              "L-EXP" in before and "L-EXP" not in after_q, f"{sorted(before)} → {sorted(after_q)}")
+        check("21a-12: the sync's counts are honest on the first run (6 consumption + 5 receipts "
+              "inserted)", c1["inserted"] == 11, str(c1))
+    finally:
+        await _cleanup()
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -30525,6 +30701,9 @@ async def main() -> int:
     print("\n 20B. Phase 20b — bulk submit and approve: per-item savepoints, a bad item "
           "fails alone, approve-only, idempotent, HOD-only, one notice per batch")
     await test_phase20b_bulk()
+    print("\n 21A. Phase 21a — lots: Top 5 Expiring by balance, bad lots with sheet and "
+          "row (dry run and after), positions are provenance, QC stagnation net of returns")
+    await test_phase21a_lots()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

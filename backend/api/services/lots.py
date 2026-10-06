@@ -197,6 +197,179 @@ async def unknown_lots(session: AsyncSession, site_id: str) -> list[dict]:
             for r in rows]
 
 
+# ── lot problems with the workbook's sheet and row (Phase 21a) ───────────────
+# Brief Track 4.3: a consumption (or return) that names a lot which does not
+# exist, or one already used up, must say WHERE in the workbook it is —
+# "Consumption Log, row 5,581" — so the store keeper can find and fix it.
+# ⚠️ REPORTED, NEVER BLOCKED (ruling Q21-18, and Phase 16's own "reported,
+# never blocked"): the consumption still counts toward stock. The same walk
+# runs on the workbook BEFORE a sync (`plan_lot_problems`, called by
+# `bulk_import.plan_ledger`) and on the database AFTER it (`lot_problems`).
+LOT_EPS = 1e-6
+PROBLEM_TEXT = {
+    "unknown_lot": "no receipt of this material brought this lot in",
+    "lot_used_up": "the lot was already used up before this row",
+}
+_KIND_ORDER = {"receipt": 0, "consumption": 1, "returns": 2}
+
+
+def _closest_lot(lot: str, candidates: set[str]) -> Optional[str]:
+    from difflib import get_close_matches
+    m = get_close_matches(lot, sorted(candidates), n=1, cutoff=0.75)
+    return m[0] if m else None
+
+
+def _walk(moves: list[dict], known: dict, credit: dict, saps_of_lot: dict,
+          uom: dict) -> list[dict]:
+    """The shared rule. `moves`: dicts with kind (receipt / consumption /
+    returns), date, sap, lot, site, qty, sheet, row (and optional id, ref).
+    `known[(site, sap)]` = lots that exist for that material; `credit[(site,
+    sap, lot)]` = stock the lot holds that no dated move shows (a roll register
+    larger than its receipts, app receipts, transfers in − out)."""
+    probs: list[dict] = []
+    bal: dict[tuple, float] = {}
+    order = sorted(moves, key=lambda m: (str(m["date"] or "")[:10],
+                                         _KIND_ORDER.get(m["kind"], 9),
+                                         m.get("row") or 0, m.get("id") or 0))
+    for m in order:
+        key = (m["site"], m["sap"], m["lot"])
+        if key not in bal:
+            bal[key] = credit.get(key, 0.0)
+        q = float(m["qty"] or 0)
+        if m["kind"] == "receipt":
+            bal[key] += q
+            continue
+        bal[key] -= q
+        if m["lot"] not in known.get((m["site"], m["sap"]), set()):
+            others = sorted(s_ for s_ in saps_of_lot.get((m["site"], m["lot"]), set())
+                            if s_ != m["sap"])
+            near = None if others else _closest_lot(
+                m["lot"], known.get((m["site"], m["sap"]), set()))
+            hint = (f"lot {m['lot']} exists under SAP {', '.join(others)}" if others else
+                    f"closest lot of this material: {near}" if near else
+                    "no similar lot of this material")
+            probs.append(dict(_out(m), problem="unknown_lot", hint=hint))
+        elif bal[key] < -LOT_EPS and q > LOT_EPS:
+            over = min(-bal[key], q)
+            probs.append(dict(_out(m), problem="lot_used_up",
+                              hint=f"{over:g} {uom.get(m['sap'], '')} more than the lot "
+                                   f"received".replace("  ", " ")))
+    for p_ in probs:
+        p_["problem_text"] = PROBLEM_TEXT[p_["problem"]]
+    probs.sort(key=lambda p_: (p_["sheet"] or "~", p_["row"] or 10**9, p_["date"] or ""))
+    return probs
+
+
+def _out(m: dict) -> dict:
+    return {"sheet": m.get("sheet"), "row": m.get("row"), "date": str(m["date"] or "")[:10],
+            "sap": m["sap"], "lot": m["lot"], "qty": round(float(m["qty"] or 0), 4),
+            "kind": m["kind"], "site": m["site"], "id": m.get("id")}
+
+
+async def _known_and_credit(session: AsyncSession, site_id: Optional[str]):
+    """Lots that exist (lots table + roll register) and the undated credit
+    each holds (rolls beyond receipts, transfers), per site."""
+    w, prm = ("WHERE l.\"Site_ID\" = :site", {"site": site_id}) if site_id else ("", {})
+    known: dict[tuple, set] = {}
+    saps_of_lot: dict[tuple, set] = {}
+    for site, sap, lot in (await session.execute(text(
+            f'SELECT l."Site_ID", TRIM(l."SAP_Code"), l."Lot_Number" FROM lots l {w} '
+            'UNION SELECT u."Site_ID", TRIM(u."SAP_Code"), u."Lot_Number" FROM lot_units u '
+            + ('WHERE u."Site_ID" = :site' if site_id else '')), prm)).all():
+        lot = norm_lot(lot)
+        if lot:
+            known.setdefault((site, sap), set()).add(lot)
+            saps_of_lot.setdefault((site, lot), set()).add(sap)
+    credit: dict[tuple, float] = {}
+    for site, sap, lot, n in (await session.execute(text(
+            'SELECT u."Site_ID", TRIM(u."SAP_Code"), u."Lot_Number", COUNT(*) FROM lot_units u '
+            + ('WHERE u."Site_ID" = :site ' if site_id else '') + 'GROUP BY 1, 2, 3'), prm)).all():
+        credit[(site, sap, norm_lot(lot))] = float(n)          # rolls; receipts net off below
+    for site, sap, frm, to, qty in (await session.execute(text(
+            'SELECT COALESCE(t."Site_ID", \'HQ\'), t."SAP_Code", t."From_Lot", t."To_Lot", t."Qty" '
+            'FROM lot_transfers t ' + ('WHERE COALESCE(t."Site_ID", \'HQ\') = :site' if site_id else '')),
+            prm)).all():
+        credit[("x", site, sap, norm_lot(frm))] = credit.get(("x", site, sap, norm_lot(frm)), 0.0) - float(qty or 0)
+        credit[("x", site, sap, norm_lot(to))] = credit.get(("x", site, sap, norm_lot(to)), 0.0) + float(qty or 0)
+    uom = {str(r[0]).strip(): str(r[1] or "") for r in (await session.execute(text(
+        'SELECT "SAP_Code", "UOM" FROM inventory'))).all()}
+    return known, saps_of_lot, credit, uom
+
+
+def _settle_credit(credit: dict, received: dict) -> dict:
+    """Rolls count only where they EXCEED the dated receipts (the balance is
+    GREATEST(receipts, rolls)); transfers always count."""
+    out: dict[tuple, float] = {}
+    for k, v in credit.items():
+        if k[0] == "x":
+            key = k[1:]
+            out[key] = out.get(key, 0.0) + v
+        else:
+            out[k] = out.get(k, 0.0) + max(0.0, v - received.get(k, 0.0))
+    return out
+
+
+async def plan_lot_problems(session: AsyncSession, site_id: str,
+                            file_by_kind: dict[str, list[dict]]) -> list[dict]:
+    """BEFORE a sync: the workbook's rows (as `bulk_import.plan_ledger` read
+    them, `n` = Excel row) plus the receipts the APP recorded with a lot (they
+    are not in the workbook). Workbook consumption is the record — the app's
+    QR issues reach it through the reconcile's max(QR, Excel)."""
+    known, saps_of_lot, credit, uom = await _known_and_credit(session, site_id)
+    moves: list[dict] = []
+    kind_of = {"receipts": "receipt", "consumption": "consumption", "returns": "returns"}
+    for kind, rows in file_by_kind.items():
+        k = kind_of.get(kind)
+        for fr in rows or []:
+            v = fr["vals"]
+            lot = norm_lot(v.get("Lot_Number"))
+            if not k or not lot:
+                continue
+            moves.append({"kind": k, "date": v.get("Date"), "sap": str(v["SAP_Code"]).strip(),
+                          "lot": lot, "site": site_id, "qty": v.get("Quantity"),
+                          "sheet": fr.get("sheet"), "row": fr.get("n")})
+            if k == "receipt":
+                known.setdefault((site_id, moves[-1]["sap"]), set()).add(lot)
+                saps_of_lot.setdefault((site_id, lot), set()).add(moves[-1]["sap"])
+    for d, sap, lot, qty in (await session.execute(text(
+            'SELECT "Date", TRIM("SAP_Code"), "Lot_Number", "Quantity" FROM receipts '
+            'WHERE "Site_ID" = :site AND COALESCE("Lot_Number", \'\') <> \'\' '
+            'AND COALESCE("Source_Ref", \'\') NOT LIKE \'XLSX:%\''), {"site": site_id})).all():
+        moves.append({"kind": "receipt", "date": d, "sap": sap, "lot": norm_lot(lot),
+                      "site": site_id, "qty": qty, "sheet": None, "row": None})
+    received: dict[tuple, float] = {}
+    for m in moves:
+        if m["kind"] == "receipt":
+            k_ = (m["site"], m["sap"], m["lot"])
+            received[k_] = received.get(k_, 0.0) + float(m["qty"] or 0)
+    return _walk(moves, known, _settle_credit(credit, received), saps_of_lot, uom)
+
+
+async def lot_problems(session: AsyncSession, site_id: Optional[str]) -> list[dict]:
+    """AFTER a sync: the same walk over the database ledger. Rows the Excel
+    sync wrote carry `Source_Sheet` / `Source_Row` (the row AT THE LAST SYNC —
+    inserting rows in Excel moves them); app-written rows have none."""
+    known, saps_of_lot, credit, uom = await _known_and_credit(session, site_id)
+    w = 'AND x."Site_ID" = :site' if site_id else ''
+    prm = {"site": site_id} if site_id else {}
+    moves: list[dict] = []
+    for kind, tbl, pos in (("receipt", "receipts", False), ("consumption", "consumption", True),
+                           ("returns", "returns", True)):
+        cols = 'x."Source_Sheet", x."Source_Row"' if pos else 'NULL, NULL'
+        for rid, d, sap, lot, qty, site, sheet, row in (await session.execute(text(
+                f'SELECT x.id, x."Date", TRIM(x."SAP_Code"), x."Lot_Number", x."Quantity", '
+                f'COALESCE(x."Site_ID", \'HQ\'), {cols} FROM {tbl} x '
+                f'WHERE COALESCE(x."Lot_Number", \'\') <> \'\' {w}'), prm)).all():
+            moves.append({"kind": kind, "date": d, "sap": sap, "lot": norm_lot(lot),
+                          "site": site, "qty": qty, "sheet": sheet, "row": row, "id": rid})
+    received: dict[tuple, float] = {}
+    for m in moves:
+        if m["kind"] == "receipt":
+            k_ = (m["site"], m["sap"], m["lot"])
+            received[k_] = received.get(k_, 0.0) + float(m["qty"] or 0)
+    return _walk(moves, known, _settle_credit(credit, received), saps_of_lot, uom)
+
+
 # ── the expiry notice (Phase 16c) ─────────────────────────────────────────────
 EXPIRY_NOTICE_DAYS = 30
 

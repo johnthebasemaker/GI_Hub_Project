@@ -196,26 +196,22 @@ async def stagnation(session: AsyncSession) -> dict:
     rule = await thresholds(session)
     today = _dt.date.today()
 
-    sql = text('''
+    # Phase 21a: the ONE lot balance (received − consumed − RETURNED ±
+    # transfers). This used to subtract consumption only, so a lot sent back
+    # to the supplier still looked like stagnant stock on the shelf.
+    from ..stock import SQL_LOT_BALANCE
+    sql = text(f'''
         WITH bal AS (
-            SELECT l."Lot_Number", TRIM(l."SAP_Code") AS "SAP_Code",
-                   COALESCE(l."Site_ID", 'HQ') AS "Site_ID",
-                   l."Received_Date", l."Expiry_Date", l."Supplier", l."Status",
-                   COALESCE((SELECT SUM(r."Quantity") FROM receipts r
-                              WHERE r."Lot_Number" = l."Lot_Number"
-                                AND TRIM(r."SAP_Code") = TRIM(l."SAP_Code")
-                                AND COALESCE(r."Site_ID",'HQ') = COALESCE(l."Site_ID",'HQ')), 0)
-                 - COALESCE((SELECT SUM(c."Quantity") FROM consumption c
-                              WHERE c."Lot_Number" = l."Lot_Number"
-                                AND TRIM(c."SAP_Code") = TRIM(l."SAP_Code")
-                                AND COALESCE(c."Site_ID",'HQ') = COALESCE(l."Site_ID",'HQ')), 0)
-                   AS remaining_qty,
+            SELECT lb."Lot_Number", TRIM(lb."SAP_Code") AS "SAP_Code",
+                   COALESCE(lb."Site_ID", 'HQ') AS "Site_ID",
+                   lb."Received_Date", lb."Expiry_Date", lb."Supplier", lb."Status",
+                   lb."Remaining_Qty" AS remaining_qty,
                    (SELECT MAX(c."Date") FROM consumption c
-                     WHERE c."Lot_Number" = l."Lot_Number"
-                       AND TRIM(c."SAP_Code") = TRIM(l."SAP_Code")
-                       AND COALESCE(c."Site_ID",'HQ') = COALESCE(l."Site_ID",'HQ'))
+                     WHERE c."Lot_Number" = lb."Lot_Number"
+                       AND TRIM(c."SAP_Code") = TRIM(lb."SAP_Code")
+                       AND COALESCE(c."Site_ID",'HQ') = COALESCE(lb."Site_ID",'HQ'))
                    AS last_consumed
-            FROM lots l
+            FROM ({SQL_LOT_BALANCE}) lb
         )
         SELECT b.*, i."Equipment_Description", i."UOM"
         FROM bal b
