@@ -33,6 +33,7 @@ from backend import models  # noqa: E402
 
 from .admin import item_router as inventory_item_router  # noqa: E402
 from .lot_register import router as lot_register_router  # noqa: E402
+from .drive_admin import router as drive_admin_router  # noqa: E402
 from .admin import router as admin_router  # noqa: E402
 from .auth import get_current_user, require_level, require_roles, site_scope  # noqa: E402
 from .auth import router as auth_router  # noqa: E402
@@ -172,6 +173,7 @@ async def lifespan(app: FastAPI):
     digest_task = None
     weekly_task = None
     briefing_task = None
+    drive_task = None
     if os.environ.get("GI_SCHEDULER", "1") != "0":
         import asyncio
         task = asyncio.create_task(scheduler_loop())
@@ -184,6 +186,12 @@ async def lifespan(app: FastAPI):
         # anomalies nothing else can notice, because each one is the ABSENCE
         # of an event rather than an event. Same GI_SCHEDULER=0 escape hatch.
         briefing_task = asyncio.create_task(briefing_loop())
+        # Phase 21c: the 07:30 Google Drive fetch (ruling Q21-9) — Live only,
+        # silent until Drive is connected, one worker via the daily claim.
+        from .config import is_practice as _is_practice
+        if not _is_practice():
+            from .drive_admin import daily_loop as _drive_daily
+            drive_task = asyncio.create_task(_drive_daily())
     # AI-job orphan sweep. ⚠️ THIS USED TO FAIL EVERY UNFINISHED ROW, which
     # under `--workers 4` meant one worker's respawn killed the other three
     # workers' in-flight OCR reads. It now reaps only jobs whose owner has
@@ -278,6 +286,8 @@ async def lifespan(app: FastAPI):
         weekly_task.cancel()
     if briefing_task:
         briefing_task.cancel()
+    if drive_task:
+        drive_task.cancel()
     if orphan_task:
         orphan_task.cancel()
     try:
@@ -484,6 +494,8 @@ app.include_router(console_oversight_router)
 app.include_router(console_traces_router)
 # T2 — admin SLA tracker: >24h Overdue Actions + clear/notify nudges (admin-only).
 app.include_router(sla_router)
+# Phase 21c — Google Drive → workbooks → Excel sync (admin; Live only).
+app.include_router(drive_admin_router)
 app.include_router(xsite_router, dependencies=_auth)
 app.include_router(console_public_router, dependencies=_auth)
 

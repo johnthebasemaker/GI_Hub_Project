@@ -242,6 +242,19 @@ Plan, measurements and deviations: `PROPOSED_PHASE18_PLAN.md`.
   `api/smartMinHooks.ts`. Settings: `min_stock_cover_days`,
   `min_stock_window_days`, `ss_pace_window_days`, `ss_planned_sqm_per_day`.
 
+## 2c. Phase 21 — lots, reorder, Drive (2026-10-06)
+
+Rulings Q21-1..24 (`PROJECT_HANDOVER.md` → *Phase 21*). Migration **`d1f7a3c9e2b4`**
+(`consumption` / `returns` `.Source_Sheet`, `.Source_Row`).
+
+| Module | What |
+|---|---|
+| `services/lots.plan_lot_problems` / `lot_problems` | One walk per lot in date order → `unknown_lot` / `lot_used_up` with the workbook sheet + Excel row and a hint. Dry run (from `bulk_import.plan_ledger`) and after the sync (Lots page). Warn, never block (Q21-18). |
+| `bulk_import._sheet_rows_xl` | Rows numbered by **Excel row** (`iter_rows(min_row=1)`); header in the first five NON-EMPTY rows. `_write_positions` stamps sheet/row after the upsert — a moved row is not an update. |
+| `dashboard.py` Top 5 Expiring | `SQL_LOT_BALANCE`, stock left only (Q21-19: never auto-closed). |
+| `services/smart_min.sqm_pace` | Approved SQM/day = paper-form entries **+ committed jobs** (`sme_attribution_group`) — D0. No pace → shown, not ordered (D2), no days of cover (D1); exact pack rate (D3); `Trail` per Surface Shield row. |
+| `services/drive_sync.py` · `drive_admin.py` · `tools/gdrive_sync.py` | Read-only Drive (httpx; folder by ID) → the six sync workbooks; **structural** `.xlsm → .xlsx` verified cell by cell (an openpyxl re-save drops cached values); atomic swap + `.backups/workbooks/`; SME commit / ERP dry run, the admin commits; 07:30 behind the daily claim; Live only. Secrets in git-ignored `deploy/gdrive_*.json`. |
+
 ## 3. Database facts that bite
 
 - Mixed-case column names are real (`"SAP_Code"`, `"Site_ID"`) — always quote.

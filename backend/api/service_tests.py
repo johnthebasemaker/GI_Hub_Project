@@ -30470,6 +30470,185 @@ async def test_phase21b_reorder():
                      "ON CONFLICT (key) DO UPDATE SET value = :v", v=saved)
 
 
+async def test_phase21c_drive_sync():
+    """Suite 21C — Phase 21c: Google Drive → workbooks (rulings Q21-7..11).
+
+    Offline: a FAKE Drive client. Pinned: day-first dates in names, the newest
+    DATED Lot Register, lock files and look-alike names never win, the
+    .xlsm → .xlsx conversion is STRUCTURAL (an openpyxl re-save loses every
+    cached formula value — proven here — the conversion keeps them, cell for
+    cell), a bad download never replaces a good file, a re-run with nothing new
+    does nothing, only one Lot Register copy stays, SME commits / ERP dry-runs,
+    and the endpoints are admin-only and refuse until Drive is connected."""
+    import datetime as _dtm
+    import io as _io
+    import re as _re
+    import tempfile
+    import zipfile as _zf
+    from pathlib import Path as _P
+
+    import openpyxl as _px
+
+    from . import auth as _auth
+    from .services import drive_sync as DS
+
+    D = DS.name_date
+    check("21c-01: dates in file names are DAY FIRST — (04-10-2026) is 4 Oct, (020726) "
+          "2 Jul, (4.10.26) 4 Oct; an impossible date or none is None",
+          (D("Rubber & Brick Materials  - CNCEC(04-10-2026).xlsx"), D("x (020726).xlsx"),
+           D("x(4.10.26).xlsx"), D("x(31-02-2026).xlsx"), D("Equipment.xlsx"))
+          == (_dtm.date(2026, 10, 4), _dtm.date(2026, 7, 2), _dtm.date(2026, 10, 4), None, None))
+
+    def f(i, name, mt, mime="application/octet-stream"):
+        return {"id": i, "name": name, "modifiedTime": mt, "mimeType": mime}
+    files = [
+        f("r1", "Rubber & Brick Materials  - CNCEC(15-09-2026).xlsx", "2026-10-05T12:00:00Z"),
+        f("r2", "Rubber & Brick Materials  - CNCEC(04-10-2026).xlsx", "2026-10-05T08:00:00Z"),
+        f("r3", "~$Rubber & Brick Materials  - CNCEC(15-09-2026).xlsx", "2026-10-06T00:00:00Z"),
+        f("i1", "CNCEC_Inventory_Smart.xlsm", "2026-10-05T11:25:00Z"),
+        f("i2", "~$CNCEC_Inventory_Smart.xlsm", "2026-10-06T01:00:00Z"),
+        f("e1", "Equipment.xlsx", "2026-09-27T08:00:00Z"),
+        f("e2", "Equipment list Updated as on 06-09-2026.xlsx", "2026-10-01T08:00:00Z"),
+        f("d1", "Return DN#023  (05-10-2026).xlsx", "2026-10-05T11:00:00Z"),
+        f("fo", "MTC", "2026-10-01T00:00:00Z", "application/vnd.google-apps.folder"),
+    ]
+    tgt = {t.dest: t for t in DS.TARGETS}
+    lot_pick, _ = DS.pick(tgt["Rubber & Brick Materials  - CNCEC.xlsx"], files)
+    inv_pick, _ = DS.pick(tgt["CNCEC_Inventory.xlsx"], files)
+    eq_pick, _ = DS.pick(tgt["Equipment.xlsx"], files)
+    check("21c-02: the Lot Register is the newest DATE IN THE NAME (04-10, though 15-09 was "
+          "touched later); Excel lock files (~$…) and look-alike names never win",
+          lot_pick["id"] == "r2" and inv_pick["id"] == "i1" and eq_pick["id"] == "e1",
+          f"{lot_pick['id']} {inv_pick['id']} {eq_pick['id']}")
+    cls = DS.classify(files)
+    check("21c-03: what the folder holds that the sync does NOT use is listed once (Q21-10) — "
+          "the DN workbook, the folder, the lock files",
+          "Return DN#023  (05-10-2026).xlsx" in cls["unused"] and cls["folders"] == ["MTC"]
+          and len(cls["lock_files"]) == 2
+          and "Equipment list Updated as on 06-09-2026.xlsx" in cls["unused"], str(cls))
+
+    # ── an .xlsm with a formula whose CACHED value Excel saved ───────────────
+    def make_xlsm() -> bytes:
+        wb = _px.Workbook()
+        ws = wb.active
+        ws.title = "Inventory"
+        ws.append(["SAP CODE", "Qty.", "Current Stock"])
+        ws.append([1045, 2, "=B2*21"])
+        for name in ("Consumption Log", "Receipt Log", "Return Log"):
+            wb.create_sheet(name).append(["Date", "SAP CODE", "Qty."])
+        buf = _io.BytesIO()
+        wb.save(buf)
+        zin = _zf.ZipFile(_io.BytesIO(buf.getvalue()))
+        out = _io.BytesIO()
+        with _zf.ZipFile(out, "w", _zf.ZIP_DEFLATED) as z:
+            for info in zin.infolist():
+                b = zin.read(info.filename)
+                if info.filename == "xl/worksheets/sheet1.xml":
+                    b = _re.sub(rb'(<c r="C2"[^>]*>)<f>B2\*21</f>(<v>\s*</v>|<v/>)?',
+                                rb'\1<f>B2*21</f><v>42</v>', b)
+                if info.filename == "[Content_Types].xml":
+                    b = b.replace(DS.XLSX_MAIN.encode(), DS.XLSM_MAIN.encode()).replace(
+                        b"</Types>", b'<Override PartName="/xl/vbaProject.bin" '
+                        b'ContentType="application/vnd.ms-office.vbaProject"/></Types>')
+                if info.filename == "xl/_rels/workbook.xml.rels":
+                    b = b.replace(b"</Relationships>", b'<Relationship Id="rIdVba" '
+                                  b'Type="http://schemas.microsoft.com/office/2006/relationships/vbaProject" '
+                                  b'Target="vbaProject.bin"/></Relationships>')
+                z.writestr(info, b)
+            z.writestr("xl/vbaProject.bin", b"\x00VBA-MACROS")
+        return out.getvalue()
+
+    xlsm = make_xlsm()
+    orig_c2 = DS.sheet_values(xlsm)["Inventory"][1][2]
+    naive = _io.BytesIO()
+    _px.load_workbook(_io.BytesIO(xlsm)).save(naive)          # the obvious way
+    naive_c2 = DS.sheet_values(naive.getvalue())["Inventory"][1][2]
+    conv = DS.xlsm_to_xlsx(xlsm)
+    with _zf.ZipFile(_io.BytesIO(conv)) as z:
+        names, ct = z.namelist(), z.read("[Content_Types].xml").decode()
+        rels = z.read("xl/_rels/workbook.xml.rels").decode()
+    check("21c-04: ⚠️ WHY THE CONVERSION IS STRUCTURAL — the cached value Excel saved "
+          "(42) reads back after the conversion, and is LOST by an openpyxl re-save "
+          "(the importer reads data_only=True, so Current Stock would read empty)",
+          orig_c2 == 42 and naive_c2 is None
+          and DS.sheet_values(conv)["Inventory"][1][2] == 42, f"{orig_c2} {naive_c2}")
+    check("21c-05: the converted file is a real .xlsx — no macro part, no macro content "
+          "type, no relationship to it — and every cell of every sheet is identical",
+          not DS.is_xlsm(conv) and "xl/vbaProject.bin" not in names and "vbaProject" not in ct
+          and "vbaProject" not in rels and DS.verify_same_values(xlsm, conv) is None
+          and DS.is_xlsm(xlsm), f"{names}")
+    inv_t = tgt["CNCEC_Inventory.xlsx"]
+    check("21c-06: a broken or wrong download is REFUSED — a truncated zip, and a "
+          "workbook missing the sheets the sync reads",
+          DS.validate(inv_t, conv) is None and DS.validate(inv_t, conv[:500]) is not None
+          and "missing sheet" in str(DS.validate(inv_t, _xlsx({"Sheet": [["a"]]}))),
+          str(DS.validate(inv_t, conv[:500])))
+
+    class Fake:
+        def __init__(self, files, blobs):
+            self.files, self.blobs, self.downloads = files, blobs, 0
+
+        def list_folder(self, folder_id=None):
+            return self.files
+
+        def download(self, fid):
+            self.downloads += 1
+            return self.blobs[fid]
+
+    small = _xlsx({"Sheet1": [["Tag", "SQM"], ["T1", 10]]})
+    blobs = {"r2": small, "i1": xlsm, "e1": small}
+    with tempfile.TemporaryDirectory() as td:
+        dest, man, bk = _P(td) / "sync", _P(td) / "m.json", _P(td) / "bk"
+        dest.mkdir()
+        (dest / "Rubber & Brick Materials  - CNCEC(15-09-2026).xlsx").write_bytes(small)  # stale twin
+        (dest / "Equipment.xlsx").write_bytes(b"OLD")
+        fake = Fake([x for x in files if x["id"] in ("r1", "r2", "r3", "i1", "i2", "e1", "e2", "d1", "fo")], blobs)
+        blobs["r1"] = small
+        rep = DS.fetch(fake, dest, manifest_path=man, backup_dir=bk)
+        got = sorted(c["dest"] for c in rep["changed"])
+        check("21c-07: a fetch writes each changed workbook under the name the sync reads — "
+              "the .xlsm converted — and moves the old copy AND the stale dated twin to the "
+              "backup, so one Lot Register stays",
+              got == ["CNCEC_Inventory.xlsx", "Equipment.xlsx", "Rubber & Brick Materials  - CNCEC.xlsx"]
+              and any(c["converted"] for c in rep["changed"] if c["dest"] == "CNCEC_Inventory.xlsx")
+              and DS.sheet_values((dest / "CNCEC_Inventory.xlsx").read_bytes())["Inventory"][1][2] == 42
+              and not (dest / "Rubber & Brick Materials  - CNCEC(15-09-2026).xlsx").exists()
+              and len(list(bk.rglob("*.xlsx"))) == 2, f"{got} {list(bk.rglob('*'))}")
+        n_dl = fake.downloads
+        rep2 = DS.fetch(fake, dest, manifest_path=man, backup_dir=bk)
+        check("21c-08: a re-run with nothing new in Drive downloads NOTHING and changes nothing",
+              fake.downloads == n_dl and not rep2["changed"] and len(rep2["unchanged"]) == 3,
+              f"{fake.downloads - n_dl} {rep2['unchanged']}")
+        fake.files = [dict(x, modifiedTime="2026-10-07T00:00:00Z") if x["id"] == "i1" else x
+                      for x in fake.files]
+        blobs["i1"] = xlsm[:400]                                   # a broken download
+        before = (dest / "CNCEC_Inventory.xlsx").read_bytes()
+        rep3 = DS.fetch(fake, dest, manifest_path=man, backup_dir=bk)
+        check("21c-09: a broken download is refused and the PREVIOUS file stays in place",
+              [r["dest"] for r in rep3["refused"]] == ["CNCEC_Inventory.xlsx"]
+              and (dest / "CNCEC_Inventory.xlsx").read_bytes() == before, str(rep3["refused"]))
+        check("21c-10: SME files changed → the SME kinds COMMIT; ERP changed → a DRY RUN only "
+              "(ruling Q21-8: the operator commits the ledger)",
+              DS.sync_commands(rep)["sme_commit"][-1] == "--commit"
+              and "--commit" not in DS.sync_commands(rep)["erp_dry_run"]
+              and DS.sync_commands(rep2) == {} and DS.ERP_COMMIT[-1] == "--commit",
+              str(DS.sync_commands(rep)))
+
+    def tok(u, r):
+        return {"Authorization": f"Bearer {_auth._make_token(u, r, None, _auth.ACCESS_TTL)}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+        st = await ac.get("/admin/drive-sync", headers=tok("sv21c_admin", "admin"))
+        hod = await ac.get("/admin/drive-sync", headers=tok("sv21c_hod", "hod"))
+        runp = await ac.post("/admin/drive-sync/run", headers=tok("sv21c_admin", "admin"))
+        aud = await ac.post("/admin/drive-sync/run", headers=tok("sv21c_aud", "auditor"))
+    connected = st.json().get("configured", {}).get("token")
+    check("21c-11: the endpoints are ADMIN only; until Drive is connected a run is refused "
+          "with the setup guide named (CI has no token)",
+          st.status_code == 200 and hod.status_code == 403 and aud.status_code == 403
+          and (connected or (runp.status_code == 409 and "GDRIVE_SETUP" in runp.text)),
+          f"{st.status_code} {hod.status_code} {aud.status_code} {runp.status_code} {runp.text[:120]}")
+
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -30822,6 +31001,9 @@ async def main() -> int:
     print("\n 21B. Phase 21b — Surface Shield reorder: the pace counts approved jobs, no "
           "pace is shown not ordered, exact days of cover, the working on every row")
     await test_phase21b_reorder()
+    print("\n 21C. Phase 21c — Google Drive → workbooks: day-first dates, structural "
+          ".xlsm conversion (cached values kept), atomic swaps, SME commit / ERP dry run")
+    await test_phase21c_drive_sync()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

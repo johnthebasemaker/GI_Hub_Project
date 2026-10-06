@@ -129,3 +129,11 @@ backups/
 # Phase 18 (ruling Q5): the operator's BLIND router holdout — lives in the
 # GI_ROUTER_HOLDOUT_V2 repository secret, never in git (docs/HOLDOUT_V2_GUIDE.md)
 tests/ai_eval/router/security_holdout_v2.yaml
+
+# Phase 21c — the Google Drive OAuth client and its read-only token
+# (tools/gdrive_sync.py --auth). Secrets: never committed.
+deploy/gdrive_*.json
+# Phase 21d — the operator's consumption photos (workers' names) and the
+# OCR evaluation cache. Stay on this Mac.
+data-archive/ocr_ground_truth/
+.cache/ocr_eval/
