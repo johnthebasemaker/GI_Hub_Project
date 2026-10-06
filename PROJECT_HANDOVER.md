@@ -1222,7 +1222,9 @@ green checks → merge → local pull, unasked (`CLAUDE.md` §5).
 
 ### Phase 21 — Auto-Pilot, OCR fine-tuning & Enterprise UI (2026-10-06, RULED)
 
-`PROPOSED_PHASE21_PLAN.md` was approved whole. Rulings:
+`PROPOSED_PHASE21_PLAN.md` was approved whole. **Shipped 2026-10-06/07, PRs
+#117–#126. Live is migrated to `e2a8c4f6b1d9`. The summary is in
+`PHASE21_SUMMARY.md`.** Rulings:
 
 | # | Ruling | Where it lives |
 |---|---|---|
