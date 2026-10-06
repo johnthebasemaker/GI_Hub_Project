@@ -1,0 +1,83 @@
+/* Phase 21f — the self-driving demo overlay. Lazy chunk only (never on the
+   login critical path). Tokens only (docs/DESIGN_SYSTEM.md); motion is
+   transform/opacity, ≤ 300 ms, and the global reduced-motion switch in
+   index.css turns it off. */
+
+.gi-demo-spot {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 2050;
+  pointer-events: none;
+  border: 2px solid var(--gi-gold);
+  border-radius: 8px;
+  /* the dim: everything but the hole */
+  box-shadow: 0 0 0 9999px rgba(0, 16, 32, 0.38);
+  transition: transform var(--gi-dur-slow) var(--gi-ease-out), opacity var(--gi-dur-mid) var(--gi-ease-out);
+}
+
+.gi-demo-ring {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 2060;
+  width: 28px;
+  height: 28px;
+  margin: -14px 0 0 -14px;
+  pointer-events: none;
+  border: 3px solid var(--gi-gold);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--gi-gold) 22%, transparent);
+  transition: transform var(--gi-dur-slow) var(--gi-ease-out);
+}
+
+.gi-demo-ring--pulse::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border: 3px solid var(--gi-gold);
+  border-radius: 50%;
+  animation: gi-demo-ripple var(--gi-dur-slow) var(--gi-ease-out);
+}
+
+@keyframes gi-demo-ripple {
+  from { transform: scale(0.95); opacity: 1; }
+  to { transform: scale(1.9); opacity: 0; }
+}
+
+.gi-demo-panel {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  z-index: 2100;
+  width: min(760px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--gi-glass-rim, rgba(212, 175, 55, 0.35));
+  background: var(--gi-navy-dark);
+  color: var(--gi-glass-text, rgba(255, 255, 255, 0.92));
+  box-shadow: var(--gi-glass-shadow, 0 12px 32px rgba(0, 0, 0, 0.35));
+}
+
+/* the target is low on the screen: the subtitles move up, out of its way */
+.gi-demo-panel--top {
+  bottom: auto;
+  top: calc(var(--gi-header-h, 64px) + 12px);
+}
+
+.gi-demo-sub {
+  font-size: 16px;
+  line-height: 1.5;
+  min-height: 48px;
+}
+
+.gi-demo-meta {
+  font-size: 12px;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.gi-demo-panel .ant-btn {
+  min-height: 32px;
+}

@@ -118,7 +118,10 @@ export default defineConfig({
         // chunk would hand every one of them the download Tier 1's device
         // gate exists to spare them. critical_path_check.mjs fails the build
         // if it ever reappears in sw.js.
-        globIgnores: ['**/loginScene-*.js'],
+        globIgnores: ['**/loginScene-*.js',
+          // Phase 21f: the self-driving demo is Practice-only — a Live device
+          // never needs it, so the service worker never fetches it
+          '**/DemoHost-*.js', '**/DemoHost-*.css'],
         // never let the SPA fallback swallow API calls
         navigateFallbackDenylist: [/^\/api\//, /^\/training-api\//],
         runtimeCaching: [

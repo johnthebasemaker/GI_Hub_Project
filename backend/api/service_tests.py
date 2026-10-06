@@ -30887,6 +30887,152 @@ async def test_phase21d2_paper_fields():
           and pp.json()["rows"][0].get("work_type") == "RIL",
           f"{pp.status_code} {str(pp.json())[:160]}")
 
+
+async def test_phase21f_demo():
+    """Suite 21F — Phase 21f: the self-driving demo's server half (rulings
+    Q21-13..17). The role switch is a sign-in WITHOUT a password, so the
+    checks here are its walls: absent in Live (404, not 403), practice.*
+    callers only, a ticket, never admin, audited. Reset removes exactly what
+    demos made and puts the demo tank back (its jobs ready, its m² taken
+    back). The assistant offers a demo only when asked to be SHOWN, only one
+    the role may start, and logs an unsupported ask once a day."""
+    import re as _re
+    from pathlib import Path as _P
+
+    from fastapi import FastAPI
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from . import practice_demo as PD
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+        live = await ac.get("/practice/demo/catalog")
+    check("21f-01: ⚠️ in the LIVE process the demo endpoints do not exist — 404, not 403",
+          live.status_code == 404, str(live.status_code))
+
+    mini = FastAPI()
+    mini.include_router(PD.router)
+
+    def tok(u, r, site="SV21F"):
+        return {"Authorization": f"Bearer {_auth._make_token(u, r, site, _auth.ACCESS_TTL)}"}
+
+    async def ex_(sql, **kw):
+        async with SessionLocal() as s_:
+            r_ = await s_.execute(_t(sql), kw)
+            await s_.commit()
+            return r_
+    await ex_("DELETE FROM users WHERE username IN ('practice.hod', 'practice.storekeeper')")
+    await ex_("DELETE FROM sme_attribution_group WHERE \"Equipment_Tag_No\" LIKE 'DEMO-SV21F%'")
+    await ex_("DELETE FROM sme_sqm_progress WHERE \"Equipment_Tag_No\" LIKE 'DEMO-SV21F%' "
+              "OR \"Equipment_Tag_No\" = 'SV21F-REAL'")
+    await ex_("DELETE FROM consumption WHERE \"Site_ID\" = 'SV21F'")
+    await ex_("DELETE FROM bug_reports WHERE username = 'practice.storekeeper'")
+    try:
+        await ex_("INSERT INTO users (username, password_hash, role, \"Site_ID\") VALUES "
+                  "('practice.hod', 'x', 'hod', 'SV21F'), ('practice.storekeeper', 'x', 'store_keeper', 'SV21F')")
+        SK, HOD = tok("practice.storekeeper", "store_keeper"), tok("practice.hod", "hod")
+        async with AsyncClient(transport=ASGITransport(app=mini), base_url="http://svc") as ac:
+            not_practice = await ac.post("/practice/demo/start", headers=tok("sv21f_sk", "store_keeper"))
+            st = await ac.post("/practice/demo/start", headers=SK)
+            ticket = st.json().get("ticket", "")
+            to_admin = await ac.post("/practice/demo/switch", headers=SK,
+                                     json={"ticket": ticket, "role": "admin"})
+            forged = await ac.post("/practice/demo/switch", headers=SK,
+                                   json={"ticket": "not-a-real-ticket-xyz", "role": "hod"})
+            access_as_ticket = await ac.post("/practice/demo/switch", headers=SK, json={
+                "ticket": SK["Authorization"].split()[1], "role": "hod"})
+            sw = await ac.post("/practice/demo/switch", headers=SK, json={"ticket": ticket, "role": "hod"})
+            cat = (await ac.get("/practice/demo/catalog", headers=SK)).json().get("items", [])
+        check("21f-02: only a practice.* account may start a demo (403 otherwise); a start "
+              "returns a 30-minute demo ticket",
+              not_practice.status_code == 403 and st.status_code == 200 and len(ticket) > 20
+              and st.json().get("expires_in") == 1800, f"{not_practice.status_code} {st.status_code}")
+        check("21f-03: ⚠️ never admin (403); a forged ticket or an ACCESS token used as a ticket "
+              "is refused (401 — wrong scope)",
+              to_admin.status_code == 403 and forged.status_code == 401
+              and access_as_ticket.status_code == 401,
+              f"{to_admin.status_code} {forged.status_code} {access_as_ticket.status_code}")
+        sj = sw.json() if sw.status_code == 200 else {}
+        claims = _auth._decode(sj.get("access_token", ""), "access") if sj.get("access_token") else {}
+        async with SessionLocal() as s_:
+            n_aud = (await s_.execute(_t(
+                "SELECT count(*) FROM system_audit_log WHERE action_type = 'PRACTICE_DEMO_SWITCH' "
+                "AND details LIKE 'practice.storekeeper → practice.hod%'"))).scalar()
+        check("21f-04: the switch is a REAL session for practice.hod — an access token with its "
+              "role and site, a refresh cookie — and it is audited",
+              sw.status_code == 200 and claims.get("sub") == "practice.hod"
+              and claims.get("role") == "hod" and sj.get("user", {}).get("role") == "hod"
+              and "set-cookie" in {k.lower() for k in sw.headers} and n_aud >= 1,
+              f"{sw.status_code} {claims.get('sub')} audit={n_aud}")
+
+        # ── reset: exactly what demos made, and the demo tank put back ──────
+        await ex_("INSERT INTO sme_sqm_progress (\"Site_ID\", \"Equipment_Tag_No\", "
+                  "\"Lining_System_Code\", \"Original_SQM\", \"Done_SQM\") VALUES "
+                  "('SV21F', 'DEMO-SV21F-TK', 'PRL1', 80, 10), ('SV21F', 'SV21F-REAL', 'PRL1', 80, 7)")
+        gid = (await ex_("INSERT INTO sme_attribution_group (\"Site_ID\", \"Work_Date\", "
+                         "\"Equipment_Tag_No\", \"Lining_System_Code\", \"SQM_Completed\", status, "
+                         "\"Done_SQM_Credited\") VALUES ('SV21F', '2026-10-04', 'DEMO-SV21F-TK', "
+                         "'PRL1', 6, 'committed', 6) RETURNING id")).scalar()
+        await ex_("INSERT INTO sme_attribution_group (\"Site_ID\", \"Work_Date\", "
+                  "\"Equipment_Tag_No\", \"Lining_System_Code\", \"SQM_Completed\", status) "
+                  "VALUES ('SV21F', '2026-10-05', 'DEMO-SV21F-TK', 'PRL1', 4, 'staged')")
+        await ex_("INSERT INTO consumption (\"Date\", \"SAP_Code\", \"Quantity\", \"Site_ID\", "
+                  "\"Remarks\") VALUES ('2026-10-06', 'SV21F-X', 2, 'SV21F', 'DEMO-0610-120000 practice demo'), "
+                  "('2026-10-06', 'SV21F-X', 3, 'SV21F', 'a real trainee entry')")
+        async with AsyncClient(transport=ASGITransport(app=mini), base_url="http://svc") as ac:
+            sk_reset = await ac.post("/practice/demo/reset", headers=SK)
+            rs = await ac.post("/practice/demo/reset", headers=HOD)
+        async with SessionLocal() as s_:
+            prog = dict((await s_.execute(_t(
+                "SELECT \"Equipment_Tag_No\", \"Done_SQM\" FROM sme_sqm_progress "
+                "WHERE \"Site_ID\" = 'SV21F'"))).all())
+            left_groups = (await s_.execute(_t(
+                "SELECT count(*) FROM sme_attribution_group WHERE \"Equipment_Tag_No\" = 'DEMO-SV21F-TK'"))).scalar()
+            left_cons = [r[0] for r in (await s_.execute(_t(
+                "SELECT \"Remarks\" FROM consumption WHERE \"Site_ID\" = 'SV21F'"))).all()]
+        check("21f-05: reset is HOD / Admin only (store keeper 403); it removes the DEMO- entry "
+              "and both demo-tank jobs, takes the APPROVED job's 6 m² back off the tank "
+              "(10 → 4; the staged one credited nothing) and leaves real work alone",
+              sk_reset.status_code == 403 and rs.status_code == 200
+              and prog.get("DEMO-SV21F-TK") == 4 and prog.get("SV21F-REAL") == 7
+              and left_groups == 0 and left_cons == ["a real trainee entry"]
+              and gid is not None,
+              f"{sk_reset.status_code} {rs.status_code} {prog} groups={left_groups} {left_cons}")
+
+        # ── the assistant's half ────────────────────────────────────────────
+        m_sk = PD.match_demo("show me how to issue stock and get it approved", "store_keeper")
+        m_qc = PD.match_demo("show me how to issue stock and get it approved", "qc")
+        check("21f-06: an explicit 'show me' is a demo ask, 'how do I' is a manual question; the "
+              "match needs TWO topic words and is fenced by role (rule 9: a QC is not offered "
+              "the issue demo)",
+              PD.wants_a_demo("Show me how to approve an issue") and PD.wants_a_demo("do a return for me")
+              and not PD.wants_a_demo("how do I approve an issue")
+              and (m_sk or {}).get("id") == "consumption-to-approval" and m_qc is None
+              and PD.match_demo("show me the dashboard", "hod") is None, f"{m_sk} {m_qc}")
+        async with SessionLocal() as s_:
+            first = await PD.record_unsupported(s_, "practice.storekeeper", "show me  the Garnet benchmark")
+        async with SessionLocal() as s_:
+            again = await PD.record_unsupported(s_, "practice.storekeeper", "show me the Garnet benchmark")
+            n_fb = (await s_.execute(_t(
+                "SELECT count(*) FROM bug_reports WHERE username = 'practice.storekeeper' "
+                "AND type = 'feature' AND description LIKE 'Demo request:%'"))).scalar()
+        check("21f-07: an ask no demo covers goes to Feedback (a 'feature' row the admin is "
+              "rung about) — ONCE per user and question per day",
+              first is True and again is False and n_fb == 1, f"{first} {again} n={n_fb}")
+
+        src = (_P(__file__).resolve().parents[2] / "frontend" / "src" / "demo" / "scripts.ts").read_text()
+        ts_ids = _re.findall(r"id: '([a-z0-9-]+)',\s*title: '([^']+)'", src)
+        check("21f-08: the assistant's catalogue and the runner's scripts agree (ids and titles), "
+              "and the launcher lists them",
+              sorted(ts_ids) == sorted((d["id"], d["title"]) for d in PD.CATALOG)
+              and {c["id"] for c in cat} == {d["id"] for d in PD.CATALOG}, f"{ts_ids}")
+    finally:
+        await ex_("DELETE FROM users WHERE username IN ('practice.hod', 'practice.storekeeper')")
+        await ex_("DELETE FROM sme_attribution_group WHERE \"Equipment_Tag_No\" LIKE 'DEMO-SV21F%'")
+        await ex_("DELETE FROM sme_sqm_progress WHERE \"Site_ID\" = 'SV21F'")
+        await ex_("DELETE FROM consumption WHERE \"Site_ID\" = 'SV21F'")
+        await ex_("DELETE FROM bug_reports WHERE username = 'practice.storekeeper'")
+
 async def main() -> int:
     await _relax_entry_gates()
     print("Service-level invariants (rolled back) + auth/role guards:\n")
@@ -31248,6 +31394,9 @@ async def main() -> int:
     print("\n 21D2. Phase 21d follow-up — the paper's date (implausible → did you mean…, the "
           "store keeper confirms) and its work types in the workbook's spelling")
     await test_phase21d2_paper_fields()
+    print("\n 21F. Phase 21f — the self-driving demo: absent in Live, practice.* + ticket, "
+          "never admin, audited; reset puts the demo tank back; the assistant offers it")
+    await test_phase21f_demo()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

@@ -7410,3 +7410,50 @@ The **Practice** tab and the reset only exist in Practice. In Live there is no
 such button, and the server has no such function.
 
 How administrators set up and run Practice on a server is in **§17.9**.
+
+## 26.8 Auto demo — watch the app run itself (Phase 21, October 2026)
+
+**Where:** Practice only. The **▶ Auto demo** button in the top bar (it does not
+exist in Live).
+
+The app drives itself on Practice data: a gold ring moves to each button, the
+rest of the page dims, a subtitle says what is about to happen (and a voice
+reads it), and then it happens, through the same screens you use. When the
+work moves to another person, it **signs out and signs in as them**. It never
+uses the admin account.
+
+| Demo | What you see |
+|---|---|
+| **Issue stock, then the HOD approves it** | The store keeper picks a material, types the quantity, WBS, who received it and a `DEMO-` remark, attaches a practice slip, and submits. Then the HOD opens Approvals → Issues, finds that line and approves it into the ledger. |
+| **Surface Shield jobs: bulk submit, then bulk approve** | The supervisor opens Execution, finds the demo tank (`DEMO-TANK-1`), selects every ready day, reviews them and submits them at once. Then the HOD opens *Awaiting the HOD*, ticks the demo tank's jobs and approves them in one go. |
+
+**The controls** (at the bottom, or the top when the action is low on the
+screen):
+- **Pause** / **Resume**;
+- **Skip** cuts the sentence short (the step itself still happens, so the demo
+  never loses its place);
+- **Mute** / **Voice on**;
+- **Stop (Esc)**.
+
+**You took over.** Touching the mouse or keyboard while it runs pauses it and
+shows **You took over — Resume**. The demo never fights the person at the
+keyboard.
+
+**Voice.** Fixed sentences use clips recorded with the Mac's own voice, so every
+laptop sounds the same. Sentences that change each run (the demo's reference)
+are spoken by the browser's on-device voice. Nothing is sent to an online voice
+service. The subtitle is always there, so a muted laptop works too. 1× or 1.5×
+in the chooser.
+
+**Ask the assistant.** In Practice, ask *"show me how to issue stock and get it
+approved"* or *"do the Surface Shield bulk approval for me"*. The answer has a
+**▶ Run this demo** button. A request no demo covers yet gets *"I can't show that
+visually yet — I've sent your request to the admin."* It is filed under Feedback
+(once per person, per question, per day) and rings the admin's bell. A normal
+*"how do I…"* question is answered from the manual as before, with the demo
+button underneath when one matches.
+
+**Clearing up (HOD / Admin).** Everything a demo makes is tagged `DEMO-` (or is
+on the demo tank). **▶ Auto demo → Reset demo data** removes exactly that. It
+also puts the demo tank's two days back to *ready* and takes their area back off
+the tank, so the next demo starts clean. Other trainees' work is not touched.

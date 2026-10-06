@@ -48,6 +48,8 @@ settings_t = _MD.tables["app_settings"]
 inventory_t = _MD.tables["inventory"]
 
 from ..practice import assert_ocr_available  # noqa: E402
+from .. import practice_demo  # noqa: E402  (Phase 21f — Practice-only demo lane)
+from ..config import is_practice  # noqa: E402
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -179,6 +181,35 @@ async def assistant(body: AskIn = Body(...),
                 yield _sse({"done": True})
                 return
 
+            # ⚠️ PHASE 21f — THE DEMO, PRACTICE ONLY, AFTER THE FENCE. An
+            # explicit "show me / do it for me" is answered with the matching
+            # self-driving demo (a ▶ Run this demo button — a click, because
+            # browsers refuse to speak without one), or, when no demo covers
+            # it, an honest "not yet" and a Feedback row for the admin (Q21-15).
+            # Live never offers to perform anything. Never breaks the turn.
+            if is_practice() and practice_demo.wants_a_demo(body.question):
+                demo, demo_ok = None, True
+                try:
+                    demo = practice_demo.match_demo(body.question, role)
+                    if demo is None:
+                        async with SessionLocal() as s:
+                            await practice_demo.record_unsupported(s, username, body.question)
+                except Exception:  # noqa: BLE001 — a demo is an add-on, never an outage
+                    demo_ok = False
+                if demo_ok:
+                    if demo:
+                        req.outcome("demo")
+                        yield _sse({"token": f"I can show you on screen: “{demo['title']}”. "
+                                             "Press ▶ Run this demo — it uses Practice data "
+                                             "and you can pause or stop it at any time."})
+                        yield _sse({"demo": demo})
+                    else:
+                        req.outcome("demo_unsupported")
+                        yield _sse({"token": "I can't show that visually yet — I've sent your "
+                                             "request to the admin."})
+                    yield _sse({"done": True})
+                    return
+
             if lane == "UI_COMMAND" and nav:
                 # Navigation only (Q17-7). A link through the same route guard
                 # as the sidebar; it grants nothing.
@@ -251,6 +282,14 @@ async def assistant(body: AskIn = Body(...),
                     req.attrs(tutorial=hit["tutorial_id"],
                               tutorial_beat=hit["beat"])
                     yield _sse({"tutorial": hit})
+                # Phase 21f: in Practice, the matching demo beside the answer
+                if is_practice():
+                    try:
+                        demo = practice_demo.match_demo(body.question, role)
+                    except Exception:  # noqa: BLE001
+                        demo = None
+                    if demo:
+                        yield _sse({"demo": demo})
                 yield _sse({"done": True})
             finally:
                 aic.GEN_SEMAPHORE.release()

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { App } from 'antd'
 import { api, detectClientType, setAuthRole, setAuthToken, TOKEN_KEY } from '../api/client'
 import { isReadOnly as roleIsReadOnly } from './readOnly'
+import { isPractice } from '../api/environment'
 import { clearIfDifferentUser, clearOnLogout } from './sessionState'
 
 export interface User {
@@ -84,7 +85,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(null)
     }
     window.addEventListener('gi-session-expired', onExpired)
-    return () => window.removeEventListener('gi-session-expired', onExpired)
+    // Phase 21f — the self-driving demo "signs out and in" as another Practice
+    // role: POST /practice/demo/switch (Practice process only, audited, never
+    // admin) returns a real session, which is adopted here exactly as a login
+    // result is. Ignored outside Practice.
+    const onAdopt = (e: Event) => {
+      const d = (e as CustomEvent<{ access_token?: string; user?: User }>).detail
+      if (!isPractice() || !d?.access_token || !d.user) return
+      setAuthToken(d.access_token)
+      clearIfDifferentUser(d.user.username)
+      setUser(d.user)
+    }
+    window.addEventListener('gi-session-adopt', onAdopt)
+    return () => {
+      window.removeEventListener('gi-session-expired', onExpired)
+      window.removeEventListener('gi-session-adopt', onAdopt)
+    }
   }, [message])
 
   const login = async (username: string, password: string) => {

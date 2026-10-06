@@ -36,7 +36,7 @@ export default function ItemSnapshot({ sap, site }: { sap?: string; site?: strin
   if (!data) return null
   const low = data.days_cover != null && data.days_cover < 14
   return (
-    <div style={{
+    <div data-testid="item-snapshot" style={{
       display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap',
       padding: '10px 14px', borderRadius: 8,
       background: 'var(--gi-snapshot-bg, rgba(0,31,64,0.04))', marginBottom: 12,
