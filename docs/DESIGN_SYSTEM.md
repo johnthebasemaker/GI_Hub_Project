@@ -35,7 +35,8 @@ A **minimalist-brutalism** view was drawn for comparison only
 The palette lives in `frontend/src/theme/tokens.ts` (TS) and the `--gi-*`
 variables in `frontend/src/index.css` (CSS). **A colour outside those files is a
 bug** (`test:design` ratchets the count of raw hex values in components: it may
-only go down).
+only go down — 195 when written, **153** after the Phase 21g pass over the
+daily-use pages; the SME estimator's charts hold most of the rest).
 
 | Role | Token | Value |
 |---|---|---|

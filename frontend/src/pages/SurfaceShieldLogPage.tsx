@@ -12,6 +12,7 @@ import { api } from '../api/client'
 import { downloadDocument } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
 import { Table } from '../lib/smartTable'
+import { brand, status as tone } from '../theme/tokens'
 
 /**
  * Phase 20a — the Surface Shield daily log. ONE master view, linked from the
@@ -175,7 +176,7 @@ export default function SurfaceShieldLogPage() {
           {j.sqm_differs && (
             <Tooltip title={j.hod_justification
               ? `HOD's reason: ${j.hod_justification}` : 'The filed SQM differs from the remark.'}>
-              <div data-testid="log-sqm-differs" style={{ fontSize: 12, color: '#d48806', cursor: 'help' }}>
+              <div data-testid="log-sqm-differs" style={{ fontSize: 12, color: brand.goldDeep, cursor: 'help' }}>
                 ⚠ remark says {num(j.sqm_from_remark)} m²
               </div>
             </Tooltip>
@@ -200,7 +201,7 @@ export default function SurfaceShieldLogPage() {
             {j.decided_at ? `, ${dayjs(j.decided_at).format('DD MMM HH:mm')}` : ''}</div>}
           {j.status === 'pending' && j.submitted_by && <div>Filed by {j.submitted_by}
             {j.submitted_at ? `, ${dayjs(j.submitted_at).format('DD MMM HH:mm')}` : ''}</div>}
-          {j.rejected_reason && <div style={{ color: '#cf1322' }}>“{j.rejected_reason}”</div>}
+          {j.rejected_reason && <div style={{ color: tone.critical }}>“{j.rejected_reason}”</div>}
           {j.hod_justification && j.status === 'approved' && (
             <div>HOD changed {num(j.original_sqm)} → {num(j.sqm)} m²: “{j.hod_justification}”</div>
           )}
@@ -221,7 +222,7 @@ export default function SurfaceShieldLogPage() {
           render: (_: unknown, m: Material) => `${num(m.base_qty)} ${m.base_uom ?? ''}` },
         { title: 'Variance', dataIndex: 'variance_pct', align: 'right', width: 90,
           render: (v: number | null, m: Material) => v == null ? '—'
-            : <span style={{ color: m.high_priority ? '#cf1322' : undefined }}>{v > 0 ? '+' : ''}{num(v, 1)} %</span> },
+            : <span style={{ color: m.high_priority ? tone.critical : undefined }}>{v > 0 ? '+' : ''}{num(v, 1)} %</span> },
         { title: 'Lot', dataIndex: 'lot', width: 110, render: (v) => v ?? '—' },
       ]} />
   )

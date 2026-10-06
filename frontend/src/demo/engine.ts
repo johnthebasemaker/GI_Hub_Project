@@ -206,7 +206,7 @@ export class DemoRunner {
       if (!el) {
         if (b.optional) return
         if (this.stopped) return
-        throw new Error(`The demo could not find "${b.text ?? b.target ?? b.within?.hasText}" on this page.`)
+        throw new Error(`The demo could not find "${this.fill(b.text ?? b.within?.hasText ?? b.target)}" on this page.`)
       }
       await this.point(el)
     } else {
@@ -262,7 +262,14 @@ export class DemoRunner {
           await sleep(fast ? 0 : 45 / this.voice.speed)
         }
         inp.dispatchEvent(new Event('change', { bubbles: true }))
-        inp.blur()
+        if (b.enter) {
+          for (const kind of ['keydown', 'keypress', 'keyup']) {
+            inp.dispatchEvent(new KeyboardEvent(kind, { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }))
+          }
+          await sleep(fast ? 50 : 200)
+        } else {
+          inp.blur()
+        }
         return
       }
       case 'select': {

@@ -28,6 +28,7 @@ import {
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import { api } from '../api/client'
+import { light, status } from '../theme/tokens'
 
 interface Lot {
   Lot_Number: string; Expiry_Date: string | null; Status: string | null
@@ -48,10 +49,10 @@ interface CardData {
 // Two fixed categorical hues (received/consumed) — a CVD-separated pair; the
 // balance line is ink, not a third category, because it is a different QUANTITY
 // (a level, not a flow) and must not read as another series of the same kind.
-const C_RECEIVED = '#4C78DB'
-const C_CONSUMED = '#E8894A'
-const C_BALANCE = '#8C8C8C'
-const C_LOW = '#EF4444'
+const C_RECEIVED = status.info
+const C_CONSUMED = status.low
+const C_BALANCE = light.textMuted
+const C_LOW = status.critical
 
 const nf = (v: number) =>
   v.toLocaleString('en-US', { maximumFractionDigits: 2 })
@@ -59,12 +60,12 @@ const nf = (v: number) =>
 /** Days of cover → the one sentence an operator actually needs. */
 function coverTone(d: CardData): { text: string; color: string } {
   if (d.avg_daily_consumption <= 0) {
-    return { text: 'No consumption in this window — burn rate unknown', color: '#8C8C8C' }
+    return { text: 'No consumption in this window — burn rate unknown', color: light.textMuted }
   }
   const c = d.days_of_cover ?? 0
   if (c < 7) return { text: `About ${c} days of cover left`, color: C_LOW }
-  if (c < 30) return { text: `About ${c} days of cover left`, color: '#F59E0B' }
-  return { text: `About ${c} days of cover left`, color: '#10B981' }
+  if (c < 30) return { text: `About ${c} days of cover left`, color: status.low }
+  return { text: `About ${c} days of cover left`, color: status.ok }
 }
 
 export default function MaterialCardPage() {

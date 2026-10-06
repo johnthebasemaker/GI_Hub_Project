@@ -6,7 +6,7 @@ import { Table } from '../lib/smartTable'
 import { useAcceptMinimums, useSetSitePace, useSmartMin } from '../api/smartMinHooks'
 import type { RagStatus, SmartMin, SmartMinRow, SmartMinSite } from '../api/smartMinHooks'
 import { useAuth } from '../auth/AuthContext'
-import { status as statusColors } from '../theme/tokens'
+import { light, dark, status as statusColors } from '../theme/tokens'
 const status = statusColors
 
 // Reorder signals — Phase 18 Track 4. What to order, and why, per item and
@@ -19,7 +19,7 @@ const RAG: Record<RagStatus, { color: string; label: string }> = {
   red: { color: statusColors.critical, label: 'Order now' },
   amber: { color: statusColors.low, label: 'Order soon' },
   green: { color: statusColors.ok, label: 'OK' },
-  none: { color: '#9CA3AF', label: 'No signal' },
+  none: { color: dark.textMuted, label: 'No signal' },
 }
 
 const PACE_SOURCE: Record<SmartMinSite['pace_source'], string> = {
@@ -115,7 +115,7 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
       title: 'Status', dataIndex: 'Status', width: 120, fixed: 'left',
       render: (v: RagStatus) => (
         <Tag bordered={false} data-testid={`rag-${v}`}
-          style={{ background: RAG[v].color, color: v === 'amber' || v === 'none' ? '#111' : '#fff', fontWeight: 600 }}>
+          style={{ background: RAG[v].color, color: v === 'amber' || v === 'none' ? light.text : light.surface, fontWeight: 600 }}>
           {RAG[v].label}
         </Tag>
       ),
@@ -145,7 +145,7 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
               </Tooltip>
             ) : null}
             {r.Surface_Shield && r.Basis.startsWith('plan_all') ? (
-              <Tooltip color="gold" title={<span style={{ color: '#111' }}>{WHOLE_PLAN_TIP}</span>}>
+              <Tooltip color="gold" title={<span style={{ color: light.text }}>{WHOLE_PLAN_TIP}</span>}>
                 <Tag color="gold" data-testid="whole-plan-tag" style={{ marginLeft: 4, cursor: 'help' }}>whole plan</Tag>
               </Tooltip>
             ) : null}</span>
@@ -374,7 +374,7 @@ export function ReorderMini() {
     <div data-testid="reorder-mini">
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
         <Tag color={status.critical}>{c.red} order now</Tag>
-        <Tag color={status.low} style={{ color: '#111' }}>{c.amber} order soon</Tag>
+        <Tag color={status.low} style={{ color: light.text }}>{c.amber} order soon</Tag>
         <Tag color={status.ok}>{c.green} OK</Tag>
       </div>
       {urgent.length ? (

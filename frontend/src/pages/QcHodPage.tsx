@@ -29,6 +29,7 @@ import { useState } from 'react'
 
 import { api } from '../api/client'
 import { useSites } from '../api/hooks'
+import { status } from '../theme/tokens'
 
 type Row = Record<string, unknown>
 
@@ -169,7 +170,7 @@ function Overview({ onEscalate }: { onEscalate: (s: EscalateSeed) => void }) {
       <KpiRow min={180} gap={12} style={{ marginBottom: 16 }}>
         <Card size="small">
           <Statistic title="Uncertified materials" value={n0(uncertified)}
-            valueStyle={{ color: uncertified > 0 ? '#cf1322' : '#3f8600' }} />
+            valueStyle={{ color: uncertified > 0 ? status.critical : status.ok }} />
         </Card>
         <Card size="small">
           <Statistic title="Sites affected" value={n0(data.sites_affected)} />
@@ -186,12 +187,12 @@ function Overview({ onEscalate }: { onEscalate: (s: EscalateSeed) => void }) {
         <Card size="small">
           <Tooltip title={`Within ${th?.expiry_warn_days ?? 60} days of expiry`}>
             <Statistic title="Expiring soon" value={n0(data.expiring_lots)}
-              valueStyle={{ color: Number(data.expiring_lots ?? 0) > 0 ? '#d46b08' : undefined }} />
+              valueStyle={{ color: Number(data.expiring_lots ?? 0) > 0 ? status.low : undefined }} />
           </Tooltip>
         </Card>
         <Card size="small">
           <Statistic title="Expired" value={n0(data.expired_lots)}
-            valueStyle={{ color: Number(data.expired_lots ?? 0) > 0 ? '#cf1322' : '#3f8600' }} />
+            valueStyle={{ color: Number(data.expired_lots ?? 0) > 0 ? status.critical : status.ok }} />
         </Card>
       </KpiRow>
 

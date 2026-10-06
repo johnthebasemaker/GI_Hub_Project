@@ -25,6 +25,7 @@ hours after a demo ended.
 from __future__ import annotations
 
 import datetime as _dt
+import json as _json
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
@@ -59,7 +60,88 @@ CATALOG = [
     {"id": "ss-bulk", "title": "Surface Shield jobs: bulk submit, then bulk approve",
      "start": "/execution", "roles": ["store_keeper", "supervisor", "hod", "admin"],
      "keywords": ["surface", "shield", "job", "jobs", "bulk", "submit", "sqm", "execution"]},
+    # Phase 21g — flows 3–6
+    {"id": "receive-lot", "title": "Receive a batch with its MFD; it appears in Lots & Expiry",
+     "start": "/entry/receive", "roles": ["store_keeper", "hod", "admin"],
+     "keywords": ["receive", "receipt", "lot", "lots", "batch", "expiry", "mfd", "received"]},
+    {"id": "loan-partial", "title": "Lend a tool, and take part of it back",
+     "start": "/entry/returnables", "roles": ["store_keeper", "hod", "admin"],
+     "keywords": ["loan", "lend", "tool", "tools", "returnable", "return", "partial", "slip"]},
+    {"id": "reorder-pace", "title": "Set the site's SQM pace, then accept a minimum",
+     "start": "/stock?tab=reorder", "roles": ["hod", "admin"],
+     "keywords": ["reorder", "minimum", "minimums", "pace", "sqm", "order", "accept"]},
+    {"id": "ocr-paste", "title": "A consumption paper: date check, names, stage",
+     "start": "/entry/ocr", "roles": ["store_keeper", "hod", "admin"],
+     "keywords": ["ocr", "paper", "photo", "paste", "names", "handwritten", "date", "stage"]},
 ]
+
+# ── what a demo changes that a DEMO- tag cannot mark ─────────────────────────
+# The reorder demo sets the site's pace and accepts a minimum; the OCR demo
+# teaches the matcher a name. Those are settings, not entries — so the state
+# they replace is SNAPSHOTTED when a demo starts (once, until the next reset)
+# and Reset puts exactly that back. Nothing else in these tables is touched.
+SNAPSHOT_KEY = "practice_demo_snapshot"
+DEMO_MIN_SAPS = ("899971",)                       # PRACTICE PU PRIMER (overlay)
+DEMO_ALIAS_KEYS = ("safty goggls",)               # the OCR demo's gold name
+
+
+async def snapshot_demo_state(session: AsyncSession) -> bool:
+    """Record what the demos may change, unless a snapshot is already held
+    (a second demo before a reset must not overwrite the ORIGINAL). Returns
+    True when a new snapshot was taken. Does not commit."""
+    if (await session.execute(text("SELECT 1 FROM app_settings WHERE key = :k"),
+                              {"k": SNAPSHOT_KEY})).first():
+        return False
+    settings = {r[0]: r[1] for r in (await session.execute(text(
+        "SELECT key, value FROM app_settings WHERE key LIKE 'ss_planned_sqm_per_day%'"))).all()}
+    overrides = [dict(r) for r in (await session.execute(text(
+        'SELECT "SAP_Code", "Site_ID", "Minimum_Qty", updated_by, '
+        "to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') AS updated_at "
+        'FROM inventory_site_overrides WHERE TRIM("SAP_Code") = ANY(:p)'),
+        {"p": list(DEMO_MIN_SAPS)})).mappings().all()]
+    aliases = [dict(r) for r in (await session.execute(text(
+        'SELECT "Site_ID", written_key, written_example, "SAP_Code", confirmations, '
+        "created_by, updated_by FROM ocr_aliases WHERE written_key = ANY(:k)"),
+        {"k": list(DEMO_ALIAS_KEYS)})).mappings().all()]
+    blob = _json.dumps({"settings": settings, "overrides": overrides, "aliases": aliases})
+    await session.execute(text("INSERT INTO app_settings (key, value) VALUES (:k, :v)"),
+                          {"k": SNAPSHOT_KEY, "v": blob})
+    return True
+
+
+async def restore_demo_state(session: AsyncSession) -> int:
+    """Put back what `snapshot_demo_state` recorded; 0 when nothing was held."""
+    raw = (await session.execute(text("SELECT value FROM app_settings WHERE key = :k"),
+                                 {"k": SNAPSHOT_KEY})).scalar()
+    if not raw:
+        return 0
+    snap = _json.loads(raw)
+    await session.execute(text(
+        "DELETE FROM app_settings WHERE key LIKE 'ss_planned_sqm_per_day%'"))
+    for k, v in (snap.get("settings") or {}).items():
+        await session.execute(text("INSERT INTO app_settings (key, value) VALUES (:k, :v)"),
+                              {"k": k, "v": v})
+    await session.execute(text(
+        'DELETE FROM inventory_site_overrides WHERE TRIM("SAP_Code") = ANY(:p)'),
+        {"p": list(DEMO_MIN_SAPS)})
+    for o in snap.get("overrides") or []:
+        await session.execute(text(
+            'INSERT INTO inventory_site_overrides ("SAP_Code", "Site_ID", "Minimum_Qty", '
+            "updated_by, updated_at) VALUES (:sap, :site, :q, :by, :at)"),
+            {"sap": o["SAP_Code"], "site": o["Site_ID"], "q": o["Minimum_Qty"],
+             "by": o["updated_by"],
+             "at": _dt.datetime.fromisoformat(o["updated_at"]) if o.get("updated_at") else None})
+    await session.execute(text("DELETE FROM ocr_aliases WHERE written_key = ANY(:k)"),
+                          {"k": list(DEMO_ALIAS_KEYS)})
+    for a in snap.get("aliases") or []:
+        await session.execute(text(
+            'INSERT INTO ocr_aliases ("Site_ID", written_key, written_example, "SAP_Code", '
+            "confirmations, created_by, updated_by) VALUES (:s, :k, :w, :p, :c, :cb, :ub)"),
+            {"s": a["Site_ID"], "k": a["written_key"], "w": a["written_example"],
+             "p": a["SAP_Code"], "c": a["confirmations"], "cb": a["created_by"],
+             "ub": a["updated_by"]})
+    await session.execute(text("DELETE FROM app_settings WHERE key = :k"), {"k": SNAPSHOT_KEY})
+    return 1
 
 
 class SwitchIn(BaseModel):
@@ -83,6 +165,7 @@ async def start(user: dict = Depends(A.get_current_user),
     _require_practice_user(user)
     ticket = A._make_token(user["username"], user.get("role", ""), user.get("site_id") or "",
                            TICKET_TTL, scope="demo")
+    await snapshot_demo_state(session)
     await write_audit(session, user["username"], "PRACTICE_DEMO_START", "users", "demo ticket")
     await session.commit()
     return {"ticket": ticket, "expires_in": int(TICKET_TTL.total_seconds())}
@@ -114,10 +197,17 @@ async def switch(body: SwitchIn, response: Response,
             "user": A._public(row.username, row.role, row.Site_ID, row.Warehouse_ID)}
 
 
-# Tables a demo writes to, and the column carrying its DEMO- tag.
+# Tables a demo writes to, and the columns that can carry its DEMO- tag: the
+# remark; the worker's name an OCR row is staged with; a demo receipt's lot;
+# a demo loan's borrower and scanned code.
 _RESET = (
-    ("pending_issues", '"Remarks"'), ("pending_receipts", '"Remarks"'),
-    ("consumption", '"Remarks"'), ("receipts", '"Remarks"'), ("returns", '"Remarks"'),
+    ("pending_issues", ('"Remarks"', '"Issued_To"')), ("pending_receipts", ('"Remarks"', '"Lot_Number"')),
+    ("consumption", ('"Remarks"', '"Issued_To"')), ("receipts", ('"Remarks"', '"Lot_Number"')),
+    ("returns", ('"Remarks"',)),
+    ("lots", ('"Lot_Number"',)), ("lot_units", ('"Lot_Number"',)),
+    ("qc_escalations", ('"Lot_Number"',)), ("qc_inspections", ('"Lot_Number"',)),
+    ("returnable_items", ("borrower_name", '"Item_Ref"')),   # its returns cascade
+    ("entry_attachments", ("file_name",)),                  # the generated DEMO slips
 )
 # A demo JOB is one filed on a DEMO- tank (overlay v10 seeds DEMO-TANK-1 with two
 # ready days) or one whose note carries the tag.
@@ -136,7 +226,8 @@ _UNCREDIT_SQL = (
 
 
 async def reset_demo_data(session: AsyncSession) -> dict[str, int]:
-    """Remove every DEMO- entry, and put the demo tank back as it was seeded:
+    """Remove every DEMO- entry, put back the settings the demos changed
+    (`restore_demo_state`), and put the demo tank back as it was seeded:
     its jobs un-filed (their days are READY again, so the demo runs again),
     and the m² an approved demo job credited taken off the tank's progress.
     The seeded store-keeper draws on the demo tank are NOT tagged and stay —
@@ -160,9 +251,11 @@ async def reset_demo_data(session: AsyncSession) -> dict[str, int]:
     res = await session.execute(text(
         f"DELETE FROM sme_attribution_group WHERE id IN ({_DEMO_GROUPS})"), {"t": t})
     removed["sme_attribution_group"] = res.rowcount or 0
-    for table, col in _RESET:
-        res = await session.execute(text(f"DELETE FROM {table} WHERE {col} LIKE :t"), {"t": t})
+    for table, cols in _RESET:
+        where = " OR ".join(f"{c} LIKE :t" for c in cols)
+        res = await session.execute(text(f"DELETE FROM {table} WHERE {where}"), {"t": t})
         removed[table] = res.rowcount or 0
+    removed["settings_restored"] = await restore_demo_state(session)
     return removed
 
 

@@ -1165,6 +1165,13 @@ Bag*); the inventory names them the way the PR did (*DUST Mask*, *TRASH BAG
   that old, or pick the date in the date box. **Stage** says *Confirm the paper's
   date first* until you do. A date inside the window is taken and shown as
   *Paper date "03/10/26" → 03 Oct 2026*.
+- **The paper is the supporting document.** Like every entry, staged rows need
+  their paper attached while the site requires documents (the normal setting). A
+  photographed page is attached automatically: the photo *is* the paper. For
+  pasted text, attach the paper in **Supporting document** below the rows. A site
+  with WBS numbers asks for the **WBS Number** too. **Stage** says what is
+  missing (*Attach the paper first*, *Choose the WBS first*). Before October 2026
+  OCR staging sent neither, so with the document setting on it was refused.
 - **Work type.** The paper's *Remarks* is the row's **Work type**, written the way
   the workbook writes it: *PV* becomes *PU*, *RIL* *R/L*, *BLL* *B/L*, *Blaster*
   *Blast*. You can edit it in the **Work type** column.
@@ -7426,6 +7433,10 @@ uses the admin account.
 |---|---|
 | **Issue stock, then the HOD approves it** | The store keeper picks a material, types the quantity, WBS, who received it and a `DEMO-` remark, attaches a practice slip, and submits. Then the HOD opens Approvals → Issues, finds that line and approves it into the ledger. |
 | **Surface Shield jobs: bulk submit, then bulk approve** | The supervisor opens Execution, finds the demo tank (`DEMO-TANK-1`), selects every ready day, reviews them and submits them at once. Then the HOD opens *Awaiting the HOD*, ticks the demo tank's jobs and approves them in one go. |
+| **Receive a batch with its MFD; it appears in Lots & Expiry** | The store keeper receives four cans of a lot-tracked primer. The batch number is a `DEMO-` reference, the manufacture date is from the label, and the expiry is left blank so it is worked out. The HOD approves the delivery. Lots & Expiry then finds the new batch, with its expiry. |
+| **Lend a tool, and take part of it back** | The store keeper lends three clamp sets, typing the sticker's code instead of using the camera. One comes back at the desk. The loan stays open and says *2 still out*; the **Slip** button is shown. |
+| **Set the site's SQM pace, then accept a minimum** (HOD) | The HOD opens Reorder signals, sets the site's pace to 6 m²/day, finds the lining primer, reviews minimums and accepts its minimum. |
+| **A consumption paper: date check, names, stage** | A paper whose date was misread (the right day, the wrong month) is pasted. The demo picks the suggested date. *Nitril glovs* is green (learned) and *Safty goggls* is gold (Accept). PV becomes PU. The paper is attached, and the rows are staged for the HOD. |
 
 **The controls** (at the bottom, or the top when the action is low on the
 screen):
@@ -7453,7 +7464,21 @@ visually yet — I've sent your request to the admin."* It is filed under Feedba
 *"how do I…"* question is answered from the manual as before, with the demo
 button underneath when one matches.
 
-**Clearing up (HOD / Admin).** Everything a demo makes is tagged `DEMO-` (or is
-on the demo tank). **▶ Auto demo → Reset demo data** removes exactly that. It
-also puts the demo tank's two days back to *ready* and takes their area back off
-the tank, so the next demo starts clean. Other trainees' work is not touched.
+**Clearing up (HOD / Admin).** Everything a demo makes is tagged `DEMO-`: in the
+remark, the batch number, the borrower, the name an OCR row is staged under, or
+by being on the demo tank. **▶ Auto demo → Reset demo data** removes exactly
+that, and puts the demo tank's two days back to *ready* with their area taken
+back off the tank.
+
+Two demos change settings rather than add entries: the reorder demo (the
+site's pace and one accepted minimum) and the OCR demo (the name it teaches).
+What those settings were is recorded when a demo starts, and the reset puts
+them back exactly. Other trainees' work is not touched.
+
+**Page tours.** The same chooser has **Page tours**: a narrated, read-only walk
+through a page. It covers what each part is for, who uses it and what to look
+at. Choose a page and press **▶ Tour it**, press **Tour this page**, or press
+**All my pages** for every page your role can open, one after another. Every
+page in the sidebar has a tour; a new page without one fails the build. Tours
+use the browser's own on-device voice. The six flows use the recorded Mac
+voice.

@@ -10,6 +10,20 @@
  */
 import { test, expect } from '@playwright/test'
 import { storageStatePath } from '../harness/env'
+import type { Page } from '@playwright/test'
+
+// a 1×1 PNG — the paper, as far as the document gate is concerned
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+
+/** Phase 21g: Stage waits for the paper (the page assumes the document gate is
+ *  on for a store keeper, as Issue does); attach it like a store keeper would. */
+async function attachPaper(page: Page) {
+  const stage = page.getByTestId('ocr-stage')
+  await expect(stage).toContainText('Attach the paper first')
+  await page.getByTestId('entry-docs').locator('input[type=file]').first()
+    .setInputFiles({ name: 'paper.png', mimeType: 'image/png', buffer: PNG })
+  await expect(page.getByTestId('entry-docs')).toContainText('paper.png')
+}
 
 const PASTE = 'Aria, E2EOCR dust mash, Nos, 2\nAria, qxzv wbrp, Nos, 1'
 
@@ -36,6 +50,7 @@ test('21d: gold suggestion with Accept, red when nothing is close, Stage waits, 
   await page.getByTestId('ocr-accept').click()
   expect((await learned).status()).toBe(200)
   await page.locator('.ant-table-row', { hasText: 'qxzv wbrp' }).getByRole('button').last().click()
+  await attachPaper(page)
   await expect(stage).toBeEnabled()
   await expect(stage).toContainText('Stage 1 row(s)')
 
@@ -81,6 +96,7 @@ test('21d: an implausible paper date holds Stage until the store keeper confirms
 
   await page.getByTestId('ocr-date-candidate').first().click()
   await expect(check).toHaveCount(0)
+  await attachPaper(page)
   await expect(stage).toBeEnabled()
   await expect(stage).toContainText('Stage 1 row(s)')
 

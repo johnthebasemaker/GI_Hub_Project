@@ -13,6 +13,7 @@ import { NAV, ADMIN_DEFAULT_GROUPS, PRIMARY_GROUP, accessibleNodes, canAccess, c
 import type { NavGroup, NavNode } from '../config/nav'
 import { useThemeMode } from '../theme/ThemeContext'
 import { practiceTheme, siderTheme } from '../theme/themes'
+import { brand, light, status } from '../theme/tokens'
 import { isPractice } from '../api/environment'
 import CommandPalette from './CommandPalette'
 import HubAssistant from './HubAssistant'
@@ -42,7 +43,7 @@ function withCount(label: string, count?: number): ReactNode {
     <span className="gi-nav-flex">
       {label}
       <Badge count={count} size="small" overflowCount={99}
-        style={{ backgroundColor: 'var(--gi-gold)', color: '#001F40', fontWeight: 600 }} />
+        style={{ backgroundColor: 'var(--gi-gold)', color: brand.navyDark, fontWeight: 600 }} />
     </span>
   )
 }
@@ -54,7 +55,7 @@ function withRedCount(label: string, count?: number): ReactNode {
     <span className="gi-nav-flex">
       {label}
       <Badge count={count} size="small" overflowCount={99}
-        style={{ backgroundColor: '#EF4444', color: '#fff', fontWeight: 600 }} />
+        style={{ backgroundColor: status.critical, color: light.surface, fontWeight: 600 }} />
     </span>
   )
 }

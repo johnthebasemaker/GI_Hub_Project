@@ -8,6 +8,7 @@ import type { LotRow } from '../api/lotHooks'
 import type { Row } from '../api/client'
 import { SiteFilter } from '../components/SiteField'
 import { daysLabel, statusColor } from '../components/LotPicker'
+import { status as tone } from '../theme/tokens'
 
 /**
  * Phase 16 — the Lot Register: every lot, its expiry and what is left of it.
@@ -167,7 +168,7 @@ export default function LotRegisterPage() {
       </div>
       {!!data?.problems?.length && (
         <Card size="small" style={{ marginTop: 16 }} data-testid="lot-problems"
-          title={<span style={{ color: 'var(--ant-color-error, #cf1322)' }}>
+          title={<span style={{ color: tone.critical }}>
             Lot problems from the workbook ({data.problems.length})</span>}>
           <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
             These rows name a lot that no receipt brought in, or a lot that was already used up.

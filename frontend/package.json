@@ -12,7 +12,7 @@
     "lint": "oxlint",
     "parity:sme": "node scripts/sme_parity.mjs",
     "test:ui-math": "node --import ./scripts/register-ts.mjs scripts/sme_ui_math.mjs",
-    "test:nav": "node scripts/nav_routes_check.mjs",
+    "test:nav": "node scripts/nav_routes_check.mjs && node scripts/tour_check.mjs",
     "preview": "vite preview",
     "preview:local": "npm run build && VITE_TUNNEL=1 VITE_TUNNEL_HOST=local.giinventory.com vite preview",
     "preview:gi": "npm run build && VITE_TUNNEL=1 VITE_TUNNEL_HOST=gi.giinventory.com vite preview",
