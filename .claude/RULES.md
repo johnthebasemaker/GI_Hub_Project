@@ -383,6 +383,31 @@ deviations: `PROPOSED_PHASE17_PLAN.md` §9.
 ⚠️ **A video request is matched on its topic** (`system_one.video_topic`) —
 "video", "tutorial" and "watch" are the training-gate beat's own words.
 
+## The UI design contract (Phase 21e, rulings Q21-21..24)
+
+`docs/DESIGN_SYSTEM.md` is the contract for EVERY UI change: industrial luxury
+corporate, navy carries the structure, gold marks the one thing to act on. Type
+is IBM Plex Sans (self-hosted), with Source Serif 4 for page titles only, on a
+fixed scale. Spacing is a 4 px grid. Motion uses the tokens, CSS only.
+
+The reviewed, pinned project skills live in `.claude/skills/`:
+- frontend-design and webapp-testing (Anthropic);
+- animate, review-animations, find-animation-opportunities and emil-design-eng
+  (Emil Kowalski);
+- web-design-guidelines (Vercel, with its rules VENDORED).
+
+They apply INSIDE the contract; where they differ, the contract wins.
+`npm run test:design` (inside `npm run build`, so CI runs it) is the mechanical
+half.
+
+| | Do not |
+|---|---|
+| **Q21-21** | Add a colour, font, size or duration outside the tokens. Raw hex in a component is a RATCHET (`perf/design-baseline.json`): it may only go down. |
+| **Motion** | Animate a table, a form field or a keyboard action (used hundreds of times a day). Never `transition: all`, never `ease-in`, never from `scale(0)`; ≤ 300 ms; the global `prefers-reduced-motion` switch-off stays. |
+| **Libraries** | Add a second component library (we are AntD), or a motion library on the login critical path. |
+| **Skills** | Update a vendored skill by fetching it live. Read the new commit's diff, copy it in, change the pin in `.claude/skills/README.md`, in a PR. `webapp-testing`'s `with_server.py` is removed ON PURPOSE: servers start only via the preview tools or the E2E harness. |
+| **Q21-24** | Turn the screenshot report (`visual-report.spec.ts`) into a gate. Pixels change for good reasons; it is a before/after report for the PR. |
+
 ## Rulings that look like oversights and are not
 
 Full list in `PROJECT_HANDOVER.md` → *Phase 10 rulings, LOCKED*. The four an

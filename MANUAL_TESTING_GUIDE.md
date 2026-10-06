@@ -5057,6 +5057,52 @@ before loading any of it.
 Automated: service_tests **21D** (10 checks, frozen data — vision never runs in
 CI, P10-7).
 
+## 21e. Phase 21e — the UI design contract (rulings Q21-21..24)
+
+**What changed:**
+- `docs/DESIGN_SYSTEM.md`, the contract;
+- self-hosted IBM Plex Sans (UI) and Source Serif 4 (page titles) in
+  `frontend/public/fonts/`;
+- motion tokens, tabular figures, button press and visible focus in
+  `index.css`;
+- `npm run test:design`, run inside `npm run build`;
+- the reviewed, pinned UI skills in `.claude/skills/`;
+- the screenshot report;
+- the minimalist-brutalism comparison (`docs/design/brutalism-view.pdf`).
+
+**TC-21E-01 — fonts.** Any page. In the browser's dev tools → *Network*, the
+font files load from `/fonts/` (none from Google). Page titles are serif and
+the UI is Plex Sans. With the network throttled, text shows at once in the
+system font, then swaps.
+
+**TC-21E-02 — numbers.** Lots & Expiry: the Received / Remaining columns align
+digit for digit.
+
+**TC-21E-03 — reduced motion.** Turn on *Reduce motion* in macOS (Accessibility
+→ Display). Open a modal or a dropdown: it appears without animating.
+
+**TC-21E-04 — focus.** Tab through a form: each button and link shows a gold
+outline. Click a button with the mouse: no outline.
+
+**TC-21E-05 — the gate.** Run:
+
+```bash
+cd frontend && npm run test:design
+```
+
+It should pass. Add `transition: all` to any `.tsx` and it fails, naming the
+line. Add a raw hex colour to a component and it fails, saying how many the
+file had before.
+
+**TC-21E-06 — the screenshot report.** Run:
+
+```bash
+cd tests/e2e && GI_VISUAL_REPORT=1 npx playwright test specs/visual-report.spec.ts
+```
+
+You get 24 images in `.results/visual-report/{dark,light}/`. It is a report,
+never a gate (Q21-24).
+
 ## 15. Do's and Don'ts
 
 ### Do

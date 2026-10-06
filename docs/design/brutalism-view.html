@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GI-Hub — minimalist brutalism (comparison view)</title>
+<style>
+  /* Phase 21e, ruling Q21-21: a VIEW of what GI-Hub would look like in
+     minimalist brutalism, for comparison only. The product's direction is
+     industrial luxury corporate (navy/gold) — docs/DESIGN_SYSTEM.md. All data
+     is invented; sites are "Site A". */
+  @page { size: A4 landscape; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #fff; color: #000; }
+  body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-variant-numeric: tabular-nums; }
+  .page { width: 297mm; height: 210mm; padding: 14mm 16mm; page-break-after: always; display: flex; flex-direction: column; gap: 6mm; }
+  .page:last-child { page-break-after: auto; }
+  .top { display: grid; grid-template-columns: 1fr auto; align-items: end; border-bottom: 3px solid #000; padding-bottom: 3mm; }
+  .brand { font-weight: 900; font-size: 30pt; letter-spacing: -0.04em; line-height: 0.9; }
+  .where { font: 700 9pt/1.2 "Courier New", monospace; text-align: right; }
+  .nav { display: flex; gap: 0; border: 2px solid #000; }
+  .nav span { padding: 2mm 4mm; font: 700 9pt "Courier New", monospace; border-right: 2px solid #000; }
+  .nav span:last-child { border-right: 0; }
+  .nav .on { background: #000; color: #fff; }
+  h1 { font-size: 22pt; font-weight: 900; letter-spacing: -0.02em; }
+  h2 { font: 700 10pt "Courier New", monospace; margin-bottom: 2mm; }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); border: 2px solid #000; }
+  .kpi { padding: 4mm; border-right: 2px solid #000; }
+  .kpi:last-child { border-right: 0; }
+  .kpi b { display: block; font-size: 28pt; font-weight: 900; letter-spacing: -0.03em; }
+  .kpi small { font: 700 8pt "Courier New", monospace; }
+  .kpi.act { background: #FF4F00; }
+  table { width: 100%; border-collapse: collapse; border: 2px solid #000; font-size: 9.5pt; }
+  th { text-align: left; font: 700 8pt "Courier New", monospace; background: #000; color: #fff; padding: 2mm 3mm; }
+  td { padding: 2mm 3mm; border-top: 1px solid #000; }
+  td.n, th.n { text-align: right; }
+  .tag { display: inline-block; border: 2px solid #000; padding: 0 2mm; font: 700 8pt "Courier New", monospace; }
+  .tag.x { background: #000; color: #fff; }
+  .tag.o { background: #FF4F00; }
+  .grid2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 6mm; }
+  .btn { display: inline-block; border: 3px solid #000; padding: 2mm 5mm; font-weight: 900; font-size: 10pt; }
+  .btn.p { background: #000; color: #fff; }
+  .note { font: 9pt/1.4 "Courier New", monospace; border-left: 6px solid #FF4F00; padding: 1mm 3mm; }
+  .foot { margin-top: auto; font: 8pt "Courier New", monospace; border-top: 2px solid #000; padding-top: 2mm; display: flex; justify-content: space-between; }
+</style>
+</head>
+<body>
+
+<!-- 1 · Dashboard -->
+<section class="page">
+  <div class="top"><div class="brand">GI—HUB</div><div class="where">SITE A · HOD · 06.10.2026</div></div>
+  <div class="nav"><span class="on">DASHBOARD</span><span>STOCK</span><span>LOTS</span><span>EXECUTION</span><span>APPROVALS</span><span>REPORTS</span></div>
+  <h1>Today.</h1>
+  <div class="kpis">
+    <div class="kpi act"><b>7</b><small>ITEMS BELOW MINIMUM — ORDER NOW</small></div>
+    <div class="kpi"><b>12</b><small>WAITING FOR YOUR APPROVAL</small></div>
+    <div class="kpi"><b>418 m²</b><small>LINED THIS MONTH</small></div>
+    <div class="kpi"><b>3</b><small>LOTS EXPIRE ≤ 30 DAYS</small></div>
+  </div>
+  <div class="grid2">
+    <div>
+      <h2>TOP 5 EXPIRING LOTS — STOCK LEFT ONLY</h2>
+      <table>
+        <tr><th>LOT</th><th>MATERIAL</th><th class="n">LEFT</th><th class="n">DAYS</th></tr>
+        <tr><td>PR-OLD</td><td>PU primer comp A</td><td class="n">4 can</td><td class="n"><span class="tag x">−15</span></td></tr>
+        <tr><td>3504</td><td>Adhesive 9 kg</td><td class="n">11 can</td><td class="n"><span class="tag o">12</span></td></tr>
+        <tr><td>A 4525</td><td>Hardener bottle</td><td class="n">40 btl</td><td class="n"><span class="tag o">20</span></td></tr>
+        <tr><td>1O26009999</td><td>Rubber sheet 4 mm</td><td class="n">3 rol</td><td class="n">88</td></tr>
+        <tr><td>PR-LATE</td><td>PU primer comp A</td><td class="n">12 can</td><td class="n">265</td></tr>
+      </table>
+    </div>
+    <div>
+      <h2>REORDER — WHY</h2>
+      <table>
+        <tr><th>ITEM</th><th class="n">ORDER</th></tr>
+        <tr><td>Dust mask</td><td class="n">60 ea</td></tr>
+        <tr><td>Leather gloves</td><td class="n">40 pr</td></tr>
+        <tr><td>Primer 10 kg</td><td class="n">4 can</td></tr>
+      </table>
+      <p class="note" style="margin-top:3mm">412 m² × 0.17 kg/m² → 30 days at 6 m²/day → ÷ 10 kg/can = 4 cans</p>
+    </div>
+  </div>
+  <div class="foot"><span>MINIMALIST BRUTALISM — COMPARISON VIEW ONLY</span><span>THE PRODUCT STAYS NAVY / GOLD (Q21-21)</span></div>
+</section>
+
+<!-- 2 · Lots & Expiry -->
+<section class="page">
+  <div class="top"><div class="brand">GI—HUB</div><div class="where">SITE A · STORE KEEPER</div></div>
+  <div class="nav"><span>DASHBOARD</span><span>STOCK</span><span class="on">LOTS</span><span>EXECUTION</span><span>APPROVALS</span><span>REPORTS</span></div>
+  <h1>Lots &amp; expiry.</h1>
+  <table>
+    <tr><th>MATERIAL ↕</th><th>LOT ↕</th><th>EXPIRY ↓</th><th>STATUS ↕</th><th class="n">RECEIVED</th><th class="n">USED</th><th class="n">LEFT</th></tr>
+    <tr><td>PU primer comp A</td><td>PR-LATE</td><td>28.06.2027</td><td><span class="tag">OK</span></td><td class="n">12</td><td class="n">0</td><td class="n"><b>12</b></td></tr>
+    <tr><td>Rubber sheet 4 mm</td><td>1O26009999</td><td>02.01.2027</td><td><span class="tag">OK</span></td><td class="n">3</td><td class="n">0</td><td class="n"><b>3</b></td></tr>
+    <tr><td>Hardener bottle</td><td>A 4525</td><td>26.10.2026</td><td><span class="tag o">≤ 30 D</span></td><td class="n">60</td><td class="n">20</td><td class="n"><b>40</b></td></tr>
+    <tr><td>Adhesive 9 kg</td><td>3504</td><td>18.10.2026</td><td><span class="tag o">≤ 30 D</span></td><td class="n">15</td><td class="n">4</td><td class="n"><b>11</b></td></tr>
+    <tr><td>PU primer comp A</td><td>PR-OLD</td><td>21.09.2026</td><td><span class="tag x">EXPIRED</span></td><td class="n">6</td><td class="n">2</td><td class="n"><b>4</b></td></tr>
+  </table>
+  <div>
+    <h2>LOT PROBLEMS FROM THE WORKBOOK — FIX THESE ROWS</h2>
+    <table>
+      <tr><th>SHEET</th><th class="n">ROW</th><th>LOT</th><th>PROBLEM</th><th>HINT</th></tr>
+      <tr><td>Consumption Log</td><td class="n"><b>414</b></td><td>PR-OVER</td><td><span class="tag o">USED UP</span></td><td>1 can more than the lot received</td></tr>
+      <tr><td>Consumption Log</td><td class="n"><b>418</b></td><td>PR-TYPO</td><td><span class="tag x">NOT RECEIVED</span></td><td>closest lot of this material: PR-OLD</td></tr>
+    </table>
+  </div>
+  <div class="foot"><span>MINIMALIST BRUTALISM — COMPARISON VIEW ONLY</span><span>2 / 3</span></div>
+</section>
+
+<!-- 3 · OCR review -->
+<section class="page">
+  <div class="top"><div class="brand">GI—HUB</div><div class="where">SITE A · STORE KEEPER · OCR IMPORT</div></div>
+  <div class="nav"><span>RECEIVE</span><span>ISSUE</span><span>RETURN</span><span class="on">OCR IMPORT</span><span>COUNT</span></div>
+  <h1>Paper → rows.</h1>
+  <table>
+    <tr><th>STATE</th><th>AS WRITTEN</th><th>MATERIAL</th><th class="n">QTY</th><th>RECEIVED BY</th></tr>
+    <tr><td><span class="tag">LEARNED ×3</span></td><td>Dust Mash</td><td>DUST Mask</td><td class="n">2</td><td>Worker 1</td></tr>
+    <tr><td><span class="tag o">CHECK</span></td><td>Lether glows</td><td>did you mean <b>LEATHER GLOVES</b> (91 %)? <span class="btn p" style="padding:0 3mm;font-size:8pt">ACCEPT</span></td><td class="n">1</td><td>Worker 2</td></tr>
+    <tr><td><span class="tag x">NOT FOUND</span></td><td>12" Fan</td><td>not in stock — choose the item</td><td class="n">1</td><td>Worker 3</td></tr>
+  </table>
+  <div style="display:flex;gap:4mm;align-items:center">
+    <span class="btn">NEXT TO CHECK (2)</span><span class="btn" style="opacity:.35">RESOLVE 2 ROWS FIRST</span>
+  </div>
+  <p class="note">Brutalism here: black rules, no radius, one alarm colour (signal orange) instead of gold, monospace labels, numbers set huge. Fast to scan on a phone; harsh on a projector; loses the GI navy/gold identity.</p>
+  <div class="foot"><span>MINIMALIST BRUTALISM — COMPARISON VIEW ONLY</span><span>3 / 3</span></div>
+</section>
+</body>
+</html>

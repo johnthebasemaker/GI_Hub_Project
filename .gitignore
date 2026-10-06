@@ -79,7 +79,16 @@ backups/
 # HyperFrames tooling — vendored third-party skill packages, reinstallable with
 # `npx skills add heygen-com/hyperframes`. Not part of this project's source.
 /.agents/
-/.claude/skills/
+/.claude/skills/*
+# Phase 21e — the reviewed, pinned UI skills are versioned (README inside)
+!/.claude/skills/README.md
+!/.claude/skills/frontend-design/
+!/.claude/skills/webapp-testing/
+!/.claude/skills/animate/
+!/.claude/skills/review-animations/
+!/.claude/skills/find-animation-opportunities/
+!/.claude/skills/emil-design-eng/
+!/.claude/skills/web-design-guidelines/
 /skills-lock.json
 /videos/*/.agents/
 /videos/*/node_modules/

@@ -2,9 +2,41 @@
    AntD tokens live in src/theme/themes.ts; this file owns what tokens can't:
    background gradients, the navy sider rail, scrollbars, and keyframes.   */
 
+/* Phase 21e (Q21-23) — self-hosted, Latin subset, never blocking (swap).
+   docs/DESIGN_SYSTEM.md §3: Plex Sans for the UI, Source Serif 4 for page
+   titles only. */
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('/fonts/IBMPlexSans-latin-var.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Source Serif 4';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/SourceSerif4-latin-600.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica,
-    Arial, sans-serif;
+  font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    Helvetica, Arial, sans-serif;
+  /* Motion tokens (docs/DESIGN_SYSTEM.md §5 — Emil Kowalski's curves). Only
+     transform/opacity animate; ≤ 300 ms; never ease-in; reduced motion = off. */
+  --gi-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --gi-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --gi-dur-press: 140ms;
+  --gi-dur-fast: 150ms;
+  --gi-dur-mid: 200ms;
+  --gi-dur-slow: 300ms;
   --gi-gold: #d4af37;
   --gi-gold-light: #f0d060;
   --gi-navy: #003366;
@@ -475,6 +507,37 @@ body {
   80% {
     transform: rotate(-3deg);
   }
+}
+
+/* ─── Phase 21e — the design contract's global half (docs/DESIGN_SYSTEM.md) ─ */
+
+/* Quantities line up: tabular figures in every table, statistic and number box. */
+.ant-table,
+.ant-statistic,
+.ant-input-number {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Page titles (Typography.Title 1–3 in the content area) in the title serif. */
+.ant-layout-content h1.ant-typography,
+.ant-layout-content h2.ant-typography,
+.ant-layout-content h3.ant-typography {
+  font-family: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* A press is felt: buttons give a little on :active (Emil — 0.97, ≤ 160 ms).
+   Not on disabled or loading buttons. */
+.ant-btn:not(:disabled):not(.ant-btn-loading):active {
+  transform: scale(0.97);
+  transition: transform var(--gi-dur-press) var(--gi-ease-out);
+}
+
+/* Keyboard focus is always visible (never removed without a replacement). */
+:where(a, button, [role='button'], [tabindex]:not([tabindex='-1'])):focus-visible {
+  outline: 2px solid var(--gi-gold);
+  outline-offset: 2px;
 }
 
 /* ─── Accessibility ─────────────────────────────────────────────────────── */
