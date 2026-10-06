@@ -32,8 +32,10 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCES = [ROOT / "frontend" / "src" / "demo" / "scripts.ts",
-           ROOT / "frontend" / "src" / "demo" / "tours.ts"]
+# The FLOWS only (the Finance presentation). Page tours (tours.ts, ~180
+# sentences) use the browser's on-device voice — Samantha on a Mac — so the
+# repository does not carry several more megabytes of audio for them.
+SOURCES = [ROOT / "frontend" / "src" / "demo" / "scripts.ts"]
 OUT = ROOT / "frontend" / "public" / "demo-audio"
 _SAY = re.compile(r"""\bsay:\s*(['"])((?:\\.|(?!\1).)*)\1""", re.S)
 

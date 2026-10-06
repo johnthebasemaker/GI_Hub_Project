@@ -57,6 +57,7 @@ import type { OcrJobStatus } from '../components/OcrJobProgress'
 import TrainingGate from '../components/TrainingGate'
 import { downloadConsumptionForm, useFormSystems } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
+import { status } from '../theme/tokens'
 
 type Row = Record<string, unknown>
 
@@ -339,7 +340,7 @@ function RowCrop({ entryId, row }: { entryId: number; row: number }) {
       <span>
         <img src={url} alt={`row ${row + 1} of the form`}
           style={{ width: 120, borderRadius: 3,
-                   border: failed ? '1px solid #d4b106'
+                   border: failed ? `1px solid ${status.low}`
                                   : '1px solid rgba(128,128,128,.35)' }} />
         {failed && <Tag color="warning" style={{ marginTop: 2 }}>whole page</Tag>}
       </span>

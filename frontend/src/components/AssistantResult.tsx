@@ -22,7 +22,7 @@ export default function AssistantResult({ nav, table, onNavigate }: {
       {nav && (
         <Link to={nav.path} onClick={onNavigate} style={{ display: 'block', marginBottom: 8 }}>
           <span style={{ display: 'block', padding: '5px 10px', borderRadius: 6, fontSize: 12.5,
-                         border: '1px solid var(--gi-gold, #C9A227)', color: 'var(--gi-gold, #C9A227)' }}>
+                         border: '1px solid var(--gi-gold)', color: 'var(--gi-gold)' }}>
             Open {nav.label} →
           </span>
         </Link>
@@ -42,7 +42,7 @@ export default function AssistantResult({ nav, table, onNavigate }: {
               <thead>
                 <tr>{table.columns.map((c) => (
                   <th key={c} style={{ textAlign: 'left', padding: '4px 6px', position: 'sticky',
-                                       top: 0, background: 'var(--gi-surface, #1f2937)' }}>{c}</th>
+                                       top: 0, background: 'var(--gi-surface)' }}>{c}</th>
                 ))}</tr>
               </thead>
               <tbody>

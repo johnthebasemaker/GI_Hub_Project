@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import SystemCode from '../sme/SystemCode'
 import { fmtPackBase } from '../lib/units'
+import { brand, status } from '../theme/tokens'
 
 /**
  * Phase 14c — the Surface Shield attribution queue, ONE JOB AT A TIME.
@@ -267,7 +268,7 @@ function JobCard({ job }: { job: Job }) {
 
   return (
     <Card size="small" className="gi-job-card" data-job={job.key}
-      style={{ marginBottom: 10, borderColor: rejected ? '#ff4d4f' : undefined }}
+      style={{ marginBottom: 10, borderColor: rejected ? status.critical : undefined }}
       title={<Space wrap>
         <BulkCheck ctx={bulk} entry={entry} />
         <strong>{job.work_date}</strong>
@@ -418,7 +419,7 @@ function PrepJobCard({ job }: { job: Job }) {
   ]
   return (
     <Card size="small" className="gi-job-card gi-prep-card" data-job={job.key}
-      style={{ marginBottom: 10, borderColor: rejected ? '#ff4d4f' : '#d4a017' }}
+      style={{ marginBottom: 10, borderColor: rejected ? status.critical : brand.gold }}
       title={<Space wrap>
         <BulkCheck ctx={bulk} entry={entry} />
         <strong>{job.work_date}</strong>

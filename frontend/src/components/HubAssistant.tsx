@@ -4,6 +4,7 @@ import { CloseOutlined, PlayCircleOutlined, RobotOutlined, SendOutlined } from '
 import { Link } from 'react-router-dom'
 import { apiBase, api, getAuthToken } from '../api/client'
 import type { DataTable, NavTarget } from './AssistantResult'
+import { brand } from '../theme/tokens'
 
 // Phase 17 — fetched only when a router answer needs it (critical path).
 const AssistantResult = lazy(() => import('./AssistantResult'))
@@ -154,8 +155,8 @@ export default function HubAssistant() {
             alignSelf: m.who === 'user' ? 'flex-end' : 'flex-start',
             maxWidth: '85%', padding: '6px 10px', borderRadius: 8,
             fontSize: 12.5, whiteSpace: 'pre-wrap',
-            background: m.who === 'user' ? 'var(--gi-gold, #C9A227)' : 'rgba(128,128,128,0.15)',
-            color: m.who === 'user' ? '#001F40' : undefined,
+            background: m.who === 'user' ? 'var(--gi-gold)' : 'rgba(128,128,128,0.15)',
+            color: m.who === 'user' ? brand.navyDark : undefined,
           }}>
             {m.text || (busy && i === msgs.length - 1
               ? (queued ? 'Waiting for a free AI slot…' : 'Thinking…') : '')}

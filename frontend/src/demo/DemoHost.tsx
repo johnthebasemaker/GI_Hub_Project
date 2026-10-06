@@ -12,14 +12,17 @@
  * are not.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { App, Button, Card, Modal, Popconfirm, Segmented, Space, Switch, Typography } from 'antd'
-import { useNavigate } from 'react-router-dom'
+import { App, Button, Card, Modal, Popconfirm, Segmented, Select, Space, Switch, Typography } from 'antd'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { accessibleNodes } from '../config/nav'
 import { DemoRunner } from './engine'
 import type { RunState } from './engine'
 import { SCRIPTS, scriptById } from './scripts'
+import { tourFor, tourScript } from './tours'
+import type { DemoScript } from './types'
 import { Voice } from './voice'
 import './demo.css'
 
@@ -41,6 +44,7 @@ function errMsg(e: unknown): string {
 
 export default function DemoHost({ request, onClose }: { request: DemoRequest; onClose: () => void }) {
   const navigate = useNavigate()
+  const location = useLocation()
   const qc = useQueryClient()
   const { user } = useAuth()
   const { message } = App.useApp()
@@ -68,8 +72,8 @@ export default function DemoHost({ request, onClose }: { request: DemoRequest; o
   const panel = useRef<HTMLDivElement>(null)
   const ticket = useRef<string | null>(null)
 
-  const start = useCallback(async (id: string) => {
-    const script = scriptById(id)
+  const start = useCallback(async (id: string, given?: DemoScript) => {
+    const script = given ?? scriptById(id)
     if (!script) { message.warning('That demo is not available.'); return }
     setChooser(false)
     try {
@@ -168,6 +172,22 @@ export default function DemoHost({ request, onClose }: { request: DemoRequest; o
 
   const canReset = user?.role === 'hod' || user?.role === 'admin'
   const mine = SCRIPTS.filter((s) => user && (s.roles.includes(user.role) || user.role === 'admin'))
+  // Phase 21g — a narrated tour of every page this role can open
+  const tourable = accessibleNodes(user).filter((n) => tourFor(n.key))
+  const [tourPage, setTourPage] = useState<string | undefined>(undefined)
+  const here = tourable.find((n) => n.key === location.pathname)
+  const runTour = (key: string) => {
+    const node = tourable.find((n) => n.key === key)
+    const sc = node && tourScript(node.key, node.label)
+    if (sc) void start(sc.id, sc)
+  }
+  const runAllTours = () => {
+    const scripts = tourable.map((n) => tourScript(n.key, n.label)).filter((x): x is DemoScript => !!x)
+    void start('tour:all', {
+      id: 'tour:all', title: `Tour: all ${scripts.length} of my pages`, blurb: '', roles: [],
+      beats: scripts.flatMap((x) => x.beats),
+    })
+  }
   const live = runner && state != null
   const pad = 6
 
@@ -189,6 +209,20 @@ export default function DemoHost({ request, onClose }: { request: DemoRequest; o
             </Card>
           ))}
           {!mine.length && <Typography.Text>No demo starts from this role yet.</Typography.Text>}
+          <Card size="small" title="Page tours" data-testid="demo-tours">
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+              A narrated walk through a page: what each part is for, and who uses it. Read-only.
+            </Typography.Paragraph>
+            <Space wrap>
+              <Select showSearch optionFilterProp="label" placeholder="Choose a page" style={{ width: 240 }}
+                value={tourPage} onChange={setTourPage} data-testid="demo-tour-page"
+                options={tourable.map((n) => ({ value: n.key, label: n.group ? `${n.label} · ${n.group}` : n.label }))} />
+              <Button disabled={!tourPage} data-testid="demo-tour-start"
+                onClick={() => tourPage && runTour(tourPage)}>▶ Tour it</Button>
+              {here && <Button data-testid="demo-tour-here" onClick={() => runTour(here.key)}>Tour this page</Button>}
+              <Button data-testid="demo-tour-all" onClick={runAllTours}>All my pages ({tourable.length})</Button>
+            </Space>
+          </Card>
           <Space wrap size={16}>
             <span>Voice <Switch size="small" checked={!muted} data-testid="demo-voice"
               onChange={(on) => { setMuted(!on); voice.muted = !on; writeFlag('gi-demo-muted', !on) }} /></span>

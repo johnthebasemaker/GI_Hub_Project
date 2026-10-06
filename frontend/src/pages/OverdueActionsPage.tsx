@@ -13,6 +13,7 @@ import { BellOutlined, CheckOutlined, ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useClearOverdue, useNotifyOverdue, useOverdueActions } from '../api/hooks'
 import type { OverdueItem } from '../api/hooks'
+import { brand, status } from '../theme/tokens'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -49,7 +50,7 @@ export default function OverdueActionsPage() {
       title: 'Age', dataIndex: 'age_hours', key: 'age', width: 90,
       sorter: (a, b) => a.age_hours - b.age_hours, defaultSortOrder: 'descend',
       render: (v: number) => (
-        <b style={{ color: v >= 72 ? '#DC2626' : v >= 48 ? '#EF4444' : '#F59E0B' }}>
+        <b style={{ color: v >= 72 ? status.critical : v >= 48 ? brand.goldDeep : status.low }}>
           {v >= 48 ? `${Math.floor(v / 24)}d ${Math.round(v % 24)}h` : `${v.toFixed(1)}h`}
         </b>
       ),

@@ -34,6 +34,8 @@ export interface Beat {
   /** Look inside the first visible `css` element whose text contains `hasText`. */
   within?: { css: string; hasText: string }
   value?: string
+  /** `type`: press Enter afterwards (a search box, a date picker, a scan desk). */
+  enter?: boolean
   as?: string
   /** After the action, wait until this selector is visible. */
   until?: string

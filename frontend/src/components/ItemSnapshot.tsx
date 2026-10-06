@@ -7,6 +7,7 @@
 import { Skeleton, Tag, Tooltip, Typography } from 'antd'
 import { useItemSnapshot } from '../api/hooks'
 import Sparkline from './Sparkline'
+import { status } from '../theme/tokens'
 
 function Metric({ label, value, suffix, tone }: {
   label: string; value: string; suffix?: string; tone?: 'default' | 'danger'
@@ -14,7 +15,7 @@ function Metric({ label, value, suffix, tone }: {
   return (
     <div style={{ minWidth: 92 }}>
       <div style={{ fontSize: 10, letterSpacing: 0.4, textTransform: 'uppercase', opacity: 0.6 }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 600, color: tone === 'danger' ? '#EF4444' : undefined }}>
+      <div style={{ fontSize: 18, fontWeight: 600, color: tone === 'danger' ? status.critical : undefined }}>
         {value}{suffix ? <span style={{ fontSize: 11, opacity: 0.6 }}> {suffix}</span> : null}
       </div>
     </div>

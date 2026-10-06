@@ -18,6 +18,7 @@ import { useIdempotencyKey } from '../api/idempotency'
 import { api } from '../api/client'
 import type { Row } from '../api/client'
 import DnApprovalQueue from '../components/DnApprovalQueue'
+import { status } from '../theme/tokens'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -365,10 +366,10 @@ function PoKpiHero({ rows, active, onPick }: {
   const partial = rows.filter((r) => String(r.status) === 'partially_delivered')
   const done = rows.filter((r) => _PO_TERMINAL.includes(String(r.status)))
   const kpis = [
-    { key: 'open', label: 'Open POs', value: open.length, color: 'var(--gi-gold, #B8860B)' },
-    { key: 'overdue', label: 'Overdue delivery', value: overdue.length, color: '#EF4444' },
-    { key: 'partial', label: 'Partially delivered', value: partial.length, color: '#3B82F6' },
-    { key: 'done', label: 'Delivered / closed', value: done.length, color: '#22C55E' },
+    { key: 'open', label: 'Open POs', value: open.length, color: 'var(--gi-gold)' },
+    { key: 'overdue', label: 'Overdue delivery', value: overdue.length, color: status.critical },
+    { key: 'partial', label: 'Partially delivered', value: partial.length, color: status.info },
+    { key: 'done', label: 'Delivered / closed', value: done.length, color: status.ok },
   ]
   return (
     <ARow gutter={12} style={{ marginBottom: 16 }}>

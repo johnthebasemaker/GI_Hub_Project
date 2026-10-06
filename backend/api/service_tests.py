@@ -31021,7 +31021,8 @@ async def test_phase21f_demo():
               first is True and again is False and n_fb == 1, f"{first} {again} n={n_fb}")
 
         src = (_P(__file__).resolve().parents[2] / "frontend" / "src" / "demo" / "scripts.ts").read_text()
-        ts_ids = _re.findall(r"id: '([a-z0-9-]+)',\s*title: '([^']+)'", src)
+        ts_ids = [(i, t) for i, _q, t in _re.findall(
+            r"id: '([a-z0-9-]+)',\s*title: (['\"])(.+?)\2,", src)]
         check("21f-08: the assistant's catalogue and the runner's scripts agree (ids and titles), "
               "and the launcher lists them",
               sorted(ts_ids) == sorted((d["id"], d["title"]) for d in PD.CATALOG)
@@ -31032,6 +31033,110 @@ async def test_phase21f_demo():
         await ex_("DELETE FROM sme_sqm_progress WHERE \"Site_ID\" = 'SV21F'")
         await ex_("DELETE FROM consumption WHERE \"Site_ID\" = 'SV21F'")
         await ex_("DELETE FROM bug_reports WHERE username = 'practice.storekeeper'")
+
+
+async def test_phase21g_demo_state():
+    """Suite 21G — Phase 21g: what flows 3–6 change, and how Reset puts it back.
+
+    A demo receipt's LOT, a demo loan, an OCR row staged under the DEMO-
+    worker name and the generated slips are TAGGED, so reset deletes them. The
+    reorder flow's pace and accepted minimum, and the OCR flow's learned name,
+    are SETTINGS a tag cannot mark — so they are snapshotted when a demo
+    starts (once, until the next reset) and reset restores exactly that.
+    Anything else in those tables is never touched."""
+    from sqlalchemy import text as _t
+
+    from . import practice_demo as PD
+
+    async def ex_(sql, **kw):
+        async with SessionLocal() as s_:
+            r_ = await s_.execute(_t(sql), kw)
+            await s_.commit()
+            return r_
+
+    async def one(sql, **kw):
+        async with SessionLocal() as s_:
+            return (await s_.execute(_t(sql), kw)).scalar()
+
+    keep_pace = await one("SELECT value FROM app_settings WHERE key = 'ss_planned_sqm_per_day@SV21G'")
+    await ex_("DELETE FROM app_settings WHERE key IN ('practice_demo_snapshot', 'ss_planned_sqm_per_day@SV21G')")
+    await ex_("DELETE FROM inventory_site_overrides WHERE \"SAP_Code\" = '899971' AND \"Site_ID\" LIKE 'SV21G%'")
+    await ex_("DELETE FROM ocr_aliases WHERE \"Site_ID\" = 'SV21G'")
+    try:
+        await ex_("INSERT INTO app_settings (key, value) VALUES ('ss_planned_sqm_per_day@SV21G', '3')")
+        await ex_("INSERT INTO inventory_site_overrides (\"SAP_Code\", \"Site_ID\", \"Minimum_Qty\", "
+                  "updated_by) VALUES ('899971', 'SV21G', 5, 'someone')")
+        async with SessionLocal() as s_:
+            took = await PD.snapshot_demo_state(s_)
+            await s_.commit()
+        async with SessionLocal() as s_:
+            took_again = await PD.snapshot_demo_state(s_)
+            await s_.commit()
+        # what a reorder + OCR demo would then do
+        await ex_("UPDATE app_settings SET value = '6' WHERE key = 'ss_planned_sqm_per_day@SV21G'")
+        await ex_("UPDATE inventory_site_overrides SET \"Minimum_Qty\" = 12, updated_by = 'practice.hod' "
+                  "WHERE \"SAP_Code\" = '899971' AND \"Site_ID\" = 'SV21G'")
+        await ex_("INSERT INTO inventory_site_overrides (\"SAP_Code\", \"Site_ID\", \"Minimum_Qty\", "
+                  "updated_by) VALUES ('899971', 'SV21G-B', 7, 'practice.hod')")
+        await ex_("INSERT INTO ocr_aliases (\"Site_ID\", written_key, written_example, \"SAP_Code\", "
+                  "confirmations, created_by, updated_by) VALUES ('SV21G', 'safty goggls', 'Safty goggls', "
+                  "'899971', 1, 'practice.storekeeper', 'practice.storekeeper')")
+        # tagged rows the new flows write
+        await ex_("INSERT INTO lots (\"Lot_Number\", \"SAP_Code\", \"Site_ID\", \"Status\", \"Received_Date\") "
+                  "VALUES ('DEMO-SV21G-LOT', '899971', 'SV21G', 'open', '2026-10-06'), "
+                  "('SV21G-REAL-LOT', '899971', 'SV21G', 'open', '2026-10-06')")
+        await ex_("INSERT INTO returnable_items (material_name, qty, borrower_name, \"Site_ID\", status) "
+                  "VALUES ('Clamp set (demo)', 3, 'DEMO-SV21G crew', 'SV21G', 'out'), "
+                  "('Real clamp', 1, 'A real borrower', 'SV21G', 'out')")
+        await ex_("INSERT INTO pending_issues (\"Date\", \"SAP_Code\", \"Quantity\", \"Site_ID\", "
+                  "\"Issued_To\", \"Remarks\", status) VALUES ('2026-10-06', '899971', 1, 'SV21G', "
+                  "'DEMO-SV21G', 'OCR import', 'pending')")
+        async with SessionLocal() as s_:
+            removed = await PD.reset_demo_data(s_)
+            await s_.commit()
+        pace = await one("SELECT value FROM app_settings WHERE key = 'ss_planned_sqm_per_day@SV21G'")
+        mins = await one("SELECT string_agg(\"Site_ID\" || '=' || \"Minimum_Qty\" || '/' || updated_by, ',' "
+                         "ORDER BY \"Site_ID\") FROM inventory_site_overrides WHERE \"SAP_Code\" = '899971' "
+                         "AND \"Site_ID\" LIKE 'SV21G%'")
+        alias = await one("SELECT count(*) FROM ocr_aliases WHERE \"Site_ID\" = 'SV21G'")
+        snap_left = await one("SELECT count(*) FROM app_settings WHERE key = 'practice_demo_snapshot'")
+        lots_left = await one("SELECT string_agg(\"Lot_Number\", ',') FROM lots WHERE \"Site_ID\" = 'SV21G'")
+        loans_left = await one("SELECT string_agg(borrower_name, ',') FROM returnable_items WHERE \"Site_ID\" = 'SV21G'")
+        pend_left = await one("SELECT count(*) FROM pending_issues WHERE \"Site_ID\" = 'SV21G'")
+        check("21g-01: a demo's start snapshots the settings demos change, ONCE — a second "
+              "demo before a reset keeps the original",
+              took is True and took_again is False)
+        check("21g-02: ⚠️ reset restores the pace (6 → 3) and the accepted minimum exactly as it "
+              "was (12 → 5, by 'someone'), removes the minimum the demo ADDED at another site, "
+              "forgets the name the OCR demo taught, and drops the snapshot",
+              pace == "3" and mins in ("SV21G=5/someone", "SV21G=5.0/someone") and alias == 0 and snap_left == 0
+              and removed.get("settings_restored") == 1, f"pace={pace} mins={mins} alias={alias} snap={snap_left}")
+        check("21g-03: the tagged rows go — the DEMO- lot, the DEMO- borrower's loan, the OCR row "
+              "staged under the DEMO- worker name — and the real lot and loan stay",
+              lots_left == "SV21G-REAL-LOT" and loans_left == "A real borrower" and pend_left == 0,
+              f"lots={lots_left} loans={loans_left} pending={pend_left}")
+        async with SessionLocal() as s_:
+            nothing = await PD.restore_demo_state(s_)
+        check("21g-04: with no snapshot held, restore changes nothing (a reset without a demo "
+              "never invents settings)", nothing == 0)
+        m = [(PD.match_demo(q, r) or {}).get("id") for q, r in (
+            ("show me how to receive a batch with its expiry", "store_keeper"),
+            ("show me how to lend a tool and take part of it back", "store_keeper"),
+            ("show me how to set the pace and accept a minimum", "hod"),
+            ("show me how to set the pace and accept a minimum", "store_keeper"),
+            ("show me the ocr paper date check", "store_keeper"))]
+        check("21g-05: the assistant finds flows 3–6 — and fences the HOD-only reorder demo away "
+              "from a store keeper",
+              m == ["receive-lot", "loan-partial", "reorder-pace", None, "ocr-paste"], str(m))
+    finally:
+        await ex_("DELETE FROM app_settings WHERE key IN ('practice_demo_snapshot', 'ss_planned_sqm_per_day@SV21G')")
+        if keep_pace is not None:
+            await ex_("INSERT INTO app_settings (key, value) VALUES ('ss_planned_sqm_per_day@SV21G', :v)", v=keep_pace)
+        await ex_("DELETE FROM inventory_site_overrides WHERE \"Site_ID\" LIKE 'SV21G%'")
+        await ex_("DELETE FROM ocr_aliases WHERE \"Site_ID\" = 'SV21G'")
+        await ex_("DELETE FROM lots WHERE \"Site_ID\" = 'SV21G'")
+        await ex_("DELETE FROM returnable_items WHERE \"Site_ID\" = 'SV21G'")
+        await ex_("DELETE FROM pending_issues WHERE \"Site_ID\" = 'SV21G'")
 
 async def main() -> int:
     await _relax_entry_gates()
@@ -31397,6 +31502,9 @@ async def main() -> int:
     print("\n 21F. Phase 21f — the self-driving demo: absent in Live, practice.* + ticket, "
           "never admin, audited; reset puts the demo tank back; the assistant offers it")
     await test_phase21f_demo()
+    print("\n 21G. Phase 21g — flows 3–6: tagged rows removed, the settings a demo changes "
+          "snapshotted at start and restored exactly by reset")
+    await test_phase21g_demo_state()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

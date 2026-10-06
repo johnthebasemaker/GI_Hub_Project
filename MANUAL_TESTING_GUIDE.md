@@ -5190,6 +5190,58 @@ by the browser; this is not a gate.
 Automated: service_tests **21F** (8 checks); E2E `demo.spec.ts` (Practice leg,
 3 tests, serial).
 
+## 21g. Phase 21g — flows 3–6, a tour for every page, the polish pass
+
+**What changed:**
+- four more flows (`scripts.ts`);
+- `tours.ts`, a tour per sidebar page, with `scripts/tour_check.mjs` inside
+  `npm run test:nav`;
+- reset now covers lots, loans, OCR rows staged under a `DEMO-` name, and the
+  generated slips;
+- a snapshot/restore for the settings the reorder and OCR demos change;
+- the OCR staging fix (paper and WBS);
+- raw colours 195 → 153 in the daily-use pages.
+
+**TC-21G-01 — flow 3 (receive a lot).** As practice.storekeeper: *Receive a
+batch…* → Start. It ends on Lots & Expiry with the `DEMO-` batch found, with an
+expiry 9 months after the MFD. Reset as practice.hod: the batch is gone.
+
+**TC-21G-02 — flow 4 (loan, part back).** As practice.storekeeper: *Lend a tool…*
+→ Start. The loan row says *2 still out*. Reset (as HOD): the loan is gone.
+
+**TC-21G-03 — flow 5 (pace + minimum).** Note the site's pace and the lining
+primer's accepted minimum. As practice.hod: *Set the site's SQM pace…* → Start.
+The pace is 6 m²/day and the primer shows **accepted**. **Reset demo data**: both
+are exactly as noted.
+
+**TC-21G-04 — flow 6 (paper).** As practice.storekeeper: *A consumption paper…* →
+Start. The date box offers today's date first, and *Safty goggls* is accepted.
+The paper is attached, and the two rows reach Approvals → Issues dated today.
+Reset: the rows are gone, and *Safty goggls* is gold again.
+
+**TC-21G-05 — tours.** ▶ Auto demo → **Page tours**:
+- on Lots & Expiry, **Tour this page** spotlights the summary, the table and
+  the lot problems, then *Demo complete.*;
+- **All my pages** visits every page in the sidebar for that role;
+- `npm run test:nav --prefix frontend` prints *PAGE TOURS: ✅ PASS — 52 sidebar
+  page(s)*. Remove one tour and it names the page.
+
+**TC-21G-06 — OCR staging with the document gate on (Live box).** With
+`require_entry_documents` on, read a photo on OCR Import. **Supporting document**
+already lists the photo, and **Stage** works. Paste text instead: Stage says
+*Attach the paper first* until a file is attached.
+
+**TC-21G-07 — the polish.** `npm run build`:
+- *DESIGN CONTRACT … raw hex 153 (baseline 153)*;
+- the critical path at its new, lower baseline.
+
+The daily-use pages read their colours from `theme/tokens.ts`: Reorder signals,
+Material card, the job cards, the Daily Log, Lots, OCR, Quality Oversight,
+Procurement and Overdue Actions.
+
+Automated: service_tests **21G** (5 checks); E2E `demo.spec.ts` now **9 tests**
+(flows 1–6, take over, a page tour).
+
 ## 15. Do's and Don'ts
 
 ### Do

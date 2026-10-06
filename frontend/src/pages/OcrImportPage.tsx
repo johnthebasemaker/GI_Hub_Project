@@ -12,9 +12,12 @@ import dayjs, { Dayjs } from 'dayjs'
 import { api } from '../api/client'
 import type { Row as ApiRow } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
-import { useList, useSites } from '../api/hooks'
+import { useDocsRequired, useList, useSites, useWbsOptions } from '../api/hooks'
+import EntryDocsUpload from '../components/EntryDocsUpload'
+import type { EntryDoc } from '../components/EntryDocsUpload'
 import OcrJobProgress from '../components/OcrJobProgress'
 import type { OcrJobStatus } from '../components/OcrJobProgress'
+import { status } from '../theme/tokens'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -111,6 +114,15 @@ export default function OcrImportPage() {
   // sweep clears the server's copy of the image, and a store keeper should
   // not have to fetch the paper back to the desk to try again.
   const [lastFile, setLastFile] = useState<File | null>(null)
+  // ⚠️ Phase 21g fix: staging went through /entry/consumption WITHOUT a
+  // supporting document, so with `require_entry_documents` on (the default,
+  // and Live's setting) every OCR stage was refused. The paper IS the
+  // document: a photographed page is attached automatically; a pasted one is
+  // attached by hand, like any entry. A site with a WBS list needs its WBS.
+  const [docs, setDocs] = useState<EntryDoc[]>([])
+  const [wbs, setWbs] = useState<string | undefined>(undefined)
+  const { data: docsRequired } = useDocsRequired()
+  const { data: wbsOptions } = useWbsOptions(site)
 
   const isAdmin = user?.role === 'admin'
   const isConsumption = kind === 'ocr_consumption'
@@ -132,6 +144,7 @@ export default function OcrImportPage() {
       const r = (await api.get(`/ai/jobs/${jobId}`)).data
       if (r.status === 'done' && r.result) {
         adopt(r.result)
+        if (lastFile) void attachPhoto(lastFile)
         setJobId(null)
         message.success('Photo read — review the rows below')
       } else if (r.status === 'error') {
@@ -204,6 +217,21 @@ export default function OcrImportPage() {
       return rs.map((x, i) => (wts[i] != null ? { ...x, work_type: wts[i] } : x))
     } catch {
       return rs
+    }
+  }
+
+  // the photographed paper becomes the entry's supporting document
+  const attachPhoto = async (file: File) => {
+    if (!site) return
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      fd.append('doc_type', isConsumption ? 'consumption' : 'receipt')
+      fd.append('site_id', site)
+      const r = await api.post<{ id: number; file_name: string }>('/entry/attachments', fd)
+      setDocs((d) => [...d, { id: r.data.id, file_name: r.data.file_name }])
+    } catch {
+      // the store keeper attaches it by hand below
     }
   }
 
@@ -308,14 +336,16 @@ export default function OcrImportPage() {
             Date: date.format('YYYY-MM-DD'), SAP_Code: r.SAP_Code,
             Quantity: Number(r.quantity), Site_ID: site,
             Issued_To: r.issued_to || null, Work_Type: r.work_type || null,
-            Remarks: 'OCR import',
+            Remarks: 'OCR import', wbs: wbs || null,
+            attachment_ids: docs.map((d) => d.id),
           })
         } else {
           await api.post('/entry/receipts', {
             Date: date.format('YYYY-MM-DD'), SAP_Code: r.SAP_Code,
             Quantity: Number(r.quantity), Site_ID: site,
             Supplier: header?.Mob_From || null,
-            Remarks: `OCR DN ${header?.DN_No || ''}`.trim(),
+            Remarks: `OCR DN ${header?.DN_No || ''}`.trim(), wbs: wbs || null,
+            attachment_ids: docs.map((d) => d.id),
           })
         }
         ok += 1
@@ -327,7 +357,7 @@ export default function OcrImportPage() {
     if (ok) message.success(`${ok} row(s) staged for HOD approval`)
     if (failed.length) message.warning(`${failed.length} row(s) failed — ${failed[0]}`)
     setRows((rs) => rs.filter((r) => !(r.SAP_Code && Number(r.quantity) > 0) || failed.length > 0))
-    if (!failed.length && ok) { setHeader(null) }
+    if (!failed.length && ok) { setHeader(null); setDocs([]) }
   }
 
   const invOptions = (inventory.data?.items ?? []).map((r: ApiRow) => ({
@@ -361,7 +391,7 @@ export default function OcrImportPage() {
             </span>
           )}
           {!r.SAP_Code && r.match_state === 'unknown' && isConsumption && (
-            <span data-testid="ocr-notfound" style={{ fontSize: 12, color: 'var(--ant-color-error, #cf1322)' }}>
+            <span data-testid="ocr-notfound" style={{ fontSize: 12, color: status.critical }}>
               “{r.material_text || '(blank)'}” is not in stock — choose the item, or type its SAP.
             </span>
           )}
@@ -426,6 +456,8 @@ export default function OcrImportPage() {
   // silently.
   const unresolved = useMemo(
     () => (isConsumption ? rows.filter((r) => !r.SAP_Code).length : 0), [rows, isConsumption])
+  const needDocs = docsRequired !== false && docs.length === 0
+  const needWbs = !!wbsOptions?.length && !wbs
   const nextUnresolved = () => {
     const el = document.querySelector('[data-ocr-unresolved="yes"]')
     el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -581,7 +613,11 @@ export default function OcrImportPage() {
         <>
           <Table sticky={{ offsetHeader: 64 }} size="small" columns={columns} dataSource={rows}
             rowKey={(r) => String(r._key)} pagination={false} scroll={{ x: 'max-content' }} />
-          <Space style={{ marginTop: 16 }} wrap>
+          <div style={{ marginTop: 16 }}>
+            <EntryDocsUpload docType={isConsumption ? 'consumption' : 'receipt'} siteId={site}
+              value={docs} onChange={setDocs} required={docsRequired !== false} />
+          </div>
+          <Space style={{ marginTop: 4 }} wrap>
             {isConsumption && (
               <Button icon={<SafetyCertificateOutlined />} onClick={specProcess}
                 loading={processing}>
@@ -596,6 +632,11 @@ export default function OcrImportPage() {
             <DatePicker value={date} allowClear={false} data-testid="ocr-date"
               status={isConsumption && !dateConfirmed ? 'warning' : undefined}
               onChange={(d) => { if (d) { setDate(d); setDateConfirmed(true) } }} />
+            {!!wbsOptions?.length && (
+              <Select placeholder="WBS Number" style={{ width: 160 }} value={wbs} onChange={setWbs}
+                data-testid="ocr-wbs" status={needWbs ? 'warning' : undefined}
+                options={wbsOptions.map((w) => ({ value: w, label: w }))} />
+            )}
             {isAdmin ? (
               <Select placeholder="Site" style={{ width: 150 }} value={site} onChange={setSite}
                 options={(sites ?? []).map((s) => ({ value: s, label: s }))} />
@@ -610,10 +651,13 @@ export default function OcrImportPage() {
             <Popconfirm title={`Stage ${readyCount} row(s) as ${isConsumption ? 'consumption' : 'receipt'} drafts?`}
               onConfirm={stage}>
               <Button type="primary" loading={staging} data-testid="ocr-stage"
-                disabled={readyCount === 0 || !site || unresolved > 0 || (isConsumption && !dateConfirmed)}>
+                disabled={readyCount === 0 || !site || unresolved > 0 || (isConsumption && !dateConfirmed)
+                  || needDocs || needWbs}>
                 {unresolved > 0 ? `Resolve ${unresolved} row(s) first`
                   : isConsumption && !dateConfirmed ? "Confirm the paper's date first"
-                    : `Stage ${readyCount} row(s) for HOD approval`}
+                    : needDocs ? 'Attach the paper first'
+                      : needWbs ? 'Choose the WBS first'
+                        : `Stage ${readyCount} row(s) for HOD approval`}
               </Button>
             </Popconfirm>
             <Button onClick={() => { setRows([]); setHeader(null); setPaperDate(null); setDateConfirmed(true) }}>
