@@ -12,6 +12,7 @@ import type { Row as ApiRow } from '../api/client'
 import { useSystemOverview } from '../api/hooks'
 import { AiTracesPanel } from './AiTracesPage'
 import PracticeResetCard from '../components/PracticeResetCard'
+import DriveSyncCard from '../components/DriveSyncCard'
 import { useInstance } from '../components/PracticeBanner'
 import KpiCard from '../components/KpiCard'
 import KpiRow from '../components/KpiRow'
@@ -553,6 +554,8 @@ export default function AdminConsolePage() {
           { key: 'lots', label: 'Lots', children: <LotsTab /> },
           { key: 'sites', label: 'Sites', children: <SitesTab /> },
           { key: 'settings', label: 'Settings', children: <SettingsTab /> },
+          // Phase 21c — Google Drive → workbooks → Excel sync (Q21-7..11).
+          { key: 'drive', label: 'Drive sync', children: <DriveSyncCard /> },
           { key: 'sessions', label: 'Sessions', children: <SessionsTab /> },
           { key: 'oversight', label: 'Oversight', children: <OversightTab /> },
           // Slice 11c. Shares its component with /admin/ai-traces, which is the

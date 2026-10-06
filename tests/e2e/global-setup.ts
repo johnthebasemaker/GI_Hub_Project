@@ -390,6 +390,8 @@ export default async function globalSetup() {
         ...process.env,
         GI_DOTENV: '0',
         GI_SCHEDULER: '0',
+        // Phase 21c: never the operator's real Drive token (deploy/gdrive_*.json)
+        GI_DRIVE_SECRETS_DIR: '/nonexistent-e2e-drive',
         JWT_SECRET,
         DATABASE_URL: ASYNC_DB_URL,
       },
@@ -418,6 +420,8 @@ export default async function globalSetup() {
         GI_INSTANCE: 'training',
         GI_DOTENV: '0',
         GI_SCHEDULER: '0',
+        // Phase 21c: never the operator's real Drive token (deploy/gdrive_*.json)
+        GI_DRIVE_SECRETS_DIR: '/nonexistent-e2e-drive',
         JWT_SECRET: PRACTICE_JWT_SECRET,
         DATABASE_URL: PRACTICE_DB_URL.replace('postgresql://', 'postgresql+asyncpg://'),
       },

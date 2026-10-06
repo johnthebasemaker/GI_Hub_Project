@@ -3569,6 +3569,50 @@ host runs `tools/tutorial_staleness.py --notify`, which stores the result here
 and rings the **admin** bell once for each new finding. **Check now** runs it on
 the spot when this server has git.
 
+## 7.15 Admin Console → Drive sync (Phase 21)
+
+**Where:** Admin Console → **Drive sync**. Admin only, and **Live only**:
+Practice has no Drive.
+
+GI Hub fetches the workbooks you back up to the Google Drive folder **CNCEC
+PROJECT Backup** by itself, and runs the Excel sync on them:
+
+| Workbook in Drive | Saved for the sync as | What happens |
+|---|---|---|
+| `CNCEC_Inventory_Smart.xlsm` | `CNCEC_Inventory.xlsx` | Converted from `.xlsm` (macros removed, **every value checked cell by cell**), then the ERP ledger is **dry-run only**. You press **Commit**. |
+| `Rubber & Brick Materials - CNCEC(<date>).xlsx` | `Rubber & Brick Materials  - CNCEC.xlsx` | The **newest date in the name** wins (day first: `04-10-2026`, `020726`). Dry-run with the ledger. |
+| `For_1_SQM.xlsx`, `Equipment.xlsx`, `Materials_DetailsAvailable_Qty.xlsx`, `Manpower_Hour_Details.xlsx` | same names | The SME estimator files **commit by themselves**. |
+
+Everything else in the folder (DN workbooks, POs, follow-up sheets, PDFs, the
+`~$…` lock files Excel leaves) is listed as *not used* and left alone.
+
+**Once: connect Drive.** Follow `docs/GDRIVE_SETUP.md` (about 15 minutes). It
+gives GI Hub **read-only** access to your Drive. It can never change, delete or
+share anything. To take access back, use Google's *Third-party access* page.
+
+**Every day at 07:30** the fetch runs by itself (if the Mac is awake). You get
+one bell notification: what was fetched, whether the SME files synced, and
+whether an ERP dry run is waiting.
+
+**On the card:**
+- **Fetch from Drive now** does the same at once. It takes a minute or two.
+- The last run lists each workbook fetched (and from which Drive file), any
+  file **refused** (a broken download, or a workbook missing a sheet the sync
+  needs; the previous file is kept), and the key lines of each sync, including
+  the *Lot problems* of §3.10.3.
+- **Commit ERP ledger** writes the receipts, consumption, returns and lots from
+  the fetched workbook into Live, exactly as the dry run showed. It is enabled
+  only while a dry run is waiting.
+
+The old copy of every workbook is kept in `.backups/workbooks/<date-time>/`
+before it is replaced. The same thing can be run from the terminal:
+
+```bash
+.venv/bin/python tools/gdrive_sync.py --list
+.venv/bin/python tools/gdrive_sync.py
+.venv/bin/python tools/gdrive_sync.py --commit-erp
+```
+
 # 8. Reports Module — Detailed Reference
 
 Available to: **Supervisor, HOD, Admin**. Site scope: locked for Supervisor + HOD; "All Sites" available to Admin.

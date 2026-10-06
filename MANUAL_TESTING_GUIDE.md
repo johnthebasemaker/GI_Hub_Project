@@ -4963,6 +4963,49 @@ one is wrong.
 Automated: service_tests **21B** (7 checks); 18m-05b updated (no-pace order is
 0, not the whole plan).
 
+## 21c. Phase 21c — Google Drive sync (rulings Q21-7..11)
+
+**Why this exists.** The operator backs up the workbooks to Drive and copied
+them to the Mac by hand, converting the `.xlsm` themselves. The pieces:
+- `services/drive_sync.py`: read-only Drive over httpx (no new dependency), the
+  folder by ID, day-first dates in names, a **structural** `.xlsm → .xlsx`
+  conversion verified cell by cell, atomic swaps with backups, and a manifest;
+- `tools/gdrive_sync.py`: the CLI, including `--auth`;
+- `drive_admin.py`: the Admin Console card and the 07:30 loop behind the daily
+  claim.
+
+⚠️ Never convert with an openpyxl re-save: it drops the cached formula values
+the importer reads (suite 21c-04 proves it).
+
+**TC-21C-01 — connect (operator, once).** Follow `docs/GDRIVE_SETUP.md`:
+- `--auth` ends with *token saved*;
+- `--list` shows the six targets and the files not used;
+- `git status` does not show `deploy/gdrive_*.json`.
+
+**TC-21C-02 — fetch.** Admin Console → Drive sync → *Fetch from Drive now*.
+Expected:
+- `CNCEC_Inventory.xlsx ← CNCEC_Inventory_Smart.xlsm (converted …)`;
+- the Rubber & Brick file with the newest date;
+- *SME files — committed*;
+- *ERP ledger — dry run*, and the gold tag *ERP dry run waiting for Commit*.
+
+The bell shows one Drive sync notice. `.backups/workbooks/<stamp>/` holds the
+old copies.
+
+**TC-21C-03 — nothing new.** Fetch again at once: *unchanged* for all six, and
+no sync run.
+
+**TC-21C-04 — commit.** Press *Commit ERP ledger* → confirm: *ERP ledger —
+committed*, and the gold tag goes. Records → Consumption shows the new rows.
+
+**TC-21C-05 — a bad file.** Upload a truncated or renamed workbook as
+`CNCEC_Inventory_Smart.xlsm`, then fetch. It is *refused* with the reason, and
+the previous `CNCEC_Inventory.xlsx` is untouched.
+
+**TC-21C-06 — Practice.** On Practice, the Drive sync tab says *Live only*.
+
+Automated: service_tests **21C** (11 checks); E2E `drive-sync.spec.ts`.
+
 ## 15. Do's and Don'ts
 
 ### Do
