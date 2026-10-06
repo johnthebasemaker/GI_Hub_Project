@@ -37,10 +37,22 @@ interface OcrRow extends ApiRow {
   qty_text?: string
   struck_through?: boolean
   SAP_Code: string
-  match_state: 'auto' | 'pick' | 'unknown'
+  // Phase 21d (Q21-5): 'suggested' is a GOLD match the store keeper must
+  // accept — only an exact or a learned match is 'auto' (green). 'pick' is the
+  // delivery-note lane's older state.
+  match_state: 'auto' | 'pick' | 'unknown' | 'suggested'
   candidates: { SAP_Code: string; Equipment_Description: string; score: number }[]
   markers?: string[]
   blocked?: boolean
+  match_source?: string | null
+  learned_count?: number
+  suggestion?: { SAP_Code: string; description: string; score: number; in_stock: boolean } | null
+}
+
+interface NameMatch {
+  written: string; state: 'auto' | 'suggested' | 'unknown'; sap: string | null
+  description: string | null; source: string | null; score: number; learned_count: number
+  candidates: { SAP_Code: string; Equipment_Description: string; score: number; in_stock: boolean }[]
 }
 
 interface HwRow {
@@ -58,7 +70,8 @@ interface HwSummary {
 
 interface DnHeader { DN_No: string; Date: string; Mob_From: string; Driver_Name: string; Vehicle_No: string; Prepared_by: string; Mob_To: string }
 
-const MATCH_COLOR = { auto: 'green', pick: 'gold', unknown: 'red' } as const
+const MATCH_COLOR = { auto: 'green', pick: 'gold', unknown: 'red', suggested: 'gold' } as const
+const MATCH_LABEL = { auto: 'matched', pick: 'pick', unknown: 'not found', suggested: 'check' } as const
 
 // 📷 OCR Import — the new-stack port of the legacy Daily Issue Log OCR lanes.
 // Photo lane: POST /ai/jobs → poll → review. Paste lane: instant + offline.
@@ -117,9 +130,52 @@ export default function OcrImportPage() {
     },
   })
 
+  // Phase 21d — the layered matcher (exact → learned → fuzzy) decides each
+  // consumption row's colour. Only exact / learned arrive with a SAP filled
+  // in; a suggestion waits for the store keeper's Accept (ruling Q21-5).
+  const rematch = async (rs: OcrRow[]) => {
+    if (!isConsumption || !rs.length || !site) return rs
+    try {
+      const r = await api.post('/ai/ocr/consumption-match', {
+        site_id: site, names: rs.map((x) => x.material_text ?? ''),
+      })
+      const ms = (r.data?.matches ?? []) as NameMatch[]
+      return rs.map((x, i) => {
+        const m = ms[i]
+        if (!m) return x
+        return {
+          ...x,
+          SAP_Code: m.state === 'auto' ? String(m.sap) : '',
+          match_state: m.state,
+          match_source: m.source,
+          learned_count: m.learned_count,
+          suggestion: m.state === 'suggested' && m.sap
+            ? { SAP_Code: m.sap, description: m.description ?? '', score: m.score,
+                in_stock: m.candidates[0]?.in_stock ?? true }
+            : null,
+          candidates: m.candidates.map((c) => ({
+            SAP_Code: c.SAP_Code, score: c.score,
+            Equipment_Description: `${c.Equipment_Description}${c.in_stock ? '' : ' — no stock here'}`,
+          })),
+        }
+      })
+    } catch {
+      return rs
+    }
+  }
+
+  // Accepting a suggestion, or picking an item by hand, TEACHES the matcher
+  // for this site (ruling Q21-3) — the next paper's same word is green.
+  const learn = (written: string, sap: string) => {
+    if (!isConsumption || !written.trim() || !sap || !site) return
+    api.post('/ai/ocr/aliases', { written, SAP_Code: sap, site_id: site }).catch(() => undefined)
+  }
+
   const adopt = (result: { rows?: OcrRow[]; items?: OcrRow[]; header?: DnHeader; date_text?: string }) => {
     // Stable per-row keys (rowKey by index is deprecated and reorders badly).
-    setRows((result.rows ?? result.items ?? []).map((r, i) => ({ ...r, _key: `r${i}` })))
+    const fresh = (result.rows ?? result.items ?? []).map((r, i) => ({ ...r, _key: `r${i}` }))
+    setRows(fresh)
+    void rematch(fresh).then(setRows)
     setHeader(result.header ?? null)
     setDateText(result.date_text ?? null)
     setTsv(null)
@@ -137,7 +193,7 @@ export default function OcrImportPage() {
         forms: [{ form_id: `form_${Date.now()}`, date_text: dateText, rows }],
       })
       const d = r.data as { rows: HwRow[]; tsv: string; summary: HwSummary }
-      setRows(d.rows.map((p, i) => ({
+      const specRows = d.rows.map((p, i) => ({
         _key: `h${i}`,
         material_text: p.product_name_raw ?? '',
         quantity: p.qty ?? 0,
@@ -152,7 +208,8 @@ export default function OcrImportPage() {
           score: (c.confidence ?? 0) / 100,
         })),
         markers: p.markers, blocked: p.blocked,
-      } as OcrRow)))
+      } as OcrRow))
+      setRows(await rematch(specRows))
       if (d.rows[0]?.date_iso) setDate(dayjs(d.rows[0].date_iso))
       setTsv(d.tsv ?? '')
       setHwSummary(d.summary)
@@ -231,7 +288,9 @@ export default function OcrImportPage() {
     { title: 'Match', dataIndex: 'match_state', width: 90,
       render: (v: OcrRow['match_state'], r) => (
         <Space size={4}>
-          <Tag color={r.blocked ? 'red' : MATCH_COLOR[v]}>{r.blocked ? 'blocked' : v}</Tag>
+          <Tag color={r.blocked ? 'red' : MATCH_COLOR[v]} data-testid={`ocr-state-${v}`}>
+            {r.blocked ? 'blocked' : r.match_source === 'learned'
+              ? `learned${r.learned_count ? ` ×${r.learned_count}` : ''}` : MATCH_LABEL[v]}</Tag>
           {(r.markers ?? []).map((m) => <span key={m}>{m}</span>)}
         </Space>
       ) },
@@ -239,9 +298,31 @@ export default function OcrImportPage() {
     {
       title: 'Material (SAP)', key: 'sap', width: 320,
       render: (_: unknown, r, i) => (
+        <Space direction="vertical" size={2} data-ocr-unresolved={!r.SAP_Code ? 'yes' : undefined}>
+          {!r.SAP_Code && r.match_state === 'suggested' && r.suggestion && (
+            <span data-testid="ocr-suggestion" style={{ fontSize: 12 }}>
+              Paper says “{r.material_text}” — did you mean <b>{r.suggestion.description}</b>{' '}
+              ({Math.round(r.suggestion.score * 100)}%{r.suggestion.in_stock ? '' : ', no stock here'})?{' '}
+              <Button size="small" type="primary" data-testid="ocr-accept"
+                onClick={() => {
+                  patch(i, { SAP_Code: r.suggestion!.SAP_Code, match_state: 'auto', match_source: 'accepted' })
+                  learn(r.material_text, r.suggestion!.SAP_Code)
+                }}>Accept</Button>
+            </span>
+          )}
+          {!r.SAP_Code && r.match_state === 'unknown' && isConsumption && (
+            <span data-testid="ocr-notfound" style={{ fontSize: 12, color: 'var(--ant-color-error, #cf1322)' }}>
+              “{r.material_text || '(blank)'}” is not in stock — choose the item, or type its SAP.
+            </span>
+          )}
         <Select showSearch size="small" style={{ width: 300 }} optionFilterProp="label"
-          value={r.SAP_Code || undefined} placeholder="Pick material"
-          onChange={(v) => patch(i, { SAP_Code: v, match_state: r.match_state === 'unknown' ? 'pick' : r.match_state })}
+          value={r.SAP_Code || undefined} placeholder={r.match_state === 'unknown' ? 'Choose the item' : 'Pick material'}
+          status={!r.SAP_Code && isConsumption ? (r.match_state === 'unknown' ? 'error' : 'warning') : undefined}
+          onChange={(v) => {
+            patch(i, { SAP_Code: v, match_state: isConsumption ? 'auto' : (r.match_state === 'unknown' ? 'pick' : r.match_state),
+                       match_source: isConsumption ? 'chosen' : r.match_source })
+            learn(r.material_text, v)
+          }}
           options={[
             ...r.candidates.map((c) => ({
               value: c.SAP_Code,
@@ -249,6 +330,7 @@ export default function OcrImportPage() {
             })),
             ...invOptions.filter((o: { value: string }) => !r.candidates.some((c) => c.SAP_Code === o.value)),
           ]} />
+        </Space>
       ),
     },
     {
@@ -262,7 +344,8 @@ export default function OcrImportPage() {
     { title: 'UOM', dataIndex: 'uom', width: 70, render: (v) => v || '—' },
     ...(isConsumption
       ? [{
-          title: 'Issued to', key: 'it', width: 150,
+          // the paper's Name column — the workbook's "Received by" (Q21-6)
+          title: 'Received by (name)', key: 'it', width: 160,
           render: (_: unknown, r: OcrRow, i: number) => (
             <Input size="small" value={r.issued_to}
               onChange={(e) => patch(i, { issued_to: e.target.value })} />
@@ -280,6 +363,16 @@ export default function OcrImportPage() {
 
   const readyCount = useMemo(
     () => rows.filter((r) => r.SAP_Code && Number(r.quantity) > 0).length, [rows])
+  // Phase 21d: a consumption row with no material yet (gold to accept, red to
+  // choose) holds the whole sheet back — or remove it. Nothing is skipped
+  // silently.
+  const unresolved = useMemo(
+    () => (isConsumption ? rows.filter((r) => !r.SAP_Code).length : 0), [rows, isConsumption])
+  const nextUnresolved = () => {
+    const el = document.querySelector('[data-ocr-unresolved="yes"]')
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    ;(el?.querySelector('input, button') as HTMLElement | null)?.focus()
+  }
   const polling = jobId != null && (job.data == null
     || job.data.status === 'queued' || job.data.status === 'running')
 
@@ -417,10 +510,16 @@ export default function OcrImportPage() {
             ) : (
               <Tag>{site}</Tag>
             )}
+            {unresolved > 0 && (
+              <Button data-testid="ocr-next-unresolved" onClick={nextUnresolved}>
+                Next to check ({unresolved})
+              </Button>
+            )}
             <Popconfirm title={`Stage ${readyCount} row(s) as ${isConsumption ? 'consumption' : 'receipt'} drafts?`}
               onConfirm={stage}>
-              <Button type="primary" disabled={readyCount === 0 || !site} loading={staging}>
-                Stage {readyCount} row(s) for HOD approval
+              <Button type="primary" disabled={readyCount === 0 || !site || unresolved > 0} loading={staging}
+                data-testid="ocr-stage">
+                {unresolved > 0 ? `Resolve ${unresolved} row(s) first` : `Stage ${readyCount} row(s) for HOD approval`}
               </Button>
             </Popconfirm>
             <Button onClick={() => { setRows([]); setHeader(null) }}>Discard</Button>

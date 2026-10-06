@@ -244,8 +244,8 @@ Plan, measurements and deviations: `PROPOSED_PHASE18_PLAN.md`.
 
 ## 2c. Phase 21 — lots, reorder, Drive (2026-10-06)
 
-Rulings Q21-1..24 (`PROJECT_HANDOVER.md` → *Phase 21*). Migration **`d1f7a3c9e2b4`**
-(`consumption` / `returns` `.Source_Sheet`, `.Source_Row`).
+Rulings Q21-1..24 (`PROJECT_HANDOVER.md` → *Phase 21*). Migrations **`d1f7a3c9e2b4`**
+(`consumption` / `returns` `.Source_Sheet`, `.Source_Row`) and **`e2a8c4f6b1d9`** (`ocr_aliases`).
 
 | Module | What |
 |---|---|
@@ -253,6 +253,7 @@ Rulings Q21-1..24 (`PROJECT_HANDOVER.md` → *Phase 21*). Migration **`d1f7a3c9e
 | `bulk_import._sheet_rows_xl` | Rows numbered by **Excel row** (`iter_rows(min_row=1)`); header in the first five NON-EMPTY rows. `_write_positions` stamps sheet/row after the upsert — a moved row is not an update. |
 | `dashboard.py` Top 5 Expiring | `SQL_LOT_BALANCE`, stock left only (Q21-19: never auto-closed). |
 | `services/smart_min.sqm_pace` | Approved SQM/day = paper-form entries **+ committed jobs** (`sme_attribution_group`) — D0. No pace → shown, not ordered (D2), no days of cover (D1); exact pack rate (D3); `Trail` per Surface Shield row. |
+| `ai/consumption_match.py` · `ocr_names.py` · `tools/ocr_eval.py` | 21d (alembic `e2a8c4f6b1d9`, `ocr_aliases`). A written product name → exact / learned (green) · fuzzy (GOLD, never auto — Q21-5) · nothing (red); stock-aware; learned per site on Accept/pick, HOD deletes (Q21-3). `consumption_semantic.py` (nomic-embed-text) is MEASURED only (Q21-4). The harness compares OCR with the workbook per DAY TOTAL (the Consumption Log aggregates per date, item, work type, tank; `PV` = `PU`); local vision only, photos git-ignored, no names printed. |
 | `services/drive_sync.py` · `drive_admin.py` · `tools/gdrive_sync.py` | Read-only Drive (httpx; folder by ID) → the six sync workbooks; **structural** `.xlsm → .xlsx` verified cell by cell (an openpyxl re-save drops cached values); atomic swap + `.backups/workbooks/`; SME commit / ERP dry run, the admin commits; 07:30 behind the daily claim; Live only. Secrets in git-ignored `deploy/gdrive_*.json`. |
 
 ## 3. Database facts that bite

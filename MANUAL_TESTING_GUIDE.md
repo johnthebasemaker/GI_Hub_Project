@@ -5006,6 +5006,57 @@ the previous `CNCEC_Inventory.xlsx` is untouched.
 
 Automated: service_tests **21C** (11 checks); E2E `drive-sync.spec.ts`.
 
+## 21d. Phase 21d — OCR measured against the workbook; the name matcher (Q21-1..6)
+
+**Why this exists.** The 11 photos of the *Safety & Production Consumables*
+papers (1–4 Oct, all of them, Q21-1) are already entered in the workbook. Pieces:
+- `tools/ocr_eval.py` runs them through the app's own pipeline (local vision,
+  cached per image + prompt), then compares the result with the Consumption Log
+  **per day total**. The workbook sums each (date, item, Work Type, tank), and
+  the paper's *Remarks* is the Work Type: `PV` = `PU`.
+- `ai/consumption_match.py` is the layered matcher: exact → learned →
+  fuzzy → optional embeddings.
+- `ocr_aliases` (alembic `e2a8c4f6b1d9`, **a Live migration — back up first**)
+  holds what the store keepers taught it.
+- The photos live in git-ignored `data-archive/ocr_ground_truth/`, and nothing
+  printed or saved contains a person's name.
+
+**TC-21D-01 — the three colours (Practice).** As practice.storekeeper, OCR
+Import → Paste → *Consumption log*. Paste the three lines from USER_MANUAL
+§3.17 → **Parse**:
+- *Nitril glovs* is green **learned ×3**;
+- *Safty goggls* is gold, with **Accept**;
+- *12 inch fan* is red;
+- Stage reads *Resolve 2 row(s) first*.
+
+**TC-21D-02 — accept teaches.** Press **Accept** on the gold row, choose any item
+for the red one: Stage enables. Discard, paste *Safty goggls* again → **Parse**:
+now green **learned ×1**.
+
+**TC-21D-03 — the HOD removes it.** As practice.hod, Approvals → **Learned OCR
+names**: *Safty goggls* is listed. **Remove** → confirm. Paste again as the store
+keeper: gold again. The audit log has `OCR_ALIAS_LEARN` and `OCR_ALIAS_DELETE`.
+
+**TC-21D-04 — Received by.** On a photo read, each row's **Received by (name)**
+holds the paper's *Name*, and is editable.
+
+**TC-21D-05 — measuring (Live box, Ollama on).** Run:
+
+```bash
+.venv/bin/python tools/ocr_eval.py --propose-aliases
+```
+
+About 40 minutes the first time; `--rescore` re-scores the cache in seconds. The
+scorecard `tests/ai_eval/ocr/scorecard.json` (numbers only) gives:
+- the pages, the dates read, the row states;
+- day-total precision / recall, fine and per (date, SAP).
+
+`.cache/ocr_eval/proposed_aliases.json` lists what the papers teach. Read it
+before loading any of it.
+
+Automated: service_tests **21D** (10 checks, frozen data — vision never runs in
+CI, P10-7).
+
 ## 15. Do's and Don'ts
 
 ### Do
