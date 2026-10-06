@@ -282,7 +282,11 @@ async def _resolve(kind: str, parsed: dict, session) -> dict:
         inventory_t.c["Material_Code"], inventory_t.c["UOM"]))).mappings().all()
     inventory = [dict(r) for r in inv_rows]
     if kind == "ocr_consumption":
-        return {"rows": fuzzy.resolve_rows(parsed["rows"], inventory)}
+        # the paper's date as written travels with the rows — until Phase 21d's
+        # follow-up it was dropped here, so a photographed page always opened
+        # on TODAY's date whatever the paper said
+        return {"rows": fuzzy.resolve_rows(parsed["rows"], inventory),
+                "date_text": str(parsed.get("date_text") or "").strip()}
     if kind == "ocr_purchase_doc":
         # A scanned purchase document carries the EXACT material code, so it
         # is matched on the code first and only falls back to fuzzy text.

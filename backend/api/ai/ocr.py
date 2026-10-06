@@ -634,12 +634,19 @@ def _looks_like_header(parts: list[str]) -> bool:
 
 
 def parse_consumption_paste(text: str) -> dict:
-    """Tab/comma/semicolon/pipe rows: Issued_To, Material, UOM, Qty, Work_Type.
+    """Tab/comma/semicolon/pipe rows: Issued_To, Material, UOM, Qty, Work_Type,
+    plus an optional `Date: DD/MM/YY` line (the paper's date box).
     Raises ValueError when nothing parses (endpoint → 422)."""
     if not (text or "").strip():
         raise ValueError("Paste at least one line.")
     rows = []
+    date_text = ""
     for raw_line in text.splitlines():
+        # "Date: 01/10/26" — the paper's date box, checked like a photo's
+        m = re.match(r"^\s*date\s*[:=]\s*(.+?)\s*$", raw_line, re.IGNORECASE)
+        if m:
+            date_text = m.group(1)
+            continue
         parts = _split_row(raw_line.strip())
         if not parts or _looks_like_header(parts) or len(parts) < 2:
             continue
@@ -650,7 +657,7 @@ def parse_consumption_paste(text: str) -> dict:
                      "work_type": parts[4] if len(parts) > 4 else ""})
     if not rows:
         raise ValueError("No data rows found.")
-    return {"rows": rows}
+    return {"rows": rows, "date_text": date_text}
 
 
 _DN_CANONICAL = {

@@ -8,6 +8,12 @@ tools/ocr_eval.py — measure the consumption-paper OCR against the workbook
     .venv/bin/python tools/ocr_eval.py --semantic           # also try the embedding layer (Q21-4)
     .venv/bin/python tools/ocr_eval.py --propose-aliases    # write the aliases the papers teach
 
+Every run scores the pages twice: RAW (the dates exactly as the model read
+them) and DATE-CHECKED (a page whose date is implausible takes the first date
+`paper_fields.check_paper_date` suggests — what a store keeper confirming the
+first suggestion gets). It prints a per-page date table and writes the
+committed scorecard `tests/ai_eval/ocr/scorecard.json` (counts only — no names).
+
 The operator's 11 photos of the *Safety & Production Consumables* papers for
 1–4 Oct 2026 are the baseline set (Q21-1). Their answers are already in
 `CNCEC_Inventory.xlsx` → Consumption Log.
@@ -53,15 +59,18 @@ DEFAULT_SET = _ROOT / "data-archive" / "ocr_ground_truth" / "2026-10-01_04"
 CACHE = _ROOT / ".cache" / "ocr_eval"
 SCORECARD = _ROOT / "tests" / "ai_eval" / "ocr" / "scorecard.json"
 
-# ── normalisation shared with suite 21D ──────────────────────────────────────
-WORK_TYPES = {"PV": "PU", "P/U": "PU", "PU": "PU", "RL": "R/L", "R/L": "R/L", "R / L": "R/L",
-              "BL": "B/L", "B/L": "B/L", "B / L": "B/L", "BLAST": "Blast", "BLASTING": "Blast",
-              "OTHERS": "Others", "OTHER": "Others"}
+# ── normalisation shared with the app (backend/api/ai/paper_fields.py) ───────
+from backend.api.ai.paper_fields import WORK_TYPES, check_paper_date  # noqa: E402,F401
+from backend.api.ai.paper_fields import norm_work_type as _app_work_type  # noqa: E402
 
 
 def norm_work_type(v) -> str:
-    s = re.sub(r"\s+", "", str(v or "")).upper()
-    return WORK_TYPES.get(s, WORK_TYPES.get(str(v or "").strip().upper(), str(v or "").strip()))
+    """The app's spelling, plus one equivalence only the COMPARISON needs: the
+    workbook writes the same work both "Blast" and "Blasting"."""
+    w = _app_work_type(v)
+    return "Blast" if w == "Blasting" else w
+
+PHOTO_DAY = _dt.date(2026, 10, 6)          # the day the 11 photos were uploaded
 
 
 def tank_key(v) -> str:
@@ -185,8 +194,24 @@ def to_form(parsed: dict, form_id: str) -> dict:
                      for r in parsed.get("rows", [])]}
 
 
+def date_checked(forms: list[dict], today: _dt.date = PHOTO_DAY) -> tuple[list[dict], list[dict]]:
+    """Each form with its date settled the way the app settles it: a plausible
+    date stays; an implausible one takes the FIRST suggestion. Returns (forms,
+    the per-page date table)."""
+    out, table = [], []
+    for f in forms:
+        chk = check_paper_date(f.get("date_text"), today)
+        used = chk["date_iso"] if chk["plausible"] else (
+            chk["candidates"][0]["date_iso"] if chk["candidates"] else None)
+        table.append({"page": f["form_id"], "read": chk["read"], "read_iso": chk["date_iso"],
+                      "plausible": chk["plausible"],
+                      "suggested": [c["label"] for c in chk["candidates"]], "used": used})
+        out.append(dict(f, date_iso=used) if used else dict(f))
+    return out, table
+
+
 def predictions(forms: list[dict], inventory, stock, *, aliases=None, semantic=None,
-                today: _dt.date = _dt.date(2026, 10, 6)):
+                today: _dt.date = PHOTO_DAY):
     """The deterministic half: ditto, corrections, quantities, the date — then
     the Phase 21d matcher. Returns (pred_rows, per-row match records)."""
     from backend.api.ai import consumption_match as CM
@@ -266,9 +291,10 @@ async def main() -> int:
         forms.append(to_form(parsed, f"page{i:02d}"))
 
     from backend.api.ai import handwritten as HW
-    dates = set()
+    checked_forms, date_table = date_checked(forms)
+    dates = {t["used"] for t in date_table if t["used"]}
     for f in forms:
-        d, _flag = HW.parse_form_date(f.get("date_text"), _dt.date(2026, 10, 6))
+        d, _flag = HW.parse_form_date(f.get("date_text"), PHOTO_DAY)
         if d:
             dates.add(d)
     inventory, stock, truth_rows = load_workbook(Path(a.workbook), dates)
@@ -283,18 +309,26 @@ async def main() -> int:
     pred, recs = predictions(forms, inventory, stock, aliases=aliases, semantic=semantic)
     truth = aggregate(truth_rows)
     sc = score(aggregate(pred), truth)
+    pred_c, recs_c = predictions(checked_forms, inventory, stock, aliases=aliases, semantic=semantic)
+    sc_c = score(aggregate(pred_c), truth)
     states = collections.Counter(r["state"] for r in recs)
     sources = collections.Counter(r["source"] for r in recs if r["source"])
     rows_total = len(recs)
-    pages_dated = sum(1 for f in forms if HW.parse_form_date(f.get("date_text"), _dt.date(2026, 10, 6))[0])
+    pages_dated = sum(1 for f in forms if HW.parse_form_date(f.get("date_text"), PHOTO_DAY)[0])
     card = {"at": _dt.datetime.now().isoformat(timespec="seconds"), "pages": len(forms),
-            "pages_dated": pages_dated, "dates": sorted(dates), "rows": rows_total,
-            "states": dict(states), "sources": dict(sources),
+            "pages_dated": pages_dated, "dates_used": sorted({t["used"] for t in date_table if t["used"]}),
+            "rows": rows_total, "states": dict(states), "sources": dict(sources),
             "aliases_applied": bool(aliases), "semantic": bool(semantic),
-            "day_totals": sc, "vision_seconds": timings}
+            "day_totals_raw": sc, "day_totals_date_checked": sc_c,
+            "pages_date_implausible": sum(1 for t in date_table if not t["plausible"]),
+            "date_table": date_table, "vision_seconds": timings}
     # the confusion list carries WRITTEN PRODUCT NAMES only — never a person
     confusion = collections.Counter((r["written"], r["state"], r["sap"]) for r in recs)
-    print(json.dumps(card, indent=1))
+    print(json.dumps({k: v for k, v in card.items() if k != "date_table"}, indent=1))
+    print("\npage    read                plausible  suggested                        used")
+    for t in date_table:
+        print(f"  {t['page']:<6} {t['read']!s:<19} {('yes' if t['plausible'] else 'NO'):<10} "
+              f"{', '.join(t['suggested']) or '—':<32} {t['used'] or '—'}")
     print("\nwritten name → state → SAP (count):")
     for (w, st, sap), n in sorted(confusion.items(), key=lambda x: -x[1])[:60]:
         print(f"  {n:>3} × {w!r:<28} {st:<9} {sap or '—'}")

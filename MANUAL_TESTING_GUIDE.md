@@ -5054,8 +5054,38 @@ scorecard `tests/ai_eval/ocr/scorecard.json` (numbers only) gives:
 `.cache/ocr_eval/proposed_aliases.json` lists what the papers teach. Read it
 before loading any of it.
 
-Automated: service_tests **21D** (10 checks, frozen data — vision never runs in
-CI, P10-7).
+**TC-21D-06 — the paper's date (Practice).** Paste, with the date line first:
+
+```
+Date: 01/07/26 (Night)
+Aria, Nitril glovs, Pair, 2, PV
+```
+
+→ **Parse**:
+- a gold box reads *The paper's date reads "01/07/26 (Night)" — N days ago*;
+- its first button is a date inside the last 14 days with the same day number
+  (on 6 Oct 2026: **01/10/26**), and there is a **Keep 01/07/26** button;
+- **Stage** reads *Confirm the paper's date first*;
+- the **Work type** column shows **PU** (written *PV*).
+
+Press the first date: the box goes, the date picker shows it, Stage enables.
+Discard and paste with today's date (`Date: DD/MM/YY`): no box; a grey line
+reads *Paper date "…" → today*.
+
+**TC-21D-07 — a photo keeps its date.** On a photographed page (Live box,
+Ollama on), the date picker opens on the **paper's** date, not today's. Before
+this follow-up the photo lane dropped the date.
+
+**TC-21D-08 — re-score (Live box, no Ollama needed).**
+`.venv/bin/python tools/ocr_eval.py --rescore` prints a per-page date table (read
+→ plausible → suggested → used) and two scores: **raw** and **date-checked**
+(each implausible page takes its first suggestion). On the 11-page set: 3 pages
+implausible, every first suggestion the true date; date+SAP precision
+0.417 → 0.614, recall 0.462 → 0.538. The committed
+`tests/ai_eval/ocr/scorecard.json` holds these numbers (no names).
+
+Automated: service_tests **21D** (10 checks) and **21D2** (8 checks), frozen
+data — vision never runs in CI, P10-7. E2E `ocr-match.spec.ts` (2 tests).
 
 ## 21e. Phase 21e — the UI design contract (rulings Q21-21..24)
 
