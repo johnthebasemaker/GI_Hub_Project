@@ -119,7 +119,11 @@ async def register(site_id: Optional[str] = Query(None), sap_code: Optional[str]
         rows = [r for r in rows if r["status"] != "exhausted"]
     rows.sort(key=lambda r: (r["SAP_Code"], _fefo_key(r)))
     exceptions = await LOTS.unknown_lots(session, site) if site is not None else []
+    # Phase 21a: row by row, with the workbook SHEET and ROW to fix — lots that
+    # do not exist and lots already used up. Reported, never blocked (Q21-18).
+    problems = await LOTS.lot_problems(session, site)
     return {"items": rows, "summary": summary, "exceptions": exceptions,
+            "problems": problems,
             "buckets": list(BUCKETS)}
 
 

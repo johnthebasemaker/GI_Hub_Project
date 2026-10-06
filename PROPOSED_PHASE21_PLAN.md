@@ -535,3 +535,59 @@ Every slice follows the standing order:
 - **Block a sync, a receipt or a FEFO pick** (the allow-and-log rulings stand).
 - **Add a second component library**, or grow the login critical path.
 - **Start or stop shared services without asking** (Ollama for the OCR baseline, Postgres when asleep).
+
+---
+
+## 11. Planned next (ruling Q21-10): DN copies, follow-up workbooks and MTCs from Drive
+
+*Added 2026-10-06 after the rulings. **Planning only.** Track 2's sync reads
+just the six workbooks. These three folders come next, as their own slices
+after 21g, on the same read-only Drive client.*
+
+What the folders hold (listed through the connector on 2026-10-06; names only,
+nothing opened):
+
+| Folder | What is in it | What GI Hub already has to receive it |
+|---|---|---|
+| **DN for CNCEC** | One workbook per return delivery note, named by number and date (`Return DN#023  (05-10-2026).xlsx`, `RDN# 013.xlsx`), plus photos of cash purchases | `returns."Return_DN_No"`, `delivery_notes` (warehouse → site DNs), the Return Log's `DN. No.` column |
+| **Pending Material Follow-up** | Requests made without a PR/PO (mail requests: `Request 22-09-2026.xlsx`, `August Request.xlsx`), received-and-pending tables (`Received and Pending supply … (21-07-26).xlsx`), and the summary `CNCEC_Indents Over all Supply and Pending Details.xlsx` | `pr_master` / PO tables, `services/procurement.py`, the PR-status report. A request without a PR has no home today |
+| **MTC** | Mill test certificates (PDF). The batch is often in the name (`… (BNO-3633,3542,3504).pdf`, `Carbon Filler_A1626.pdf`, `… 0426_0926.pdf`); sometimes only inside | `mtc_documents` (SAP, `Lot_Number`, file blob), the QC gate at issue (`assert_qc_cleared`), `lots."Expiry_Date"` with `Expiry_Source` |
+
+### 11.1 DN copies → "open the DN" from any return
+
+- **Index, don't import.** For each `Return DN#NNN (date).xlsx`, the sync keeps
+  a row `dn_files` (DN number, date from the name, Drive file ID,
+  `modifiedTime`).
+- **Linking.** A return line whose `Return_DN_No` matches gets a **View DN** link,
+  in Records → Returns and on the Return slip.
+- **Mismatches are reported, never fixed:**
+  - the DN workbook's lines are compared with the Return Log's lines for that DN
+    (SAP + qty);
+  - a difference is listed, as Track 4.3 does for lots, with sheet and row.
+- **Cash-purchase photos** are listed as attachments only.
+
+### 11.2 Requests without a PR, and the supply summary
+
+- **A new kind of demand: "Request (no PR)".** Read from the request workbooks:
+  date, material, qty, requester and the mail reference when present. It sits
+  beside PRs in the PR-status report, so "requested → received → pending" covers
+  everything ordered, however it was ordered.
+- **Received / pending:** computed from the ledger's receipts against the
+  request, by SAP and date window.
+- **The summary workbook** (*Over all Supply and Pending*) is used as a
+  **check**, not a source. Where its pending figure disagrees with GI Hub's, the
+  row is listed with sheet and row, as in 21a.
+- **Open question for then:** do these requests also reduce the reorder
+  suggestion (as on-order quantity does, Phase 19b), or only appear in reports?
+
+### 11.3 MTCs → certificate and exact expiry per batch
+
+1. **Match by name first.** Extract batch numbers from the file name (`BNO-3633,3542,3504` → three batches; `A1626`; `0426_0926` read as MFD 04/26, expiry 09/26) with the Phase 16 `norm_lot`. Each batch that matches a lot attaches the certificate to that lot (`mtc_documents.Lot_Number`).
+2. **Then look inside** when the name has no batch. Read the PDF's text layer (`ai/pdf_extract.py`, no vision model) for *Batch / Lot No.*, *Mfg / MFD*, *Exp / Expiry*. A scanned PDF with no text layer is queued for the OCR model (minutes per page) only on request.
+3. **Expiry from the certificate.**
+   - A certificate expiry fills `lots.Expiry_Date` with `Expiry_Source = 'mtc'`.
+   - It ranks above *derived* and the Lot Register file. It never overwrites an expiry typed in the app (the Phase 16 rule stands).
+   - A disagreement between sources is listed for QC, not resolved silently.
+4. **Coverage report.** A list of Surface Shield lots with **no certificate**, which the QC gate needs (your note: "maybe some materials MTC not available"). QC sees it; nothing is blocked beyond today's gate.
+
+**Why this order:** 11.3 first, since it feeds the QC gate and the exact expiry, which matters most for stock that ages. Then 11.1, a link and a check. Then 11.2, which needs a ruling on reorder.

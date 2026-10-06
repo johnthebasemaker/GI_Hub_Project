@@ -4872,6 +4872,59 @@ bulk-approve. Logistics → 403 on bulk-submit. 51 ids → 422.
 
 Automated: service_tests **20B** (7 checks); E2E `bulk.spec.ts`.
 
+## 21a. Phase 21a — lot fixes (brief Track 4)
+
+**Why this exists.** The dashboard's *Top 5 expiring lots* listed lots whose
+stock was all issued (it looked only at `Status = 'open'`). The Lots page could
+not be sorted. A workbook line naming a bad lot was listed only as a lot, with no
+row to fix. Now:
+- `dashboard.py` reads `stock.SQL_LOT_BALANCE`;
+- the Lots table sorts on every header;
+- `services/lots.plan_lot_problems` (dry run) and `lot_problems` (database) walk
+  each lot in date order;
+- ledger rows carry `Source_Sheet` / `Source_Row` (alembic `d1f7a3c9e2b4`, **a
+  Live migration — backup first**).
+
+**TC-21A-01 — the widget skips empty lots.** Practice as practice.hod, Dashboard.
+`PR-EMPTY` (expires in 5 days, nothing left) is **not** in *Top 5 expiring lots*.
+`PR-OLD` (expired, stock left) is, with a negative day count and a *Left* figure.
+
+**TC-21A-02 — sorting.** Lots & Expiry:
+1. Default order: the oldest expiry first.
+2. Click **Expiry**: the newest first, and lots without an expiry stay at the
+   bottom. The address bar shows `sort=exp&dir=desc`.
+3. Reload: the order is kept.
+4. Click **Status**: Expired first, then ≤ 30 days.
+5. Click **Remaining**, then **Material**: each sorts.
+
+**TC-21A-03 — lot problems with sheet and row.** Same page, bottom card *Lot
+problems from the workbook*:
+- `PR-TYPO`: *Consumption Log*, row **418**, *Lot not received*;
+- `PR-OVER`: row **414**, *Lot already used up*, hint "1 … more than the lot
+  received".
+
+**TC-21A-04 — dry run before the push.** As admin, run:
+
+```bash
+DATABASE_URL=… .venv/bin/python tools/pg_excel_sync.py --site CNCEC --kinds ledger
+```
+
+Expected:
+- the dry run prints *"N workbook row(s) name a lot that does not exist or is
+  already used up (e.g. Consumption Log row …)"*;
+- `--commit` still writes them (ruling Q21-18: warn, never block).
+
+The same list shows in Bulk Import → *Ledger backfill* → Dry-run.
+
+**TC-21A-05 — a moved row is not a change.** Insert an empty row near the top
+of the Consumption Log, then sync. The report shows 0 updated, and the problem
+rows show their new numbers (+1).
+
+**TC-21A-06 — QC stagnation counts returns.** As QC-HOD, a lot returned in full
+no longer appears as stagnant or expired stock.
+
+Automated: service_tests **21A** (12 checks); E2E `lots.spec.ts` (21a test).
+
 ## 15. Do's and Don'ts
 
 ### Do

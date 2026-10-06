@@ -570,7 +570,7 @@ export interface DashboardMetrics {
   // 2026-08-05 widgets. `days_left` goes NEGATIVE for a lot that has already
   // expired — those are shown, not hidden: FEFO is allow-and-log by standing
   // ruling, so this warns rather than blocks.
-  top_expiring: { lot: string; sap: string; name: string; expiry_date: string; days_left: number }[]
+  top_expiring: { lot: string; sap: string; site: string; name: string; expiry_date: string; days_left: number; remaining: number; uom: string }[]
   highest_value: { sap: string; name: string; qty: number; unit_cost: number; value: number }[]
   /** Unit_Cost is optional on the inventory master, so `highest_value` is a
    *  partial picture BY CONSTRUCTION. The coverage travels with the data so a

@@ -164,6 +164,12 @@ export default async function globalSetup() {
     + "to_char(current_date - 60, 'YYYY-MM-DD'), to_char(current_date + d, 'YYYY-MM-DD'), "
     + "'open', 'receipt' FROM (VALUES ('E2EOLD', -10), ('E2ESOON', 20), ('E2ELATE', 200)) v(l, d) "
     + "ON CONFLICT DO NOTHING", E2E_DB)
+  // Phase 21a: a consumption naming a lot no receipt brought in, as the Excel
+  // sync writes it — with its sheet and row (lots.spec.ts, "lot problems").
+  psql(
+    "INSERT INTO consumption (\"Date\", \"SAP_Code\", \"Quantity\", \"Site_ID\", \"Lot_Number\", "
+    + "\"Source_Sheet\", \"Source_Row\") VALUES (to_char(current_date - 3, 'YYYY-MM-DD'), "
+    + "'E2ELOT-1', 1, 'CNCEC', 'E2EBAD', 'Consumption Log', 777)", E2E_DB)
 
   // ── 1c. the SME tier-segregation fixture (sme-tiers.spec.ts) ─────────────
   // A purpose-built copy of the PHENACIN ACP POWDER shape that produced the

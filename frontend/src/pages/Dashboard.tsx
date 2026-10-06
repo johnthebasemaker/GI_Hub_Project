@@ -148,23 +148,26 @@ export default function Dashboard() {
           {/* A WARNING widget, never a block: FEFO stays allow-and-log by
               standing ruling, so already-expired lots are shown (negative
               days) rather than hidden — those are the ones needing a decision
-              today. */}
+              today. Phase 21a: only lots with stock LEFT — an issued-out lot is
+              not on a shelf, whatever its date. */}
           <Card title="Top 5 expiring lots" size="small">
             {metrics?.top_expiring?.length ? (
-              <Table size="small" pagination={false} rowKey={(r) => String(r.lot)}
+              <Table size="small" pagination={false} rowKey={(r) => `${r.lot}|${r.sap}|${r.site}`}
                 dataSource={metrics.top_expiring}
                 columns={[
                   { title: 'Lot', dataIndex: 'lot', width: 120 },
                   { title: 'SAP', dataIndex: 'sap', width: 90 },
                   { title: 'Material', dataIndex: 'name', ellipsis: true },
                   { title: 'Expires', dataIndex: 'expiry_date', width: 110 },
+                  { title: 'Left', dataIndex: 'remaining', width: 90, align: 'right',
+                    render: (v: number, r) => <span data-testid="expiring-left">{v} {r.uom}</span> },
                   { title: 'Days', dataIndex: 'days_left', width: 90, align: 'right',
                     render: (v: number) => (
                       <Tag color={v < 0 ? 'red' : v <= 30 ? 'orange' : 'default'}>
                         {v < 0 ? `${Math.abs(v)} overdue` : v}
                       </Tag>) },
                 ]} />
-            ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No dated lots" />}
+            ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No dated lots with stock left" />}
           </Card>
         </Col>
         <Col xs={24} lg={12}>

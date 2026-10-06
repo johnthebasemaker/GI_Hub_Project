@@ -717,9 +717,34 @@ oldest expiry first, with:
 Click a status at the top to show only those lots. **Show used-up lots** adds the
 lots with nothing left. A CHEMOLINE batch opens to show its rolls: when each was
 received, where it is, and for a used roll the day and tank it was issued to. A
-red banner warns when an expired lot still has stock. At the bottom, **Lots used
-but never received** lists lots the Consumption or Return Log names that no
-receipt brought in.
+red banner warns when an expired lot still has stock.
+
+**Sorting (Phase 21).** Click any column header to sort by it, and click again to
+reverse. **Expiry** and **MFD** keep lots with no date at the bottom either way.
+**Status** sorts by urgency (expired first, then ≤ 30, ≤ 60, ≤ 90 days, OK), not
+alphabetically. The sort is kept in the page's link (`?sort=exp&dir=desc`), so a
+link you send someone opens the same view.
+
+**Lot problems from the workbook (Phase 21).** At the bottom, a red card lists
+every Consumption Log or Return Log row that names a lot which is wrong, with the
+**sheet and the Excel row** to fix:
+
+| Problem | It means | Hint shown |
+|---|---|---|
+| **Lot not received** | No receipt of that material brought this lot in | the SAP that *does* carry a lot with that number, or the closest lot of this material (a typo) |
+| **Lot already used up** | Everything received of this lot was already issued or returned before this row | how much more than the lot received |
+
+The **Row** is the Excel row at the last sync. If you insert rows above it in
+Excel, it moves; the next sync shows the new number. A row entered in the app,
+not the workbook, says *entered in the app*. The stock still counts these rows:
+GI Hub never refuses a line because of its lot. Fix the workbook and sync again.
+The Admin sees the same list in the sync's dry run, before anything is written.
+
+**Dashboard → Top 5 expiring lots (Phase 21).** It lists only lots with stock
+**left** (received − consumed − returned), with a **Left** column. A lot whose
+stock is all issued is not on a shelf, whatever its date, so it no longer appears
+there. Lots are not closed automatically when they reach zero, because a return
+can bring stock back; they simply drop out of the list.
 
 **Issuing (the Issue form's Lot field).** For a lot-tracked material, the Lot
 field is a list of that material's open lots in **FEFO order**. Each shows its
@@ -760,7 +785,7 @@ Inventory → **Edit** has two settings:
 | You see… | It means… | What to do |
 |---|---|---|
 | a red **Expired** lot with stock left | The lot **was received**, its expiry has passed, and the ledger says some of it is still on the shelf. | Check the shelf. If it is there, ask the Admin to dispose of it or quarantine it. If it is not, an issue or return was never entered — enter it, or correct the workbook. |
-| a lot under **Lots used but never received** | The Consumption or Return Log names a lot that **no receipt of that material** brought in. The lot itself may be fine; usually the lot number or the SAP code on that line was typed wrong. The column *Received under SAP* shows the material that **did** receive a lot with that number. | Correct the line in the workbook (the lot, or the SAP code) and sync again. The stock already counts the line either way. |
+| a row under **Lot problems from the workbook** | The Consumption or Return Log names a lot that **no receipt of that material** brought in, or one that was already used up. The lot itself may be fine; usually the lot number or the SAP code on that line was typed wrong. The *Hint* shows the material that **did** receive a lot with that number, or the closest lot. | Open the workbook at the **sheet and row** shown, correct the line (the lot, the SAP code or the quantity) and sync again. The stock already counts the line either way. |
 
 An expired lot whose stock is all used shows **Used up**, not *Expired*, and
 appears only with **Show used-up lots** switched on. So when a lot shows
@@ -774,7 +799,10 @@ Practice (§26) has lots to try all of this on:
   `PR-LATE`.
 - **PRACTICE CHEMOLINE (899973)** has batch `1O26009999` with three rolls to pick.
 - One issue names lot `PR-TYPO`, which no receipt brought in, so the Lots & Expiry
-  page has a *used but never received* example.
+  page has a *Lot not received* example (Consumption Log, row 418).
+- `PR-EMPTY` expires within a week but has nothing left, so it is **not** in the
+  Dashboard's *Top 5 expiring lots*. `PR-OVER` received 2 and was issued three
+  times, so its third issue (row 414) is listed as *Lot already used up*.
 
 ## 3.11 What changed in September–October 2026 (Phases 14, 15 and 16)
 

@@ -175,6 +175,19 @@ def _sheet_rows(data: bytes, want: str | None, header_probe: tuple[str, ...],
                 required: bool = True) -> tuple[list[str], list[tuple]]:
     """Load one worksheet and find its header row (workbooks carry a title
     banner above the real header). Returns (headers, data_rows)."""
+    headers, rows, _first = _sheet_rows_xl(data, want, header_probe, required)
+    return headers, rows
+
+
+def _sheet_rows_xl(data: bytes, want: str | None, header_probe: tuple[str, ...],
+                   required: bool = True) -> tuple[list[str], list[tuple], int]:
+    """`_sheet_rows` plus the EXCEL row number of the first data row, so a
+    problem can be reported as "Consumption Log, row 5,581" (Phase 21a).
+
+    ⚠️ `iter_rows(min_row=1)` — never the default. In read-only mode the
+    default starts at the sheet's recorded `min_row`, so a sheet whose top
+    rows are empty would number every row too low; from row 1, list index + 1
+    IS the Excel row (checked against the real Consumption Log)."""
     import openpyxl
     try:
         wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
@@ -191,18 +204,26 @@ def _sheet_rows(data: bytes, want: str | None, header_probe: tuple[str, ...],
                 if required:
                     raise HTTPException(422, f"worksheet {want!r} not found "
                                              f"(has: {wb.sheetnames})")
-                return [], []
+                return [], [], 0
         else:
             ws = wb.worksheets[0]
-        rows = list(ws.iter_rows(values_only=True))
+        rows = list(ws.iter_rows(min_row=1, values_only=True))
     finally:
         wb.close()
     probe = {p.lower() for p in header_probe}
-    for i, row in enumerate(rows[:5]):
-        cells = {str(c).strip().lower() for c in row if c is not None}
+    # The header is within the first five NON-EMPTY rows (reading from row 1
+    # now includes blank rows above a banner, which must not use up the five).
+    seen = 0
+    for i, row in enumerate(rows):
+        cells = {str(c).strip().lower() for c in row if c is not None and str(c).strip()}
+        if not cells:
+            continue
         if probe <= cells:
             headers = [str(c).strip() if c is not None else "" for c in row]
-            return headers, rows[i + 1:]
+            return headers, rows[i + 1:], i + 2
+        seen += 1
+        if seen >= 5:
+            break
     raise HTTPException(422, f"header row not found (need columns {sorted(probe)})")
 
 
@@ -823,8 +844,8 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
     out["lots"] = lot_report = {"rows": 0, "multi": [], "roll_fixed": [],
                                 "roll_unknown": []}
     for kind, spec in _LEDGER_SHEETS.items():
-        headers, rows = _sheet_rows(data, spec["sheet"], ("sap code", "qty."),
-                                    required=False)
+        headers, rows, first = _sheet_rows_xl(data, spec["sheet"], ("sap code", "qty."),
+                                              required=False)
         section = {"inserts": [], "corrections": [], "updates": [],
                    "upserts": [], "stamps": [], "conflicts": [], "vanished": [],
                    "matched": 0, "adopted": 0, "relabelled": 0,
@@ -845,7 +866,9 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
                                    f"column(s): {', '.join(extra_cols)}")
 
         file_rows = []
-        for n, row in enumerate(rows, start=1):
+        # Phase 21a: `n` IS THE EXCEL ROW (it used to be the index below the
+        # header, so "row 12" in a reject was really row 14 of the sheet).
+        for n, row in enumerate(rows, start=first or 1):
             sap = _s(row[sap_i]) if sap_i is not None and sap_i < len(row) else None
             if not sap:
                 continue
@@ -880,9 +903,10 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
                     lot_report[it["note"]].append(
                         {"sheet": spec["sheet"], "row": n, "sap": sap,
                          "serial": row[colmap["Serial_No"]], "now": it["serial_no"]})
-            file_rows.append({"n": n, "vals": vals})
+            file_rows.append({"n": n, "vals": vals, "sheet": spec["sheet"]})
 
         table, ref = spec["table"], spec["ref"]
+        section["_file_rows"] = file_rows      # for the lot check; popped below
         db_rows = [dict(m) for m in (await session.execute(
             select(table).where(table.c["Site_ID"] == site_id)
             .order_by(table.c["id"]))).mappings().all()]
@@ -935,7 +959,8 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
                     section["zero_skipped"] += 1   # zero-qty history, no twin
                     continue
                 label = allocate(fr["_group"])
-                row = dict(v, Source_Ref=label)
+                row = dict(v, Source_Ref=label, Source_Sheet=fr.get("sheet"),
+                           Source_Row=fr.get("n"))
                 section["inserts"].append(row)
                 section["upserts"].append(row)
                 continue
@@ -983,7 +1008,8 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
                              "qty_to": v["Quantity"]})
                 else:
                     section["matched"] += 1
-            section["upserts"].append(dict(v, Source_Ref=label))
+            section["upserts"].append(dict(v, Source_Ref=label, Source_Sheet=fr.get("sheet"),
+                                           Source_Row=fr.get("n")))
 
         if bucket_plan:
             existing = {r.get("Source_Ref") for r in delta_rows}
@@ -1031,6 +1057,18 @@ async def plan_ledger(session: AsyncSession, data: bytes, site_id: str,
             out["warnings"].append(
                 f"{spec['sheet']}: {section['db_only']} DB row(s) have no workbook "
                 f"counterpart — left untouched (this importer never deletes)")
+    # Phase 21a (brief Track 4.3) — lots the workbook names that do not exist,
+    # or that are already used up, with the SHEET and ROW to fix. Reported,
+    # never blocked (ruling Q21-18): the consumption still counts.
+    file_by_kind = {k: sec.pop("_file_rows", []) for k, sec in out["sections"].items()}
+    out["lot_problems"] = await LOTS.plan_lot_problems(session, site_id, file_by_kind)
+    if out["lot_problems"]:
+        first_p = out["lot_problems"][0]
+        out["warnings"].append(
+            f"{len(out['lot_problems'])} workbook row(s) name a lot that does not exist or "
+            f"is already used up (e.g. {first_p['sheet']} row {first_p['row']}: lot "
+            f"{first_p['lot']} of SAP {first_p['sap']} — {first_p['problem_text']}). "
+            f"Pushed anyway (ruling Q21-18); fix the workbook and sync again")
     if lot_report["multi"]:
         out["warnings"].append(
             f"{len(lot_report['multi'])} Serial No. cell(s) hold SEVERAL lots "
@@ -1676,6 +1714,29 @@ async def restore_sqm_overrides(session: AsyncSession, site_id: str,
     return diverged
 
 
+async def _write_positions(session: AsyncSession, table, site_id, rows: list[dict]) -> None:
+    """`Source_Sheet` / `Source_Row` for every upserted row that carries one —
+    one `UPDATE … FROM (VALUES …)` per 500, touching only rows that moved."""
+    pos = [(r["Source_Ref"], r["Source_Sheet"], int(r["Source_Row"])) for r in rows
+           if r.get("Source_Row") and r.get("Source_Sheet") and r.get("Source_Ref")]
+    if not pos or site_id is None or "Source_Row" not in table.c:
+        return
+    tname = table.name
+    for i in range(0, len(pos), 500):
+        chunk = pos[i:i + 500]
+        params: dict = {"site": site_id}
+        vals = []
+        for j, (ref, sheet, row) in enumerate(chunk):
+            params[f"r{j}"], params[f"s{j}"], params[f"n{j}"] = ref, sheet, row
+            vals.append(f"(CAST(:r{j} AS text), CAST(:s{j} AS text), CAST(:n{j} AS integer))")
+        await session.execute(text(f'''
+            UPDATE {tname} t SET "Source_Sheet" = v.sheet, "Source_Row" = v.rn
+            FROM (VALUES {", ".join(vals)}) AS v(ref, sheet, rn)
+            WHERE t."Site_ID" = :site AND t."Source_Ref" = v.ref
+              AND (t."Source_Row" IS DISTINCT FROM v.rn
+                   OR t."Source_Sheet" IS DISTINCT FROM v.sheet)'''), params)
+
+
 async def apply_ledger(session: AsyncSession, plan: dict, username: str) -> dict:
     """Write a ledger plan. THE ONE WRITER — the HTTP import and
     `tools/pg_excel_sync.py` both call this, where they used to keep two copies.
@@ -1750,6 +1811,11 @@ async def apply_ledger(session: AsyncSession, plan: dict, username: str) -> dict
         counts["inserted"] += ins
         counts["updated"] += upd
         counts["unchanged"] += len(rows) - ins - upd
+        # Phase 21a — WHERE in the workbook each row is. Written AFTER the
+        # upsert and on its own, so a row that merely MOVED (rows inserted
+        # above it in Excel) is not counted as an update and does not re-link
+        # anything: a position is provenance, not data.
+        await _write_positions(session, table, plan.get("site_id"), rows)
         counts["updated_ids"][kind] = upd_ids
 
         # Phase 14b — link the delta rows just written, drop the ones no longer
