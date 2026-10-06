@@ -499,6 +499,13 @@ app.include_router(sla_router)
 app.include_router(drive_admin_router)
 # Phase 21d — the consumption-paper name matcher and the names it learned.
 app.include_router(ocr_names_router)
+# Phase 21f — the self-driving demo's server half. ⚠️ PRACTICE PROCESS ONLY
+# (ruling Q21-13): in Live these paths are not mounted at all — a 404, never
+# a 403 — because the role switch is a sign-in without a password.
+from .config import is_practice as _is_practice_mount  # noqa: E402
+if _is_practice_mount():
+    from .practice_demo import router as practice_demo_router  # noqa: E402
+    app.include_router(practice_demo_router)
 app.include_router(xsite_router, dependencies=_auth)
 app.include_router(console_public_router, dependencies=_auth)
 

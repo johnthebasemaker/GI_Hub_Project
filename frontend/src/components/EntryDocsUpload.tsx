@@ -140,7 +140,7 @@ export default function EntryDocsUpload({
       : { label: 'Supporting documents', hint: 'hand-written note / delivery note' }
 
   return (
-    <div style={{ marginBottom: 12 }}>
+    <div style={{ marginBottom: 12 }} data-testid="entry-docs">
       <Typography.Text strong>
         <PaperClipOutlined /> {heading.label}
         {required ? ` (required — ${heading.hint})` : ' (optional)'}

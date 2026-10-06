@@ -5133,6 +5133,63 @@ cd tests/e2e && GI_VISUAL_REPORT=1 npx playwright test specs/visual-report.spec.
 You get 24 images in `.results/visual-report/{dark,light}/`. It is a report,
 never a gate (Q21-24).
 
+## 21f. Phase 21f — the self-driving Practice demo (rulings Q21-12..17)
+
+**What it is.** `frontend/src/demo/` (a lazy chunk, Practice only): the runner
+(`engine.ts`), the voice (`voice.ts`), the two flows (`scripts.ts`) and the
+overlay (`DemoHost.tsx`). `backend/api/practice_demo.py` provides the catalogue,
+the 30-minute demo ticket, the role switch (never admin, audited) and the reset.
+It is mounted **only in the Practice process**. Overlay **v10** seeds
+`DEMO-TANK-1`.
+
+**TC-21F-01 — Live has none of it.** In Live: there is no ▶ Auto demo button, and
+`GET /practice/demo/catalog` is **404** (not 403).
+
+**TC-21F-02 — flow 1.** In Practice as `practice.storekeeper`: **▶ Auto demo** →
+*Issue stock, then the HOD approves it* → **▶ Start**. Watch it:
+- pick *Masking Tape*;
+- type 2, choose a WBS, type *Crew A* and a `DEMO-…` remark;
+- **Add to batch**, attach a slip, **Submit batch to HOD**;
+- switch to **practice.hod** (the top bar changes);
+- Approvals → Issues → approve the `DEMO-` line.
+
+The subtitle ends *Demo complete.* The audit log has two `PRACTICE_DEMO_SWITCH`
+rows.
+
+**TC-21F-03 — flow 2.** As `practice.supervisor`: *Surface Shield jobs* → Start.
+The two `DEMO-TANK-1` days are submitted, then approved by practice.hod. Lining
+Coverage for `DEMO-TANK-1` shows 10 m².
+
+**TC-21F-04 — take over.** Start a demo and click anywhere on the page: it
+pauses with **You took over — Resume**. Resume carries on; **Esc** stops it
+(*Demo stopped.*).
+
+**TC-21F-05 — reset.** As practice.hod: ▶ Auto demo → **Reset demo data** →
+confirm. No `DEMO-` issue is left, and `DEMO-TANK-1`'s two days are ready again
+(0 m² done). Run flow 2 again: it works.
+
+**TC-21F-06 — the assistant.** In Practice:
+- ask *"show me how to issue stock and get it approved"* → **▶ Run this demo**;
+  pressing it starts flow 1;
+- ask *"show me the Garnet benchmark"* → *I can't show that visually yet…*; Admin
+  Console → Feedback has one *Demo request* row, still one if you ask again
+  today;
+- as practice.qc, the issue demo is not offered (role fence).
+
+**TC-21F-07 — the voice.** Voice on, 1× speed: fixed sentences play the
+recorded Mac voice (`frontend/public/demo-audio/`). After editing a sentence,
+re-record:
+
+```bash
+.venv/bin/python tools/demo_voice.py
+```
+
+`--check` lists the sentences that have no clip yet. Missing clips are spoken
+by the browser; this is not a gate.
+
+Automated: service_tests **21F** (8 checks); E2E `demo.spec.ts` (Practice leg,
+3 tests, serial).
+
 ## 15. Do's and Don'ts
 
 ### Do

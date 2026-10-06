@@ -25,6 +25,8 @@ export default function HubAssistant() {
   const [health, setHealth] = useState<AiHealth | null>(null)
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [tutorial, setTutorial] = useState<TutorialHit | null>(null)
+  // Phase 21f — Practice only: the self-driving demo this question matches
+  const [demo, setDemo] = useState<{ id: string; title: string } | null>(null)
   const [nav, setNav] = useState<NavTarget | null>(null)
   const [table, setTable] = useState<DataTable | null>(null)
   const [q, setQ] = useState('')
@@ -56,6 +58,7 @@ export default function HubAssistant() {
     setBusy(true)
     setQueued(false)
     setTutorial(null)
+    setDemo(null)
     setNav(null)
     setTable(null)
     setMsgs((m) => [...m, { who: 'user', text: question }, { who: 'ai', text: '' }])
@@ -91,6 +94,7 @@ export default function HubAssistant() {
             if (ev.status === 'queued') setQueued(true)
             if (ev.token) { setQueued(false); appendToLast(ev.token) }
             if (ev.tutorial) setTutorial(ev.tutorial as TutorialHit)
+            if (ev.demo) setDemo(ev.demo as { id: string; title: string })
             if (ev.navigate) setNav(ev.navigate as NavTarget)
             if (ev.table) setTable(ev.table as DataTable)
             if (ev.error) appendToLast(ev.error)
@@ -179,6 +183,19 @@ export default function HubAssistant() {
             </Typography.Text>
           </Button>
         </Link>
+      )}
+      {/* Phase 21f (Q21-15) — a BUTTON, not an instant start: the click is
+          also what lets the browser speak. Practice only (the server sends a
+          demo frame only from the Practice process). */}
+      {demo && (
+        <Button size="small" type="primary" block data-testid="assistant-run-demo"
+          style={{ marginBottom: 8, height: 'auto', whiteSpace: 'normal', textAlign: 'left' }}
+          onClick={() => {
+            setOpen(false)
+            window.dispatchEvent(new CustomEvent('gi-demo-run', { detail: { id: demo.id } }))
+          }}>
+          ▶ Run this demo: {demo.title}
+        </Button>
       )}
       {(nav || table) && (
         <Suspense fallback={null}>

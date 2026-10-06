@@ -51,7 +51,7 @@ os.environ.setdefault("GI_DOTENV", "0")
 
 # Bumped when the OVERLAY's content changes. Reported with the tutorial
 # fixture's own DATASET_VERSION as "<fixture>.<overlay>".
-OVERLAY_VERSION = 9   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
+OVERLAY_VERSION = 10  # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
                       # · 4 = Phase 18 return desk loans (2026-10-03)
                       # · 5 = Phase 18 reorder-signal trio (2026-10-03)
                       # · 6 = Phase 19 accepted minimum · per-site / global POs ·
@@ -62,6 +62,8 @@ OVERLAY_VERSION = 9   # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry
                       #       workbook lot problems with a sheet and row (2026-10-06)
                       # · 9 = Phase 21d learned OCR names — the paste lane shows
                       #       green (learned), gold (suggested) and red (2026-10-06)
+                      # · 10 = Phase 21f the self-driving demo's own tank
+                      #       (DEMO-TANK-1, two READY days) (2026-10-06)
 
 SITE = "CNCEC"
 WAREHOUSE = "WH-01"
@@ -229,6 +231,10 @@ async def seed_queues() -> dict:
                 out["log_jobs"] = await seed_daily_log_jobs(today)
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  daily-log example skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["demo_jobs"] = await seed_demo_jobs(today)
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  demo-tank example skipped: {type(e).__name__}: {str(e)[:160]}")
             try:
                 out["lots"] = await seed_lots(today)
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
@@ -498,6 +504,58 @@ async def seed_daily_log_jobs(today: str) -> int:
                         username="practice.hod", site_id=SITE)
             made += 1
     return made
+
+
+DEMO_TAG = "DEMO-TANK-1"
+
+
+async def seed_demo_jobs(today: str) -> int:
+    """Phase 21f — the self-driving demo's OWN tank (flow 2, `ss-bulk`).
+
+    DEMO-TANK-1 on the Practice lining system (PRL1), with two days of
+    store-keeper draws whose remarks give the area — so both cards are READY
+    and the demo can select-all, submit, and have the HOD approve them. The
+    draws are NOT tagged (they are the store keeper's, and they stay); the
+    JOBS the demo files are on a DEMO- tank, so Reset demo data
+    (`practice_demo.reset_demo_data`) un-files them and takes their m² back —
+    the tank is ready for the next demo. Its own tank, so a trainee's work on
+    PRACTICE-TK-01 is never filed by a demo. Idempotent; Practice-only (P12-5).
+    """
+    import datetime as _d
+
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+
+    t0 = _d.date.fromisoformat(today)
+    day = lambda n: (t0 - _d.timedelta(days=n)).isoformat()      # noqa: E731
+    async with SessionLocal() as s:
+        if (await s.execute(text(
+                'SELECT 1 FROM sme_equipment WHERE "Equipment_Tag_No" = :t'), {"t": DEMO_TAG})).first():
+            return 0
+        if not (await s.execute(text(
+                'SELECT 1 FROM sme_recipe WHERE "Lining_System_Code" = :c LIMIT 1'), {"c": JOB_CODE})).first():
+            return 0        # seed_job_notes builds the system; nothing to file against
+        await s.execute(text(
+            'INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", "Name", "Type", '
+            '"Substrate", "Lining_System_Code", "Surface_Area_SQM", "Equipment_Total_SQM") '
+            "VALUES (:site, :t, 'Demo tank (self-driving demo)', 'CV', 'CONCRETE SUBSTRATE', "
+            ":c, 80, 80)"), {"site": SITE, "t": DEMO_TAG, "c": JOB_CODE})
+        await s.execute(text(
+            'INSERT INTO sme_sqm_progress ("Site_ID", "Equipment_Tag_No", "Lining_System_Code", '
+            '"Original_SQM", "Done_SQM") VALUES (:site, :t, :c, 80, 0)'),
+            {"site": SITE, "t": DEMO_TAG, "c": JOB_CODE})
+        # recipe PRL1: primer 0.35 + topcoat 0.6 KG/m² — both days on the recipe
+        for back, remark, primer, top in ((3, "Wall - 6 SQM Done", 2.1, 3.6),
+                                          (2, "Floor - 4 SQM Done", 1.4, 2.4)):
+            for sap, qty in ((JOB_SAPS[0][0], primer), (JOB_SAPS[1][0], top)):
+                await s.execute(text(
+                    'INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", '
+                    '"Tank_No", "Work_Type", "Issued_To", "Remarks") VALUES '
+                    "(:d, :p, :q, :site, :t, 'Lining', 'Demo crew', :r)"),
+                    {"d": day(back), "p": sap, "q": qty, "site": SITE, "t": DEMO_TAG, "r": remark})
+        await s.commit()
+    return 2
 
 
 ROLL_SAP = "899973"

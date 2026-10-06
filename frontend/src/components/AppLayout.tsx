@@ -21,6 +21,9 @@ import HubAssistant from './HubAssistant'
 // button. Loaded on first open instead — the critical-path check re-baselined
 // DOWN, deliberately.
 const QrScanner = lazy(() => import('./QrScanner'))
+// Phase 21f — the self-driving demo. PRACTICE ONLY and lazy: nothing of it is
+// fetched until ▶ Auto demo (or the assistant's ▶ Run this demo) is pressed.
+const DemoHost = lazy(() => import('../demo/DemoHost'))
 import { BARCODE_FORMATS, parseScanPayload } from '../lib/barcode'
 import NotificationBell from './NotificationBell'
 import WhatsNew from './WhatsNew'
@@ -115,6 +118,17 @@ export default function AppLayout() {
   useUnitSizesLoader()
   const { mode, toggle } = useThemeMode()
   const { message } = App.useApp()
+  const [demoReq, setDemoReq] = useState<{ n: number; id?: string; focus?: string } | null>(null)
+  useEffect(() => {
+    if (!isPractice()) return
+    const run = (e: Event) => setDemoReq({ n: Date.now(), id: (e as CustomEvent<{ id?: string }>).detail?.id })
+    window.addEventListener('gi-demo-run', run)
+    // ?demo=<id> opens the chooser on that demo; a click still starts it,
+    // because browsers only let a page speak after a person's gesture
+    const want = new URLSearchParams(window.location.search).get('demo')
+    if (want) setDemoReq({ n: Date.now(), focus: want })
+    return () => window.removeEventListener('gi-demo-run', run)
+  }, [])
   const level = user?.level ?? 0
   const isAdmin = user?.role === 'admin'
   // Admin "All areas" toggle — reveals operational groups beyond the curated
@@ -269,6 +283,12 @@ export default function AppLayout() {
             {!isMobile && <PracticeTag />}
           </Space>
           <Space size="middle" className="gi-header-actions">
+            {isPractice() && (
+              <Tooltip title="Watch the app run itself on Practice data">
+                <Button size="small" data-testid="demo-launch"
+                  onClick={() => setDemoReq({ n: Date.now() })}>▶ Auto demo</Button>
+              </Tooltip>
+            )}
             <Tooltip title="Jump to any page (⌘K / Ctrl-K)">
               <Button type="text" aria-label="Open command palette" icon={<SearchOutlined />}
                 onClick={() => window.dispatchEvent(new Event('gi-open-command-palette'))} />
@@ -327,6 +347,11 @@ export default function AppLayout() {
         </Content>
       </Layout>
       <CommandPalette />
+      {demoReq && (
+        <Suspense fallback={null}>
+          <DemoHost request={demoReq} onClose={() => setDemoReq(null)} />
+        </Suspense>
+      )}
       <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
       {scanOpen && (
         <Suspense fallback={null}>
