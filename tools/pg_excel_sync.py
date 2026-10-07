@@ -112,8 +112,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
+from pathlib import Path
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -563,7 +565,13 @@ async def main() -> int:
                          "missing that the workbook looks truncated")
     ap.add_argument("--user", default="pg-excel-sync",
                     help="username stamped on the audit rows")
+    ap.add_argument("--report-json", default=None,
+                    help="also write the run's counts as JSON to this path (Phase 22a: "
+                         "the Drive scheduler commits an ERP dry run by itself only when "
+                         "it would just ADD rows — ruling Q22-1)")
     args = ap.parse_args()
+    report: dict = {"commit": bool(args.commit), "kinds": {}, "rejects": 0,
+                    "lot_problems": 0, "stock_mismatches": None}
 
     if args.commit and args.dry_run:
         print("❌ --commit and --dry-run are mutually exclusive.")
@@ -702,8 +710,15 @@ async def main() -> int:
 
             if kind == "lots":
                 print_lot_plan(plan)
+                report["kinds"][kind] = {
+                    "lots_new": len(plan["lots"]), "lot_changes": len(plan["lot_changes"]),
+                    "units_new": plan["units_new"], "units_changed": plan["units_changed"],
+                    "receipt_fills": len(plan["receipt_fills"])}
             else:
                 print(f"      {format_summary(bi._summary(plan))}")
+                report["kinds"][kind] = bi._summary(plan)
+                report["rejects"] += len(plan.get("rejects", []))
+                report["lot_problems"] += len(plan.get("lot_problems") or [])
             if kind == "ledger" and plan.get("lots"):
                 # Phase 16 — `Serial No.` read by the item (services/lots.py)
                 _lr = plan["lots"]
@@ -922,6 +937,15 @@ async def main() -> int:
         if args.commit:
             await session.commit()
             print("\n✅ COMMITTED — one atomic transaction")
+            if "ledger" in kinds:
+                # Phase 22a: what the Lots page lists as "fixed since last
+                # sync", and the count the top bar shows
+                from backend.api.services import lots as _lots
+                _snap = await _lots.record_problem_snapshot(session, args.site)
+                await session.commit()
+                report["lot_problems_after_commit"] = _snap["count"]
+                print(f"   lot problems now {_snap['count']} "
+                      f"({len(_snap['fixed'])} fixed in the last day)")
         else:
             print("\n… dry-run only. Re-run with --commit to apply.")
 
@@ -931,6 +955,7 @@ async def main() -> int:
             ok = len(expected) - len(mismatches)
             print(f"\n== STOCK VERIFICATION: {ok}/{len(expected)} SAPs match "
                   f"the workbook's Current Stock ==")
+            report["stock_mismatches"] = len(mismatches)
             for sap, want, got in mismatches[:15]:
                 print(f"    ✗ {sap}: workbook={want} db={got}")
             if len(mismatches) > 15:
@@ -953,6 +978,9 @@ async def main() -> int:
                       f"tools/stock_excel_check.py --marked writes a marked copy")
 
     await engine.dispose()
+    if args.report_json:
+        report["exit_code"] = exit_code
+        Path(args.report_json).write_text(json.dumps(report, indent=1, default=str))
     return exit_code
 
 

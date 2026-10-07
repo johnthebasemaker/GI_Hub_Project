@@ -33,6 +33,7 @@ from backend import models  # noqa: E402
 
 from .admin import item_router as inventory_item_router  # noqa: E402
 from .lot_register import router as lot_register_router  # noqa: E402
+from .drive_admin import drive_router  # noqa: E402
 from .drive_admin import router as drive_admin_router  # noqa: E402
 from .ocr_names import router as ocr_names_router  # noqa: E402
 from .admin import router as admin_router  # noqa: E402
@@ -497,6 +498,7 @@ app.include_router(console_traces_router)
 app.include_router(sla_router)
 # Phase 21c — Google Drive → workbooks → Excel sync (admin; Live only).
 app.include_router(drive_admin_router)
+app.include_router(drive_router)
 # Phase 21d — the consumption-paper name matcher and the names it learned.
 app.include_router(ocr_names_router)
 # Phase 21f — the self-driving demo's server half. ⚠️ PRACTICE PROCESS ONLY

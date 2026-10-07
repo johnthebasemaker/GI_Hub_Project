@@ -46,6 +46,15 @@ os.environ.setdefault("GI_DOTENV", "0")
 # opt in with GI_TEST_OLLAMA_HOST=<url>; nothing here skips when it is absent.
 os.environ["OLLAMA_HOST"] = os.environ.get("GI_TEST_OLLAMA_HOST") or "http://127.0.0.1:9"
 
+# Hermetic Drive (Phase 22a): since 2026-10-07 the operator's real Drive token
+# lives in deploy/, and suite 21C's "run now" would then START A REAL FETCH —
+# overwriting the repo-root workbooks and running the Excel sync. Point the
+# Drive module at an empty folder, exactly as the E2E stack does. OVERRIDE, not
+# setdefault; must precede the `services.drive_sync` import (paths at import).
+os.environ["GI_DRIVE_SECRETS_DIR"] = "/nonexistent-service-test-drive"
+import tempfile as _tempfile  # noqa: E402
+os.environ["GI_DRIVE_CACHE_DIR"] = _tempfile.mkdtemp(prefix="gi-svc-drive-")
+
 # ⚠️ ORDER IS THE WHOLE MECHANISM. `db.py` builds its engine at import time from
 # whatever DATABASE_URL says at that instant, so the swap has to happen on the
 # line BEFORE it — not in main(), not in a fixture. Everything below this point
@@ -30673,6 +30682,419 @@ async def test_phase21c_drive_sync():
           f"{st.status_code} {hod.status_code} {aud.status_code} {runp.status_code} {runp.text[:120]}")
 
 
+async def test_phase22a_drive_plumbing():
+    """Suite 22A — Phase 22a: the Drive pull as an always-on service (rulings
+    Q22-1..6). Offline: a FAKE Drive. Pinned: every Drive call retried; a
+    refused token is its own error (the banner goes red); a download must match
+    Drive's md5; a sheet that shrank > 2 % is refused unless accepted; the
+    DN / MTC / Pending subfolders are crawled (Waste Disposal ignored) and cached
+    by md5; the ERP side auto-commits ONLY an additions-only dry run; the pull
+    times are validated and each slot is due once, catching up ≤ 3 h; the
+    freshness word; one recorded run end to end; the endpoints' roles; the
+    lot-problem snapshot ("fixed since last sync") and its Excel download."""
+    import datetime as _dtm
+    import hashlib as _hl
+    import io as _io
+    import json as _json
+    import tempfile
+    from pathlib import Path as _P
+
+    import openpyxl as _px
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from . import drive_admin as DA
+    from .services import drive_sync as DS
+    from .services import lots as LOTS
+
+    def tok(u, r, site=None):
+        return {"Authorization": f"Bearer {_auth._make_token(u, r, site, _auth.ACCESS_TTL)}"}
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+
+    async def q(sql, **kw):
+        async with SessionLocal() as s_:
+            return (await s_.execute(_t(sql), kw)).scalar()
+
+    # ── the client: retries, token errors ─────────────────────────────────────
+    class R:
+        def __init__(self, code, body=None, content=b""):
+            self.status_code, self._b, self.content = code, body or {}, content
+            self.headers = {"content-type": "application/json"}
+
+        def json(self):
+            return self._b
+
+    class ReadTimeout(Exception):
+        pass
+
+    class Http:
+        def __init__(self, script):
+            self.script, self.calls = list(script), 0
+
+        def _next(self):
+            self.calls += 1
+            x = self.script.pop(0)
+            if isinstance(x, Exception):
+                raise x
+            return x
+
+        def post(self, url, **kw):
+            return self._next()
+
+        def get(self, url, **kw):
+            return self._next()
+
+    with tempfile.TemporaryDirectory() as td:
+        tp, cp = _P(td) / "t.json", _P(td) / "c.json"
+        tp.write_text(_json.dumps({"refresh_token": "r"}))
+        cp.write_text(_json.dumps({"installed": {"client_id": "i", "client_secret": "s"}}))
+        slept: list = []
+        ok_tok = R(200, {"access_token": "a", "expires_in": 3600})
+        http = Http([ReadTimeout("t"), ok_tok, R(503), R(200, {"files": [{"id": "x"}]})])
+        c = DS.DriveClient(tp, cp, http=http, sleep=slept.append)
+        got = c.list_folder("F")
+        check("22a-01: every Drive call is RETRIED — a read timeout on the token and a 503 "
+              "on the listing are tried again with a pause, and the listing still arrives",
+              got == [{"id": "x"}] and http.calls == 4 and len(slept) == 2, f"{got} {http.calls} {slept}")
+        c2 = DS.DriveClient(tp, cp, http=Http([ReadTimeout("t")] * 3), sleep=slept.append)
+        try:
+            c2.list_folder("F")
+            gave_up = None
+        except DS.DriveError as e:
+            gave_up = str(e)
+        c3 = DS.DriveClient(tp, cp, http=Http([R(400, {"error": "invalid_grant"})]), sleep=slept.append)
+        try:
+            c3.list_folder("F")
+            tok_err = None
+        except DS.TokenError as e:
+            tok_err = str(e)
+        check("22a-02: three failures give up with a sentence; a REFUSED token is its own "
+              "error (TokenError) naming the 7-day Testing expiry and the --auth fix",
+              gave_up and "3 tries" in gave_up and tok_err and "7 days" in tok_err
+              and "--auth" in tok_err, f"{gave_up} | {tok_err}")
+
+    # ── arrival checks: md5 and shrinkage ─────────────────────────────────────
+    def _xlsx(rows_by_sheet):
+        wb = _px.Workbook()
+        first = True
+        for name, rows in rows_by_sheet.items():
+            ws = wb.active if first else wb.create_sheet()
+            ws.title = name
+            first = False
+            for r in rows:
+                ws.append(r)
+        b = _io.BytesIO()
+        wb.save(b)
+        return b.getvalue()
+
+    def inv(n):
+        return _xlsx({"Inventory": [["SAP CODE"]] + [[i] for i in range(5)],
+                      "Consumption Log": [["Date"]] + [[i] for i in range(n)],
+                      "Receipt Log": [["Date"]], "Return Log": [["Date"]]})
+
+    class Fake:
+        def __init__(self, tree, blobs):
+            self.tree, self.blobs, self.downloads = tree, blobs, 0
+
+        def list_folder(self, folder_id=None):
+            return self.tree.get(folder_id or DS.FOLDER_ID, [])
+
+        def download(self, fid):
+            self.downloads += 1
+            return self.blobs[fid]
+
+    def md5(b):
+        return _hl.md5(b).hexdigest()  # noqa: S324
+
+    big, small, other = inv(200), inv(150), inv(199)
+    with tempfile.TemporaryDirectory() as td:
+        dest, man, bk = _P(td) / "s", _P(td) / "m.json", _P(td) / "bk"
+        dest.mkdir()
+        f1 = {"id": "i1", "name": "CNCEC_Inventory_Smart.xlsx", "modifiedTime": "2026-10-07T10:00:00Z",
+              "md5Checksum": md5(big)}
+        fk = Fake({DS.FOLDER_ID: [f1]}, {"i1": big})
+        r1 = DS.fetch(fk, dest, manifest_path=man, backup_dir=bk)
+        rows1 = (r1["changed"] or [{}])[0].get("rows", {})
+        fk.tree[DS.FOLDER_ID] = [dict(f1, modifiedTime="2026-10-07T11:00:00Z", md5Checksum="0" * 32)]
+        fk.blobs["i1"] = other
+        r2 = DS.fetch(fk, dest, manifest_path=man, backup_dir=bk)
+        check("22a-03: each workbook ARRIVES CHECKED — the download matches Drive's md5 and "
+              "its sheet row counts are reported; a download that does not match is refused "
+              "and the previous file kept",
+              rows1.get("Consumption Log") == 201 and r1["changed"][0]["md5_checked"]
+              and [x["dest"] for x in r2["refused"]] == ["CNCEC_Inventory.xlsx"]
+              and "checksum" in r2["refused"][0]["reason"], f"{rows1} {r2['refused']}")
+        fk.tree[DS.FOLDER_ID] = [dict(f1, modifiedTime="2026-10-07T12:00:00Z", md5Checksum=md5(small))]
+        fk.blobs["i1"] = small
+        r3 = DS.fetch(fk, dest, manifest_path=man, backup_dir=bk)
+        r4 = DS.fetch(fk, dest, manifest_path=man, backup_dir=bk, accept_shrink=True)
+        check("22a-04: a sheet that SHRANK by more than 2 % (201 → 151 rows) is refused with "
+              "the numbers, and taken only when the operator accepts the smaller file",
+              r3["refused"] and r3["refused"][0].get("shrink") and "201 to 151" in r3["refused"][0]["reason"]
+              and [c["dest"] for c in r4["changed"]] == ["CNCEC_Inventory.xlsx"],
+              f"{r3['refused']} {r4['changed']}")
+        check("22a-04b: small losses pass (≤ 2 %, or ≤ 2 rows on a small sheet); a vanished "
+              "sheet does not",
+              DS.shrinkage({"A": 1000, "B": 10}, {"A": 985, "B": 8}) == []
+              and DS.shrinkage({"A": 30}, {}) != [], str(DS.shrinkage({"A": 30}, {})))
+
+    # ── the subfolders ────────────────────────────────────────────────────────
+    FOLD = DS.FOLDER_MIME
+    dn1, mtc1, req1, nest1 = b"jpeg-1", b"%PDF-1", b"PK-xlsx", b"jpeg-n"
+    tree = {
+        DS.FOLDER_ID: [
+            {"id": "fdn", "name": "DN for CNCEC", "mimeType": FOLD},
+            {"id": "fmtc", "name": "MTC", "mimeType": FOLD},
+            {"id": "fpen", "name": "Pending Material Follow-up", "mimeType": FOLD},
+            {"id": "fwd", "name": "Waste Disposal", "mimeType": FOLD},
+            {"id": "fxx", "name": "Photos 2025", "mimeType": FOLD},
+            {"id": "w1", "name": "Notes.xlsx"}],
+        "fdn": [{"id": "d1", "name": "DN# 13021-03052026.jpeg", "md5Checksum": md5(dn1)},
+                {"id": "dlock", "name": "~$RDN# 024.xlsx"},
+                {"id": "fsub", "name": "older", "mimeType": FOLD}],
+        "fsub": [{"id": "d2", "name": "DN# 15724 - 1.jpeg", "md5Checksum": md5(nest1)}],
+        "fmtc": [{"id": "m1", "name": "GI-CUMICRETE PU MF 300 (BNO-3504).pdf", "md5Checksum": md5(mtc1)}],
+        "fpen": [{"id": "p1", "name": "Request 22-09-2026.xlsx", "md5Checksum": md5(req1)}],
+        "fwd": [{"id": "x1", "name": "CNCEC-007.pdf"}],
+    }
+    blobs = {"d1": dn1, "d2": nest1, "m1": mtc1, "p1": req1}
+    fk = Fake(tree, blobs)
+    cr = DS.crawl(fk, tree[DS.FOLDER_ID])
+    kinds = sorted((f["kind"], f["name"]) for f in cr["files"])
+    check("22a-05: the DN, MTC and Pending Material Follow-up folders are read (a nested "
+          "folder too, Excel lock files never); Waste Disposal is IGNORED (Q22-22) and any "
+          "other folder is listed as not read",
+          kinds == [("dn", "DN# 13021-03052026.jpeg"), ("dn", "DN# 15724 - 1.jpeg"),
+                    ("mtc", "GI-CUMICRETE PU MF 300 (BNO-3504).pdf"),
+                    ("pending", "Request 22-09-2026.xlsx")]
+          and cr["ignored"] == ["Waste Disposal"] and cr["unknown"] == ["Photos 2025"], str(cr)[:300])
+    with tempfile.TemporaryDirectory() as td:
+        cdir = _P(td)
+        rows = DS.cache_files(fk, cr["files"], {}, cache_dir=cdir)
+        n1 = fk.downloads
+        known = {r["id"]: {"md5": r.get("md5Checksum")} for r in rows}
+        rows2 = DS.cache_files(fk, cr["files"], known, cache_dir=cdir)
+        changed = [dict(f, md5Checksum=md5(b"jpeg-1b")) if f["id"] == "d1" else f for f in cr["files"]]
+        blobs["d1"] = b"jpeg-1b"
+        rows3 = DS.cache_files(fk, changed, known, cache_dir=cdir)
+        blobs["m1"] = b"truncated"
+        bad = [dict(f, md5Checksum=md5(b"%PDF-2")) if f["id"] == "m1" else f for f in cr["files"]]
+        rows4 = DS.cache_files(fk, bad, {}, cache_dir=_P(td) / "x")
+        clock = iter([0.0, 0.0, 999.0, 999.0, 999.0, 999.0, 999.0])
+        rows5 = DS.cache_files(fk, cr["files"], {}, cache_dir=_P(td) / "y", budget_s=10,
+                               clock=lambda: next(clock))
+        st = lambda rs: sorted(r["state"] for r in rs)   # noqa: E731
+        check("22a-06: files are CACHED read-only by Drive id, verified by md5; a re-run "
+              "downloads nothing, a changed file is fetched again, a bad download is "
+              "'failed' (nothing written) and past the time budget the rest wait for 'later'",
+              st(rows) == ["new"] * 4 and n1 == 4 and st(rows2) == ["same"] * 4
+              and sorted(r["state"] for r in rows3 if r["id"] == "d1") == ["changed"]
+              and [r["state"] for r in rows4 if r["id"] == "m1"] == ["failed"]
+              and not (_P(td) / "x" / "mtc" / "m1.pdf").exists()
+              and "later" in st(rows5)
+              and (cdir / "dn" / "d1.jpeg").read_bytes() == b"jpeg-1b",
+              f"{st(rows)} {st(rows2)} {st(rows3)} {st(rows4)} {st(rows5)}")
+
+    # ── ERP auto-commit: additions only (Q22-1) ───────────────────────────────
+    add = {"kinds": {"inventory": {"inserts": 1, "updates": 0, "unchanged": 5, "rejects": 0},
+                     "ledger": {"consumption": {"inserts": 12, "updates": 0, "corrections": 0,
+                                                "conflicts": 0, "vanished": 0, "relabelled": 0}},
+                     "lots": {"lots_new": 1, "lot_changes": 0}}, "rejects": 0}
+    edit = _json.loads(_json.dumps(add))
+    edit["kinds"]["ledger"]["consumption"]["updates"] = 2
+    gone = _json.loads(_json.dumps(add))
+    gone["kinds"]["ledger"]["consumption"]["vanished"] = 1
+    lotc = _json.loads(_json.dumps(add))
+    lotc["kinds"]["lots"]["lot_changes"] = 3
+    check("22a-07: the ERP dry run is committed by itself ONLY when it just ADDS rows "
+          "(ruling Q22-1) — an edit, a removal, a lot change or no report at all waits for "
+          "the operator, each with its reason",
+          DS.additions_only(add) == (True, []) and DS.inserts_total(add) == 14
+          and DS.additions_only(edit)[0] is False and "2 updates" in DS.additions_only(edit)[1][0]
+          and DS.additions_only(gone)[0] is False and DS.additions_only(lotc)[0] is False
+          and DS.additions_only(None)[0] is False,
+          f"{DS.additions_only(edit)} {DS.additions_only(gone)}")
+
+    # ── the schedule (Q22-2) ──────────────────────────────────────────────────
+    try:
+        DS.clean_times(["25:00"])
+        bad_t = None
+    except ValueError as e:
+        bad_t = str(e)
+    N = _dtm.datetime
+    check("22a-08: pull times are validated (HH:MM, 1–6 a day, sorted, de-duplicated; "
+          "'7:30' accepted); a slot is due from its minute for 3 hours — a slot missed "
+          "while the server was down still runs — and the next slot is tomorrow's when "
+          "today's have passed; the default is 07:30 and 19:30",
+          DS.clean_times(["19:30", "7:30", "07:30"]) == ["07:30", "19:30"] and bad_t
+          and DS.due_slots(N(2026, 10, 8, 7, 29), ["07:30"]) == []
+          and DS.due_slots(N(2026, 10, 8, 9, 0), ["07:30"]) == [("07:30", N(2026, 10, 8, 7, 30))]
+          and DS.due_slots(N(2026, 10, 8, 10, 31), ["07:30"]) == []
+          and DS.due_slots(N(2026, 10, 9, 0, 30), ["22:00"]) == [("22:00", N(2026, 10, 8, 22, 0))]
+          and DS.next_slot(N(2026, 10, 8, 20, 0), ["07:30", "19:30"]) == N(2026, 10, 9, 7, 30)
+          and DS.parse_schedule(None)["times"] == ["07:30", "19:30"], str(bad_t))
+    fs = DS.freshness_status
+    now = N(2026, 10, 8, 12, 0)
+    okk = {"ok": True}
+    check("22a-09: the banner's word — practice, not connected, running, token (red), "
+          "failed, never, stale after 26 h (Q22-4), waiting for Commit (amber), ok",
+          [fs(practice=True, connected=True, running=False, last=okk, last_ok_at=None, now=now),
+           fs(practice=False, connected=False, running=False, last=None, last_ok_at=None, now=now),
+           fs(practice=False, connected=True, running=True, last=okk, last_ok_at=None, now=now),
+           fs(practice=False, connected=True, running=False, last={"ok": False, "token_error": True},
+              last_ok_at="2026-10-08T07:30:00", now=now),
+           fs(practice=False, connected=True, running=False, last={"ok": False},
+              last_ok_at="2026-10-08T07:30:00", now=now),
+           fs(practice=False, connected=True, running=False, last=None, last_ok_at=None, now=now),
+           fs(practice=False, connected=True, running=False, last=okk,
+              last_ok_at="2026-10-07T09:59:00", now=now),
+           fs(practice=False, connected=True, running=False, last={"ok": True, "erp_pending": True},
+              last_ok_at="2026-10-08T07:30:00", now=now),
+           fs(practice=False, connected=True, running=False, last=okk,
+              last_ok_at="2026-10-08T07:30:00", now=now)]
+          == ["practice", "not_connected", "running", "token", "failed", "never", "stale",
+              "pending_commit", "ok"])
+
+    # ── one recorded run, end to end, on a fake Drive ─────────────────────────
+    saved_paths = (DS.MANIFEST, DS.BACKUP_DIR, DS.SYNC_DIR, DS.CACHE_DIR)
+    saved_keys = {k: await q("SELECT value FROM app_settings WHERE key = :k", k=k)
+                  for k in (DA.LAST_KEY, DA.LAST_OK_KEY, DA.SCHEDULE_KEY)}
+    with tempfile.TemporaryDirectory() as td:
+        DS.MANIFEST, DS.BACKUP_DIR = _P(td) / "m.json", _P(td) / "bk"
+        DS.SYNC_DIR, DS.CACHE_DIR = _P(td) / "sync", _P(td) / "cache"
+        DS.SYNC_DIR.mkdir()
+        blobs.update({"d1": dn1, "m1": mtc1})
+        await ex("DELETE FROM drive_files WHERE drive_id IN ('d1','d2','m1','p1','gone1')")
+        await ex("INSERT INTO drive_files (drive_id, kind, name) VALUES ('gone1', 'dn', 'DN# 1.jpeg')")
+        n_runs = await q("SELECT COUNT(*) FROM drive_sync_runs")
+        try:
+            rep = await DA.run_once(trigger="test", user="sv22a", client_factory=lambda: Fake(tree, blobs))
+            n_files = await q("SELECT COUNT(*) FROM drive_files WHERE drive_id IN ('d1','d2','m1','p1') "
+                              "AND removed_at IS NULL AND cache_path IS NOT NULL")
+            gone = await q("SELECT removed_at IS NOT NULL FROM drive_files WHERE drive_id = 'gone1'")
+            n_runs2 = await q("SELECT COUNT(*) FROM drive_sync_runs")
+            last_ok = _json.loads(await q("SELECT value FROM app_settings WHERE key = :k", k=DA.LAST_OK_KEY))
+            check("22a-10: one run end to end on a fake Drive — no workbook matched so no sync "
+                  "runs, the 4 subfolder files are indexed and cached, a file gone from Drive "
+                  "is MARKED removed (kept), the run is RECORDED in drive_sync_runs and "
+                  "'last updated' is stamped",
+                  rep.get("ok") and n_files == 4 and gone and n_runs2 == n_runs + 1
+                  and last_ok.get("fetch_at") == rep["finished"]
+                  and rep["folders"]["kinds"]["dn"]["total"] == 2
+                  and rep["folders"]["ignored"] == ["Waste Disposal"],
+                  f"{rep.get('ok')} {n_files} {gone} {n_runs2 - n_runs} {str(rep.get('folders'))[:200]}")
+            fid = await q("SELECT id FROM drive_files WHERE drive_id = 'm1'")
+            await ex("INSERT INTO drive_files (drive_id, kind, name, cache_path) VALUES "
+                     "('sv22a-out', 'mtc', 'x.pdf', '/etc/hosts') ON CONFLICT (drive_id) DO NOTHING")
+            out_id = await q("SELECT id FROM drive_files WHERE drive_id = 'sv22a-out'")
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+                gf = await ac.get(f"/drive/files/{fid}", headers=tok("sv22a_sk", "store_keeper", "SV22A"))
+                go = await ac.get(f"/drive/files/{out_id}", headers=tok("sv22a_sk", "store_keeper", "SV22A"))
+                ga = await ac.get(f"/drive/files/{fid}")
+            check("22a-11: a cached file is served to a signed-in user (inline, its own type); "
+                  "a path outside the cache folder is NOT served, and nothing without a sign-in",
+                  gf.status_code == 200 and gf.content == mtc1 and "pdf" in gf.headers.get("content-type", "")
+                  and go.status_code == 404 and ga.status_code == 401,
+                  f"{gf.status_code} {go.status_code} {ga.status_code}")
+        finally:
+            DS.MANIFEST, DS.BACKUP_DIR, DS.SYNC_DIR, DS.CACHE_DIR = saved_paths
+            await ex("DELETE FROM drive_files WHERE drive_id IN ('d1','d2','m1','p1','gone1','sv22a-out')")
+            await ex("DELETE FROM drive_sync_runs WHERE by_user = 'sv22a'")
+
+    # ── the endpoints and their roles ─────────────────────────────────────────
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            fr = await ac.get("/drive/freshness", headers=tok("sv22a_sk", "store_keeper", "SV22A"))
+            pl_sk = await ac.post("/drive/pull", headers=tok("sv22a_sk", "store_keeper", "SV22A"))
+            pl_hod = await ac.post("/drive/pull", headers=tok("sv22a_hod", "hod", "SV22A"))
+            bad = await ac.put("/admin/drive-sync/schedule", headers=tok("sv22a_ad", "admin"),
+                               json={"times": ["7:3x"]})
+            hodp = await ac.put("/admin/drive-sync/schedule", headers=tok("sv22a_hod", "hod", "SV22A"),
+                                json={"times": ["06:00"]})
+            good = await ac.put("/admin/drive-sync/schedule", headers=tok("sv22a_ad", "admin"),
+                                json={"times": ["19:30", "6:15"], "enabled": True,
+                                      "auto_commit_additions": False})
+            st = await ac.get("/admin/drive-sync", headers=tok("sv22a_ad", "admin"))
+        aud = await q("SELECT COUNT(*) FROM system_audit_log WHERE username = 'sv22a_ad' "
+                      "AND action_type = 'drive_schedule'")
+        check("22a-12: 'Last updated from Drive' answers EVERY signed-in user (here: not "
+              "connected — CI has no token); Pull is admin + HOD only (Q22-3) and refused "
+              "until Drive is connected; the schedule is admin-only, validated, audited and "
+              "shown back with the history",
+              fr.status_code == 200 and fr.json()["status"] == "not_connected"
+              and fr.json()["can_pull"] is False
+              and pl_sk.status_code == 403 and pl_hod.status_code == 409
+              and bad.status_code == 422 and hodp.status_code == 403
+              and good.status_code == 200 and good.json()["times"] == ["06:15", "19:30"]
+              and st.json()["schedule"]["auto_commit_additions"] is False
+              and isinstance(st.json()["history"], list) and aud == 1,
+              f"{fr.status_code} {fr.text[:120]} {pl_sk.status_code} {pl_hod.status_code} "
+              f"{bad.status_code} {hodp.status_code} {good.status_code} {aud}")
+    finally:
+        for k, v in saved_keys.items():
+            if v is None:
+                await ex("DELETE FROM app_settings WHERE key = :k", k=k)
+            else:
+                await ex("UPDATE app_settings SET value = :v WHERE key = :k", k=k, v=v)
+        await ex("DELETE FROM system_audit_log WHERE username = 'sv22a_ad'")
+
+    # ── lot problems: fixed since last sync, the count, the download ──────────
+    saved_snap = await q("SELECT value FROM app_settings WHERE key = :k", k=LOTS.SNAPSHOT_KEY)
+    real = LOTS.lot_problems
+    p1 = {"kind": "consumption", "date": "2026-07-26", "sap": "1042", "lot": "3502", "qty": 2.0,
+          "problem": "unknown_lot", "sheet": "Consumption Log", "row": 759, "hint": "closest lot 3508",
+          "problem_text": "no receipt of this material brought this lot in"}
+    p2 = dict(p1, sap="1043", row=760)
+    try:
+        cur = [p1, p2]
+
+        async def fake_problems(session, site_id):
+            return list(cur)
+        LOTS.lot_problems = fake_problems
+        t0 = _dtm.datetime(2026, 10, 8, 7, 30)
+        async with SessionLocal() as s_:
+            a = await LOTS.record_problem_snapshot(s_, "SV22A", now=t0)
+            await s_.commit()
+        cur = [dict(p2, row=761)]               # p1 fixed; p2 MOVED a row — not a fix
+        async with SessionLocal() as s_:
+            b = await LOTS.record_problem_snapshot(s_, "SV22A", now=t0 + _dtm.timedelta(hours=12))
+            await s_.commit()
+            fx = await LOTS.recently_fixed(s_, "SV22A", now=t0 + _dtm.timedelta(hours=13))
+            fx_late = await LOTS.recently_fixed(s_, "SV22A", now=t0 + _dtm.timedelta(hours=40))
+            counts = await LOTS.problem_counts(s_)
+        check("22a-13: after each committed sync the lot problems are snapshotted by WHAT "
+              "they are (never the row — inserting a row in Excel moves it): one that is "
+              "gone is 'fixed' and shown for a day; the count feeds the top bar",
+              a["count"] == 2 and b["count"] == 1 and [f["sap"] for f in b["fixed"]] == ["1042"]
+              and len(fx) == 1 and fx_late == [] and counts.get("SV22A") == 1,
+              f"{a['count']} {b['count']} {b['fixed']} {fx} {counts}")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            x = await ac.get("/lot-register/problems.xlsx?site_id=SV22A",
+                             headers=tok("sv22a_sk", "store_keeper", "SV22A"))
+            reg = await ac.get("/lot-register?site_id=SV22A", headers=tok("sv22a_sk", "store_keeper", "SV22A"))
+            au = await ac.get("/lot-register/problems.xlsx", headers=tok("sv22a_au", "auditor"))
+        ws = _px.load_workbook(_io.BytesIO(x.content)).active if x.status_code == 200 else None
+        hdr = [c.value for c in ws[1]] if ws else []
+        r2_ = [c.value for c in ws[2]] if ws else []
+        check("22a-14: the problems download as Excel — sheet, row, date, SAP, lot, qty, "
+              "problem, what to change — for the store keeper, HOD and QC; the register "
+              "lists the fixed ones beside the open ones",
+              x.status_code == 200 and hdr[:2] == ["Sheet", "Row"] and r2_[1] == 761
+              and r2_[7] == "closest lot 3508" and reg.status_code == 200
+              and "problems_fixed" in reg.json() and au.status_code == 403,
+              f"{x.status_code} {hdr} {r2_} {reg.status_code} {au.status_code}")
+    finally:
+        LOTS.lot_problems = real
+        if saved_snap is None:
+            await ex("DELETE FROM app_settings WHERE key = :k", k=LOTS.SNAPSHOT_KEY)
+        else:
+            await ex("UPDATE app_settings SET value = :v WHERE key = :k", k=LOTS.SNAPSHOT_KEY, v=saved_snap)
+
+
 async def test_phase21d_ocr_match():
     """Suite 21D — Phase 21d: the consumption-paper matcher and what it learns
     (rulings Q21-1..6), on FROZEN data (the vision model never runs here, P10-7).
@@ -31505,6 +31927,9 @@ async def main() -> int:
     print("\n 21G. Phase 21g — flows 3–6: tagged rows removed, the settings a demo changes "
           "snapshotted at start and restored exactly by reset")
     await test_phase21g_demo_state()
+    print("\n 22A. Phase 22a — Drive as a service: retries, checked arrivals, the DN / MTC / "
+          "Pending folders cached, auto-commit only for additions, the pull times, the banner")
+    await test_phase22a_drive_plumbing()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

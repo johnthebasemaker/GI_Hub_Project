@@ -5006,6 +5006,66 @@ the previous `CNCEC_Inventory.xlsx` is untouched.
 
 Automated: service_tests **21C** (11 checks); E2E `drive-sync.spec.ts`.
 
+## 22a. Phase 22a — Drive as a service: schedule, Pull, freshness (rulings Q22-1..6)
+
+**What changed.** The Drive sync runs at the times set in the UI (07:30 and
+19:30), commits the ERP side by itself only when the dry run just ADDS rows,
+checks each file on arrival, reads the DN / MTC / Pending subfolders into a
+read-only cache, records every run, and shows "Last updated from Drive" on every
+page. Migration **`f3b9d2e7a4c1`** (`drive_files`, `drive_sync_runs`).
+
+**TC-22A-01 — the chip.** Sign in as a store keeper on Live. The top bar shows
+a cloud and **<time> today** (a red number on it = lot rows to fix); hover says
+*Last updated from Drive* and lists each workbook's Drive copy, the ERP commit time
+and the next pull. No **Pull** button. Sign in as HOD: **Pull** is there.
+
+**TC-22A-02 — Pull.** As HOD press **Pull**. The chip spins (*pulling…*), then
+returns to navy with the new time. Admin Console → Drive sync → **Recent
+pulls** has a row *pull (hod-user)*.
+
+**TC-22A-03 — additions commit by themselves.** Add a consumption row to the
+workbook in Drive, then Pull. The notice says *ERP ledger committed by itself
+— 1 new row(s)*; Records → Consumption shows it; no gold *waiting for Commit*.
+
+**TC-22A-04 — an edit waits.** Change the quantity of an existing workbook row,
+then Pull. The notice says *dry-run ready … (consumption: 1 updates)*; the
+chip is **amber** (*· Commit*); the card's **Commit ERP ledger** applies
+it.
+
+**TC-22A-05 — schedule.** On the card type `06:15, 19:30` → **Save**. *Pulls by
+itself* shows both times and the next one. `7:3x` is refused with a sentence.
+Switch the second toggle off: the line says the ERP ledger *always waits for
+you*. Put it back to `07:30, 19:30`, both toggles on.
+
+**TC-22A-06 — a shrunken workbook.** Upload a copy of `CNCEC_Inventory_Smart.xlsm`
+with 300 Consumption Log rows deleted, then Fetch. It is refused (*"Consumption
+Log" shrank from … to …*) and **Accept the smaller file** appears. Do not
+accept; restore the real file in Drive.
+
+**TC-22A-07 — folders.** After a pull, the card's **Folders** line counts DN
+for CNCEC, MTC and Pending Material Follow-up files. `ls .cache/drive/` has
+`dn/`, `mtc/`, `pending/`. Waste Disposal is not there.
+
+**TC-22A-08 — sign-in ended.** Rename `deploy/gdrive_token.json`, Pull. The
+chip turns **red** (*sign-in ended*) and its tooltip names `--auth`. Rename it
+back.
+
+**TC-22A-09 — lot problems.** Lots & Expiry → *Lot problems from the
+workbook* → **Download as Excel**: one row per problem, with *What to change*.
+Fix one row in the workbook, pull: the card shows *✅ 1 fixed since the last
+sync*, and the chip's count drops by one.
+
+**TC-22A-10 — terminal.** `.venv/bin/python tools/gdrive_sync.py` prints the
+same notice and appears in **Recent pulls** as *cli:<you>*.
+
+**TC-22A-11 — Practice and phones.** On Practice the chip is a grey cloud
+(*Practice data*), there is no Pull button, and the card says *Live only*. On a
+phone the chip sits at the top of the ☰ menu, and the top bar does not scroll
+sideways.
+
+Automated: service_tests **22A** (15 checks); E2E `drive-sync.spec.ts` (the chip
+and its roles, Practice).
+
 ## 21d. Phase 21d — OCR measured against the workbook; the name matcher (Q21-1..6)
 
 **Why this exists.** The 11 photos of the *Safety & Production Consumables*

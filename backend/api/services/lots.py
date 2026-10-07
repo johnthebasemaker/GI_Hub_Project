@@ -29,6 +29,7 @@ stays lot-less: re-tagging history would rewrite what the floor recorded.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import re
 from typing import Optional
 
@@ -415,3 +416,81 @@ async def expiry_notices(session: AsyncSession, *, today=None) -> dict:
                            related_ref=f"{site}:{today.isoformat()}", delivery="evening")
         sent += 1
     return {"sites": sent, "lots": len(rows)}
+
+
+# ── Phase 22a: "fixed since last sync" and the count for the top bar ─────────
+# A problem is identified by WHAT it is (kind, date, SAP, lot, qty, problem),
+# never by its row number — inserting a row in Excel moves every row below it,
+# and that is not a fix. Snapshot after every committed sync; a problem in the
+# previous snapshot that is gone now is listed ✅ for a day (plan §1.3).
+SNAPSHOT_KEY = "lot_problems_snapshot"
+FIXED_SHOWN_FOR = _dt.timedelta(hours=24)
+
+
+def problem_key(p: dict) -> str:
+    return "|".join(str(p.get(k) or "") for k in ("kind", "date", "sap", "lot", "qty", "problem"))
+
+
+async def _read_snapshot(session: AsyncSession) -> dict:
+    import json as _json
+    raw = (await session.execute(text("SELECT value FROM app_settings WHERE key = :k"),
+                                 {"k": SNAPSHOT_KEY})).scalar()
+    try:
+        return _json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+
+
+async def record_problem_snapshot(session: AsyncSession, site_id: str,
+                                  *, now: Optional[_dt.datetime] = None) -> dict:
+    """After a COMMITTED sync: store this site's problem keys and count, and
+    which of the previous ones are gone (fixed). Caller commits."""
+    import json as _json
+    now = now or _dt.datetime.now()
+    probs = await lot_problems(session, site_id)
+    snap = await _read_snapshot(session)
+    prev = snap.get(site_id) or {}
+    cur_keys = {problem_key(p): p for p in probs}
+    prev_items = prev.get("items") or {}
+    fixed = [dict(v, fixed_at=now.isoformat(timespec="seconds"))
+             for k, v in prev_items.items() if k not in cur_keys]
+    # keep yesterday's fixes visible until their day is up
+    still = [f for f in prev.get("fixed", [])
+             if f.get("fixed_at") and now - _dt.datetime.fromisoformat(f["fixed_at"]) < FIXED_SHOWN_FOR
+             and problem_key(f) not in cur_keys]
+    seen = {problem_key(f) for f in fixed}
+    fixed += [f for f in still if problem_key(f) not in seen]
+    snap[site_id] = {
+        "at": now.isoformat(timespec="seconds"), "count": len(probs), "fixed": fixed,
+        "items": {k: {kk: (str(vv) if isinstance(vv, (_dt.date, _dt.datetime)) else vv)
+                      for kk, vv in v.items() if kk in ("kind", "date", "sap", "lot", "qty",
+                                                         "problem", "sheet", "row", "hint")}
+                  for k, v in cur_keys.items()},
+    }
+    await session.execute(text(
+        "INSERT INTO app_settings (key, value) VALUES (:k, :v) "
+        "ON CONFLICT (key) DO UPDATE SET value = :v"),
+        {"k": SNAPSHOT_KEY, "v": _json.dumps(snap, default=str)})
+    return snap[site_id]
+
+
+async def recently_fixed(session: AsyncSession, site_id: Optional[str],
+                         *, now: Optional[_dt.datetime] = None) -> list[dict]:
+    now = now or _dt.datetime.now()
+    snap = await _read_snapshot(session)
+    sites = [site_id] if site_id else list(snap)
+    out = []
+    for s in sites:
+        for f in (snap.get(s) or {}).get("fixed", []):
+            try:
+                if now - _dt.datetime.fromisoformat(f["fixed_at"]) < FIXED_SHOWN_FOR:
+                    out.append(dict(f, site=s))
+            except (KeyError, ValueError):
+                continue
+    return out
+
+
+async def problem_counts(session: AsyncSession) -> dict[str, int]:
+    """Per site, from the last snapshot — cheap enough for the top bar."""
+    return {s: int(v.get("count") or 0) for s, v in (await _read_snapshot(session)).items()
+            if isinstance(v, dict)}
