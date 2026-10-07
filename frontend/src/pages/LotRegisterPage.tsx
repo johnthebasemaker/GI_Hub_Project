@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Alert, Card, Empty, Input, Space, Switch, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Empty, Input, Space, Switch, Tag, Typography } from 'antd'
 import type { ColumnsType, SortOrder } from 'antd/es/table/interface'
 import { Table } from '../lib/smartTable'
-import { useLotRegister, useLotUnits } from '../api/lotHooks'
+import { downloadLotProblems, useLotRegister, useLotUnits } from '../api/lotHooks'
 import type { LotRow } from '../api/lotHooks'
 import type { Row } from '../api/client'
 import { SiteFilter } from '../components/SiteField'
@@ -166,17 +166,26 @@ export default function LotRegisterPage() {
           expandedRowRender: (r) => <Rolls r={r} />,
         }} />
       </div>
-      {!!data?.problems?.length && (
-        <Card size="small" style={{ marginTop: 16 }} data-testid="lot-problems"
+      {!!(data?.problems?.length || data?.problems_fixed?.length) && (
+        <Card size="small" style={{ marginTop: 16 }} data-testid="lot-problems" id="lot-problems"
           title={<span style={{ color: tone.critical }}>
-            Lot problems from the workbook ({data.problems.length})</span>}>
+            Lot problems from the workbook ({data?.problems?.length ?? 0})</span>}
+          extra={<Button size="small" data-testid="lot-problems-xlsx"
+            onClick={() => { void downloadLotProblems(site || undefined) }}>
+            Download as Excel</Button>}>
           <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
             These rows name a lot that no receipt brought in, or a lot that was already used up.
             The stock still counts — fix the row in the workbook, then sync again. <b>Row</b> is the
             Excel row at the last sync: inserting rows above it moves it.
           </Typography.Paragraph>
+          {!!data?.problems_fixed?.length && (
+            <Alert type="success" showIcon style={{ marginBottom: 8 }} data-testid="lot-problems-fixed"
+              message={`✅ ${data.problems_fixed.length} fixed since the last sync`}
+              description={data.problems_fixed.map((f) =>
+                `${f.sheet ?? 'app'} row ${f.row ?? '—'} · SAP ${f.sap} · lot ${f.lot}`).join('  ·  ')} />
+          )}
           <Table size="small" pagination={{ pageSize: 20, hideOnSinglePage: true }}
-            dataSource={data.problems}
+            dataSource={data?.problems ?? []}
             rowKey={(r) => `${r.kind}|${r.id ?? ''}|${r.sheet ?? ''}|${r.row ?? ''}|${r.lot}`}
             columns={[
               { title: 'Sheet', dataIndex: 'sheet', key: 'sh', width: 140,

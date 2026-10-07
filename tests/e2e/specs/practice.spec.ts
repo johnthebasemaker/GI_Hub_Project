@@ -70,6 +70,10 @@ test('15c: Practice is violet, with a pulsing PRACTICE badge top-left on the log
     expect(await badge.evaluate((el) => getComputedStyle(el).animationName)).toBe('gi-practice-glow')
     expect(await page.locator('.gi-sider').evaluate((el) => getComputedStyle(el).backgroundImage))
       .toContain('rgb(42, 27, 61)')
+    // Phase 22a: Practice never pulls from Drive — the top bar says so, no Pull button
+    await expect(page.getByTestId('drive-freshness')).toHaveAttribute('data-status', 'practice')
+    await expect(page.getByTestId('drive-freshness')).toHaveAttribute('aria-label', 'Practice data')
+    await expect(page.getByTestId('drive-pull')).toHaveCount(0)
   })
 
 test('15c: under reduced motion the Practice badge stands still', async ({ browser }) => {

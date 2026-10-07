@@ -25,6 +25,8 @@ const QrScanner = lazy(() => import('./QrScanner'))
 // Phase 21f — the self-driving demo. PRACTICE ONLY and lazy: nothing of it is
 // fetched until ▶ Auto demo (or the assistant's ▶ Run this demo) is pressed.
 const DemoHost = lazy(() => import('../demo/DemoHost'))
+// Phase 22a — lazy: the top-bar Drive chip stays off the sign-in critical path
+const DriveFreshness = lazy(() => import('./DriveFreshness'))
 import { BARCODE_FORMATS, parseScanPayload } from '../lib/barcode'
 import NotificationBell from './NotificationBell'
 import WhatsNew from './WhatsNew'
@@ -254,6 +256,12 @@ export default function AppLayout() {
             rootClassName="gi-nav-drawer"
             styles={{ body: { padding: 0 } }}
           >
+            {/* Phase 22a: on a phone the Drive chip lives here — the top bar has no room */}
+            {user && (
+              <div style={{ padding: '12px 16px 0' }}>
+                <Suspense fallback={null}><DriveFreshness /></Suspense>
+              </div>
+            )}
             {navBody}
           </Drawer>
         ) : (
@@ -304,6 +312,8 @@ export default function AppLayout() {
                 {health ? 'API online' : 'API offline'}
               </Typography.Text>
             </span>
+            {/* Phase 22a: how fresh the workbook data is; admin / HOD can pull now */}
+            {user && !isMobile && <Suspense fallback={null}><DriveFreshness /></Suspense>}
             <Tooltip title={mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
               <Button type="text" aria-label="Toggle color theme"
                 icon={mode === 'dark' ? <SunOutlined /> : <MoonOutlined />} onClick={toggle} />

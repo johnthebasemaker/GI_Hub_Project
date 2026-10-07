@@ -5,7 +5,11 @@ Excel sync (Phase 21c, rulings Q21-7..11).
 
     .venv/bin/python tools/gdrive_sync.py --auth        # once: Google sign-in, read-only
     .venv/bin/python tools/gdrive_sync.py --list        # what would be fetched (downloads nothing)
-    .venv/bin/python tools/gdrive_sync.py               # fetch → SME commit → ERP dry run
+    .venv/bin/python tools/gdrive_sync.py               # the same run as the Pull button:
+                                                        # fetch → SME commit → ERP dry run →
+                                                        # ERP commit if it only ADDS rows (Q22-1)
+                                                        # → DN / MTC / request folders, recorded
+    .venv/bin/python tools/gdrive_sync.py --accept-shrink  # take a workbook that lost > 2 % rows
     .venv/bin/python tools/gdrive_sync.py --fetch-only  # fetch, no sync
     .venv/bin/python tools/gdrive_sync.py --commit-erp  # the operator's Commit: ERP ledger
 
@@ -25,7 +29,6 @@ import http.server
 import json
 import os
 import secrets
-import subprocess
 import sys
 import threading
 import urllib.parse
@@ -116,14 +119,18 @@ def _list() -> int:
           f"· {len(cls['lock_files'])} Excel lock file(s)")
     for n in cls["unused"]:
         print(f"      – {n}")
+    cr = DS.crawl(c, files)
+    by: dict[str, int] = {}
+    for f in cr["files"]:
+        by[f["kind"]] = by.get(f["kind"], 0) + 1
+    print("\n  subfolders read (Phase 22): " + (" · ".join(f"{k} {n}" for k, n in sorted(by.items()))
+                                            or "none found"))
+    if cr["ignored"]:
+        print(f"  ignored: {', '.join(cr['ignored'])}")
+    if cr["unknown"]:
+        print(f"  not read: {', '.join(cr['unknown'])}")
     return 0
 
-
-def _run_sync(argv: list[str]) -> tuple[int, str]:
-    env = dict(os.environ)
-    p = subprocess.run([sys.executable, *argv], cwd=str(_ROOT), env=env, text=True,
-                       capture_output=True)
-    return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
 def main() -> int:
@@ -134,6 +141,8 @@ def main() -> int:
     ap.add_argument("--commit-erp", action="store_true",
                     help="COMMIT the ERP ledger from the fetched workbook (the operator's click)")
     ap.add_argument("--site", default="CNCEC")
+    ap.add_argument("--accept-shrink", action="store_true",
+                    help="accept a workbook whose sheet lost more than 2 %% of its rows")
     a = ap.parse_args()
     if os.environ.get("GI_INSTANCE", "").lower() == "training":
         print("❌ Practice never syncs from Drive (rule 17).")
@@ -143,11 +152,9 @@ def main() -> int:
             return _auth()
         if a.list:
             return _list()
-        if a.commit_erp:
-            rc, out = _run_sync(DS.ERP_COMMIT)
-            print(out)
-            return rc
-        rep = DS.fetch(DS.DriveClient())
+        if not a.fetch_only:
+            return _recorded_run(commit_erp=a.commit_erp, accept_shrink=a.accept_shrink)
+        rep = DS.fetch(DS.DriveClient(), accept_shrink=a.accept_shrink)
     except DS.DriveError as e:
         print(f"❌ {e}")
         return 1
@@ -159,17 +166,47 @@ def main() -> int:
         print(f"  ❌ {r['dest']} ← {r['source']}: {r['reason']} — the previous file was kept")
     for n in rep["notes"]:
         print(f"  note: {n}")
-    if a.fetch_only:
-        return 1 if rep["refused"] else 0
-    rc_all = 1 if rep["refused"] else 0
-    for label, argv in DS.sync_commands(rep, a.site).items():
-        print(f"\n▶ {label}: {' '.join(argv)}")
-        rc, out = _run_sync(argv)
-        print(out[-6000:])
-        rc_all = rc_all or rc
-    if not rep["changed"]:
-        print("\nnothing new in Drive — no sync run")
-    return rc_all
+    return 1 if rep["refused"] else 0
+
+
+def _recorded_run(*, commit_erp: bool, accept_shrink: bool) -> int:
+    """Phase 22a: a terminal run is the SAME run as the Pull button — same
+    lock, same auto-commit rule, same subfolders — and it is RECORDED, so the
+    top bar's "Last updated from Drive" is never blank after a terminal run
+    (it was on 2026-10-07: the CLI wrote nothing to the database)."""
+    import asyncio
+    import getpass
+
+    from backend.api import drive_admin
+    try:
+        rep = asyncio.run(drive_admin.run_once(
+            trigger="cli", user=f"cli:{getpass.getuser()}", commit_erp=commit_erp,
+            accept_shrink=accept_shrink))
+    except RuntimeError:
+        print("❌ a Drive sync is already running (the Pull button, the schedule or another terminal)")
+        return 1
+    title, body = drive_admin._notice(rep)
+    print(f"▶ {title}\n  {body}")
+    f = rep.get("fetch") or {}
+    for c in f.get("changed", []):
+        rows = ", ".join(f"{k} {v:,}" for k, v in (c.get("rows") or {}).items())
+        print(f"  ✅ {c['dest']} ← {c['source']}{' (converted from .xlsm)' if c['converted'] else ''}"
+              f"{'  [' + rows + ']' if rows else ''}")
+    for r in f.get("refused", []):
+        print(f"  ❌ {r['dest']} ← {r['source']}: {r['reason']}")
+    for label, r in (rep.get("runs") or {}).items():
+        print(f"\n▶ {label} (exit {r['rc']})")
+        for ln in r["summary"]:
+            print(f"    {ln}")
+    fo = rep.get("folders") or {}
+    if fo.get("error"):
+        print(f"\n  folders: ❌ {fo['error']}")
+    for kind, c in (fo.get("kinds") or {}).items():
+        print(f"  folder {kind}: {c['total']} file(s) · new {c.get('new', 0)} · "
+              f"changed {c.get('changed', 0)} · failed {c.get('failed', 0)} · later {c.get('later', 0)}")
+    if rep.get("error"):
+        print(f"❌ {rep['error']}")
+    return 0 if rep.get("ok") else 1
 
 
 if __name__ == "__main__":

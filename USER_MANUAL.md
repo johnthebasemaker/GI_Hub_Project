@@ -740,6 +740,14 @@ not the workbook, says *entered in the app*. The stock still counts these rows:
 GI Hub never refuses a line because of its lot. Fix the workbook and sync again.
 The Admin sees the same list in the sync's dry run, before anything is written.
 
+**Working through them (Phase 22).** **Download as Excel** (top right of the
+card) gives the list as a workbook — sheet, row, date, SAP, lot, qty, the
+problem and *what to change* — to keep open beside the real workbook while you
+fix it. After the next sync, the rows you fixed show in a green **✅ fixed
+since the last sync** line for a day, so you can see the count go down. The top
+bar's Drive cloud carries a red number for how many are left; clicking it opens
+this card.
+
 **Dashboard → Top 5 expiring lots (Phase 21).** It lists only lots with stock
 **left** (received − consumed − returned), with a **Left** column. A lot whose
 stock is all issued is not on a shelf, whatever its date, so it no longer appears
@@ -3665,19 +3673,57 @@ PROJECT Backup** by itself, and runs the Excel sync on them:
 | `Rubber & Brick Materials - CNCEC(<date>).xlsx` | `Rubber & Brick Materials  - CNCEC.xlsx` | The **newest date in the name** wins (day first: `04-10-2026`, `020726`). Dry-run with the ledger. |
 | `For_1_SQM.xlsx`, `Equipment.xlsx`, `Materials_DetailsAvailable_Qty.xlsx`, `Manpower_Hour_Details.xlsx` | same names | The SME estimator files **commit by themselves**. |
 
-Everything else in the folder (DN workbooks, POs, follow-up sheets, PDFs, the
-`~$…` lock files Excel leaves) is listed as *not used* and left alone.
+Everything else at the top of the folder (POs, PDFs, the `~$…` lock files
+Excel leaves) is listed as *not used* and left alone. Since Phase 22 three
+**subfolders** are read too — **DN for CNCEC**, **MTC** and **Pending Material
+Follow-up** — and kept as read-only copies so anyone signed in can open a DN
+photo or a certificate without Drive access. **Waste Disposal** is ignored.
 
 **Once: connect Drive.** Follow `docs/GDRIVE_SETUP.md` (about 15 minutes). It
 gives GI Hub **read-only** access to your Drive. It can never change, delete or
 share anything. To take access back, use Google's *Third-party access* page.
 
-**Every day at 07:30** the fetch runs by itself (if the Mac is awake). You get
-one bell notification: what was fetched, whether the SME files synced, and
-whether an ERP dry run is waiting.
+**At the pull times** — 07:30 and 19:30 to start with — the fetch runs by
+itself (if the Mac is awake). Change the times on the card (**Pulls by
+itself**: type `07:30, 19:30`, **Save**; switch it off with the toggle). A time
+missed while the Mac was asleep still runs if it wakes within 3 hours. You get
+one bell notification per pull.
+
+**The ERP ledger commits by itself only when the pull just ADDS rows** (Phase
+22, ruling Q22-1) — new days of paper, new receipts. If the workbook would
+**edit or remove** a row GI Hub already holds, or reject one, the pull stops
+at the dry run, the notice says why (e.g. *consumption: 2 updates*), and you
+press **Commit ERP ledger**. The second toggle on the card turns the automatic
+commit off altogether.
+
+**Files are checked on arrival.** Each workbook must match Drive's own
+checksum, and the card shows its sheet sizes (*Consumption Log 6,139 →
+6,201*). A sheet that **shrank by more than 2 %** is refused and the old copy
+kept — a half-saved upload looks like that. If you deleted the rows on
+purpose, press **Accept the smaller file**.
+
+**The top bar on every page** shows a cloud and a time — **☁ 07:30 today** —
+the last time the workbook data arrived from Drive ("Last updated from Drive";
+hover it for the sentence). The tooltip also lists each workbook's Drive copy,
+when the ERP ledger was last committed and the next pull. Navy is fresh;
+**amber** means older than 26 hours (*(old)*), or ERP changes are waiting for
+your Commit (*· Commit*); **red** means the last pull failed or the Google
+sign-in ended (run `--auth` again — `docs/GDRIVE_SETUP.md`). On Practice it is
+a grey cloud (*Practice data*). A small **red number** on the cloud counts the
+workbook rows that name a bad lot — click it to go to §3.10.3. **Admin and
+HOD** also see **Pull**: the same run, now. On a phone the chip is at the top
+of the menu (☰).
+
+**Google sign-in.** The card says when the sign-in was saved. While the Google
+app is still in **Testing**, Google ends it after 7 days; publishing it once
+(`docs/GDRIVE_SETUP.md`, step 6 — the Branding page first) makes it last.
 
 **On the card:**
 - **Fetch from Drive now** does the same at once. It takes a minute or two.
+- **Recent pulls** lists the last ten: when, who or what started it (schedule,
+  Pull, the card, a terminal), what changed, and whether the ERP side
+  committed by itself.
+- **Folders** counts the DN, MTC and request files read.
 - The last run lists each workbook fetched (and from which Drive file), any
   file **refused** (a broken download, or a workbook missing a sheet the sync
   needs; the previous file is kept), and the key lines of each sync, including
@@ -3694,6 +3740,9 @@ before it is replaced. The same thing can be run from the terminal:
 .venv/bin/python tools/gdrive_sync.py
 .venv/bin/python tools/gdrive_sync.py --commit-erp
 ```
+
+A terminal run is the same run as **Pull** — same checks, same automatic
+commit rule — and it shows in **Recent pulls** and the top bar.
 
 # 8. Reports Module — Detailed Reference
 

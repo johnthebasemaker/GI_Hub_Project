@@ -122,9 +122,43 @@ async def register(site_id: Optional[str] = Query(None), sap_code: Optional[str]
     # Phase 21a: row by row, with the workbook SHEET and ROW to fix — lots that
     # do not exist and lots already used up. Reported, never blocked (Q21-18).
     problems = await LOTS.lot_problems(session, site)
+    # Phase 22a: the problems that disappeared at the last sync, shown ✅ for a day
+    fixed = await LOTS.recently_fixed(session, site)
     return {"items": rows, "summary": summary, "exceptions": exceptions,
-            "problems": problems,
+            "problems": problems, "problems_fixed": fixed,
             "buckets": list(BUCKETS)}
+
+
+@router.get("/problems.xlsx", summary="The workbook rows to fix, as Excel (Phase 22a)")
+async def problems_xlsx(site_id: Optional[str] = Query(None), user: dict = Depends(_READERS),
+                        session: AsyncSession = Depends(get_session)):
+    """Every lot problem with the sheet and row to change in the workbook —
+    what the operator fixes the workbook from. Rows are "the row at the last
+    sync": inserting rows in Excel moves them."""
+    import io
+
+    import openpyxl
+    from fastapi.responses import StreamingResponse
+    site = resolve_site_param(user, site_id)
+    probs = await LOTS.lot_problems(session, site)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Lot problems"
+    ws.append(["Sheet", "Row", "Date", "SAP", "Lot", "Qty", "Problem", "What to change"])
+    for p in sorted(probs, key=lambda x: (str(x.get("sheet") or ""), int(x.get("row") or 0))):
+        ws.append([p.get("sheet") or "(entered in the app)", p.get("row"), str(p.get("date") or "")[:10],
+                   p.get("sap"), p.get("lot"), p.get("qty"),
+                   p.get("problem_text") or p.get("problem"), p.get("hint") or ""])
+    for col, w in zip("ABCDEFGH", (18, 8, 12, 10, 16, 8, 44, 40)):
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = "A2"
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    name = f"lot-problems-{site or 'all'}-{_dt.date.today().isoformat()}.xlsx"
+    return StreamingResponse(
+        buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @router.get("/options", summary="Open lots of one material in FEFO order (Issue form)")

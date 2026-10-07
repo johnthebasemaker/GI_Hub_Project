@@ -24,9 +24,10 @@ ARCHITECTURAL RULES honoured here (see handoff.md SME Canon):
 from __future__ import annotations
 
 from sqlalchemy import (
-    Boolean, CheckConstraint, Column, DateTime, Float, ForeignKey, Index,
+    BigInteger, Boolean, CheckConstraint, Column, DateTime, Float, ForeignKey, Index,
     Integer, LargeBinary, Numeric, Text, UniqueConstraint, Uuid, text,
 )
+from sqlalchemy import Date as SADate
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -2775,6 +2776,50 @@ class OcrAliases(Base):
     updated_by = Column(Text)
     updated_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
     __table_args__ = (UniqueConstraint("Site_ID", "written_key", name="ux_ocr_aliases_site_key"),)
+
+
+class DriveFiles(Base):
+    """Phase 22a (alembic f3b9d2e7a4c1) — one row per file in the Drive backup
+    folder's DN / MTC / Pending Material Follow-up subfolders (rulings
+    Q22-6..12). Index, don't import: the file itself is a read-only copy at
+    `cache_path`. `parsed_key` is what the name links by (DN number, batch,
+    request date) — filled by slices 22b–22d."""
+    __tablename__ = "drive_files"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    drive_id = Column(Text, nullable=False)
+    kind = Column(Text, nullable=False)
+    folder = Column(Text)
+    name = Column(Text, nullable=False)
+    mime = Column(Text)
+    size = Column(BigInteger)
+    md5 = Column(Text)
+    modified_time = Column(Text)
+    cache_path = Column(Text)
+    parsed_key = Column(Text)
+    parsed_date = Column(SADate)
+    link_status = Column(Text)
+    first_seen = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    last_seen = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    removed_at = Column(DateTime)
+    __table_args__ = (UniqueConstraint("drive_id", name="ux_drive_files_drive_id"),
+                      Index("ix_drive_files_kind_key", "kind", "parsed_key"))
+
+
+class DriveSyncRuns(Base):
+    """Phase 22a (alembic f3b9d2e7a4c1) — the Drive sync's run history: the
+    schedule, the Pull button, the Admin card and the CLI all write one row."""
+    __tablename__ = "drive_sync_runs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    started_at = Column(DateTime, nullable=False)
+    finished_at = Column(DateTime)
+    trigger = Column(Text, nullable=False)
+    by_user = Column(Text)
+    kind = Column(Text, nullable=False)
+    ok = Column(Boolean)
+    files_changed = Column(Integer, server_default=text('0'))
+    erp_auto_committed = Column(Boolean, server_default=text('false'))
+    report = Column(Text)
+    __table_args__ = (Index("ix_drive_sync_runs_started", "started_at"),)
 
 
 class LotTransfers(Base):
