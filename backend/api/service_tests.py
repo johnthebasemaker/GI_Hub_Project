@@ -31095,6 +31095,167 @@ async def test_phase22a_drive_plumbing():
             await ex("UPDATE app_settings SET value = :v WHERE key = :k", k=LOTS.SNAPSHOT_KEY, v=saved_snap)
 
 
+async def test_phase22b_dn_links():
+    """Suite 22B — Phase 22b: DN copies on receipts and returns, WD numbers
+    (rulings Q22-6..9). Pinned on the REAL file names in the Drive folder: a
+    receipt's DN and a file name reduce to one key; DN. Copy links its exact
+    file; cash purchases and return DNs link; an equipment photo is 'other' and
+    an unmatched DN is 'unlinked' (never guessed); a delivery without a DN gets
+    ONE WD number per delivery, allocated once, never renumbered; the Return
+    Log's DN. No. is imported; a return DN's lines and total are checked."""
+    import io as _io
+    import tempfile
+    from pathlib import Path as _P
+
+    import openpyxl as _px
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from . import bulk_import as _bi
+    from .services import drive_links as DL
+
+    def tok(u, r, site=None):
+        return {"Authorization": f"Bearer {_auth._make_token(u, r, site, _auth.ACCESS_TTL)}"}
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+
+    async def q(sql, **kw):
+        async with SessionLocal() as s_:
+            return (await s_.execute(_t(sql), kw)).scalar()
+
+    K = DL.dn_file_key
+    check("22b-01: real Drive names reduce to the receipt's key — dated, '- 1' copies, a stray "
+          "dot, a lettered DN, cash purchases, return DNs; equipment photos and 'Other Cash "
+          "Purchase' are not DNs",
+          [K(n)[0] for n in ("DN# 13021-03052026.jpeg", "DN# 15724 - 1.jpeg", "DN# 15784..jpeg",
+                             "DN# GI-RLP-SAR-348.jpeg", "Cash Purchase 8.jpeg", "RDN# 024.xlsx",
+                             "Return DN#023 Format (05-10-2026).xlsx", "GI-PG-1165.jpeg",
+                             "Other Cash Purchase - 1.jpeg")]
+          == ["dn:13021", "dn:15724", "dn:15784", "dn:GIRLPSAR348", "cp:8", "rdn:24", "rdn:23", None, None]
+          and K("DN# 13021-03052026.jpeg")[1].isoformat() == "2026-05-03"
+          and [DL.dn_key(x) for x in ("13021", 13021.0, "CP 8", "GI/RLP/SAR-348", "WD", "From SAR", None)]
+          == ["dn:13021", "dn:13021", "cp:8", "dn:GIRLPSAR348", None, None, None]
+          and DL.rdn_key("GI/RL/CNCEC-024") == "rdn:24")
+
+    S = "SV22B"
+    cdir = _P(tempfile.mkdtemp(prefix="gi-22b-"))
+    names = {"f1": "DN# 13021-03052026.jpeg", "f2": "Cash Purchase 8.jpeg",
+             "f3": "DN# 15623-29042026.pdf", "f4": "DN# 99999.jpeg", "f5": "GI-PG-1165.jpeg",
+             "f6": "RDN# 024.xlsx"}
+
+    def rdn_book(qtys):
+        wb = _px.Workbook()
+        ws = wb.active
+        ws.append(["REF NO.", "GI/RL/CNCEC-024", "DATE", "2026-10-06"])
+        ws.append(["Supplied the Following:"])
+        ws.append(["S.No.", "Item Description", "Unit", "Quantity", "Remarks"])
+        for i, x in enumerate(qtys, 1):
+            ws.append([i, f"Item {i}", "Cans", x, "Return"])
+        ws.append(["Total", None, None, sum(qtys)])
+        ws.append(["Prepared By", "someone"])
+        b = _io.BytesIO()
+        wb.save(b)
+        return b.getvalue()
+
+    async def cleanup():
+        await ex("DELETE FROM receipt_wd WHERE \"Site_ID\" = :s", s=S)
+        await ex("DELETE FROM receipts WHERE \"Site_ID\" = :s", s=S)
+        await ex("DELETE FROM returns WHERE \"Site_ID\" = :s", s=S)
+        await ex("DELETE FROM drive_files WHERE drive_id LIKE 'sv22b-%'")
+    await cleanup()
+    try:
+        for k, n in names.items():
+            p = cdir / f"{k}{_P(n).suffix}"
+            p.write_bytes(rdn_book([43, 1, 1, 1, 1]) if k == "f6" else b"x")
+            await ex("INSERT INTO drive_files (drive_id, kind, name, mime, cache_path) "
+                     "VALUES (:d, 'dn', :n, :m, :p)", d=f"sv22b-{k}", n=n,
+                     m="image/jpeg" if n.endswith("jpeg") else None, p=str(p))
+        rows = [("2026-05-03", "13021", None, None), ("2026-08-01", "CP 8", None, None),
+                ("2026-04-29", "15623", "DN for CNCEC\\DN# 15623-29042026.pdf", None),
+                ("2026-09-01", "WD", None, "1234 ABC"), ("2026-09-01", "WD", None, "1234 ABC"),
+                ("2026-09-02", "WD", None, "1234 ABC"), ("2026-09-03", None, None, None)]
+        for d, dn, cp, veh in rows:
+            await ex('INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID", "DN_No", '
+                     '"DN_Copy", "Vehicle_No") VALUES (:d, \'1001\', 1, :s, :dn, :cp, :v)',
+                     d=d, s=S, dn=dn, cp=cp, v=veh)
+        for qty in (43, 1, 1, 1):                       # the Return Log has 4 of the DN's 5 lines
+            await ex('INSERT INTO returns ("Date", "SAP_Code", "Quantity", "Site_ID", "DN_No", '
+                     '"Source_Sheet", "Source_Row") VALUES (\'2026-10-06\', \'1049\', :q, :s, \'24\', '
+                     "'Return Log', 20)", q=qty, s=S)
+        async with SessionLocal() as s_:
+            out = await DL.link_dn(s_)
+            await s_.commit()
+        st = {}
+        for k in names:
+            st[k] = await q("SELECT link_status FROM drive_files WHERE drive_id = :d", d=f"sv22b-{k}")
+        async with SessionLocal() as s_:
+            wd = (await s_.execute(_t(
+                'SELECT r."Date", w.wd_no FROM receipt_wd w JOIN receipts r ON r.id = w.receipt_id '
+                'WHERE w."Site_ID" = :s ORDER BY r."Date", r.id'), {"s": S})).all()
+        check("22b-02: files LINK when a receipt or return names them (DN number, cash purchase, "
+              "the exact DN. Copy file, a return DN); an equipment photo is 'other' and a DN no "
+              "receipt names is 'unlinked' — listed, never guessed (Q22-7)",
+              st == {"f1": "linked", "f2": "linked", "f3": "linked", "f4": "unlinked",
+                     "f5": "other", "f6": "linked"} and out["linked"] >= 4, f"{st} {out}")
+        check("22b-03: WITHOUT a delivery note (Q22-8) — one WD number per DELIVERY (the two "
+              "lines of 1 Sep share it), the next delivery the next number, a blank DN too, "
+              "per site, in date order",
+              [w for _, w in wd] == ["WD-SV22B-0001", "WD-SV22B-0001", "WD-SV22B-0002", "WD-SV22B-0003"],
+              str(wd))
+        await ex('INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID", "DN_No") '
+                 "VALUES ('2026-08-15', '1001', 1, :s, 'WD')", s=S)       # back-dated, arrives later
+        async with SessionLocal() as s_:
+            await DL.assign_wd_numbers(s_)
+            await s_.commit()
+            wd2 = dict((await s_.execute(_t(
+                'SELECT r."Date", w.wd_no FROM receipt_wd w JOIN receipts r ON r.id = w.receipt_id '
+                'WHERE w."Site_ID" = :s'), {"s": S})).all())
+        check("22b-04: a number is NEVER renumbered — a back-dated delivery synced later gets the "
+              "NEXT number, and the earlier ones keep theirs",
+              wd2.get("2026-08-15") == "WD-SV22B-0004" and wd2.get("2026-09-01") == "WD-SV22B-0001",
+              str(wd2))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            r = await ac.get("/drive/ledger-docs?kind=receipts", headers=tok("sv22b_hod", "hod", S))
+            rr = await ac.get("/drive/ledger-docs?kind=returns", headers=tok("sv22b_hod", "hod", S))
+            bad = await ac.get("/drive/ledger-docs?kind=consumption", headers=tok("sv22b_hod", "hod", S))
+            sk = await ac.get("/drive/ledger-docs?kind=receipts", headers=tok("sv22b_sk", "store_keeper", S))
+            st_ = await ac.get("/admin/drive-sync", headers=tok("sv22b_ad", "admin"))
+        rows_ = r.json().get("rows", {}) if r.status_code == 200 else {}
+        by_dn = {}
+        for rid, v in rows_.items():
+            dn = await q('SELECT COALESCE("DN_No", \'\') FROM receipts WHERE id = :i', i=int(rid))
+            by_dn.setdefault(dn, []).append(v)
+        check("22b-05: Records → Receipts gets, per row, its DN copies and its WD number — the "
+              "DN. Copy file for 15623, the photo for 13021, the cash purchase for CP 8; Returns "
+              "get the return DN; the same roles as Records → Receipts (the store keeper does not read it)",
+              r.status_code == 200 and [f["name"] for f in by_dn["13021"][0]["files"]] == [names["f1"]]
+              and [f["name"] for f in by_dn["15623"][0]["files"]] == [names["f3"]]
+              and by_dn["CP 8"][0]["files"][0]["name"] == names["f2"]
+              and by_dn["WD"][0]["wd"].startswith("WD-SV22B-")
+              and rr.status_code == 200 and len(rr.json()["rows"]) == 4
+              and bad.status_code == 422 and sk.status_code == 403,
+              f"{r.status_code} {str(by_dn)[:300]} {rr.text[:120]} {sk.status_code}")
+        dnr = st_.json().get("dn", {})
+        mism = dnr.get("return_dn_mismatch") or []
+        check("22b-06: the Drive card reports DN coverage — the unlinked file by name — and a "
+              "return DN whose lines/total differ from the Return Log (5 lines / 47 on the DN, "
+              "4 / 46 in the log, with the log's rows)",
+              "DN# 99999.jpeg" in (dnr.get("files_without_receipt") or [])
+              and any(m["dn"] == "24" and m["dn_lines"] == 5 and m["dn_total"] == 47
+                      and m["log_lines"] == 4 and m["log_total"] == 46 and m["log_rows"] == [20, 20, 20, 20]
+                      for m in mism), str(dnr)[:400])
+        cols = _bi._LEDGER_SHEETS["returns"]
+        check("22b-07: the Return Log's DN. No. is IMPORTED at last (Q22-9) — mapped to returns.DN_No, "
+              "no longer ignored, and NOT part of the row label (ref stays Reason, so no row is relabelled)",
+              cols["cols"].get("DN_No") == ("DN. No.",) and "dn. no." not in cols["ignore"]
+              and cols["ref"] == "Reason")
+    finally:
+        await cleanup()
+
+
 async def test_phase21d_ocr_match():
     """Suite 21D — Phase 21d: the consumption-paper matcher and what it learns
     (rulings Q21-1..6), on FROZEN data (the vision model never runs here, P10-7).
@@ -31930,6 +32091,9 @@ async def main() -> int:
     print("\n 22A. Phase 22a — Drive as a service: retries, checked arrivals, the DN / MTC / "
           "Pending folders cached, auto-commit only for additions, the pull times, the banner")
     await test_phase22a_drive_plumbing()
+    print("\n 22B. Phase 22b — DN copies on receipts and returns, WD numbers for deliveries "
+          "without a DN, the Return Log's DN imported, return DNs checked")
+    await test_phase22b_dn_links()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

@@ -5066,6 +5066,43 @@ sideways.
 Automated: service_tests **22A** (15 checks); E2E `drive-sync.spec.ts` (the chip
 and its roles, Practice).
 
+## 22b. Phase 22b — DN copies on receipts and returns; WD numbers (rulings Q22-6..9)
+
+Migration **`a4c7e1d9b3f2`** (`returns."DN_No"`, `receipt_wd`). After migrating
+Live, fill the returns' DN once from the workbook (no "edits" on the next pull):
+
+```bash
+.venv/bin/python tools/backfill_return_dn.py --commit
+```
+
+**TC-22B-01 — a DN opens.** After a pull, sign in as HOD → Records → Receipts →
+search a DN number that has a photo (e.g. 13021). The DN column shows the number
+and a 📎; it opens the photo. A PDF DN (e.g. 15610) opens in the viewer.
+
+**TC-22B-02 — two copies.** Search 15724: the 📎 shows **2**; the viewer has a
+button per file.
+
+**TC-22B-03 — DN. Copy.** An April receipt whose DN. Copy cell names
+`DN# 15623-29042026.pdf` opens exactly that file.
+
+**TC-22B-04 — cash purchase.** Search `CP 8`: the 📎 opens *Cash Purchase 8*.
+
+**TC-22B-05 — WD.** Search `WD`: each row shows **WD-CNCEC-00nn**; two lines of
+the same day and vehicle share one number. Pull again: no number changes.
+
+**TC-22B-06 — Receive.** Receive Stock: leave *Delivery note no.* blank, submit;
+after the HOD approves, Records → Receipts shows a new WD number. Type a DN on
+another receipt: it shows that DN instead.
+
+**TC-22B-07 — returns.** Records → Returns: a return of DN 24 opens `RDN# 024`.
+
+**TC-22B-08 — the card.** Admin Console → Drive sync → *Delivery notes*: the WD
+count, receipt DNs without a copy, the unlinked files (13627, 13672, 14746 on
+2026-10-07 — Q22-7), and any return DN whose lines/total differ from the Return
+Log.
+
+Automated: service_tests **22B** (7 checks); E2E `drive-dn.spec.ts`.
+
 ## 21d. Phase 21d — OCR measured against the workbook; the name matcher (Q21-1..6)
 
 **Why this exists.** The 11 photos of the *Safety & Production Consumables*

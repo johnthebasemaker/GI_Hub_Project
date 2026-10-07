@@ -608,13 +608,16 @@ _LEDGER_SHEETS = {
                  # Phase 16: the Return Log's `Serial No.` is read at last — a
                  # Surface Shield return gives back to its LOT, an equipment
                  # return keeps its asset tag (alembic d8a3f6c1b2e9)
-                 "Serial_No": ("Serial No.",), "Lot_Number": _LOT_COLS},
+                 "Serial_No": ("Serial No.",), "Lot_Number": _LOT_COLS,
+                 # Phase 22b (ruling Q22-9): the return DN, so a return opens
+                 # its RDN from Drive. NOT part of the label (ref stays Reason).
+                 "DN_No": ("DN. No.",)},
         # the Return Log reuses the Receipt Log template; `returns` is a
-        # narrow table (Date/SAP/Qty/Reason/Remarks/Serial/Lot) so the rest
+        # narrow table (Date/SAP/Qty/Reason/Remarks/Serial/Lot/DN) so the rest
         # has no home
         "ref": "Reason",
         "ignore": ("pr#", "wbs#", "location", "vehicle no.",
-                   "driver name", "dn. no.", "pallet no.", "mob. from",
+                   "driver name", "pallet no.", "mob. from",
                    "mob. to", "prepared by", "received by", "dn. copy"),
     },
 }

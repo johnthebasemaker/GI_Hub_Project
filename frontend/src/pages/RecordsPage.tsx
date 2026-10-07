@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { Button, Empty, Space, Typography } from 'antd'
 import { EditOutlined, PaperClipOutlined, PlusOutlined } from '@ant-design/icons'
 import BrowseTable from '../components/BrowseTable'
+import { DnCell, useLedgerDocs } from '../components/DriveDocs'
 import InventoryItemModal from '../components/InventoryItemModal'
 import type { ItemMode } from '../components/InventoryItemModal'
 import { lockedSite } from '../components/SiteField'
@@ -40,6 +41,23 @@ export default function RecordsPage() {
           onClick={() => { setTarget(r); setMode('edit') }}>Edit</Button>) },
   ] as Cols), [canEditItems])
 
+  // Phase 22b — receipts and returns open their DN copy from Drive; a receipt
+  // without a delivery note shows its WD number (rulings Q22-8/9)
+  const ledgerKind = entity?.key === 'receipts' || entity?.key === 'returns' ? entity.key : null
+  const docs = useLedgerDocs(ledgerKind ?? 'receipts', !!ledgerKind)
+  const docRows = docs.data?.rows
+  const decorateDn = useCallback((cols: Cols): Cols => {
+    const dnCol = {
+      title: 'DN', dataIndex: 'DN_No', key: 'DN_No', width: 150,
+      render: (v: unknown, r: Row) => (
+        <DnCell dn={v} doc={docRows?.[String(r.id)]} />),
+    }
+    const has = cols.some((c) => (c as { dataIndex?: unknown }).dataIndex === 'DN_No')
+    return (has
+      ? cols.map((c) => ((c as { dataIndex?: unknown }).dataIndex === 'DN_No' ? { ...c, ...dnCol } : c))
+      : [...cols, dnCol]) as Cols
+  }, [docRows])
+
   if (!entity) return <Empty description={`Unknown record type: ${key}`} />
 
   const docType = DOCS_LINK[entity.key]
@@ -59,7 +77,7 @@ export default function RecordsPage() {
       </Space>
       <BrowseTable path={entity.path} hasSite={entity.hasSite} searchable
         hasCategory={entity.key === 'inventory'}
-        decorateColumns={canEditItems ? decorate : undefined}
+        decorateColumns={canEditItems ? decorate : ledgerKind ? decorateDn : undefined}
         toolbarExtra={canEditItems ? (
           <Button type="primary" icon={<PlusOutlined />} onClick={() => { setTarget(null); setMode('create') }}>
             New item

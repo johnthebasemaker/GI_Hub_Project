@@ -1221,6 +1221,44 @@ first part of it is live:
 
 The colours (navy and gold), the pages and the buttons are where they were.
 
+## 3.19 Delivery notes from Drive, and WD numbers (Phase 22, October 2026)
+
+The photos and PDFs in the Drive folder **DN for CNCEC** are now opened from
+GI Hub itself — nobody needs Drive access.
+
+**Records → Receipts** (HOD, Logistics, Admin, Auditor) has a **DN** column:
+- a 📎 next to the number opens the delivery note (a photo, or a PDF). When a DN
+  has two copies (`DN# 15724` and `DN# 15724 - 1`) the 📎 shows **2** and the
+  viewer has a button per copy;
+- the Receipt Log's **DN. Copy** column already names the file for older
+  receipts (`DN for CNCEC\DN# 15623-29042026.pdf`) — that exact file opens;
+- cash purchases link too: `CP 8` opens *Cash Purchase 8*.
+
+**Records → Returns** has the same column: the Return Log's **DN. No.** is now
+imported, and `RDN# 024` or *Return DN#024 (…).xlsx* opens from the return.
+
+**WD — goods without a delivery note.** "WD" in the DN column means *Without
+Delivery Note*; local purchases come in the same way. GI Hub gives each such
+**delivery** its own number — **WD-CNCEC-0007** — shown in the DN column. All
+the lines of one delivery (same day, same vehicle) share it, numbers go up in
+date order, and a number is **never** changed or reused, even when an older
+delivery is added later (it simply gets the next number). The workbook is not
+touched: write "WD" there as before.
+
+**Receive Stock** has a **Delivery note no.** box. It stays filled for every
+item of the same delivery. Leave it blank when the goods came without a note:
+after approval the delivery gets its WD number.
+
+**Admin Console → Drive sync → Delivery notes** lists:
+- how many deliveries carry a WD number;
+- receipt DNs with **no copy in Drive** (photograph and upload them if you want
+  them on file);
+- files in the folder that **no receipt or return names** — usually a typo in
+  the number (e.g. `DN# 13627` where the receipt says 15627). They stay unlinked
+  until the number matches; GI Hub never guesses;
+- a **return DN** whose number of lines or total quantity differs from the
+  Return Log's rows for that DN, with the Return Log rows to check.
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.

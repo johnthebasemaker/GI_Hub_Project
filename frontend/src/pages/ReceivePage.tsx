@@ -30,6 +30,7 @@ interface FormValues {
   Quantity: number
   Date: Dayjs
   Supplier?: string
+  DN_No?: string
   Expiry_Date?: Dayjs
   MFD_Date?: Dayjs
   PR_Number?: string
@@ -164,11 +165,13 @@ export default function ReceivePage() {
       Bin_Location: v.Bin_Location || null,
       // C3: DN header (if a note was AI-read) rides along as real receipt
       // columns — server whitelists them via ReceiptIn.extra.
-      ...(dnHeader ? {
+      // Phase 22b: the DN number typed on the form wins over one AI-read; left
+      // blank, the delivery gets a WD number after approval (ruling Q22-8)
+      ...(dnHeader || v.DN_No ? {
         extra: Object.fromEntries(Object.entries({
-          DN_No: dnHeader.DN_No, Vehicle_No: dnHeader.Vehicle_No,
-          Driver_Name: dnHeader.Driver_Name, Mob_From: dnHeader.Mob_From,
-          Prepared_by: dnHeader.Prepared_by,
+          DN_No: v.DN_No || dnHeader?.DN_No, Vehicle_No: dnHeader?.Vehicle_No,
+          Driver_Name: dnHeader?.Driver_Name, Mob_From: dnHeader?.Mob_From,
+          Prepared_by: dnHeader?.Prepared_by,
         }).filter(([, v2]) => v2)),
       } : {}),
     }
@@ -330,6 +333,10 @@ export default function ReceivePage() {
           <Row gutter={16}>
             <Col xs={24} md={8}><Form.Item name="Supplier" label="Supplier"><Input placeholder="Supplier name" /></Form.Item></Col>
             <Col xs={24} md={8}><Form.Item name="PR_Number" label="PR Number (optional)"><Input placeholder="links + auto-closes PR" /></Form.Item></Col>
+            {/* Phase 22b (Q22-8): kept between items — one delivery, one DN */}
+            <Col xs={24} md={8}><Form.Item name="DN_No" label="Delivery note no."
+              tooltip="Leave blank when the goods came without a delivery note (or a local purchase): GI Hub gives the delivery its own WD number.">
+              <Input placeholder="blank = no DN → WD number" data-testid="receive-dn" /></Form.Item></Col>
             {!lotItem && (
               <Col xs={24} md={8}><Form.Item name="Lot_Number" label="Lot Number (optional)"><Input placeholder="auto if expiry set" /></Form.Item></Col>
             )}

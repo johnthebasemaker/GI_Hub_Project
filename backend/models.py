@@ -625,6 +625,9 @@ class Returns(Base):
     # Phase 21a (alembic d1f7a3c9e2b4) — see Consumption.Source_Row.
     Source_Sheet = Column(Text)
     Source_Row = Column(Integer)
+    # Phase 22b (alembic a4c7e1d9b3f2) — the Return Log's `DN. No.` (ruling
+    # Q22-9), so a return opens its return DN (RDN# 024 …) from Drive.
+    DN_No = Column(Text)
     __table_args__ = (
         Index("ux_returns_xlsx_ref", "Site_ID", "Source_Ref", unique=True,
               postgresql_where=text("\"Source_Ref\" LIKE 'XLSX:%'")),
@@ -2803,6 +2806,21 @@ class DriveFiles(Base):
     removed_at = Column(DateTime)
     __table_args__ = (UniqueConstraint("drive_id", name="ux_drive_files_drive_id"),
                       Index("ix_drive_files_kind_key", "kind", "parsed_key"))
+
+
+class ReceiptWd(Base):
+    """Phase 22b (alembic a4c7e1d9b3f2) — "WD" = Without Delivery Note (ruling
+    Q22-8): every receipt without a DN carries its delivery's automatic number
+    `WD-<site>-0001`, allocated once and never renumbered; the lines of one
+    delivery (site | day | DN text | vehicle = `group_key`) share it.
+    `services/drive_links.assign_wd_numbers`."""
+    __tablename__ = "receipt_wd"
+    receipt_id = Column(Integer, primary_key=True)
+    Site_ID = Column(Text, nullable=False)
+    wd_no = Column(Text, nullable=False)
+    group_key = Column(Text, nullable=False)
+    assigned_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    __table_args__ = (Index("ix_receipt_wd_no", "wd_no"),)
 
 
 class DriveSyncRuns(Base):

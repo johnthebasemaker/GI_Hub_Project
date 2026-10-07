@@ -44,6 +44,12 @@ interface Status {
   running?: { since: string; by: string; what: string } | null
   history?: HistoryRow[]
   files?: { kind: string; link: string; n: number }[]
+  dn?: {
+    receipt_dns_without_file?: string[]; files_without_receipt?: string[]
+    wd_deliveries?: number; wd_lines?: number
+    return_dn_mismatch?: { file: string; dn: string; dn_lines: number; dn_total: number
+                           log_lines: number; log_total: number; log_rows: number[] }[]
+  }
 }
 const KIND_LABEL: Record<string, string> = { dn: 'DN for CNCEC', mtc: 'MTC', pending: 'Pending Material Follow-up' }
 
@@ -181,6 +187,28 @@ export default function DriveSyncCard() {
             : 'switched off — only the buttons pull'}
           {data.schedule && <ScheduleEditor key={data.schedule.times.join()} sch={data.schedule} />}
         </Line>
+        {data.dn && data.dn.wd_lines !== undefined && (
+          <Line label="Delivery notes">
+            <div data-testid="drive-dn-report" style={{ fontSize: 12 }}>
+              <div>{data.dn.wd_deliveries ?? 0} deliver{data.dn.wd_deliveries === 1 ? 'y' : 'ies'} without a DN
+                ({data.dn.wd_lines ?? 0} lines) carry a WD number.</div>
+              {!!data.dn.receipt_dns_without_file?.length && (
+                <div>{data.dn.receipt_dns_without_file.length} receipt DN(s) have no copy in Drive:{' '}
+                  {data.dn.receipt_dns_without_file.slice(0, 30).join(', ')}
+                  {data.dn.receipt_dns_without_file.length > 30 ? ' …' : ''}</div>
+              )}
+              {!!data.dn.files_without_receipt?.length && (
+                <div data-testid="drive-dn-unlinked">Not linked (no receipt or return names them — check the number):{' '}
+                  {data.dn.files_without_receipt.join(', ')}</div>
+              )}
+              {data.dn.return_dn_mismatch?.map((m) => (
+                <div key={m.file}>⚠ Return DN {m.dn} ({m.file}): {m.dn_lines} line(s), total {m.dn_total} — the
+                  Return Log has {m.log_lines} line(s), total {m.log_total}
+                  {m.log_rows.length ? ` (rows ${m.log_rows.join(', ')})` : ''}</div>
+              ))}
+            </div>
+          </Line>
+        )}
         {!!data.files?.length && (
           <Line label="Folders">
             <span data-testid="drive-folders">{Object.entries(data.files.reduce<Record<string, string[]>>((acc, f) => {
