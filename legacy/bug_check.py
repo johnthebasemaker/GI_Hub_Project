@@ -1794,7 +1794,10 @@ def check_models_schema_parity() -> None:
                ("returns", "Source_Row"),
                # Phase 22b (alembic a4c7e1d9b3f2) — the Return Log's DN number,
                # so a return opens its return DN from Drive. New-stack only.
-               ("returns", "DN_No")}
+               ("returns", "DN_No"),
+               # Phase 22c (alembic b5d8f2a6c3e7) — the Drive file a
+               # certificate came from. New-stack only.
+               ("mtc_documents", "drive_file_id")}
     extra = model_only - allowed
     assert not extra, f"unexpected model-only columns (update models.py or DB): {extra}"
 

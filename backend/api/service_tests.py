@@ -31256,6 +31256,215 @@ async def test_phase22b_dn_links():
         await cleanup()
 
 
+async def test_phase22c_mtc_links():
+    """Suite 22C — Phase 22c: certificates from Drive on their lots (rulings
+    Q22-10/11). Pinned on the real names and both certificate layouts (CUMI's
+    Batch No / D.O.M / D.O.E, TIP TOP's Chargen Nr. / Herstellungsdatum): a
+    link needs batch AND product; a bare 4-digit tail never links; a thickness
+    must be the item's own; an exact link is a certificate that clears the
+    issue gate, with the certificate's expiry on the lot (an app-typed one is
+    kept and the difference listed); anything less is PROPOSED and QC decides;
+    a retest expiry set in the app wins over the next certificate."""
+    import datetime as _dtm
+    import tempfile
+    from pathlib import Path as _P
+
+    from fpdf import FPDF
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from .services import mtc_links as M
+    from .services import quality as Q
+
+    def tok(u, r, site=None):
+        return {"Authorization": f"Bearer {_auth._make_token(u, r, site, _auth.ACCESS_TTL)}"}
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+
+    async def q(sql, **kw):
+        async with SessionLocal() as s_:
+            return (await s_.execute(_t(sql), kw)).scalar()
+
+    P = M.parse_name
+    a = P("GI-CUMICRETE PU MF 300 5MM (BNO-3633,3542,3504).pdf")
+    b = P("MTC - CUMIFURAN FN POWDER - Batch - 2802, 2826, 2861.pdf")
+    c = P("AB250001410_4924-A1-3.1-BC 3004.pdf")
+    d = P("CUMI FN 2802.jpeg")
+    e = P("AB250001410_1425-A2-3.1-Härter E40.pdf")
+    check("22c-01: certificate NAMES give batches and a product — CUMI's (BNO-…) list and "
+          "'Batch - …', 'CUMI FN 2802', TIP TOP's '4924-A1-3.1-BC 3004' (batch A14924)",
+          a["batches"] == ["3633", "3542", "3504"] and "5MM" in a["product"].upper()
+          and b["batches"] == ["2802", "2826", "2861"] and "CUMIFURAN" in b["product"].upper()
+          and c["batches"] == ["A14924"] and c["product"] == "BC 3004"
+          and d["batches"] == ["2802"] and e["batches"] == ["A21425"], f"{a} {b} {c} {d} {e}")
+    cumi = M.parse_page("TEST CERTIFICATE\nProduct Name : CUMICRETE PU MF 300 (3.MM)\nBatch No : 3504\n"
+                        "D.O.M : 16/03/2026\nD.O.E : 15/12/2026\nQty : 565 Pac")
+    tip = M.parse_page("Artikel / Product Cement BC 3004\nChargen Nr. / A1 – 4924\nBatch no.\n"
+                       "Herstellungsdatum / 05.12.24\nDate of production")
+    check("22c-02: certificate TEXT gives batch, product, manufacture and expiry dates — both "
+          "layouts, day first",
+          cumi == {"batch": "3504", "product": "CUMICRETE PU MF 300 (3.MM)",
+                   "mfd": _dtm.date(2026, 3, 16), "expiry": _dtm.date(2026, 12, 15)}
+          and tip["batch"] == "A14924" and tip["product"] == "Cement BC 3004"
+          and tip["mfd"] == _dtm.date(2024, 12, 5) and tip["expiry"] is None, f"{cumi} {tip}")
+    check("22c-03: a batch links EXACTLY, or as a supplier batch (letter + digits) at the end "
+          "of the workbook's long batch — never a bare 4-digit tail (0426 'matched' A20426 on "
+          "the real folder)",
+          M.batch_matches("3504", "3504") and M.batch_matches("A14924", "5254143A14924")
+          and not M.batch_matches("0426", "525106711A20426") and not M.batch_matches("3504", "13504"))
+    check("22c-04: the product must name the lot's material (Cement BC 3004 ↔ BC 3004(9KG), "
+          "Härter E40 ↔ HARDNER E40 30GR) and a thickness must be the item's own (3 MM ≠ 5 MM)",
+          M.family_ok("Cement BC 3004", "BC 3004(9KG)")
+          and M.family_ok("Härter E40", "HARDNER E40 30GR")
+          and M.family_ok("CUMICRETE PU MF 300 (3.MM)", "CUMICRETE PU MF300(3MM) COMP A Ea Can 2.52 kg")
+          and not M.family_ok("CUMICRETE PU MF 300 (3.MM)", "CUMICRETE PU MF300(5MM) COMP C Ea Bag 20 kg")
+          and not M.family_ok("PRIMER PR 304", "BC 3004(9KG)"))
+
+    S = "SV22C"
+    items = [("SV22C-PU3", "CUMICRETE PU MF300(3MM) COMP A Ea Can 2.52 kg"),
+             ("SV22C-PU5", "CUMICRETE PU MF300(5MM) COMP C Ea Bag 20 kg"),
+             ("SV22C-BC", "BC 3004(9KG)"), ("SV22C-AR", "AR BRICKS 40MM (230X115X40MM)")]
+    lots = [("SV22C-PU3", "9504", None, None), ("SV22C-PU5", "9504", None, None),
+            ("SV22C-BC", "5254143A19924", "2027-01-01", "app"), ("SV22C-AR", "AR-40-1", None, None)]
+    cdir = _P(tempfile.mkdtemp(prefix="gi-22c-"))
+
+    def cert_pdf(lines) -> bytes:
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Helvetica", size=11)
+        for ln in lines:
+            pdf.cell(0, 8, ln, new_x="LMARGIN", new_y="NEXT")
+        return bytes(pdf.output())
+
+    files = {
+        "pu3": ("GI-CUMICRETE PU MF 300 (BNO-9504).pdf",
+                cert_pdf(["TEST CERTIFICATE", "Product Name : CUMICRETE PU MF 300 (3.MM)",
+                          "Batch No : 9504", "D.O.M : 16/03/2026", "D.O.E : 15/12/2026"])),
+        "amb": ("GI-CUMICRETE PU MF 300 (BNO-9504) copy.jpeg", b"jpeg"),       # name only, no thickness
+        "bc": ("AB250001410_9924-A1-3.1-BC 3004.pdf",
+               cert_pdf(["Artikel / Product Cement BC 3004", "Chargen Nr. / A1 - 9924",
+                         "Herstellungsdatum / 05.12.24", "D.O.E : 30/06/2026"])),
+        "ar": ("AR BRICK MTC - 40MM 1st container.pdf", cert_pdf(["MTC", "AR BRICKS 40MM"])),
+    }
+
+    async def cleanup():
+        await ex("DELETE FROM mtc_documents WHERE \"SAP_Code\" LIKE 'SV22C-%'")
+        await ex("DELETE FROM mtc_assignments WHERE \"SAP_Code\" LIKE 'SV22C-%'")
+        await ex("DELETE FROM lots WHERE \"SAP_Code\" LIKE 'SV22C-%'")
+        await ex("DELETE FROM inventory WHERE \"SAP_Code\" LIKE 'SV22C-%'")
+        await ex("DELETE FROM drive_files WHERE drive_id LIKE 'sv22c-%'")
+        await ex("DELETE FROM system_audit_log WHERE username LIKE 'sv22c_%'")
+    await cleanup()
+    try:
+        for sap, desc in items:
+            await ex('INSERT INTO inventory ("SAP_Code", "Equipment_Description", "Category", "Site_ID") '
+                     "VALUES (:s, :d, 'Surface Shields', :site)", s=sap, d=desc, site=S)
+        for sap, lot, exp, src in lots:
+            await ex('INSERT INTO lots ("SAP_Code", "Lot_Number", "Site_ID", "Received_Date", '
+                     '"Expiry_Date", "Expiry_Source") VALUES (:s, :l, :site, \'2026-05-01\', :e, :src)',
+                     s=sap, l=lot, site=S, e=exp, src=src)
+        ids = {}
+        for k, (name, blob) in files.items():
+            p = cdir / f"{k}{_P(name).suffix}"
+            p.write_bytes(blob)
+            await ex("INSERT INTO drive_files (drive_id, kind, name, cache_path) VALUES (:d, 'mtc', :n, :p)",
+                     d=f"sv22c-{k}", n=name, p=str(p))
+            ids[k] = await q("SELECT id FROM drive_files WHERE drive_id = :d", d=f"sv22c-{k}")
+        async with SessionLocal() as s_:
+            out = await M.link_mtc(s_)
+            await s_.commit()
+        docs = (await q("SELECT string_agg(\"SAP_Code\" || '/' || \"Lot_Number\" || '@' || drive_file_id, ',' "
+                        "ORDER BY \"SAP_Code\") FROM mtc_documents WHERE \"SAP_Code\" LIKE 'SV22C-%'")) or ""
+        exp3 = await q('SELECT "Expiry_Date" || \'|\' || "Expiry_Source" || \'|\' || COALESCE("MFD_Date", \'\') '
+                       "FROM lots WHERE \"SAP_Code\" = 'SV22C-PU3'")
+        expbc = await q('SELECT "Expiry_Date" || \'|\' || "Expiry_Source" FROM lots WHERE "SAP_Code" = \'SV22C-BC\'')
+        prop = await q("SELECT string_agg(\"SAP_Code\", ',' ORDER BY \"SAP_Code\") FROM mtc_assignments "
+                       "WHERE \"SAP_Code\" LIKE 'SV22C-%' AND status = 'proposed'")
+        st = {k: await q("SELECT link_status FROM drive_files WHERE id = :i", i=i) for k, i in ids.items()}
+        check("22c-05: an EXACT match (batch AND product; the text says 3 MM, so not the 5 MM "
+              "lot of the same batch) is filed as the lot's certificate, with the certificate's "
+              "expiry ('mtc') and manufacture date on the lot",
+              f"SV22C-PU3/9504@{ids['pu3']}" in docs and "SV22C-PU5" not in docs.replace(
+                  f"SV22C-PU5/9504@{ids['amb']}", "")
+              and exp3 == "2026-12-15|mtc|2026-03-16" and st["pu3"] == "linked", f"{docs} {exp3} {st}")
+        check("22c-06: ⚠️ an expiry typed in the app (a retest) is KEPT — the certificate is "
+              "filed but its different expiry is only listed (Q22-11)",
+              f"SV22C-BC/5254143A19924@{ids['bc']}" in docs and expbc == "2027-01-01|app"
+              and any(x["SAP_Code"] == "SV22C-BC" and x["mtc_expiry"] == "2026-06-30"
+                      for x in out["disagreements"]), f"{expbc} {out['disagreements']}")
+        check("22c-07: anything less than exact is only PROPOSED — a name with no thickness over "
+              "a batch that is both a 3 MM and a 5 MM lot; a file with no batch (AR bricks by "
+              "container) waits for a person (Q22-10)",
+              prop == "SV22C-PU3,SV22C-PU5" and st["amb"] == "suggested" and st["ar"] == "unlinked",
+              f"{prop} {st}")
+        async with SessionLocal() as s_:
+            gate = await Q.visible_mtc(s_, sap_code="SV22C-PU3", site_id=S)
+            gate5 = await Q.visible_mtc(s_, sap_code="SV22C-PU5", site_id=S)
+        check("22c-08: the filed certificate CLEARS the issue gate for that material at that "
+              "site; a merely proposed one does not",
+              gate is not None and gate5 is None, f"{gate} {gate5}")
+        async with SessionLocal() as s_:
+            await M.link_mtc(s_)
+            await s_.commit()
+        n_docs = await q("SELECT COUNT(*) FROM mtc_documents WHERE \"SAP_Code\" LIKE 'SV22C-%'")
+        n_prop = await q("SELECT COUNT(*) FROM mtc_assignments WHERE \"SAP_Code\" LIKE 'SV22C-%'")
+        check("22c-09: a second pull changes nothing — no second certificate, no second proposal",
+              n_docs == 2 and n_prop == 2, f"{n_docs} {n_prop}")
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            ov = await ac.get(f"/drive/mtc?site_id={S}", headers=tok("sv22c_sk", "store_keeper", S))
+            asg_sk = await ac.post(f"/drive/mtc/{ids['ar']}/assign", headers=tok("sv22c_sk", "store_keeper", S),
+                                   json={"lots": [{"SAP_Code": "SV22C-AR", "Lot_Number": "AR-40-1"}]})
+            asg = await ac.post(f"/drive/mtc/{ids['ar']}/assign", headers=tok("sv22c_hod", "hod", S),
+                                json={"lots": [{"SAP_Code": "SV22C-AR", "Lot_Number": "AR-40-1"}],
+                                      "note": "1st container"})
+            aid = await q("SELECT id FROM mtc_assignments WHERE \"SAP_Code\" = 'SV22C-AR'")
+            c_hod = await ac.post(f"/drive/mtc/assignments/{aid}/confirm", headers=tok("sv22c_hod", "hod", S))
+            c_qc = await ac.post(f"/drive/mtc/assignments/{aid}/confirm", headers=tok("sv22c_qc", "qc", S))
+            c_again = await ac.post(f"/drive/mtc/assignments/{aid}/confirm", headers=tok("sv22c_qc", "qc", S))
+            amb = await q("SELECT id FROM mtc_assignments WHERE \"SAP_Code\" = 'SV22C-PU5'")
+            rej = await ac.post(f"/drive/mtc/assignments/{amb}/reject", headers=tok("sv22c_qc", "qc", S))
+        ar_doc = await q("SELECT COUNT(*) FROM mtc_documents WHERE \"SAP_Code\" = 'SV22C-AR' AND drive_file_id = :f",
+                         f=ids["ar"])
+        missing = [x["SAP_Code"] for x in ov.json().get("lots_without_mtc", [])] if ov.status_code == 200 else []
+        check("22c-10: the Lots page sees files, proposals and Surface Shield lots with no "
+              "certificate; Admin / HOD / QC assign a file (the store keeper cannot), only QC "
+              "confirms (not the HOD) — then it is the lot's certificate; a decided proposal "
+              "cannot be decided twice; QC can reject",
+              ov.status_code == 200 and "SV22C-AR" in missing and "SV22C-PU3" not in missing
+              and asg_sk.status_code == 403 and asg.status_code == 200 and c_hod.status_code == 403
+              and c_qc.status_code == 200 and ar_doc == 1 and c_again.status_code == 409
+              and rej.status_code == 200,
+              f"{ov.status_code} {missing} {asg_sk.status_code} {asg.status_code} {c_hod.status_code} "
+              f"{c_qc.status_code} {c_qc.text[:100]} {ar_doc} {c_again.status_code} {rej.status_code}")
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            sx = await ac.put("/lot-register/expiry", headers=tok("sv22c_qc", "qc", S),
+                              json={"SAP_Code": "SV22C-PU3", "Lot_Number": "9504",
+                                    "Expiry_Date": "2027-03-31", "reason": "retest passed QT-118"})
+            sk = await ac.put("/lot-register/expiry", headers=tok("sv22c_sk", "store_keeper", S),
+                              json={"SAP_Code": "SV22C-PU3", "Lot_Number": "9504",
+                                    "Expiry_Date": "2027-04-30", "reason": "nope"})
+            reg = await ac.get(f"/lot-register?site_id={S}&include_exhausted=true", headers=tok("sv22c_sk", "store_keeper", S))
+        async with SessionLocal() as s_:
+            await M.link_mtc(s_)
+            await s_.commit()
+        after = await q('SELECT "Expiry_Date" || \'|\' || "Expiry_Source" FROM lots WHERE "SAP_Code" = \'SV22C-PU3\'')
+        aud = await q("SELECT COUNT(*) FROM system_audit_log WHERE username = 'sv22c_qc' AND action_type = 'LOT_EXPIRY_SET'")
+        has = {(r["SAP_Code"], r["Has_MTC"]) for r in reg.json().get("items", [])} if reg.status_code == 200 else set()
+        check("22c-11: QC changes a lot's expiry after a retest (audited, with the reason); the "
+              "NEXT pull does not put the certificate's date back (Q22-11); the store keeper "
+              "cannot; the register marks which lots have a certificate",
+              sx.status_code == 200 and sk.status_code == 403 and after == "2027-03-31|app" and aud == 1
+              and ("SV22C-PU3", True) in has and ("SV22C-PU5", False) in has,
+              f"{sx.status_code} {sk.status_code} {after} {aud} {has}")
+    finally:
+        await cleanup()
+
+
 async def test_phase21d_ocr_match():
     """Suite 21D — Phase 21d: the consumption-paper matcher and what it learns
     (rulings Q21-1..6), on FROZEN data (the vision model never runs here, P10-7).
@@ -32094,6 +32303,9 @@ async def main() -> int:
     print("\n 22B. Phase 22b — DN copies on receipts and returns, WD numbers for deliveries "
           "without a DN, the Return Log's DN imported, return DNs checked")
     await test_phase22b_dn_links()
+    print("\n 22C. Phase 22c — certificates from Drive on their lots: batch AND product, "
+          "exact links clear the gate, the rest go to QC, the certificate's expiry")
+    await test_phase22c_mtc_links()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

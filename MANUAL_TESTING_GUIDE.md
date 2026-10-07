@@ -5103,6 +5103,38 @@ Log.
 
 Automated: service_tests **22B** (7 checks); E2E `drive-dn.spec.ts`.
 
+## 22c. Phase 22c — certificates (MTC) from Drive on their lots (rulings Q22-10/11)
+
+Migration **`b5d8f2a6c3e7`** (`mtc_documents.drive_file_id`, `mtc_assignments`).
+
+**TC-22C-01 — exact links.** After a pull, Lots & Expiry → search 3504. The
+3 MM lots of batch 3504 show **MTC ✓ open** (the certificate opens); their
+expiry is **2026-12-15 from MTC**. The 5 MM lot 3504 does not (it has its own
+certificate, *… 5MM (BNO-3633,3542,3504)*).
+
+**TC-22C-02 — supplier batches.** BC 3004 lot `5254143A14924` and HARDNER E40
+lot `525106711A21425` show MTC ✓ (TIP TOP's `A1 – 4924`, `A2 – 1425`).
+
+**TC-22C-03 — needs a person.** The card lists the AR brick and CHEMOLINE files.
+As HOD press **Assign to lot(s)** on *AR BRICK MTC - 40MM 1st container*, pick
+the AR BRICKS 40MM lots it covers, note "1st container" → *Sent to QC*.
+
+**TC-22C-04 — QC decides.** Sign in as QC → the proposal is under *Waiting for
+QC*. **Confirm**: the lot shows MTC ✓. The HOD has no Confirm button. **Reject**
+another one: it leaves the list.
+
+**TC-22C-05 — the gate.** A Surface Shield whose only certificate was just
+confirmed can be issued at that site (the *no certificate* refusal is gone).
+
+**TC-22C-06 — retest.** As QC press **edit** on a *from MTC* expiry, set a later
+date with a reason → the expiry shows **set**. Pull again: it stays. Admin →
+Audit log has `LOT_EXPIRY_SET` with the reason.
+
+**TC-22C-07 — missing.** The card's *Surface Shield lots without a certificate*
+lists COROFLAKE, PHENACIN, CUMIFLOOR ECO, Garnet … — the list to chase.
+
+Automated: service_tests **22C** (11 checks); E2E `drive-mtc.spec.ts`.
+
 ## 21d. Phase 21d — OCR measured against the workbook; the name matcher (Q21-1..6)
 
 **Why this exists.** The 11 photos of the *Safety & Production Consumables*
