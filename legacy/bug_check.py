@@ -1791,7 +1791,10 @@ def check_models_schema_parity() -> None:
                ("consumption", "Source_Sheet"),
                ("consumption", "Source_Row"),
                ("returns", "Source_Sheet"),
-               ("returns", "Source_Row")}
+               ("returns", "Source_Row"),
+               # Phase 22b (alembic a4c7e1d9b3f2) — the Return Log's DN number,
+               # so a return opens its return DN from Drive. New-stack only.
+               ("returns", "DN_No")}
     extra = model_only - allowed
     assert not extra, f"unexpected model-only columns (update models.py or DB): {extra}"
 

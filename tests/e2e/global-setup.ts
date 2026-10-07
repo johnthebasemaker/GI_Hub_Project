@@ -21,7 +21,7 @@ import * as path from 'node:path'
 import {
   API_PORT, API_URL, ASYNC_DB_URL, AUTH_DIR, E2E_DB, E2E_PASSWORD, JWT_SECRET,
   PG_HOST, PG_PORT, PG_USER, PRACTICE_ADMIN_PASSWORD, PRACTICE_API_PORT,
-  PRACTICE_API_URL, PRACTICE_DB, PRACTICE_DB_URL, PRACTICE_JWT_SECRET, PY, ROOT, RUNTIME_DIR,
+  PRACTICE_API_URL, PRACTICE_DB, PRACTICE_DB_URL, PRACTICE_JWT_SECRET, PY, ROOT, RUNTIME_DIR, DRIVE_CACHE_DIR,
   SYNC_DB_URL, USERS, WEB_PORT, WEB_URL,
 } from './harness/env'
 
@@ -400,6 +400,8 @@ export default async function globalSetup() {
         GI_SCHEDULER: '0',
         // Phase 21c: never the operator's real Drive token (deploy/gdrive_*.json)
         GI_DRIVE_SECRETS_DIR: '/nonexistent-e2e-drive',
+        // Phase 22b: the DN / MTC copies a spec places, never the dev Mac's cache
+        GI_DRIVE_CACHE_DIR: DRIVE_CACHE_DIR,
         JWT_SECRET,
         DATABASE_URL: ASYNC_DB_URL,
       },

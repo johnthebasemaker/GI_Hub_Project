@@ -55,7 +55,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import get_current_user, require_roles
+from .auth import get_current_user, require_roles, resolve_site_param
 from .config import is_practice
 from .db import SessionLocal, get_session
 from .services import drive_sync as DS
@@ -66,6 +66,8 @@ drive_router = APIRouter(prefix="/drive", tags=["drive"])
 
 _ADMIN = require_roles("admin")
 _PULLERS = require_roles("admin", "hod")          # ruling Q22-3
+# the same roles that read Records → Receipts / Returns (main.py `_LEDGER`)
+_LEDGER_READERS = require_roles("admin", "hod", "logistics", "auditor")
 _LOCK_KEY = 2_102_103            # pg advisory lock: one Drive run at a time
 LAST_KEY, RUNNING_KEY = "drive_sync_last", "drive_sync_running"
 LAST_OK_KEY, SCHEDULE_KEY = "drive_sync_last_ok", "drive_sync_schedule"
@@ -371,7 +373,20 @@ async def status(user: dict = Depends(_ADMIN), session: AsyncSession = Depends(g
             "running": await _get(session, RUNNING_KEY),
             "history": [{k: (v.isoformat(timespec="seconds") if isinstance(v, _dt.datetime) else v)
                          for k, v in dict(r).items()} for r in hist],
-            "files": [dict(r) for r in files]}
+            "files": [dict(r) for r in files],
+            "dn": await _dn_report(session)}
+
+
+async def _dn_report(session: AsyncSession) -> dict:
+    """Phase 22b — DN coverage (Q22-7: listed, never guessed) and the return
+    DNs whose lines or total disagree with the Return Log (§11.1)."""
+    from .services import drive_links
+    try:
+        return {**await drive_links.dn_coverage(session),
+                "return_dn_mismatch": await drive_links.return_dn_check(session)}
+    except Exception:  # noqa: BLE001 — a report, never a reason the card fails
+        log.exception("DN report failed")
+        return {}
 
 
 class ScheduleIn(BaseModel):
@@ -482,6 +497,23 @@ async def pull(user: dict = Depends(_PULLERS), session: AsyncSession = Depends(g
     await _check_can_start(session)
     _start(trigger="pull", user=user["username"])
     return {"started": True}
+
+
+@drive_router.get("/ledger-docs", summary="DN files and WD numbers per receipt / return (Phase 22b)")
+async def ledger_docs(kind: str, site_id: Optional[str] = None,
+                      user: dict = Depends(_LEDGER_READERS),
+                      session: AsyncSession = Depends(get_session)):
+    """{rows: {id: {files: [{id, name, mime}], wd}}} for Records → Receipts /
+    Returns. Gives any new without-DN delivery its WD number first (Q22-8) —
+    idempotent, so a page view never renumbers anything."""
+    if kind not in ("receipts", "returns"):
+        raise HTTPException(422, "kind is receipts or returns")
+    from .services import drive_links
+    site = resolve_site_param(user, site_id)
+    if kind == "receipts":
+        await drive_links.assign_wd_numbers(session)
+        await session.commit()
+    return {"rows": await drive_links.ledger_docs(session, kind, site)}
 
 
 @drive_router.get("/files/{file_id}", summary="A cached read-only copy of a Drive file")
