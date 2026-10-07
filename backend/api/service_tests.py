@@ -31465,6 +31465,180 @@ async def test_phase22c_mtc_links():
         await cleanup()
 
 
+async def test_phase22d_requests():
+    """Suite 22D — Phase 22d: Requests & Pending from the Drive folder *Pending
+    Material Follow-up* (rulings Q22-12/13). Pinned: the layouts are read by
+    their HEADERS (one or more "Received on …" columns, "Available QTY." /
+    "Balance", a SAP column or only a Material Code); the request date comes
+    from the row, the name (day first) or the month; a status table has none;
+    Surface Shields are skipped; a line with no SAP is listed for the operator;
+    GI Hub's received is FIFO from the Receipt Log, oldest request first,
+    never a receipt older than the request; the roll-up is a CHECK; a pending
+    request without a PR lowers Smart Reorder's suggested order."""
+    import datetime as _dtm
+    import io as _io
+    import tempfile
+    from pathlib import Path as _P
+
+    import openpyxl as _px
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from .services import requests_sync as R
+    from .services import smart_min as SM
+
+    def tok(u, r, site=None):
+        return {"Authorization": f"Bearer {_auth._make_token(u, r, site, _auth.ACCESS_TTL)}"}
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+
+    async def q(sql, **kw):
+        async with SessionLocal() as s_:
+            return (await s_.execute(_t(sql), kw)).scalar()
+
+    def book(rows) -> bytes:
+        wb = _px.Workbook()
+        for r in rows:
+            wb.active.append(r)
+        b = _io.BytesIO()
+        wb.save(b)
+        return b.getvalue()
+
+    D = R.request_date_from_name
+    check("22d-01: the request date from the NAME — day first, a 2-digit year, the first of "
+          "two dates (the update date is not the request), a month name",
+          (D("Request 22-09-2026.xlsx"), D("Material Request 03-08-26 (upd 10-08-26).xlsx"),
+           D("August Request.xlsx"), D("notes.xlsx"))
+          == (_dtm.date(2026, 9, 22), _dtm.date(2026, 8, 3), _dtm.date(2026, 8, 1), None))
+    mr = R.read_requests(book([
+        ["Sl. No.", "SAP Code", "Material Code", "Material Description", "UOM", "Qty",
+         "Received on 09/08/26", "Received on 10/08/26", "Pending Qty", "Remarks"],
+        [1, 1209, "GI-7003347", "Floating trowel", "EA", 20, None, 5, 15, None],
+        [2, None, "N/A", "INDUSTRIAL AC 15 ton", "EA", 4, 2, None, 2, None],
+        [None, None, None, None, None, None, None, None, None, None]]),
+        "Material Request 03-08-26 (upd 10-08-26).xlsx")
+    st = R.read_requests(book([
+        ["SAP Code", "Material Code", "Equipment Description", "UOM", "REQ. QTY.", "Available\nQTY.",
+         "In Jubail", "Balance", "PR#", "Type"],
+        [1081, "GI-6000147", "LED 220v -Halogen Lamp", "Pcs", 50, 10, None, 40, "Without PR", "R/L Tools"],
+        [1194, "GI-7002380", "Chisel Minus Pointed", "Nos", 20, 0, None, 20, "PR No. 3000000884 - 48", "B/L Tools"]]),
+        "Received and Pending supply For CNCEC project(21-07-26).xlsx")
+    a, b = mr["lines"]
+    check("22d-02: layouts are read by HEADER — two 'Received on' columns summed, the SAP column "
+          "as an integer, a blank row skipped; the status table's 'Available QTY.' / 'Balance' / "
+          "PR#; a status table's lines carry NO request date (it is dated when written)",
+          a["sap"] == "1209" and a["wb_received"] == 5 and a["wb_pending"] == 15
+          and a["date"] == _dtm.date(2026, 8, 3) and b["code"] is None and len(mr["lines"]) == 2
+          and st["lines"][0]["wb_received"] == 10 and st["lines"][0]["wb_pending"] == 40
+          and st["lines"][0]["without_pr"] and not st["lines"][1]["without_pr"]
+          and st["lines"][0]["date"] is None and st["date"] is None,
+          f"{a} {b} {st['lines'][:2]}")
+
+    S = "SV22D"
+    cdir = _P(tempfile.mkdtemp(prefix="gi-22d-"))
+
+    async def cleanup():
+        await ex("DELETE FROM material_request_lines WHERE request_id IN (SELECT id FROM material_requests "
+                 "WHERE \"Site_ID\" = :s)", s=S)
+        await ex("DELETE FROM material_requests WHERE \"Site_ID\" = :s", s=S)
+        await ex("DELETE FROM drive_files WHERE drive_id LIKE 'sv22d-%'")
+        await ex("DELETE FROM receipts WHERE \"Site_ID\" = :s", s=S)
+        await ex("DELETE FROM inventory WHERE \"Site_ID\" = :s", s=S)
+    await cleanup()
+    try:
+        for sap, code, desc, cat, mn in (("SV22D-GLV", "GI-SV22D-1", "LEATHER GLOVES", "PPE", 10),
+                                         ("SV22D-MASK", "GI-SV22D-2", "DUST MASK", "R/L Consumables", 0),
+                                         ("SV22D-PU", "GI-SV22D-3", "CUMICRETE PU", "Surface Shields", 0)):
+            await ex('INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", "Category", '
+                     '"Site_ID", "Minimum_Qty", "Opening_Stock") VALUES (:s, :c, :d, :cat, :site, :mn, 0)',
+                     s=sap, c=code, d=desc, cat=cat, site=S, mn=mn)
+        for d_, sap, qty in (("2026-08-01", "SV22D-GLV", 2), ("2026-09-05", "SV22D-MASK", 30),
+                             ("2026-09-25", "SV22D-MASK", 15)):
+            await ex('INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID") VALUES (:d, :s, :q, :site)',
+                     d=d_, s=sap, q=qty, site=S)
+        files = {
+            "a": ("Request 01-09-2026.xlsx", book([
+                ["Sl. No.", "Material Code", "Material Description", "UOM", "Qty", "Received 05/09/26", "Pending Qty"],
+                [1, "GI-SV22D-2", "DUST MASK", "EA", 40, 30, 10],
+                [2, "GI-SV22D-1", "LEATHER GLOVES", "Pair", 8, None, 8],
+                [3, "GI-SV22D-3", "CUMICRETE PU", "Can", 5, None, 5],
+                [4, "N/A", "Head Pan", "Nos", 10, None, 10]])),
+            "b": ("Request 20-09-2026.xlsx", book([
+                ["Sl. No.", "Material Code", "Material Description", "UOM", "Qty", "Pending Qty"],
+                [1, "GI-SV22D-2", "DUST MASK", "EA", 20, 20]])),
+            "s": ("CNCEC_Indents Over all Supply and Pending Details.xlsx", book([
+                ["Sl. No.", "Date", "Material Code", "Material Name", "UOM", "Req. Qty.", "Received Qty.", "Pending Qty."],
+                [1, _dtm.datetime(2026, 9, 1), "GI-SV22D-2", "DUST MASK", "EA", 40, 40, 0],
+                [2, _dtm.datetime(2026, 9, 1), "GI-SV22D-1", "LEATHER GLOVES", "Pair", 8, 0, 8]])),
+        }
+        for k, (name, blob) in files.items():
+            p = cdir / f"{k}.xlsx"
+            p.write_bytes(blob)
+            await ex("INSERT INTO drive_files (drive_id, kind, name, cache_path) VALUES (:d, 'pending', :n, :p)",
+                     d=f"sv22d-{k}", n=name, p=str(p))
+        async with SessionLocal() as s_:
+            out = await R.link_requests(s_, site=S)
+            await s_.commit()
+            ov = await R.overview(s_, S)
+        it = {(i["file"][:10], i["description"]): i for i in ov["items"]}
+        check("22d-03: request workbooks become lines — the Surface Shield is SKIPPED, a line "
+              "with no SAP code is listed for the operator (Q22-12), the roll-up is not a source",
+              out["skipped_surface_shield"] == 1 and len(ov["items"]) == 4
+              and [x["description"] for x in ov["needs_sap"]] == ["Head Pan"]
+              and not any("Over all" in i["file"] for i in ov["items"]), f"{out} {list(it)}")
+        m1, m2 = it[("Request 01", "DUST MASK")], it[("Request 20", "DUST MASK")]
+        g = it[("Request 01", "LEATHER GLOVES")]
+        check("22d-04: RECEIVED is GI Hub's, FIFO, oldest request first: the 1 Sep request takes "
+              "the 30 of 5 Sep and 10 of the 15 of 25 Sep (pending 0); the 20 Sep request gets the "
+              "other 5 (pending 15); the gloves' receipt of 1 Aug is OLDER than the request, so "
+              "it does not count (pending 8). The workbook's own figure differing is flagged",
+              m1["received"] == 40 and m1["pending"] == 0 and m1["wb_received"] == 30 and m1["differs"]
+              and m2["received"] == 5 and m2["pending"] == 15
+              and g["received"] == 0 and g["pending"] == 8,
+              f"{m1['received']} {m1['pending']} {m2['received']} {m2['pending']} {g['received']}")
+        sc = ov["summary_check"]
+        check("22d-05: the roll-up is a CHECK (Q22-12): its dust-mask line (pending 0) agrees with "
+              "GI Hub and is not listed; nothing differs here",
+              sc == [], str(sc))
+        await ex("UPDATE material_request_lines SET wb_pending = 3 WHERE request_id IN (SELECT id FROM "
+                 "material_requests WHERE is_summary AND \"Site_ID\" = :s) AND description = 'LEATHER GLOVES'", s=S)
+        async with SessionLocal() as s_:
+            sc2 = (await R.overview(s_, S))["summary_check"]
+            no_pr = await R.pending_no_pr(s_)
+            sm = await SM.compute(s_, S)
+        row = next((r for r in sm["items"] if r["SAP_Code"] == "SV22D-GLV"), {})
+        check("22d-06: a roll-up pending figure that differs is listed with its sheet and row "
+              "(never fixed)",
+              len(sc2) == 1 and sc2[0]["row"] == 3 and sc2[0]["rollup_pending"] == 3
+              and sc2[0]["gi_pending"] == 8, str(sc2))
+        check("22d-07: ⚠️ a request WITHOUT a PR still pending is ON ORDER in Smart Reorder "
+              "(Q22-13): gloves minimum 10, stock 2 → 2 × 10 − 2 = 18, less the 8 requested = 10, "
+              "shown as Requested_No_PR",
+              no_pr.get(("SV22D-GLV", S)) == 8 and row.get("Requested_No_PR") == 8
+              and row.get("Suggested_Order") == 10, f"{no_pr} {row.get('Requested_No_PR')} {row.get('Suggested_Order')}")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            r1 = await ac.get(f"/material-requests?site_id={S}&open_only=true", headers=tok("sv22d_sk", "store_keeper", S))
+            r2 = await ac.get(f"/material-requests?site_id={S}", headers=tok("sv22d_qc", "qc", S))
+        check("22d-08: GET /material-requests — pending only for the store keeper (the received "
+              "mask request drops out), with the needs-SAP list; QC does not read it",
+              r1.status_code == 200 and r1.json()["totals"]["open"] == 3 and len(r1.json()["items"]) == 3
+              and r1.json()["needs_sap"] and r2.status_code == 403,
+              f"{r1.status_code} {r1.text[:200]} {r2.status_code}")
+        await ex("UPDATE drive_files SET removed_at = CURRENT_TIMESTAMP WHERE drive_id = 'sv22d-b'")
+        async with SessionLocal() as s_:
+            await R.link_requests(s_, site=S)
+            await s_.commit()
+        left = await q("SELECT COUNT(*) FROM material_requests WHERE \"Site_ID\" = :s", s=S)
+        check("22d-09: a request file removed from Drive takes its lines with it (the workbook "
+              "is the source); re-reading replaces, never duplicates",
+              left == 2, str(left))
+    finally:
+        await cleanup()
+
+
 async def test_phase21d_ocr_match():
     """Suite 21D — Phase 21d: the consumption-paper matcher and what it learns
     (rulings Q21-1..6), on FROZEN data (the vision model never runs here, P10-7).
@@ -32306,6 +32480,9 @@ async def main() -> int:
     print("\n 22C. Phase 22c — certificates from Drive on their lots: batch AND product, "
           "exact links clear the gate, the rest go to QC, the certificate's expiry")
     await test_phase22c_mtc_links()
+    print("\n 22D. Phase 22d — Requests & Pending from Drive: layouts by header, FIFO received, "
+          "the roll-up a check, no-PR requests on order in Smart Reorder")
+    await test_phase22d_requests()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

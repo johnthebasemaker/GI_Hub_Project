@@ -35,6 +35,7 @@ from .admin import item_router as inventory_item_router  # noqa: E402
 from .lot_register import router as lot_register_router  # noqa: E402
 from .drive_admin import drive_router  # noqa: E402
 from .mtc_drive import router as mtc_drive_router  # noqa: E402
+from .material_requests import router as material_requests_router  # noqa: E402
 from .drive_admin import router as drive_admin_router  # noqa: E402
 from .ocr_names import router as ocr_names_router  # noqa: E402
 from .admin import router as admin_router  # noqa: E402
@@ -501,6 +502,7 @@ app.include_router(sla_router)
 app.include_router(drive_admin_router)
 app.include_router(drive_router)
 app.include_router(mtc_drive_router)
+app.include_router(material_requests_router)
 # Phase 21d — the consumption-paper name matcher and the names it learned.
 app.include_router(ocr_names_router)
 # Phase 21f — the self-driving demo's server half. ⚠️ PRACTICE PROCESS ONLY

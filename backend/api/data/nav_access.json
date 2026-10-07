@@ -226,6 +226,13 @@
    "auditor",
    "hod"
   ],
+  "/requests-pending": [
+   "admin",
+   "logistics",
+   "auditor",
+   "hod",
+   "store_keeper"
+  ],
   "/security": [
    "admin",
    "logistics",
@@ -331,6 +338,7 @@
   "/qc/accounts": "QC Accounts",
   "/qc/inspections": "Inspections",
   "/reports": "Reports",
+  "/requests-pending": "Requests & Pending",
   "/security": "Security",
   "/site/incoming": "Incoming Deliveries",
   "/sk/requests": "Supervisor Requests",

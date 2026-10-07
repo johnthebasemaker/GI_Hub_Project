@@ -2849,6 +2849,46 @@ class ReceiptWd(Base):
     __table_args__ = (Index("ix_receipt_wd_no", "wd_no"),)
 
 
+class MaterialRequests(Base):
+    """Phase 22d (alembic c6e9a3b7d4f8) — one request workbook from the Drive
+    folder *Pending Material Follow-up* (services/requests_sync.py). The
+    roll-up (`is_summary`) is a check, never a source (ruling Q22-12)."""
+    __tablename__ = "material_requests"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    drive_file_id = Column(Integer, nullable=False)
+    file_name = Column(Text, nullable=False)
+    request_date = Column(SADate)
+    layout = Column(Text)
+    is_summary = Column(Boolean, nullable=False, server_default=text('false'))
+    Site_ID = Column(Text)
+    synced_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    __table_args__ = (UniqueConstraint("drive_file_id", name="ux_material_requests_file"),)
+
+
+class MaterialRequestLines(Base):
+    """Phase 22d (alembic c6e9a3b7d4f8) — one requested line, as the workbook
+    wrote it; GI Hub's received / pending are computed at read time."""
+    __tablename__ = "material_request_lines"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(Integer, nullable=False)
+    sheet = Column(Text)
+    row_no = Column(Integer)
+    SAP_Code = Column(Text)
+    Material_Code = Column(Text)
+    description = Column(Text)
+    uom = Column(Text)
+    requested_qty = Column(Float, nullable=False)
+    wb_received = Column(Float)
+    wb_pending = Column(Float)
+    pr_ref = Column(Text)
+    without_pr = Column(Boolean, nullable=False, server_default=text('true'))
+    item_type = Column(Text)
+    remarks = Column(Text)
+    request_date = Column(SADate)
+    __table_args__ = (Index("ix_material_request_lines_req", "request_id"),
+                      Index("ix_material_request_lines_sap", "SAP_Code"))
+
+
 class DriveSyncRuns(Base):
     """Phase 22a (alembic f3b9d2e7a4c1) — the Drive sync's run history: the
     schedule, the Pull button, the Admin card and the CLI all write one row."""

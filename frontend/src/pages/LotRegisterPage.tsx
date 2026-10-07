@@ -252,7 +252,7 @@ export default function LotRegisterPage() {
           </Typography.Paragraph>
           {!!data?.problems_fixed?.length && (
             <Alert type="success" showIcon style={{ marginBottom: 8 }} data-testid="lot-problems-fixed"
-              message={`✅ ${data.problems_fixed.length} fixed since the last sync`}
+              title={`✅ ${data.problems_fixed.length} fixed since the last sync`}
               description={data.problems_fixed.map((f) =>
                 `${f.sheet ?? 'app'} row ${f.row ?? '—'} · SAP ${f.sap} · lot ${f.lot}`).join('  ·  ')} />
           )}

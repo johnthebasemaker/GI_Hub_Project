@@ -5135,6 +5135,35 @@ lists COROFLAKE, PHENACIN, CUMIFLOOR ECO, Garnet … — the list to chase.
 
 Automated: service_tests **22C** (11 checks); E2E `drive-mtc.spec.ts`.
 
+## 22d. Phase 22d — Requests & Pending from Drive (rulings Q22-12/13)
+
+Migration **`c6e9a3b7d4f8`** (`material_requests`, `material_request_lines`).
+
+**TC-22D-01 — the page.** After a pull, sign in as store keeper → **Requests &
+Pending**. The tags count the lines (≈ 313 on 2026-10-07), the pending ones and
+the pending ones without a PR. Each row names its workbook and row.
+
+**TC-22D-02 — received.** Pick a request line whose item arrived later (e.g.
+SAFETY HELMET of 22-09): *Received* matches the Receipt Log after 22 Sep. A
+receipt dated BEFORE a request never counts for it. Where the workbook's
+"Received on" columns differ, an orange tag shows the workbook figure.
+
+**TC-22D-03 — no SAP code.** The yellow box lists the lines whose Material Code
+is N/A and that have no SAP code (≈ 48), with file and row.
+
+**TC-22D-04 — Surface Shields.** No Surface Shield item appears.
+
+**TC-22D-05 — reorder.** Smart Reorder → a general item with a pending no-PR
+request shows *+ n requested (no PR)* under On order, and its suggested order
+is n lower.
+
+**TC-22D-06 — roll-up.** The bottom card lists the roll-up rows whose pending
+differs from GI Hub's, with sheet and row. Nothing changes when you pull again.
+
+**TC-22D-07 — roles.** QC and the supervisor have no Requests & Pending.
+
+Automated: service_tests **22D** (9 checks); nav (54 routes) + tours.
+
 ## 21d. Phase 21d — OCR measured against the workbook; the name matcher (Q21-1..6)
 
 **Why this exists.** The 11 photos of the *Safety & Production Consumables*

@@ -121,6 +121,10 @@ export const NAV: NavGroup[] = [
       // roles that hold, inspect or answer for controlled material — the store
       // keeper, QC, the HOD and the Head of Qualities. Read-only.
       { key: '/lots', label: 'Lots & Expiry', icon: <ExperimentOutlined />, access: { anyRole: [SK, QC, HOD, 'qc_hod'] } },
+      // Phase 22d (rulings Q22-12/13): the requests mailed from site, kept in
+      // Drive → Pending Material Follow-up — requested · received · pending.
+      // The people who ask for material and chase it; read-only.
+      { key: '/requests-pending', label: 'Requests & Pending', icon: <ProfileOutlined />, access: { anyRole: [SK, HOD, LOG, AUD] } },
       // The rack locator sits at the TOP LEVEL on purpose: the store keeper is
       // the person who has to walk to the shelf, and burying it inside a
       // supervisor group would hide it from its only real user. Narrowed
