@@ -748,6 +748,37 @@ since the last sync** line for a day, so you can see the count go down. The top
 bar's Drive cloud carries a red number for how many are left; clicking it opens
 this card.
 
+**Certificates (MTC) from Drive (Phase 22).** The suppliers' certificates in the
+Drive folder **MTC** are matched to their lots after every pull:
+- the **MTC** column shows **✓ open** when a lot has a certificate from Drive
+  (it opens the PDF or photo), or **✓** for one uploaded in the app;
+- a certificate is filed on a lot by itself only when **both** its batch and
+  its product match — `Batch No : 3504` on a *CUMICRETE PU MF 300 (3 MM)*
+  certificate goes to the 3 MM lot 3504, never the 5 MM lot of the same number;
+  `A1 – 4924` on a *BC 3004* certificate goes to batch `5254143A14924`;
+- the certificate's **expiry** (D.O.E) becomes the lot's expiry, marked **from
+  MTC**; its manufacture date fills an empty MFD. It ranks above the Lot
+  Register file and a derived date.
+
+The **Certificates (MTC) from Drive** card below the table:
+- **Needs a person** — files that name no batch GI Hub holds, or none at all
+  (AR bricks by container, CHEMOLINE rolls by order). Admin, HOD or QC opens
+  one and presses **Assign to lot(s)**, picks every lot it covers and adds a
+  note (*1st container, DN 15707*);
+- **Waiting for QC to confirm** — every assignment, and every match the pull
+  could not be sure of (a batch number shared by two thicknesses). Only **QC**
+  (and the Head of Qualities) press **Confirm** or **Reject**: a certificate on
+  file clears the *no certificate, no issue* gate, so the last word is
+  Quality's;
+- **Surface Shield lots without a certificate** — the list to chase.
+
+**Changing an expiry after a retest (QC, Head of Qualities, HOD).** Press **edit**
+beside a lot's expiry, choose the new date and say why (*retest passed, report
+QT-118*). The date is marked **set**; neither the next certificate nor the Lot
+Register file overwrites it. It is recorded in the audit log. If a certificate
+later disagrees with a date set by hand, the pull lists it rather than
+changing it.
+
 **Dashboard → Top 5 expiring lots (Phase 21).** It lists only lots with stock
 **left** (received − consumed − returned), with a **Left** column. A lot whose
 stock is all issued is not on a shelf, whatever its date, so it no longer appears

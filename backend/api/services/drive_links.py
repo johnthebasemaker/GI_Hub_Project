@@ -194,8 +194,8 @@ async def ledger_docs(session: AsyncSession, kind: str, site_id: Optional[str]) 
     """{row id: {"files": [{id, name, mime}], "wd": "WD-…" | None}} for every
     receipt (or return) of the site that has a DN file or a WD number — what
     Records → Receipts / Returns shows in its DN column."""
-    w = 'WHERE COALESCE(x."Site_ID", \'HQ\') = :site' if site_id else ""
-    prm = {"site": site_id} if site_id else {}
+    w = 'WHERE COALESCE(x."Site_ID", \'HQ\') = :site' if site_id is not None else ""
+    prm = {"site": site_id} if site_id is not None else {}
     files = (await session.execute(text(
         "SELECT id, name, mime, parsed_key FROM drive_files "
         "WHERE kind = 'dn' AND removed_at IS NULL AND cache_path IS NOT NULL"))).mappings().all()
@@ -324,3 +324,9 @@ async def return_dn_check(session: AsyncSession) -> list[dict]:
 
 
 LINKERS.append(("dn", link_dn))
+
+
+# 22c — certificates → lots (imported last: mtc_links does not import this module)
+from . import mtc_links as _mtc  # noqa: E402
+
+LINKERS.append(("mtc", _mtc.link_mtc))

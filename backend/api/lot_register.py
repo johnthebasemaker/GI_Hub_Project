@@ -19,7 +19,8 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -118,6 +119,14 @@ async def register(site_id: Optional[str] = Query(None), sap_code: Optional[str]
     elif not include_exhausted:
         rows = [r for r in rows if r["status"] != "exhausted"]
     rows.sort(key=lambda r: (r["SAP_Code"], _fefo_key(r)))
+    # Phase 22c: which lots have a certificate on file (and the Drive copy, if any)
+    certs = {(str(sap), str(lot)): (fid, n) for sap, lot, fid, n in (await session.execute(text(
+        'SELECT TRIM("SAP_Code"), "Lot_Number", MIN(drive_file_id), COUNT(*) FROM mtc_documents '
+        'WHERE COALESCE("Lot_Number", \'\') <> \'\' GROUP BY 1, 2'))).all()}
+    for r in rows:
+        c = certs.get((str(r["SAP_Code"]).strip(), str(r["Lot_Number"])))
+        r["Has_MTC"] = bool(c)
+        r["MTC_Drive_File"] = c[0] if c else None
     exceptions = await LOTS.unknown_lots(session, site) if site is not None else []
     # Phase 21a: row by row, with the workbook SHEET and ROW to fix — lots that
     # do not exist and lots already used up. Reported, never blocked (Q21-18).
@@ -159,6 +168,42 @@ async def problems_xlsx(site_id: Optional[str] = Query(None), user: dict = Depen
     return StreamingResponse(
         buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+class ExpiryIn(BaseModel):
+    SAP_Code: str
+    Lot_Number: str
+    Expiry_Date: _dt.date
+    reason: str = Field(..., min_length=3, max_length=300)
+
+
+_EXPIRY_EDITORS = require_roles("qc", "qc_hod", "hod")
+
+
+@router.put("/expiry", summary="Change a lot's expiry (a retest) — Phase 22c, ruling Q22-11")
+async def set_expiry(body: ExpiryIn, user: dict = Depends(_EXPIRY_EDITORS),
+                     session: AsyncSession = Depends(get_session)):
+    """The certificate's expiry is the real one, but a retest can extend or
+    shorten it (Q22-11). A date set here is `Expiry_Source = 'app'`: neither
+    the next Drive certificate nor the Lot Register file overwrites it.
+    Audited with the reason."""
+    row = (await session.execute(text(
+        'SELECT id, COALESCE("Site_ID", \'HQ\'), "Expiry_Date", "Expiry_Source" FROM lots '
+        'WHERE TRIM("SAP_Code") = TRIM(:s) AND "Lot_Number" = :l'),
+        {"s": body.SAP_Code, "l": body.Lot_Number})).all()
+    if not row:
+        raise HTTPException(404, "no such lot")
+    for rid, site, old, src in row:
+        resolve_site_param(user, site)
+        await session.execute(text(
+            'UPDATE lots SET "Expiry_Date" = :e, "Expiry_Source" = \'app\' WHERE id = :i'),
+            {"e": body.Expiry_Date.isoformat(), "i": rid})
+        from .services.ledger import write_audit
+        await write_audit(session, user["username"], "LOT_EXPIRY_SET", "lots",
+                          f"{body.SAP_Code}/{body.Lot_Number} @ {site}: {old or '—'} ({src or '—'}) → "
+                          f"{body.Expiry_Date.isoformat()} — {body.reason}")
+    await session.commit()
+    return {"updated": len(row), "Expiry_Date": body.Expiry_Date.isoformat(), "Expiry_Source": "app"}
 
 
 @router.get("/options", summary="Open lots of one material in FEFO order (Issue form)")

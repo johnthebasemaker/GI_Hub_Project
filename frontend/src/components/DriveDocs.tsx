@@ -24,35 +24,39 @@ export function useLedgerDocs(kind: 'receipts' | 'returns', enabled = true) {
   })
 }
 
-function isImage(d: DriveDoc) {
-  return (d.mime ?? '').startsWith('image/') || /\.(jpe?g|png|gif|webp)$/i.test(d.name)
+// the downloaded file's own type first — a certificate can be a .jpeg
+function isImage(d: DriveDoc, type: string) {
+  return type.startsWith('image/') || (!type && /\.(jpe?g|png|gif|webp)$/i.test(d.name))
+    || (d.mime ?? '').startsWith('image/')
 }
-function isPdf(d: DriveDoc) {
-  return (d.mime ?? '') === 'application/pdf' || /\.pdf$/i.test(d.name)
+function isPdf(d: DriveDoc, type: string) {
+  return type === 'application/pdf' || (!type && /\.pdf$/i.test(d.name))
 }
 
 /** One file, fetched with the session (an <img src> cannot carry it). */
 function Preview({ doc }: { doc: DriveDoc }) {
   const [url, setUrl] = useState<string | null>(null)
+  const [type, setType] = useState('')
   const [err, setErr] = useState<string | null>(null)
   useEffect(() => {
     let alive = true
     let made: string | null = null
     api.get(`/drive/files/${doc.id}`, { responseType: 'blob' })
       .then((r) => {
-        made = URL.createObjectURL(r.data as Blob)
-        if (alive) setUrl(made)
+        const blob = r.data as Blob
+        made = URL.createObjectURL(blob)
+        if (alive) { setType(blob.type || ''); setUrl(made) }
       })
       .catch(() => { if (alive) setErr('This copy is not on the server yet — the next pull fetches it.') })
     return () => { alive = false; if (made) URL.revokeObjectURL(made) }
   }, [doc.id])
   if (err) return <Typography.Text type="secondary">{err}</Typography.Text>
   if (!url) return <Typography.Text type="secondary">Loading…</Typography.Text>
-  if (isImage(doc)) {
+  if (isImage(doc, type)) {
     return <img src={url} alt={doc.name} data-testid="drive-doc-image"
       style={{ maxWidth: '100%', maxHeight: '70vh', display: 'block', margin: '0 auto' }} />
   }
-  if (isPdf(doc)) {
+  if (isPdf(doc, type)) {
     return <iframe src={url} title={doc.name} data-testid="drive-doc-pdf"
       style={{ width: '100%', height: '70vh', border: 0 }} />
   }

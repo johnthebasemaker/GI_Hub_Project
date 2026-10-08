@@ -1,6 +1,12 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Alert, Button, Card, Empty, Input, Space, Switch, Tag, Typography } from 'antd'
+import { Alert, App, Button, Card, DatePicker, Empty, Input, Modal, Space, Switch, Tag, Typography } from 'antd'
+import type { Dayjs } from 'dayjs'
+import { useQueryClient } from '@tanstack/react-query'
+import { api } from '../api/client'
+import { useAuth } from '../auth/AuthContext'
+import MtcDriveCard from '../components/MtcDriveCard'
+import { DriveDocsModal } from '../components/DriveDocs'
 import type { ColumnsType, SortOrder } from 'antd/es/table/interface'
 import { Table } from '../lib/smartTable'
 import { downloadLotProblems, useLotRegister, useLotUnits } from '../api/lotHooks'
@@ -70,6 +76,46 @@ function Rolls({ r }: { r: LotRow }) {
   )
 }
 
+// Phase 22c (ruling Q22-11): the certificate's expiry is the real one, but QC can
+// change it after a retest — that date then wins over the next certificate.
+const EXPIRY_EDITORS = new Set(['qc', 'qc_hod', 'hod'])
+
+function ExpiryModal({ lot, onClose }: { lot: LotRow; onClose: () => void }) {
+  const { message } = App.useApp()
+  const qc = useQueryClient()
+  const [date, setDate] = useState<Dayjs | null>(null)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const save = async () => {
+    if (!date) return
+    setBusy(true)
+    try {
+      await api.put('/lot-register/expiry', { SAP_Code: lot.SAP_Code, Lot_Number: lot.Lot_Number,
+        Expiry_Date: date.format('YYYY-MM-DD'), reason })
+      message.success('Expiry changed')
+      void qc.invalidateQueries({ queryKey: ['/lot-register'] })
+      onClose()
+    } catch (e) {
+      const x = e as { response?: { data?: { detail?: unknown } } }
+      message.error(typeof x?.response?.data?.detail === 'string' ? x.response.data.detail : 'Could not change the expiry')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Modal open title={`Change the expiry of lot ${lot.Lot_Number}`} onCancel={onClose} okText="Save"
+      onOk={save} okButtonProps={{ disabled: !date || reason.trim().length < 3 || busy }}>
+      <Typography.Paragraph type="secondary">
+        Now {String(lot.Expiry_Date ?? '—').slice(0, 10)}{lot.Expiry_Source ? ` (${String(lot.Expiry_Source)})` : ''}.
+        A date set here stays: the next certificate or Lot Register file does not overwrite it.
+      </Typography.Paragraph>
+      <DatePicker value={date} onChange={setDate} style={{ width: '100%' }} data-testid="expiry-date" />
+      <Input style={{ marginTop: 8 }} value={reason} onChange={(e) => setReason(e.target.value)}
+        placeholder="Why (e.g. retest passed, report QT-118)" data-testid="expiry-reason" />
+    </Modal>
+  )
+}
+
 export default function LotRegisterPage() {
   // The chosen sort lives in the URL (?sort=exp&dir=desc), so a shared link
   // opens the same view. Default: oldest expiry first, as the page promises.
@@ -86,6 +132,10 @@ export default function LotRegisterPage() {
     site_id: site, q: q || undefined, status, include_exhausted: exhausted,
   })
   const summary = data?.summary ?? {}
+  const { user } = useAuth()
+  const canEditExpiry = EXPIRY_EDITORS.has(user?.role ?? '')
+  const [expiryLot, setExpiryLot] = useState<LotRow | null>(null)
+  const [cert, setCert] = useState<LotRow | null>(null)
 
   const cols: ColumnsType<LotRow> = [
     { title: 'Material', key: 'm', fixed: 'left', width: 260, sortOrder: order('m'),
@@ -102,8 +152,22 @@ export default function LotRegisterPage() {
       sorter: datesEmptyLast((r) => r.MFD_Date), render: (v) => v ?? '—' },
     { title: 'Expiry', dataIndex: 'Expiry_Date', key: 'exp', width: 140, sortOrder: order('exp'),
       sorter: datesEmptyLast((r) => r.Expiry_Date),
-      render: (v, r) => (v ? <>{String(v).slice(0, 10)}{r.Expiry_Source === 'derived' &&
-        <Tag style={{ marginInlineStart: 4 }}>derived</Tag>}</> : '—') },
+      render: (v, r) => (
+        <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+          {v ? String(v).slice(0, 10) : '—'}
+          {v && r.Expiry_Source === 'derived' && <Tag style={{ margin: 0 }}>derived</Tag>}
+          {v && r.Expiry_Source === 'mtc' && <Tag color="blue" style={{ margin: 0 }}>from MTC</Tag>}
+          {v && r.Expiry_Source === 'app' && <Tag style={{ margin: 0 }}>set</Tag>}
+          {canEditExpiry && <Button size="small" type="link" style={{ padding: 0 }} data-testid="expiry-edit"
+            aria-label={`Change the expiry of lot ${r.Lot_Number}`} onClick={() => setExpiryLot(r)}>edit</Button>}
+        </span>) },
+    { title: 'MTC', key: 'mtc', width: 80,
+      render: (_: unknown, r) => (r.Has_MTC
+        ? (r.MTC_Drive_File
+          ? <Button size="small" type="link" style={{ padding: 0 }} data-testid="lot-mtc"
+              onClick={() => setCert(r)}>✓ open</Button>
+          : <Tag color="green" style={{ margin: 0 }}>✓</Tag>)
+        : <Typography.Text type="secondary">—</Typography.Text>) },
     { title: 'Status', key: 'st', width: 150, sortOrder: order('st'),
       sorter: (a, b) => (STATUS_RANK[a.status] ?? 9) - (STATUS_RANK[b.status] ?? 9)
         || (a.days_left ?? 1e9) - (b.days_left ?? 1e9),
@@ -123,7 +187,8 @@ export default function LotRegisterPage() {
       <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
         Every lot of a lot-tracked material, oldest expiry first. Quantities are worked out
         from the ledger (received − consumed − returned). An expiry marked <Tag>derived</Tag>
-        is the manufacture date plus the item&apos;s shelf life.
+        is the manufacture date plus the item&apos;s shelf life; <Tag>from MTC</Tag> is the
+        supplier&apos;s certificate (Phase 22c).
       </Typography.Paragraph>
       <Space wrap style={{ marginBottom: 12 }} data-testid="lot-summary">
         {ORDER.filter((k) => summary[k]).map((k) => (
@@ -166,6 +231,13 @@ export default function LotRegisterPage() {
           expandedRowRender: (r) => <Rolls r={r} />,
         }} />
       </div>
+      <MtcDriveCard lots={data?.items ?? []} site={site} />
+      {expiryLot && <ExpiryModal lot={expiryLot} onClose={() => setExpiryLot(null)} />}
+      {cert?.MTC_Drive_File && (
+        <DriveDocsModal title={`MTC — lot ${cert.Lot_Number}`}
+          docs={[{ id: Number(cert.MTC_Drive_File), name: `MTC ${cert.Lot_Number}.pdf`, mime: null }]}
+          onClose={() => setCert(null)} />
+      )}
       {!!(data?.problems?.length || data?.problems_fixed?.length) && (
         <Card size="small" style={{ marginTop: 16 }} data-testid="lot-problems" id="lot-problems"
           title={<span style={{ color: tone.critical }}>

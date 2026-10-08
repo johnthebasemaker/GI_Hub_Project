@@ -359,8 +359,10 @@ async def plan(session: AsyncSession, data: bytes, site_id: str,
                 "DN_No": next((r["dn"] for r in rs if r["dn"]), None),
                 "Received_Date": received}
         cur = existing.get((lot, sap))
-        if cur and cur.get("src") == "app":
-            # a person typed this expiry on the Receive form — the app wins
+        if cur and cur.get("src") in ("app", "mtc"):
+            # a person typed this expiry (the Receive form, a retest) — the app
+            # wins; or the supplier's certificate gave it (Phase 22c, ruling
+            # Q22-11) — the certificate outranks this file
             want.pop("Expiry_Date")
             want.pop("Expiry_Source")
         # A batch lot no receipt names: usually the Receipt Log spells it

@@ -38,6 +38,9 @@ export interface LotRow extends Row {
   SAP_Code: string
   status: string
   days_left: number | null
+  /** Phase 22c — a certificate is on file for this lot (from Drive or uploaded) */
+  Has_MTC?: boolean
+  MTC_Drive_File?: number | null
 }
 /** Phase 21a — one workbook row naming a bad lot, with where to fix it. */
 export interface LotProblem extends Row {

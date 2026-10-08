@@ -308,6 +308,32 @@ class MtcDocuments(Base):
     po_item_id = Column(Integer)
     DN_Number = Column(Text)
     qc_inspection_id = Column(Integer)
+    # Phase 22c (alembic b5d8f2a6c3e7) — the Drive file this certificate came
+    # from (services/mtc_links.py); NULL for one uploaded in the app.
+    drive_file_id = Column(Integer)
+    __table_args__ = (Index("ix_mtc_documents_drive_file", "drive_file_id"),)
+
+
+class MtcAssignments(Base):
+    """Phase 22c (alembic b5d8f2a6c3e7) — a Drive certificate PROPOSED for a lot
+    (a batch with no product to check, or assigned by hand — ruling Q22-10);
+    it becomes an `mtc_documents` row only when QC confirms it."""
+    __tablename__ = "mtc_assignments"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    drive_file_id = Column(Integer, nullable=False)
+    SAP_Code = Column(Text, nullable=False)
+    Lot_Number = Column(Text, nullable=False)
+    Site_ID = Column(Text)
+    source = Column(Text, nullable=False)
+    status = Column(Text, nullable=False, server_default=text("'proposed'"))
+    batch_text = Column(Text)
+    note = Column(Text)
+    proposed_by = Column(Text)
+    proposed_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    decided_by = Column(Text)
+    decided_at = Column(DateTime)
+    __table_args__ = (Index("ix_mtc_assignments_status", "status"),)
+
 
 class PendingIssues(Base):
     __tablename__ = "pending_issues"
