@@ -519,8 +519,9 @@ async def ledger_docs(kind: str, site_id: Optional[str] = None,
 @drive_router.get("/files/{file_id}", summary="A cached read-only copy of a Drive file")
 async def drive_file(file_id: int, user: dict = Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)):
-    if is_practice():
-        raise HTTPException(404, "not found")
+    # Practice serves its own drawn examples (overlay v11, rule 17g) — the same
+    # confinement to the cache folder applies, and Practice's drive_files only
+    # ever names what the overlay wrote
     row = (await session.execute(text(
         "SELECT name, mime, cache_path FROM drive_files WHERE id = :i"), {"i": file_id})
     ).mappings().first()

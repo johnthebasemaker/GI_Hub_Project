@@ -13,6 +13,7 @@ import { BulbOutlined, PauseCircleOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { runSuggestionEngine } from './engine'
 import type { SmeModel, SuggestionRow } from './engine'
+import { brand, status } from '../theme/tokens'
 
 export default function SuggestionPanel({ model, order, onPause }: {
   model: SmeModel
@@ -39,7 +40,7 @@ export default function SuggestionPanel({ model, order, onPause }: {
     { title: 'Unlocks', dataIndex: 'Newly_Completable_Tags', key: 'u', ellipsis: true },
     {
       title: 'Avg gain', dataIndex: 'Avg_Completion_Gain_Pct', key: 'g', align: 'right',
-      render: (v: number) => <span style={{ color: v > 0 ? '#10B981' : undefined }}>{v > 0 ? '+' : ''}{v.toFixed(2)}%</span>,
+      render: (v: number) => <span style={{ color: v > 0 ? status.ok : undefined }}>{v > 0 ? '+' : ''}{v.toFixed(2)}%</span>,
     },
     {
       title: '', key: 'a', width: 90,
@@ -53,7 +54,7 @@ export default function SuggestionPanel({ model, order, onPause }: {
 
   return (
     <Card size="small" style={{ marginTop: 16 }}
-      title={<span><BulbOutlined style={{ color: '#D4AF37' }} /> Smart Suggestions — what if you paused one?</span>}>
+      title={<span><BulbOutlined style={{ color: brand.gold }} /> Smart Suggestions — what if you paused one?</span>}>
       <Typography.Paragraph style={{ marginTop: 0 }}>
         {best.Newly_Completable_Count > 0 ? (
           <>⭐ Pausing <Typography.Text strong code>{best.Pause_Tag}</Typography.Text> makes{' '}

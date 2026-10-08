@@ -35,8 +35,9 @@ A **minimalist-brutalism** view was drawn for comparison only
 The palette lives in `frontend/src/theme/tokens.ts` (TS) and the `--gi-*`
 variables in `frontend/src/index.css` (CSS). **A colour outside those files is a
 bug** (`test:design` ratchets the count of raw hex values in components: it may
-only go down — 195 when written, **153** after the Phase 21g pass over the
-daily-use pages; the SME estimator's charts hold most of the rest).
+only go down — 195 when written, 153 after the Phase 21g pass over the
+daily-use pages, and **0** since Phase 22f, which moved the SME estimator's
+charts onto the tokens. A new raw colour now fails the build outright).
 
 | Role | Token | Value |
 |---|---|---|
@@ -44,7 +45,17 @@ daily-use pages; the SME estimator's charts hold most of the rest).
 | Attention | `brand.gold` / `goldLight`; `goldDeep` on white | #D4AF37 / #F0D060; #B45309 |
 | Dark surfaces | `dark.bg` / `surface` / `surface2` / `border` | #0A1628 / #162038 / #1E3050 / #2A4060 |
 | Light surfaces | `light.bg` / `surface` / `border` | #F8FAFC / #FFFFFF / #E5E7EB |
-| Status | `status.ok` / `low` / `critical` / `info` | #22C55E / #F59E0B / #EF4444 / #4A90D9 |
+| Status | `status.ok` / `low` / `critical` / `info` / `neutral` | #22C55E / #F59E0B / #EF4444 / #4A90D9 / #94A3B8 |
+| Chart series | `chartColors[0..7]` | gold, navyLight, the status colours, then #2E7D8C / #8B3A62 / #4A90D9 |
+| Media | `media.letterbox` | #000000 — a camera or video frame, not the theme |
+
+Phase 22f mapped every raw colour onto these (ruling Q22-20): Tailwind emerald
+(#10B981) and antd greens → `status.ok`; amber (#F59E0B, #FBBF24) → `status.low`;
+reds (#EF4444, #CF1322, #DC2626, #DC3545, #F87171) → `status.critical`; blues →
+`status.info`; slate #94A3B8 (an empty bar, "no data") → `status.neutral`; gold →
+`brand.gold`; white text on a coloured chip → `light.surface`. The only visible
+change is the green, a touch brighter. A file whose code already has a variable
+named `status` imports the tokens as `status as tone`.
 
 - **Primary buttons:** gold with navy text, in both themes.
 - **Contrast:** text and its background meet WCAG AA in light AND dark (gold on

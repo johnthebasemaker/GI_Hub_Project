@@ -11,37 +11,38 @@
 
 ## 0. State in ten lines
 
-1. **Phase 21 is on `main`**, PRs #116–#126. What was done, what is left and
-   what the operator does are in **[`PHASE21_SUMMARY.md`](PHASE21_SUMMARY.md)**.
-   - Lots by balance, plus bad workbook lots with their sheet and row (21a).
-   - Reorder maths counting approved jobs (21b).
-   - The Drive sync (21c), waiting for the operator's token.
-   - OCR in three colours, learned names, and the paper-date check (21d).
-   - The design contract (21e).
-   - The self-driving Practice demo: 6 flows and 52 page tours (21f/21g).
-   - Rulings Q21-1..24 plus Q21-1a are in `PROJECT_HANDOVER.md` → *Phase 21*.
+1. **Phase 22 is on `main`**, PRs #127–#133. What was done, what is left and
+   what the operator does are in **[`PHASE22_SUMMARY.md`](PHASE22_SUMMARY.md)**.
+   - Drive as a service: pull times in the UI, Pull button, "last updated"
+     chip, checked arrivals, auto-commit of additions only, the DN / MTC /
+     Pending folders cached (22a).
+   - DN copies on receipts/returns, WD numbers (22b); MTC certificates on their
+     lots, QC confirms the rest (22c); Requests & Pending (22d).
+   - The consumption paper line by line: shift → Prepared by, tanks, Compare
+     not Stage (22e); raw colours 0, Practice overlay v11 (22f).
+   - Rulings Q22-1..24 are in `PROJECT_HANDOVER.md` → *Phase 22*. Phase 21 is
+     in `PHASE21_SUMMARY.md`.
 2. ⚠️ **Standing order (CLAUDE.md §5):** every change goes branch → PR →
    green checks → auto-merge → `git pull` on local `main`, without waiting to
    be asked. Rollback is a revert PR, never a history rewrite.
-3. **Alembic head `e2a8c4f6b1d9`.** Live was migrated on 2026-10-06 at the
-   operator's instruction. The backup is
-   `.backups/gihub_2026-10-06_230148_before_phase21_migrate.sql.gz`. Both
-   Practice DBs are at head with overlay **v10** (`DEMO-TANK-1` for the
-   demo).
-4. **All gates green** (2026-10-07):
+3. **Alembic head `d7fa4c8e2b19`.** Live was migrated slice by slice on
+   2026-10-07/08 (ruling Q22-23), a backup before each in `.backups/`
+   (`…before_phase22a…` → `…before_phase22e…`). Practice DBs: migrated and
+   overlay **v11** applied at the end of Phase 22.
+4. **All gates green** (2026-10-08):
 
    | Gate | Result |
    |---|---|
-   | service_tests | **2,951 / 0** |
-   | E2E | **202** |
+   | service_tests | **3,003 / 0** |
+   | E2E | **207** |
    | AI Tier 1 | 147/147 |
    | Router L2 | pass |
    | grid | 72 |
    | parity:sme | 1,334 |
    | ui-math | 33/0 |
-   | nav | 53 routes, plus **page tours 52** |
+   | nav | 54 routes, plus **page tours 53** |
    | bug_check | 599/0/0 |
-   | build | design contract green (raw hex ratchet **153**); critical path green at its lowered baseline |
+   | build | design contract green (raw hex ratchet **0**); critical path re-baselined for Phase 22 (+1.3 KB raw, each step said why) |
 5. ⚠️ **`main` is BRANCH-PROTECTED** (Q18-1). `dual-ci`, `ai-router-eval` and
    `frontend-build` are required and strict, admins included. A PR that falls
    behind `main` needs `gh pr update-branch` before auto-merge can land it.

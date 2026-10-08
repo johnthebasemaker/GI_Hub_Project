@@ -331,7 +331,7 @@ export default function AppLayout() {
               <Tooltip title="My profile — update phone number">
                 <Button type="text" className="gi-user-label" icon={<UserOutlined />}
                   onClick={() => setProfileOpen(true)}>
-                  {user.label} · {user.username}
+                  <span className="gi-user-role">{user.label} · </span>{user.username}
                 </Button>
               </Tooltip>
             )}

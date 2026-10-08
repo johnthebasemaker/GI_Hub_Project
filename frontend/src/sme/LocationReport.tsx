@@ -26,6 +26,7 @@ import { scopeBottleneckCoverage, tagStats } from './session'
 import SuggestionPanel from './SuggestionPanel'
 import TagDetail from './TagDetail'
 import TierNote from './TierNote'
+import { light, status } from '../theme/tokens'
 
 const mono: React.CSSProperties = { fontFamily: 'JetBrains Mono, monospace' }
 const secHdr: React.CSSProperties = {
@@ -142,7 +143,7 @@ function ScopeSection({ model, order, onOrder, siteId, scopeTitle, slug, showSug
               <span style={{ fontSize: '0.72rem', opacity: 0.7 }}>{st.name.slice(0, 26)}</span>
               <FulfilPill pct={st.fulfillPct} />
               {st.fulfillWithOrderedPct > st.fulfillPct && (
-                <span style={{ ...mono, fontSize: '0.64rem', color: '#F59E0B' }}
+                <span style={{ ...mono, fontSize: '0.64rem', color: status.low }}
                   title="Coverage once the open purchase orders land">
                   → {st.fulfillWithOrderedPct.toFixed(1)}% ordered
                 </span>
@@ -226,7 +227,7 @@ export default function LocationReport({ siteId }: { siteId?: string }) {
                 title={(
                   <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <span style={{
-                      ...mono, background: locColor(loc), color: '#fff', borderRadius: 6,
+                      ...mono, background: locColor(loc), color: light.surface, borderRadius: 6,
                       padding: '1px 10px', fontSize: '0.72rem', fontWeight: 700,
                     }}>{loc}</span>
                     <span style={{ fontSize: '0.72rem', opacity: 0.75 }}>{tags.length} equipment</span>
@@ -282,19 +283,19 @@ function AllEquipmentMode({ model, order, onOrder, siteId }: {
         <Col flex="1 1 150px"><KpiDrill title="Total SQM" value={nf(sqm)}
           drillTitle="SQM by Equipment" rows={all.map((t) => ({ Tag: t.tag, SQM: t.sqm }))} /></Col>
         <Col flex="1 1 150px"><KpiDrill title="Buildable now SQM" value={nf(can)}
-          accent="#10B981" drillTitle="Buildable today (physical stock only)"
+          accent={status.ok} drillTitle="Buildable today (physical stock only)"
           help="Bottlenecked by stock ON THE SHELF. Material on an open purchase order is excluded — it cannot line a tank today."
           rows={all.map((t) => ({
             Tag: t.tag, 'Buildable now': t.canSqm, 'Ready now %': t.fulfillPct,
           }))} /></Col>
         <Col flex="1 1 150px"><KpiDrill title="When delivered SQM" value={nf(canOrd)}
-          accent="#F59E0B" drillTitle="Buildable once purchase orders arrive"
+          accent={status.low} drillTitle="Buildable once purchase orders arrive"
           help="Coverage against the TOTAL procured quantity — arrived stock plus the pending part of the order. Forecast only."
           rows={all.filter((t) => t.canSqmWithOrdered > t.canSqm).map((t) => ({
             Tag: t.tag, 'Buildable now': t.canSqm, 'When delivered': t.canSqmWithOrdered,
           }))} /></Col>
         <Col flex="1 1 150px"><KpiDrill title="Deficit SQM" value={nf(sqm - can)}
-          accent={sqm - can > 0 ? '#EF4444' : undefined}
+          accent={sqm - can > 0 ? status.critical : undefined}
           drillTitle="SQM Deficit by Equipment (against physical stock)"
           rows={all.filter((t) => t.sqm - t.canSqm > 0.005)
             .map((t) => ({ Tag: t.tag, 'Deficit SQM': Math.round((t.sqm - t.canSqm) * 100) / 100 }))} /></Col>

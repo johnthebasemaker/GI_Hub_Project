@@ -9,6 +9,7 @@ import { useAuth } from '../auth/AuthContext'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { TutorialFreshness } from '../components/AnnouncementsAdmin'
+import { media, status } from '../theme/tokens'
 
 /**
  * Training & Onboarding (Phase 10 Track 5).
@@ -127,7 +128,7 @@ function ModuleCard({ m, onChanged, seekTo, wantLang, focused }:
     <Card
       title={<Space>{m.title}<Tag>v{m.version}</Tag>
         {m.mandatory && <Tag color="red">Required for your role</Tag>}
-        {m.acknowledged && <Tag icon={<CheckCircleTwoTone twoToneColor="#52c41a" />}>Completed</Tag>}</Space>}
+        {m.acknowledged && <Tag icon={<CheckCircleTwoTone twoToneColor={status.ok} />}>Completed</Tag>}</Space>}
       style={{ marginBottom: 16 }}
     >
       {m.description && <Typography.Paragraph type="secondary">{m.description}</Typography.Paragraph>}
@@ -180,7 +181,7 @@ function ModuleCard({ m, onChanged, seekTo, wantLang, focused }:
               autoPlay={focused || undefined}
               playsInline
               preload={focused ? 'auto' : 'metadata'}
-              style={{ maxHeight: 420, background: '#000', borderRadius: 6 }}
+              style={{ maxHeight: 420, background: media.letterbox, borderRadius: 6 }}
               onPause={(e) => beacon((e.target as HTMLVideoElement).currentTime)}
               onEnded={(e) => beacon((e.target as HTMLVideoElement).currentTime)}
             >

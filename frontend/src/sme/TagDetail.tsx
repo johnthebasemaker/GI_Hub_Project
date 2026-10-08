@@ -15,6 +15,7 @@ import { FulfilPill, StatusDot } from './PriorityList'
 import { codeStats } from './session'
 import type { TagStat } from './session'
 import { materialCodeCol, materialNameCol } from './materialCols'
+import { brand, status } from '../theme/tokens'
 
 const mono: React.CSSProperties = { fontFamily: 'JetBrains Mono, monospace' }
 const nf = (v: number, d = 3) =>
@@ -30,21 +31,21 @@ const matColumns: ColumnsType<AllocationLine> = [
   { title: 'Demand', dataIndex: 'Demand_Qty', key: 'd', align: 'right', render: (v: number) => nf(v) },
   {
     title: 'Available', dataIndex: 'Alloc_Available', key: 'av', align: 'right',
-    render: (v: number) => <span style={{ color: '#10B981' }}>{nf(v)}</span>,
+    render: (v: number) => <span style={{ color: status.ok }}>{nf(v)}</span>,
   },
   {
     title: 'Pending Delivery', dataIndex: 'Alloc_Pending', key: 'or', align: 'right',
     render: (v: number) => (
-      <span style={{ color: v > 0 ? '#F59E0B' : undefined, opacity: v > 0 ? 1 : 0.4 }}>{nf(v)}</span>
+      <span style={{ color: v > 0 ? status.low : undefined, opacity: v > 0 ? 1 : 0.4 }}>{nf(v)}</span>
     ),
   },
   {
     title: 'Short (physical)', dataIndex: 'Shortfall_Available_Qty', key: 'sp', align: 'right',
-    render: (v: number) => <span style={{ color: v > 0 ? '#EF4444' : undefined, fontWeight: v > 0 ? 700 : 400 }}>{nf(v)}</span>,
+    render: (v: number) => <span style={{ color: v > 0 ? status.critical : undefined, fontWeight: v > 0 ? 700 : 400 }}>{nf(v)}</span>,
   },
   {
     title: 'To buy (net)', dataIndex: 'Shortfall_Qty', key: 's', align: 'right',
-    render: (v: number) => <span style={{ color: v > 0 ? '#EF4444' : '#10B981' }}>{nf(v)}</span>,
+    render: (v: number) => <span style={{ color: v > 0 ? status.critical : status.ok }}>{nf(v)}</span>,
   },
   {
     title: 'Ready now', dataIndex: 'Fulfillment_Pct', key: 'f', align: 'right', width: 100,
@@ -54,7 +55,7 @@ const matColumns: ColumnsType<AllocationLine> = [
     title: 'When delivered', dataIndex: 'Fulfillment_With_Ordered_Pct', key: 'fo',
     align: 'right', width: 110,
     render: (v: number, r) => (
-      <span style={{ color: v > r.Fulfillment_Pct ? '#F59E0B' : undefined,
+      <span style={{ color: v > r.Fulfillment_Pct ? status.low : undefined,
         opacity: v > r.Fulfillment_Pct ? 1 : 0.5 }}>{v.toFixed(1)}%</span>
     ),
   },
@@ -89,7 +90,7 @@ export default function TagDetail({ lines, stat, preview }: {
           }}>
             <StatusDot pct={cs.fulfillPct} />
             <span style={{
-              ...mono, border: '1px solid rgba(212,175,55,.5)', color: '#D4AF37',
+              ...mono, border: '1px solid rgba(212,175,55,.5)', color: brand.gold,
               borderRadius: 6, padding: '0 6px', fontSize: '0.7rem', fontWeight: 700,
             }}>Code {cs.code}</span>
             <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>{cs.shortName}</span>
@@ -98,7 +99,7 @@ export default function TagDetail({ lines, stat, preview }: {
             </span>
             <FulfilPill pct={cs.fulfillPct} />
             {cs.fulfillWithOrderedPct > cs.fulfillPct && (
-              <span style={{ ...mono, fontSize: '0.64rem', color: '#F59E0B', whiteSpace: 'nowrap' }}
+              <span style={{ ...mono, fontSize: '0.64rem', color: status.low, whiteSpace: 'nowrap' }}
                 title="Coverage once the open purchase orders land — not buildable today">
                 → {cs.fulfillWithOrderedPct.toFixed(1)}% ordered
               </span>
@@ -116,13 +117,13 @@ export default function TagDetail({ lines, stat, preview }: {
       }}>
         <span>System codes: <b style={mono}>{codes.length}</b></span>
         <span>Total demand: <b style={mono}>{nf(stat.demand)}</b></span>
-        <span>Available: <b style={{ ...mono, color: '#10B981' }}>{nf(stat.allocAvailable)}</b></span>
-        <span>On order: <b style={{ ...mono, color: stat.allocPending > 0 ? '#F59E0B' : undefined }}>{nf(stat.allocPending)}</b></span>
-        <span>To buy: <b style={{ ...mono, color: stat.shortfall > 0 ? '#EF4444' : undefined }}>{nf(stat.shortfall)}</b></span>
+        <span>Available: <b style={{ ...mono, color: status.ok }}>{nf(stat.allocAvailable)}</b></span>
+        <span>On order: <b style={{ ...mono, color: stat.allocPending > 0 ? status.low : undefined }}>{nf(stat.allocPending)}</b></span>
+        <span>To buy: <b style={{ ...mono, color: stat.shortfall > 0 ? status.critical : undefined }}>{nf(stat.shortfall)}</b></span>
         <span style={{ marginLeft: 'auto' }}>
           Ready now: <FulfilPill pct={stat.fulfillPct} />
           {stat.fulfillWithOrderedPct > stat.fulfillPct && (
-            <span style={{ ...mono, fontSize: '0.7rem', color: '#F59E0B', marginLeft: 6 }}>
+            <span style={{ ...mono, fontSize: '0.7rem', color: status.low, marginLeft: 6 }}>
               (when delivered {stat.fulfillWithOrderedPct.toFixed(1)}%)
             </span>
           )}

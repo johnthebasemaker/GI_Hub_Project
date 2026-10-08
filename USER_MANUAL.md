@@ -1365,6 +1365,30 @@ Details.xlsx* is never read as requests. Where its pending figure differs from
 GI Hub's, the row is listed at the bottom of the page — look at it; nothing is
 changed.
 
+## 3.21 Phase 22 in Practice, and a tidier top bar (October 2026)
+
+**Practice has examples of everything Phase 22 added** (it never pulls from
+Drive — these are drawn, synthetic files):
+- **Records → Receipts** (HOD): search `90001` — the 📎 opens a drawn delivery
+  note; search `WD` — deliveries without a DN carry their **WD-CNCEC-00nn**
+  number.
+- **Lots & Expiry → Certificates (MTC) from Drive**: *PRACTICE PU PRIMER
+  (BNO-PR-SOON)* is on lot PR-SOON by itself (its expiry is *from MTC*); *PRACTICE
+  MTC - container 1* is proposed by the HOD on PR-LATE — sign in as
+  `practice.qc` and **Confirm** it.
+- **Requests & Pending**: a request from ten days ago, with a line that has no
+  SAP code.
+- **OCR Import**: the site's preparers are *Practice Day* / *Practice Night*.
+  Paste a paper dated **two days ago** with "(Night)", for example
+  `Date: <that day> (Night)` then a line of the first two items — it is already
+  in the "workbook", so it is **compared**, not staged. The spelling `Tank one`
+  is learned for the first tank.
+
+**The top bar on a laptop.** Below 1440 pixels wide the top bar drops the role
+name before your username and the words *API online* (the green dot stays, and
+both are in the tooltips), so the Drive chip, the PRACTICE tag and the demo
+launcher fit on one line.
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.

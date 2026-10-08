@@ -16,6 +16,7 @@ import type { BalanceRow, UnitRef } from './insights'
 import { FulfilPill } from './PriorityList'
 import { RowsExportButtons } from './rowsExport'
 import { materialCodeCol, materialNameCol } from './materialCols'
+import { brand, light, status } from '../theme/tokens'
 
 const procCols = ['Material', 'Name', 'UOM', 'Demand', 'Available', 'Pending Delivery',
   'Shortfall', 'Net Shortfall', 'Coverage %']
@@ -37,7 +38,7 @@ const balanceCols: ColumnsType<BalanceRow> = [
   { title: 'Pending Delivery', dataIndex: 'Pending_Delivery_Qty', key: 'o', align: 'right', render: (v: number) => nf(v) },
   {
     title: 'Shortfall', dataIndex: 'Shortfall', key: 's', align: 'right',
-    render: (v: number) => <span style={{ color: v > 0 ? '#EF4444' : undefined, fontWeight: v > 0 ? 700 : 400 }}>{nf(v)}</span>,
+    render: (v: number) => <span style={{ color: v > 0 ? status.critical : undefined, fontWeight: v > 0 ? 700 : 400 }}>{nf(v)}</span>,
   },
   { title: 'Net Shortfall', dataIndex: 'Net_Shortfall', key: 'x', align: 'right', render: (v: number) => nf(v) },
   {
@@ -80,7 +81,7 @@ export default function ProcurementView({ model, units, materials }: {
               <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                 <span>{fcDot(cov)}</span>
                 <span style={{
-                  ...mono, background: locColor(loc), color: '#fff', borderRadius: 6,
+                  ...mono, background: locColor(loc), color: light.surface, borderRadius: 6,
                   padding: '1px 10px', fontSize: '0.72rem', fontWeight: 700,
                 }}>{loc || '—'}</span>
                 <span style={{ fontSize: '0.72rem', opacity: 0.75 }}>
@@ -97,7 +98,7 @@ export default function ProcurementView({ model, units, materials }: {
                 label: (
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{
-                      ...mono, border: '1px solid rgba(212,175,55,.5)', color: '#D4AF37',
+                      ...mono, border: '1px solid rgba(212,175,55,.5)', color: brand.gold,
                       borderRadius: 6, padding: '0 6px', fontSize: '0.68rem', fontWeight: 700,
                     }}>{cs.label}</span>
                     <span style={{ fontSize: '0.72rem', opacity: 0.75 }}>{cs.shortName}</span>
@@ -134,7 +135,7 @@ export default function ProcurementView({ model, units, materials }: {
       }}>
         <span>Materials: <b style={mono}>{overall.rows.length}</b></span>
         <span>Total demand: <b style={mono}>{nf(overall.totals.demand)}</b></span>
-        <span>Shortfall: <b style={{ ...mono, color: overall.totals.shortfall > 0 ? '#EF4444' : undefined }}>{nf(overall.totals.shortfall)}</b></span>
+        <span>Shortfall: <b style={{ ...mono, color: overall.totals.shortfall > 0 ? status.critical : undefined }}>{nf(overall.totals.shortfall)}</b></span>
         <span>Net shortfall (after on-order): <b style={mono}>{nf(overall.totals.netShortfall)}</b></span>
         <span style={{ marginLeft: 'auto' }}>
           Coverage: <FulfilPill pct={Math.min(overall.totals.coveragePct, 100)} />

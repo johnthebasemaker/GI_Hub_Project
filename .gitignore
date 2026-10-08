@@ -146,3 +146,8 @@ deploy/gdrive_*.json
 # OCR evaluation cache. Stay on this Mac.
 data-archive/ocr_ground_truth/
 .cache/ocr_eval/
+
+# Phase 22a — the read-only copies of the Drive DN / MTC / request files (real
+# delivery notes and certificates; Practice's drawn examples under practice/).
+# Served by /drive/files only. NEVER committed.
+.cache/drive/

@@ -26,6 +26,7 @@ import SuggestionPanel from './SuggestionPanel'
 import TagDetail from './TagDetail'
 import TierNote from './TierNote'
 import { materialCodeCol, materialNameCol } from './materialCols'
+import { status } from '../theme/tokens'
 
 const mono: React.CSSProperties = { fontFamily: 'JetBrains Mono, monospace' }
 const secHdr: React.CSSProperties = {
@@ -161,17 +162,17 @@ export default function SessionReport({ siteId }: { siteId?: string }) {
     { title: 'Demand', dataIndex: 'Demand_Qty', key: 'd', align: 'right', render: (v: number) => nf(v) },
     {
       title: 'Available', dataIndex: 'Available_Qty', key: 'av', align: 'right',
-      render: (v: number) => <span style={{ color: '#10B981' }}>{nf(v)}</span>,
+      render: (v: number) => <span style={{ color: status.ok }}>{nf(v)}</span>,
     },
     {
       title: 'Pending Delivery', dataIndex: 'Pending_Delivery_Qty', key: 'or', align: 'right',
       render: (v: number) => (
-        <span style={{ opacity: v > 0 ? 1 : 0.4, color: v > 0 ? '#F59E0B' : undefined }}>{nf(v)}</span>
+        <span style={{ opacity: v > 0 ? 1 : 0.4, color: v > 0 ? status.low : undefined }}>{nf(v)}</span>
       ),
     },
     {
       title: 'To Order', dataIndex: 'Shortfall_Qty', key: 's', align: 'right',
-      render: (v: number) => <span style={{ color: v > 0 ? '#EF4444' : undefined, fontWeight: v > 0 ? 700 : 400 }}>{nf(v)}</span>,
+      render: (v: number) => <span style={{ color: v > 0 ? status.critical : undefined, fontWeight: v > 0 ? 700 : 400 }}>{nf(v)}</span>,
     },
     // Three columns repeating "SQM" cost more width than the numbers do; one
     // group header says it once for all of them.
@@ -182,7 +183,7 @@ export default function SessionReport({ siteId }: { siteId?: string }) {
         { title: 'Done', dataIndex: 'SQM_Done', key: 'sd', align: 'right', render: (v: number) => nf(v, 1) },
         {
           title: 'Deficit', dataIndex: 'SQM_Deficit', key: 'sx', align: 'right',
-          render: (v: number) => <span style={{ color: v > 0 ? '#EF4444' : undefined }}>{nf(v, 1)}</span>,
+          render: (v: number) => <span style={{ color: v > 0 ? status.critical : undefined }}>{nf(v, 1)}</span>,
         },
       ],
     },
@@ -213,12 +214,12 @@ export default function SessionReport({ siteId }: { siteId?: string }) {
     { title: 'Remaining m²', dataIndex: 'Remaining_SQM', key: 'r', align: 'right', render: (v: number) => nf(v, 1) },
     {
       title: 'Achievable now', dataIndex: 'SQM_Achievable_Now', key: 'an', align: 'right',
-      render: (v: number) => <span style={{ color: '#10B981', fontWeight: 700 }}>{nf(v, 1)}</span>,
+      render: (v: number) => <span style={{ color: status.ok, fontWeight: 700 }}>{nf(v, 1)}</span>,
     },
     {
       title: 'When delivered', dataIndex: 'SQM_Achievable_With_Ordered', key: 'ao', align: 'right',
       render: (v: number, r) => (
-        <span style={{ color: v > r.SQM_Achievable_Now ? '#F59E0B' : undefined, opacity: v > r.SQM_Achievable_Now ? 1 : 0.5 }}>
+        <span style={{ color: v > r.SQM_Achievable_Now ? status.low : undefined, opacity: v > r.SQM_Achievable_Now ? 1 : 0.5 }}>
           {nf(v, 1)}
         </span>
       ),
@@ -226,7 +227,7 @@ export default function SessionReport({ siteId }: { siteId?: string }) {
     {
       title: 'Deficit m²', dataIndex: 'SQM_Deficit', key: 'd', align: 'right',
       render: (v: number) => (
-        <span style={{ color: v > 0 ? '#EF4444' : undefined, fontWeight: v > 0 ? 700 : 400 }}>{nf(v, 1)}</span>
+        <span style={{ color: v > 0 ? status.critical : undefined, fontWeight: v > 0 ? 700 : 400 }}>{nf(v, 1)}</span>
       ),
     },
     {
@@ -241,7 +242,7 @@ export default function SessionReport({ siteId }: { siteId?: string }) {
       width: 110, align: 'right',
       render: (v: number, r) => (
         <span style={{ ...mono, fontSize: '0.72rem',
-          color: v > r.Coverage_Now_Pct ? '#F59E0B' : undefined,
+          color: v > r.Coverage_Now_Pct ? status.low : undefined,
           opacity: v > r.Coverage_Now_Pct ? 1 : 0.5 }}>{v.toFixed(1)}%</span>
       ),
     },
@@ -274,7 +275,7 @@ export default function SessionReport({ siteId }: { siteId?: string }) {
             'Ready now %': r.Fulfillment_Pct,
           }))} help="Material components demanded by the session — one row per physical drum (Material_Code + variant SAP). Total Procured is the whole quantity bought for the project; Available is the part of it that has arrived." /></Col>
         <Col flex="1 1 160px"><KpiDrill title="Need to Order" value={String(shortOnly.length)}
-          accent={shortOnly.length > 0 ? '#EF4444' : '#10B981'}
+          accent={shortOnly.length > 0 ? status.critical : status.ok}
           drillTitle="Order List (net shortfall > 0)" rows={shortOnly.map((r) => ({
             Material: r.Material_Code, SAP: r.SAP_Code, Name: r.Material_Name,
             Available: r.Available_Qty, 'Pending Delivery': r.Pending_Delivery_Qty,
@@ -294,7 +295,7 @@ export default function SessionReport({ siteId }: { siteId?: string }) {
             }
           })} help={`Buildable m² ÷ remaining m² (${scope.canSqm} / ${scope.sqm}), each unit capped by its SCARCEST component — never a quantity average across materials. PHYSICAL stock only; against the total procured quantity it would be ${covOrd.toFixed(1)}%.`} /></Col>
         <Col flex="1 1 160px"><KpiDrill title="When delivered" value={`${covOrd.toFixed(1)}%`}
-          accent="#F59E0B" drillTitle="Components covered only by an open PO"
+          accent={status.low} drillTitle="Components covered only by an open PO"
           rows={combined.filter((r) => r.Pending_Delivery_Qty > 0).map((r) => ({
             Material: r.Material_Code, SAP: r.SAP_Code, Name: r.Material_Name,
             Available: r.Available_Qty, 'Pending Delivery': r.Pending_Delivery_Qty,
@@ -353,9 +354,9 @@ export default function SessionReport({ siteId }: { siteId?: string }) {
                   The amber bar is the PENDING part of the order (2026-08-05
                   subset rule) — stacking the RAW order on top of `Available`
                   would draw a fully-delivered material at twice its size. */}
-              <Bar dataKey="Available_Qty" name="Available" stackId="p" fill="#10B981" fillOpacity={0.8} />
-              <Bar dataKey="Pending_Delivery_Qty" name="Pending Delivery" stackId="p" fill="#F59E0B" fillOpacity={0.8} />
-              <Bar dataKey="Shortfall_Qty" name="To Order" stackId="p" fill="#EF4444" fillOpacity={0.8} />
+              <Bar dataKey="Available_Qty" name="Available" stackId="p" fill={status.ok} fillOpacity={0.8} />
+              <Bar dataKey="Pending_Delivery_Qty" name="Pending Delivery" stackId="p" fill={status.low} fillOpacity={0.8} />
+              <Bar dataKey="Shortfall_Qty" name="To Order" stackId="p" fill={status.critical} fillOpacity={0.8} />
             </BarChart>
           </ResponsiveContainer>
         )}
@@ -366,13 +367,13 @@ export default function SessionReport({ siteId }: { siteId?: string }) {
           <span>Equipment: <b style={mono}>{sessionTags.length}</b></span>
           <span>Components: <b style={mono}>{combined.length}</b></span>
           <span>Total demand: <b style={mono}>{nf(totDemand)}</b></span>
-          <span>Available: <b style={{ ...mono, color: '#10B981' }}>{nf(totAvail)}</b></span>
-          <span>On order: <b style={{ ...mono, color: totOrdered > 0 ? '#F59E0B' : undefined }}>{nf(totOrdered)}</b></span>
-          <span>To procure: <b style={{ ...mono, color: totShort > 0 ? '#EF4444' : undefined }}>{nf(totShort)}</b></span>
+          <span>Available: <b style={{ ...mono, color: status.ok }}>{nf(totAvail)}</b></span>
+          <span>On order: <b style={{ ...mono, color: totOrdered > 0 ? status.low : undefined }}>{nf(totOrdered)}</b></span>
+          <span>To procure: <b style={{ ...mono, color: totShort > 0 ? status.critical : undefined }}>{nf(totShort)}</b></span>
           <span style={{ marginLeft: 'auto' }}>
             Ready now: <FulfilPill pct={cov} />
             {covOrd > cov && (
-              <span style={{ ...mono, fontSize: '0.7rem', color: '#F59E0B', marginLeft: 6 }}>
+              <span style={{ ...mono, fontSize: '0.7rem', color: status.low, marginLeft: 6 }}>
                 (when delivered {covOrd.toFixed(1)}%)
               </span>
             )}
@@ -404,16 +405,16 @@ export default function SessionReport({ siteId }: { siteId?: string }) {
                   { title: 'Demand', dataIndex: 'Demand_Qty', key: 'd', align: 'right', render: (v: number) => nf(v) },
                   {
                     title: 'Available', dataIndex: 'Alloc_Available', key: 'av', align: 'right',
-                    render: (v: number) => <span style={{ color: '#10B981' }}>{nf(v)}</span>,
+                    render: (v: number) => <span style={{ color: status.ok }}>{nf(v)}</span>,
                   },
                   {
                     title: 'Pending Delivery', dataIndex: 'Alloc_Pending', key: 'or', align: 'right',
-                    render: (v: number) => <span style={{ color: v > 0 ? '#F59E0B' : undefined, opacity: v > 0 ? 1 : 0.4 }}>{nf(v)}</span>,
+                    render: (v: number) => <span style={{ color: v > 0 ? status.low : undefined, opacity: v > 0 ? 1 : 0.4 }}>{nf(v)}</span>,
                   },
                   {
                     title: 'Still to buy', dataIndex: 'Shortfall_Qty', key: 's', align: 'right',
                     render: (v: number) => (
-                      <span style={{ color: v > 0 ? '#EF4444' : '#10B981', fontWeight: v > 0 ? 700 : 400 }}>{nf(v)}</span>
+                      <span style={{ color: v > 0 ? status.critical : status.ok, fontWeight: v > 0 ? 700 : 400 }}>{nf(v)}</span>
                     ),
                   },
                 ]} />
@@ -421,9 +422,9 @@ export default function SessionReport({ siteId }: { siteId?: string }) {
           }} />
         <SummaryStrip>
           <span>Remaining: <b style={mono}>{nf(sqmTot.rem, 1)}</b> m²</span>
-          <span>Achievable now: <b style={{ ...mono, color: '#10B981' }}>{nf(sqmTot.now, 1)}</b> m²</span>
-          <span>When delivered: <b style={{ ...mono, color: '#F59E0B' }}>{nf(sqmTot.ord, 1)}</b> m²</span>
-          <span>Deficit: <b style={{ ...mono, color: sqmTot.def > 0 ? '#EF4444' : undefined }}>{nf(sqmTot.def, 1)}</b> m²</span>
+          <span>Achievable now: <b style={{ ...mono, color: status.ok }}>{nf(sqmTot.now, 1)}</b> m²</span>
+          <span>When delivered: <b style={{ ...mono, color: status.low }}>{nf(sqmTot.ord, 1)}</b> m²</span>
+          <span>Deficit: <b style={{ ...mono, color: sqmTot.def > 0 ? status.critical : undefined }}>{nf(sqmTot.def, 1)}</b> m²</span>
         </SummaryStrip>
       </Card>
 

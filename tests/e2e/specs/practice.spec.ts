@@ -74,6 +74,9 @@ test('15c: Practice is violet, with a pulsing PRACTICE badge top-left on the log
     await expect(page.getByTestId('drive-freshness')).toHaveAttribute('data-status', 'practice')
     await expect(page.getByTestId('drive-freshness')).toHaveAttribute('aria-label', 'Practice data')
     await expect(page.getByTestId('drive-pull')).toHaveCount(0)
+    // Phase 22f: the Practice HOD's top bar fits a laptop window (it overflowed by 184 px)
+    expect(await page.locator('.gi-header').evaluate((e) => e.scrollWidth - e.clientWidth),
+      'the Practice HOD top bar overflows').toBeLessThanOrEqual(1)
   })
 
 test('15c: under reduced motion the Practice badge stands still', async ({ browser }) => {

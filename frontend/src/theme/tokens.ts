@@ -36,6 +36,14 @@ export const status = {
   low: '#F59E0B',
   critical: '#EF4444',
   info: '#4A90D9',
+  // Phase 22f — "no data / not applicable" (an empty bar, a dash) — the slate
+  // the SME charts used as a raw value
+  neutral: '#94A3B8',
+}
+
+// Phase 22f — surfaces that are not the theme: a camera or video letterbox
+export const media = {
+  letterbox: '#000000',
 }
 
 // Role accent colors (ROLES map in config.py).

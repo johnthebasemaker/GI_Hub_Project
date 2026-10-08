@@ -51,7 +51,7 @@ os.environ.setdefault("GI_DOTENV", "0")
 
 # Bumped when the OVERLAY's content changes. Reported with the tutorial
 # fixture's own DATASET_VERSION as "<fixture>.<overlay>".
-OVERLAY_VERSION = 10  # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
+OVERLAY_VERSION = 11  # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
                       # · 4 = Phase 18 return desk loans (2026-10-03)
                       # · 5 = Phase 18 reorder-signal trio (2026-10-03)
                       # · 6 = Phase 19 accepted minimum · per-site / global POs ·
@@ -64,6 +64,10 @@ OVERLAY_VERSION = 10  # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry
                       #       green (learned), gold (suggested) and red (2026-10-06)
                       # · 10 = Phase 21f the self-driving demo's own tank
                       #       (DEMO-TANK-1, two READY days) (2026-10-06)
+                      # · 11 = Phase 22 the Drive features on Practice data — a DN
+                      #       to open, a WD delivery, two certificates (one for QC),
+                      #       a request, Day/Night preparers, a learned tank, a Night
+                      #       paper to Compare; the queue seed made idempotent (2026-10-08)
 
 SITE = "CNCEC"
 WAREHOUSE = "WH-01"
@@ -202,6 +206,14 @@ async def seed_queues() -> dict:
                     select(inv.c["SAP_Code"]).where(inv.c["Site_ID"] == SITE)
                     .order_by(inv.c["SAP_Code"]).limit(6))).all()]
             receipts = [("899001", 24.0), (saps[0], 40.0), (saps[1], 12.0)]
+            # Phase 22f — IDEMPOTENT: a second run used to add another 3 + 3 + 1
+            # rows and two PRs (12 seed receipts after four runs). Seeded once;
+            # earlier duplicates are trimmed back to one run's worth.
+            async with SessionLocal() as s:
+                already = await trim_seed_duplicates(s)
+                await s.commit()
+            if already:
+                receipts = []
             for sap, qty in receipts:
                 rr = await ac.post("/entry/receipts", headers=H, json={
                     "Date": today, "SAP_Code": sap, "Quantity": qty, "Site_ID": SITE,
@@ -209,9 +221,9 @@ async def seed_queues() -> dict:
                     "Remarks": "Practice seed — approve or reject me"})
                 if rr.status_code != 201:
                     print(f"  ⚠️  receipt {sap}: {rr.status_code} {rr.text[:160]}")
-            issues = [("899001", 6.0, "Aria Bellweather"),
-                      (saps[2], 3.0, "Tomas Halversen"),
-                      (saps[3], 2.0, "Nadia Okonjo")]
+            issues = [] if already else [("899001", 6.0, "Aria Bellweather"),
+                                         (saps[2], 3.0, "Tomas Halversen"),
+                                         (saps[3], 2.0, "Nadia Okonjo")]
             for sap, qty, who in issues:
                 ri = await ac.post("/entry/consumption", headers=H, json={
                     "Date": today, "SAP_Code": sap, "Quantity": qty, "Site_ID": SITE,
@@ -260,6 +272,10 @@ async def seed_queues() -> dict:
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  on-order example skipped: {type(e).__name__}: {str(e)[:160]}")
             try:
+                out["drive"] = await seed_drive_examples(today)
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  Drive examples skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
                 out["loans"] = await seed_returnables()
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  loan example skipped: {type(e).__name__}: {str(e)[:160]}")
@@ -269,25 +285,28 @@ async def seed_queues() -> dict:
                 print(f"  ⚠️  partial-return example skipped: {type(e).__name__}: {str(e)[:160]}")
 
         async with SessionLocal() as s:
-            await ledger.stage_return(s, username="practice.storekeeper", data={
-                "Site_ID": SITE, "SAP_Code": "899001", "Quantity": 2.0,
-                "Reason": "Surplus to job", "Lot_Number": "LOT-TUT-001",
-                "Remarks": "Practice seed"})
-            await s.commit()
-            draft = await procurement.create_pr(
-                s, username="practice.hod", site_id=SITE,
-                lines=[{"SAP_Code": saps[4], "Requested_Qty": 50},
-                       {"SAP_Code": saps[5], "Requested_Qty": 20}],
-                notes="Practice seed — a draft for the HOD to submit")
-            sent = await procurement.create_pr(
-                s, username="practice.hod", site_id=SITE,
-                lines=[{"SAP_Code": "899001", "Requested_Qty": 100}],
-                notes="Practice seed — already with Logistics")
-            await s.commit()
-            if sent.get("pr_number"):
-                await procurement.submit_pr(s, username="practice.hod",
-                                            pr_number=sent["pr_number"], site_id=SITE)
+            draft: dict = {}
+            sent: dict = {}
+            if not already:
+                await ledger.stage_return(s, username="practice.storekeeper", data={
+                    "Site_ID": SITE, "SAP_Code": "899001", "Quantity": 2.0,
+                    "Reason": "Surplus to job", "Lot_Number": "LOT-TUT-001",
+                    "Remarks": "Practice seed"})
                 await s.commit()
+                draft = await procurement.create_pr(
+                    s, username="practice.hod", site_id=SITE,
+                    lines=[{"SAP_Code": saps[4], "Requested_Qty": 50},
+                           {"SAP_Code": saps[5], "Requested_Qty": 20}],
+                    notes="Practice seed — a draft for the HOD to submit")
+                sent = await procurement.create_pr(
+                    s, username="practice.hod", site_id=SITE,
+                    lines=[{"SAP_Code": "899001", "Requested_Qty": 100}],
+                    notes="Practice seed — already with Logistics")
+                await s.commit()
+                if sent.get("pr_number"):
+                    await procurement.submit_pr(s, username="practice.hod",
+                                                pr_number=sent["pr_number"], site_id=SITE)
+                    await s.commit()
             for name in ("pending_receipts", "pending_issues", "pending_returns"):
                 tt = md.tables[name]
                 out[name] = (await s.execute(select(func.count()).select_from(tt).where(
@@ -302,6 +321,30 @@ async def seed_queues() -> dict:
             await _set(s, "require_entry_documents", prev)
             await s.commit()
     return out
+
+
+_SEED_REMARK = "Practice seed — approve or reject me"
+
+
+async def trim_seed_duplicates(s) -> bool:
+    """Phase 22f: True when the queue seed already ran (so it is not staged
+    again). Rows a non-idempotent older overlay added on every run are trimmed
+    back to ONE run's worth — the oldest kept: 3 receipts, 3 issues, 1 return."""
+    from sqlalchemy import text
+    seen = (await s.execute(text(
+        'SELECT COUNT(*) FROM pending_receipts WHERE "Remarks" = :r'), {"r": _SEED_REMARK})).scalar() or 0
+    if not seen:
+        return False
+    for table, remark, keep in (("pending_receipts", _SEED_REMARK, 3),
+                                ("pending_issues", _SEED_REMARK, 3),
+                                ("pending_returns", "Practice seed", 1)):
+        res = await s.execute(text(f"""
+            DELETE FROM {table} WHERE "Remarks" = :r AND id NOT IN (
+                SELECT id FROM {table} WHERE "Remarks" = :r ORDER BY id LIMIT :k)"""),
+            {"r": remark, "k": keep})
+        if res.rowcount:
+            print(f"  trimmed {res.rowcount} duplicate seed row(s) from {table}")
+    return True
 
 
 GARNET_SAP = "899970"   # synthetic, Practice-only (P12-5)
@@ -949,6 +992,173 @@ async def seed_on_order_examples() -> int:
             {"m0": f"MAT-{REORDER_SAPS[0]}", "m1": f"MAT-{REORDER_SAPS[1]}"})
         await s.commit()
     return 2
+
+
+PRACTICE_DN = "90001"
+
+
+def _practice_png(lines: list[str]) -> bytes:
+    """A drawn, obviously synthetic document (no real company — P12-0)."""
+    import io
+
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (900, 600), "white")
+    d = ImageDraw.Draw(img)
+    d.rectangle([20, 20, 880, 580], outline="black", width=3)
+    y = 50
+    for ln in lines:
+        d.text((50, y), ln, fill="black")
+        y += 40
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _practice_pdf(lines: list[str]) -> bytes:
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=12)
+    for ln in lines:
+        pdf.cell(0, 9, ln, new_x="LMARGIN", new_y="NEXT")
+    return bytes(pdf.output())
+
+
+def _practice_xlsx(rows: list[list]) -> bytes:
+    import io
+
+    import openpyxl
+    wb = openpyxl.Workbook()
+    for r in rows:
+        wb.active.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+async def seed_drive_examples(today: str) -> dict:
+    """Phase 22 (rule 17g) — the Drive features, on Practice data.
+
+    Practice never pulls from Drive (rule 17); these are what a pull WOULD
+    have indexed, drawn here, all synthetic:
+      · DN — receipt DN 90001 with a drawn delivery note to open (📎), and a
+        delivery with NO DN that gets its WD number (22b);
+      · MTC — a certificate whose batch and product match lot PR-SOON (filed
+        by itself), and one with no batch ("container 1") proposed by the HOD
+        on PR-LATE for the QC trainee to confirm (22c);
+      · a request workbook from 10 days ago: a general item without a PR, one
+        line with no SAP code (22d);
+      · the site's Day / Night preparers, a learned tank spelling, and a NIGHT
+        paper two days ago already in the "workbook" — paste it to see Compare
+        (22e). Idempotent; never fatal.
+    """
+    import datetime as _d
+
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+    from backend.api.services import drive_links, drive_sync as DS
+    from backend.api.services import ledger, mtc_links, preparers, requests_sync
+
+    t0 = _d.date.fromisoformat(today)
+    out = {}
+    folder = DS.CACHE_DIR / "practice"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    async def put_file(s, drive_id, kind, name, data, mime):
+        path = folder / f"{drive_id}{pathlib.Path(name).suffix}"
+        path.write_bytes(data)
+        await s.execute(text('''
+            INSERT INTO drive_files (drive_id, kind, folder, name, mime, size, cache_path)
+            VALUES (:d, :k, 'Practice', :n, :m, :z, :p)
+            ON CONFLICT (drive_id) DO UPDATE SET cache_path = :p, removed_at = NULL'''),
+            {"d": drive_id, "k": kind, "n": name, "m": mime, "z": len(data), "p": str(path)})
+
+    async with SessionLocal() as s:
+        # ── 22b: a DN to open, and a delivery without one ───────────────────
+        if not (await s.execute(text('SELECT 1 FROM receipts WHERE "DN_No" = :d'),
+                                {"d": PRACTICE_DN})).first():
+            for dn, veh, qty in ((PRACTICE_DN, "PR-1001", 5.0), ("WD", "PR-2002", 3.0)):
+                await ledger.post_receipt(s, username="practice.storekeeper", data={
+                    "Date": (t0 - _d.timedelta(days=3)).isoformat(), "SAP_Code": "899001",
+                    "Quantity": qty, "Site_ID": SITE, "Supplier": "Halcyon Industrial Supply",
+                    "Remarks": "Practice — DN example",
+                    "extra": {"DN_No": dn, "Vehicle_No": veh}})
+        await put_file(s, "practice-dn-90001", "dn", f"DN# {PRACTICE_DN}.png",
+                       _practice_png(["DELIVERY NOTE", f"DN# {PRACTICE_DN}", "PRACTICE DATA - NOT A REAL DOCUMENT",
+                                      "Tutorial Demo Gasket Set (899001)   x 5"]), "image/png")
+        # ── 22c: two certificates ──────────────────────────────────────────
+        lot = (await s.execute(text(
+            'SELECT "Expiry_Date" FROM lots WHERE "Lot_Number" = \'PR-SOON\' LIMIT 1'))).scalar()
+        if lot:
+            exp = _d.date.fromisoformat(str(lot)[:10])
+            await put_file(s, "practice-mtc-1", "mtc", "PRACTICE PU PRIMER (BNO-PR-SOON).pdf",
+                           _practice_pdf(["TEST CERTIFICATE - PRACTICE DATA",
+                                          "Product Name : PRACTICE PU PRIMER", "Batch No : PR-SOON",
+                                          f"D.O.M : {(exp - _d.timedelta(days=270)).strftime('%d/%m/%Y')}",
+                                          f"D.O.E : {exp.strftime('%d/%m/%Y')}"]), "application/pdf")
+        await put_file(s, "practice-mtc-2", "mtc", "PRACTICE MTC - container 1.pdf",
+                       _practice_pdf(["TEST CERTIFICATE - PRACTICE DATA", "Container 1",
+                                      "(no batch number on this page)"]), "application/pdf")
+        # ── 22d: a request mailed 10 days ago ──────────────────────────────
+        codes = [r[0] for r in (await s.execute(text(
+            'SELECT "Material_Code" FROM inventory WHERE "Site_ID" = :s AND "Material_Code" IS NOT NULL '
+            "AND \"Category\" NOT ILIKE '%surface%' ORDER BY \"SAP_Code\" LIMIT 2"), {"s": SITE})).all()]
+        req_day = t0 - _d.timedelta(days=10)
+        rows = [["Sl. No.", "Material Code", "Material Description", "UOM", "Qty", "Pending Qty", "Remarks"]]
+        for i, c in enumerate(codes, 1):
+            rows.append([i, c, f"Practice requested item {i}", "EA", 20 * i, 20 * i, None])
+        rows.append([len(rows), "N/A", "Practice head pan (no SAP code yet)", "Nos", 10, 10, None])
+        await put_file(s, "practice-req-1", "pending", f"Request {req_day.strftime('%d-%m-%Y')}.xlsx",
+                       _practice_xlsx(rows),
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        await s.commit()
+        out.update(await drive_links.relink_all(s))
+        await s.commit()
+        # QC's queue: the no-batch certificate proposed on PR-LATE by the HOD
+        fid = (await s.execute(text("SELECT id FROM drive_files WHERE drive_id = 'practice-mtc-2'"))).scalar()
+        late = (await s.execute(text(
+            'SELECT "SAP_Code", COALESCE("Site_ID", \'HQ\') FROM lots WHERE "Lot_Number" = \'PR-LATE\' LIMIT 1'))).first()
+        if fid and late:
+            await s.execute(text('''
+                INSERT INTO mtc_assignments (drive_file_id, "SAP_Code", "Lot_Number", "Site_ID",
+                    source, status, proposed_by, note)
+                SELECT :f, :s, 'PR-LATE', :site, 'manual', 'proposed', 'practice.hod', 'container 1'
+                WHERE NOT EXISTS (SELECT 1 FROM mtc_assignments WHERE drive_file_id = :f)'''),
+                {"f": fid, "s": late[0], "site": late[1]})
+        # ── 22e: the preparers, a learned tank, a Night paper in the workbook ──
+        if not await preparers.history(s, SITE):
+            await preparers.save(s, SITE, [{"from": "", "day": "Practice Day", "night": "Practice Night"}])
+        tag = (await s.execute(text(
+            'SELECT "Equipment_Tag_No" FROM sme_equipment WHERE "Site_ID" = :s ORDER BY 1 LIMIT 1'),
+            {"s": SITE})).scalar()
+        if tag:
+            from backend.api.ai.paper_fields import tank_key
+            await s.execute(text('''
+                INSERT INTO sme_tank_alias ("Site_ID", alias_raw, alias_norm, "Equipment_Tag_No", status,
+                                            resolved_by, resolved_at)
+                VALUES (:s, :raw, :n, :t, 'mapped', 'practice.storekeeper', CURRENT_TIMESTAMP)
+                ON CONFLICT ("Site_ID", alias_norm) DO NOTHING'''),
+                {"s": SITE, "raw": "Tank one", "n": tank_key("Tank one"), "t": tag})
+        night = (t0 - _d.timedelta(days=2)).isoformat()
+        gl = (await s.execute(text(
+            'SELECT "SAP_Code" FROM inventory WHERE "Site_ID" = :s AND "Category" NOT ILIKE \'%surface%\' '
+            'ORDER BY "SAP_Code" LIMIT 2'), {"s": SITE})).all()
+        if not (await s.execute(text(
+                "SELECT 1 FROM consumption WHERE \"Source_Ref\" LIKE 'XLSX:PRACTICE:night:%' LIMIT 1"))).first():
+            for n, (sap,) in enumerate(gl, start=1):
+                await s.execute(text('''
+                    INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", "Work_Type",
+                        "Issued_To", "Issued_By", "Prepared_By", "Tank_No", "Source_Ref",
+                        "Source_Sheet", "Source_Row", "Item_Type")
+                    VALUES (:d, :sap, :q, :s, 'R/L', 'Aria Bellweather', 'Practice Night', 'Practice Night',
+                            :tank, :ref, 'Consumption Log', :row, 'R/L Consumables')'''),
+                    {"d": night, "sap": sap, "q": float(n), "s": SITE, "tank": tag,
+                     "ref": f"XLSX:PRACTICE:night:{night}:{sap}:{n}", "row": 900 + n})
+        await s.commit()
+        out["night_paper"] = night
+    _ = (mtc_links, requests_sync)          # imported for their linkers
+    return out
 
 
 def fixture_version() -> int:

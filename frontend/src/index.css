@@ -211,6 +211,17 @@ body {
   --gi-header-h: 64px;
 }
 
+/* Phase 22f — a laptop-wide window: the Drive chip, the PRACTICE tag and the
+   demo launcher pushed the HOD's top bar 184 px past 1280 (Practice). Below
+   1440 the role name before the username and the words "API online" go (the
+   dot and the tooltip stay). */
+@media (max-width: 1440px) {
+  .gi-user-role,
+  .gi-health-label {
+    display: none;
+  }
+}
+
 /* On narrow screens, keep only the actionable header items */
 @media (max-width: 900px) {
   .gi-header-title,

@@ -27,6 +27,10 @@ const PAGES: { name: string; path: string; role: 'hod' | 'sk' | 'admin'; ready: 
   { name: '10-ocr', path: '/entry/ocr', role: 'sk', ready: /OCR Import/ },
   { name: '11-admin-console', path: '/admin/console', role: 'admin', ready: /Admin Console/ },
   { name: '12-login', path: '/login', role: 'hod', ready: /GI Hub|Sign in/i },
+  // Phase 22f — the SME estimator held most of the raw colours (now tokens)
+  { name: '13-sme-estimator', path: '/sme', role: 'hod', ready: /Estimator|SME/i },
+  { name: '14-lining-coverage', path: '/hod/lining-coverage', role: 'hod', ready: /Lining Coverage|Coverage/i },
+  { name: '15-requests-pending', path: '/requests-pending', role: 'hod', ready: /Requests & Pending/ },
 ]
 
 if (process.env.GI_VISUAL_REPORT === '1') {

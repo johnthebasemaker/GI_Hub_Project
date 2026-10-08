@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Alert, App, Button, Card, Input, Space, Tag, Typography } from 'antd'
 import { SafetyCertificateOutlined } from '@ant-design/icons'
 import { use2faStatus, useDisable2fa, useEnroll2fa, useVerify2fa } from '../api/hooks'
+import { light } from '../theme/tokens'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -75,7 +76,7 @@ export default function SecurityPage() {
             <div style={{ textAlign: 'center', marginBottom: 12 }}>
               {/* White frame keeps the QR quiet-zone scannable on the dark theme */}
               <img src={pending.qr} alt="2FA QR code" width={180} height={180}
-                style={{ border: '1px solid var(--gi-line)', borderRadius: 8, background: '#fff', padding: 6 }} />
+                style={{ border: '1px solid var(--gi-line)', borderRadius: 8, background: light.surface, padding: 6 }} />
             </div>
             <Alert type="info" showIcon style={{ marginBottom: 12 }}
               title={<span>Manual key: <Typography.Text code copyable>{pending.secret}</Typography.Text></span>} />

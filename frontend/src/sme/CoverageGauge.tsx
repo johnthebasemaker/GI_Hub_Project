@@ -7,6 +7,7 @@
  * keep the exact brand look.
  */
 import { fc } from './insights'
+import { status } from '../theme/tokens'
 
 const W = 300, H = 168, CX = 150, CY = 158, R = 115
 const SA = -Math.PI
@@ -39,18 +40,18 @@ export default function CoverageGauge({ pct, canSqm, totalSqm }: {
         {p > 0 && (
           <path d={arc(R, SA, vA)} fill="none" stroke={col} strokeWidth={20} strokeLinecap="round" />
         )}
-        <text x={CX - R + 2} y={CY + 20} fill="#94A3B8" fontSize={10} fontFamily="JetBrains Mono, monospace">0%</text>
-        <text x={CX + R - 22} y={CY + 20} fill="#94A3B8" fontSize={10} fontFamily="JetBrains Mono, monospace">100%</text>
+        <text x={CX - R + 2} y={CY + 20} fill={status.neutral} fontSize={10} fontFamily="JetBrains Mono, monospace">0%</text>
+        <text x={CX + R - 22} y={CY + 20} fill={status.neutral} fontSize={10} fontFamily="JetBrains Mono, monospace">100%</text>
         <text x={CX} y={CY - 20} textAnchor="middle" fill={col} fontSize={32} fontWeight={800}
           fontFamily="JetBrains Mono, monospace">{p.toFixed(1)}%</text>
-        <text x={CX} y={CY - 2} textAnchor="middle" fill="#94A3B8" fontSize={11}
+        <text x={CX} y={CY - 2} textAnchor="middle" fill={status.neutral} fontSize={11}
           fontFamily="Inter, sans-serif">Overall Coverage</text>
-        <text x={CX} y={CY + 14} textAnchor="middle" fill="#94A3B8" fontSize={10}
+        <text x={CX} y={CY + 14} textAnchor="middle" fill={status.neutral} fontSize={10}
           fontFamily="JetBrains Mono, monospace">{nf1(canSqm)} / {nf1(totalSqm)} SQM</text>
       </svg>
-      <div style={{ display: 'flex', justifyContent: 'center', gap: 16, fontSize: 12, color: '#94A3B8', fontFamily: 'JetBrains Mono, monospace' }}>
-        <span><span style={{ color: '#10B981' }}>■</span> Available: {nf1(canSqm)} SQM</span>
-        <span><span style={{ color: '#EF4444' }}>■</span> Shortfall: {nf1(Math.max(0, totalSqm - canSqm))} SQM</span>
+      <div style={{ display: 'flex', justifyContent: 'center', gap: 16, fontSize: 12, color: status.neutral, fontFamily: 'JetBrains Mono, monospace' }}>
+        <span><span style={{ color: status.ok }}>■</span> Available: {nf1(canSqm)} SQM</span>
+        <span><span style={{ color: status.critical }}>■</span> Shortfall: {nf1(Math.max(0, totalSqm - canSqm))} SQM</span>
       </div>
     </div>
   )

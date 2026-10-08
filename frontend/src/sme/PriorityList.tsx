@@ -13,13 +13,14 @@ import { Button, Tooltip, Typography } from 'antd'
 import { ArrowDownOutlined, ArrowUpOutlined, CloseOutlined, HolderOutlined } from '@ant-design/icons'
 import { fc } from './insights'
 import type { TagStat } from './session'
+import { brand, light, status } from '../theme/tokens'
 
 const mono: React.CSSProperties = { fontFamily: 'JetBrains Mono, monospace' }
 
 export function FulfilPill({ pct }: { pct: number }) {
   return (
     <span style={{
-      ...mono, background: fc(pct), color: '#fff', borderRadius: 10,
+      ...mono, background: fc(pct), color: light.surface, borderRadius: 10,
       padding: '1px 8px', fontSize: '0.7rem', fontWeight: 700, whiteSpace: 'nowrap',
     }}>{pct.toFixed(1)}%</span>
   )
@@ -50,7 +51,7 @@ function SortableRow({ tag, index, count, stat, selected, onSelect, onRemove, on
         opacity: isDragging ? 0.6 : 1,
         display: 'flex', alignItems: 'center', gap: 8,
         padding: '6px 8px', borderRadius: 8, marginBottom: 6,
-        border: `1px solid ${selected ? '#D4AF37' : 'rgba(128,128,128,.25)'}`,
+        border: `1px solid ${selected ? brand.gold : 'rgba(128,128,128,.25)'}`,
         background: isDragging ? 'rgba(212,175,55,.08)' : 'rgba(128,128,128,.05)',
         cursor: onSelect ? 'pointer' : 'default',
       }}
@@ -69,7 +70,7 @@ function SortableRow({ tag, index, count, stat, selected, onSelect, onRemove, on
             {stat.name.slice(0, 22)}
           </span>
         ) : (
-          <span style={{ fontSize: '0.72rem', color: '#F59E0B', marginLeft: 6 }}>
+          <span style={{ fontSize: '0.72rem', color: status.low, marginLeft: 6 }}>
             not in current site data
           </span>
         )}
@@ -78,7 +79,7 @@ function SortableRow({ tag, index, count, stat, selected, onSelect, onRemove, on
             <>
               {stat.codes.map((c) => (
                 <span key={c} style={{
-                  ...mono, border: '1px solid rgba(212,175,55,.5)', color: '#D4AF37',
+                  ...mono, border: '1px solid rgba(212,175,55,.5)', color: brand.gold,
                   borderRadius: 6, padding: '0 4px', marginRight: 4, fontSize: '0.62rem',
                 }}>{c}</span>
               ))}
