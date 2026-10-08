@@ -335,13 +335,16 @@ async def trim_seed_duplicates(s) -> bool:
         'SELECT COUNT(*) FROM pending_receipts WHERE "Remarks" = :r'), {"r": _SEED_REMARK})).scalar() or 0
     if not seen:
         return False
-    for table, remark, keep in (("pending_receipts", _SEED_REMARK, 3),
-                                ("pending_issues", _SEED_REMARK, 3),
-                                ("pending_returns", "Practice seed", 1)):
+    # `pending_returns` keeps no remark: its seed row is the store keeper's
+    # "Surplus to job" return of 899001 (the shape `stage_return` writes)
+    for table, where, prm, keep in (
+            ("pending_receipts", '"Remarks" = :r', {"r": _SEED_REMARK}, 3),
+            ("pending_issues", '"Remarks" = :r', {"r": _SEED_REMARK}, 3),
+            ("pending_returns", '"Return_Reason" = :r AND submitted_by = :u AND "SAP_Code" = :p',
+             {"r": "Surplus to job", "u": "practice.storekeeper", "p": "899001"}, 1)):
         res = await s.execute(text(f"""
-            DELETE FROM {table} WHERE "Remarks" = :r AND id NOT IN (
-                SELECT id FROM {table} WHERE "Remarks" = :r ORDER BY id LIMIT :k)"""),
-            {"r": remark, "k": keep})
+            DELETE FROM {table} WHERE {where} AND id NOT IN (
+                SELECT id FROM {table} WHERE {where} ORDER BY id LIMIT :k)"""), {**prm, "k": keep})
         if res.rowcount:
             print(f"  trimmed {res.rowcount} duplicate seed row(s) from {table}")
     return True
