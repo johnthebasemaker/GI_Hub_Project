@@ -133,7 +133,16 @@ WORK_TYPES = {
     # "Blasting" is left alone; only the misspellings become "Blast"
     "BLAST": "Blast", "BLASTER": "Blast", "BLASTING": "Blasting",
     "OTHERS": "Others", "OTHER": "Others",
+    # Phase 22e — what the vision model read on the 5–6 Oct papers, line by line
+    # against the workbook: a handwritten B as "15"/"13", an R as "12", "Blast"
+    # as "Best", "Buffing" as "Buffy"
+    "15/L": "B/L", "15L": "B/L", "13/L": "B/L", "13L": "B/L",
+    "12/L": "R/L", "12L": "R/L", "12LL": "R/L",
+    "BEST": "Blast", "BLST": "Blast", "BUFFY": "Buffing", "BUFF": "Buffing", "BUFFING": "Buffing",
 }
+# A Remarks cell that is only a DITTO mark as the model reads it: "1", "11",
+# "n", "h", "″" — never a work type, always "same as above".
+_WT_DITTO = re.compile(r'^(?:1{1,2}|[nNhH]|[″"〃\'`,.·\-]+)$')
 
 
 def norm_work_type(v: Any) -> str:
@@ -142,3 +151,146 @@ def norm_work_type(v: Any) -> str:
     s = str(v or "").strip()
     key = re.sub(r"[\s.\-]+", "", s).upper()
     return WORK_TYPES.get(key, s)
+
+
+def fill_work_types(values: list[Any]) -> list[str]:
+    """Each Remarks cell in the workbook's spelling, a ditto mark (or a blank
+    under a written one) taking the work type above it (Phase 22e)."""
+    out, prev = [], ""
+    for v in values:
+        s = str(v or "").strip()
+        if (not s or _WT_DITTO.match(s)) and prev:
+            out.append(prev)
+            continue
+        w = norm_work_type(s)
+        out.append(w)
+        if w:
+            prev = w
+    return out
+
+
+# ── 3 · the tank (Phase 22e, ruling Q22-17) ─────────────────────────────────
+# The paper's Tank No. column, as the crew writes it: `K-TNK-091` (Train K's
+# tank 091 = `522-8k10-TNK-091`), `89D0-TNK-001` (= `522-89D0-TNK-001`),
+# `J027`, `others` — and most lines a DITTO mark. The vision model garbles the
+# handwriting: `84D0`, `S4D0`, `K-TNK-04L`. Matched like names are (Q21-5):
+#
+#   auto       an official tag, a tag by the written short form (`K-` is Train K,
+#              `J0xx` the J series — Q22-17), or a LEARNED spelling — green
+#   suggested  the nearest tag(s) after the confusable strokes (4↔9, S↔8, O↔0,
+#              L↔1 …) — gold, the store keeper accepts; and a bare `TNK-091`,
+#              which is a tank in BOTH trains, is never picked: both are offered
+#   unknown    nothing close — red
+#   ditto      only marks (″ " 〃 ,, ·) — the row inherits the tank above it
+#   blank      nothing written
+_TANK_CONFUSED = {frozenset(p) for p in ("49", "S8", "S5", "B8", "O0", "D0", "L1", "I1", "Z2",
+                                         "G6", "71", "Q0")}
+_TANK_RULE = re.compile(r"^(?P<train>[JK])?\W*(?:TNK|TANK|TK)\W*(?P<num>\d{1,4})$")
+_AREA_RULE = re.compile(r"^(?P<area>[0-9A-Z]{4})\W*(?:TNK|TANK|TK)\W*(?P<num>\d{1,4})$")
+
+
+def tank_norm(v: Any) -> str:
+    """The sync's `alias_norm`: upper, separators gone, leading zeros inside each
+    digit run dropped (`J091`, `J0091`, `J-0091` → `J91`)."""
+    s = re.sub(r"[^A-Za-z0-9]", "", str(v or "")).upper()
+    return re.sub(r"0*(\d+)", lambda m: m.group(1), s)
+
+
+def tank_key(written: Any) -> str:
+    """What a WRITTEN tank is matched and learned by: a letter O touching a
+    digit is a zero ("Jo27" = J027), then `tank_norm`. Nothing bolder — an L or
+    an I stays a question (gold), never a quiet guess."""
+    raw = re.sub(r"(?<=\d)[oO]|[oO](?=\d)", "0", str(written or "").strip())
+    return tank_norm(raw)
+
+
+def tank_forms(tag: str) -> set[str]:
+    """Every short form a tag is written as: itself, without the `522-` project
+    prefix, and the train form (`522-8k10-TNK-091` → `KTNK91`)."""
+    n = tank_norm(tag)
+    forms = {n}
+    if n.startswith("522"):
+        forms.add(n[3:])
+    m = re.search(r"8([JK])\d+TNK(\d+)$", n)
+    if m:
+        forms.add(f"{m.group(1)}TNK{m.group(2)}")
+    return forms
+
+
+def _tank_cost(a: str, b: str) -> float:
+    """Weighted edit distance: a confusable stroke costs ½."""
+    n, m = len(a), len(b)
+    d = [[0.0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n + 1):
+        d[i][0] = float(i)
+    for j in range(m + 1):
+        d[0][j] = float(j)
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            x, y = a[i - 1], b[j - 1]
+            sub = 0.0 if x == y else (0.5 if frozenset((x, y)) in _TANK_CONFUSED else 1.0)
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + sub)
+    return d[n][m]
+
+
+def match_tank(written: Any, tags: list[str], aliases: Optional[dict[str, str]] = None,
+               *, max_cost: float = 1.5) -> dict:
+    """One written tank → {written, state, tag, source, candidates: [{tag, cost}]}."""
+    raw = str(written or "").strip()
+    out: dict = {"written": raw, "state": "unknown", "tag": None, "source": None, "candidates": []}
+    if not raw:
+        return {**out, "state": "blank"}
+    if not re.search(r"[A-Za-z0-9]", raw):
+        return {**out, "state": "ditto"}
+    if raw.lower().rstrip("s") == "other":
+        return {**out, "state": "auto", "tag": "others", "source": "exact"}
+    raw_n = re.sub(r"(?<=\d)[oO]|[oO](?=\d)", "0", raw)
+    n = tank_key(raw)
+    al = aliases or {}
+    if n in al:
+        return {**out, "state": "auto", "tag": al[n], "source": "learned"}
+    for t in tags:
+        if n == tank_norm(t):
+            return {**out, "state": "auto", "tag": t, "source": "exact"}
+    m = _TANK_RULE.match(raw_n.upper().replace(" ", ""))
+    if m:
+        num, train = str(int(m.group("num"))), m.group("train")
+        hits = [t for t in tags if tank_norm(t).endswith(f"TNK{num}")
+                and (not train or f"8{train}" in tank_norm(t))]
+        if len(hits) == 1 and train:
+            return {**out, "state": "auto", "tag": hits[0], "source": "rule"}
+        if hits:
+            return {**out, "state": "suggested", "tag": None, "source": "rule",
+                    "candidates": [{"tag": t, "cost": 0.0} for t in hits]}
+    m = _AREA_RULE.match(raw_n.upper().replace(" ", ""))
+    if m:
+        area, num = tank_norm(m.group("area")), str(int(m.group("num")))
+        hits = [t for t in tags if area in tank_norm(t) and tank_norm(t).endswith(f"TNK{num}")]
+        if len(hits) == 1:
+            return {**out, "state": "auto", "tag": hits[0], "source": "rule"}
+    scored = sorted(((min(_tank_cost(n, f) for f in tank_forms(t)), t) for t in tags),
+                    key=lambda x: (x[0], x[1]))
+    out["candidates"] = [{"tag": t, "cost": c} for c, t in scored[:3]]
+    if scored and scored[0][0] <= max_cost:
+        best = scored[0][0]
+        tied = [t for c, t in scored if c == best]
+        out.update(state="suggested", source="fuzzy", tag=tied[0] if len(tied) == 1 else None)
+    return out
+
+
+def fill_dittos(matches: list[dict]) -> list[dict]:
+    """A ditto (or a blank under a written tank) takes the tank of the line
+    above — the way the paper is read."""
+    prev = None
+    out = []
+    for m in matches:
+        if m["state"] in ("ditto", "blank") and prev is not None:
+            # `group` = the written tank this line repeats, so the store keeper
+            # can tick every line of one tank at once (Q22-17)
+            out.append({**prev, "written": m["written"], "inherited": True,
+                        "group": prev["written"]})
+            continue
+        out.append({**m, "group": m["written"]})
+        if m["state"] not in ("ditto", "blank"):
+            prev = m
+    return out

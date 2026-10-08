@@ -31639,6 +31639,190 @@ async def test_phase22d_requests():
         await cleanup()
 
 
+async def test_phase22e_paper_lines():
+    """Suite 22E — Phase 22e: the consumption paper, line by line (rulings
+    Q22-14..19). Pinned: "(Night)" → the Night preparer, NO mark → Day, by the
+    names in force on the paper's date; the tank matched like a name (`K-` is
+    Train K, a bare TNK-091 never picked, dittos inherit, a learned spelling is
+    green next time); the vision's work-type misreads; one-to-one pairing with
+    the workbook (two identical lines → two rows); a paper already in the
+    workbook is compared; staging carries the tank and the preparer, and the
+    submitter stays the login."""
+    import datetime as _dtm
+
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from . import bulk_import as _bi
+    from .ai import paper_compare as PC
+    from .ai import paper_fields as PF
+    from .services import ledger as _led
+    from .services import preparers as PREP
+
+    def tok(u, r, site=None):
+        return {"Authorization": f"Bearer {_auth._make_token(u, r, site, _auth.ACCESS_TTL)}"}
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+
+    async def q(sql, **kw):
+        async with SessionLocal() as s_:
+            return (await s_.execute(_t(sql), kw)).scalar()
+
+    hist = PREP.clean([{"from": "2026-09-01", "day": "Mydeen", "night": "Mani"},
+                       {"from": "2026-10-01", "day": "Johnson", "night": "Kalied"}])
+    D = _dtm.date
+    try:
+        PREP.clean([{"from": "2026-13-01", "day": "x"}])
+        bad = None
+    except ValueError as e:
+        bad = str(e)
+    check("22e-01: '(Night)' is the night shift, NO mark is Day (Q22-14); the preparer is the "
+          "pair in force on the paper's OWN date (Q22-16) — a September paper keeps its names",
+          PREP.shift_of("Night") == ("Night", True) and PREP.shift_of(None) == ("Day", False)
+          and PREP.pick(hist, D(2026, 10, 5))["night"] == "Kalied"
+          and PREP.pick(hist, D(2026, 9, 20))["day"] == "Mydeen" and bad and "not a date" in bad)
+
+    tags = ["522-89D0-TNK-001", "522-8J10-TNK-091", "522-8k10-TNK-091", "522-8k80-TNK-071",
+            "J027", "J050", "J091"]
+    M = PF.match_tank
+    res = [M(w, tags) for w in ("K-TNK-091", "89D0-TNK-001", "Jo27", "84D0-Tnk-001", "TNK-091",
+                                "others", "″", "Ko-Tnk-ool")]
+    check("22e-02: tanks — 'K-' is Train K and '89D0-TNK-001' its tag (green), an O beside "
+          "digits is a zero, a confusable stroke is GOLD (84D0 → 89D0), a bare TNK-091 is in "
+          "both trains and NEVER picked, 'others' stays, a ditto is a ditto, nonsense is red",
+          [(r["state"], r["tag"]) for r in res]
+          == [("auto", "522-8k10-TNK-091"), ("auto", "522-89D0-TNK-001"), ("auto", "J027"),
+              ("suggested", "522-89D0-TNK-001"), ("suggested", None), ("auto", "others"),
+              ("ditto", None), ("unknown", None)]
+          and len(res[4]["candidates"]) == 2, str([(r["state"], r["tag"]) for r in res]))
+    filled = PF.fill_dittos([M(w, tags) for w in ("J050", "″", "", "K-TNK-091", '"')])
+    check("22e-03: a ditto (or a blank under a tank) takes the tank ABOVE, and remembers which "
+          "written tank it repeats — so all the lines of one tank can be ticked together",
+          [x["tag"] for x in filled] == ["J050", "J050", "J050", "522-8k10-TNK-091", "522-8k10-TNK-091"]
+          and [x["group"] for x in filled] == ["J050", "J050", "J050", "K-TNK-091", "K-TNK-091"])
+    check("22e-04: the vision's work-type misreads on the 5–6 Oct papers ('Best' = Blast, "
+          "'15/L' = B/L, '12 LL' = R/L, 'Buffy' = Buffing) and a lone '1' is a ditto",
+          PF.fill_work_types(["Best", "1", "15/L", "", "12 LL", "Buffy", "PV"])
+          == ["Blast", "Blast", "B/L", "B/L", "R/L", "Buffing", "PU"])
+
+    wb = [{"id": 1, "sap": "1165", "qty": 1.0, "tank": "522-8k80-TNK-071", "work_type": "Blast",
+           "issued_to": "A", "sheet": "Consumption Log", "row": 10},
+          {"id": 2, "sap": "1165", "qty": 1.0, "tank": "522-8k80-TNK-071", "work_type": "Blast",
+           "issued_to": "A", "sheet": "Consumption Log", "row": 11},
+          {"id": 3, "sap": "1131", "qty": 4.0, "tank": "522-8k80-TNK-071", "work_type": "Blast",
+           "issued_to": "B", "sheet": "Consumption Log", "row": 12},
+          {"id": 4, "sap": "1097", "qty": 2.0, "tank": "522-8k80-TNK-071", "work_type": "Blast",
+           "issued_to": "C", "sheet": "Consumption Log", "row": 13}]
+    paper = [{"SAP_Code": "1165", "quantity": 1, "tank": "522-8k80-TNK-071", "work_type": "Blast", "issued_to": "A"},
+             {"SAP_Code": "1165", "quantity": 1, "tank": "522-8k80-TNK-071", "work_type": "Blast", "issued_to": "A"},
+             {"SAP_Code": "1131", "quantity": 6, "tank": "522-8k80-TNK-071", "work_type": "Blast", "issued_to": "B"},
+             {"SAP_Code": "1190", "quantity": 2, "tank": "522-8k80-TNK-071", "work_type": "Blast", "issued_to": "D"}]
+    al = PC.align(paper, wb)
+    check("22e-05: ⚠️ pairing is ONE TO ONE (Q22-19) — two identical lines (same item, tank, "
+          "qty, worker) pair with rows 10 and 11, never both with 10; a different quantity is "
+          "'differs' with both numbers; a line the workbook lacks is 'missing'; a workbook row "
+          "the page lacks is 'extra'",
+          [(x["status"], x["row"]) for x in al["lines"]]
+          == [("same", 10), ("same", 11), ("differs", 12), ("missing", None)]
+          and al["lines"][2]["diffs"] == {"quantity": [6.0, 4.0]}
+          and [x["row"] for x in al["extra"]] == [13], str(al))
+
+    S = "SV22E"
+    D0 = "2026-10-05"
+
+    async def cleanup():
+        for sql in ('DELETE FROM consumption WHERE "Site_ID" = :s', 'DELETE FROM pending_issues WHERE "Site_ID" = :s',
+                    'DELETE FROM sme_equipment WHERE "Site_ID" = :s', 'DELETE FROM sme_tank_alias WHERE "Site_ID" = :s',
+                    "DELETE FROM app_settings WHERE key = 'consumption_preparers:SV22E'",
+                    "DELETE FROM system_audit_log WHERE username LIKE 'sv22e_%'"):
+            await ex(sql, s=S)
+    await cleanup()
+    try:
+        for t in tags:
+            await ex('INSERT INTO sme_equipment ("Site_ID", "Equipment_Tag_No", "Lining_System_Code", '
+                     '"Surface_Area_SQM") VALUES (:s, :t, \'SV22E-SYS\', 1)', s=S, t=t)
+        for n, (sap, qty, who) in enumerate((("1165", 1, "A"), ("1165", 1, "A"), ("1131", 4, "B")), start=10):
+            await ex('INSERT INTO consumption ("Date", "SAP_Code", "Quantity", "Site_ID", "Tank_No", "Work_Type", '
+                     '"Issued_To", "Issued_By", "Prepared_By", "Source_Ref", "Source_Sheet", "Source_Row", "Item_Type") '
+                     "VALUES (:d, :sap, :q, :s, '522-8k80-TNK-071', 'Blast', :w, 'Kalied', 'Kalied', :ref, "
+                     "'Consumption Log', :n, 'R/L Consumables')",
+                     d=D0, sap=sap, q=qty, s=S, w=who, ref=f"XLSX:{S}:consumption:{D0}:{sap}:x:{n}", n=n)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            sk = tok("sv22e_sk", "store_keeper", S)
+            put_sk = await ac.put("/ai/ocr/preparers", headers=sk,
+                                  json={"site_id": S, "history": [{"from": "", "day": "X", "night": "Y"}]})
+            put = await ac.put("/ai/ocr/preparers", headers=tok("sv22e_hod", "hod", S),
+                               json={"site_id": S, "history": [{"from": "2026-10-01", "day": "Johnson", "night": "Kalied"}]})
+            pc_n = await ac.post("/ai/ocr/paper-check", headers=sk, json={
+                "date_text": "05/10/26 (Night)", "site_id": S, "date_iso": D0,
+                "tanks": ["K-TNK-07l", "″", "J050"], "work_types": ["Blast", "1", "PV"]})
+            pc_d = await ac.post("/ai/ocr/paper-check", headers=sk, json={
+                "date_text": "05/10/26", "site_id": S, "date_iso": D0, "tanks": [], "work_types": []})
+            learn = await ac.post("/ai/ocr/tank-alias", headers=sk,
+                                  json={"site_id": S, "tag": "522-8k80-TNK-071", "written": ["K-TNK-07l", "″"]})
+            bad_tag = await ac.post("/ai/ocr/tank-alias", headers=sk,
+                                    json={"site_id": S, "tag": "NOT-A-TANK", "written": ["x"]})
+            pc_again = await ac.post("/ai/ocr/paper-check", headers=sk, json={
+                "date_text": "05/10/26 (Night)", "site_id": S, "date_iso": D0, "tanks": ["K-TNK-07l"]})
+            cmp = await ac.post("/ai/ocr/compare", headers=sk, json={
+                "site_id": S, "date": D0, "prepared_by": "Kalied",
+                "rows": [{"SAP_Code": "1165", "quantity": 1, "tank": "522-8k80-TNK-071", "issued_to": "A"},
+                         {"SAP_Code": "1165", "quantity": 1, "tank": "522-8k80-TNK-071", "issued_to": "A"},
+                         {"SAP_Code": "1131", "quantity": 4, "tank": "522-8k80-TNK-071", "issued_to": "B"}]})
+            cmp_day = await ac.post("/ai/ocr/compare", headers=sk, json={
+                "site_id": S, "date": D0, "prepared_by": "Johnson", "rows": [{"SAP_Code": "1165", "quantity": 1}]})
+        pn, pd_ = pc_n.json(), pc_d.json()
+        check("22e-06: paper-check reads the SHIFT and gives the site's PREPARER (Night → Kalied, "
+              "no mark → Day → Johnson), the tanks with the ditto filled, the work types; only "
+              "the HOD / Admin set the names",
+              put_sk.status_code == 403 and put.status_code == 200
+              and pn["shift"] == {"shift": "Night", "marked": True} and pn["prepared_by"] == "Kalied"
+              and pd_["shift"] == {"shift": "Day", "marked": False} and pd_["prepared_by"] == "Johnson"
+              and pn["tanks"][0]["state"] == "suggested" and pn["tanks"][0]["tag"] == "522-8k80-TNK-071"
+              and pn["tanks"][1]["inherited"] and pn["tanks"][2]["tag"] == "J050"
+              and pn["work_types"] == ["Blast", "Blast", "PU"], f"{put_sk.status_code} {put.status_code} {pn} {pd_}")
+        check("22e-07: Accept TEACHES the tank spelling for the site (a ditto teaches nothing, a "
+              "tag the site does not have is refused) — the next paper's same spelling is GREEN",
+              learn.status_code == 200 and learn.json()["learned"] == ["KTNK7L"]
+              and bad_tag.status_code == 422
+              and pc_again.json()["tanks"][0]["state"] == "auto"
+              and pc_again.json()["tanks"][0]["source"] == "learned",
+              f"{learn.text[:120]} {bad_tag.status_code} {pc_again.json().get('tanks')}")
+        c = cmp.json()
+        check("22e-08: a paper ALREADY in the workbook is found (3 rows, 5 Oct, Kalied) and paired "
+              "line by line — the two identical gloves lines with rows 10 and 11; the Day "
+              "preparer's block is a different paper (nothing there)",
+              c["in_workbook"] == 3 and [(x["status"], x["row"]) for x in c["lines"]]
+              == [("same", 10), ("same", 11), ("same", 12)] and cmp_day.json()["in_workbook"] == 0,
+              f"{cmp.text[:300]} {cmp_day.text[:100]}")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://svc") as ac:
+            st = await ac.post("/entry/consumption", headers=tok("sv22e_sk", "store_keeper", S), json={
+                "Date": "2026-10-06", "SAP_Code": "1165", "Quantity": 2, "Site_ID": S,
+                "Tank_No": "J050", "Prepared_By": "Johnson", "Work_Type": "R/L", "Issued_To": "Z"})
+        pid = await q('SELECT id FROM pending_issues WHERE "Site_ID" = :s', s=S)
+        pend = await q('SELECT "Prepared_By" || \'|\' || "Issued_By" || \'|\' || "Tank_No" FROM pending_issues '
+                       'WHERE id = :i', i=pid or -1)
+        if pid:
+            async with SessionLocal() as s_:
+                await _led.commit_consumption(s_, approver="sv22e_hod", pending_id=pid)
+                await s_.commit()
+        done = await q('SELECT "Prepared_By" || \'|\' || "Tank_No" FROM consumption WHERE "Site_ID" = :s '
+                       "AND \"Date\" = '2026-10-06'", s=S)
+        check("22e-09: staging carries the TANK and the PREPARER; the submitter stays the login "
+              "(the HOD's notices go to it), and the approved row keeps Prepared by",
+              st.status_code in (200, 201) and pend == "Johnson|sv22e_sk|J050" and done == "Johnson|J050",
+              f"{st.status_code} {st.text[:150]} {pend} {done}")
+        cols = _bi._LEDGER_SHEETS["consumption"]["cols"]
+        check("22e-10: the Excel sync writes the workbook's 'Prepared by' into Prepared_By too "
+              "(the migration back-filled the synced rows, so the next pull changes nothing)",
+              cols.get("Prepared_By") == ("Prepared by",) and cols.get("Issued_By") == ("Prepared by",))
+    finally:
+        await cleanup()
+
+
 async def test_phase21d_ocr_match():
     """Suite 21D — Phase 21d: the consumption-paper matcher and what it learns
     (rulings Q21-1..6), on FROZEN data (the vision model never runs here, P10-7).
@@ -31843,9 +32027,10 @@ async def test_phase21d2_paper_fields():
         anon = await ac.post("/ai/ocr/paper-check", json={"date_text": "01/10/26"})
     j = pc.json() if pc.status_code == 200 else {}
     check("21d2-07: POST /ai/ocr/paper-check (store keeper) — the date checked against TODAY, "
-          "the work types normalised; signed out → 401",
+          "the work types normalised (Phase 22e: a blank under a written one is a ditto — it "
+          "takes the work type above); signed out → 401",
           pc.status_code == 200 and "plausible" in j.get("date", {})
-          and j.get("work_types") == ["PU", "Blast", ""] and anon.status_code == 401,
+          and j.get("work_types") == ["PU", "Blast", "Blast"] and anon.status_code == 401,
           f"{pc.status_code} {j} {anon.status_code}")
     check("21d2-08: ⚠️ the OCR lane (photo AND paste) now carries the paper's date to the page "
           "— before this, a photographed page always opened on today",
@@ -32483,6 +32668,9 @@ async def main() -> int:
     print("\n 22D. Phase 22d — Requests & Pending from Drive: layouts by header, FIFO received, "
           "the roll-up a check, no-PR requests on order in Smart Reorder")
     await test_phase22d_requests()
+    print("\n 22E. Phase 22e — the paper line by line: shift → preparer, tanks like names, "
+          "one-to-one pairing, compare not stage, the tank and preparer staged")
+    await test_phase22e_paper_lines()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

@@ -81,6 +81,10 @@ class Consumption(Base):
     # sync decides whether a line changed. App-written rows leave it NULL.
     Source_Sheet = Column(Text)
     Source_Row = Column(Integer)
+    # Phase 22e (alembic d7fa4c8e2b19) — the workbook's *Prepared by*: who was
+    # on shift and wrote the paper (Night/Day → the site's names, Q22-14..16).
+    # `Issued_By` stays the submitter's login on app rows.
+    Prepared_By = Column(Text)
     # ── 2026-09-16: the WORKBOOK-ROW LABEL (alembic f6b83d1a27c9) ────────────
     # ⚠️ A PROVENANCE LABEL, NOT A MOVEMENT KEY — and the difference is the
     # whole design. `XLSX:<site>:<kind>:<date>:<sap>:<ref-hash>:<n>` names ONE
@@ -354,6 +358,7 @@ class PendingIssues(Base):
     Site_ID = Column(Text, server_default=text("'HQ'"))
     status = Column(Text, server_default=text("'draft'"))
     wbs = Column(Text)             # lowercase in legacy pending_issues (verified)
+    Prepared_By = Column(Text)     # Phase 22e (alembic d7fa4c8e2b19) — see Consumption
     Technician = Column(Text)      # legacy field — preserved, not used by v2
     Source_Ref = Column(Text)
     Requested_By = Column(Text)

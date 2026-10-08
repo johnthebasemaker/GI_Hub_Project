@@ -1797,7 +1797,11 @@ def check_models_schema_parity() -> None:
                ("returns", "DN_No"),
                # Phase 22c (alembic b5d8f2a6c3e7) — the Drive file a
                # certificate came from. New-stack only.
-               ("mtc_documents", "drive_file_id")}
+               ("mtc_documents", "drive_file_id"),
+               # Phase 22e (alembic d7fa4c8e2b19) — who prepared the paper
+               # (the shift's name), apart from the submitter. New-stack only.
+               ("pending_issues", "Prepared_By"),
+               ("consumption", "Prepared_By")}
     extra = model_only - allowed
     assert not extra, f"unexpected model-only columns (update models.py or DB): {extra}"
 

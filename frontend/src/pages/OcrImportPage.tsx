@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import type { Key } from 'react'
 import PracticeNotice from '../components/PracticeNotice'
 import {
   Alert, App, Button, Card, DatePicker, Descriptions, Input, InputNumber, Popconfirm, Radio,
@@ -18,6 +19,8 @@ import type { EntryDoc } from '../components/EntryDocsUpload'
 import OcrJobProgress from '../components/OcrJobProgress'
 import type { OcrJobStatus } from '../components/OcrJobProgress'
 import { status } from '../theme/tokens'
+import { pickPreparers } from '../components/PreparersCard'
+import type { PreparerEntry } from '../components/PreparersCard'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -50,6 +53,27 @@ interface OcrRow extends ApiRow {
   match_source?: string | null
   learned_count?: number
   suggestion?: { SAP_Code: string; description: string; score: number; in_stock: boolean } | null
+  // Phase 22e — the tank, matched like a name (Q22-17)
+  tank_state?: 'auto' | 'suggested' | 'unknown' | 'ditto' | 'blank'
+  tank_tag?: string | null
+  tank_source?: string | null
+  tank_group?: string
+  tank_candidates?: { tag: string; cost: number }[]
+  // Phase 22e — Compare with the workbook (Q22-19)
+  wb_status?: 'same' | 'differs' | 'missing'
+  wb_row?: number | null
+  wb_diffs?: Record<string, [unknown, unknown]>
+}
+
+interface TankMatch {
+  written: string; state: OcrRow['tank_state']; tag: string | null; source: string | null
+  group?: string; candidates: { tag: string; cost: number }[]
+}
+interface CompareRes {
+  in_workbook: number
+  lines: { index: number; status: 'same' | 'differs' | 'missing'; row: number | null; diffs: Record<string, [unknown, unknown]> }[]
+  extra: { row: number | null; SAP_Code: string; quantity: number | null; tank: string | null }[]
+  counts: Record<string, number>
 }
 
 interface NameMatch {
@@ -127,6 +151,26 @@ export default function OcrImportPage() {
   const isAdmin = user?.role === 'admin'
   const isConsumption = kind === 'ocr_consumption'
 
+  // Phase 22e — the shift written by the date ("(Night)"; nothing = Day, Q22-14)
+  // and the site's preparer for it on the paper's date (Q22-16)
+  const [shift, setShift] = useState<{ shift: 'Day' | 'Night'; marked: boolean } | null>(null)
+  const [preparedOverride, setPreparedOverride] = useState<string | null>(null)
+  const [tankTags, setTankTags] = useState<string[]>([])
+  const [selected, setSelected] = useState<Key[]>([])
+  const [bulkTank, setBulkTank] = useState<string | undefined>()
+  const [cmp, setCmp] = useState<CompareRes | null>(null)
+  const { data: prepData } = useQuery<{ history: PreparerEntry[] }>({
+    queryKey: ['/ai/ocr/preparers', site],
+    enabled: !!site && isConsumption,
+    queryFn: async () => (await api.get('/ai/ocr/preparers', { params: { site_id: site } })).data,
+  })
+  const preparedBy = useMemo(() => {
+    if (preparedOverride != null) return preparedOverride
+    const p = pickPreparers(prepData?.history ?? [], date.format('YYYY-MM-DD'))
+    if (!p || !shift) return ''
+    return (shift.shift === 'Night' ? p.night : p.day) || ''
+  }, [preparedOverride, prepData, date, shift])
+
   const { data: aiHealth } = useQuery({
     queryKey: ['/ai/health'],
     queryFn: async () => (await api.get('/ai/health')).data as { ok: boolean; message: string },
@@ -202,9 +246,13 @@ export default function OcrImportPage() {
     try {
       const r = await api.post('/ai/ocr/paper-check', {
         date_text: dt || null, work_types: rs.map((x) => x.work_type ?? ''),
+        site_id: site, tanks: rs.map((x) => x.tank_no ?? ''),
       })
       const d = r.data.date as PaperDate
       const wts = (r.data.work_types ?? []) as string[]
+      const tks = (r.data.tanks ?? []) as TankMatch[]
+      if (r.data.shift && withDate) setShift(r.data.shift)
+      if (r.data.tank_tags) setTankTags(r.data.tank_tags as string[])
       if (withDate && dt && dt.trim()) {
         setPaperDate(d)
         if (d.plausible && d.date_iso) {
@@ -214,7 +262,17 @@ export default function OcrImportPage() {
           setDateConfirmed(false)
         }
       }
-      return rs.map((x, i) => (wts[i] != null ? { ...x, work_type: wts[i] } : x))
+      return rs.map((x, i) => {
+        const t = tks[i]
+        return {
+          ...x,
+          ...(wts[i] != null ? { work_type: wts[i] } : {}),
+          ...(t ? { tank_state: t.state, tank_tag: t.state === 'auto' ? t.tag : null,
+                    tank_source: t.source, tank_group: t.group ?? t.written,
+                    tank_candidates: t.candidates?.length ? t.candidates
+                      : (t.tag ? [{ tag: t.tag, cost: 0 }] : []) } : {}),
+        }
+      })
     } catch {
       return rs
     }
@@ -235,6 +293,42 @@ export default function OcrImportPage() {
     }
   }
 
+  // Phase 22e (Q22-19): a paper the workbook already holds is COMPARED, never
+  // staged again. Runs once the date and the preparer are settled, and again
+  // when a row's item, quantity or tank changes.
+  const cmpKey = JSON.stringify(rows.map((r) => [r.SAP_Code, r.quantity, r.tank_tag, r.work_type, r.issued_to]))
+  useEffect(() => {
+    if (!isConsumption || !rows.length || !site || !dateConfirmed) { setCmp(null); return }
+    const t = setTimeout(() => {
+      api.post('/ai/ocr/compare', {
+        site_id: site, date: date.format('YYYY-MM-DD'), prepared_by: preparedBy || null,
+        rows: rows.map((r) => ({ SAP_Code: r.SAP_Code || null, quantity: r.quantity,
+                                 tank: r.tank_tag || r.tank_no || null, work_type: r.work_type || null,
+                                 issued_to: r.issued_to || null })),
+      }).then((r) => {
+        const c = r.data as CompareRes
+        setCmp(c.in_workbook > 0 ? c : null)
+      }).catch(() => setCmp(null))
+    }, 400)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cmpKey, site, date, dateConfirmed, preparedBy, isConsumption])
+
+  // Accepting a tank teaches its spelling(s) for this site (Q22-17) — for every
+  // ticked row at once, ditto marks included (they teach nothing themselves)
+  const setTank = (idxs: number[], tag: string) => {
+    const written = idxs.map((i) => rows[i]?.tank_group || rows[i]?.tank_no || '').filter(Boolean)
+    setRows((rs) => rs.map((r, k) => (idxs.includes(k)
+      ? { ...r, tank_tag: tag, tank_state: 'auto', tank_source: 'accepted' } : r)))
+    if (site && written.length) {
+      api.post('/ai/ocr/tank-alias', { site_id: site, tag, written }).catch(() => undefined)
+    }
+  }
+  const sameTank = (i: number) => {
+    const g = rows[i]?.tank_group
+    return rows.map((r, k) => (r.tank_group === g ? k : -1)).filter((k) => k >= 0)
+  }
+
   const confirmDate = (iso: string) => {
     setDate(dayjs(iso))
     setDateConfirmed(true)
@@ -246,6 +340,10 @@ export default function OcrImportPage() {
     setRows(fresh)
     setPaperDate(null)
     setDateConfirmed(true)
+    setShift(null)
+    setPreparedOverride(null)
+    setSelected([])
+    setCmp(null)
     void (async () => {
       let rs = await rematch(fresh)
       if (isConsumption) rs = await checkPaper(rs, result.date_text)
@@ -336,6 +434,7 @@ export default function OcrImportPage() {
             Date: date.format('YYYY-MM-DD'), SAP_Code: r.SAP_Code,
             Quantity: Number(r.quantity), Site_ID: site,
             Issued_To: r.issued_to || null, Work_Type: r.work_type || null,
+            Tank_No: r.tank_tag || null, Prepared_By: preparedBy || null,
             Remarks: 'OCR import', wbs: wbs || null,
             attachment_ids: docs.map((d) => d.id),
           })
@@ -365,6 +464,20 @@ export default function OcrImportPage() {
   }))
 
   const columns: ColumnsType<OcrRow> = [
+    ...(cmp ? [{
+      // Phase 22e — this paper is already in the workbook: line by line (Q22-19)
+      title: 'Workbook', key: 'wb', width: 170,
+      render: (_: unknown, r: OcrRow) => (
+        <Space direction="vertical" size={0} data-testid="ocr-wb">
+          <Tag color={r.wb_status === 'same' ? 'green' : r.wb_status === 'differs' ? 'gold' : 'red'} style={{ margin: 0 }}>
+            {r.wb_status === 'same' ? `✓ row ${r.wb_row ?? ''}` : r.wb_status === 'differs' ? `≠ row ${r.wb_row ?? ''}` : 'not in the workbook'}</Tag>
+          {Object.entries(r.wb_diffs ?? {}).map(([k, [paper, book]]) => (
+            <Typography.Text key={k} type="secondary" style={{ fontSize: 11 }}>
+              {k.replace('_', ' ')}: paper {String(paper ?? '—')} · workbook {String(book ?? '—')}</Typography.Text>
+          ))}
+        </Space>
+      ),
+    }] : []),
     { title: 'Match', dataIndex: 'match_state', width: 90,
       render: (v: OcrRow['match_state'], r) => (
         <Space size={4}>
@@ -438,6 +551,35 @@ export default function OcrImportPage() {
             <Input size="small" value={r.work_type} data-testid="ocr-work-type"
               onChange={(e) => patch(i, { work_type: e.target.value })} />
           ),
+        }, {
+          // Phase 22e — the tank, green / gold / red like the names (Q22-17)
+          title: 'Tank', key: 'tank', width: 260,
+          render: (_: unknown, r: OcrRow, i: number) => (
+            <Space direction="vertical" size={2} data-testid="ocr-tank">
+              <Space size={4} wrap>
+                <Tag color={r.tank_tag ? 'green' : r.tank_state === 'suggested' ? 'gold' : r.tank_no || r.tank_group ? 'red' : 'default'}
+                  style={{ margin: 0 }}>{r.tank_tag ? (r.tank_source === 'learned' ? 'learned' : 'matched')
+                    : r.tank_state === 'suggested' ? 'check' : r.tank_no || r.tank_group ? 'not found' : 'none'}</Tag>
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                  {r.tank_group && r.tank_group !== r.tank_no ? `as above (“${r.tank_group}”)` : r.tank_no ? `“${r.tank_no}”` : ''}</Typography.Text>
+                {/* a tie (a bare TNK-091 is a tank in BOTH trains) is never accepted
+                    in one click — the store keeper chooses below */}
+                {!r.tank_tag && r.tank_state === 'suggested' && r.tank_candidates?.[0]
+                  && !(r.tank_candidates.length > 1 && r.tank_candidates[0].cost === r.tank_candidates[1].cost) && (
+                  <Button size="small" type="primary" data-testid="ocr-tank-accept"
+                    onClick={() => setTank(sameTank(i), r.tank_candidates![0].tag)}>
+                    Accept {r.tank_candidates[0].tag}</Button>
+                )}
+                <Button size="small" type="link" style={{ padding: 0 }} data-testid="ocr-tank-same"
+                  onClick={() => setSelected(sameTank(i).map((k) => String(rows[k]._key)))}>tick all like this</Button>
+              </Space>
+              <Select size="small" style={{ width: 240 }} showSearch value={r.tank_tag || undefined}
+                placeholder="Choose the tank" onChange={(v) => setTank([i], v)}
+                options={[...(r.tank_candidates ?? []).map((c) => ({ value: c.tag, label: `★ ${c.tag}` })),
+                  ...tankTags.filter((t) => !(r.tank_candidates ?? []).some((c) => c.tag === t))
+                    .map((t) => ({ value: t, label: t }))]} />
+            </Space>
+          ),
         }]
       : []),
     {
@@ -448,6 +590,14 @@ export default function OcrImportPage() {
       ),
     },
   ]
+
+  const rowsView = useMemo(() => (cmp
+    ? rows.map((r, i) => {
+        const ln = cmp.lines.find((x) => x.index === i)
+        return ln ? { ...r, wb_status: ln.status, wb_row: ln.row, wb_diffs: ln.diffs } : r
+      })
+    : rows), [rows, cmp])
+  const inWorkbook = !!cmp && cmp.in_workbook > 0
 
   const readyCount = useMemo(
     () => rows.filter((r) => r.SAP_Code && Number(r.quantity) > 0).length, [rows])
@@ -611,8 +761,56 @@ export default function OcrImportPage() {
       )}
       {rows.length > 0 && (
         <>
-          <Table sticky={{ offsetHeader: 64 }} size="small" columns={columns} dataSource={rows}
-            rowKey={(r) => String(r._key)} pagination={false} scroll={{ x: 'max-content' }} />
+          {isConsumption && (
+            <Space wrap style={{ marginBottom: 8 }} data-testid="ocr-shift">
+              {shift && (
+                <Tag color={shift.shift === 'Night' ? 'blue' : 'gold'} style={{ cursor: 'pointer' }}
+                  data-testid="ocr-shift-tag"
+                  onClick={() => { setShift({ shift: shift.shift === 'Night' ? 'Day' : 'Night', marked: false }); setPreparedOverride(null) }}>
+                  {shift.shift === 'Night' ? 'Night shift' : shift.marked ? 'Day shift' : 'Day shift (no mark)'} · click to switch
+                </Tag>
+              )}
+              <span>Prepared by</span>
+              <Input size="small" style={{ width: 180 }} value={preparedBy} data-testid="ocr-prepared-by"
+                placeholder="set the site's names (Admin → Sites)"
+                onChange={(e) => setPreparedOverride(e.target.value)} />
+            </Space>
+          )}
+          {inWorkbook && cmp && (
+            <Alert type="info" showIcon style={{ marginBottom: 12 }} data-testid="ocr-compare"
+              title={`This paper is already in the workbook — ${cmp.in_workbook} row(s) for ${date.format('DD MMM YYYY')}`
+                + `${preparedBy ? `, prepared by ${preparedBy}` : ''}. It is COMPARED, not staged (staging it too would count the stock twice).`}
+              description={<Space wrap size={6}>
+                <Tag color="green">{cmp.counts.same ?? 0} same</Tag>
+                <Tag color="gold">{cmp.counts.differs ?? 0} differ</Tag>
+                <Tag color="red">{cmp.counts.missing ?? 0} not in the workbook</Tag>
+                <Tag>{cmp.counts.extra ?? 0} workbook row(s) not on this page</Tag>
+                <span>Fix a difference in the workbook; the next pull brings it in.</span>
+              </Space>} />
+          )}
+          {isConsumption && selected.length > 0 && (
+            <Space wrap style={{ marginBottom: 8 }} data-testid="ocr-bulk-tank">
+              <span>{selected.length} row(s) ticked — set their tank:</span>
+              <Select size="small" style={{ width: 240 }} showSearch value={bulkTank} onChange={setBulkTank}
+                placeholder="Tank" options={tankTags.map((t) => ({ value: t, label: t }))} data-testid="ocr-bulk-tank-pick" />
+              <Button size="small" type="primary" disabled={!bulkTank} data-testid="ocr-bulk-tank-apply"
+                onClick={() => {
+                  const idxs = rows.map((r, k) => (selected.includes(String(r._key)) ? k : -1)).filter((k) => k >= 0)
+                  setTank(idxs, bulkTank!)
+                  setSelected([])
+                }}>Apply to {selected.length}</Button>
+              <Button size="small" onClick={() => setSelected([])}>Clear</Button>
+            </Space>
+          )}
+          <Table sticky={{ offsetHeader: 64 }} size="small" columns={columns} dataSource={rowsView}
+            rowKey={(r) => String(r._key)} pagination={false} scroll={{ x: 'max-content' }}
+            rowSelection={isConsumption ? { selectedRowKeys: selected, onChange: setSelected, columnWidth: 36 } : undefined} />
+          {inWorkbook && !!cmp?.extra.length && (
+            <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8 }} data-testid="ocr-compare-extra">
+              In the workbook for this date and preparer but not on this page (often another page of the same shift):{' '}
+              {cmp.extra.slice(0, 40).map((x) => `row ${x.row ?? '—'} SAP ${x.SAP_Code} × ${x.quantity ?? '—'}`).join(' · ')}
+            </Typography.Paragraph>
+          )}
           <div style={{ marginTop: 16 }}>
             <EntryDocsUpload docType={isConsumption ? 'consumption' : 'receipt'} siteId={site}
               value={docs} onChange={setDocs} required={docsRequired !== false} />
@@ -652,15 +850,16 @@ export default function OcrImportPage() {
               onConfirm={stage}>
               <Button type="primary" loading={staging} data-testid="ocr-stage"
                 disabled={readyCount === 0 || !site || unresolved > 0 || (isConsumption && !dateConfirmed)
-                  || needDocs || needWbs}>
-                {unresolved > 0 ? `Resolve ${unresolved} row(s) first`
+                  || needDocs || needWbs || inWorkbook}>
+                {inWorkbook ? 'Already in the workbook — compared, not staged'
+                  : unresolved > 0 ? `Resolve ${unresolved} row(s) first`
                   : isConsumption && !dateConfirmed ? "Confirm the paper's date first"
                     : needDocs ? 'Attach the paper first'
                       : needWbs ? 'Choose the WBS first'
                         : `Stage ${readyCount} row(s) for HOD approval`}
               </Button>
             </Popconfirm>
-            <Button onClick={() => { setRows([]); setHeader(null); setPaperDate(null); setDateConfirmed(true) }}>
+            <Button onClick={() => { setRows([]); setHeader(null); setPaperDate(null); setDateConfirmed(true); setCmp(null); setShift(null); setSelected([]) }}>
               Discard
             </Button>
           </Space>

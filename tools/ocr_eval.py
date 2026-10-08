@@ -258,6 +258,113 @@ def propose_aliases(recs: list[dict], truth_rows: list[dict], inventory) -> list
     return out
 
 
+# ── Phase 22e: LINE BY LINE (the Consumption Log is one row per paper line) ──
+def load_lines(path: Path, dates: set[str]) -> list[dict]:
+    """Every Consumption Log row of those dates, in sheet order, with the fields a
+    paper line carries — Prepared by and Received by included. Surface Shields
+    are left out (never on these papers)."""
+    import warnings
+
+    import openpyxl
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    rows = list(wb["Consumption Log"].iter_rows(min_row=1, values_only=True))
+    wb.close()
+    h = [str(c).strip() if c else "" for c in rows[1]]
+    cx = {k: i for i, k in enumerate(h)}
+    out = []
+    for n, r in enumerate(rows[2:], start=3):
+        d = r[0]
+        if not isinstance(d, _dt.datetime) or d.date().isoformat() not in dates:
+            continue
+        if str(r[cx["type"]] or "").lower() == "surface shield":
+            continue
+        sap = r[cx["SAP CODE"]]
+        out.append({"date": d.date().isoformat(), "row": n, "sheet": "Consumption Log",
+                    "sap": str(int(sap)) if isinstance(sap, (int, float)) else str(sap or "").strip(),
+                    "qty": r[cx["Qty."]], "tank": r[cx["Tank No."]],
+                    "work_type": r[cx["Work Type"]], "issued_to": r[cx["Received by"]],
+                    "prepared": str(r[cx["Prepared by"]] or "").strip()})
+    return out
+
+
+def tank_tags(path: Path) -> list[str]:
+    """The official tank tags, from the SME equipment workbook."""
+    import warnings
+
+    import openpyxl
+    if not path.exists():
+        return []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    ws = wb.worksheets[0]
+    rows = list(ws.iter_rows(min_row=1, values_only=True))
+    wb.close()
+    h = [str(c or "").strip().rstrip(".") for c in rows[0]]
+    i = h.index("Equipment_Tag_No") if "Equipment_Tag_No" in h else None
+    return sorted({str(r[i]).strip() for r in rows[1:] if i is not None and r[i]})
+
+
+def lines_report(forms: list[dict], truth: list[dict], inventory, stock, tags: list[str],
+                 preparers: dict[str, str], *, aliases=None, accept_first=True,
+                 today: _dt.date = PHOTO_DAY) -> dict:
+    """Pages grouped by (date, preparer) — the shift's pages together — paired
+    one to one with the workbook block of that date and preparer, exactly as
+    OCR Import's Compare does (`ai/paper_compare.align`). Counts only."""
+    from backend.api.ai import consumption_match as CM
+    from backend.api.ai import handwritten as HW
+    from backend.api.ai import paper_compare as PC
+    from backend.api.ai.paper_fields import fill_dittos, fill_work_types, match_tank
+    nwt = norm_work_type          # the harness's: "Blasting" and "Blast" are the same work
+    from backend.api.services.preparers import shift_of
+    checked, _table = date_checked(forms, today)
+    blocks: dict[tuple, list] = collections.defaultdict(list)
+    page_ok = 0
+    for f in checked:
+        shift, _marked = shift_of(HW.parse_shift(f.get("date_text")))
+        who = preparers.get(shift)
+        day = f.get("date_iso")
+        if day and who and any(t["date"] == day and t["prepared"] == who for t in truth):
+            page_ok += 1
+        res = HW.process_batch([f], inventory, stock, today=today)
+        tm = fill_dittos([match_tank(r.get("tank_no"), tags) for r in res["rows"]])
+        wts = fill_work_types([r.get("work_type") for r in res["rows"]])
+        for r, t, wt in zip(res["rows"], tm, wts):
+            m = CM.match(r.get("product_name_raw") or "", inventory, aliases=aliases, stock=stock)
+            sap = m["sap"] if (m["state"] == "auto" or (accept_first and m["state"] == "suggested")) else None
+            blocks[(day, who)].append({"SAP_Code": sap, "quantity": r.get("qty"),
+                                       "tank": t.get("tag") or r.get("tank_no"),
+                                       "work_type": nwt(wt),
+                                       "issued_to": r.get("received_by")})
+    tot = collections.Counter()
+    fields = collections.Counter()
+    for (day, who), paper in blocks.items():
+        wb = [dict(t, work_type=nwt(t["work_type"])) for t in truth
+              if t["date"] == day and t["prepared"] == who]
+        res = PC.align(paper, wb)
+        tot["paper"] += len(paper)
+        tot["truth"] += len(wb)
+        for k, v in res["counts"].items():
+            tot[k] += v
+        for ln in res["lines"]:
+            if ln["status"] in ("same", "differs"):
+                for fld in ("quantity", "tank", "work_type", "issued_to"):
+                    fields[fld + ("_wrong" if fld in ln["diffs"] else "_right")] += 1
+    paired = tot["same"] + tot["differs"]
+    acc = {f: round(fields[f + "_right"] / max(fields[f + "_right"] + fields[f + "_wrong"], 1), 3)
+           for f in ("quantity", "tank", "work_type", "issued_to")}
+    return {"pages": len(forms), "pages_preparer_right": page_ok,
+            "paper_lines": tot["paper"], "workbook_lines": tot["truth"],
+            "paired": paired, "same": tot["same"], "differs": tot["differs"],
+            "missing": tot["missing"], "extra": tot["extra"],
+            "line_recall": round(paired / max(tot["truth"], 1), 3),
+            "line_precision": round(paired / max(tot["paper"], 1), 3),
+            "field_accuracy_on_paired": acc, "accept_first_suggestion": accept_first,
+            "aliases_applied": bool(aliases)}
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--images", default=str(DEFAULT_SET))
@@ -266,6 +373,13 @@ async def main() -> int:
     ap.add_argument("--semantic", action="store_true", help="also measure the embedding layer")
     ap.add_argument("--aliases", help="JSON of learned aliases to apply (e.g. the proposed ones)")
     ap.add_argument("--propose-aliases", action="store_true")
+    ap.add_argument("--lines", action="store_true",
+                    help="Phase 22e: score LINE BY LINE against the workbook block of the "
+                         "same date and preparer (the scorecard keeps the day totals too)")
+    ap.add_argument("--preparers", default="Day=Johnson,Night=Kalied",
+                    help="the site's Day / Night preparers for --lines")
+    ap.add_argument("--equipment", default=str(_ROOT / "Equipment.xlsx"),
+                    help="the SME equipment workbook (the official tank tags) for --lines")
     a = ap.parse_args()
     imgs = sorted(p for p in Path(a.images).glob("*") if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".heic"))
     if not imgs:
@@ -332,6 +446,16 @@ async def main() -> int:
     print("\nwritten name → state → SAP (count):")
     for (w, st, sap), n in sorted(confusion.items(), key=lambda x: -x[1])[:60]:
         print(f"  {n:>3} × {w!r:<28} {st:<9} {sap or '—'}")
+    if a.lines:
+        preps = dict(x.split("=", 1) for x in a.preparers.split(",") if "=" in x)
+        truth_lines = load_lines(Path(a.workbook), set(d for d in dates if d))
+        tags = tank_tags(Path(a.equipment))
+        for accept in (False, True):
+            key = "lines_accept_first" if accept else "lines_auto_only"
+            card[key] = lines_report(forms, truth_lines, inventory, stock, tags, preps,
+                                     aliases=aliases, accept_first=accept)
+        print("\nLINE BY LINE (Phase 22e):")
+        print(json.dumps({k: card[k] for k in ("lines_auto_only", "lines_accept_first")}, indent=1))
     SCORECARD.parent.mkdir(parents=True, exist_ok=True)
     SCORECARD.write_text(json.dumps(card, indent=1))
     if a.propose_aliases:

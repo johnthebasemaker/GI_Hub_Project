@@ -34,6 +34,7 @@ import {
 } from '../api/hooks'
 import type { Row } from '../api/client'
 import type { WorkTypeSuggestion } from '../api/hooks'
+import PreparersCard from '../components/PreparersCard'
 import { useAuth } from '../auth/AuthContext'
 import { useReadOnly } from '../auth/useReadOnly'
 
@@ -376,6 +377,8 @@ export default function WbsPage() {
           </Form.Item>
         </Form>
       </Modal>
+      {/* Phase 22e — the site's Day / Night preparers (ruling Q22-16) */}
+      {site && <PreparersCard fixedSite={site} />}
     </Space>
   )
 }

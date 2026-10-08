@@ -284,6 +284,8 @@ class ConsumptionIn(BaseModel):
     Work_Type: Optional[str] = None
     Issued_To: Optional[str] = None
     Issued_By: Optional[str] = None
+    # Phase 22e: who prepared the paper (the shift's name) — not the submitter
+    Prepared_By: Optional[str] = Field(None, max_length=120)
     PR_Number: Optional[str] = None
     Tank_No: Optional[str] = None
     Serial_No: Optional[str] = None
