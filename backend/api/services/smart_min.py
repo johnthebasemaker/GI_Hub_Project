@@ -414,6 +414,10 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
         '"Unit_Size", "Base_UOM", COALESCE("Minimum_Qty", 0) AS "Minimum_Qty" '
         'FROM inventory'))).mappings().all()}
     on_order, global_on_order = await open_po_qty(session)
+    # Phase 22d (ruling Q22-13): a request mailed WITHOUT a PR and not yet
+    # received is on order too — labelled apart from the POs
+    from . import requests_sync as _req
+    requested_no_pr = await _req.pending_no_pr(session)
 
     accepted = await accepted_minimums(session, site_id)
 
@@ -479,7 +483,8 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
                "Daily_Use": None, "Plan_Demand_Base": None, "Base_UOM": None,
                "Why": "", "Trail": None,
                "On_Order": round(on_order.get((_norm(i["Material_Code"]).upper(), s), 0.0), 3),
-               "Global_On_Order": round(global_on_order.get(_norm(i["Material_Code"]).upper(), 0.0), 3)}
+               "Global_On_Order": round(global_on_order.get(_norm(i["Material_Code"]).upper(), 0.0), 3),
+               "Requested_No_PR": round(requested_no_pr.get((sap, s), 0.0), 3)}
         if is_ss:
             p = plan_saps.get((sap, s))
             if p is None:
@@ -558,7 +563,8 @@ async def compute(session: AsyncSession, site_id: Optional[str]) -> dict:
             target = 2 * eff
             if plan_packs is not None:
                 target = min(target, max(plan_packs, eff))   # never past the plan
-            row["Suggested_Order"] = math.ceil(max(target - st - row["On_Order"], 0))
+            row["Suggested_Order"] = math.ceil(max(
+                target - st - row["On_Order"] - row["Requested_No_PR"], 0))
         else:
             row["Suggested_Order"] = 0
         # D1 — days of cover need a RATE. Without an SQM pace there is none: the

@@ -1290,6 +1290,39 @@ after approval the delivery gets its WD number.
 - a **return DN** whose number of lines or total quantity differs from the
   Return Log's rows for that DN, with the Return Log rows to check.
 
+## 3.20 Requests & Pending (Phase 22, October 2026)
+
+**Where:** sidebar → **Requests & Pending** (store keeper, HOD, Logistics, Admin,
+Auditor). The page lists every line of the requests the site mails, from the
+Drive folder **Pending Material Follow-up**: `Request 22-09-2026.xlsx`,
+`August Request.xlsx`, `Material Request 03-08-26 …`, the RL indent, and the
+*Without PR* lines of the 21-07 status table. General items only — Surface
+Shields are not here.
+
+| Column | What it is |
+|---|---|
+| **Requested** | The request date: the row's *Date*, else the date in the file name (day first), else the month (*August Request* → 1 Aug). How many days ago. |
+| **Item** | Description, SAP code and Material Code. **no SAP code** (orange) when neither the SAP column nor the Material Code matches the inventory. |
+| **PR** | the PR number, or **no PR** |
+| **Asked / Received / Pending** | **Received is worked out by GI Hub** from the Receipt Log: receipts of that SAP on or after the request date, given to the **oldest request first**, so two requests never both count one delivery. An orange *workbook n* tag shows where the workbook's own "Received on …" columns say something else. |
+| **From** | the workbook and its row |
+
+**Pending only** (on by default), **Without PR / With PR**, the site and a search
+narrow the list.
+
+**Lines with no SAP code** are listed in a yellow box (file, sheet, row) — add
+the SAP code in the workbook and the next pull matches them.
+
+**Requests without a PR are "on order".** Smart Reorder subtracts them from its
+suggested order and shows *+ n requested (no PR)* under **On order**, so it stops
+asking for what the site already requested. Requests with a PR are left to the
+PO tracking, which already counts them.
+
+**The roll-up is a check.** *CNCEC_Indents Over all Supply and Pending
+Details.xlsx* is never read as requests. Where its pending figure differs from
+GI Hub's, the row is listed at the bottom of the page — look at it; nothing is
+changed.
+
 # 4. Store Keeper Manual
 
 The Store Keeper is the warehouse-floor operator. They see only the **Entry Log** page and the sidebar shell.

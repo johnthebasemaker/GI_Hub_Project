@@ -175,6 +175,14 @@ export default function ReorderSignals({ canPickSite }: { canPickSite: boolean }
               </div>
             </Tooltip>
           ) : null}
+          {r.Requested_No_PR ? (
+            <Tooltip title={`${fmt(r.Requested_No_PR, 2)} was requested without a PR and has not arrived yet `
+              + '(Requests & Pending). It is subtracted from the suggested order.'}>
+              <div data-testid="requested-no-pr" style={{ fontSize: 11, opacity: 0.75, cursor: 'help' }}>
+                + {fmt(r.Requested_No_PR, 2)} requested (no PR)
+              </div>
+            </Tooltip>
+          ) : null}
         </span>
       ),
     },

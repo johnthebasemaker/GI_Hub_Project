@@ -59,6 +59,7 @@ const AiTracesPage = lazy(() => import('./pages/AiTracesPage'))
 const WbsPage = lazy(() => import('./pages/WbsPage'))
 const FeedbackPage = lazy(() => import('./pages/FeedbackPage'))
 const TrainingPage = lazy(() => import('./pages/TrainingPage'))
+const RequestsPendingPage = lazy(() => import('./pages/RequestsPendingPage'))
 
 export default function App() {
   const { user } = useAuth()
@@ -69,6 +70,7 @@ export default function App() {
         <Route index element={<Dashboard />} />
         <Route path="stock" element={<StockPage />} />
         <Route path="lots" element={<LotRegisterPage />} />
+        <Route path="requests-pending" element={<RequestsPendingPage />} />
         <Route path="locator" element={<LocatorPage />} />
         <Route path="assets" element={<AssetsPage />} />
         {/* Where a QR scan lands. The param may be a SAP code, a Material_Code

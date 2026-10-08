@@ -34,6 +34,8 @@ export interface SmartMinRow {
   On_Order: number
   /** open PO quantity on POs not raised from a PR — shown, never subtracted */
   Global_On_Order: number
+  /** Phase 22d — requested WITHOUT a PR, not yet received (Q22-13) */
+  Requested_No_PR?: number
   Suggested_Order: number
   /** Phase 21b: why there is no order (no SQM pace → set one), else null */
   Order_Hint?: string | null

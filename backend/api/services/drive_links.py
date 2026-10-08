@@ -330,3 +330,8 @@ LINKERS.append(("dn", link_dn))
 from . import mtc_links as _mtc  # noqa: E402
 
 LINKERS.append(("mtc", _mtc.link_mtc))
+
+# 22d — the request workbooks (Pending Material Follow-up)
+from . import requests_sync as _req  # noqa: E402
+
+LINKERS.append(("pending", _req.link_requests))
