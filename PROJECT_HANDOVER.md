@@ -1223,7 +1223,7 @@ green checks → merge → local pull, unasked (`CLAUDE.md` §5).
 ### Phase 22 — Deep Drive integration, OCR line by line & final polish (2026-10-07, RULED)
 
 `PROPOSED_PHASE22_PLAN.md` was approved whole (2026-10-07). **Shipped
-2026-10-07/08, PRs #127–#133. Live is migrated to `d7fa4c8e2b19`. The summary is
+2026-10-07/08, PRs #127–#134. Live is migrated to `d7fa4c8e2b19`. The summary is
 in `PHASE22_SUMMARY.md`.** Rulings:
 
 | # | Ruling | Where it lives |
