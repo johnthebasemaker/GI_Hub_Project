@@ -39,6 +39,7 @@ of it.
 | #131 | 22d | Requests & Pending page; FIFO received from the Receipt Log; the roll-up as a check; no-PR requests on order in Smart Reorder |
 | #132 | 22e | Shift → Prepared by (Day/Night names per site, from-date history); `Prepared_By` column; tank matcher + bulk tick; work-type misreads; **Compare, not Stage**; `ocr_eval.py --lines` |
 | #133 | 22f | Raw colours 153 → **0**; the HOD top bar fits a laptop; Practice overlay **v11**; queue seed idempotent; `tools/ocr_site_setup.py`; this summary |
+| #134 | fix | The queue-seed trim looked for a `Remarks` column `pending_returns` does not have (a fresh build never reaches the trim; the existing sandboxes did) |
 
 ### 2.2 On Live (ruling Q22-23: backup first, each time)
 
@@ -50,6 +51,18 @@ of it.
 | Prepared by | back-filled on 5,363 of 6,139 consumption rows (the rest have none in the workbook) |
 | The 11 Phase 21 names (Q22-18) | loaded for CNCEC (audited as `ocr-site-setup`). The new papers confirmed the two I doubted: "Tyvek" is handwritten like "Tyneh", and "Safety coverall **L**" was read as "2" |
 | CNCEC preparers | from 2026-09-26: Day **Johnson**, Night **Kalied** |
+
+### 2.2b Practice (rule 17g)
+
+- Both Practice databases (`gihub_seed_training`, `gihub_training`) were
+  migrated to `d7fa4c8e2b19`, backups first, then got overlay **v11**: dataset
+  `2.11`, 4 drawn Drive files.
+- Their approval queues are trimmed from 12 seed rows to 3 receipts, 3 issues
+  and 1 return.
+- The Practice admin password is unchanged (taken from `deploy/.env`), and the
+  wall was re-run.
+- Re-running the overlay prints "garnet example skipped". The Garnet job is
+  already there and its seed is not re-runnable; nothing is lost.
 
 ### 2.3 Measured
 
@@ -151,4 +164,4 @@ of DN photos, certificates and requests. After it:
 
 ## 5. Services on this Mac when I finished
 
-Postgres up; Ollama down. No dev servers running.
+Postgres stopped again (the sleep state you left it in); Ollama stopped. No dev servers running.
