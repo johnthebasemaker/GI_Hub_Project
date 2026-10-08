@@ -292,6 +292,7 @@ async def post_consumption(session: AsyncSession, *, username: str, data: dict) 
         "Work_Type": data.get("Work_Type") or None,
         "Issued_To": data.get("Issued_To") or None,
         "Issued_By": data.get("Issued_By") or username,
+        "Prepared_By": data.get("Prepared_By") or None,          # Phase 22e
         "PR_Number": data.get("PR_Number") or None,
         "Tank_No": data.get("Tank_No") or None,
         "Serial_No": data.get("Serial_No") or None,
@@ -425,6 +426,7 @@ async def stage_consumption(session: AsyncSession, *, username: str, data: dict)
         "Date": data["Date"], "SAP_Code": sap, "Quantity": float(data["Quantity"]),
         "Work_Type": work_type or None, "Issued_To": data.get("Issued_To") or None,
         "Issued_By": data.get("Issued_By") or username, "PR_Number": data.get("PR_Number") or None,
+        "Prepared_By": (data.get("Prepared_By") or "").strip() or None,   # Phase 22e
         "Tank_No": data.get("Tank_No") or None, "Serial_No": data.get("Serial_No") or None,
         "Remarks": data.get("Remarks") or None, "Requested_By": data.get("Requested_By") or None,
         "Lot_Number": (data.get("Lot_Number") or "").strip() or None,

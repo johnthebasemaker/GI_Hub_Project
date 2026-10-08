@@ -5164,6 +5164,52 @@ differs from GI Hub's, with sheet and row. Nothing changes when you pull again.
 
 Automated: service_tests **22D** (9 checks); nav (54 routes) + tours.
 
+## 22e. Phase 22e — the consumption paper line by line (rulings Q22-14..19)
+
+Migration **`d7fa4c8e2b19`** (`Prepared_By` on `pending_issues` and
+`consumption`; the synced rows back-filled from `Issued_By`).
+
+**TC-22E-01 — preparers.** Admin Console → Sites → *Consumption papers — who
+prepares them*: CNCEC, from `2026-09-26`, Day *Johnson*, Night *Kalied* → Save.
+The HOD sees the same card on **WBS & Work Types** for the own site; the store
+keeper cannot change it.
+
+**TC-22E-02 — shift.** OCR Import, paste `Date: <yesterday> (Night)` and two
+rows → **Night shift** and *Prepared by* **Kalied**. Without "(Night)" → **Day
+shift (no mark)**, **Johnson**. Click the tag → it switches.
+
+**TC-22E-03 — tanks.** Paste a sixth field `K-TNK-091` on the first row and
+nothing on the second → both rows green `522-8k10-TNK-091` (the second *as
+above*). `84D0-TNK-001` is gold → **Accept** → the next paste of it is green
+(*learned*). `TNK-091` offers both trains and accepts nothing by itself.
+
+**TC-22E-04 — bulk.** **Tick all like this** on a ditto row ticks every row of
+that tank; the bar's **Apply** sets them all.
+
+**TC-22E-05 — compare.** Photograph (or paste) a 5 Oct night page that is in the
+workbook → the blue box, **✓ row …** on each matching line, **≠** with the
+difference on a changed one, **Stage** disabled (*Already in the workbook*).
+Switch the shift to Day: the box goes (another preparer's block).
+
+**TC-22E-06 — stage.** A paper not in the workbook stages; HOD → Approvals → the
+row shows Tank and, after approval, Records → Consumption has **Prepared_By**
+= the shift's name while the submitter is the store keeper's login.
+
+**TC-22E-07 — line by line.** With Ollama up:
+
+```bash
+.venv/bin/python tools/ocr_eval.py --images data-archive/ocr_ground_truth/2026-10-05_06 --rescore --lines
+```
+
+prints `lines_auto_only` / `lines_accept_first`: paired lines, missing, extra,
+and field accuracy (counts only, no names). 2026-10-08: recall 0.735 / precision
+0.764 accepting the first suggestion; quantity 0.94, work type 0.99, tank 0.42
+(the reader garbles the first tank cell, which every ditto inherits — the bulk
+tank bar is the fix on screen). Restore `tests/ai_eval/ocr/scorecard.json`
+afterwards if you do not mean to commit it.
+
+Automated: service_tests **22E** (10 checks); E2E `ocr-compare.spec.ts`.
+
 ## 21d. Phase 21d — OCR measured against the workbook; the name matcher (Q21-1..6)
 
 **Why this exists.** The 11 photos of the *Safety & Production Consumables*

@@ -579,6 +579,9 @@ _LEDGER_SHEETS = {
                  "Tank_No": ("Tank No.",), "WBS": ("WBS#",),
                  "Approved By": ("Approved By",), "Issued_To": ("Received by",),
                  "Issued_By": ("Prepared by",), "Remarks": ("Remarks",),
+                 # Phase 22e: the same cell, in its own column — Issued_By is
+                 # the submitter's login on app rows (alembic d7fa4c8e2b19)
+                 "Prepared_By": ("Prepared by",),
                  # 2026-08-04: the programme a consumption belongs to. All
                  # 1,110 rows carry it, and it is what routes Surface Shields
                  # into the SME portal — see `plan_sme_routing`.

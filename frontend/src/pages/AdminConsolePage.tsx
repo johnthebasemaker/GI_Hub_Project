@@ -12,6 +12,7 @@ import type { Row as ApiRow } from '../api/client'
 import { useSystemOverview } from '../api/hooks'
 import { AiTracesPanel } from './AiTracesPage'
 import PracticeResetCard from '../components/PracticeResetCard'
+import PreparersCard from '../components/PreparersCard'
 import DriveSyncCard from '../components/DriveSyncCard'
 import { useInstance } from '../components/PracticeBanner'
 import KpiCard from '../components/KpiCard'
@@ -70,6 +71,8 @@ function SitesTab() {
             ),
           },
         ] as ColumnsType<ApiRow>} />
+      {/* Phase 22e — the Day / Night preparers of each site's consumption papers */}
+      <PreparersCard />
     </div>
   )
 }

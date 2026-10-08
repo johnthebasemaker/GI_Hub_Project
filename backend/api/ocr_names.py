@@ -48,6 +48,11 @@ class MatchIn(BaseModel):
 class PaperIn(BaseModel):
     date_text: Optional[str] = Field(None, max_length=80)
     work_types: list[Optional[str]] = Field(default_factory=list, max_length=200)
+    # Phase 22e: the site (for its tanks and its Day/Night preparers), the
+    # paper's tank cells, and the date the store keeper settled on
+    site_id: Optional[str] = None
+    tanks: list[Optional[str]] = Field(default_factory=list, max_length=200)
+    date_iso: Optional[str] = Field(None, max_length=10)
 
 
 class LearnIn(BaseModel):
@@ -91,13 +96,160 @@ async def consumption_match(body: MatchIn, user: dict = Depends(_SK),
             "matches": [CM.match(n, inv, aliases=al, stock=stock) for n in body.names]}
 
 
-@router.post("/paper-check", summary="The paper's date and work types, checked")
-async def paper_check(body: PaperIn, user: dict = Depends(_SK)):
-    """Phase 21d follow-up. Never changes anything by itself: an implausible
-    date comes back with the dates it most likely is, and the store keeper
-    confirms one before the sheet can be staged."""
-    return {"date": PF.check_paper_date(body.date_text),
-            "work_types": [PF.norm_work_type(w) for w in body.work_types]}
+async def site_tanks(session: AsyncSession, site: str) -> tuple[list[str], dict[str, str]]:
+    """The official tank tags of the site (`sme_equipment`) and the spellings
+    already mapped to them (`sme_tank_alias` — the workbook's and the ones a
+    store keeper accepted)."""
+    tags = [r[0] for r in (await session.execute(text(
+        'SELECT DISTINCT "Equipment_Tag_No" FROM sme_equipment WHERE "Site_ID" = :s '
+        "AND COALESCE(\"Equipment_Tag_No\", '') <> ''"), {"s": site})).all()]
+    aliases = {r[0]: r[1] for r in (await session.execute(text(
+        'SELECT alias_norm, "Equipment_Tag_No" FROM sme_tank_alias WHERE "Site_ID" = :s '
+        "AND status = 'mapped' AND \"Equipment_Tag_No\" IS NOT NULL"), {"s": site})).all()}
+    return tags, aliases
+
+
+@router.post("/paper-check", summary="The paper's date, shift, preparer, work types and tanks, checked")
+async def paper_check(body: PaperIn, user: dict = Depends(_SK),
+                      session: AsyncSession = Depends(get_session)):
+    """Phase 21d follow-up, extended in 22e. Never changes anything by itself:
+    an implausible date comes back with the dates it most likely is; the shift
+    is read from the date box ("(Night)"; NO mark = Day — ruling Q22-14) and
+    gives the site's preparer for that date (Q22-16); each tank cell is matched
+    against the site's tank tags (Q22-17), a ditto taking the tank above."""
+    import datetime as _dtm
+
+    from .services import preparers as PREP
+    d = PF.check_paper_date(body.date_text)
+    out: dict = {"date": d, "work_types": PF.fill_work_types(body.work_types)}
+    if not body.site_id and not user.get("site_id"):
+        return out
+    site = resolve_site_param(user, body.site_id) or ""
+    shift, marked = PREP.shift_of(d.get("shift") if d else None)
+    day = None
+    for iso in (body.date_iso, d.get("date_iso") if d else None):
+        try:
+            day = _dtm.date.fromisoformat(iso) if iso else None
+        except ValueError:
+            day = None
+        if day:
+            break
+    out["shift"] = {"shift": shift, "marked": marked}
+    out["prepared_by"] = await PREP.preparer_for(session, site, day, shift)
+    if body.tanks:
+        tags, aliases = await site_tanks(session, site)
+        out["tanks"] = PF.fill_dittos([PF.match_tank(t, tags, aliases) for t in body.tanks])
+        out["tank_tags"] = sorted(tags)
+    return out
+
+
+class TankLearnIn(BaseModel):
+    written: list[str] = Field(..., min_length=1, max_length=200)
+    tag: str = Field(..., min_length=1, max_length=80)
+    site_id: Optional[str] = None
+
+
+_TANK_UPSERT = """
+    INSERT INTO sme_tank_alias ("Site_ID", alias_raw, alias_norm, "Equipment_Tag_No",
+                                status, resolved_by, resolved_at)
+    VALUES (:s, :raw, :n, :t, 'mapped', :u, CURRENT_TIMESTAMP)
+    ON CONFLICT ("Site_ID", alias_norm) DO UPDATE SET "Equipment_Tag_No" = :t,
+        status = 'mapped', resolved_by = :u, resolved_at = CURRENT_TIMESTAMP"""
+
+
+@router.post("/tank-alias", summary="Learn what written tank number(s) mean at this site")
+async def learn_tank(body: TankLearnIn, user: dict = Depends(_SK),
+                     session: AsyncSession = Depends(get_session)):
+    """Phase 22e (Q22-17): Accept on a gold tank teaches the spelling, in the
+    same table the Excel sync's tank aliases live in. Several spellings at once
+    — the store keeper ticks every row with that tank (or its ditto marks)."""
+    import re as _re
+    site = await _site(user, body.site_id)
+    tags, _ = await site_tanks(session, site)
+    if body.tag not in tags:
+        raise HTTPException(422, f"{body.tag} is not one of this site's tanks")
+    learned = []
+    for w in sorted({x.strip() for x in body.written if x and x.strip()}):
+        if not _re.search(r"[A-Za-z0-9]", w):
+            continue                                 # a ditto mark teaches nothing
+        norm = PF.tank_key(w)
+        if norm == PF.tank_norm(body.tag):
+            continue                                 # already the tag itself
+        await session.execute(text(_TANK_UPSERT), {"s": site, "raw": w[:80], "n": norm,
+                                                   "t": body.tag, "u": user["username"]})
+        learned.append(norm)
+    if learned:
+        await write_audit(session, user["username"], "OCR_TANK_LEARN", "sme_tank_alias",
+                          f"site={site} {learned} → {body.tag}")
+    await session.commit()
+    return {"learned": learned, "tag": body.tag}
+
+
+class CompareRow(BaseModel):
+    SAP_Code: Optional[str] = None
+    quantity: Optional[float] = None
+    tank: Optional[str] = None
+    work_type: Optional[str] = None
+    issued_to: Optional[str] = None
+
+
+class CompareIn(BaseModel):
+    site_id: Optional[str] = None
+    date: str = Field(..., min_length=10, max_length=10)
+    prepared_by: Optional[str] = Field(None, max_length=120)
+    rows: list[CompareRow] = Field(default_factory=list, max_length=200)
+
+
+@router.post("/compare", summary="Is this paper already in the workbook? Line by line")
+async def compare(body: CompareIn, user: dict = Depends(_SK),
+                  session: AsyncSession = Depends(get_session)):
+    """Phase 22e (ruling Q22-19): a paper already typed into the workbook is
+    COMPARED, never staged again — staging it as well would take the stock
+    down twice. The workbook's rows of that date and preparer (Surface Shields
+    excluded — never on these papers) are paired one to one with the paper's,
+    so two identical lines (same item, tank, quantity, worker) pair with two
+    rows, never one."""
+    from .ai import paper_compare as PC
+    site = await _site(user, body.site_id)
+    wb = await PC.workbook_rows(session, site, body.date, body.prepared_by)
+    res = PC.align([r.model_dump() for r in body.rows], wb)
+    return {"site_id": site, "date": body.date, "prepared_by": body.prepared_by,
+            "in_workbook": len(wb), **res}
+
+
+class PreparersIn(BaseModel):
+    site_id: str = Field(..., min_length=1, max_length=40)
+    history: list[dict] = Field(..., max_length=50)
+
+
+@router.get("/preparers", summary="Who prepares the site's consumption papers, Day and Night")
+async def get_preparers(site_id: Optional[str] = None,
+                        user: dict = Depends(require_roles("store_keeper", "hod", "admin")),
+                        session: AsyncSession = Depends(get_session)):
+    from .services import preparers as PREP
+    site = resolve_site_param(user, site_id)
+    if not site:
+        raise HTTPException(422, "choose a site")
+    return {"site_id": site, "history": await PREP.history(session, site)}
+
+
+@router.put("/preparers", summary="Set the Day / Night preparers (from a date) — Admin, the site's HOD")
+async def put_preparers(body: PreparersIn, user: dict = Depends(require_roles("hod", "admin")),
+                        session: AsyncSession = Depends(get_session)):
+    """Ruling Q22-16: a HISTORY per site, so a paper keeps the names in force on
+    its own date when the shift changes hands."""
+    import json as _json
+
+    from .services import preparers as PREP
+    site = resolve_site_param(user, body.site_id)
+    try:
+        rows = await PREP.save(session, site, body.history)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    await write_audit(session, user["username"], "PREPARERS_SET", "app_settings",
+                      f"site={site} {_json.dumps(rows)}")
+    await session.commit()
+    return {"site_id": site, "history": rows}
 
 
 @router.post("/aliases", summary="Learn what a written name means at this site")

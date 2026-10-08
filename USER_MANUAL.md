@@ -1215,10 +1215,52 @@ Bag*); the inventory names them the way the PR did (*DUST Mask*, *TRASH BAG
   the workbook writes it: *PV* becomes *PU*, *RIL* *R/L*, *BLL* *B/L*, *Blaster*
   *Blast*. You can edit it in the **Work type** column.
 
+**Day / Night and Prepared by (Phase 22).** Above the rows a tag says **Night
+shift** when "(Night)" is written next to the date, and **Day shift (no mark)**
+when nothing is written — an unmarked paper is a Day paper. **Prepared by** is
+filled with your site's Day or Night name in force on the paper's date (at
+CNCEC: Day → Johnson, Night → Kalied). Click the tag to switch the shift, or type
+over the name. The names are kept by the Admin (Admin Console → **Sites**) or
+your HOD (**WBS & Work Types**), each line *from* a date, so older papers keep the
+names of their time. The staged rows carry it; your own login stays the
+submitter.
+
+**Tank (Phase 22).** The **Tank** column matches what is written against your
+site's official tanks, like the names:
+- 🟢 **matched** — `K-TNK-091` is Train K's tank 091 (`522-8k10-TNK-091`),
+  `89D0-TNK-001` is `522-89D0-TNK-001`, `J027` is `J027`; or a spelling learned
+  before (**learned**);
+- 🟡 **check** — the nearest tank after the strokes the reader confuses
+  (`84D0` → `89D0`): press **Accept**, or choose in the box. A bare `TNK-091`
+  is a tank in **both** trains: nothing is accepted for you — choose one;
+- 🔴 **not found** — choose the tank.
+
+A ditto mark under a tank takes the tank above (*as above ("K-TNK-091")*).
+**Tick all like this** ticks every row of that tank; with rows ticked, a bar
+above the table sets their tank in one go. **Accept**, a choice or the bar
+**teaches** the spelling for your site — green next time.
+
+**Already in the workbook? Compare, not stage (Phase 22).** When the workbook
+already has rows for the paper's **date and preparer**, a blue box says *This
+paper is already in the workbook — 79 row(s) for 05 Oct 2026, prepared by
+Kalied. It is COMPARED, not staged.* Staging it too would take the stock down
+twice. A **Workbook** column shows each line: **✓ row 5948** (the same), **≠
+row 5950** with what differs (*quantity: paper 3 · workbook 1*), or **not in
+the workbook**; rows typed for that date and preparer but not on this page are
+listed below the table (usually another page of the same shift). Two identical
+lines (same item, tank, quantity and worker) pair with two workbook rows, never
+one. Fix a difference in the workbook — the next pull brings it in. **Stage**
+says *Already in the workbook — compared, not staged*. A paper not yet typed
+stages as before, with its tank and Prepared by.
+
+**Work types the reader gets wrong** are mapped as well: *Best* → Blast, *15/L*
+→ B/L, *12 LL* → R/L, *Buffy* → Buffing; a lone *1* (a ditto mark, as read) takes
+the work type above.
+
 The photos never leave this Mac. The reader is the local AI, and the photos of
 the papers used to measure it are kept only on the office computer.
 
-**Practice:** paste these three lines (Name, Product, UOM, Qty) into OCR Import → Paste (Consumption log),
+**Practice:** paste these three lines (Name, Product, UOM, Qty — then optionally Work type and Tank) into OCR Import → Paste (Consumption log),
 press **Parse**, and you see all three colours:
 
 ```

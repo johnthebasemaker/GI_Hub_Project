@@ -654,7 +654,9 @@ def parse_consumption_paste(text: str) -> dict:
                      "material_text": parts[1] if len(parts) > 1 else "",
                      "uom": parts[2] if len(parts) > 2 else "",
                      "quantity": _to_float(parts[3]) if len(parts) > 3 else 0.0,
-                     "work_type": parts[4] if len(parts) > 4 else ""})
+                     "work_type": parts[4] if len(parts) > 4 else "",
+                     # Phase 22e: an optional 6th field — the tank as written
+                     "tank_no": parts[5] if len(parts) > 5 else ""})
     if not rows:
         raise ValueError("No data rows found.")
     return {"rows": rows, "date_text": date_text}
