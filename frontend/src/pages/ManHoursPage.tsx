@@ -19,6 +19,7 @@ import { ExecVarianceTab, ReasonLogTab, SurfacePrepTab } from './ExecutionReport
 import ManpowerPlanner from './ManpowerPlanner'
 import EfficiencyChartTab from './EfficiencyChartTab'
 import SessionManpowerReport from './SessionManpowerReport'
+import { status } from '../theme/tokens'
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -800,7 +801,7 @@ function VarianceTab({ site }: TabProps) {
       <Row gutter={16} style={{ marginBottom: 16, maxWidth: 640 }}>
         <Col span={8}><Card size="small"><Statistic title="Scopes tracked" value={k?.scopes ?? 0} /></Card></Col>
         <Col span={8}><Card size="small"><Statistic title="Over-consuming" value={k?.over_consuming ?? 0}
-          styles={(k?.over_consuming ?? 0) > 0 ? { content: { color: '#dc3545' } } : undefined} /></Card></Col>
+          styles={(k?.over_consuming ?? 0) > 0 ? { content: { color: status.critical } } : undefined} /></Card></Col>
         <Col span={8}><Card size="small"><Statistic title="Total actual MH" value={k?.total_actual ?? 0} precision={1} /></Card></Col>
       </Row>
       <Table sticky={{ offsetHeader: 64 }} size="small" loading={isFetching} columns={columns} dataSource={items}
@@ -877,7 +878,7 @@ function ScorecardTab({ site }: TabProps) {
         <Col span={6}><Card size="small"><Statistic title="With manpower booked" value={k?.with_labor ?? 0} /></Card></Col>
         <Col span={6}><Card size="small"><Statistic title="Site norm MH/SQM" value={norm?.mh_per_sqm ?? '—'} /></Card></Col>
         <Col span={6}><Card size="small"><Statistic title="Recon drift" value={k?.drift ?? 0}
-          styles={(k?.drift ?? 0) > 0 ? { content: { color: '#dc3545' } } : undefined} /></Card></Col>
+          styles={(k?.drift ?? 0) > 0 ? { content: { color: status.critical } } : undefined} /></Card></Col>
       </Row>
       <Space style={{ marginBottom: 12 }} wrap>
         <Checkbox checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)}>

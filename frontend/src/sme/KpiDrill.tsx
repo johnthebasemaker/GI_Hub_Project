@@ -7,6 +7,7 @@ import { useMemo, useState } from 'react'
 import { Card, Modal, Typography } from 'antd'
 import { Table } from '../lib/smartTable'
 import type { ColumnsType } from 'antd/es/table'
+import { status } from '../theme/tokens'
 
 export type DrillRow = Record<string, string | number | null | undefined>
 
@@ -44,7 +45,7 @@ export default function KpiDrill({ title, value, delta, deltaColor, help, drillT
           color: accent, lineHeight: 1.3, whiteSpace: 'nowrap',
         }}>{value}</div>
         {delta !== undefined && (
-          <div style={{ fontSize: '0.72rem', fontFamily: 'JetBrains Mono, monospace', color: deltaColor ?? '#94A3B8' }}>
+          <div style={{ fontSize: '0.72rem', fontFamily: 'JetBrains Mono, monospace', color: deltaColor ?? status.neutral }}>
             {delta}
           </div>
         )}

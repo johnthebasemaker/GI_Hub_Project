@@ -42,6 +42,7 @@ import KpiRow from '../components/KpiRow'
 import MultiSelectAll from '../sme/MultiSelectAll'
 import { decodeTags } from '../sme/ScenarioContext'
 import SystemCode from '../sme/SystemCode'
+import { status } from '../theme/tokens'
 
 type Row = Record<string, unknown>
 
@@ -54,9 +55,9 @@ const n0 = (v: unknown) => (v == null ? '—' : Math.round(Number(v)).toLocaleSt
 
 /** The three columns, in the order the question is asked. */
 const COLS = [
-  { key: 'can_do', title: 'We can do now', hint: 'Costed from the area the material physically on site supports. This is the part you can start today.', tone: '#3f8600' },
+  { key: 'can_do', title: 'We can do now', hint: 'Costed from the area the material physically on site supports. This is the part you can start today.', tone: status.ok },
   { key: 'overall', title: 'Overall total', hint: 'The whole remaining job, materials no object.', tone: undefined },
-  { key: 'blocked', title: 'Blocked by material', hint: 'The difference — how big the delay is. Deliberately shows no headcount.', tone: '#cf1322' },
+  { key: 'blocked', title: 'Blocked by material', hint: 'The difference — how big the delay is. Deliberately shows no headcount.', tone: status.critical },
 ] as const
 
 export default function SessionManpowerReport({ site }: { site?: string }) {
@@ -127,7 +128,7 @@ export default function SessionManpowerReport({ site }: { site?: string }) {
       render: n2 },
     { title: 'Blocked m²', dataIndex: 'Blocked_SQM', width: 110, align: 'right',
       render: (v: unknown) => (
-        <span style={{ color: Number(v ?? 0) > 0 ? '#cf1322' : undefined }}>
+        <span style={{ color: Number(v ?? 0) > 0 ? status.critical : undefined }}>
           {n2(v)}</span>) },
     { title: 'Can-do man-hrs', dataIndex: 'Can_Do_Manhours', width: 130,
       align: 'right', render: n0 },

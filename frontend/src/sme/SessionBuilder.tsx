@@ -23,6 +23,7 @@ import PriorityList from './PriorityList'
 import { encodeTags, useScenario } from './ScenarioContext'
 import { tagStats } from './session'
 import TagDetail from './TagDetail'
+import { light } from '../theme/tokens'
 
 const secHdr: React.CSSProperties = {
   fontFamily: 'JetBrains Mono, monospace', fontSize: '0.68rem', fontWeight: 700,
@@ -181,7 +182,7 @@ export default function SessionBuilder({ siteId }: { siteId?: string }) {
                   <Space size={8}>
                     <span style={{
                       fontFamily: 'JetBrains Mono, monospace', background: locColor(loc),
-                      color: '#fff', borderRadius: 6, padding: '1px 10px',
+                      color: light.surface, borderRadius: 6, padding: '1px 10px',
                       fontSize: '0.72rem', fontWeight: 700,
                     }}>{loc}</span>
                     <span style={{ fontSize: '0.72rem', opacity: 0.75 }}>

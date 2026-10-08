@@ -29,6 +29,7 @@ import { useScenario } from './ScenarioContext'
 import { codeStats } from './session'
 import TierNote from './TierNote'
 import { materialCodeCol, materialNameCol } from './materialCols'
+import { brand, status as tone } from '../theme/tokens'
 
 const mono: React.CSSProperties = { fontFamily: 'JetBrains Mono, monospace' }
 const nf = (v: number, d = 3) =>
@@ -36,7 +37,7 @@ const nf = (v: number, d = 3) =>
 
 const CodePill = ({ code }: { code: string }) => (
   <span style={{
-    ...mono, border: '1px solid rgba(212,175,55,.5)', color: '#D4AF37',
+    ...mono, border: '1px solid rgba(212,175,55,.5)', color: brand.gold,
     borderRadius: 6, padding: '0 6px', fontSize: '0.68rem', fontWeight: 700,
   }}>Code {code}</span>
 )
@@ -51,23 +52,23 @@ const shortageCols: ColumnsType<AllocationLine> = [
   { title: 'Demand', dataIndex: 'Demand_Qty', key: 'd', align: 'right', render: (v: number) => nf(v) },
   {
     title: 'Available', dataIndex: 'Alloc_Available', key: 'av', align: 'right',
-    render: (v: number) => <span style={{ color: '#10B981' }}>{nf(v)}</span>,
+    render: (v: number) => <span style={{ color: tone.ok }}>{nf(v)}</span>,
   },
   {
     title: 'Pending Delivery', dataIndex: 'Alloc_Pending', key: 'or', align: 'right',
     render: (v: number) => (
-      <span style={{ color: v > 0 ? '#F59E0B' : undefined, opacity: v > 0 ? 1 : 0.4 }}>{nf(v)}</span>
+      <span style={{ color: v > 0 ? tone.low : undefined, opacity: v > 0 ? 1 : 0.4 }}>{nf(v)}</span>
     ),
   },
   {
     title: 'Short (physical)', dataIndex: 'Shortfall_Available_Qty', key: 'sp', align: 'right',
     render: (v: number) => (
-      <span style={{ color: v > 0 ? '#EF4444' : undefined, fontWeight: v > 0 ? 700 : 400 }}>{nf(v)}</span>
+      <span style={{ color: v > 0 ? tone.critical : undefined, fontWeight: v > 0 ? 700 : 400 }}>{nf(v)}</span>
     ),
   },
   {
     title: 'To Order', dataIndex: 'Shortfall_Qty', key: 's', align: 'right',
-    render: (v: number) => <b style={{ color: v > 0 ? '#EF4444' : '#10B981' }}>{nf(v)}</b>,
+    render: (v: number) => <b style={{ color: v > 0 ? tone.critical : tone.ok }}>{nf(v)}</b>,
   },
   {
     title: 'Ready now', dataIndex: 'Fulfillment_Pct', key: 'f', align: 'right', width: 100,
@@ -167,7 +168,7 @@ function ExecMain({ model, siteId }: { model: SmeModel; siteId?: string }) {
             <span style={mono}>{nf(cs.sqm, 1)} SQM</span>
             <FulfilPill pct={cs.fulfillPct} />
             {cs.fulfillWithOrderedPct > cs.fulfillPct && (
-              <span style={{ ...mono, fontSize: '0.68rem', color: '#F59E0B' }}>
+              <span style={{ ...mono, fontSize: '0.68rem', color: tone.low }}>
                 → {cs.fulfillWithOrderedPct.toFixed(1)}% once ordered stock lands
               </span>
             )}
@@ -187,7 +188,7 @@ function ExecMain({ model, siteId }: { model: SmeModel; siteId?: string }) {
 
       {/* 1️⃣ critical code — RED */}
       <Card size="small" style={{ borderColor: 'rgba(239,68,68,.6)', marginBottom: 12 }}
-        title={<span style={{ color: '#EF4444', fontWeight: 700 }}>1️⃣ Critical — Code {selCode}</span>}>
+        title={<span style={{ color: tone.critical, fontWeight: 700 }}>1️⃣ Critical — Code {selCode}</span>}>
         {critLines.length === 0 ? (
           critAwaiting.length > 0 ? (
             <Alert type="warning" showIcon
@@ -223,11 +224,11 @@ function ExecMain({ model, siteId }: { model: SmeModel; siteId?: string }) {
           <Card key={c} size="small" style={{ borderColor: 'rgba(245,158,11,.5)', marginBottom: 12 }}
             title={(
               <Space>
-                <span style={{ color: '#F59E0B', fontWeight: 700 }}>{i + 2}️⃣ Code {c}</span>
+                <span style={{ color: tone.low, fontWeight: 700 }}>{i + 2}️⃣ Code {c}</span>
                 <span style={{ fontSize: '0.75rem', opacity: 0.75 }}>{st?.shortName}</span>
                 {st && <FulfilPill pct={st.fulfillPct} />}
                 {st && st.fulfillWithOrderedPct > st.fulfillPct && (
-                  <span style={{ ...mono, fontSize: '0.64rem', color: '#F59E0B' }}>
+                  <span style={{ ...mono, fontSize: '0.64rem', color: tone.low }}>
                     → {st.fulfillWithOrderedPct.toFixed(1)}% ordered
                   </span>
                 )}
@@ -266,7 +267,7 @@ function ExecMain({ model, siteId }: { model: SmeModel; siteId?: string }) {
           // open PO, allShort is empty and the page used to declare the tag
           // "fully buildable with current stock".
           <>⏳ <b style={mono}>{selTag}</b> has <b>nothing left to buy</b>, but{' '}
-            <b style={{ color: '#F59E0B' }}>{awaitingDelivery.length} material
+            <b style={{ color: tone.low }}>{awaitingDelivery.length} material
               {awaitingDelivery.length > 1 ? 's are' : ' is'} still on order</b> and not
             on site — it is <b>not buildable today</b>. Wait for delivery rather than
             re-ordering.</>
@@ -275,7 +276,7 @@ function ExecMain({ model, siteId }: { model: SmeModel; siteId?: string }) {
         ) : (
           <>
             Procurement strategy for <b style={mono}>{selTag}</b>: order the{' '}
-            <b style={{ color: '#EF4444' }}>{critLines.length} critical-code material{critLines.length === 1 ? '' : 's'}</b>{' '}
+            <b style={{ color: tone.critical }}>{critLines.length} critical-code material{critLines.length === 1 ? '' : 's'}</b>{' '}
             (Code {selCode}) first — total{' '}
             <b style={mono}>{nf(critLines.reduce((s, l) => s + l.Shortfall_Qty, 0))}</b> units —
             then the remaining <b style={mono}>{allShort.length - critLines.length}</b> shortage
@@ -360,7 +361,7 @@ function ProgressList({ model, snap, siteId }: { model: SmeModel; snap: SmeSnaps
     {
       title: 'Completion %', dataIndex: 'Completion_Pct', key: 'p', align: 'right', width: 110,
       render: (v: number) => (
-        <b style={{ color: v >= 100 ? '#10B981' : v > 0 ? '#F59E0B' : '#EF4444' }}>{v.toFixed(1)}%</b>
+        <b style={{ color: v >= 100 ? tone.ok : v > 0 ? tone.low : tone.critical }}>{v.toFixed(1)}%</b>
       ),
     },
     { title: 'Status', dataIndex: 'Status', key: 'st', width: 130 },
@@ -550,7 +551,7 @@ function ConsumptionComparison({ model, siteId }: { model: SmeModel; siteId?: st
     {
       title: 'Variance %', dataIndex: 'Variance_Pct', key: 'p', align: 'right', width: 100,
       render: (v: number | null) => v === null ? '—' : (
-        <b style={{ color: v > 1 ? '#F59E0B' : v < -1 ? '#3B82F6' : '#10B981' }}>
+        <b style={{ color: v > 1 ? tone.low : v < -1 ? tone.info : tone.ok }}>
           {v > 0 ? '+' : ''}{v.toFixed(1)}%
         </b>
       ),
@@ -584,7 +585,7 @@ function ConsumptionComparison({ model, siteId }: { model: SmeModel; siteId?: st
         <Col flex="1 1 140px"><KpiDrill title="Total Actual" value={nf(totA)}
           drillTitle="Actual by material" rows={filtered.map((r) => ({ Material: r.Material, Actual: r.Actual }))} /></Col>
         <Col flex="1 1 140px"><KpiDrill title="Variance" value={nf(totA - totE)}
-          accent={Math.abs(totA - totE) > 0.001 ? (totA > totE ? '#F59E0B' : '#3B82F6') : '#10B981'}
+          accent={Math.abs(totA - totE) > 0.001 ? (totA > totE ? tone.low : tone.info) : tone.ok}
           drillTitle="Variance by row" rows={filtered.map((r) => ({
             Tag: r.Tag, Material: r.Material, Variance: r.Variance,
           }))} /></Col>

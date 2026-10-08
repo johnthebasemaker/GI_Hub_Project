@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Button, Input, Modal, Space, Typography } from 'antd'
 import type { InputRef } from 'antd'
 import jsQR from 'jsqr'
+import { media } from '../theme/tokens'
 
 // Live QR badge scanner — Phase AI-4 Smart Scan tier 1.
 // Decoding is 100% CLIENT-SIDE: frames go video → canvas → BarcodeDetector
@@ -119,7 +120,7 @@ export default function QrScanner({
         <>
           <div style={{ position: 'relative' }}>
             <video ref={videoRef} muted playsInline
-              style={{ width: '100%', borderRadius: 8, background: '#000', display: 'block' }} />
+              style={{ width: '100%', borderRadius: 8, background: media.letterbox, display: 'block' }} />
             {/* Aiming frame (Phase 18): where to hold the code. Decoding still
                 reads the whole frame — this only tells the eye where to aim. */}
             <div aria-hidden style={{

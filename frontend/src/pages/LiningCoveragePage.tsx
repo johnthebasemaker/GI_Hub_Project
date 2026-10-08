@@ -7,6 +7,7 @@ import { useState } from 'react'
 import { api } from '../api/client'
 import { useSites } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
+import { status } from '../theme/tokens'
 
 /**
  * Phase 8-1 — Lining Coverage (predictive material analytics).
@@ -69,7 +70,7 @@ export default function LiningCoveragePage() {
     {
       title: 'When delivered', dataIndex: 'Achievable_With_Ordered_SQM', key: 'ao', align: 'right',
       render: (v: number, r) => (
-        <span style={{ color: v > r.Achievable_SQM ? '#F59E0B' : undefined,
+        <span style={{ color: v > r.Achievable_SQM ? status.low : undefined,
           opacity: v > r.Achievable_SQM ? 1 : 0.5 }}>{v}</span>
       ),
     },

@@ -33,6 +33,7 @@ import ProcurementView from './ProcurementView'
 import { RowsExportButtons } from './rowsExport'
 import { materialCodeCol, materialNameCol } from './materialCols'
 import TierNote from './TierNote'
+import { brand, status } from '../theme/tokens'
 
 // Legacy dashboard_material_balance export columns (same frame as the CSV).
 const balanceExportCols = ['Code', 'Material Name', 'UOM', 'Available', 'Pending Delivery',
@@ -153,10 +154,10 @@ export default function SmeDashboard({ siteId }: { siteId?: string }) {
     { title: 'Short Name', dataIndex: 'shortName', key: 's', ellipsis: true },
     { title: 'SQM Total', dataIndex: 'sqm', key: 't', align: 'right', render: (v: number) => nf(v, 1) },
     { title: 'Buildable now SQM', dataIndex: 'canSqm', key: 'a', align: 'right',
-      render: (v: number) => <span style={{ color: '#10B981' }}>{nf(v, 1)}</span> },
+      render: (v: number) => <span style={{ color: status.ok }}>{nf(v, 1)}</span> },
     { title: 'When delivered SQM', dataIndex: 'canSqmWithOrdered', key: 'ao', align: 'right',
       render: (v: number, r) => (
-        <span style={{ color: v > r.canSqm ? '#F59E0B' : undefined, opacity: v > r.canSqm ? 1 : 0.5 }}>{nf(v, 1)}</span>
+        <span style={{ color: v > r.canSqm ? status.low : undefined, opacity: v > r.canSqm ? 1 : 0.5 }}>{nf(v, 1)}</span>
       ) },
     { title: 'SQM Deficit', dataIndex: 'shortSqm', key: 'd', align: 'right', render: (v: number) => nf(v, 1) },
     {
@@ -166,7 +167,7 @@ export default function SmeDashboard({ siteId }: { siteId?: string }) {
     {
       title: 'When delivered %', dataIndex: 'coverageWithOrderedPct', key: 'po', align: 'right',
       render: (v: number, r) => (
-        <span style={{ color: v > r.coveragePct ? '#F59E0B' : undefined, opacity: v > r.coveragePct ? 1 : 0.5 }}>{v.toFixed(1)}%</span>
+        <span style={{ color: v > r.coveragePct ? status.low : undefined, opacity: v > r.coveragePct ? 1 : 0.5 }}>{v.toFixed(1)}%</span>
       ),
     },
   ]
@@ -224,13 +225,13 @@ export default function SmeDashboard({ siteId }: { siteId?: string }) {
               drillTitle="SQM by Equipment & System Code" rows={dSqm}
               help="Remaining surface area (m²) after deducting daily consumption entries." /></Col>
             <Col flex="1 1 160px"><KpiDrill title="Buildable now SQM" value={nf(canSqm, 2)}
-              accent="#10B981" drillTitle="Buildable today (physical stock only)" rows={dCovSqm}
+              accent={status.ok} drillTitle="Buildable today (physical stock only)" rows={dCovSqm}
               help="Area (m²) coverable with stock ON THE SHELF. Stock on an open purchase order is excluded." /></Col>
             <Col flex="1 1 160px"><KpiDrill title="When delivered SQM" value={nf(canSqmOrd, 2)}
-              accent="#F59E0B" drillTitle="Buildable once purchase orders arrive" rows={dCovSqm}
+              accent={status.low} drillTitle="Buildable once purchase orders arrive" rows={dCovSqm}
               help="Coverage against the TOTAL procured quantity (arrived + pending delivery = the whole PO). Forecast only — never a readiness figure." /></Col>
             <Col flex="1 1 160px"><KpiDrill title="SQM Deficit" value={nf(shortSqm, 2)}
-              accent={shortSqm > 0 ? '#EF4444' : undefined}
+              accent={shortSqm > 0 ? status.critical : undefined}
               drillTitle="SQM Deficit by Equipment & System Code" rows={dDefSqm}
               help="Area (m²) that cannot be completed with stock on hand." /></Col>
           </Row>
@@ -247,13 +248,13 @@ export default function SmeDashboard({ siteId }: { siteId?: string }) {
           drillTitle="SQM by Equipment & System Code" rows={dSqm}
           help="Remaining surface area (m²) after deducting daily consumption entries." /></Col>
         <Col flex="1 1 145px"><KpiDrill title="Buildable now SQM" value={nf(canSqm, 2)}
-          accent="#10B981" drillTitle="Buildable today (physical stock only)" rows={dCovSqm}
+          accent={status.ok} drillTitle="Buildable today (physical stock only)" rows={dCovSqm}
           help="Area (m²) coverable with stock ON THE SHELF = Total SQM × Ready-now %. Stock on an open purchase order is excluded — it cannot line a tank today." /></Col>
         <Col flex="1 1 145px"><KpiDrill title="When delivered SQM" value={nf(canSqmOrd, 2)}
-          accent="#F59E0B" drillTitle="Buildable once purchase orders arrive" rows={dCovSqm}
+          accent={status.low} drillTitle="Buildable once purchase orders arrive" rows={dCovSqm}
           help="Coverage against the TOTAL procured quantity (arrived + pending delivery = the whole PO). Forecast only — never a readiness figure." /></Col>
         <Col flex="1 1 145px"><KpiDrill title="SQM Deficit" value={nf(shortSqm, 2)}
-          accent={shortSqm > 0 ? '#EF4444' : undefined}
+          accent={shortSqm > 0 ? status.critical : undefined}
           drillTitle="SQM Deficit by Equipment & System Code" rows={dDefSqm}
           help="Area (m²) that cannot be completed = Total SQM − Buildable now SQM." /></Col>
         <Col flex="1 1 145px"><KpiDrill title="Coverage now" value={`${fCov.toFixed(1)}%`}
@@ -261,11 +262,11 @@ export default function SmeDashboard({ siteId }: { siteId?: string }) {
           drillTitle="Coverable SQM by Equipment & System Code" rows={dCovSqm}
           help={`Available Qty ÷ Demand Qty across all filtered materials — ARRIVED stock only. Against the total procured quantity it would be ${fCovOrd.toFixed(1)}%.`} /></Col>
         <Col flex="1 1 145px"><KpiDrill title="When delivered" value={`${fCovOrd.toFixed(1)}%`}
-          accent="#F59E0B"
+          accent={status.low}
           drillTitle="Coverable SQM by Equipment & System Code" rows={dCovSqm}
           help="Coverage once the open purchase orders land. Forecast only." /></Col>
         <Col flex="1 1 145px"><KpiDrill title="Critical (<50%)" value={String(critCount)}
-          accent={critCount > 0 ? '#EF4444' : '#10B981'}
+          accent={critCount > 0 ? status.critical : status.ok}
           drillTitle="Critical Materials (physical coverage < 50%)" rows={dCrit}
           help="Materials where ARRIVED Qty covers less than 50% of total demand. A pending delivery does not lift a material out of this list." /></Col>
       </Row>
@@ -285,8 +286,8 @@ export default function SmeDashboard({ siteId }: { siteId?: string }) {
                 <YAxis hide />
                 <Tooltip formatter={(v) => nf(Number(v), 1)} />
                 <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'JetBrains Mono, monospace' }} />
-                <Bar dataKey="Available" stackId="inv" fill="#10B981" fillOpacity={0.8} />
-                <Bar dataKey="Shortfall" stackId="inv" fill="#EF4444" fillOpacity={0.8} />
+                <Bar dataKey="Available" stackId="inv" fill={status.ok} fillOpacity={0.8} />
+                <Bar dataKey="Shortfall" stackId="inv" fill={status.critical} fillOpacity={0.8} />
               </BarChart>
             </ResponsiveContainer>
           </Card>
@@ -304,7 +305,7 @@ export default function SmeDashboard({ siteId }: { siteId?: string }) {
                     <Bar dataKey="canSqm" name="Can Do" stackId="loc">
                       {locs.map((l) => <Cell key={l.key} fill={locColor(l.label)} fillOpacity={0.8} />)}
                     </Bar>
-                    <Bar dataKey="shortSqm" name="Deficit" stackId="loc" fill="#EF4444" fillOpacity={0.6} />
+                    <Bar dataKey="shortSqm" name="Deficit" stackId="loc" fill={status.critical} fillOpacity={0.6} />
                   </BarChart>
                 </ResponsiveContainer>
                 <Row gutter={[8, 8]} style={{ marginTop: 8 }}>
@@ -312,7 +313,7 @@ export default function SmeDashboard({ siteId }: { siteId?: string }) {
                     <Col key={l.key} flex="1 1 120px">
                       <Card size="small" styles={{ body: { padding: 8, textAlign: 'center' } }}>
                         <div style={{ fontSize: '1.05rem' }}>{fcDot(l.coveragePct)}</div>
-                        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.7rem', fontWeight: 700, color: '#D4AF37' }}>{l.label}</div>
+                        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.7rem', fontWeight: 700, color: brand.gold }}>{l.label}</div>
                         <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '1.05rem', fontWeight: 700 }}>{l.coveragePct.toFixed(1)}%</div>
                         <div style={{ fontSize: '0.66rem', opacity: 0.65 }}>{nf(l.canSqm, 0)} / {nf(l.sqm, 0)} SQM</div>
                         <div style={{ fontSize: '0.64rem', opacity: 0.65 }}>{l.equipment} equipment</div>

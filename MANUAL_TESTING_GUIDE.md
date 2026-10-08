@@ -5210,6 +5210,37 @@ afterwards if you do not mean to commit it.
 
 Automated: service_tests **22E** (10 checks); E2E `ocr-compare.spec.ts`.
 
+## 22f. Phase 22f — colours on tokens, Practice examples, the queue seed (rulings Q22-20/21)
+
+**TC-22F-01 — colours.** `npm run test:design` reports **raw hex 0**. Open the
+SME Estimator (dashboard, Session Report, Execution Plan, Total Overview), Lining
+Coverage, Man-Hours, the Manpower Planner: the same colours as before, the greens
+a touch brighter. `npm run parity:sme` unchanged. Before/after screenshots:
+`GI_VISUAL_REPORT=1 npx playwright test specs/visual-report.spec.ts` (pages 13–15
+are new).
+
+**TC-22F-02 — the top bar.** At 1280 px wide, sign in to Practice as
+`practice.hod`: one line, no sideways scroll; the username without the role name;
+the green dot without "API online".
+
+**TC-22F-03 — Practice examples (overlay v11).** As in USER_MANUAL §3.21: the
+DN 90001 photo, WD numbers, the two certificates (Confirm as `practice.qc`), the
+request with a no-SAP line, Practice Day / Night, a Night paper two days ago that
+Compares.
+
+**TC-22F-04 — the queue seed.** Run the overlay twice on a copy:
+`tools/practice_db.py build` then the overlay again — Approvals still shows 3
+receipts, 3 issues, 1 return (it used to add another set every run; an existing
+sandbox with 12 is trimmed to 3).
+
+**TC-22F-05 — Live set-up (operator-approved, Q22-16/18).**
+
+```bash
+.venv/bin/python tools/ocr_site_setup.py --site CNCEC --aliases .cache/ocr_eval/proposed_aliases_phase21.json --preparers 2026-09-26:Johnson:Kalied
+```
+
+dry-runs; `--commit` writes it (audited as `ocr-site-setup`).
+
 ## 21d. Phase 21d — OCR measured against the workbook; the name matcher (Q21-1..6)
 
 **Why this exists.** The 11 photos of the *Safety & Production Consumables*

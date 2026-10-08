@@ -1220,6 +1220,33 @@ green checks → merge → local pull, unasked (`CLAUDE.md` §5).
 | **Q20-12/13** | Paper-form PENDING_HOD entries bulk-approve, each posting stock in its own savepoint; QSEP blocks or stock conflicts fail alone. At most 50. | `bulk_jobs.approve_entries` |
 | **Q20-14..17** | Pitch numbers use `[operator]` placeholders except published figures (sourced). A 10-minute talk plus a deck. The demo runs on localhost Practice. No supplier prices or site names. | `FINANCE_PITCH.md`, the Slides artifact |
 
+### Phase 22 — Deep Drive integration, OCR line by line & final polish (2026-10-07, RULED)
+
+`PROPOSED_PHASE22_PLAN.md` was approved whole (2026-10-07). **Shipped
+2026-10-07/08, PRs #127–#133. Live is migrated to `d7fa4c8e2b19`. The summary is
+in `PHASE22_SUMMARY.md`.** Rulings:
+
+| # | Ruling | Where it lives |
+|---|---|---|
+| **Q22-1** | A pull commits the ERP side by itself ONLY when the dry run just ADDS rows; edits, removals, rejects and lot changes wait for the Admin's Commit. | `drive_sync.additions_only`, `drive_admin.run_once` (22a) |
+| **Q22-2/3/4** | Pulls at 07:30 and 19:30, set in the UI; Pull button for Admin + HOD; "stale" after 26 h. | `drive_sync_schedule`, `DriveFreshness` (22a) |
+| **Q22-5** | The Google app is published via the Branding page (GDRIVE_SETUP step 6), so the token does not expire weekly. | `docs/GDRIVE_SETUP.md` |
+| **Q22-6** | DN / MTC / request files are cached read-only on the server. | `drive_files`, `.cache/drive/` (22a) |
+| **Q22-7** | DN files no receipt names are LISTED, never guessed. | Drive card → Delivery notes (22b) |
+| **Q22-8** | "WD" = Without Delivery Note (local purchases too): one automatic `WD-<site>-NNNN` per delivery, never renumbered. | `receipt_wd` (22b) |
+| **Q22-9** | The Return Log's DN. No. is imported; RDN files link. | `returns.DN_No` (22b) |
+| **Q22-10** | A certificate with no batch in the name is assigned by a person (Admin/HOD/QC) and CONFIRMED by QC. | `mtc_assignments` (22c) |
+| **Q22-11** | A certificate's expiry ranks highest, but an expiry typed in the app (a retest) wins and is never overwritten. | `Expiry_Source` `mtc` / `app`, `PUT /lot-register/expiry` (22c) |
+| **Q22-12/13** | Request workbooks are the source, the "Over all" roll-up a check; pending no-PR requests are on order in Smart Reorder; lines with no SAP code are listed for the operator. | `requests_sync` (22d) |
+| **Q22-14/15/16** | An unmarked consumption paper is Day; "(Night)" is Night. *Prepared by* gets its own column (`Issued_By` stays the submitter). The site's Day/Night names are a from-date history. | `preparers`, `Prepared_By` (22e) |
+| **Q22-17** | `K-` = Train K, `J0xx` = the J series; the store keeper teaches a tank spelling on Accept, with bulk tick for one tank's rows. | `paper_fields.match_tank` (22e) |
+| **Q22-18** | The 11 Phase 21 names are loaded (done 2026-10-08, `tools/ocr_site_setup.py`). | `ocr_aliases` |
+| **Q22-19** | Per paper: in the workbook (date + preparer) → Compare, never Stage; pairing is one to one. | `ai/paper_compare` (22e) |
+| **Q22-20** | SME chart colours move onto the tokens (green a touch brighter). | raw hex 0 (22f) |
+| **Q22-21** | NO real photos in Practice; the paste box stays. | — |
+| **Q22-22/24** | Waste Disposal and "Surface Shield Material Received Details" are not read. | `drive_sync.IGNORED_FOLDERS` |
+| **Q22-23** | Claude runs the Phase 22 Live migrations, backup first. | `.backups/gihub_2026-10-0[78]_*_before_phase22*_migrate.sql.gz` |
+
 ### Phase 21 — Auto-Pilot, OCR fine-tuning & Enterprise UI (2026-10-06, RULED)
 
 `PROPOSED_PHASE21_PLAN.md` was approved whole. **Shipped 2026-10-06/07, PRs

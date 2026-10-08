@@ -21,6 +21,7 @@ import KpiDrill from './KpiDrill'
 import { ScopedExport } from './MatrixReports'
 import { FulfilPill } from './PriorityList'
 import TierNote from './TierNote'
+import { brand, status as tone } from '../theme/tokens'
 
 const mono: React.CSSProperties = { fontFamily: 'JetBrains Mono, monospace' }
 const nf = (v: number, d = 1) =>
@@ -163,21 +164,21 @@ export default function TotalOverview({ siteId }: { siteId?: string }) {
     // "Allocated" column this replaces summed both.
     {
       title: 'Available', dataIndex: 'available', key: 'av', width: 110, align: 'right',
-      render: (v: number) => <span style={{ color: '#10B981' }}>{nf(v, 2)}</span>,
+      render: (v: number) => <span style={{ color: tone.ok }}>{nf(v, 2)}</span>,
     },
     {
       title: 'Pending Delivery', dataIndex: 'ordered', key: 'or', width: 110, align: 'right',
       render: (v: number) => (
-        <span style={{ color: v > 0 ? '#F59E0B' : undefined, opacity: v > 0 ? 1 : 0.4 }}>{nf(v, 2)}</span>
+        <span style={{ color: v > 0 ? tone.low : undefined, opacity: v > 0 ? 1 : 0.4 }}>{nf(v, 2)}</span>
       ),
     },
     {
       title: 'Short (physical)', dataIndex: 'shortfall', key: 'sh', width: 130, align: 'right',
-      render: (v: number) => <span style={{ color: v > 0 ? '#EF4444' : undefined, fontWeight: v > 0 ? 700 : 400 }}>{nf(v, 2)}</span>,
+      render: (v: number) => <span style={{ color: v > 0 ? tone.critical : undefined, fontWeight: v > 0 ? 700 : 400 }}>{nf(v, 2)}</span>,
     },
     {
       title: 'To buy (net)', dataIndex: 'toBuy', key: 'tb', width: 120, align: 'right',
-      render: (v: number) => <span style={{ color: v > 0 ? '#EF4444' : '#10B981' }}>{nf(v, 2)}</span>,
+      render: (v: number) => <span style={{ color: v > 0 ? tone.critical : tone.ok }}>{nf(v, 2)}</span>,
     },
     {
       title: 'Ready now %', dataIndex: 'pct', key: 'p', width: 110, align: 'right',
@@ -186,7 +187,7 @@ export default function TotalOverview({ siteId }: { siteId?: string }) {
     {
       title: 'When delivered %', dataIndex: 'pctOrdered', key: 'po', width: 125, align: 'right',
       render: (v: number, r) => (
-        <span style={{ color: v > r.pct ? '#F59E0B' : undefined, opacity: v > r.pct ? 1 : 0.5 }}>
+        <span style={{ color: v > r.pct ? tone.low : undefined, opacity: v > r.pct ? 1 : 0.5 }}>
           {v.toFixed(1)}%
         </span>
       ),
@@ -258,7 +259,7 @@ export default function TotalOverview({ siteId }: { siteId?: string }) {
             .map((r) => ({ Tag: r.tag, Code: r.code, Remaining: r.remainingSqm }))} /></Col>
         {/* TIER 1 — what the site can physically build today. */}
         <Col flex="1 1 140px"><KpiDrill title="Buildable now SQM" value={nf(canSqm)}
-          accent="#10B981" drillTitle="Buildable today (physical stock only)"
+          accent={tone.ok} drillTitle="Buildable today (physical stock only)"
           help="Remaining SQM × the unit's TIER-1 bottleneck. Stock on a purchase order is excluded — it cannot line a tank today."
           rows={[...filtered].sort((a, b) => a.pct - b.pct).map((r) => ({
             Tag: r.tag, Code: r.code,
@@ -267,7 +268,7 @@ export default function TotalOverview({ siteId }: { siteId?: string }) {
           }))} /></Col>
         {/* TIER 1 + 2 — what it can build once the open POs land. */}
         <Col flex="1 1 140px"><KpiDrill title="When delivered SQM" value={nf(canSqmOrd)}
-          accent="#F59E0B" drillTitle="Buildable once purchase orders arrive"
+          accent={tone.low} drillTitle="Buildable once purchase orders arrive"
           help="Coverage against the TOTAL procured quantity — arrived stock plus the pending part of the order. FORECAST ONLY — never a readiness figure."
           rows={[...filtered].filter((r) => r.pctOrdered > r.pct)
             .sort((a, b) => a.pctOrdered - b.pctOrdered).map((r) => ({
@@ -276,7 +277,7 @@ export default function TotalOverview({ siteId }: { siteId?: string }) {
               'Ready now %': r.pct, 'When delivered %': r.pctOrdered,
             }))} /></Col>
         <Col flex="1 1 140px"><KpiDrill title="Shortfall SQM" value={nf(shortSqm)}
-          accent={shortSqm > 0.005 ? '#EF4444' : undefined}
+          accent={shortSqm > 0.005 ? tone.critical : undefined}
           drillTitle="Shortfall SQM (physical gap)"
           help="Remaining − Buildable now. Measured against PHYSICAL stock, because that is what procurement has to close."
           rows={filtered.filter((r) => r.pct < 100)
@@ -349,7 +350,7 @@ export default function TotalOverview({ siteId }: { siteId?: string }) {
           label: (
             <Space>
               <span style={{
-                ...mono, border: '1px solid rgba(212,175,55,.5)', color: '#D4AF37',
+                ...mono, border: '1px solid rgba(212,175,55,.5)', color: brand.gold,
                 borderRadius: 6, padding: '0 6px', fontSize: '0.68rem', fontWeight: 700,
               }}>Code {code}</span>
               <span style={{ fontSize: '0.74rem', opacity: 0.75 }}>{codeRows[0]?.system}</span>
@@ -358,7 +359,7 @@ export default function TotalOverview({ siteId }: { siteId?: string }) {
               </span>
               <FulfilPill pct={Math.round(cov * 10) / 10} />
               {covOrd > cov && (
-                <span style={{ ...mono, fontSize: '0.66rem', color: '#F59E0B' }}>
+                <span style={{ ...mono, fontSize: '0.66rem', color: tone.low }}>
                   → {covOrd.toFixed(1)}% when delivered
                 </span>
               )}
@@ -373,19 +374,19 @@ export default function TotalOverview({ siteId }: { siteId?: string }) {
                 { title: 'Name', dataIndex: 'name', key: 'n', ellipsis: true },
                 { title: 'UOM', dataIndex: 'uom', key: 'u', width: 60 },
                 { title: 'Stock available', dataIndex: 'avail', key: 'av', align: 'right' as const,
-                  render: (v: number) => <span style={{ color: '#10B981' }}>{nf(v, 3)}</span> },
+                  render: (v: number) => <span style={{ color: tone.ok }}>{nf(v, 3)}</span> },
                 { title: 'Pending delivery', dataIndex: 'onOrder', key: 'oo', align: 'right' as const,
                   render: (v: number) => (
-                    <span style={{ color: v > 0 ? '#F59E0B' : undefined, opacity: v > 0 ? 1 : 0.4 }}>{nf(v, 3)}</span>
+                    <span style={{ color: v > 0 ? tone.low : undefined, opacity: v > 0 ? 1 : 0.4 }}>{nf(v, 3)}</span>
                   ) },
                 { title: 'Total Demand', dataIndex: 'demand', key: 'd', align: 'right' as const, render: (v: number) => nf(v, 3) },
                 {
                   title: 'Short (physical)', dataIndex: 'shortPhys', key: 's', align: 'right' as const,
-                  render: (v: number) => <span style={{ color: v > 0 ? '#EF4444' : undefined, fontWeight: v > 0 ? 700 : 400 }}>{nf(v, 3)}</span>,
+                  render: (v: number) => <span style={{ color: v > 0 ? tone.critical : undefined, fontWeight: v > 0 ? 700 : 400 }}>{nf(v, 3)}</span>,
                 },
                 {
                   title: 'To buy (net)', dataIndex: 'toBuy', key: 'tb', align: 'right' as const,
-                  render: (v: number) => <span style={{ color: v > 0 ? '#EF4444' : '#10B981' }}>{nf(v, 3)}</span>,
+                  render: (v: number) => <span style={{ color: v > 0 ? tone.critical : tone.ok }}>{nf(v, 3)}</span>,
                 },
                 {
                   title: 'Ready now %', dataIndex: 'pct', key: 'p', align: 'right' as const, width: 110,
@@ -394,7 +395,7 @@ export default function TotalOverview({ siteId }: { siteId?: string }) {
                 {
                   title: 'When delivered %', dataIndex: 'pctOrdered', key: 'po', align: 'right' as const, width: 125,
                   render: (v: number, r) => (
-                    <span style={{ color: v > r.pct ? '#F59E0B' : undefined, opacity: v > r.pct ? 1 : 0.5 }}>
+                    <span style={{ color: v > r.pct ? tone.low : undefined, opacity: v > r.pct ? 1 : 0.5 }}>
                       {v.toFixed(1)}%
                     </span>
                   ),

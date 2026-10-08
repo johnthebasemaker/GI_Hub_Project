@@ -19,6 +19,7 @@ import { buildModel, syscodeCompare } from './engine'
 import { allUnits, locColor } from './insights'
 import type { UnitRef } from './insights'
 import KpiDrill from './KpiDrill'
+import { brand, light } from '../theme/tokens'
 
 const mono: React.CSSProperties = { fontFamily: 'JetBrains Mono, monospace' }
 const nf = (v: number, d = 1) =>
@@ -26,7 +27,7 @@ const nf = (v: number, d = 1) =>
 
 const CodePill = ({ code }: { code: string }) => (
   <span style={{
-    ...mono, border: '1px solid rgba(212,175,55,.5)', color: '#D4AF37',
+    ...mono, border: '1px solid rgba(212,175,55,.5)', color: brand.gold,
     borderRadius: 6, padding: '0 6px', fontSize: '0.68rem', fontWeight: 700, marginRight: 6,
   }}>Code {code}</span>
 )
@@ -116,7 +117,7 @@ export function EquipmentMatrixReport({ siteId }: { siteId?: string }) {
           label: (
             <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{
-                ...mono, background: locColor(loc), color: '#fff', borderRadius: 6,
+                ...mono, background: locColor(loc), color: light.surface, borderRadius: 6,
                 padding: '1px 10px', fontSize: '0.72rem', fontWeight: 700,
               }}>{loc}</span>
               <span style={{ fontSize: '0.72rem', opacity: 0.75, flex: 1 }}>

@@ -41,6 +41,7 @@ import { api } from '../api/client'
 import KpiRow from '../components/KpiRow'
 import MultiSelectAll from '../sme/MultiSelectAll'
 import SystemCode from '../sme/SystemCode'
+import { status } from '../theme/tokens'
 
 type Row = Record<string, unknown>
 
@@ -370,7 +371,7 @@ export default function ManpowerPlanner() {
               <Statistic title="To assign / procure"
                 valueStyle={{ color: (result.gap as Row[] ?? [])
                   .reduce((a, g) => a + Number(g.To_Procure ?? 0), 0) > 0
-                  ? '#cf1322' : '#3f8600' }}
+                  ? status.critical : status.ok }}
                 value={n0((result.gap as Row[] ?? [])
                   .reduce((a, g) => a + Number(g.To_Procure ?? 0), 0))} />
             </Card>
@@ -485,18 +486,18 @@ export default function ManpowerPlanner() {
             <Card size="small">
               <Statistic title="Overtime incurred"
                 valueStyle={{ color: Number(strat?.Overtime_Hours_Incurred ?? 0) > 0
-                  ? '#cf1322' : '#3f8600' }}
+                  ? status.critical : status.ok }}
                 value={n0(strat?.Overtime_Hours_Incurred)} suffix="man-hrs" />
             </Card>
             <Card size="small">
               <Statistic title="Unmet"
                 valueStyle={{ color: Number(strat?.Unmet_Manhours ?? 0) > 0
-                  ? '#cf1322' : '#3f8600' }}
+                  ? status.critical : status.ok }}
                 value={n0(strat?.Unmet_Manhours)} suffix="man-hrs" />
             </Card>
             <Card size="small">
               <Statistic title="Deadline reachable?"
-                valueStyle={{ color: strat?.Feasible ? '#3f8600' : '#cf1322' }}
+                valueStyle={{ color: strat?.Feasible ? status.ok : status.critical }}
                 value={strat?.Feasible ? 'Yes' : 'No'} />
             </Card>
           </KpiRow>

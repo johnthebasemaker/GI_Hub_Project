@@ -31,7 +31,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import KpiCard from '../components/KpiCard'
 import KpiRow from '../components/KpiRow'
-import { brand, status } from '../theme/tokens'
+import { brand, chartColors, dark, status } from '../theme/tokens'
 
 interface Point {
   date: string
@@ -67,8 +67,8 @@ interface Daily {
 
 // Enough separation that two lines on one axis are never in doubt, and no
 // reliance on red/green alone.
-const PALETTE = [brand.gold, status.info, '#A78BFA', '#34D399', '#F472B6',
-                 '#FBBF24', '#60A5FA', '#F87171']
+const PALETTE = [brand.gold, status.info, chartColors[7], status.ok, chartColors[6],
+                 status.low, status.info, status.critical]
 
 export default function EfficiencyChartTab({ site }: { site?: string }) {
   const [code, setCode] = useState<string | undefined>()
@@ -287,9 +287,9 @@ function EffTooltip({ active, payload, label, series }: {
   if (!active || !payload?.length) return null
   const row = (payload[0] as unknown as { payload: Record<string, unknown> }).payload
   return (
-    <div style={{ background: 'rgba(20,28,45,.96)', border: '1px solid #2A4060',
+    <div style={{ background: 'rgba(20,28,45,.96)', border: `1px solid ${dark.border}`,
                   borderRadius: 6, padding: '8px 10px', fontSize: 12,
-                  color: '#F0F4F8', maxWidth: 320 }}>
+                  color: dark.text, maxWidth: 320 }}>
       <div style={{ fontWeight: 600, marginBottom: 4 }}>{label}</div>
       {series.map((s) => {
         const h = row[`${s.key}__hours`] as number | null
@@ -302,7 +302,7 @@ function EffTooltip({ active, payload, label, series }: {
             <strong>{s.key}</strong>: {h ?? 0} h
             {c != null ? ` · ${c} MH/m² running` : ' · no running figure yet'}
             {gap && (
-              <div style={{ color: '#FBBF24' }}>
+              <div style={{ color: status.low }}>
                 no area recorded — {reason || 'no reason written down'}
               </div>
             )}

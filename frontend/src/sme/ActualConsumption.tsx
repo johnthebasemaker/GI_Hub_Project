@@ -35,6 +35,7 @@ import { LinkOutlined, EditOutlined } from '@ant-design/icons'
 import { Table } from '../lib/smartTable'
 import { api } from '../api/client'
 import type { Row } from '../api/client'
+import { status } from '../theme/tokens'
 
 const mono: React.CSSProperties = { fontVariantNumeric: 'tabular-nums' }
 const nf = (n: unknown) => Number(n ?? 0).toLocaleString(undefined,
@@ -162,7 +163,7 @@ export default function ActualConsumption({ siteId }: Props) {
     { title: 'Variance', dataIndex: 'Variance_Pct', width: 110, align: 'right' as const,
       render: (v: number | null) => v == null
         ? <span style={{ opacity: 0.4 }}>—</span>
-        : <span style={{ ...mono, color: v > 0 ? '#DC2626' : '#16A34A' }}>
+        : <span style={{ ...mono, color: v > 0 ? status.critical : status.ok }}>
             {v > 0 ? '+' : ''}{nf(v)}%</span> },
     { title: 'Source', dataIndex: 'notes', ellipsis: true },
     { title: '', key: 'act', width: 110,
