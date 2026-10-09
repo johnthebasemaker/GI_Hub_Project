@@ -18,13 +18,16 @@
  * Keyboard: ⌘K/Ctrl-K to open, type to filter, ↑/↓ to move, Enter to go,
  * Esc to close.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
 import { Empty, Input, Modal, Spin, Tag } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { accessibleNodes } from '../config/nav'
 import type { FlatNav } from '../config/nav'
+
+// Phase 23d — loaded only when materials are listed (off the critical path)
+const PaletteThumb = lazy(() => import('../catalogue/PaletteThumbs'))
 
 // Subsequence fuzzy match ("isu" matches "Issue Stock"); returns false if no match.
 function fuzzy(query: string, text: string): boolean {
@@ -233,6 +236,10 @@ export default function CommandPalette() {
               return (
                 <div key={`m:${m.SAP_Code}`} onMouseEnter={() => setActive(i)}
                   onClick={() => go(rows[i])} style={rowStyle(i)}>
+                  {/* Phase 23d — the material's picture (one batched call, lazy) */}
+                  <Suspense fallback={null}>
+                    <PaletteThumb sap={m.SAP_Code} all={materials.map((x) => x.SAP_Code)} />
+                  </Suspense>
                   <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap' }}>
                     <b style={{ fontFamily: 'JetBrains Mono, monospace' }}>{m.SAP_Code}</b>

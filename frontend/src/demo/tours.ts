@@ -51,8 +51,13 @@ export const TOURS: Tour[] = [
   t('/requests-pending', 'Requests & Pending', 'Requests and Pending: every line of the requests the site mails, from the Drive folder Pending Material Follow-up.', [
     ['The tags count the lines, how many are still pending, and how many were asked for without a PR.', '[data-testid="req-totals"]'],
     ['Received is worked out from the Receipt Log, oldest request first. An orange tag means the workbook says something else.', '[data-testid="req-table"]'],
-    ['Lines with no SAP code are listed here so they can be fixed in the workbook.', '[data-testid="req-needs-sap"]'],
+    ['Lines with no SAP code are decided here: link one to its item, keep a GI code as not stocked yet, or mark it not a stock item. GI Hub remembers the name.', '[data-testid="req-needs-sap"]'],
   ], 'Requests without a PR also count as on order in Smart Reorder, so nothing is ordered twice.'),
+  t('/catalogue', 'Catalogue', 'The catalogue: every GI material code and the site plant and tools, with pictures.', [
+    ['This line says which Drive file the codes came from, and anything in it worth a look.', '[data-testid="catalogue-report"]'],
+    ['Search by code, name or SAP. Needs a picture shows the codes still without one.', '[data-testid="catalogue-search"]'],
+    ['Click a row to see its pictures. Admin, HOD and Logistics add, replace or remove them, and a removed picture can be restored.', '[data-testid="catalogue-materials"]'],
+  ], 'Pictures named by GI code in the Drive folder Material Images arrive with the next pull.'),
   t('/lots', 'Lots & Expiry', 'Lots and Expiry: every batch, its expiry, and what is left of it.', [
     ['The summary counts expired lots, lots expiring soon and lots in good date.', '[data-testid="lot-summary"]'],
     ['Each row is one lot. Sort by expiry, status or what is left.', '[data-testid="lot-table"]'],

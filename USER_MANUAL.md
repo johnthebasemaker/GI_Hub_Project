@@ -1423,6 +1423,49 @@ Details.xlsx* is never read as requests. Where its pending figure differs from
 GI Hub's, the row is listed at the bottom of the page — look at it; nothing is
 changed.
 
+## 3.22 The catalogue: every material and tool, with pictures (Phase 23, October 2026)
+
+**Where:** sidebar → **Catalogue** (everyone who handles material). Two tabs:
+
+- **Materials** — the ≈ 6,000 GI material codes from Drive's *All MATERIAL
+  CODES* workbook. It is not your stock list: **At GI Hub** says whether the
+  code is stocked (and under which SAP) or **not stocked**. Search by code,
+  name or SAP. **Needs a picture** lists the codes without one, so the gaps can
+  be worked down.
+- **Plant & tools** — the site's equipment list from Drive (*Equipment list
+  Updated as on …*), by section: vehicles, blasting equipment, utilities …
+
+A blue line at the top says which Drive file the codes came from. It also lists
+anything worth a look: a code the file gives two descriptions, and GI codes in
+your item master that the file does not have.
+
+**Pictures.** Click a row. The drawer shows up to **four** pictures; the
+**main** one (★) is what lists show. The Admin, HOD and Logistics can:
+- **Add a picture (or take one)**: JPG, PNG, WebP or iPhone HEIC, up to 10 MB.
+  On a phone this opens the camera. GPS and phone details are removed from
+  every picture.
+- **★** make another picture the main one; **🗑** remove one. A removed picture
+  is kept: **Removed pictures → Restore** brings it back.
+- **Use the main picture for other codes too**: type the GI codes of the same
+  family (sizes S–XXXL, 5 mm / 6 mm …) and **Assign**.
+- When a code has no picture but a code of the **same family** has one, it is
+  offered: **Use this**. Nothing is attached until somebody chooses.
+
+One set of pictures per code, shared by every site. Every change is audited.
+Everybody else sees the pictures. **Pictures from Drive:** put a file named by
+its GI code in Drive's **Material Images** folder (`GI-7000003.jpg`) and it
+arrives with the next pull (`docs/GDRIVE_SETUP.md` Part 4). GI Hub never
+searches the web for pictures.
+
+**Where pictures show:** the Stock list (beside the SAP), a material's card,
+the ⌘K search, Requests & Pending, the HOD's PR lines, and Logistics' PR review
+(open a PR's row to see its lines with pictures).
+
+**A PR for an item GI Hub does not stock yet.** In *Purchase Requests → Create
+PR*, type three letters of the item: below the stocked items the box lists
+catalogue codes **not stocked yet**. Such a line carries the GI code and **no
+SAP code**; none is made up. It links itself when your workbook adds the item.
+
 ## 3.21 Phase 22 in Practice, and a tidier top bar (October 2026)
 
 **Practice has examples of everything Phase 22 added** (it never pulls from

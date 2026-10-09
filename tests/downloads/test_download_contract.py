@@ -61,6 +61,7 @@ os.environ["OLLAMA_HOST"] = "http://127.0.0.1:9"
 os.environ["GI_DRIVE_SECRETS_DIR"] = "/nonexistent-download-gate-drive"
 _DRIVE_CACHE = tempfile.mkdtemp(prefix="gi-dl-drive-")
 os.environ["GI_DRIVE_CACHE_DIR"] = _DRIVE_CACHE
+os.environ["GI_MEDIA_DIR"] = tempfile.mkdtemp(prefix="gi-dl-media-")
 os.environ.setdefault("GI_SCHEDULER", "0")
 os.environ.setdefault("JWT_SECRET", "download-gate-only-secret-key-32-bytes-minimum")
 os.environ.setdefault("GI_TEST_DB", "gihub_dltest")
@@ -147,6 +148,8 @@ def file_routes() -> dict[str, Any]:
 NOT_DOWNLOADS = {
     "POST /execution/ocr/upload": "an UPLOAD: it accepts a photo, returns JSON",
     "POST /auth/2fa/enroll": "JSON with the QR as a data: URI inside it, not a file",
+    "POST /catalogue/images/{image_id}/assign": "JSON — it names 'image/jpeg' only as a stored "
+                                                "picture's default type",
 }
 
 
@@ -201,6 +204,7 @@ class Ctx:
     weekly_token: str = ""
     training: tuple[str, str] = ("", "")
     xlsx_upload: bytes = b""
+    image: int = 0
 
 
 def seed() -> Ctx:
@@ -303,6 +307,20 @@ def seed() -> Ctx:
         cur.close()
         conn.close()
 
+    # a catalogue picture (Phase 23d) — stored in this run's own media folder
+    from backend.api.services import media as _media
+    st = _media.store(_TINY_JPEG)
+    conn = _db()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM item_images WHERE item_key = 'GI-DLGATE'")
+        ctx.image = _one(cur, """INSERT INTO item_images (kind, item_key, sha256, mime, width, height,
+            bytes, source, is_primary, uploaded_by) VALUES ('material', 'GI-DLGATE', %s, 'image/jpeg',
+            %s, %s, %s, 'upload', true, 'dl_gate') RETURNING id""", (st.sha256, st.width, st.height, st.bytes))
+    finally:
+        cur.close()
+        conn.close()
+
     # a stock workbook to check (the marked-copy download takes an upload)
     import openpyxl
     wb = openpyxl.Workbook()
@@ -371,6 +389,8 @@ def check_bytes(kind: str, r) -> Optional[str]:
         return None if b[:3] == b"\xff\xd8\xff" else f"not a JPEG: {b[:4]!r}"
     if kind == "image":
         return check_bytes("png", r) and check_bytes("jpeg", r)
+    if kind == "webp":
+        return None if b[:4] == b"RIFF" and b[8:12] == b"WEBP" else f"not a WebP: {b[:12]!r}"
     if kind == "video":
         return None if len(b) > 0 else "an empty video"
     raise AssertionError(f"unknown kind {kind}")
@@ -415,6 +435,13 @@ def _master_entities() -> list[str]:
 
 
 _SP = lambda c: {"site_id": c.site}  # noqa: E731
+
+
+def _signed(image_id: int, size: str) -> dict:
+    from urllib.parse import parse_qsl
+
+    from backend.api.services import media as _media
+    return dict(parse_qsl(_media.sign(image_id, size)))
 
 
 def cases() -> list[Case]:
@@ -471,6 +498,12 @@ def cases() -> list[Case]:
              "frontend/src/pages/QcInspectionsPage.tsx", params=lambda c: {"inline": 1},
              allow={404: "an inspection outside the caller's scope is a 404, never a 403 "
                          "(qc.inspection_certificate: a direct fetch must not confirm it exists)"}),
+        # Phase 23d — a catalogue picture is a SIGNED link (an <img> sends no token)
+        *[Case("GET /catalogue/img/{image_id}/{size}", f"catalogue-img-{sz}",
+               (lambda z: lambda c: f"/catalogue/img/{c.image}/{z}")(sz),
+               "jpeg" if sz == "original" else "webp", "frontend/src/catalogue/thumbs.tsx",
+               params=(lambda z: lambda c: _signed(c.image, z))(sz), anonymous=True)
+          for sz in ("thumb", "display", "original")],
         Case("GET /reports/weekly-exec/{token}", "weekly-exec-link",
              lambda c: f"/reports/weekly-exec/{c.weekly_token}", "pdf", "", anonymous=True),
         Case("POST /stock/excel-check/marked", "excel-check-marked",

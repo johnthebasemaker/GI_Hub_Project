@@ -18,6 +18,8 @@
 # WHAT IT CAPTURES
 #   • `gihub` on :5433 — a plain-SQL pg_dump, gzipped. Plain SQL rather than
 #     -Fc so a snapshot stays greppable and restorable with nothing but psql.
+#   • `media/catalog/` — the catalogue's pictures (Phase 23d), as a tar.gz;
+#     restore with `tar -xzf media_<stamp>.tar.gz -C media/`.
 #   • `gi_database.db` — the frozen legacy SQLite, copied READ-ONLY. It is the
 #     legacy source of truth, it lives only on this disk, and it is never in
 #     git. The copy is verified by comparing the source sha256 before and
@@ -106,6 +108,15 @@ cmd_backup() {
     ok "$(basename "$dst.gz")   ${dim}$(human "$dst.gz") · source sha256 unchanged${off}"
   fi
 
+  # Phase 23d (ruling Q23-7) — the catalogue's pictures live on disk, not in
+  # the database: archive the folder beside the dump so a restore has both.
+  local media_dir="${GI_MEDIA_DIR:-$ROOT/media/catalog}"
+  if [ -d "$media_dir" ] && [ -n "$(ls -A "$media_dir" 2>/dev/null)" ]; then
+    local mtar="$OUT_DIR/media_${stamp}.tar.gz"
+    tar -czf "$mtar" -C "$(dirname "$media_dir")" "$(basename "$media_dir")"
+    ok "$(basename "$mtar")   ${dim}$(human "$mtar") · pictures${off}"
+  fi
+
   prune
   printf '\n%s  %s\n' "$dim" "$(ls -1 "$OUT_DIR"/*.gz 2>/dev/null | wc -l | tr -d ' ') file(s) in ${OUT_DIR#$ROOT/}, keeping the newest $KEEP of each kind${off}"
 }
@@ -115,7 +126,7 @@ cmd_backup() {
 # this script's own naming scheme produced, inside OUT_DIR.
 prune() {
   local kind f n
-  for kind in "${PG_DB}_" "gi_database_"; do
+  for kind in "${PG_DB}_" "gi_database_" "media_"; do
     n=0
     while IFS= read -r f; do
       n=$((n + 1))

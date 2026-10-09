@@ -374,6 +374,11 @@ def lines_report(forms: list[dict], truth: list[dict], inventory, stock, tags: l
         shift, _marked = shift_of(HW.parse_shift(f.get("date_text")))
         who = preparers.get(shift)
         day = f.get("date_iso")
+        # the workbook left Prepared By blank for the day (7–8 Oct 2026): score
+        # against the whole day — both shifts' pages in one block
+        if day and not any(t["date"] == day and t["prepared"] == who for t in truth) \
+                and any(t["date"] == day and not t["prepared"] for t in truth):
+            who = ""
         if day and who and any(t["date"] == day and t["prepared"] == who for t in truth):
             page_ok += 1
         res = HW.process_batch([f], inventory, stock, today=today)

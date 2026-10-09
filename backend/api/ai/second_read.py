@@ -133,7 +133,11 @@ class Grid:
         xs = np.array([0.0, float(width)])
         top = float(min(self.y(a - 1, xs)))
         bottom = float(max(self.y(b, xs)))
-        return int(top - PAD_TOP * self.row_h), int(bottom + PAD_BOTTOM * self.row_h)
+        # ⚠️ the last printed row sits on the signature boxes ("Issued |
+        # Reviewed | Approved"): any margin below it and the model reads the
+        # footer as a row (measured: "30|…|Reviewed|Reviewed|…")
+        pad = 0.04 if b >= ROWS_PER_PAGE else PAD_BOTTOM
+        return int(top - PAD_TOP * self.row_h), int(bottom + pad * self.row_h)
 
     def header(self, width: int) -> tuple[int, int]:
         """The printed column header (S.No | Name | Tank No.# | Product …)."""
@@ -279,6 +283,8 @@ Answer with ONE LINE per printed row that has anything written in it, exactly:
 S.No|Name|Tank|Product|UOM|QTY|Remarks
 - Transcribe faithfully; keep spelling errors; do not interpret.
 - A ditto mark (" 〃 ,, a tick or a short dash meaning "same as above") is <D>.
+- QTY always holds a NUMBER written for that row (a lone short stroke there
+  is the number 1) — never <D>.
 - A cell with nothing in it is left empty between the bars.
 - A row with nothing written at all is left out.
 - No header line, no JSON, no commentary — only the lines."""
@@ -298,6 +304,9 @@ def user_prompt(gaps: list[int]) -> str:
 
 
 # ── reading the answer ──────────────────────────────────────────────────────
+_FOOTER = {"issued", "reviewed", "approved", "s.no", "name", "tank no.#", "product name"}
+
+
 def _qty(v: str):
     v = v.strip().replace(",", ".")
     try:
@@ -331,9 +340,14 @@ def parse_rows(text: str) -> list[dict]:
                 continue                       # a header line or prose
             f += [""] * (7 - len(f))
             sub = lambda c: "<DITTO>" if c.upper() in ("<D>", "D", "<DITTO>") else c  # noqa: E731
+            if any(c.strip().lower() in _FOOTER for c in f[1:7]):
+                continue                       # the signature boxes, not a row
+            # a quantity is READ, never copied from the row above: a "ditto" in
+            # QTY is left empty for the store keeper (it is a question)
+            qty = "" if f[5].upper() in ("<D>", "D", "<DITTO>") else f[5]
             raw_rows.append({"sno": f[0], "issued_to": sub(f[1]), "tank_no": sub(f[2]),
-                             "material_text": sub(f[3]), "uom": sub(f[4]), "qty_text": f[5],
-                             "quantity": _qty(f[5]), "work_type": sub(f[6])})
+                             "material_text": sub(f[3]), "uom": sub(f[4]), "qty_text": qty,
+                             "quantity": _qty(qty), "work_type": sub(f[6])})
     rows = [ocr.clean_consumption_row(r) for r in raw_rows]
     return [r for r in rows if any(str(r.get(k) or "").strip() for k in
                                    ("issued_to", "material_text", "qty_text", "tank_no", "work_type"))

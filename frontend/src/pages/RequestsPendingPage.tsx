@@ -6,6 +6,7 @@ import { Table } from '../lib/smartTable'
 import { api } from '../api/client'
 import { SiteFilter } from '../components/SiteField'
 import SapMapper from '../components/SapMapper'
+import { SapThumb } from '../catalogue/thumbs'
 
 /**
  * Phase 22d — Requests & Pending (rulings Q22-12/13).
@@ -59,7 +60,8 @@ export default function RequestsPendingPage() {
         {r.age_days != null && <Typography.Text type="secondary" style={{ fontSize: 11 }}>{r.age_days} days ago</Typography.Text>}
       </Space> },
     { title: 'Item', key: 'item', width: 280, sorter: (a, b) => a.description.localeCompare(b.description),
-      render: (_: unknown, r) => <Space direction="vertical" size={0}>
+      render: (_: unknown, r) => <Space size={8} align="start">{r.SAP_Code && <SapThumb sap={r.SAP_Code} size={36} />}
+        <Space direction="vertical" size={0}>
         <span>{r.description}</span>
         <Typography.Text type="secondary" style={{ fontSize: 11 }}>
           {r.SAP_Code ? `SAP ${r.SAP_Code}` : r.status === 'not_stocked'
@@ -68,7 +70,7 @@ export default function RequestsPendingPage() {
               : <Tag color="orange" style={{ margin: 0 }}>no SAP code</Tag>}
           {r.status === 'mapped' && <Tag color="green" style={{ margin: '0 0 0 4px' }}>linked here</Tag>}
           {r.Material_Code ? ` · ${r.Material_Code}` : ''}</Typography.Text>
-      </Space> },
+      </Space></Space> },
     { title: 'PR', key: 'pr', width: 130,
       render: (_: unknown, r) => (r.without_pr ? <Tag color="gold">no PR</Tag> : <Typography.Text style={{ fontSize: 12 }}>{r.pr}</Typography.Text>) },
     { title: 'Asked', dataIndex: 'requested', key: 'req', align: 'right', width: 80, render: n },

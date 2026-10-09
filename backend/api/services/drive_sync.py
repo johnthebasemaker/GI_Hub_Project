@@ -568,7 +568,16 @@ SUBFOLDERS: dict[str, str] = {
     "dn for cncec": "dn",
     "mtc": "mtc",
     "pending material follow-up": "pending",
+    # Phase 23d (ruling Q23-6): pictures named by GI code — the operator makes it
+    "material images": "images",
 }
+# Phase 23d — workbooks in the ROOT that are indexed and cached like a
+# subfolder's files: the material catalogue and the site plant & tools list
+# (ruling Q23-9; `Equipment.xlsx` — the SME tanks — is not this one).
+ROOT_FILES: tuple[tuple[str, str], ...] = (
+    (r"^all\s*material\s*codes.*\.xlsx?$", "catalogue"),
+    (r"^equipment\s*list.*\.xlsx?$", "equipment"),
+)
 IGNORED_FOLDERS = ("waste disposal",)
 FOLDER_MIME = "application/vnd.google-apps.folder"
 CACHE_BUDGET_S = 600          # one run downloads for at most 10 min; the rest next run
@@ -596,6 +605,12 @@ def crawl(client: DriveClient, root_files: list[dict], *, max_depth: int = 2) ->
 
     for f in root_files:
         if f.get("mimeType") != FOLDER_MIME:
+            if is_lock_file(f["name"]):
+                continue
+            for rx, kind in ROOT_FILES:
+                if re.match(rx, f["name"].strip(), re.IGNORECASE):
+                    out["files"].append({**f, "kind": kind, "folder": "(root)"})
+                    break
             continue
         kind = subfolder_kind(f["name"])
         if kind:

@@ -5350,6 +5350,45 @@ GI_DOTENV=0 .venv/bin/python tools/ocr_site_setup.py --site CNCEC --check
 
 → `back-check: 5363 of 5363 rows explained by the history (100.0 %)`.
 
+## 23d. Phase 23d — the catalogue and pictures (rulings Q23-5..9)
+
+**TC-23D-01 — from Drive.** Admin → **Pull**. **Catalogue**: the blue line says
+*From All MATERIAL CODES-15.04.2026.xlsx · 5,976 codes*. It reports GI-7003055
+(two descriptions in the file) and the item-master codes the file lacks.
+**Plant & tools (37)** lists the site equipment by section.
+
+**TC-23D-02 — add a picture.** As HOD: Catalogue → search a code → click it →
+**Add a picture**. The picture shows as **main**, and the row's thumbnail
+appears. Add three more; a fifth is refused (*at most 4*). On a phone, the
+button opens the camera.
+
+**TC-23D-03 — change, remove, restore, assign.** ★ another picture → it is the
+main one. 🗑 the main one → the next becomes main, and the removed one is under
+*Removed pictures* → **Restore**. **Assign** the main picture to two sibling
+codes → both rows get it. Audit shows `CATALOGUE_IMAGE_*`.
+
+**TC-23D-04 — family suggestion.** A code with no picture whose sibling (same
+name, other size) has one shows *Pictures of the same family — use one?* →
+**Use this**.
+
+**TC-23D-05 — read-only roles.** As store keeper / auditor: pictures visible,
+no Add / ★ / 🗑 / Assign.
+
+**TC-23D-06 — pictures elsewhere.** Stock list (beside the SAP), a material
+card (top left), ⌘K results, Requests & Pending, HOD → PR lines, Logistics →
+PR queue → open a row.
+
+**TC-23D-07 — PR for a not-stocked item (Q23-5).** HOD → Create PR → type
+*jubl* → a *not stocked yet* option → create. The line shows *not stocked yet ·
+GI-…* and no SAP.
+
+**TC-23D-08 — Drive pictures.** Put `GI-7000003 test.jpg` in Drive → Material
+Images → Pull: GI-7000003 has the picture (*from Drive*). Delete it in Drive →
+Pull: the picture goes.
+
+**TC-23D-09 — backup.** `./bin/backup_db.sh` → a `media_<stamp>.tar.gz` beside
+the dump.
+
 ## 21d. Phase 21d — OCR measured against the workbook; the name matcher (Q21-1..6)
 
 **Why this exists.** The 11 photos of the *Safety & Production Consumables*

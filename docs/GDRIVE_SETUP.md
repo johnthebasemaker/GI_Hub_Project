@@ -131,6 +131,21 @@ ignored).
 .venv/bin/python tools/gdrive_sync.py
 ```
 
+## Part 4: the catalogue and pictures (Phase 23d)
+
+Each pull also reads three more things from the same Drive folder. You change
+nothing in GI Hub when a new edition arrives.
+
+| In Drive | What GI Hub does with it |
+|---|---|
+| `All MATERIAL CODES-<date>.xlsx` (the root) | The **newest** edition (by the date in its name) becomes the material catalogue (≈ 6,000 GI codes). A code missing from a newer edition is marked, never deleted. |
+| `Equipment list Updated as on <date>.xlsx` (the root) | The site's plant & tools, by section. Not `Equipment.xlsx` (the SME tanks). |
+| a folder named **`Material Images`** (make it once) | Every file whose name **starts with a GI code** becomes that code's picture: `GI-7000003.jpg`, `GI-7000003 tyvek front.png`. A file without a code is listed, not guessed. Delete it in Drive and its picture goes too. |
+
+Pictures uploaded in GI Hub are kept on this Mac (`media/catalog/`) and
+archived with the nightly backup. They are **never** written to Drive; the
+sign-in stays read-only.
+
 ---
 
 ## Safety notes

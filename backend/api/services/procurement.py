@@ -276,8 +276,43 @@ async def create_pr(session: AsyncSession, *, username: str, site_id: str,
     prepared: list[dict] = []
     for ln in lines:
         sap = str(ln.get("SAP_Code") or "").strip()
+        code = str(ln.get("Material_Code") or "").strip().upper()
+        if not sap and code:
+            # Phase 23d (ruling Q23-5): a PR for a catalogue item GI Hub does not
+            # stock yet. If the item master has the code after all, it is that
+            # SAP; otherwise the line carries the GI code and NO SAP (none is
+            # invented) and links itself when the workbook adds the item.
+            stocked = (await session.execute(select(inventory_t.c["SAP_Code"]).where(
+                func.upper(func.trim(inventory_t.c["Material_Code"])) == code).limit(1))).scalar()
+            if stocked:
+                sap = str(stocked).strip()
+            else:
+                cat = (await session.execute(text(
+                    'SELECT description, uom FROM material_catalog WHERE "Material_Code" = :c '
+                    "AND removed_at IS NULL"), {"c": code})).first()
+                if cat is None:
+                    return {"error": f"{code} is not in the material catalogue"}
+                try:
+                    qty = float(ln.get("Requested_Qty") or 0)
+                except (TypeError, ValueError):
+                    return {"error": f"line {code}: qty is not a number"}
+                if qty <= 0:
+                    return {"error": f"line {code}: qty must be > 0"}
+                try:
+                    est = float(ln.get("Est_Cost_SAR") or 0)
+                except (TypeError, ValueError):
+                    est = 0.0
+                prepared.append({
+                    "SAP_Code": "", "Material_Code": code,
+                    "Material_Name": (str(ln.get("Material_Name") or "").strip() or cat[0] or ""),
+                    "Requested_Qty": qty,
+                    "UOM": (str(ln.get("UOM") or "").strip() or cat[1] or ""),
+                    "Est_Cost_SAR": est,
+                    "Notes": (str(ln.get("Notes") or "").strip() or (notes or "")),
+                })
+                continue
         if not sap:
-            return {"error": "every line needs a SAP_Code"}
+            return {"error": "every line needs a SAP_Code (or a catalogue GI code)"}
         try:
             qty = float(ln.get("Requested_Qty") or 0)
         except (TypeError, ValueError):
