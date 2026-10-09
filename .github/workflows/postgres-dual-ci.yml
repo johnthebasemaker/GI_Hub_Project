@@ -321,7 +321,13 @@ jobs:
         env:
           DATABASE_URL: postgresql+psycopg2://gihub:gihub_ci@localhost:5432/gihub
           JWT_SECRET: ci-only-service-test-secret-key-32bytes-min
-        run: python -m pytest tests/downloads -q -p no:cacheprovider
+        # opencv: the Execution photo-crop route needs it in production (it
+        # answers 503 "cannot decode QR codes" without it). requirements.txt
+        # keeps it optional for Streamlit Cloud, so the gate installs the
+        # version this Mac runs rather than testing the degraded path.
+        run: |
+          pip install opencv-python-headless==4.13.0.92
+          python -m pytest tests/downloads -q -p no:cacheprovider
 
   # ⚠️ THE AI QA PYRAMID, L3 — the System One router MODEL (Phase 17d).
   #
