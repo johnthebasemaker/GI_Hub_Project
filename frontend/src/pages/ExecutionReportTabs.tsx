@@ -17,7 +17,7 @@
 import { DownloadOutlined } from '@ant-design/icons'
 import SystemCode from '../sme/SystemCode'
 import {
-  Alert, Button, Card, DatePicker, Row, Space, Statistic, Table, Tag,
+  Alert, App, Button, Card, DatePicker, Row, Space, Statistic, Table, Tag,
   Tooltip, Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -25,7 +25,8 @@ import { useQuery } from '@tanstack/react-query'
 import type { Dayjs } from 'dayjs'
 import { useState } from 'react'
 
-import { api, apiBase } from '../api/client'
+import { api } from '../api/client'
+import { downloadDocument } from '../api/hooks'
 import KpiRow from '../components/KpiRow'
 
 type Row = Record<string, unknown>
@@ -53,16 +54,27 @@ export function VarianceTag({ value }: { value: unknown }) {
 }
 
 function ExportButtons({ path, params }: { path: string; params?: Record<string, string> }) {
-  const go = (format: 'csv' | 'xlsx') => {
-    const q = new URLSearchParams({ ...(params ?? {}), format }).toString()
-    // Straight to the API so the browser handles the download; the server
-    // applies rule 12 (formula defusing) on the way out.
-    window.open(`${apiBase()}${path}?${q}`, '_blank')
+  const { message } = App.useApp()
+  const [busy, setBusy] = useState(false)
+  // ⚠️ Phase 23a: these used `window.open(url)`. A new tab carries NO bearer
+  // token (the access token lives in memory, never in a cookie), so every
+  // press came back 401. The authenticated helper fetches with the token, and
+  // the server still applies rule 12 (formula defusing) on the way out.
+  const go = async (format: 'csv' | 'xlsx') => {
+    setBusy(true)
+    try {
+      await downloadDocument(path, { ...(params ?? {}), format },
+        `${path.split('/').pop()}.${format}`)
+    } catch (e) {
+      message.error((e as Error)?.message || 'Download failed')
+    } finally {
+      setBusy(false)
+    }
   }
   return (
     <Space>
-      <Button size="small" icon={<DownloadOutlined />} onClick={() => go('xlsx')}>Excel</Button>
-      <Button size="small" icon={<DownloadOutlined />} onClick={() => go('csv')}>CSV</Button>
+      <Button size="small" icon={<DownloadOutlined />} disabled={busy} onClick={() => go('xlsx')}>Excel</Button>
+      <Button size="small" icon={<DownloadOutlined />} disabled={busy} onClick={() => go('csv')}>CSV</Button>
     </Space>
   )
 }

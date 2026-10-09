@@ -60,7 +60,7 @@ interface Targets {
   system_names: Record<string, string>
 }
 
-export default function ManpowerPlanner() {
+export default function ManpowerPlanner({ site }: { site?: string }) {
   const [form] = Form.useForm()
   const [result, setResult] = useState<Row | null>(null)
   const [mode, setMode] = useState<'days' | 'hours'>('days')
@@ -103,6 +103,9 @@ export default function ManpowerPlanner() {
         ? { target_days: v.target_days }
         : { deadline_hours: v.deadline_hours }),
       ...(autoShifts ? {} : { shifts_per_day: v.shifts_per_day ?? 2 }),
+      // Phase 23a — the plan is costed against a site's roster. An admin must
+      // name it (the page's site picker), or the server answers 422.
+      ...(site ? { site_id: site } : {}),
     })
   }
 

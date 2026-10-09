@@ -1,12 +1,13 @@
 import { useCallback, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
-  Alert, App, Button, Collapse, Drawer, Empty, Space, Tag, Tooltip, Typography, Upload,
+  Alert, App, Button, Collapse, Drawer, Empty, Select, Space, Tag, Tooltip, Typography, Upload,
 } from 'antd'
 import { DownloadOutlined, FileExcelOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { useSites } from '../api/hooks'
 
 /**
  * GI Hub stock vs the Excel workbook's "Current Stock" — which materials differ
@@ -126,12 +127,20 @@ function MismatchList({ items }: { items: Mismatch[] }) {
 }
 
 /** Upload the workbook: check it (and store), or get the marked copy back. */
-function useUploads(onDone: () => void) {
+function useUploads(onDone: () => void, siteId?: string) {
   const { message } = App.useApp()
+  // Phase 23a — the check is STORED against a site. A site-bound user gets
+  // their own; a global role (admin, logistics) must name one, or the server
+  // answers 422 "site_id is required for a global role".
+  const form = (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    if (siteId) fd.append('site_id', siteId)
+    return fd
+  }
   const check = useMutation({
     mutationFn: async (file: File) => {
-      const fd = new FormData()
-      fd.append('file', file)
+      const fd = form(file)
       return (await api.post('/stock/excel-check', fd)).data
     },
     onSuccess: () => { message.success('Checked — the list is up to date'); onDone() },
@@ -139,8 +148,7 @@ function useUploads(onDone: () => void) {
   })
   const marked = useMutation({
     mutationFn: async (file: File) => {
-      const fd = new FormData()
-      fd.append('file', file)
+      const fd = form(file)
       const r = await api.post('/stock/excel-check/marked', fd, { responseType: 'blob' })
       return { blob: r.data as Blob, name: file.name.replace(/\.xlsx$/i, '') }
     },
@@ -166,7 +174,11 @@ export function ExcelCheckPanel({ extra }: { extra?: ReactNode }) {
   const { data: check, isLoading } = useExcelCheck()
   const [open, setOpen] = useState(false)
   const refresh = useCallback(() => { void qc.invalidateQueries({ queryKey: KEY }) }, [qc])
-  const { check: runCheck, marked } = useUploads(refresh)
+  const isGlobal = (user?.level ?? 0) >= 3 || !user?.site_id
+  const { data: sites } = useSites()
+  const [pickedSite, setPickedSite] = useState<string | undefined>()
+  const site = isGlobal ? (pickedSite ?? check?.Site_ID ?? sites?.[0]) : undefined
+  const { check: runCheck, marked } = useUploads(refresh, site)
   const canUpload = WRITERS.has(user?.role ?? '')
   if (isLoading) return null
   const items = check?.items ?? []
@@ -174,13 +186,20 @@ export function ExcelCheckPanel({ extra }: { extra?: ReactNode }) {
 
   const uploads = canUpload && (
     <Space wrap>
-      <Upload accept=".xlsx" showUploadList={false}
+      {isGlobal && (
+        <Select size="middle" style={{ width: 140 }} value={site} onChange={setPickedSite}
+          aria-label="Site to check" data-testid="excel-check-site"
+          options={(sites ?? []).map((x) => ({ value: x, label: x }))} />
+      )}
+      <Upload accept=".xlsx" showUploadList={false} disabled={isGlobal && !site}
         beforeUpload={(f) => { runCheck.mutate(f); return false }}>
-        <Button icon={<ReloadOutlined />} loading={runCheck.isPending}>Check again (upload workbook)</Button>
+        <Button icon={<ReloadOutlined />} disabled={runCheck.isPending || (isGlobal && !site)}>
+          Check again (upload workbook)</Button>
       </Upload>
-      <Upload accept=".xlsx" showUploadList={false}
+      <Upload accept=".xlsx" showUploadList={false} disabled={isGlobal && !site}
         beforeUpload={(f) => { marked.mutate(f); return false }}>
-        <Button type="primary" icon={<DownloadOutlined />} loading={marked.isPending}>
+        <Button type="primary" icon={<DownloadOutlined />}
+          disabled={marked.isPending || (isGlobal && !site)}>
           Get the marked workbook
         </Button>
       </Upload>

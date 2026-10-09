@@ -124,3 +124,36 @@ test('the forms box refuses a number the server would refuse anyway',
     await expect(box).toHaveValue('1')
     await ctx.close()
   })
+
+/**
+ * Phase 23a — the operator's 422. An ADMIN is not bound to a site, and a
+ * printed form is registered against one, so the page must ask which site
+ * and send it. Before the fix the request carried no site_id and every admin
+ * print failed with "Request failed with status code 422".
+ */
+test('an admin picks the site, and the form downloads', async ({ browser }) => {
+  const ctx = await browser.newContext({ storageState: storageStatePath('admin') })
+  const page = await ctx.newPage()
+  await page.goto('/execution')
+  const card = page.locator('.ant-card', { hasText: 'Print a consumption form' })
+  const site = card.getByTestId('form-print-site')
+  await expect(site).toBeVisible()
+  await site.click()
+  await page.locator('.ant-select-dropdown:visible .ant-select-item-option',
+    { hasText: 'CNCEC' }).first().click()
+
+  await card.getByRole('combobox').nth(1).click()
+  // A lining-system option reads "<code> — <name>"; the site list (still
+  // fading out) has none, so this cannot pick a site by accident.
+  const first = page.locator('.ant-select-item-option').filter({ hasText: ' — ' }).first()
+  await expect(first).toBeVisible()
+  await first.click()
+  await expect(card.getByTestId('form-print-download')).toBeEnabled()
+
+  const [dl] = await Promise.all([
+    page.waitForEvent('download'),
+    card.getByTestId('form-print-download').click(),
+  ])
+  expect(dl.suggestedFilename()).toMatch(/^consumption-.*\.pdf$/)
+  await ctx.close()
+})

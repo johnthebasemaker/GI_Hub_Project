@@ -40,6 +40,9 @@ _SENSITIVE = (
 )
 
 
+LIST_MAX = 2000
+
+
 def _is_sensitive(name: str) -> bool:
     n = name.lower()
     return any(s in n for s in _SENSITIVE)
@@ -117,9 +120,14 @@ def make_read_router(table, *, prefix: str, tag: str, id_col: str,
     # search hits SAP codes, names, categories, lot/PR/PO numbers, remarks, …).
     search_cols = [c for c in out_cols if isinstance(c.type, Text)]
 
+    # ⚠️ Phase 23a: the cap is 2000, not 500. Pickers load a whole master
+    # list (the OCR page asked for 1000 inventory rows and the Documents page
+    # for 600); against a 500 cap both got a 422 and showed an EMPTY picker,
+    # silently. The item master is 507 rows and growing — `tests/downloads`
+    # now fails if any frontend literal limit exceeds its route's cap.
     @router.get("", dependencies=_rguard, summary=f"List {tag}")
     async def list_items(
-        limit: int = Query(50, ge=1, le=500),
+        limit: int = Query(50, ge=1, le=LIST_MAX),
         offset: int = Query(0, ge=0),
         site_id: Optional[str] = Query(
             None,

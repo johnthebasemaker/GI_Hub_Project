@@ -5241,6 +5241,47 @@ sandbox with 12 is trimmed to 3).
 
 dry-runs; `--commit` writes it (audited as `ocr-site-setup`).
 
+## 23a. Phase 23a — downloads that work for every role (the Execution 422)
+
+**TC-23A-01 — the operator's bug.** Sign in as **admin**. Execution Entries →
+*Print a consumption form*: a **Site** box comes first. Pick CNCEC, a lining
+system, press **Download** → a PDF. Press it again with 3 forms → one PDF, three
+sheets. Before 23a this answered "Request failed with status code 422".
+
+**TC-23A-02 — errors say why.** Still as admin, clear the Site box in the
+browser's dev tools (or call the endpoint without `site_id`): the toast now says
+*"site_id is required for a global role"*, not "status code 422". Every
+download in the app uses the same decoding.
+
+**TC-23A-03 — Stock vs Excel as admin.** Stock → *Check again (upload
+workbook)* and *Get the marked workbook*: a **Site** box is shown, both uploads
+work. As a Store Keeper there is no box.
+
+**TC-23A-04 — Manpower Planner as admin.** Man-Hours → 🧠 Manpower Planner →
+plan any job: a result, not a 422 (the page's site is sent now).
+
+**TC-23A-05 — Execution report exports.** Execution → the variance / reasons /
+surface-prep tabs → **Excel** and **CSV**: files download (they opened a tab
+that answered 401 before).
+
+**TC-23A-06 — signed-in links.** QC Inspections → open a certificate; a DN
+column's ⬇ link; Document Library → preview an image / PDF. Each opens the file
+(each used a plain `/api/…` link that carried no sign-in).
+
+**TC-23A-07 — the pickers.** OCR Import and Documents: the material and
+employee pickers list every item (they asked for 1,000 / 600 rows against a cap
+of 500 and showed nothing).
+
+**TC-23A-08 — the gate.**
+
+```bash
+GI_DOTENV=0 .venv/bin/python -m pytest tests/downloads -q -p no:cacheprovider
+```
+
+→ **247 passed**: every file-returning route (found from the route table, not a
+list) as all nine roles, the bytes checked, and the site rule checked against
+the screen that calls it. It runs in CI (`dual-ci`) on the generated fixture.
+
 ## 21d. Phase 21d — OCR measured against the workbook; the name matcher (Q21-1..6)
 
 **Why this exists.** The 11 photos of the *Safety & Production Consumables*

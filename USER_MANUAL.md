@@ -590,6 +590,10 @@ differs.
 | **Opening stock** | The Opening Stock differs. | Run the sync, or correct the workbook. |
 | **Unexplained** | Part of the difference that none of the above explains. It is always shown, never hidden. | Compare the material's records by hand. |
 
+**Admin and Logistics: choose the site.** The check is stored against one
+site. If you are not bound to a site, a **Site** box appears beside the upload
+buttons; it starts on the site of the last check.
+
 **The marked workbook.** Press **Get the marked workbook** and choose your
 `CNCEC_Inventory.xlsx`. You get back a **copy** containing:
 - a **GI Hub check** sheet first, listing every cause with how to fix it;
@@ -1938,6 +1942,13 @@ A: Submitted/approved items don't show on your screen. Ask HOD or Admin to filte
 
 **Where:** Execution Entries (`/execution`) → **Print a consumption form**.
 Store Keeper, Supervisor and HOD.
+
+**Admin: choose the site first.** A printed form is registered against a
+site. A Store Keeper, Supervisor or HOD prints for their own site
+automatically. An Admin works across sites, so the card shows a **Site** box
+before the lining system; pick the site the paper is for. The box remembers your
+last choice. *(Phase 23a: until this, an Admin's print failed with "Request
+failed with status code 422".)*
 
 The field fills these in by hand and photographs them; the app reads the photo.
 Everything about the form's design exists to make that reading reliable.

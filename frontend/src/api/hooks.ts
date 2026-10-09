@@ -336,9 +336,13 @@ export function useGeneratedForms(status?: string) {
 // button is pressed. Each form carries its OWN QR — which is the whole reason
 // the feature exists, because the photocopier it replaces duplicated one.
 export async function downloadConsumptionForm(code: string, esc?: string,
-                                              copies = 1) {
+                                              copies = 1, siteId?: string) {
   const params: Record<string, string | number> = {}
   if (esc) params.esc = esc
+  // Phase 23a — printing REGISTERS the form against a site. A site-bound user
+  // gets their own; a global role (admin) must name one, or the server answers
+  // 422 "site_id is required for a global role".
+  if (siteId) params.site_id = siteId
   if (copies > 1) params.copies = copies
   await downloadDocument('/execution/forms/' + encodeURIComponent(code),
     params, `consumption-${code}.pdf`)

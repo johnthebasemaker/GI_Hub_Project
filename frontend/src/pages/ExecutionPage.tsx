@@ -55,7 +55,7 @@ import { api } from '../api/client'
 import OcrJobProgress from '../components/OcrJobProgress'
 import type { OcrJobStatus } from '../components/OcrJobProgress'
 import TrainingGate from '../components/TrainingGate'
-import { downloadConsumptionForm, useFormSystems } from '../api/hooks'
+import { downloadConsumptionForm, useFormSystems, useSites } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
 import { status } from '../theme/tokens'
 
@@ -1037,6 +1037,7 @@ export function HodApprovalQueueTab() {
  * sheets" BEFORE they press print, not after the printer has started.
  */
 const ROWS_PER_FORM_PAGE = 18   // mirrors consumption_form.ROWS_PER_PAGE
+const PRINT_SITE_KEY = 'gi-form-print-site'
 
 function FormPrintCard() {
   const { message } = App.useApp()
@@ -1045,6 +1046,22 @@ function FormPrintCard() {
   const [esc, setEsc] = useState<string | undefined>()
   const [copies, setCopies] = useState<number>(1)
   const [busy, setBusy] = useState(false)
+  // Phase 23a — a global role picks the site the printed forms belong to (a
+  // site-bound user's own site is applied by the server). Remembered per
+  // browser, because an admin printing for CNCEC prints for CNCEC again.
+  const { user } = useAuth()
+  const needSite = (user?.level ?? 0) >= 3 || !user?.site_id
+  const { data: sites } = useSites()
+  const [printSite, setPrintSite] = useState<string | undefined>(() => {
+    try { return localStorage.getItem(PRINT_SITE_KEY) || undefined } catch { return undefined }
+  })
+  useEffect(() => {
+    if (needSite && !printSite && sites?.length === 1) setPrintSite(sites[0])
+  }, [needSite, printSite, sites])
+  const pickSite = (v: string) => {
+    setPrintSite(v)
+    try { localStorage.setItem(PRINT_SITE_KEY, v) } catch { /* private window */ }
+  }
 
   const picked = (systems ?? []).find((x) => x.Lining_System_Code === code)
   const rows = picked
@@ -1062,7 +1079,7 @@ function FormPrintCard() {
     if (!code) return
     setBusy(true)
     try {
-      await downloadConsumptionForm(code, esc, copies)
+      await downloadConsumptionForm(code, esc, copies, needSite ? printSite : undefined)
       message.success(copies > 1
         ? `${copies} forms downloaded — every one is a separate numbered sheet `
           + 'with its own QR code'
@@ -1078,6 +1095,12 @@ function FormPrintCard() {
     <Card size="small" style={{ marginBottom: 12 }}
       title={<Space><PrinterOutlined />Print a consumption form</Space>}>
       <Space wrap align="start">
+        {needSite && (
+          <Select
+            style={{ width: 150 }} placeholder="Site" value={printSite}
+            onChange={pickSite} data-testid="form-print-site" aria-label="Site the forms belong to"
+            options={(sites ?? []).map((x) => ({ value: x, label: x }))} />
+        )}
         <Select
           style={{ width: 300 }} placeholder="Lining system" loading={isLoading}
           value={code} showSearch optionFilterProp="label"
@@ -1102,8 +1125,9 @@ function FormPrintCard() {
             value={copies} onChange={(v) => setCopies(Math.max(1, Math.min(200, Number(v) || 1)))}
             addonBefore="Forms" aria-label="How many forms?" />
         </Space>
-        <Button type="primary" icon={<DownloadOutlined />} loading={busy}
-          disabled={!code} onClick={go}>Download</Button>
+        <Button type="primary" icon={<DownloadOutlined />}
+          disabled={busy || !code || (needSite && !printSite)} onClick={go}
+          data-testid="form-print-download">Download</Button>
         {rows != null && (
           <Typography.Text type="secondary" style={{ lineHeight: '32px' }}>
             {rows} material line(s)

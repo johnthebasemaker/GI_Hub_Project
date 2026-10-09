@@ -274,6 +274,11 @@ api.interceptors.response.use(
     const cfg = err?.config
     const url: string = cfg?.url ?? ''
     const status: number | undefined = err?.response?.status
+    // Phase 23a — a download's error arrives as a Blob; read it back first.
+    // Loaded on the first failure only, so it costs the first paint nothing.
+    if (status && status !== 401) {
+      try { await (await import('./errorBody')).normaliseErrorBody(err) } catch { /* keep err as is */ }
+    }
     // A view-only refusal never reached the network, so it has no response —
     // without this it would be misread below as "the API is unreachable" and
     // log a backend-is-down diagnostic. Surface it as its own toast instead.
