@@ -31639,6 +31639,188 @@ async def test_phase22d_requests():
         await cleanup()
 
 
+async def test_phase23c_sap_mapper_preparers():
+    """Suite 23C — Phase 23c (rulings Q23-1/4/5). The "needs a SAP code" mapper:
+    a decision per site and written key, applied when the requests are READ —
+    `item` counts the line against a SAP at once, `catalogue` waits ("not
+    stocked yet", no SAP invented) and links BY ITSELF when the item master
+    gains the GI code, `not_stock` leaves pending and reorder; Admin / HOD /
+    Logistics decide, the store keeper reads; audited and undoable. The
+    preparers: one-day covers beside the from-date pairs."""
+    import datetime as _dtm
+
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from .services import preparers as PREP
+    from .services import requests_sync as R
+
+    S = "SV23C"
+
+    def tok(u, r, site=""):
+        return {"Authorization": f"Bearer {_auth._make_token(u, r, site, _auth.ACCESS_TTL)}"}
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+
+    async def q(sql, **kw):
+        async with SessionLocal() as s_:
+            v = (await s_.execute(_t(sql), kw)).scalar()
+            await s_.commit()          # an INSERT … RETURNING goes through here too
+            return v
+
+    async def cleanup():
+        await ex('DELETE FROM material_request_lines WHERE request_id IN (SELECT id FROM material_requests '
+                 'WHERE "Site_ID" = :s)', s=S)
+        await ex('DELETE FROM material_requests WHERE "Site_ID" = :s', s=S)
+        await ex('DELETE FROM request_sap_map WHERE "Site_ID" = :s', s=S)
+        await ex('DELETE FROM inventory WHERE "Site_ID" = :s', s=S)
+        await ex('DELETE FROM receipts WHERE "Site_ID" = :s', s=S)
+
+    check("23c-01: a line is learned by its GI code when it has one, else by its description "
+          "with case, spaces and punctuation folded",
+          R.line_key("gi-7000087", "x") == "code:GI-7000087"
+          and R.line_key("N/A", "Garden  Trowel (Hand Showel)") == "desc:garden trowel hand showel"
+          and R.line_key(None, "GARDEN TROWEL - HAND SHOWEL") == "desc:garden trowel hand showel")
+
+    await cleanup()
+    try:
+        await ex('INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", "Category", '
+                 '"Site_ID", "Minimum_Qty", "Opening_Stock") VALUES '
+                 "('SV23C-TRW', NULL, 'TROWEL GARDEN HAND', 'Tools', :s, 0, 0)", s=S)
+        await ex('INSERT INTO receipts ("Date", "SAP_Code", "Quantity", "Site_ID") '
+                 "VALUES ('2026-09-10', 'SV23C-TRW', 2, :s)", s=S)
+        rid = await q('INSERT INTO material_requests (drive_file_id, file_name, request_date, layout, '
+                      'is_summary, "Site_ID") VALUES (-2301, \'Request 01-09-2026.xlsx\', \'2026-09-01\', '
+                      "'x', false, :s) RETURNING id", s=S)
+        for row, code, desc, qty in ((1, "N/A", "Garden Trowel (Hand Showel)", 5),
+                                     (2, "GI-7999001", "JUBLEE CLAMP 1in", 4),
+                                     (3, "N/A", "Measurement Cup 1L", 2),
+                                     (4, "N/A", "Crane hire (service)", 1)):
+            await ex('INSERT INTO material_request_lines (request_id, sheet, row_no, "SAP_Code", '
+                     '"Material_Code", description, uom, requested_qty, without_pr, request_date) '
+                     "VALUES (:r, 'S', :rw, NULL, :c, :d, 'EA', :q, true, '2026-09-01')",
+                     r=rid, rw=row, c=code, d=desc, q=qty)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as c:
+            lst = await c.get("/material-requests/needs-sap", headers=tok("sv23c_sk", "store_keeper", S))
+            sk_post = await c.post("/material-requests/sap-map", headers=tok("sv23c_sk", "store_keeper", S),
+                                   json={"keys": ["desc:measurement cup 1l"], "decision": "not_stock"})
+            body = lst.json() if lst.status_code == 200 else {}
+            g = {x["key"]: x for x in body.get("groups", [])}
+            trowel = g.get("desc:garden trowel hand showel", {})
+            check("23c-02: the list groups the lines by what they would be learned as, ranks the "
+                  "item master's best match first (the trowel → SV23C-TRW), and the store keeper "
+                  "may READ it but not decide (Q23-4: 403)",
+                  lst.status_code == 200 and body.get("can_map") is False
+                  and body["counts"].get("needs_sap") == 4
+                  and (trowel.get("suggestions") or [{}])[0].get("SAP_Code") == "SV23C-TRW"
+                  and sk_post.status_code == 403,
+                  f"{lst.status_code} counts={body.get('counts')} sugg={trowel.get('suggestions')} sk={sk_post.status_code}")
+
+            hod = tok("sv23c_hod", "hod", S)
+            r_item = await c.post("/material-requests/sap-map", headers=hod, json={
+                "keys": ["desc:garden trowel hand showel"], "decision": "item", "SAP_Code": "SV23C-TRW",
+                "examples": {"desc:garden trowel hand showel": "Garden Trowel (Hand Showel)"}})
+            r_bad = await c.post("/material-requests/sap-map", headers=hod, json={
+                "keys": ["desc:measurement cup 1l"], "decision": "item", "SAP_Code": "NOPE-1"})
+            r_cat_nocode = await c.post("/material-requests/sap-map", headers=hod, json={
+                "keys": ["desc:measurement cup 1l"], "decision": "catalogue"})
+            r_cat = await c.post("/material-requests/sap-map", headers=hod, json={
+                "keys": ["code:GI-7999001"], "decision": "catalogue"})
+            r_ns = await c.post("/material-requests/sap-map", headers=hod, json={
+                "keys": ["desc:crane hire service"], "decision": "not_stock"})
+            r_log_nosite = await c.post("/material-requests/sap-map", headers=tok("sv23c_lg", "logistics"),
+                                        json={"keys": ["desc:measurement cup 1l"], "decision": "not_stock"})
+            r_junk = await c.post("/material-requests/sap-map", headers=hod, json={
+                "keys": ["anything"], "decision": "not_stock"})
+        check("23c-03: the HOD decides for their own site — an item that is not in the site's "
+              "master is refused, a line with no GI code cannot be 'not stocked yet' without one, "
+              "Logistics must name the site, and a key that is not from the list is refused (422s "
+              "with a reason)",
+              r_item.status_code == 200 and r_cat.status_code == 200 and r_ns.status_code == 200
+              and r_bad.status_code == 422 and "not in" in r_bad.text
+              and r_cat_nocode.status_code == 422 and r_log_nosite.status_code == 422
+              and r_junk.status_code == 422,
+              f"{r_item.status_code} {r_bad.status_code} {r_cat_nocode.status_code} {r_cat.status_code} "
+              f"{r_ns.status_code} {r_log_nosite.status_code} {r_junk.status_code}")
+
+        async with SessionLocal() as s_:
+            ov = await R.overview(s_, S)
+            nopr = await R.pending_no_pr(s_)
+        it = {i["description"]: i for i in ov["items"]}
+        tr, cl, cr = it["Garden Trowel (Hand Showel)"], it["JUBLEE CLAMP 1in"], it["Crane hire (service)"]
+        check("23c-04: decisions apply when the requests are READ — the trowel now counts against "
+              "SV23C-TRW (2 received of 5, 3 pending, on order in Smart Reorder); the clamp is "
+              "'not stocked yet' with NO SAP (none invented, Q23-5); the crane hire is out of "
+              "pending and reorder; only the cup still needs a decision; the workbook rows are "
+              "untouched",
+              tr["status"] == "mapped" and tr["SAP_Code"] == "SV23C-TRW" and tr["received"] == 2
+              and tr["pending"] == 3 and nopr.get(("SV23C-TRW", S)) == 3
+              and cl["status"] == "not_stocked" and cl["SAP_Code"] is None
+              and cr["status"] == "not_stock"
+              and [x["description"] for x in ov["needs_sap"]] == ["Measurement Cup 1L"]
+              and await q('SELECT count(*) FROM material_request_lines l JOIN material_requests r '
+                          'ON r.id = l.request_id WHERE r."Site_ID" = :s AND l."SAP_Code" IS NOT NULL', s=S) == 0,
+              str({k: (v["status"], v["SAP_Code"], v["pending"]) for k, v in it.items()}))
+
+        # the workbook adds the clamp → it links by itself
+        await ex('INSERT INTO inventory ("SAP_Code", "Material_Code", "Equipment_Description", "Category", '
+                 '"Site_ID", "Minimum_Qty", "Opening_Stock") VALUES '
+                 "('SV23C-CLMP', 'GI-7999001', 'JUBILEE CLAMP 1\"', 'Tools', :s, 0, 0)", s=S)
+        async with SessionLocal() as s_:
+            ov2 = await R.overview(s_, S)
+        cl2 = {i["description"]: i for i in ov2["items"]}["JUBLEE CLAMP 1in"]
+        check("23c-05: 'not stocked yet' links BY ITSELF the day the item master gains its GI "
+              "code — nobody decides again",
+              cl2["status"] == "linked_by_code" and cl2["SAP_Code"] == "SV23C-CLMP", str(cl2)[:200])
+
+        mid = await q('SELECT id FROM request_sap_map WHERE "Site_ID" = :s AND written_key = '
+                      "'desc:garden trowel hand showel'", s=S)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            other = await c.delete(f"/material-requests/sap-map/{mid}", headers=tok("sv23c_h2", "hod", "OTHER"))
+            und = await c.delete(f"/material-requests/sap-map/{mid}", headers=tok("sv23c_hod", "hod", S))
+        audits = await q("SELECT count(*) FROM system_audit_log WHERE action_type IN "
+                         "('REQUEST_SAP_MAP', 'REQUEST_SAP_UNMAP') AND details LIKE :d", d=f"%site={S}%")
+        async with SessionLocal() as s_:
+            ov3 = await R.overview(s_, S)
+        check("23c-06: Undo puts the line back on the list (another site's HOD cannot); every "
+              "decision and every undo is audited",
+              other.status_code == 403 and und.status_code == 200 and audits >= 4
+              and "Garden Trowel (Hand Showel)" in [x["description"] for x in ov3["needs_sap"]],
+              f"other={other.status_code} undo={und.status_code} audits={audits}")
+    finally:
+        await cleanup()
+
+    # ── the earlier preparers (Q23-1) ───────────────────────────────────────
+    hist = PREP.clean([
+        {"from": "2026-05-18", "day": "Johnson", "night": ""},
+        {"from": "2026-07-23", "day": "Johnson", "night": "Mani"},
+        {"from": "2026-08-02", "day": "Johnson", "night": "Mydeen"},
+        {"from": "2026-09-26", "day": "Johnson", "night": "Kalied"},
+        {"on": "2026-09-28", "cover": "Imtiyaz", "shift": ""},
+        {"on": "2026-09-26", "cover": "Mydeen", "shift": "Night"}])
+    D = _dtm.date
+    try:
+        PREP.clean([{"on": "2026-09-28", "cover": ""}])
+        bad = None
+    except ValueError as e:
+        bad = str(e)
+    check("23c-07: the history (Q23-1) — Johnson Day throughout, no Night before 23 Jul, Night by "
+          "the name in force; a ONE-DAY cover never changes the pair (28 Sep is still Johnson / "
+          "Kalied) but is a name for that day, any shift or the one given; a cover needs a name",
+          PREP.pick(hist, D(2026, 6, 1)) == {"from": "2026-05-18", "day": "Johnson", "night": ""}
+          and PREP.pick(hist, D(2026, 8, 15))["night"] == "Mydeen"
+          and PREP.pick(hist, D(2026, 9, 28))["night"] == "Kalied"
+          and PREP.covers_on(hist, D(2026, 9, 28)) == ["Imtiyaz"]
+          and PREP.covers_on(hist, D(2026, 9, 26), "Day") == []
+          and PREP.covers_on(hist, D(2026, 9, 26), "Night") == ["Mydeen"]
+          and PREP.names_on(hist, D(2026, 9, 28)) == {"Johnson", "Kalied", "Imtiyaz"}
+          and bad and "needs a name" in bad, str(hist))
+
+
 async def test_phase23b_page_tank_second_read():
     """Suite 23B — Phase 23b (rulings Q23-2/3). The page tank offers the tanks
     the site used in the 7 days BEFORE the paper's date (busiest first,
@@ -31750,11 +31932,11 @@ async def test_phase23b_page_tank_second_read():
     cut_blank = SR.strip_image(page(lined=False), [2, 3])
     size = cut[1]["size"] if cut else None
     check("23b-04: the strips are cut from the page's own ruled lines (2–4 and 9–10: two "
-          "strips under the printed column header, stacked into ONE image and enlarged 2× — "
-          "about 6½ rows tall, far less than a page); a photo whose ruled lines cannot be "
-          "found gets NO second read — never a guessed crop",
+          "strips under the printed column header, stacked into ONE image — about 6½ rows "
+          "tall, far less than a page); a photo whose ruled lines cannot be found gets NO "
+          "second read — never a guessed crop",
           cut is not None and cut[1]["geometry"] == "ruled lines" and cut[1]["strips"] == 2
-          and size and size[0] == 1800 and 300 < size[1] < 600 and cut_blank is None,
+          and size and size[0] == 900 and 150 < size[1] < 300 and cut_blank is None,
           f"{cut[1] if cut else None} / {cut_blank[1] if cut_blank else None}")
     inked = SR.strip_image(page(ink=(1, 2, 3, 6, 7)), [2, 3, 4, 5, 8], read={1, 6, 7})
     none_written = SR.strip_image(page(ink=(1, 6)), [2, 3, 4], read={1, 6})
@@ -31781,12 +31963,20 @@ async def test_phase23b_page_tank_second_read():
           and [m["sno"] for m in merged] == ["1", "2", "7", "8", "9", "13"]
           # ⚠️ an EMPTY second read is an answer (the gaps were blank), never
           # the first read's "found no rows" refusal
-          and SR.parse_rows('{"date_text": "", "rows": []}') == [],
+          and SR.parse_rows('{"date_text": "", "rows": []}') == [] and SR.parse_rows("") == []
+          # the compact answer: one line per row, <D> = ditto, a name-only row kept
+          and [(r["sno"], r["issued_to"], r["material_text"], r["quantity"]) for r in SR.parse_rows(
+              "S.No|Name|Tank|Product|UOM|QTY|Remarks\n2|Yaseen|<D>|<D>|<D>|1|<D>\n"
+              "3|Wiswanth||||| \nsome prose")]
+          == [("2", "Yaseen", "<DITTO>", 1.0), ("3", "Wiswanth", "", None)],
           str([(a["sno"], a["issued_to"]) for a in acc]))
     prompt = SR.user_prompt([2, 3, 4, 9, 10, 11])
-    check("23b-06: the prompt names the rows (2–4, 9–11) and demands a row per printed row even "
-          "when every cell is a ditto — the exact way the first read lost them",
-          "2–4, 9–11" in prompt and "EVEN WHEN every cell is a ditto" in prompt, prompt[:120])
+    check("23b-06: the prompt names the rows (2–4, 9–11) and demands a line per printed row "
+          "even when every cell is a ditto — the exact way the first read lost them — in the "
+          "compact one-line format, on its own capped, cloud-free lane",
+          "2–4, 9–11" in prompt and "EVEN WHEN every cell is a ditto" in prompt
+          and "S.No|Name|Tank|Product|UOM|QTY|Remarks" in SR.SYSTEM_PROMPT
+          and SR.LANE == "ocr_consumption_second", prompt[:120])
 
     # ── the job: first read DONE first, the second read after ───────────────
     import json as _json2
@@ -31795,17 +31985,13 @@ async def test_phase23b_page_tank_second_read():
 
     async def _fake_vision(prompt, *, system, image_b64, num_predict=1400, timeout_s=0, **kw):
         calls.append(prompt)
-        if "strips cut from the SAME form" in prompt:
+        if "The strips below the header" in prompt:
             # at this moment the first read must already be visible as `done`
             async with SessionLocal() as s_:
                 st = (await s_.execute(_t("SELECT status FROM ai_jobs WHERE id = :i"),
                                        {"i": job_id})).scalar()
             seen_first_done.append(st == "done")
-            return _json2.dumps({"date_text": "", "rows": [
-                {"sno": "2", "issued_to": "Worker", "tank_no": "<DITTO>", "material_text": "<DITTO>",
-                 "uom": "", "qty_text": "1", "quantity": 1, "work_type": "<DITTO>"},
-                {"sno": "3", "issued_to": "", "tank_no": "", "material_text": "", "uom": "",
-                 "qty_text": "", "quantity": None, "work_type": ""}]}), "fake-vlm"
+            return "2|Worker|<D>|<D>||1|<D>\n3||||||", "fake-vlm"
         return _json2.dumps({"date_text": "06/10/26", "rows": [
             {"sno": "1", "issued_to": "Worker", "tank_no": "J027", "material_text": "Leather gloves",
              "uom": "Pair", "qty_text": "1", "quantity": 1, "work_type": "R/L"},
@@ -32900,6 +33086,9 @@ async def main() -> int:
     print("\n 23B. Phase 23b — the page tank (7 days before, ditto/blank/unknown only) and the "
           "background second read of the S.No gaps (0 s wait)")
     await test_phase23b_page_tank_second_read()
+    print("\n 23C. Phase 23c — the SAP-code mapper (item / not stocked yet / not a stock item, "
+          "applied on read, audited, undoable) and the earlier preparers with one-day covers")
+    await test_phase23c_sap_mapper_preparers()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

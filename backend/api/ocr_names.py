@@ -136,6 +136,8 @@ async def paper_check(body: PaperIn, user: dict = Depends(_SK),
             break
     out["shift"] = {"shift": shift, "marked": marked}
     out["prepared_by"] = await PREP.preparer_for(session, site, day, shift)
+    # Phase 23c (Q23-1): a one-day cover is offered beside the regular name
+    out["covers"] = PREP.covers_on(await PREP.history(session, site), day, shift)
     if body.tanks:
         tags, aliases = await site_tanks(session, site)
         out["tanks"] = PF.fill_dittos([PF.match_tank(t, tags, aliases) for t in body.tanks])

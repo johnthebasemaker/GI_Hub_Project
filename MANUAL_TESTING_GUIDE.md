@@ -5313,6 +5313,43 @@ prints `SECOND READ` (rows added, seconds per page) and
 Suite 23B (service tests) and `npm run test:ui-math` (OCR page rules) pin the
 rules.
 
+## 23c. Phase 23c — the SAP-code mapper and the earlier preparers (rulings Q23-1/4/5)
+
+**TC-23C-01 — link.** As HOD: Requests & Pending → **Needs a SAP code**. A name
+with gold tags: click one, then **Link** → *linked to …*. The name leaves the
+list, and in the table below its lines show the SAP with **linked here**.
+Received and pending now count, and a no-PR line appears under *On order* in
+Smart Reorder.
+
+**TC-23C-02 — not stocked yet.** A name with a GI code (e.g. *JUBLEE CLAMP*,
+GI-7000087) → **Not stocked yet**. Its lines show a blue *not stocked yet* tag
+and **no** SAP. When the item is added to the workbook with that GI code, the
+next pull (or page reload) shows the line linked, with nobody deciding again.
+
+**TC-23C-03 — not a stock item / bulk / undo.** Tick two names → **Not a stock
+item**. Both leave the list and pending. **Decided** → **Undo** on one →
+it is back on **Needs a SAP code**. Admin Console → Audit shows
+`REQUEST_SAP_MAP` / `REQUEST_SAP_UNMAP`.
+
+**TC-23C-04 — permissions (Q23-4).** As store keeper: the card lists the names
+but has no Link / Not stocked / Undo buttons and says *Admin, HOD and Logistics
+decide*. A HOD of another site cannot undo this site's decision.
+
+**TC-23C-05 — preparers.** Admin Console → Sites → *Consumption papers*: the
+CNCEC lines from 18 May (Day Johnson, no Night) to 26 Sep (Kalied), and two
+**one-day covers** (Imtiyaz on 28 Sep, either shift; Mydeen on 26 Sep, Night).
+Dates are picked from a calendar. In OCR Import, paste a paper dated
+`28/09/26`: **Prepared by** shows Johnson, and its drop-down also offers
+Imtiyaz.
+
+**TC-23C-06 — the back-check.**
+
+```bash
+GI_DOTENV=0 .venv/bin/python tools/ocr_site_setup.py --site CNCEC --check
+```
+
+→ `back-check: 5363 of 5363 rows explained by the history (100.0 %)`.
+
 ## 21d. Phase 21d — OCR measured against the workbook; the name matcher (Q21-1..6)
 
 **Why this exists.** The 11 photos of the *Safety & Production Consumables*

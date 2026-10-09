@@ -2894,6 +2894,28 @@ class MaterialRequestLines(Base):
                       Index("ix_material_request_lines_sap", "SAP_Code"))
 
 
+class RequestSapMap(Base):
+    """Phase 23c (alembic e8ab5d9f3c21) — what a request line with no SAP code
+    means at a site: `item` (a SAP), `catalogue` (a GI code not stocked yet —
+    links itself when the workbook gains it; Q23-5) or `not_stock`. Applied
+    when the requests are read (services/requests_sync.py)."""
+    __tablename__ = "request_sap_map"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    Site_ID = Column(Text, nullable=False)
+    written_key = Column(Text, nullable=False)
+    written_example = Column(Text)
+    decision = Column(Text, nullable=False)
+    SAP_Code = Column(Text)
+    Material_Code = Column(Text)
+    created_by = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    updated_by = Column(Text)
+    updated_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    __table_args__ = (UniqueConstraint("Site_ID", "written_key", name="ux_request_sap_map_key"),
+                      CheckConstraint("decision IN ('item', 'catalogue', 'not_stock')",
+                                      name="ck_request_sap_map_decision"))
+
+
 class DriveSyncRuns(Base):
     """Phase 22a (alembic f3b9d2e7a4c1) — the Drive sync's run history: the
     schedule, the Pull button, the Admin card and the CLI all write one row."""

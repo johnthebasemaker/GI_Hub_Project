@@ -17,7 +17,19 @@ for the site is left alone (the store keeper's own Accept wins). Every SAP must
 exist in the inventory master, or nothing is written.
 
 `--preparers FROM:DAY:NIGHT` adds (or replaces) the history line starting on
-FROM; earlier lines are kept, so older papers keep their names.
+FROM; earlier lines are kept, so older papers keep their names. Repeat it for
+several lines (Phase 23c, ruling Q23-1); NIGHT may be empty.
+
+`--cover ON:NAME[:SHIFT]` records a ONE-DAY cover (Q23-1: Imtiyaz, 2026-09-28).
+
+`--check` re-derives every consumption row's *Prepared by* from the history
+(the pair in force that day, plus that day's covers) and lists every row it
+cannot explain. Read-only.
+
+    # Phase 23c — the earlier preparers on CNCEC
+    … --site CNCEC --preparers 2026-05-18:Johnson: --preparers 2026-07-23:Johnson:Mani \
+        --preparers 2026-07-30:Johnson:Subramani --preparers 2026-08-02:Johnson:Mydeen \
+        --cover 2026-09-28:Imtiyaz --check
 """
 from __future__ import annotations
 
@@ -37,7 +49,12 @@ async def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--site", required=True)
     ap.add_argument("--aliases", help="JSON list of {written_key, SAP_Code}")
-    ap.add_argument("--preparers", help="FROM:DAY:NIGHT, e.g. 2026-09-26:Johnson:Kalied")
+    ap.add_argument("--preparers", action="append", default=[],
+                    help="FROM:DAY:NIGHT, e.g. 2026-09-26:Johnson:Kalied (repeatable)")
+    ap.add_argument("--cover", action="append", default=[],
+                    help="ON:NAME[:SHIFT] — a one-day cover (repeatable)")
+    ap.add_argument("--check", action="store_true",
+                    help="re-derive every Prepared by from the history; list what it cannot explain")
     ap.add_argument("--commit", action="store_true")
     a = ap.parse_args()
     from sqlalchemy import text
@@ -72,18 +89,51 @@ async def main() -> int:
                 await write_audit(s, ACTOR, "OCR_ALIAS_LEARN", "ocr_aliases",
                                   f"site={a.site} loaded {len(new)} operator-approved name(s) (Q22-18): "
                                   + ", ".join(f"{r['written_key']!r}→{r['SAP_Code']}" for r in new))
-        if a.preparers:
+        if a.preparers or a.cover:
+            hist = await PREP.history(s, a.site)
+            for spec in a.preparers:
+                try:
+                    frm, day, night = spec.split(":", 2)
+                except ValueError:
+                    print("❌ --preparers is FROM:DAY:NIGHT")
+                    return 2
+                hist = [h for h in hist if h.get("on") or h.get("from") != frm]
+                hist.append({"from": frm, "day": day, "night": night})
+            for spec in a.cover:
+                parts = spec.split(":")
+                if len(parts) < 2:
+                    print("❌ --cover is ON:NAME[:SHIFT]")
+                    return 2
+                on, name, shift = parts[0], parts[1], (parts[2] if len(parts) > 2 else "")
+                hist = [h for h in hist if not (h.get("on") == on and h.get("cover") == name)]
+                hist.append({"on": on, "cover": name, "shift": shift})
             try:
-                frm, day, night = a.preparers.split(":", 2)
-            except ValueError:
-                print("❌ --preparers is FROM:DAY:NIGHT")
+                saved = await PREP.save(s, a.site, hist)
+            except ValueError as e:
+                print(f"❌ {e}")
                 return 2
-            hist = [h for h in await PREP.history(s, a.site) if h.get("from") != frm]
-            hist.append({"from": frm, "day": day, "night": night})
-            saved = await PREP.save(s, a.site, hist)
-            print(f"preparers for {a.site}: {saved}")
+            print(f"preparers for {a.site}:")
+            for h in saved:
+                print(f"   {h}")
             await write_audit(s, ACTOR, "PREPARERS_SET", "app_settings",
                               f"site={a.site} {json.dumps(saved)}")
+        if a.check:
+            import datetime as _dt
+            hist = await PREP.history(s, a.site)
+            rows = (await s.execute(text(
+                'SELECT LEFT("Date", 10) AS d, TRIM("Prepared_By") AS p, count(*) AS n FROM consumption '
+                'WHERE "Site_ID" = :s AND COALESCE(TRIM("Prepared_By"), \'\') <> \'\' GROUP BY 1, 2'),
+                {"s": a.site})).all()
+            total = sum(r.n for r in rows)
+            bad = [(r.d, r.p, r.n) for r in rows
+                   if r.p not in PREP.names_on(hist, _dt.date.fromisoformat(r.d))]
+            ok = total - sum(n for *_x, n in bad)
+            print(f"back-check: {ok} of {total} rows explained by the history "
+                  f"({100 * ok / max(total, 1):.1f} %)")
+            for d, p_, n in sorted(bad)[:40]:
+                print(f"   ✗ {d}  {p_}  ({n} row(s)) — not in force that day")
+            if bad:
+                rc = 1
         if a.commit:
             await s.commit()
             print("✅ committed")

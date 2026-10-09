@@ -40,7 +40,7 @@ PAD_TOP = 0.12              # a strip reaches this far into the row above it —
                             # more, and the model reads the row above as the first row
 PAD_BOTTOM = 0.35           # …and this far below (handwriting sags onto the line)
 HEADER_ROWS = 1.4           # the printed column header sits this high above row 1
-UPSCALE = 2                 # strips are small: twice the pixels per handwritten stroke
+UPSCALE = 1                 # 2× doubled the prefill (158 s on one page) — kept at 1×
 
 
 def _sno(r: dict) -> Optional[int]:
@@ -267,41 +267,75 @@ def strip_image(jpeg: bytes, gaps: list[int], read: Optional[set[int]] = None
 
 
 # ── the prompt ──────────────────────────────────────────────────────────────
+LANE = "ocr_consumption_second"
+
+SYSTEM_PROMPT = """\
+You are reading strips cut from a handwritten "Daily - Consumption / Safety &
+Production Consumables" form. The top strip is the printed column header:
+S.No | Name | Tank No.# | Product Name | UOM | QTY | Remarks. Each strip below
+it holds printed rows; the S.No is PRINTED in the left column of every row.
+
+Answer with ONE LINE per printed row that has anything written in it, exactly:
+S.No|Name|Tank|Product|UOM|QTY|Remarks
+- Transcribe faithfully; keep spelling errors; do not interpret.
+- A ditto mark (" 〃 ,, a tick or a short dash meaning "same as above") is <D>.
+- A cell with nothing in it is left empty between the bars.
+- A row with nothing written at all is left out.
+- No header line, no JSON, no commentary — only the lines."""
+
+
 def _rows_text(gaps: list[int]) -> str:
     return ", ".join(f"{a}" if a == b else f"{a}–{b}" for a, b in runs(gaps))
 
 
 def user_prompt(gaps: list[int]) -> str:
     return (
-        f"This image is strips cut from the SAME form. The top strip is the printed "
-        f"column header (S.No | Name | Tank No.# | Product Name | UOM | QTY | "
-        f"Remarks); below it are the printed rows S.No {_rows_text(gaps)} (a strip "
-        f"may show a sliver of the row above or below it — ignore it). Read the "
-        f"S.No printed in the left column of each row. Transcribe EVERY printed row in these strips that has "
-        f"anything written in it — one JSON row per printed row, with its "
-        f"printed S.No, EVEN WHEN every cell is a ditto mark (output <DITTO> for "
-        f"each such cell). A row with nothing written at all is left out. Do not "
-        f"output a row whose S.No is not in that list. Same JSON shape as "
-        f"always: {{\"date_text\": \"\", \"rows\": [...]}}."
+        f"The strips below the header are the printed rows S.No {_rows_text(gaps)} "
+        f"(a strip may show a sliver of the row above or below — ignore it). "
+        f"One line per printed row that has writing, EVEN WHEN every cell is a "
+        f"ditto mark (<D>). Do not answer for an S.No not in that list."
     )
 
 
 # ── reading the answer ──────────────────────────────────────────────────────
+def _qty(v: str):
+    v = v.strip().replace(",", ".")
+    try:
+        return float(v) if v else None
+    except ValueError:
+        return None
+
+
 def parse_rows(text: str) -> list[dict]:
-    """The second read's rows. ⚠️ An EMPTY answer is a valid answer here — the
-    gap rows are often genuinely blank — whereas `ocr.parse_vision_reply`
-    rightly refuses a first read with no rows (a photo nobody could read must
-    not look like a blank form). Only that refusal is turned into []."""
+    """`S.No|Name|Tank|Product|UOM|QTY|Remarks` lines → the first read's row
+    shape (`<D>` → `<DITTO>`, the token the rest of the pipeline resolves).
+
+    ⚠️ LENIENT ON PURPOSE. The first read's parser drops a row with no product
+    and no quantity — a ditto row read as empty cells has only a NAME, and that
+    is exactly the row this read exists to recover. Blank rows were never shown
+    to the model (`written_gaps`), so a name alone is kept. A JSON answer (the
+    model ignoring the format) is read too."""
+    import re as _re
     from . import ocr
-    obj = ocr.extract_json_object(text) or ocr.salvage_truncated_json(text)
-    if not obj or not isinstance(obj.get("rows"), list):
-        return []
-    # ⚠️ LENIENT ON PURPOSE. The first read's parser drops a row with no product
-    # and no quantity — a ditto row read as empty cells has only a NAME, and
-    # that is exactly the row this read exists to recover. Blank rows were never
-    # shown to the model (`written_gaps`), so a name alone is kept.
-    rows = [ocr.clean_consumption_row(r) for r in obj["rows"] if isinstance(r, dict)]
-    return [r for r in rows if any(str(r.get(f) or "").strip() for f in
+    if "{" in (text or "") and '"rows"' in (text or ""):
+        obj = ocr.extract_json_object(text) or ocr.salvage_truncated_json(text)
+        raw_rows = [r for r in (obj or {}).get("rows", []) if isinstance(r, dict)]
+    else:
+        raw_rows = []
+        for line in (text or "").splitlines():
+            line = line.strip().strip("`").strip()
+            if line.count("|") < 5:
+                continue
+            f = [c.strip() for c in line.split("|")]
+            if not _re.match(r"^\d{1,2}$", f[0]):
+                continue                       # a header line or prose
+            f += [""] * (7 - len(f))
+            sub = lambda c: "<DITTO>" if c.upper() in ("<D>", "D", "<DITTO>") else c  # noqa: E731
+            raw_rows.append({"sno": f[0], "issued_to": sub(f[1]), "tank_no": sub(f[2]),
+                             "material_text": sub(f[3]), "uom": sub(f[4]), "qty_text": f[5],
+                             "quantity": _qty(f[5]), "work_type": sub(f[6])})
+    rows = [ocr.clean_consumption_row(r) for r in raw_rows]
+    return [r for r in rows if any(str(r.get(k) or "").strip() for k in
                                    ("issued_to", "material_text", "qty_text", "tank_no", "work_type"))
             or r.get("quantity") is not None]
 

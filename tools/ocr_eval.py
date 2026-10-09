@@ -182,8 +182,7 @@ async def read_strip(strip: bytes, gaps: list[int]) -> tuple[str, float]:
     from backend.api.ai import route as R
     from backend.api.ai import second_read as SR
     t0 = time.perf_counter()
-    out = await R.call_vision("ocr_consumption", SR.user_prompt(gaps),
-                              system=ocr.SYSTEM_PROMPTS["ocr_consumption"],
+    out = await R.call_vision(SR.LANE, SR.user_prompt(gaps), system=SR.SYSTEM_PROMPT,
                               image_b64=base64.b64encode(strip).decode(),
                               image_tokens=ocr.estimate_image_tokens(strip), temperature=0.1)
     if out.error_class:
@@ -213,7 +212,7 @@ async def second_pass(raw: bytes, parsed: dict, page_no: int, rescore: bool, log
         strip, meta = cut
         gaps = meta["rows"]
         entry.update(geometry=meta["geometry"], written=gaps, blank=meta.get("blank"))
-        cp = CACHE / f"second_{hashlib.sha256(strip + SR.user_prompt(gaps).encode()).hexdigest()[:24]}.txt"
+        cp = CACHE / f"second_{hashlib.sha256(strip + SR.user_prompt(gaps).encode() + SR.SYSTEM_PROMPT.encode()).hexdigest()[:24]}.txt"
         if cp.exists():
             text2 = cp.read_text()
         elif rescore:

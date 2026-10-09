@@ -1229,6 +1229,17 @@ your HOD (**WBS & Work Types**), each line *from* a date, so older papers keep t
 names of their time. The staged rows carry it; your own login stays the
 submitter.
 
+**Earlier preparers and one-day covers (Phase 23).** CNCEC's history now goes
+back to May. Johnson is Day throughout. The Night names are: none before 23
+Jul, Mani from 23 Jul, Subramani from 30 Jul, Mydeen from 2 Aug, and Kalied
+from 26 Sep. A **one-day cover** is somebody who prepared papers on a single
+date: Imtiyaz on 28 Sep, and Mydeen on the 26 Sep handover night. A cover never
+changes the regular pair. For that date, **Prepared by** offers the cover's name
+in its drop-down as well. In the card, dates are picked from a calendar.
+**Add a one-day cover** adds one, with *either shift*, *Day* or *Night*. Every
+*Prepared by* in the Consumption Log is explained by this history: 5,363 of
+5,363 rows.
+
 **Tank (Phase 22).** The **Tank** column matches what is written against your
 site's official tanks, like the names:
 - 🟢 **matched** — `K-TNK-091` is Train K's tank 091 (`522-8k10-TNK-091`),
@@ -1382,8 +1393,25 @@ Shields are not here.
 **Pending only** (on by default), **Without PR / With PR**, the site and a search
 narrow the list.
 
-**Lines with no SAP code** are listed in a yellow box (file, sheet, row) — add
-the SAP code in the workbook and the next pull matches them.
+**Needs a SAP code — decide it here (Phase 23).** A request line the workbook
+gave no SAP code no longer has to be fixed in the workbook. The **Needs a SAP
+code** card groups those lines by what is written on them. Lines that say the
+same thing are one row, and the item master's closest matches are offered as
+gold tags. For each name:
+- **Link** — click a gold tag, or choose the item in the box, then **Link**. The
+  line counts against that item at once: received, pending and Smart Reorder.
+- **Not stocked yet** — for a line with a GI material code that GI Hub does not
+  stock (most of them: *JUBLEE CLAMP*, *HELMET A/C with hose* …). No SAP number
+  is made up. The line **links by itself** on the day your workbook adds an item
+  with that code.
+- **Not a stock item** — a service or a one-off. It leaves pending and reorder.
+
+Tick several names to decide them together. GI Hub remembers each decision for
+that name at your site, so the next request with the same words is already
+decided, and your workbook is never changed. **Decided** lists what was decided
+and by whom; **Undo** puts a name back on the list. **Not stocked yet** shows
+the GI-coded lines that are waiting. The Admin, the site's HOD and Logistics
+decide; store keepers and auditors see the list. Every decision is audited.
 
 **Requests without a PR are "on order".** Smart Reorder subtracts them from its
 suggested order and shows *+ n requested (no PR)* under **On order**, so it stops

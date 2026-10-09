@@ -139,6 +139,14 @@ POLICIES: dict[str, LanePolicy] = {
     "ocr_consumption_form": _p(model=aic.MODEL_VISION, num_predict=2600,
                                timeout_s=aic.VISION_TIMEOUT_S, vision=True,
                                cloud_fallback=True, max_retries=0),
+    # Phase 23b (ruling Q23-3) — the background second read of the rows the
+    # first read skipped. A COMPACT answer (one `S.No|Name|…` line per row,
+    # ~30 tokens, not ~100 of JSON) under a hard cap: the measured cost of the
+    # JSON answer was 158–578 s, the model running on to the full 3,072. No
+    # cloud path: the papers carry workers' names, and nobody is waiting.
+    "ocr_consumption_second": _p(model=aic.MODEL_VISION, num_predict=1024,
+                                 timeout_s=min(aic.VISION_TIMEOUT_S, 300.0), vision=True,
+                                 cloud_fallback=False, max_retries=0),
     "tool_identify":        _p(model=aic.MODEL_VISION, num_predict=384,
                                timeout_s=aic.VISION_TIMEOUT_S, vision=True,
                                cloud_fallback=True, max_retries=0),

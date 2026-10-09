@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Key } from 'react'
 import PracticeNotice from '../components/PracticeNotice'
 import {
-  Alert, App, Button, Card, DatePicker, Descriptions, Input, InputNumber, Popconfirm, Radio,
+  Alert, App, AutoComplete, Button, Card, DatePicker, Descriptions, Input, InputNumber, Popconfirm, Radio,
   Select, Space, Tag, Typography, Upload,
 } from 'antd'
 import { Table } from '../lib/smartTable'
@@ -21,7 +21,7 @@ import type { EntryDoc } from '../components/EntryDocsUpload'
 import OcrJobProgress from '../components/OcrJobProgress'
 import type { OcrJobStatus } from '../components/OcrJobProgress'
 import { status } from '../theme/tokens'
-import { pickPreparers } from '../components/PreparersCard'
+import { coversOn, pickPreparers } from '../components/PreparersCard'
 import type { PreparerEntry } from '../components/PreparersCard'
 
 function errMsg(e: unknown): string {
@@ -883,9 +883,17 @@ export default function OcrImportPage() {
                 </Tag>
               )}
               <span>Prepared by</span>
-              <Input size="small" style={{ width: 180 }} value={preparedBy} data-testid="ocr-prepared-by"
+              {/* Phase 23c (Q23-1): the regular name, plus that day's one-day cover(s) */}
+              <AutoComplete size="small" style={{ width: 180 }} value={preparedBy}
                 placeholder="set the site's names (Admin → Sites)"
-                onChange={(e) => setPreparedOverride(e.target.value)} />
+                onChange={(v) => setPreparedOverride(v)}
+                options={[...new Set([(() => {
+                  const p = pickPreparers(prepData?.history ?? [], date.format('YYYY-MM-DD'))
+                  return (shift?.shift === 'Night' ? p?.night : p?.day) || ''
+                })(), ...coversOn(prepData?.history ?? [], date.format('YYYY-MM-DD'), shift?.shift)])]
+                  .filter(Boolean).map((n) => ({ value: n }))}>
+                <Input size="small" data-testid="ocr-prepared-by" />
+              </AutoComplete>
             </Space>
           )}
           {inWorkbook && cmp && (

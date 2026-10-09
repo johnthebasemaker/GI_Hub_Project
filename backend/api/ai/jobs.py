@@ -451,7 +451,7 @@ async def _run_second_read(job_id: int, kind: str, parsed: dict, result: dict, s
     t0 = _time.perf_counter()
     try:
         out = await _route.call_vision(
-            kind, SR.user_prompt(gaps), system=ocr.SYSTEM_PROMPTS[kind],
+            SR.LANE, SR.user_prompt(gaps), system=SR.SYSTEM_PROMPT,
             image_b64=strip_b64, image_tokens=ocr.estimate_image_tokens(base64.b64decode(strip_b64)),
             temperature=0.1)
         rows2 = SR.parse_rows(out.text)
