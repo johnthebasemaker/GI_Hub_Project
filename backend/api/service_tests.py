@@ -31639,6 +31639,232 @@ async def test_phase22d_requests():
         await cleanup()
 
 
+async def test_phase23b_page_tank_second_read():
+    """Suite 23B — Phase 23b (rulings Q23-2/3). The page tank offers the tanks
+    the site used in the 7 days BEFORE the paper's date (busiest first,
+    `others` last, the paper's own day excluded), then the learned tanks; the
+    second read aims at the GAPS in the printed S.No column — where the 8
+    photos' 7 lost lines actually were — cuts them as strips from the ruled
+    lines, reads them once AFTER the first read is already `done` (0 s wait),
+    and adds only gap rows with something written."""
+    import base64 as _b64
+    import datetime as _dtm
+    import io as _io
+
+    from PIL import Image as _Img
+    from PIL import ImageDraw as _Draw
+    from sqlalchemy import text as _t
+
+    from . import auth as _auth
+    from . import ocr_names as ON
+    from .ai import client as _aic2
+    from .ai import jobs as AJ
+    from .ai import second_read as SR
+
+    SITE = "SV23B"
+    D = _dtm.date
+
+    def tok(u, r, site=None):
+        return {"Authorization": f"Bearer {_auth._make_token(u, r, site or '', _auth.ACCESS_TTL)}"}
+
+    async def ex(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+
+    # ── the page tank ────────────────────────────────────────────────────────
+    await ex('DELETE FROM consumption WHERE "Site_ID" = :s', s=SITE)
+    for day, tank, n in (("2026-10-08", "J027", 3), ("2026-10-07", "J050", 5),
+                         ("2026-10-03", "Others", 1), ("2026-10-02", "others", 1),
+                         ("2026-10-01", "J027", 1),          # 8 days before — out
+                         ("2026-10-09", "J091", 9)):        # the paper's own day — out
+        for k in range(n):
+            await ex('INSERT INTO consumption ("SAP_Code","Quantity","Date","Site_ID","Tank_No") '
+                     "VALUES ('1001', 1, :d, :s, :t)", d=f"{day} 00:00:00", s=SITE, t=tank)
+    await ex('DELETE FROM sme_tank_alias WHERE "Site_ID" = :s', s=SITE)
+    await ex('INSERT INTO sme_tank_alias ("Site_ID", alias_raw, alias_norm, "Equipment_Tag_No", status) '
+             "VALUES (:s, 'K-TNK-091', 'KTNK091', '522-8k10-TNK-091', 'mapped')", s=SITE)
+    async with SessionLocal() as s_:
+        recent = await ON.recent_tanks(s_, SITE, D(2026, 10, 9))
+    check("23b-01: the page tank offers the site's tanks of the 7 days BEFORE the paper's "
+          "date (Q23-2) — busiest first, the workbook's 'Others'/'others' folded into one and "
+          "put last; the paper's own day and the 8th day before are not in the list",
+          [(r["tag"], r["lines"]) for r in recent] == [("J050", 5), ("J027", 3), ("Others", 2)],
+          str(recent))
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://t") as c:
+        r = await c.get("/ai/ocr/page-tanks", params={"date": "2026-10-09"},
+                        headers=tok("sv23b_sk", "store_keeper", SITE))
+        r_admin = await c.get("/ai/ocr/page-tanks", params={"date": "2026-10-09"},
+                              headers=tok("sv23b_admin", "admin"))
+        r_bad = await c.get("/ai/ocr/page-tanks", params={"date": "9/10/26"},
+                            headers=tok("sv23b_sk", "store_keeper", SITE))
+        r_hod = await c.get("/ai/ocr/page-tanks", params={"date": "2026-10-09", "site_id": SITE},
+                            headers=tok("sv23b_hod", "hod", SITE))
+    body = r.json() if r.status_code == 200 else {}
+    check("23b-02: GET /ai/ocr/page-tanks — the store keeper gets the window (2–8 Oct), the "
+          "recent tanks and then the learned ones not already offered; an admin without a site "
+          "is told to name one (422, a readable reason); a bad date is a 422; a HOD is refused "
+          "(the OCR page is the store keeper's)",
+          r.status_code == 200 and body.get("from") == "2026-10-02" and body.get("to") == "2026-10-08"
+          and [x["tag"] for x in body.get("recent", [])] == ["J050", "J027", "Others"]
+          and "522-8k10-TNK-091" in body.get("learned", [])
+          and r_admin.status_code == 422 and "site_id" in r_admin.text
+          and r_bad.status_code == 422 and r_hod.status_code == 403,
+          f"{r.status_code} {str(body)[:200]} admin={r_admin.status_code} bad={r_bad.status_code} hod={r_hod.status_code}")
+
+    # ── the gaps ─────────────────────────────────────────────────────────────
+    read = [{"sno": s} for s in ("1", "7", "8", "13", "15", "16", *map(str, range(18, 29)))]
+    gaps = SR.missing_rows(read)
+    check("23b-03: the gaps are the printed rows the first read did not return — on the "
+          "operator's 6 Oct page (read 1, 7, 8, 13, 15, 16, 18–28) that is 2–6, 9–12, 14, 17, "
+          "29, 30 (the ink test below keeps only the written ones); a page without S.No is "
+          "never re-read",
+          gaps == [2, 3, 4, 5, 6, 9, 10, 11, 12, 14, 17, 29, 30]
+          and SR.runs(gaps) == [(2, 6), (9, 12), (14, 14), (17, 17), (29, 30)]
+          and SR.missing_rows([{"sno": None}, {"sno": None}, {"sno": "1"}]) == []
+          and SR.missing_rows([{"sno": str(k)} for k in range(1, 31)]) == [], str(gaps))
+
+    # a synthetic ruled page: 30 rows between 20% and 86.7% of the height, with
+    # "handwriting" (a zig-zag) in the rows named by `ink`
+    def page(lined: bool = True, ink=()) -> bytes:
+        im = _Img.new("RGB", (900, 1280), "white")
+        dr = _Draw.Draw(im)
+        top, bottom = 0.20 * 1280, 0.867 * 1280
+        step = (bottom - top) / 30
+        if lined:
+            for k in range(31):
+                y = top + k * step
+                dr.line((60, y, 840, y), fill="black", width=2)
+            for x in (60, 120, 840):
+                dr.line((x, top, x, bottom), fill="black", width=2)
+        for row in ink:
+            y0, y1 = top + (row - 1) * step + step * 0.3, top + row * step - step * 0.3
+            pts = [(150 + 12 * i, y0 if i % 2 else y1) for i in range(45)]
+            dr.line(pts, fill=(20, 30, 140), width=2)
+        buf = _io.BytesIO()
+        im.save(buf, format="JPEG", quality=90)
+        return buf.getvalue()
+
+    cut = SR.strip_image(page(), [2, 3, 4, 9, 10])
+    cut_blank = SR.strip_image(page(lined=False), [2, 3])
+    size = cut[1]["size"] if cut else None
+    check("23b-04: the strips are cut from the page's own ruled lines (2–4 and 9–10: two "
+          "strips under the printed column header, stacked into ONE image and enlarged 2× — "
+          "about 6½ rows tall, far less than a page); a photo whose ruled lines cannot be "
+          "found gets NO second read — never a guessed crop",
+          cut is not None and cut[1]["geometry"] == "ruled lines" and cut[1]["strips"] == 2
+          and size and size[0] == 1800 and 300 < size[1] < 600 and cut_blank is None,
+          f"{cut[1] if cut else None} / {cut_blank[1] if cut_blank else None}")
+    inked = SR.strip_image(page(ink=(1, 2, 3, 6, 7)), [2, 3, 4, 5, 8], read={1, 6, 7})
+    none_written = SR.strip_image(page(ink=(1, 6)), [2, 3, 4], read={1, 6})
+    check("23b-04b ⚠️ THE MODEL INVENTS ROWS (asked about four blank printed rows of the "
+          "6 Oct paper it returned four rows of ditto marks): only gap rows with handwriting "
+          "go to the second read — rows 2, 3 here, never the blank 4, 5, 8 — and a page whose "
+          "gaps are all blank gets no second read at all",
+          inked is not None and inked[1]["rows"] == [2, 3] and inked[1]["blank"] == [4, 5, 8]
+          and none_written is None, f"{inked[1] if inked else None}")
+
+    second = [{"sno": "2", "issued_to": "A", "material_text": "<DITTO>", "qty_text": "1", "quantity": 1},
+              {"sno": "3", "issued_to": "", "material_text": "", "qty_text": "", "quantity": None},
+              {"sno": "7", "issued_to": "dup", "material_text": "x", "qty_text": "1", "quantity": 1},
+              {"sno": "2", "issued_to": "twice", "material_text": "y", "qty_text": "1", "quantity": 1},
+              {"sno": "21", "issued_to": "not a gap", "material_text": "z", "qty_text": "1", "quantity": 1},
+              {"sno": "9", "issued_to": "B", "material_text": "<DITTO>", "qty_text": "6", "quantity": 6}]
+    acc = SR.accept(second, [2, 3, 4, 9], read)
+    merged = SR.merge(read[:4], acc)
+    check("23b-05: only a GAP row with something written is added — a blank row, a row the "
+          "first read already has, a second copy of one S.No and a row outside the gaps are "
+          "dropped — and the page is put back in printed order",
+          [(a["sno"], a["issued_to"]) for a in acc] == [("2", "A"), ("9", "B")]
+          and all(a["second_read"] for a in acc)
+          and [m["sno"] for m in merged] == ["1", "2", "7", "8", "9", "13"]
+          # ⚠️ an EMPTY second read is an answer (the gaps were blank), never
+          # the first read's "found no rows" refusal
+          and SR.parse_rows('{"date_text": "", "rows": []}') == [],
+          str([(a["sno"], a["issued_to"]) for a in acc]))
+    prompt = SR.user_prompt([2, 3, 4, 9, 10, 11])
+    check("23b-06: the prompt names the rows (2–4, 9–11) and demands a row per printed row even "
+          "when every cell is a ditto — the exact way the first read lost them",
+          "2–4, 9–11" in prompt and "EVEN WHEN every cell is a ditto" in prompt, prompt[:120])
+
+    # ── the job: first read DONE first, the second read after ───────────────
+    import json as _json2
+    calls: list[str] = []
+    seen_first_done: list[bool] = []
+
+    async def _fake_vision(prompt, *, system, image_b64, num_predict=1400, timeout_s=0, **kw):
+        calls.append(prompt)
+        if "strips cut from the SAME form" in prompt:
+            # at this moment the first read must already be visible as `done`
+            async with SessionLocal() as s_:
+                st = (await s_.execute(_t("SELECT status FROM ai_jobs WHERE id = :i"),
+                                       {"i": job_id})).scalar()
+            seen_first_done.append(st == "done")
+            return _json2.dumps({"date_text": "", "rows": [
+                {"sno": "2", "issued_to": "Worker", "tank_no": "<DITTO>", "material_text": "<DITTO>",
+                 "uom": "", "qty_text": "1", "quantity": 1, "work_type": "<DITTO>"},
+                {"sno": "3", "issued_to": "", "tank_no": "", "material_text": "", "uom": "",
+                 "qty_text": "", "quantity": None, "work_type": ""}]}), "fake-vlm"
+        return _json2.dumps({"date_text": "06/10/26", "rows": [
+            {"sno": "1", "issued_to": "Worker", "tank_no": "J027", "material_text": "Leather gloves",
+             "uom": "Pair", "qty_text": "1", "quantity": 1, "work_type": "R/L"},
+            {"sno": "4", "issued_to": "Worker", "tank_no": "<DITTO>", "material_text": "<DITTO>",
+             "uom": "", "qty_text": "4", "quantity": 4, "work_type": "<DITTO>"}]}), "fake-vlm"
+
+    async def _ok():
+        return True
+
+    async def _models():
+        return [_aic2.MODEL_VISION]
+
+    saved = (_aic2.vision_json, _aic2.health, _aic2.list_models)
+    _aic2.vision_json, _aic2.health, _aic2.list_models = _fake_vision, _ok, _models
+    try:
+        async with SessionLocal() as s_:
+            job_id = await AJ.create_job(s_, kind="ocr_consumption", actor="sv23b_sk", site_id=SITE,
+                                         image_b64=_b64.b64encode(page(ink=(1, 2, 3, 4))).decode())
+            await s_.commit()
+        await AJ.run_job(job_id)
+        async with SessionLocal() as s_:
+            row = (await s_.execute(_t("SELECT status, result_json, payload_json FROM ai_jobs "
+                                       "WHERE id = :i"), {"i": job_id})).first()
+    finally:
+        _aic2.vision_json, _aic2.health, _aic2.list_models = saved
+    res = _json2.loads(row.result_json or "{}")
+    sr = res.get("second_read") or {}
+    check("23b-07 ⚠️ 0 s WAIT (Q23-3): the job is `done` with the first read's rows BEFORE the "
+          "second read is asked anything; the second read then looks only at the WRITTEN gap "
+          "rows (2–3; the blank 5–30 are never shown) and records what it added (row 2), "
+          "dropping the empty row 3; the photo is still cleared from the queue",
+          row.status == "done" and len(res.get("rows", [])) == 2 and seen_first_done == [True]
+          and len(calls) == 2 and sr.get("status") == "done" and sr.get("rows") == [2, 3]
+          and [a.get("sno") for a in sr.get("added", [])] == ["2"]
+          and sr["added"][0].get("second_read") is True and row.payload_json is None,
+          f"status={row.status} first_done={seen_first_done} sr={str(sr)[:300]}")
+
+    import os as _os2
+    _os2.environ["GI_OCR_SECOND_READ"] = "0"
+    try:
+        off = AJ._plan_second_read("ocr_consumption", {"rows": read},
+                                   _b64.b64encode(page(ink=(2, *SR.read_snos(read)))).decode())
+    finally:
+        _os2.environ.pop("GI_OCR_SECOND_READ", None)
+    on = AJ._plan_second_read("ocr_consumption", {"rows": read},
+                              _b64.b64encode(page(ink=(2, *SR.read_snos(read)))).decode())
+    check("23b-08: the second read can be switched off (GI_OCR_SECOND_READ=0); a delivery note "
+          "or a full page plans none; a consumption page with gaps plans one",
+          off is None and AJ._plan_second_read("ocr_delivery_note", {"rows": read}, "eA==") is None
+          and AJ._plan_second_read("ocr_consumption",
+                                   {"rows": [{"sno": str(k)} for k in range(1, 31)]},
+                                   _b64.b64encode(page()).decode()) is None
+          and on is not None and on[2]["status"] == "running" and on[0] == [2],
+          str(on[2] if on else None))
+    await ex('DELETE FROM consumption WHERE "Site_ID" = :s', s=SITE)
+    await ex('DELETE FROM sme_tank_alias WHERE "Site_ID" = :s', s=SITE)
+    await ex("DELETE FROM ai_jobs WHERE id = :i", i=job_id)
+
+
 async def test_phase22e_paper_lines():
     """Suite 22E — Phase 22e: the consumption paper, line by line (rulings
     Q22-14..19). Pinned: "(Night)" → the Night preparer, NO mark → Day, by the
@@ -32671,6 +32897,9 @@ async def main() -> int:
     print("\n 22E. Phase 22e — the paper line by line: shift → preparer, tanks like names, "
           "one-to-one pairing, compare not stage, the tank and preparer staged")
     await test_phase22e_paper_lines()
+    print("\n 23B. Phase 23b — the page tank (7 days before, ditto/blank/unknown only) and the "
+          "background second read of the S.No gaps (0 s wait)")
+    await test_phase23b_page_tank_second_read()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

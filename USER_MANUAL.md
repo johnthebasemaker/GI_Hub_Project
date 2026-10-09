@@ -1244,6 +1244,32 @@ A ditto mark under a tank takes the tank above (*as above ("K-TNK-091")*).
 above the table sets their tank in one go. **Accept**, a choice or the bar
 **teaches** the spelling for your site — green next time.
 
+**Tank for this whole page (Phase 23).** The reader often garbles the **first**
+tank on a page, and every ditto mark below it inherits the mistake. Above the
+table, **Tank for this whole page** lists the tanks your site used in the **7
+days before the paper's date** (busiest first, with how many lines), then the
+site's other tanks. Choose the tank you can read in the first cell, and every
+row whose tank is a **ditto mark, blank, not found or a gold "check"** takes it
+at once. Two kinds of row are **never** changed: a row whose own written tank
+was matched (🟢), and a row where you chose the tank yourself. **Undo** puts
+back exactly what was there. The page tank does not teach a spelling; only
+**Accept** or a choice in a row's box teaches one. *(Measured on the 8 photos of
+5–6 Oct: the tank is right on 0.81 of the lines instead of 0.42, and 49 lines
+are entirely right instead of 32.)*
+
+**The second read (Phase 23).** On a photographed page, the reader sometimes
+skips rows that are nothing but ditto marks. On the 6 Oct paper it skipped rows
+2–4 and 9–12 and returned 17 of 24 lines. GI Hub now checks the printed **S.No**
+column. When a printed row is missing from the read **and has handwriting in
+it**, it is cut out of the photo and read **again in the background**. Blank
+rows are never re-read: shown blank rows, the reader invents lines. The rows from the first read
+appear straight away as before, so **you never wait** for this. A blue note
+says *Reading again the printed rows the first read skipped (S.No 2–6, 9–12…)*.
+Rows found are slotted in at their S.No, marked **2nd read** in purple, and
+matched like the others (a ditto takes the tank and remark above). Check them
+like any row. If nothing more is written there, the note says so. A pasted
+paper has no photo, so it gets no second read.
+
 **Already in the workbook? Compare, not stage (Phase 22).** When the workbook
 already has rows for the paper's **date and preparer**, a blue box says *This
 paper is already in the workbook — 79 row(s) for 05 Oct 2026, prepared by

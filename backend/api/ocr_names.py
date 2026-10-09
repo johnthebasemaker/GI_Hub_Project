@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -141,6 +141,61 @@ async def paper_check(body: PaperIn, user: dict = Depends(_SK),
         out["tanks"] = PF.fill_dittos([PF.match_tank(t, tags, aliases) for t in body.tanks])
         out["tank_tags"] = sorted(tags)
     return out
+
+
+PAGE_TANK_DAYS = 7
+
+
+async def recent_tanks(session: AsyncSession, site: str, day, days: int = PAGE_TANK_DAYS) -> list[dict]:
+    """The tanks the site's consumption lines name in the `days` days BEFORE
+    `day` (the paper's own date is not included — ruling Q23-2), busiest
+    first, `others` last. Spellings are folded case-insensitively so the
+    workbook's `Others` and `others` are one choice."""
+    import datetime as _dtm
+    lo = (day - _dtm.timedelta(days=days)).isoformat()
+    hi = day.isoformat()
+    rows = (await session.execute(text(
+        'SELECT TRIM("Tank_No") AS t, count(*) AS n FROM consumption '
+        'WHERE "Site_ID" = :s AND COALESCE(TRIM("Tank_No"), \'\') <> \'\' '
+        'AND LEFT("Date", 10) >= :lo AND LEFT("Date", 10) < :hi '
+        'GROUP BY 1'), {"s": site, "lo": lo, "hi": hi})).all()
+    folded: dict[str, dict] = {}
+    for t, n in rows:
+        key = t.lower()
+        cur = folded.setdefault(key, {"tag": t, "lines": 0})
+        cur["lines"] += int(n)
+        if t != key and cur["tag"] == key:   # prefer the workbook's own casing
+            cur["tag"] = t
+    out = sorted(folded.values(), key=lambda r: (r["tag"].lower() == "others", -r["lines"], r["tag"]))
+    return out
+
+
+@router.get("/page-tanks", summary="Tanks for the 'tank for this whole page' choice (Q23-2)")
+async def page_tanks(date: str = Query(..., max_length=10, description="the paper's date, YYYY-MM-DD"),
+                     site_id: Optional[str] = None,
+                     user: dict = Depends(_SK),
+                     session: AsyncSession = Depends(get_session)):
+    """Phase 23b (ruling Q23-2). The reader garbles the FIRST tank cell of a
+    page and every ditto below inherits it (tank right 0.42 on the 8 photos).
+    The store keeper sets the tank once for the page instead, chosen from the
+    tanks the site actually used in the 7 days before the paper's date, then
+    the learned tanks. Read-only: filling the rows happens on the page, and
+    only ditto / blank / unknown rows are filled."""
+    import datetime as _dtm
+    try:
+        day = _dtm.date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(422, "date must be YYYY-MM-DD")
+    site = resolve_site_param(user, site_id) or ""
+    if not site:
+        raise HTTPException(422, "site_id is required for a global role")
+    recent = await recent_tanks(session, site, day)
+    tags, aliases = await site_tanks(session, site)
+    seen = {r["tag"].lower() for r in recent}
+    learned = sorted({t for t in [*aliases.values(), *tags] if t and t.lower() not in seen})
+    return {"site_id": site, "from": (day - _dtm.timedelta(days=PAGE_TANK_DAYS)).isoformat(),
+            "to": (day - _dtm.timedelta(days=1)).isoformat(),
+            "recent": recent, "learned": learned}
 
 
 class TankLearnIn(BaseModel):

@@ -5282,6 +5282,37 @@ GI_DOTENV=0 .venv/bin/python -m pytest tests/downloads -q -p no:cacheprovider
 list) as all nine roles, the bytes checked, and the site rule checked against
 the screen that calls it. It runs in CI (`dual-ci`) on the generated fixture.
 
+## 23b. Phase 23b — OCR: the page tank and the second read (rulings Q23-2/3)
+
+**TC-23B-01 — the page tank (paste lane, no AI needed).** OCR Import → Paste
+(Consumption log), a date of yesterday, three lines: a garbled tank
+(`Zq9-Tnk-0o`), a ditto (`″`) and a tank your site knows (e.g. `J027`). Parse.
+**Tank for this whole page** lists the tanks of the 7 days before yesterday
+with their line counts. Choose one: rows 1 and 2 take it, row 3 keeps `J027`.
+**Undo**: rows 1 and 2 go back to *not found* / *as above*. Choose a tank in
+row 1's own box, then a page tank: row 1 is not changed.
+
+**TC-23B-02 — the second read (photo lane, local AI on).** Photograph a paper
+with a few ditto-only rows. The rows appear as soon as the first read ends,
+with a blue note *Reading again the printed rows… S.No …*. Keep editing (pick
+an item, set a tank). Within about a minute the note turns green: *found N more
+row(s)*, the rows sit at their S.No with a purple **2nd read** tag, and your
+edits are still there.
+
+**TC-23B-03 — off switch.** `GI_OCR_SECOND_READ=0` in `deploy/.env` → no note,
+no second read.
+
+**TC-23B-04 — the measurement.**
+
+```bash
+GI_DOTENV=0 .venv/bin/python tools/ocr_eval.py --images data-archive/ocr_ground_truth/2026-10-05_06 --second-read --lines --aliases .cache/ocr_eval/proposed_aliases_phase21.json
+```
+
+prints `SECOND READ` (rows added, seconds per page) and
+`lines_accept_first_page_tank` (tank accuracy with one page tank per page).
+Suite 23B (service tests) and `npm run test:ui-math` (OCR page rules) pin the
+rules.
+
 ## 21d. Phase 21d — OCR measured against the workbook; the name matcher (Q21-1..6)
 
 **Why this exists.** The 11 photos of the *Safety & Production Consumables*
