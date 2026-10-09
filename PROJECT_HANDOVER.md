@@ -1220,6 +1220,37 @@ green checks → merge → local pull, unasked (`CLAUDE.md` §5).
 | **Q20-12/13** | Paper-form PENDING_HOD entries bulk-approve, each posting stock in its own savepoint; QSEP blocks or stock conflicts fail alone. At most 50. | `bulk_jobs.approve_entries` |
 | **Q20-14..17** | Pitch numbers use `[operator]` placeholders except published figures (sourced). A 10-minute talk plus a deck. The demo runs on localhost Practice. No supplier prices or site names. | `FINANCE_PITCH.md`, the Slides artifact |
 
+### Phase 23 — Quality, Voice & Visuals (2026-10-09, RULED)
+
+`PROPOSED_PHASE23_PLAN.md` (#135) was approved whole on 2026-10-09; slices
+23a–23g. **Local Mac only — no Hetzner yet.** Rulings:
+
+| # | Ruling | Where it lives |
+|---|---|---|
+| **Q23-1** | Johnson is the Day preparer throughout. Night: Mani from 2026-07-23, Subramani from 07-30, Mydeen from 08-02, Kalied from 09-26. Imtiyaz is a SINGLE-DAY cover (2026-09-28). No Night papers before 07-23. | `preparers` history (23c) |
+| **Q23-2** | The page tank offers the site's tanks used in the 7 days before the paper's date, then learned aliases; it fills ONLY ditto / blank / unknown rows and never overrides an explicit input. | OCR Import (23b) |
+| **Q23-3** | The bottom-of-page second read runs AUTOMATICALLY in the background — **0 s added wait for the store keeper is mandatory**. | OCR (23b) |
+| **Q23-4** | SAP-code mapping: Admin, HOD, Logistics. NOT the store keeper. | `request_sap_map` (23c) |
+| **Q23-5** | A request line linked to a not-stocked catalogue code waits until the item appears in the workbook — NO invented SAP numbers. HODs MAY raise a PR for a not-stocked catalogue item. | 23c / 23d |
+| **Q23-6** | The operator creates the Drive `Material Images` folder (files named by GI code) later. **No web image search, ever.** | 23d |
+| **Q23-7** | Pictures are stored on disk, backed up nightly; the Drive token stays read-only. | `media/catalog/` (23d) |
+| **Q23-8** | Admin, HOD, Logistics change pictures, audited and restorable; ONE picture set per code, shared across sites. | 23d |
+| **Q23-9** | "Equipment" = the site plant & tools list (58 assets), not tanks and areas. | 23d |
+| **Q23-10/11** | English-only voice. BOTH a 🔊 read-aloud (the device's own voice) AND Whistle dictation into other text fields. | 23e |
+| **Q23-12** | Whistle (~120 MB, CPU, outside Ollama) is an explicit EXCEPTION to the one-warm-model rule (Q17-1). | `services/stt` (23e) |
+| **Q23-13** | Practice login shows the 8 shared accounts with one-click sign-in; the Practice ADMIN password is shown only inside the Live Admin Console. | 23f |
+| **Q23-14** | The 12 demos of plan §6.2; the management tour in English captions + voice only. | 23f |
+| **Q23-15** | Claude runs the two Phase 23 Live migrations, backup first. | `.backups/` |
+| **Q23-16** | FINANCE_PITCH uses measured numbers only; no invented projected savings. | 23g |
+| **Q23-17** | The 5 consumption rows dated 2026-10-10 are left alone; the operator fixes the workbook. | — |
+
+**23a finding (2026-10-09):** the Execution "422" was an admin print sending no
+`site_id` (a printed form is registered to a site). The same defect sat in the
+Stock-vs-Excel uploads and the Manpower Planner; plain `/api/…` links and a
+`window.open` export carried no token (401); two pickers asked for more rows
+than the list cap. All fixed, and `tests/downloads` (pytest, in `dual-ci`) now
+calls every file-returning route as every role.
+
 ### Phase 22 — Deep Drive integration, OCR line by line & final polish (2026-10-07, RULED)
 
 `PROPOSED_PHASE22_PLAN.md` was approved whole (2026-10-07). **Shipped

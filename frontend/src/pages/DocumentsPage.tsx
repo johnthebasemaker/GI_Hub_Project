@@ -31,7 +31,7 @@ export default function DocumentsPage() {
 
   // Label sheet scoping: pick specific materials (blank = every item at the
   // site) and how many copies of each label to print (legacy per-item qty).
-  const inventory = useList('/inventory', { limit: 600 })
+  const inventory = useList('/inventory', { limit: 1000 })
   const [labelSaps, setLabelSaps] = useState<string[]>([])
   const [labelCopies, setLabelCopies] = useState(1)
   const materialOptions = useMemo(() => (inventory.data?.items ?? [])
@@ -51,7 +51,7 @@ export default function DocumentsPage() {
   // type an employee ID (what an SK does on every PPE issue) is not the same
   // act as printing or exporting the whole roster.
   const canBadge = ['hod', 'auditor', 'admin'].includes(String(user?.role ?? ''))
-  const employees = useList('/employees', { limit: 600 }, canBadge)
+  const employees = useList('/employees', { limit: 1000 }, canBadge)
   const [badgeEmp, setBadgeEmp] = useState<string | undefined>()
   const employeeOptions = useMemo(() => (employees.data?.items ?? [])
     .filter((r: ApiRow) => String(r.status ?? 'active') === 'active')

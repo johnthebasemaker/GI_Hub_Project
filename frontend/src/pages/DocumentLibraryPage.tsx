@@ -5,6 +5,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { DownloadOutlined, EyeOutlined, FolderOpenOutlined } from '@ant-design/icons'
 import type { Dayjs } from 'dayjs'
 import { api } from '../api/client'
+import { useAuthedUrl } from '../api/authedFile'
 import { useEntryDocs, useSites } from '../api/hooks'
 import type { EntryDocRow } from '../api/hooks'
 import { useAuth } from '../auth/AuthContext'
@@ -19,20 +20,23 @@ import { Select } from 'antd'
  */
 const TYPE_COLORS: Record<string, string> = { consumption: 'blue', receipt: 'green', return: 'volcano' }
 
-export function docPreviewUrl(id: number) {
-  return `/api/entry/attachments/${id}/download?inline=1`
+export function docPreviewPath(id: number) {
+  return `/entry/attachments/${id}/download?inline=1`
 }
 
 export function DocPreviewDrawer({ doc, onClose }: { doc: EntryDocRow | null; onClose: () => void }) {
   const isImage = doc?.mime_type?.startsWith('image/')
   const isPdf = doc?.mime_type === 'application/pdf'
+  // Phase 23a — fetched signed-in; a plain <img src="/api/…"> sends no token.
+  const { url: preview, error } = useAuthedUrl(doc && (isImage || isPdf) ? docPreviewPath(doc.id) : null)
   return (
     <Drawer open={!!doc} onClose={onClose} width={720}
       title={doc ? `${doc.file_name} · ${doc.doc_type} · ${doc.doc_number}` : ''}>
       {doc && (
         <>
-          {isImage && <img src={docPreviewUrl(doc.id)} alt={doc.file_name} style={{ maxWidth: '100%' }} />}
-          {isPdf && <iframe src={docPreviewUrl(doc.id)} title={doc.file_name}
+          {error && <Typography.Text type="danger">{error}</Typography.Text>}
+          {isImage && preview && <img src={preview} alt={doc.file_name} style={{ maxWidth: '100%' }} />}
+          {isPdf && preview && <iframe src={preview} title={doc.file_name}
             style={{ width: '100%', height: '75vh', border: 'none' }} />}
           {!isImage && !isPdf && (
             <Typography.Paragraph>No inline preview for this file type.</Typography.Paragraph>

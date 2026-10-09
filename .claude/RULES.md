@@ -458,6 +458,13 @@ JWT_SECRET=ci-only-service-test-secret-key-32bytes-min \
 .venv/bin/python -u -m backend.api.service_tests
 ```
 ```bash
+# Download contract (Phase 23a) — every file-returning route, as every role, with
+# the parameters the screen sends; seeds its own throwaway DB (gihub_dltest), so
+# it also runs in CI on the generated fixture. Never skips.
+GI_DOTENV=0 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
+.venv/bin/python -m pytest tests/downloads -q -p no:cacheprovider
+```
+```bash
 # SME maths — the dual-engine parity oracle (1,313 comparisons) and the UI math (33)
 npm run parity:sme --prefix frontend
 npm run test:ui-math --prefix frontend

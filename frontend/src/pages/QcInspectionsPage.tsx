@@ -23,6 +23,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { Table } from '../lib/smartTable'
 import { useQcDecide, useQcInspections } from '../api/hooks'
 import type { Row } from '../api/client'
+import { openAuthed } from '../api/authedFile'
 import { useAuth } from '../auth/AuthContext'
 import { useReadOnly } from '../auth/useReadOnly'
 
@@ -125,8 +126,8 @@ function DecideModal({ row, onClose }: { row: Row | null; onClose: () => void })
                 <Button
                   size="small" type="link" icon={<FileSearchOutlined />}
                   style={{ padding: '0 4px' }}
-                  href={`/api/qc/inspections/${row.id}/certificate?inline=1`}
-                  target="_blank" rel="noreferrer"
+                  onClick={() => void openAuthed(`/qc/inspections/${row.id}/certificate`, { inline: 1 })
+                    .catch((e: Error) => message.error(e.message))}
                 >
                   {String(row.mtc_file_name ?? 'Open certificate')}
                 </Button>
@@ -176,6 +177,7 @@ function DecideModal({ row, onClose }: { row: Row | null; onClose: () => void })
 }
 
 export default function QcInspectionsPage() {
+  const { message } = App.useApp()
   const { user } = useAuth()
   const { readOnly } = useReadOnly()
   const [status, setStatus] = useState<string>('pending')
@@ -249,8 +251,8 @@ export default function QcInspectionsPage() {
         ? (
           <Button size="small" type="link" icon={<FileSearchOutlined />}
             style={{ padding: 0 }}
-            href={`/api/qc/inspections/${r.id}/certificate?inline=1`}
-            target="_blank" rel="noreferrer">
+            onClick={() => void openAuthed(`/qc/inspections/${r.id}/certificate`, { inline: 1 })
+              .catch((e: Error) => message.error(e.message))}>
             {String(r.mtc_number ?? 'open')}
           </Button>
         )

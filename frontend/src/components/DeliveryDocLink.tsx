@@ -2,6 +2,7 @@ import { Button, Space, Tag, Tooltip } from 'antd'
 import { DownloadOutlined, FileTextOutlined } from '@ant-design/icons'
 import type { ColumnType } from 'antd/es/table'
 import type { Row } from '../api/client'
+import { openAuthed } from '../api/authedFile'
 
 /**
  * The delivery document, shown wherever a delivery is shown.
@@ -51,8 +52,9 @@ export function DeliveryDocLink({
             <Button
               size="small" type="link" icon={<DownloadOutlined />}
               style={{ padding: '0 4px' }}
-              href={`/api/entry/attachments/${attachmentId}/download?inline=1`}
-              target="_blank" rel="noreferrer"
+              aria-label="Open the signed document"
+              onClick={() => void openAuthed(`/entry/attachments/${attachmentId}/download`, { inline: 1 })
+                .catch(() => undefined)}
             />
           </Tooltip>
         )

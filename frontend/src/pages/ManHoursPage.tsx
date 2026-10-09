@@ -1004,7 +1004,7 @@ export default function ManHoursPage() {
           { key: 'exec-prep', label: '🧱 Surface Prep Progress',
             children: <SurfacePrepTab /> },
           { key: 'planner', label: '🧠 Manpower Planner',
-            children: <ManpowerPlanner /> },
+            children: <ManpowerPlanner site={effSite} /> },
           // Phase 8 slice 8e — the SME session, costed in labour. Arrived at
           // from the Session Builder's 📊 button, which lands on ?tab=session.
           // Phase 9e. Placed beside the planner: one answers "how many people
