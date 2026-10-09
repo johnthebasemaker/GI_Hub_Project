@@ -24313,7 +24313,13 @@ async def test_ai_gateway():
           "(Q5). `/ai/insights` and `/ai/eod-summary` summarise live SQL over "
           "the ERP and `/ai/nl-search` sends generated SQL — the way to keep a "
           "permission narrow is for the wider path not to be written",
-          all(p.cloud_fallback is p.vision for p in _rt.POLICIES.values())
+          # every vision lane is cloud-capable EXCEPT the ones named here, each
+          # with its reason — Phase 23b's second read: the papers carry
+          # workers' names and nobody is waiting for it (the WIDER path is
+          # simply not written for it)
+          all(p.cloud_fallback is p.vision for k, p in _rt.POLICIES.items()
+              if k not in ("ocr_consumption_second",))
+          and _rt.POLICIES["ocr_consumption_second"].cloud_fallback is False
           and not any(p.cloud_fallback for p in _rt.POLICIES.values()
                       if not p.vision),
           str({k: (v.vision, v.cloud_fallback) for k, v in _rt.POLICIES.items()}))
@@ -28342,6 +28348,7 @@ async def test_phase17a_qchod_access():
         "/security": "/auth/2fa/status",
         "/training": "/training/modules",
         "/feedback": "/feedback/mine",
+        "/catalogue": "/catalogue/materials",     # Phase 23d — pictures, read-only
     }
     check("17q-03: every page the snapshot grants qc_hod has a representative read here "
           "(a new grant must bring its endpoint check with it)",

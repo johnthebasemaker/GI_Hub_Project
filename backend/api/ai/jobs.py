@@ -228,7 +228,7 @@ JOB_KINDS = ("ocr_consumption", "ocr_delivery_note", "tool_identify",
 # working. Two literal copies of "3072" is precisely how a budget and the lane
 # it belongs to drift apart, which is the bug this comment block describes.
 NUM_PREDICT = {k: v.num_predict for k, v in _route.POLICIES.items()
-               if v.vision and k != "ocr_consumption_form"}
+               if v.vision and k not in ("ocr_consumption_form", "ocr_consumption_second")}
 # ⚠️ NOT `route.DEFAULT_POLICY.num_predict`, which is 512 — the CHAT budget.
 # Binding it there silently halved the fallback for an unlisted VISION lane
 # from 1024 to 512, which is the same class of mistake as the one-budget-for-
