@@ -37,6 +37,7 @@ from .drive_admin import drive_router  # noqa: E402
 from .mtc_drive import router as mtc_drive_router  # noqa: E402
 from .material_requests import router as material_requests_router  # noqa: E402
 from .catalogue import router as catalogue_router  # noqa: E402
+from .stt import router as stt_router  # noqa: E402
 from .drive_admin import router as drive_admin_router  # noqa: E402
 from .ocr_names import router as ocr_names_router  # noqa: E402
 from .admin import router as admin_router  # noqa: E402
@@ -367,6 +368,15 @@ app.include_router(instance_router)
 from .practice import mounted as _practice_mounted, router as practice_router  # noqa: E402
 if _practice_mounted():
     app.include_router(practice_router)
+# Phase 23f (Q23-13): the shared accounts on the Practice login page (Practice
+# only), and the Practice admin password for a signed-in Live admin (Live only)
+from .practice import accounts_router as practice_accounts_router  # noqa: E402
+from .practice import live_router as practice_live_router  # noqa: E402
+from .config import is_practice as _is_practice_creds  # noqa: E402
+if _is_practice_creds():
+    app.include_router(practice_accounts_router)
+else:
+    app.include_router(practice_live_router)
 
 # Inbound WhatsApp webhook (Phase 6). Unauthenticated by design — Meta calls it
 # with its own verify-token (GET) / X-Hub-Signature-256 HMAC (POST). Mounted at
@@ -506,6 +516,8 @@ app.include_router(mtc_drive_router)
 app.include_router(material_requests_router)
 # Phase 23d — the material & equipment catalogue with pictures (Q23-5..9)
 app.include_router(catalogue_router)
+# Phase 23e — voice input on this machine (Whistle, Q23-10..12)
+app.include_router(stt_router)
 # Phase 21d — the consumption-paper name matcher and the names it learned.
 app.include_router(ocr_names_router)
 # Phase 21f — the self-driving demo's server half. ⚠️ PRACTICE PROCESS ONLY

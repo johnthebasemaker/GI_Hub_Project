@@ -56,6 +56,8 @@ import tempfile as _tempfile  # noqa: E402
 os.environ["GI_DRIVE_CACHE_DIR"] = _tempfile.mkdtemp(prefix="gi-svc-drive-")
 # Phase 23d: pictures go to a throwaway folder, never the operator's media/
 os.environ["GI_MEDIA_DIR"] = _tempfile.mkdtemp(prefix="gi-svc-media-")
+# Phase 23e: no real voice model — suite 23E stubs the engine; CI has none either
+os.environ["GI_STT_DIR"] = _tempfile.mkdtemp(prefix="gi-svc-stt-")
 
 # ⚠️ ORDER IS THE WHOLE MECHANISM. `db.py` builds its engine at import time from
 # whatever DATABASE_URL says at that instant, so the swap has to happen on the
@@ -10038,6 +10040,8 @@ async def test_auditor_read_only():
         ("POST", "/ai/assistant"), ("POST", "/ai/query"),
         ("POST", "/ai/nl-search"), ("POST", "/ai/insights"),
         ("POST", "/ai/eod-summary"),
+        # Phase 23e: dictation — speech in, text out, nothing written
+        ("POST", "/ai/stt"),
     }
     check("bd: EVERY mutating route is blocked for an auditor except the "
           "documented read-only/self-service exceptions — a new @router.post "
@@ -31648,6 +31652,193 @@ async def test_phase22d_requests():
         await cleanup()
 
 
+from sqlalchemy import text as _t_23e  # noqa: E402
+
+
+async def test_phase23e_voice():
+    """Suite 23E — Phase 23e (rulings Q23-10..12). Whistle is used ONLY from
+    files pinned by checksum (anything else: the microphone hides itself, never
+    a download); telemetry is off; the audio is a ≤ 30 s 16 kHz mono WAV, never
+    stored; the site's own words go in as keywords; the text comes back to be
+    read — speaking never sends."""
+    import hashlib as _hl
+    import io as _io2
+    import json as _js
+    import os as _os3
+    import tempfile as _tf2
+    import wave as _wave
+    from pathlib import Path as _P2
+
+    from . import auth as _auth
+    from . import stt as API
+    from .services import stt as STT
+
+    def tok(u, r, site=""):
+        return {"Authorization": f"Bearer {_auth._make_token(u, r, site, _auth.ACCESS_TTL)}"}
+
+    def wav(seconds=1.0, rate=16000, ch=1) -> bytes:
+        buf = _io2.BytesIO()
+        with _wave.open(buf, "wb") as w:
+            w.setnchannels(ch)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(b"\x00\x10" * int(seconds * rate) * ch)
+        return buf.getvalue()
+
+    saved_dir = STT.STT_DIR
+    d = _P2(_tf2.mkdtemp(prefix="gi-23e-"))
+    try:
+        STT.STT_DIR = d
+        st_missing = STT.status(refresh=True)
+        (d / "libneedle.dylib").write_bytes(b"engine")
+        (d / "whistle.cact").write_bytes(b"weights")
+        (d / "manifest.json").write_text(_js.dumps({"whistle_version": "2.0.0", "files": {
+            "engine": {"name": "libneedle.dylib", "sha256": _hl.sha256(b"engine").hexdigest()},
+            "weights": {"name": "whistle.cact", "sha256": _hl.sha256(b"OTHER").hexdigest()}}}))
+        st_bad = STT.status(refresh=True)
+        (d / "manifest.json").write_text(_js.dumps({"whistle_version": "2.0.0", "files": {
+            "engine": {"name": "libneedle.dylib", "sha256": _hl.sha256(b"engine").hexdigest()},
+            "weights": {"name": "whistle.cact", "sha256": _hl.sha256(b"weights").hexdigest()}}}))
+        st_ok = STT.status(refresh=True)
+        _os3.environ["GI_STT"] = "0"
+        st_off = STT.status(refresh=True)
+        _os3.environ.pop("GI_STT", None)
+        STT.status(refresh=True)                     # back to the pinned, available state
+        for k in ("NEEDLE_TELEMETRY", "DO_NOT_TRACK", "HF_HUB_OFFLINE"):
+            _os3.environ.pop(k, None)
+        STT._env()
+        env_ok = (_os3.environ.get("NEEDLE_TELEMETRY") == "0" and _os3.environ.get("DO_NOT_TRACK") == "1"
+                  and _os3.environ.get("HF_HUB_OFFLINE") == "1"
+                  and _os3.environ["NEEDLE_WHISTLE_WEIGHTS"].endswith("whistle.cact"))
+        check("23e-01: Whistle is used ONLY from files whose SHA-256 matches the pin — none set "
+              "up, a mismatched file, or GI_STT=0 all mean 'no microphone' with a reason (never "
+              "a download); loading switches the package's telemetry OFF and Hugging Face offline",
+              st_missing["provider"] == "none" and "not set up" in (st_missing["reason"] or "")
+              and st_bad["provider"] == "none" and "does not match its pin" in (st_bad["reason"] or "")
+              and st_ok["provider"] == "whistle" and st_off["provider"] == "none" and env_ok,
+              f"{st_missing} {st_bad} {st_ok} {st_off}")
+
+        bad = []
+        for blob, why in ((wav(rate=44100), "16 kHz"), (wav(ch=2), "mono"), (wav(31.5), "30 seconds"),
+                          (b"not audio", "not a WAV"), (b"", "empty")):
+            try:
+                STT.decode_wav(blob)
+                bad.append(why)
+            except STT.SttError as e:
+                if why not in str(e) and why != "mono":
+                    bad.append(f"{why}: {e}")
+        samples = STT.decode_wav(wav(2.0))
+        check("23e-02: the audio must be a ≤ 30 s 16 kHz mono 16-bit WAV (what the browser "
+              "makes); anything else is refused with a reason a person can act on",
+              not bad and len(samples) == 32000 and abs(samples[0] - 0.125) < 1e-6, str(bad))
+
+        calls = []
+
+        def _fake_run(smp, keywords):
+            calls.append((len(smp), list(keywords)))
+            return {"text": "show me the tyvek coverall stock", "ms": 12, "language": "en"}
+        saved_run = STT._run
+        STT._run = _fake_run
+        try:
+            async with SessionLocal() as s_:
+                await s_.execute(_t_23e('DELETE FROM consumption WHERE "Site_ID" = \'SV23E\''))
+                await s_.execute(_t_23e('DELETE FROM inventory WHERE "Site_ID" = \'SV23E\''))
+                await s_.execute(_t_23e(
+                    'INSERT INTO inventory ("SAP_Code", "Equipment_Description", "Site_ID", "Minimum_Qty", '
+                    '"Opening_Stock") VALUES (\'SV23E-1\', \'TYVEK COVERALL DISPOSABLE XL\', \'SV23E\', 0, 0)'))
+                await s_.execute(_t_23e(
+                    'INSERT INTO consumption ("SAP_Code", "Quantity", "Date", "Site_ID", "Tank_No") VALUES '
+                    '(\'SV23E-1\', 1, to_char(CURRENT_DATE - 1, \'YYYY-MM-DD\'), \'SV23E\', \'J027\')'))
+                await s_.commit()
+            API._kw_cache.clear()
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://t") as c:
+                stat = (await c.get("/ai/stt/status", headers=tok("sv23e_sk", "store_keeper", "SV23E"))).json()
+                ok = await c.post("/ai/stt", headers=tok("sv23e_sk", "store_keeper", "SV23E"),
+                                  files={"audio": ("s.wav", wav(1.5), "audio/wav")})
+                badwav = await c.post("/ai/stt", headers=tok("sv23e_sk", "store_keeper", "SV23E"),
+                                      files={"audio": ("s.wav", wav(rate=8000), "audio/wav")})
+                anon = await c.post("/ai/stt", files={"audio": ("s.wav", wav(1), "audio/wav")})
+            kw = calls[0][1] if calls else []
+            check("23e-03: POST /ai/stt — signed in, the text comes back to be READ (nothing is sent "
+                  "anywhere by speaking); the site's own words ride along as keywords (its "
+                  "materials, its tanks); bad audio is a 422, no sign-in a 401",
+                  stat.get("available") is True and ok.status_code == 200
+                  and ok.json().get("text") == "show me the tyvek coverall stock"
+                  and ok.json().get("seconds") == 1.5 and calls and calls[0][0] == 24000
+                  and "Tyvek Coverall Disposable" in kw and "J027" in kw
+                  and badwav.status_code == 422 and anon.status_code == 401,
+                  f"stat={stat} ok={ok.status_code} {ok.text[:120]} kw={kw[:6]} bad={badwav.status_code} anon={anon.status_code}")
+            STT.STT_DIR = d / "nowhere"
+            STT.status(refresh=True)
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+                off = await c.post("/ai/stt", headers=tok("sv23e_sk", "store_keeper", "SV23E"),
+                                   files={"audio": ("s.wav", wav(1), "audio/wav")})
+                offst = (await c.get("/ai/stt/status", headers=tok("sv23e_sk", "store_keeper", "SV23E"))).json()
+            check("23e-04: with no model the endpoint says so (503 with the reason) and the status "
+                  "tells the page to hide the microphone — there is no other engine to fall back to",
+                  off.status_code == 503 and offst.get("available") is False and offst.get("reason"),
+                  f"{off.status_code} {offst}")
+        finally:
+            STT._run = saved_run
+            async with SessionLocal() as s_:
+                await s_.execute(_t_23e('DELETE FROM consumption WHERE "Site_ID" = \'SV23E\''))
+                await s_.execute(_t_23e('DELETE FROM inventory WHERE "Site_ID" = \'SV23E\''))
+                await s_.commit()
+    finally:
+        STT.STT_DIR = saved_dir
+        STT.status(refresh=True)
+
+
+async def test_phase23f_practice_credentials():
+    """Suite 23F — Phase 23f (ruling Q23-13). The Practice login page lists the
+    8 shared accounts (never practice.admin) from a route that exists only in
+    the Practice process; the Practice admin password is shown only to a
+    signed-in LIVE admin, from deploy/.env. Both lists agree with the overlay
+    that actually creates the accounts."""
+    import os as _os4
+
+    from . import auth as _auth
+    from . import practice as PR
+    import tools.practice_overlay as OV
+
+    def tok(u, r, site=""):
+        return {"Authorization": f"Bearer {_auth._make_token(u, r, site, _auth.ACCESS_TTL)}"}
+
+    over = {u for u, _r, _s, _w in OV.ACCOUNTS} - {"practice.admin"}
+    mine = {u for u, *_x in PR.SHARED_ACCOUNTS}
+    roles_ok = all(dict((u, r) for u, r, _s, _w in OV.ACCOUNTS)[u] == r for u, r, *_x in PR.SHARED_ACCOUNTS)
+    check("23f-01: the login page's list IS the overlay's — the same 8 shared accounts and roles, "
+          "the same default password and PRACTICE_PASSWORD override, and practice.admin is "
+          "never on it",
+          mine == over and len(mine) == 8 and roles_ok and "practice.admin" not in mine
+          and PR.DEFAULT_SHARED_PASSWORD == OV.DEFAULT_PASSWORD, f"{sorted(mine ^ over)}")
+    transport = ASGITransport(app=app)
+    saved = _os4.environ.get("PRACTICE_ADMIN_PASSWORD")
+    _os4.environ["PRACTICE_ADMIN_PASSWORD"] = "sv23f-admin-pw"
+    try:
+        async with AsyncClient(transport=transport, base_url="http://t") as c:
+            open_ = await c.get("/practice/accounts")
+            adm = await c.get("/admin/practice/credentials", headers=tok("sv23f_admin", "admin"))
+            hod = await c.get("/admin/practice/credentials", headers=tok("sv23f_hod", "hod", "CNCEC"))
+            anon = await c.get("/admin/practice/credentials")
+    finally:
+        if saved is None:
+            _os4.environ.pop("PRACTICE_ADMIN_PASSWORD", None)
+        else:
+            _os4.environ["PRACTICE_ADMIN_PASSWORD"] = saved
+    body = adm.json() if adm.status_code == 200 else {}
+    check("23f-02: on LIVE the open accounts route does not exist (404 — rule 17); a Live ADMIN "
+          "sees the Practice admin password from deploy/.env and the command that resets every "
+          "Practice password; an HOD is refused, no sign-in is a 401",
+          open_.status_code == 404 and adm.status_code == 200
+          and body.get("admin_password") == "sv23f-admin-pw"
+          and body.get("reset_command") == ".venv/bin/python tools/practice_db.py overlay"
+          and len(body.get("accounts", [])) == 8
+          and hod.status_code == 403 and anon.status_code == 401,
+          f"open={open_.status_code} adm={adm.status_code} hod={hod.status_code} anon={anon.status_code}")
+
+
 async def test_phase23d_catalogue_pictures():
     """Suite 23D — Phase 23d (rulings Q23-5..9). The catalogue is read from the
     newest "All MATERIAL CODES" edition (sheets merged, conflicts reported, a
@@ -33381,6 +33572,12 @@ async def main() -> int:
     print("\n 23D. Phase 23d — the catalogue and plant list from Drive, pictures (re-encoded, "
           "4 per item, signed links, restorable), not-stocked requests and PRs")
     await test_phase23d_catalogue_pictures()
+    print("\n 23E. Phase 23e — voice input: pinned Whistle only, telemetry off, 16 kHz WAV, "
+          "site keywords, the words come back to be read")
+    await test_phase23e_voice()
+    print("\n 23F. Phase 23f — Practice sign-in details: the 8 shared accounts on the Practice "
+          "login page only, the admin password only for a Live admin")
+    await test_phase23f_practice_credentials()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

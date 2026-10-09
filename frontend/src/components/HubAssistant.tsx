@@ -8,6 +8,8 @@ import { brand } from '../theme/tokens'
 
 // Phase 17 — fetched only when a router answer needs it (critical path).
 const AssistantResult = lazy(() => import('./AssistantResult'))
+// Phase 23e — voice in, voice out (Whistle on this machine; the device's voice)
+const Voice = lazy(() => import('../voice/Voice'))
 
 interface Msg { who: 'user' | 'ai'; text: string }
 /** Phase 12f — a pre-rendered tutorial, and the second the step is on screen. */
@@ -160,6 +162,13 @@ export default function HubAssistant() {
           }}>
             {m.text || (busy && i === msgs.length - 1
               ? (queued ? 'Waiting for a free AI slot…' : 'Thinking…') : '')}
+            {m.who === 'ai' && m.text && !(busy && i === msgs.length - 1) && (
+              <Suspense fallback={null}>
+                <div style={{ textAlign: 'right', marginTop: 2 }}>
+                  <Voice kind="read" text={m.text} testId="assistant-read-aloud" />
+                </div>
+              </Suspense>
+            )}
           </div>
         ))}
       </div>
@@ -208,6 +217,11 @@ export default function HubAssistant() {
           placeholder="Ask the manual…" value={q} disabled={busy || (health ? !health.ok : false)}
           onChange={(e) => setQ(e.target.value)} onPressEnter={ask} maxLength={500}
         />
+        {/* the words land in the box; the person reads them and presses Send */}
+        <Suspense fallback={null}>
+          <Voice kind="mic" testId="assistant-mic"
+            onText={(t) => setQ((prev) => (prev ? `${prev.trimEnd()} ${t}` : t).slice(0, 500))} />
+        </Suspense>
         <Button type="primary" icon={<SendOutlined />} onClick={ask}
           loading={busy} disabled={health ? !health.ok : false} aria-label="Send" />
       </Space.Compact>

@@ -95,3 +95,6 @@ qrcode>=7.4
 # of several installed packages; declared here because a test gate must not
 # rely on somebody else's transitive pin.
 PyYAML>=6.0
+# Phase 23e — Whistle speech-to-text (Apache-2.0). Pure Python; the engine and
+# the 16.9 MB model are fetched ONCE by tools/stt_setup.py and pinned by sha256.
+cactus-needle==3.1.3

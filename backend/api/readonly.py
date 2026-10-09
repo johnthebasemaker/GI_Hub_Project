@@ -21,7 +21,7 @@ prefix), never by a substring:
   session lifecycle   /auth/login, /auth/login/2fa, /auth/refresh, /auth/logout
   own credentials     /auth/2fa/*, /auth/phone/*  (write only the caller's row)
   compute-only POSTs  /sme/plan/cascade, /sme/plan/export, /sme/export/rows
-  AI reads            /ai/assistant, /ai/query, /ai/nl-search, /ai/insights,
+  AI reads            /ai/assistant, /ai/query, /ai/nl-search, /ai/insights, /ai/stt,
                       /ai/eod-summary  — these stream answers over POST because
                       the question does not fit in a query string
 
@@ -103,6 +103,7 @@ _ROLE_PREFIXES = {
         "/ai/nl-search",
         "/ai/insights",
         "/ai/eod-summary",
+        "/ai/stt",           # Phase 23e — speech in, text out; writes nothing
     ),
     # ⚠️ THREE PATHS, AND THEY ALL SEND A MESSAGE. A QC-HOD raises an
     # escalation, resolves one they raised, and tunes their own stagnation
@@ -115,6 +116,7 @@ _ROLE_PREFIXES = {
         "/qc-hod/escalations",
         "/qc-hod/settings",
         "/ai/assistant",
+        "/ai/stt",
     ),
 }
 

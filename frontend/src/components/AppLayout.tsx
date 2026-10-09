@@ -27,6 +27,8 @@ const QrScanner = lazy(() => import('./QrScanner'))
 const DemoHost = lazy(() => import('../demo/DemoHost'))
 // Phase 22a — lazy: the top-bar Drive chip stays off the sign-in critical path
 const DriveFreshness = lazy(() => import('./DriveFreshness'))
+// Phase 23e — 🎤 dictate into the last text box · 🔊 read the page (Q23-11)
+const Voice = lazy(() => import('../voice/Voice'))
 import { BARCODE_FORMATS, parseScanPayload } from '../lib/barcode'
 import NotificationBell from './NotificationBell'
 import WhatsNew from './WhatsNew'
@@ -260,6 +262,7 @@ export default function AppLayout() {
             {user && (
               <div style={{ padding: '12px 16px 0' }}>
                 <Suspense fallback={null}><DriveFreshness /></Suspense>
+                <Suspense fallback={null}><Voice kind="bar" /></Suspense>
               </div>
             )}
             {navBody}
@@ -314,6 +317,7 @@ export default function AppLayout() {
             </span>
             {/* Phase 22a: how fresh the workbook data is; admin / HOD can pull now */}
             {user && !isMobile && <Suspense fallback={null}><DriveFreshness /></Suspense>}
+            {user && !isMobile && <Suspense fallback={null}><Voice kind="bar" /></Suspense>}
             <Tooltip title={mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
               <Button type="text" aria-label="Toggle color theme"
                 icon={mode === 'dark' ? <SunOutlined /> : <MoonOutlined />} onClick={toggle} />
@@ -335,7 +339,11 @@ export default function AppLayout() {
                 </Button>
               </Tooltip>
             )}
-            <Button size="small" icon={<LogoutOutlined />} onClick={logout}>Sign out</Button>
+            {/* Phase 23e: under 1440 px the word goes, the icon stays (the bar must fit 1280 px) */}
+            <Tooltip title="Sign out">
+              <Button size="small" icon={<LogoutOutlined />} onClick={logout} aria-label="Sign out">
+                <span className="gi-signout-label">Sign out</span></Button>
+            </Tooltip>
           </Space>
         </Header>
         <Content className="gi-content">

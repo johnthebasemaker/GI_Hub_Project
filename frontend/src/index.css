@@ -222,6 +222,15 @@ body {
   }
 }
 
+/* Phase 23e — the voice controls: inline on a wide screen, one button that
+   opens them on a laptop (the HOD's bar must fit 1280 px) */
+.gi-voice-compact { display: none; }
+@media (max-width: 1440px) {
+  .gi-signout-label { display: none; }
+  .gi-voice-inline { display: none; }
+  .gi-voice-compact { display: inline; }
+}
+
 /* On narrow screens, keep only the actionable header items */
 @media (max-width: 900px) {
   .gi-header-title,
