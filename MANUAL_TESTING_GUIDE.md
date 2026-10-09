@@ -5389,6 +5389,39 @@ Pull: the picture goes.
 **TC-23D-09 — backup.** `./bin/backup_db.sh` → a `media_<stamp>.tar.gz` beside
 the dump.
 
+## 23e. Phase 23e — voice in and out (rulings Q23-10..12)
+
+**TC-23E-00 — set up once (needs the internet once).**
+
+```bash
+.venv/bin/pip install -r requirements.txt && .venv/bin/python tools/stt_setup.py
+```
+
+→ `models/stt/` holds `libneedle.dylib` and `whistle.cact`, pinned in
+`manifest.json`; `--verify` re-checks them offline.
+
+**TC-23E-01 — Hub Assistant.** Open the assistant → 🎤 → allow the microphone →
+say *"How many leather gloves are in stock"* → tap 🎤. The words are in the box
+and **nothing is sent** until you press Send. On an answer, 🔊 reads it; press
+again to stop.
+
+**TC-23E-02 — any text box.** Requests & Pending → click the search box → top
+bar 🔊 (laptop) → 🎤 → speak → the words land in the search box. With no box
+clicked: *Click into a text box first — heard: “…”*.
+
+**TC-23E-03 — read the page.** Select a paragraph → 🔊 → it is read; with
+nothing selected, the page title and its line. Right-click 🔊 → 0.8× / 1.25×.
+
+**TC-23E-04 — off / missing.** `GI_STT=0` in `deploy/.env` (or move
+`models/stt/` away) → restart → no 🎤 anywhere; 🔊 still works.
+
+**TC-23E-05 — privacy.** While dictating, Activity Monitor → Network: no
+outbound traffic from the API process; `~/.cactus_needle/` holds no telemetry
+id.
+
+**TC-23E-06 — the measurement.** `.venv/bin/python tools/stt_eval.py` → WER
+≈ 0.14 with keywords, ≈ 15 ms a phrase.
+
 ## 21d. Phase 21d — OCR measured against the workbook; the name matcher (Q21-1..6)
 
 **Why this exists.** The 11 photos of the *Safety & Production Consumables*

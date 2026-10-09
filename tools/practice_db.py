@@ -232,6 +232,42 @@ def cmd_build(today: _dt.date) -> int:
     return cmd_reset()
 
 
+# ── overlay (Phase 23f) ─────────────────────────────────────────────────────
+def cmd_overlay() -> int:
+    """Re-apply tools/practice_overlay.py to BOTH Practice databases — the new
+    examples of a phase, and every Practice password set back to its value
+    (the shared one, and practice.admin's from deploy/.env). Same hardening as
+    `build`: an ephemeral signing key, no outbound secrets, GI_DOTENV=0 — only
+    the two Practice passwords are read from deploy/.env."""
+    import secrets as _secrets
+    py = str(_ROOT / ".venv" / "bin" / "python")
+    keep = {}
+    envfile = _ROOT / "deploy" / ".env"
+    if envfile.is_file():
+        try:
+            from dotenv import dotenv_values
+            vals = dotenv_values(envfile)
+            keep = {k: vals[k] for k in ("PRACTICE_PASSWORD", "PRACTICE_ADMIN_PASSWORD") if vals.get(k)}
+        except ImportError:
+            pass
+    sandbox, seed = names()
+    for db in (seed, sandbox):
+        env = {k: v for k, v in os.environ.items()}
+        for k in ("WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "SMTP_HOST", "SMTP_SERVER",
+                  "SMTP_USER", "SMTP_PASS", "GI_AI_VISION_API_KEY", "GI_AI_RO_URL"):
+            env.pop(k, None)
+        env.update(keep)
+        env.update(JWT_SECRET=_secrets.token_hex(32), GI_INSTANCE="training", GI_DOTENV="0",
+                   GI_SCHEDULER="0", DATABASE_URL=with_db(practice_url(), db).replace(
+                       "postgresql://", "postgresql+asyncpg://", 1))
+        print(f"▶ overlay → {db}")
+        proc = subprocess.run([py, "tools/practice_overlay.py"], cwd=str(_ROOT), env=env, text=True)
+        if proc.returncode != 0:
+            print(f"❌ overlay failed on {db} (exit {proc.returncode})")
+            return proc.returncode
+    return cmd_wall()
+
+
 # ── reset ───────────────────────────────────────────────────────────────────
 def cmd_reset() -> int:
     """The CLI twin of the Practice admin's button — same clone function, run
@@ -386,7 +422,7 @@ def cmd_verify() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
-    ap.add_argument("command", choices=("wall", "build", "reset", "verify", "migrate"))
+    ap.add_argument("command", choices=("wall", "build", "reset", "verify", "migrate", "overlay"))
     ap.add_argument("--today", default=None,
                     help="anchor for the synthetic dates (default: today). The "
                          "tutorial RENDERS keep their pinned anchor; only the "
@@ -401,6 +437,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_reset()
     if a.command == "migrate":
         return cmd_migrate()
+    if a.command == "overlay":
+        return cmd_overlay()
     return cmd_verify()
 
 

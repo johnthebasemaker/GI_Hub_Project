@@ -1466,6 +1466,37 @@ PR*, type three letters of the item: below the stocked items the box lists
 catalogue codes **not stocked yet**. Such a line carries the GI code and **no
 SAP code**; none is made up. It links itself when your workbook adds the item.
 
+## 3.23 Speak instead of typing, and read aloud (Phase 23, October 2026)
+
+**🎤 Dictate.** The microphone sits in two places:
+- in the **Hub Assistant**, beside the question box;
+- in the **top bar**. On a laptop it is folded into the 🔊 button: click that,
+  then 🎤.
+
+**Click into any text box first** (a search, a remark, a reason), then the top
+bar's 🎤. Tap once to start, speak, and tap again to stop; it stops by itself at
+30 seconds. The words appear **in the box**. **Read them before you press Send
+or Save**: nothing is ever sent by speaking. English only.
+
+The speech is turned into text **on the office computer** by a small model
+called *Whistle*. The recording is not kept, nothing is sent to the internet,
+and your site's own words (its materials, its tanks) help it hear names like
+*Tyvek* or *J027*. It still mishears now and then ("Rays of PR" for "Raise a
+PR"), which is why the words wait in the box for you. The browser asks once for
+permission to use the microphone; answer **Allow**. If the server has no voice
+model, the 🎤 simply does not appear.
+
+**🔊 Read aloud** uses your phone's or computer's own voice:
+- on every Hub Assistant answer;
+- in the top bar it reads the text you have **selected**, or, if nothing is
+  selected, the page's title and the line under it.
+
+Press it again to stop. Right-click it to choose 0.8×, 1× or 1.25× speed.
+Leaving the page stops it.
+
+**On a laptop the top bar is tighter:** *Sign out* shows as its icon only (hover
+for the name).
+
 ## 3.21 Phase 22 in Practice, and a tidier top bar (October 2026)
 
 **Practice has examples of everything Phase 22 added** (it never pulls from

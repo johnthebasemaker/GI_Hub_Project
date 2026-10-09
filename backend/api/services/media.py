@@ -34,7 +34,14 @@ from pathlib import Path
 from typing import Optional
 
 _ROOT = Path(__file__).resolve().parents[3]
-MEDIA_DIR = Path(os.environ.get("GI_MEDIA_DIR") or (_ROOT / "media" / "catalog"))
+def _default_dir() -> Path:
+    # Practice keeps its own folder (rule 17): its drawn pictures never land
+    # beside Live's, and a Practice upload never reaches Live's backup
+    from ..config import is_practice
+    return _ROOT / "media" / ("practice" if is_practice() else "catalog")
+
+
+MEDIA_DIR = Path(os.environ.get("GI_MEDIA_DIR") or _default_dir())
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_SIDE = 2400              # the stored picture's long edge

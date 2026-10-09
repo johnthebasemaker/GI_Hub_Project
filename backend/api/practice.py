@@ -178,6 +178,66 @@ async def reset(body: ResetIn = Body(...),
             "by": user["username"]}
 
 
+# ── Phase 23f (ruling Q23-13) — who can sign in to Practice ──────────────────
+# The shared accounts and their password. ⚠️ Mirrors tools/practice_overlay
+# (ACCOUNTS, DEFAULT_PASSWORD, PRACTICE_PASSWORD) — suite 23F asserts they
+# agree. `practice.admin` is NOT here: its password is its own, shown only to a
+# signed-in Live admin (`live_router` below).
+SHARED_ACCOUNTS = (
+    ("practice.storekeeper", "store_keeper", "Store Keeper", "issue, receive, return; OCR papers"),
+    ("practice.supervisor", "supervisor", "Supervisor", "execution jobs, material requests, forms"),
+    ("practice.hod", "hod", "Head of Department", "approvals, PRs, Requests & Pending, pictures"),
+    ("practice.qc", "qc", "Quality Control", "inspections, certificates (MTC)"),
+    ("practice.qchod", "qc_hod", "Head of Qualities", "QC across sites"),
+    ("practice.logistics", "logistics", "Logistics", "POs, the PR queue, pictures"),
+    ("practice.warehouse", "warehouse_user", "Warehouse", "the central warehouse"),
+    ("practice.auditor", "auditor", "Auditor (view-only)", "reads everything, changes nothing"),
+)
+DEFAULT_SHARED_PASSWORD = "Practice@2026"
+
+
+def shared_password() -> str:
+    return os.environ.get("PRACTICE_PASSWORD", "").strip() or DEFAULT_SHARED_PASSWORD
+
+
+accounts_router = APIRouter(prefix="/practice", tags=["practice"])
+
+
+@accounts_router.get("/accounts", summary="The shared Practice accounts (Practice only)")
+async def practice_accounts():
+    """OPEN, on purpose, and PRACTICE ONLY (not mounted on Live — a 404 there).
+    The login page shows these so a trainee needs nobody to hand them over;
+    the data behind them is invented, and the password is the one the trainer
+    hands out anyway. The admin account is never listed (Q23-13)."""
+    if not is_practice():
+        raise HTTPException(404, "Not Found")
+    return {"password": shared_password(),
+            "accounts": [{"username": u, "role": r, "label": lbl, "what": w}
+                         for u, r, lbl, w in SHARED_ACCOUNTS]}
+
+
+live_router = APIRouter(prefix="/admin/practice", tags=["admin"])
+
+
+@live_router.get("/credentials", summary="Practice sign-in details, for a Live admin (Q23-13)")
+async def practice_credentials(user: dict = Depends(require_roles("admin"))):
+    """LIVE ONLY, ADMIN ONLY. The Practice admin password lives in
+    `deploy/.env` (PRACTICE_ADMIN_PASSWORD) and is shown here — behind a Live
+    admin's sign-in — and nowhere on the open Practice login page. Resetting
+    every Practice password is the overlay, which re-sets them all; this
+    returns the command rather than reaching into the Practice database (the
+    wall, rule 17)."""
+    admin_pw = os.environ.get("PRACTICE_ADMIN_PASSWORD", "").strip()
+    return {"shared_password": shared_password(),
+            "admin_username": "practice.admin",
+            "admin_password": admin_pw or None,
+            "admin_password_note": None if admin_pw else
+            "not set in deploy/.env — the overlay generated one and printed it once; "
+            "set PRACTICE_ADMIN_PASSWORD and re-run the overlay to choose it",
+            "accounts": [{"username": u, "label": lbl} for u, _r, lbl, _w in SHARED_ACCOUNTS],
+            "reset_command": ".venv/bin/python tools/practice_db.py overlay"}
+
+
 def mounted() -> bool:
     """Whether main.py includes the router. A function so the decision is in
     one place and suite TR can assert it."""

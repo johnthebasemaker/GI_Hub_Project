@@ -1,7 +1,7 @@
 {
  "_note": "Critical path of the sign-in page (raw + gzipped bytes, hashes normalised). Re-recorded only by `node scripts/critical_path_check.mjs --update`, deliberately.",
- "js_raw": 1231767,
- "js_gz": 390932,
- "css_gz": 5289,
- "files": 15
+ "js_raw": 1234065,
+ "js_gz": 392181,
+ "css_gz": 5326,
+ "files": 18
 }

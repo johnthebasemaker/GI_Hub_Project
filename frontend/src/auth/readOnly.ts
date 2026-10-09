@@ -47,6 +47,7 @@ const ALLOWED_EXACT = new Set([
 
 const ALLOWED_PREFIXES = [
   '/ai/assistant', '/ai/query', '/ai/nl-search', '/ai/insights', '/ai/eod-summary',
+  '/ai/stt', // Phase 23e — dictation: speech in, text out, nothing written
 ]
 
 /**
@@ -60,7 +61,7 @@ const ALLOWED_PREFIXES = [
  * shape both files exist to avoid.
  */
 const ROLE_ALLOWED_PREFIXES: Record<string, string[]> = {
-  qc_hod: ['/qc-hod/escalations', '/qc-hod/settings', '/ai/assistant'],
+  qc_hod: ['/qc-hod/escalations', '/qc-hod/settings', '/ai/assistant', '/ai/stt'],
 }
 
 /** Strip the /api or /api/v1 mount and any trailing slash or query string. */
