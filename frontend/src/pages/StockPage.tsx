@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext'
 import BrowseTable from '../components/BrowseTable'
 import { ExcelCheckPanel, MismatchTag, useMismatchMap } from '../components/ExcelCheck'
 import type { buildColumns } from '../lib/columns'
+import { SapThumb } from '../catalogue/thumbs'
 
 type Cols = ReturnType<typeof buildColumns>
 
@@ -20,7 +21,9 @@ function useExcelHighlight() {
     c.key === 'SAP_Code'
       ? { ...c, render: (v: unknown) => {
           const m = mism.get(String(v ?? ''))
-          return <>{String(v ?? '')}{m && <MismatchTag m={m} />}</>
+          // Phase 23d — the material's picture beside its SAP (batched)
+          return <Space size={6}><SapThumb sap={String(v ?? '')} size={26} />
+            <span>{String(v ?? '')}{m && <MismatchTag m={m} />}</span></Space>
         } }
       : c)), [mism])
   const rowClassName = useCallback((r: Record<string, unknown>) =>

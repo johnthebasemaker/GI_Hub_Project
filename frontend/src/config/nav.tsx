@@ -18,13 +18,7 @@
  */
 import type { ReactNode } from 'react'
 import {
-  AimOutlined, AlertOutlined, AuditOutlined, BarChartOutlined, CameraOutlined, CarOutlined,
-  DashboardOutlined, DatabaseOutlined, EnvironmentOutlined, ExperimentOutlined, FallOutlined,
-  FieldTimeOutlined, FileExcelOutlined, FileProtectOutlined, FileSearchOutlined, FireOutlined,
-  FormOutlined, FundProjectionScreenOutlined, InboxOutlined, MessageOutlined,
-  PlayCircleOutlined, ProfileOutlined,
-  SafetyCertificateOutlined, SafetyOutlined, SolutionOutlined, TagsOutlined, StockOutlined, TeamOutlined,
-  ToolOutlined, ControlOutlined, UserAddOutlined,
+  AimOutlined, AlertOutlined, AuditOutlined, BarChartOutlined, CameraOutlined, CarOutlined, ControlOutlined, DashboardOutlined, DatabaseOutlined, EnvironmentOutlined, ExperimentOutlined, FallOutlined, FieldTimeOutlined, FileExcelOutlined, FileProtectOutlined, FileSearchOutlined, FireOutlined, FormOutlined, FundProjectionScreenOutlined, InboxOutlined, MessageOutlined, PictureOutlined, PlayCircleOutlined, ProfileOutlined, SafetyCertificateOutlined, SafetyOutlined, SolutionOutlined, StockOutlined, TagsOutlined, TeamOutlined, ToolOutlined, UserAddOutlined,
 } from '@ant-design/icons'
 import type { User } from '../auth/AuthContext'
 import { isReadOnly } from '../auth/readOnly'
@@ -125,6 +119,10 @@ export const NAV: NavGroup[] = [
       // Drive → Pending Material Follow-up — requested · received · pending.
       // The people who ask for material and chase it; read-only.
       { key: '/requests-pending', label: 'Requests & Pending', icon: <ProfileOutlined />, access: { anyRole: [SK, HOD, LOG, AUD] } },
+      // Phase 23d (rulings Q23-5..9): the 6,000 GI codes and the site's plant &
+      // tools, with pictures. Everybody who handles material SEES them; Admin,
+      // HOD and Logistics change them (the server enforces that).
+      { key: '/catalogue', label: 'Catalogue', icon: <PictureOutlined />, access: { anyRole: [SK, WH, SUP, QC, HOD, LOG, AUD, 'qc_hod'] } },
       // The rack locator sits at the TOP LEVEL on purpose: the store keeper is
       // the person who has to walk to the shelf, and burying it inside a
       // supervisor group would hide it from its only real user. Narrowed

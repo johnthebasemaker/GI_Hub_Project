@@ -2894,6 +2894,98 @@ class MaterialRequestLines(Base):
                       Index("ix_material_request_lines_sap", "SAP_Code"))
 
 
+class RequestSapMap(Base):
+    """Phase 23c (alembic e8ab5d9f3c21) — what a request line with no SAP code
+    means at a site: `item` (a SAP), `catalogue` (a GI code not stocked yet —
+    links itself when the workbook gains it; Q23-5) or `not_stock`. Applied
+    when the requests are read (services/requests_sync.py)."""
+    __tablename__ = "request_sap_map"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    Site_ID = Column(Text, nullable=False)
+    written_key = Column(Text, nullable=False)
+    written_example = Column(Text)
+    decision = Column(Text, nullable=False)
+    SAP_Code = Column(Text)
+    Material_Code = Column(Text)
+    created_by = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    updated_by = Column(Text)
+    updated_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    __table_args__ = (UniqueConstraint("Site_ID", "written_key", name="ux_request_sap_map_key"),
+                      CheckConstraint("decision IN ('item', 'catalogue', 'not_stock')",
+                                      name="ck_request_sap_map_decision"))
+
+
+class MaterialCatalog(Base):
+    """Phase 23d (alembic f9bc6e1a4d32) — every GI material code in Drive's
+    "All MATERIAL CODES-*.xlsx"; NOT the item master (services/catalogue.py)."""
+    __tablename__ = "material_catalog"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    Material_Code = Column(Text, nullable=False)
+    description = Column(Text, nullable=False)
+    uom = Column(Text)
+    series = Column(Text)
+    source_file = Column(Text)
+    first_seen = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    last_seen = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    removed_at = Column(DateTime)
+    __table_args__ = (UniqueConstraint("Material_Code", name="ux_material_catalog_code"),)
+
+
+class SiteEquipment(Base):
+    """Phase 23d (alembic f9bc6e1a4d32) — the site plant & tools list from
+    Drive (ruling Q23-9), one row per equipment line."""
+    __tablename__ = "site_equipment"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    Site_ID = Column(Text, nullable=False)
+    equipment_key = Column(Text, nullable=False)
+    category = Column(Text)
+    description = Column(Text, nullable=False)
+    brand = Column(Text)
+    serials = Column(Text)
+    asset_no = Column(Text)
+    uom = Column(Text)
+    qty = Column(Float)
+    sticker_no = Column(Text)
+    sticker_expiry = Column(Text)
+    condition = Column(Text)
+    remarks = Column(Text)
+    source_file = Column(Text)
+    source_row = Column(Integer)
+    first_seen = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    last_seen = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    removed_at = Column(DateTime)
+    __table_args__ = (UniqueConstraint("Site_ID", "equipment_key", name="ux_site_equipment_key"),)
+
+
+class ItemImages(Base):
+    """Phase 23d (alembic f9bc6e1a4d32) — pictures of a material code or an
+    equipment line, on disk under media/catalog/ (services/media.py); one set
+    per code across sites; soft-deleted so they can be restored."""
+    __tablename__ = "item_images"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kind = Column(Text, nullable=False)
+    item_key = Column(Text, nullable=False)
+    sha256 = Column(Text, nullable=False)
+    mime = Column(Text)
+    width = Column(Integer)
+    height = Column(Integer)
+    bytes = Column(Integer)
+    source = Column(Text, nullable=False)
+    drive_file_id = Column(Integer)
+    is_primary = Column(Boolean, nullable=False, server_default=text('false'))
+    caption = Column(Text)
+    uploaded_by = Column(Text, nullable=False)
+    uploaded_at = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    removed_at = Column(DateTime)
+    removed_by = Column(Text)
+    __table_args__ = (CheckConstraint("kind IN ('material', 'equipment')", name="ck_item_images_kind"),
+                      CheckConstraint("source IN ('upload', 'drive', 'family', 'practice')",
+                                      name="ck_item_images_source"),
+                      Index("ix_item_images_item", "kind", "item_key"),
+                      Index("ix_item_images_sha", "sha256"))
+
+
 class DriveSyncRuns(Base):
     """Phase 22a (alembic f3b9d2e7a4c1) — the Drive sync's run history: the
     schedule, the Pull button, the Admin card and the CLI all write one row."""

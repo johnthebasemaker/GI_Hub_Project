@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import uuid
+from typing import Optional
 
 from sqlalchemy import select, update
 
@@ -101,6 +102,7 @@ EXPECTED_SECONDS: dict[str, int] = {
     "ocr_consumption": 215,
     "ocr_purchase_doc": 240,
     "ocr_consumption_form": 400,          # the Phase 9c printed form (form_jobs)
+    "ocr_consumption_second": 90,         # Phase 23b — the skipped rows, in the background
     "tool_identify": 30,
 }
 DEFAULT_EXPECTED_SECONDS = 180
@@ -226,7 +228,7 @@ JOB_KINDS = ("ocr_consumption", "ocr_delivery_note", "tool_identify",
 # working. Two literal copies of "3072" is precisely how a budget and the lane
 # it belongs to drift apart, which is the bug this comment block describes.
 NUM_PREDICT = {k: v.num_predict for k, v in _route.POLICIES.items()
-               if v.vision and k != "ocr_consumption_form"}
+               if v.vision and k not in ("ocr_consumption_form", "ocr_consumption_second")}
 # ⚠️ NOT `route.DEFAULT_POLICY.num_predict`, which is 512 — the CHAT budget.
 # Binding it there silently halved the fallback for an unlisted VISION lane
 # from 1024 to 512, which is the same class of mistake as the one-budget-for-
@@ -385,15 +387,23 @@ async def run_job(job_id: int) -> None:
                 image_b64=image_b64, image_tokens=img_tokens, temperature=0.1)
             parsed = ocr.parse_vision_reply(kind, out.text)
 
+        # Phase 23b (ruling Q23-3) — the rows the first read skipped are read
+        # again in the background. Decided and cut HERE, while the image is
+        # still in hand; the first read's rows are written as `done` below
+        # BEFORE that second call starts, so the store keeper waits 0 s for it.
+        second = _plan_second_read(kind, parsed if kind != "tool_identify" else None, image_b64)
         async with SessionLocal() as s:
             if kind != "tool_identify":
                 result = await _resolve(kind, parsed, s)
+            if second:
+                result["second_read"] = second[2]
             await s.execute(update(ai_jobs_t).where(ai_jobs_t.c["id"] == job_id)
                             .values(status="done", finished_at=_now(),
                                     payload_json=None,
                                     result_json=json.dumps(result, ensure_ascii=False)))
             await s.commit()
     except Exception as e:
+        second = None
         logger.warning("ai job %s failed: %s", job_id, e)
         async with SessionLocal() as s:
             await s.execute(update(ai_jobs_t).where(ai_jobs_t.c["id"] == job_id)
@@ -403,6 +413,71 @@ async def run_job(job_id: int) -> None:
             await s.commit()
     finally:
         await stop_beat(beat)
+    if second:
+        await _run_second_read(job_id, kind, parsed, result, second)
+
+
+
+def _plan_second_read(kind: str, parsed: Optional[dict], image_b64: str):
+    """(gaps, strip_b64, state) when the consumption page has printed rows the
+    first read did not return, else None. Off with GI_OCR_SECOND_READ=0."""
+    if kind != "ocr_consumption" or not parsed or not image_b64:
+        return None
+    if os.environ.get("GI_OCR_SECOND_READ", "1").strip() in ("0", "false", "no"):
+        return None
+    from . import second_read as SR
+    try:
+        rows = parsed.get("rows") or []
+        cut = SR.strip_image(base64.b64decode(image_b64), SR.missing_rows(rows),
+                             read=SR.read_snos(rows))
+    except Exception as e:  # noqa: BLE001 — a failed cut never costs the first read
+        logger.warning("second read: could not cut the strips: %s", e)
+        return None
+    if not cut:
+        return None
+    strip, meta = cut
+    gaps = meta["rows"]          # the gap rows with handwriting — the only ones asked about
+    state = SR.initial_state(gaps, meta, expected_seconds("ocr_consumption_second"),
+                             _now().isoformat(timespec="seconds"))
+    return gaps, base64.b64encode(strip).decode(), state
+
+
+async def _run_second_read(job_id: int, kind: str, parsed: dict, result: dict, second) -> None:
+    """Read the gap strips, add what they hold, record the outcome. Never raises."""
+    import time as _time
+
+    from . import second_read as SR
+    gaps, strip_b64, state = second
+    t0 = _time.perf_counter()
+    try:
+        out = await _route.call_vision(
+            SR.LANE, SR.user_prompt(gaps), system=SR.SYSTEM_PROMPT,
+            image_b64=strip_b64, image_tokens=ocr.estimate_image_tokens(base64.b64decode(strip_b64)),
+            temperature=0.1)
+        rows2 = SR.parse_rows(out.text)
+        added = SR.accept(rows2, gaps, parsed.get("rows") or [])
+        resolved: list[dict] = []
+        if added:
+            async with SessionLocal() as s:
+                resolved = (await _resolve(kind, {"rows": added, "date_text": ""}, s))["rows"]
+            for r, a in zip(resolved, added):
+                r["sno"] = a.get("sno")
+                r["second_read"] = True
+        state = {**state, "status": "done", "added": resolved,
+                 "added_snos": [r.get("sno") for r in resolved],
+                 "seconds": round(_time.perf_counter() - t0, 1)}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("ai job %s second read failed: %s", job_id, e)
+        state = {**state, "status": "error", "error": str(e)[:200],
+                 "seconds": round(_time.perf_counter() - t0, 1)}
+    try:
+        async with SessionLocal() as s:
+            await s.execute(update(ai_jobs_t).where(ai_jobs_t.c["id"] == job_id)
+                            .values(result_json=json.dumps({**result, "second_read": state},
+                                                           ensure_ascii=False)))
+            await s.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("ai job %s: could not record the second read: %s", job_id, e)
 
 
 def spawn(job_id: int) -> None:

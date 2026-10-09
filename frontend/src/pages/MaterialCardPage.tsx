@@ -12,10 +12,11 @@
  * this page never has to guess what a sticker encodes.
  */
 import { fmtPackBase } from '../lib/units'
+import { imgSrc, useThumbs } from '../catalogue/thumbs'
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
-  Alert, Button, Card, Col, Descriptions, Empty, Radio, Row, Segmented, Skeleton,
+  Alert, Button, Card, Col, Descriptions, Empty, Image, Radio, Row, Segmented, Skeleton,
   Space, Statistic, Tag, Typography,
 } from 'antd'
 import { ArrowLeftOutlined, WarningOutlined } from '@ant-design/icons'
@@ -114,9 +115,13 @@ export default function MaterialCardPage() {
         )}
       </Space>
 
-      <Typography.Title level={3} style={{ margin: 0 }}>
-        {d.description || d.sap_code}
-      </Typography.Title>
+      <Space align="center" size={12}>
+        {/* Phase 23d — the material's main picture; the catalogue holds the rest */}
+        <MaterialPicture sap={d.sap_code} />
+        <Typography.Title level={3} style={{ margin: 0 }}>
+          {d.description || d.sap_code}
+        </Typography.Title>
+      </Space>
       <Typography.Text type="secondary">
         SAP {d.sap_code}{d.material_code ? ` · MAT ${d.material_code}` : ''}
         {d.category ? ` · ${d.category}` : ''}
@@ -287,5 +292,16 @@ export default function MaterialCardPage() {
           { key: 'v', label: 'Stock value', children: d.stock_value ? `SAR ${nf(d.stock_value)}` : '—' },
         ]} />
     </>
+  )
+}
+
+
+function MaterialPicture({ sap }: { sap: string }) {
+  const { data } = useThumbs({ saps: [sap], size: 'display' })
+  const src = data?.saps[sap]
+  if (!src) return null
+  return (
+    <Image src={imgSrc(src)} width={72} height={72} alt="" data-testid="material-picture"
+      style={{ objectFit: 'cover', borderRadius: 6 }} />
   )
 }

@@ -5282,6 +5282,113 @@ GI_DOTENV=0 .venv/bin/python -m pytest tests/downloads -q -p no:cacheprovider
 list) as all nine roles, the bytes checked, and the site rule checked against
 the screen that calls it. It runs in CI (`dual-ci`) on the generated fixture.
 
+## 23b. Phase 23b — OCR: the page tank and the second read (rulings Q23-2/3)
+
+**TC-23B-01 — the page tank (paste lane, no AI needed).** OCR Import → Paste
+(Consumption log), a date of yesterday, three lines: a garbled tank
+(`Zq9-Tnk-0o`), a ditto (`″`) and a tank your site knows (e.g. `J027`). Parse.
+**Tank for this whole page** lists the tanks of the 7 days before yesterday
+with their line counts. Choose one: rows 1 and 2 take it, row 3 keeps `J027`.
+**Undo**: rows 1 and 2 go back to *not found* / *as above*. Choose a tank in
+row 1's own box, then a page tank: row 1 is not changed.
+
+**TC-23B-02 — the second read (photo lane, local AI on).** Photograph a paper
+with a few ditto-only rows. The rows appear as soon as the first read ends,
+with a blue note *Reading again the printed rows… S.No …*. Keep editing (pick
+an item, set a tank). Within about a minute the note turns green: *found N more
+row(s)*, the rows sit at their S.No with a purple **2nd read** tag, and your
+edits are still there.
+
+**TC-23B-03 — off switch.** `GI_OCR_SECOND_READ=0` in `deploy/.env` → no note,
+no second read.
+
+**TC-23B-04 — the measurement.**
+
+```bash
+GI_DOTENV=0 .venv/bin/python tools/ocr_eval.py --images data-archive/ocr_ground_truth/2026-10-05_06 --second-read --lines --aliases .cache/ocr_eval/proposed_aliases_phase21.json
+```
+
+prints `SECOND READ` (rows added, seconds per page) and
+`lines_accept_first_page_tank` (tank accuracy with one page tank per page).
+Suite 23B (service tests) and `npm run test:ui-math` (OCR page rules) pin the
+rules.
+
+## 23c. Phase 23c — the SAP-code mapper and the earlier preparers (rulings Q23-1/4/5)
+
+**TC-23C-01 — link.** As HOD: Requests & Pending → **Needs a SAP code**. A name
+with gold tags: click one, then **Link** → *linked to …*. The name leaves the
+list, and in the table below its lines show the SAP with **linked here**.
+Received and pending now count, and a no-PR line appears under *On order* in
+Smart Reorder.
+
+**TC-23C-02 — not stocked yet.** A name with a GI code (e.g. *JUBLEE CLAMP*,
+GI-7000087) → **Not stocked yet**. Its lines show a blue *not stocked yet* tag
+and **no** SAP. When the item is added to the workbook with that GI code, the
+next pull (or page reload) shows the line linked, with nobody deciding again.
+
+**TC-23C-03 — not a stock item / bulk / undo.** Tick two names → **Not a stock
+item**. Both leave the list and pending. **Decided** → **Undo** on one →
+it is back on **Needs a SAP code**. Admin Console → Audit shows
+`REQUEST_SAP_MAP` / `REQUEST_SAP_UNMAP`.
+
+**TC-23C-04 — permissions (Q23-4).** As store keeper: the card lists the names
+but has no Link / Not stocked / Undo buttons and says *Admin, HOD and Logistics
+decide*. A HOD of another site cannot undo this site's decision.
+
+**TC-23C-05 — preparers.** Admin Console → Sites → *Consumption papers*: the
+CNCEC lines from 18 May (Day Johnson, no Night) to 26 Sep (Kalied), and two
+**one-day covers** (Imtiyaz on 28 Sep, either shift; Mydeen on 26 Sep, Night).
+Dates are picked from a calendar. In OCR Import, paste a paper dated
+`28/09/26`: **Prepared by** shows Johnson, and its drop-down also offers
+Imtiyaz.
+
+**TC-23C-06 — the back-check.**
+
+```bash
+GI_DOTENV=0 .venv/bin/python tools/ocr_site_setup.py --site CNCEC --check
+```
+
+→ `back-check: 5363 of 5363 rows explained by the history (100.0 %)`.
+
+## 23d. Phase 23d — the catalogue and pictures (rulings Q23-5..9)
+
+**TC-23D-01 — from Drive.** Admin → **Pull**. **Catalogue**: the blue line says
+*From All MATERIAL CODES-15.04.2026.xlsx · 5,976 codes*. It reports GI-7003055
+(two descriptions in the file) and the item-master codes the file lacks.
+**Plant & tools (37)** lists the site equipment by section.
+
+**TC-23D-02 — add a picture.** As HOD: Catalogue → search a code → click it →
+**Add a picture**. The picture shows as **main**, and the row's thumbnail
+appears. Add three more; a fifth is refused (*at most 4*). On a phone, the
+button opens the camera.
+
+**TC-23D-03 — change, remove, restore, assign.** ★ another picture → it is the
+main one. 🗑 the main one → the next becomes main, and the removed one is under
+*Removed pictures* → **Restore**. **Assign** the main picture to two sibling
+codes → both rows get it. Audit shows `CATALOGUE_IMAGE_*`.
+
+**TC-23D-04 — family suggestion.** A code with no picture whose sibling (same
+name, other size) has one shows *Pictures of the same family — use one?* →
+**Use this**.
+
+**TC-23D-05 — read-only roles.** As store keeper / auditor: pictures visible,
+no Add / ★ / 🗑 / Assign.
+
+**TC-23D-06 — pictures elsewhere.** Stock list (beside the SAP), a material
+card (top left), ⌘K results, Requests & Pending, HOD → PR lines, Logistics →
+PR queue → open a row.
+
+**TC-23D-07 — PR for a not-stocked item (Q23-5).** HOD → Create PR → type
+*jubl* → a *not stocked yet* option → create. The line shows *not stocked yet ·
+GI-…* and no SAP.
+
+**TC-23D-08 — Drive pictures.** Put `GI-7000003 test.jpg` in Drive → Material
+Images → Pull: GI-7000003 has the picture (*from Drive*). Delete it in Drive →
+Pull: the picture goes.
+
+**TC-23D-09 — backup.** `./bin/backup_db.sh` → a `media_<stamp>.tar.gz` beside
+the dump.
+
 ## 21d. Phase 21d — OCR measured against the workbook; the name matcher (Q21-1..6)
 
 **Why this exists.** The 11 photos of the *Safety & Production Consumables*

@@ -37,6 +37,17 @@ NO SAP CODE. A line whose Material Code is `N/A` and has no SAP Code cannot be
 matched to stock: it is listed for the operator to add the SAP code in the
 workbook (ruling Q22-12 — "you tell me, I will add it").
 
+THE MAPPER (Phase 23c, rulings Q23-4/5). Instead of the workbook, Admin / HOD /
+Logistics decide in GI Hub what such a line means, once per site and written
+key (`request_sap_map`), applied whenever the requests are READ:
+  item       → a SAP in the item master: received, pending and reorder count it;
+  catalogue  → a GI code GI Hub does not stock yet ("not stocked yet"): no SAP
+               is invented, and the line links BY ITSELF the day an item with
+               that GI code appears in the workbook;
+  not_stock  → a service or one-off: out of pending and reorder.
+A line whose GI code is in the 6,000-code catalogue (Phase 23d) is "not
+stocked yet" without anybody deciding.
+
 ON ORDER (Q22-13). A pending line requested WITHOUT a PR counts as on order in
 Smart Reorder (`pending_no_pr`), labelled, so the reorder suggestion stops
 asking for what was already requested. A line WITH a PR is left to the PO
@@ -202,6 +213,34 @@ async def _inventory(session: AsyncSession, site: str) -> tuple[dict, dict, set]
     return by_code, saps, ss
 
 
+def _norm_desc(s: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", (s or "").lower())).strip()
+
+
+def line_key(code: Optional[str], desc: Optional[str]) -> str:
+    """What a mapping is learned by: the GI code when the line has one, else
+    its normalised description."""
+    c = (code or "").strip().upper().replace(" ", "")
+    if c and c not in _NA:
+        return f"code:{c}"
+    return f"desc:{_norm_desc(desc)}"
+
+
+async def sap_map(session: AsyncSession, site: Optional[str]) -> dict[tuple[str, str], dict]:
+    sql = 'SELECT * FROM request_sap_map' + (' WHERE "Site_ID" = :s' if site else '')
+    return {(r["Site_ID"], r["written_key"]): dict(r) for r in (await session.execute(
+        text(sql), {"s": site} if site else {})).mappings().all()}
+
+
+async def catalogue_codes(session: AsyncSession) -> set[str]:
+    """GI codes in the material catalogue (Phase 23d); empty before it exists."""
+    exists = (await session.execute(text("SELECT to_regclass('public.material_catalog')"))).scalar()
+    if not exists:
+        return set()
+    return {r[0] for r in (await session.execute(text(
+        'SELECT UPPER(TRIM("Material_Code")) FROM material_catalog'))).all()}
+
+
 def resolve_sap(line: dict, by_code: dict, saps: dict) -> Optional[str]:
     if line.get("sap") and line["sap"] in saps:
         return line["sap"]
@@ -319,10 +358,42 @@ async def overview(session: AsyncSession, site: Optional[str]) -> dict:
     lines = await _lines(session, summary=False)
     if site is not None:
         lines = [ln for ln in lines if (ln["site"] or "") == site]
+    # Phase 23c — the mapper's decisions, and the item master as it is NOW (a
+    # "not stocked yet" code links itself once the workbook adds the item)
+    maps = await sap_map(session, site)
+    catalogue = await catalogue_codes(session)
+    masters: dict[str, tuple[dict, dict]] = {}
     for ln in lines:
         ln["date"] = ln["request_date"]
-        ln["sap_resolved"] = ln["SAP_Code"]
         ln["qty"] = float(ln["requested_qty"] or 0)
+        ln["mapping"] = None
+        ln["status"] = "sap" if ln["SAP_Code"] else "needs_sap"
+        if not ln["SAP_Code"]:
+            s_ = ln["site"] or SITE
+            if s_ not in masters:
+                by_code, saps, _ss = await _inventory(session, s_)
+                masters[s_] = (by_code, saps)
+            by_code, saps = masters[s_]
+            code = (ln["Material_Code"] or "").strip().upper().replace(" ", "")
+            m = maps.get((s_, line_key(ln["Material_Code"], ln["description"])))
+            if code and code in by_code:
+                ln["SAP_Code"], ln["status"] = by_code[code], "linked_by_code"
+            elif m and m["decision"] == "item" and m["SAP_Code"] in saps:
+                ln["SAP_Code"], ln["status"] = m["SAP_Code"], "mapped"
+            elif m and m["decision"] == "catalogue":
+                mc = (m["Material_Code"] or code).upper()
+                if mc in by_code:
+                    ln["SAP_Code"], ln["status"] = by_code[mc], "linked_by_code"
+                else:
+                    ln["status"] = "not_stocked"
+                    ln["Material_Code"] = ln["Material_Code"] or m["Material_Code"]
+            elif m and m["decision"] == "not_stock":
+                ln["status"] = "not_stock"
+            elif code and code in catalogue:
+                ln["status"] = "not_stocked"
+            if m:
+                ln["mapping"] = {"id": m["id"], "decision": m["decision"], "by": m["updated_by"] or m["created_by"]}
+        ln["sap_resolved"] = ln["SAP_Code"] if ln["status"] != "not_stock" else None
     by_site: dict[str, list] = {}
     for ln in lines:
         by_site.setdefault(ln["site"] or SITE, []).append(ln)
@@ -346,10 +417,12 @@ async def overview(session: AsyncSession, site: Optional[str]) -> dict:
             "pr": ln["pr_ref"], "without_pr": bool(ln["without_pr"]),
             "type": ln["item_type"], "remarks": ln["remarks"], "site": ln["site"],
             "age_days": (today - ln["request_date"]).days if ln["request_date"] else None,
+            "status": ln["status"], "mapping": ln["mapping"],
+            "key": line_key(ln["Material_Code"], ln["description"]),
         })
     needs_sap = [{"file": i["file"], "sheet": i["sheet"], "row": i["row"],
                   "Material_Code": i["Material_Code"], "description": i["description"]}
-                 for i in items if not i["SAP_Code"]]
+                 for i in items if i["status"] == "needs_sap"]
     return {"items": items, "needs_sap": needs_sap,
             "summary_check": await summary_check(session, items)}
 
@@ -386,7 +459,7 @@ async def pending_no_pr(session: AsyncSession) -> dict[tuple[str, str], float]:
     ov = await overview(session, None)
     out: dict[tuple[str, str], float] = {}
     for i in ov["items"]:
-        if i["without_pr"] and i["SAP_Code"] and i["pending"] > 0:
+        if i["without_pr"] and i["SAP_Code"] and i["pending"] > 0 and i["status"] != "not_stock":
             k = (i["SAP_Code"], i["site"] or SITE)
             out[k] = out.get(k, 0.0) + i["pending"]
     return out
@@ -394,3 +467,50 @@ async def pending_no_pr(session: AsyncSession) -> dict[tuple[str, str], float]:
 
 def as_json(o: Any) -> str:
     return json.dumps(o, default=str)
+
+
+# ── the mapper's list (Phase 23c) ────────────────────────────────────────────
+async def needs_sap_groups(session: AsyncSession, site: Optional[str]) -> dict:
+    """Lines without a SAP, grouped by what they would be learned as — with the
+    best item-master matches pre-ranked (the matcher OCR uses), and the
+    "not stocked yet" / mapped lines alongside so a decision can be undone."""
+    from ..ai import fuzzy as FZ
+    ov = await overview(session, site)
+    groups: dict[tuple[str, str], dict] = {}
+    for i in ov["items"]:
+        if i["status"] in ("sap", "linked_by_code") and not i["mapping"]:
+            continue
+        k = (i["site"] or SITE, i["key"])
+        g = groups.setdefault(k, {
+            "site": k[0], "key": i["key"], "written": i["description"] or "",
+            "Material_Code": i["Material_Code"], "uom": i["uom"], "status": i["status"],
+            "mapping": i["mapping"], "SAP_Code": i["SAP_Code"], "lines": 0, "requested": 0.0,
+            "pending": 0.0, "files": set()})
+        g["lines"] += 1
+        g["requested"] += i["requested"]
+        g["pending"] += i["pending"]
+        g["files"].add(i["file"])
+    inv_cache: dict[str, list] = {}
+    out = []
+    for g in groups.values():
+        if g["status"] == "needs_sap":
+            if g["site"] not in inv_cache:
+                inv_cache[g["site"]] = [dict(r) for r in (await session.execute(text(
+                    'SELECT TRIM("SAP_Code") AS sap, "Equipment_Description" AS d, "UOM" AS uom, '
+                    '"Material_Code" AS code FROM inventory WHERE COALESCE("Site_ID", \'\') = :s'),
+                    {"s": g["site"]})).mappings().all()]
+            scored = sorted(((FZ._hybrid_score(g["written"], r["d"] or ""), r)
+                             for r in inv_cache[g["site"]]), key=lambda t: -t[0])
+            g["suggestions"] = [{"SAP_Code": r["sap"], "description": r["d"], "uom": r["uom"],
+                                 "Material_Code": r["code"], "score": round(sc, 3)}
+                                for sc, r in scored[:3] if sc >= 0.35]
+        g["files"] = sorted(g["files"])
+        g["requested"] = round(g["requested"], 3)
+        g["pending"] = round(g["pending"], 3)
+        out.append(g)
+    order = {"needs_sap": 0, "not_stocked": 1, "mapped": 2, "not_stock": 3, "linked_by_code": 4}
+    out.sort(key=lambda g: (order.get(g["status"], 9), -g["lines"], g["written"].lower()))
+    counts: dict[str, int] = {}
+    for g in out:
+        counts[g["status"]] = counts.get(g["status"], 0) + g["lines"]
+    return {"groups": out, "counts": counts}

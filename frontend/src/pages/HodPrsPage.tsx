@@ -9,6 +9,8 @@ import type { Dayjs } from 'dayjs'
 import { DownloadOutlined, EditOutlined, InboxOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useAuth } from '../auth/AuthContext'
 import { api } from '../api/client'
+import PrItemPicker, { splitPick } from '../catalogue/PrItemPicker'
+import { Thumb, useThumbs } from '../catalogue/thumbs'
 import { downloadPrPdf, useAutoDraftPr, useCreatePr, useEditPrLine, useHodPrLines, useHodPrs, useInventoryMaster, useRenamePr, useSites, useSubmitPr } from '../api/hooks'
 import { useIdempotencyKey } from '../api/idempotency'
 import type { Row as ApiRow } from '../api/client'
@@ -30,7 +32,7 @@ interface PrFormValues {
   supplier?: string
   delivery_date?: Dayjs
   notes?: string
-  lines: { SAP_Code: string; Requested_Qty: number; Est_Cost_SAR?: number; Notes?: string }[]
+  lines: { item?: string; Requested_Qty: number; Est_Cost_SAR?: number; Notes?: string }[]
 }
 
 function NewPr() {
@@ -43,9 +45,6 @@ function NewPr() {
   const autoDraft = useAutoDraftPr()
   const siteWatch = Form.useWatch('site_id', form)
 
-  const itemOptions = (inventory.data?.items ?? []).map((r: ApiRow) => ({
-    value: String(r.SAP_Code), label: `${r.SAP_Code} — ${r.Equipment_Description ?? ''}`,
-  }))
 
   const doAutoDraft = async () => {
     if (!siteWatch) { message.warning('Pick a site first'); return }
@@ -68,7 +67,8 @@ function NewPr() {
         supplier: v.supplier || null,
         notes: v.notes || null,
         delivery_date: v.delivery_date ? v.delivery_date.format('YYYY-MM-DD') : null,
-        lines: v.lines,
+        // Phase 23d: a catalogue pick carries its GI code and no SAP (Q23-5)
+        lines: v.lines.map(({ item, ...l }) => ({ ...l, ...splitPick(item) })),
       })
       message.success(`PR ${res.pr_number} created (${res.lines} line(s)) — now submit it to Logistics`)
       form.resetFields()
@@ -115,9 +115,8 @@ function NewPr() {
             <>
               {fields.map((field) => (
                 <Space key={field.key} align="baseline" style={{ display: 'flex', marginTop: 8 }} wrap>
-                  <Form.Item name={[field.name, 'SAP_Code']} rules={[{ required: true, message: 'Material' }]}>
-                    <Select showSearch optionFilterProp="label" placeholder="Material (SAP)"
-                      style={{ width: 320 }} options={itemOptions} loading={inventory.isFetching} />
+                  <Form.Item name={[field.name, 'item']} rules={[{ required: true, message: 'Material' }]}>
+                    <PrItemPicker inventory={(inventory.data?.items ?? []) as ApiRow[]} loading={inventory.isFetching} />
                   </Form.Item>
                   <Form.Item name={[field.name, 'Requested_Qty']} rules={[{ required: true, message: 'Qty' }]}>
                     <InputNumber min={0.0001} placeholder="Qty" style={{ width: 100 }} />
@@ -302,8 +301,16 @@ function PrLinesEditor({ pr, site, editable }: { pr: string; site?: string; edit
     } catch (e) { message.error(errMsg(e)) }
   }
 
+  // Phase 23d — each line's picture (one batch call for the whole PR)
+  const { data: thumbs } = useThumbs({
+    saps: (lines ?? []).map((l) => String(l.SAP_Code ?? '')),
+    codes: (lines ?? []).map((l) => String(l.Material_Code ?? '')),
+  })
   const cols: ColumnsType<ApiRow> = [
-    { title: 'SAP', dataIndex: 'SAP_Code' },
+    { title: '', key: '__pic', width: 56, render: (_: unknown, r: ApiRow) => (
+      <Thumb size={40} src={thumbs?.saps[String(r.SAP_Code ?? '')] ?? thumbs?.codes[String(r.Material_Code ?? '').toUpperCase()]} />) },
+    { title: 'SAP', dataIndex: 'SAP_Code', render: (v, r) => (v ? String(v)
+      : <Tag color="blue">not stocked yet · {String(r.Material_Code ?? '')}</Tag>) },
     { title: 'Material', dataIndex: 'Material_Name', ellipsis: true, render: (v) => v ?? '—' },
     { title: 'Qty', dataIndex: 'Requested_Qty', align: 'right', render: (v) => Number(v) },
     { title: 'UOM', dataIndex: 'UOM', render: (v) => v ?? '—' },

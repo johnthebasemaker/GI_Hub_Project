@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import PrLinesPics from '../catalogue/PrLinesPics'
 import {
   App, Button, Card, Col, DatePicker, Descriptions, Form, Input, InputNumber, Modal, Popconfirm,
   Row as ARow, Select, Space, Tabs, Tag, Typography, Upload,
@@ -87,6 +88,8 @@ function IncomingPRs() {
         size="small" loading={isFetching} columns={columns} dataSource={rows ?? []}
         rowKey={(r) => `${r.PR_Number}-${r.Site_ID}`}
         pagination={{ pageSize: 20, showTotal: (t) => `${t} in queue` }}
+        // Phase 23d — open a PR to see its lines with their pictures
+        expandable={{ expandedRowRender: (r) => <PrLinesPics pr={String(r.PR_Number)} site={String(r.Site_ID ?? '')} /> }}
       />
       <Modal
         open={!!pr}

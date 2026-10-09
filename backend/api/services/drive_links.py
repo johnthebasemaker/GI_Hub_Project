@@ -335,3 +335,10 @@ LINKERS.append(("mtc", _mtc.link_mtc))
 from . import requests_sync as _req  # noqa: E402
 
 LINKERS.append(("pending", _req.link_requests))
+
+# 23d — the material catalogue, the site equipment list, the Material Images folder
+from . import catalogue as _cat  # noqa: E402
+
+LINKERS.append(("catalogue", _cat.link_catalogue))
+LINKERS.append(("equipment", _cat.link_equipment))
+LINKERS.append(("images", _cat.link_images))

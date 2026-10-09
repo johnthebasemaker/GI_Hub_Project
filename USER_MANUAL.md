@@ -1229,6 +1229,17 @@ your HOD (**WBS & Work Types**), each line *from* a date, so older papers keep t
 names of their time. The staged rows carry it; your own login stays the
 submitter.
 
+**Earlier preparers and one-day covers (Phase 23).** CNCEC's history now goes
+back to May. Johnson is Day throughout. The Night names are: none before 23
+Jul, Mani from 23 Jul, Subramani from 30 Jul, Mydeen from 2 Aug, and Kalied
+from 26 Sep. A **one-day cover** is somebody who prepared papers on a single
+date: Imtiyaz on 28 Sep, and Mydeen on the 26 Sep handover night. A cover never
+changes the regular pair. For that date, **Prepared by** offers the cover's name
+in its drop-down as well. In the card, dates are picked from a calendar.
+**Add a one-day cover** adds one, with *either shift*, *Day* or *Night*. Every
+*Prepared by* in the Consumption Log is explained by this history: 5,363 of
+5,363 rows.
+
 **Tank (Phase 22).** The **Tank** column matches what is written against your
 site's official tanks, like the names:
 - 🟢 **matched** — `K-TNK-091` is Train K's tank 091 (`522-8k10-TNK-091`),
@@ -1243,6 +1254,32 @@ A ditto mark under a tank takes the tank above (*as above ("K-TNK-091")*).
 **Tick all like this** ticks every row of that tank; with rows ticked, a bar
 above the table sets their tank in one go. **Accept**, a choice or the bar
 **teaches** the spelling for your site — green next time.
+
+**Tank for this whole page (Phase 23).** The reader often garbles the **first**
+tank on a page, and every ditto mark below it inherits the mistake. Above the
+table, **Tank for this whole page** lists the tanks your site used in the **7
+days before the paper's date** (busiest first, with how many lines), then the
+site's other tanks. Choose the tank you can read in the first cell, and every
+row whose tank is a **ditto mark, blank, not found or a gold "check"** takes it
+at once. Two kinds of row are **never** changed: a row whose own written tank
+was matched (🟢), and a row where you chose the tank yourself. **Undo** puts
+back exactly what was there. The page tank does not teach a spelling; only
+**Accept** or a choice in a row's box teaches one. *(Measured on the 8 photos of
+5–6 Oct: the tank is right on 0.81 of the lines instead of 0.42, and 49 lines
+are entirely right instead of 32.)*
+
+**The second read (Phase 23).** On a photographed page, the reader sometimes
+skips rows that are nothing but ditto marks. On the 6 Oct paper it skipped rows
+2–4 and 9–12 and returned 17 of 24 lines. GI Hub now checks the printed **S.No**
+column. When a printed row is missing from the read **and has handwriting in
+it**, it is cut out of the photo and read **again in the background**. Blank
+rows are never re-read: shown blank rows, the reader invents lines. The rows from the first read
+appear straight away as before, so **you never wait** for this. A blue note
+says *Reading again the printed rows the first read skipped (S.No 2–6, 9–12…)*.
+Rows found are slotted in at their S.No, marked **2nd read** in purple, and
+matched like the others (a ditto takes the tank and remark above). Check them
+like any row. If nothing more is written there, the note says so. A pasted
+paper has no photo, so it gets no second read.
 
 **Already in the workbook? Compare, not stage (Phase 22).** When the workbook
 already has rows for the paper's **date and preparer**, a blue box says *This
@@ -1356,8 +1393,25 @@ Shields are not here.
 **Pending only** (on by default), **Without PR / With PR**, the site and a search
 narrow the list.
 
-**Lines with no SAP code** are listed in a yellow box (file, sheet, row) — add
-the SAP code in the workbook and the next pull matches them.
+**Needs a SAP code — decide it here (Phase 23).** A request line the workbook
+gave no SAP code no longer has to be fixed in the workbook. The **Needs a SAP
+code** card groups those lines by what is written on them. Lines that say the
+same thing are one row, and the item master's closest matches are offered as
+gold tags. For each name:
+- **Link** — click a gold tag, or choose the item in the box, then **Link**. The
+  line counts against that item at once: received, pending and Smart Reorder.
+- **Not stocked yet** — for a line with a GI material code that GI Hub does not
+  stock (most of them: *JUBLEE CLAMP*, *HELMET A/C with hose* …). No SAP number
+  is made up. The line **links by itself** on the day your workbook adds an item
+  with that code.
+- **Not a stock item** — a service or a one-off. It leaves pending and reorder.
+
+Tick several names to decide them together. GI Hub remembers each decision for
+that name at your site, so the next request with the same words is already
+decided, and your workbook is never changed. **Decided** lists what was decided
+and by whom; **Undo** puts a name back on the list. **Not stocked yet** shows
+the GI-coded lines that are waiting. The Admin, the site's HOD and Logistics
+decide; store keepers and auditors see the list. Every decision is audited.
 
 **Requests without a PR are "on order".** Smart Reorder subtracts them from its
 suggested order and shows *+ n requested (no PR)* under **On order**, so it stops
@@ -1368,6 +1422,49 @@ PO tracking, which already counts them.
 Details.xlsx* is never read as requests. Where its pending figure differs from
 GI Hub's, the row is listed at the bottom of the page — look at it; nothing is
 changed.
+
+## 3.22 The catalogue: every material and tool, with pictures (Phase 23, October 2026)
+
+**Where:** sidebar → **Catalogue** (everyone who handles material). Two tabs:
+
+- **Materials** — the ≈ 6,000 GI material codes from Drive's *All MATERIAL
+  CODES* workbook. It is not your stock list: **At GI Hub** says whether the
+  code is stocked (and under which SAP) or **not stocked**. Search by code,
+  name or SAP. **Needs a picture** lists the codes without one, so the gaps can
+  be worked down.
+- **Plant & tools** — the site's equipment list from Drive (*Equipment list
+  Updated as on …*), by section: vehicles, blasting equipment, utilities …
+
+A blue line at the top says which Drive file the codes came from. It also lists
+anything worth a look: a code the file gives two descriptions, and GI codes in
+your item master that the file does not have.
+
+**Pictures.** Click a row. The drawer shows up to **four** pictures; the
+**main** one (★) is what lists show. The Admin, HOD and Logistics can:
+- **Add a picture (or take one)**: JPG, PNG, WebP or iPhone HEIC, up to 10 MB.
+  On a phone this opens the camera. GPS and phone details are removed from
+  every picture.
+- **★** make another picture the main one; **🗑** remove one. A removed picture
+  is kept: **Removed pictures → Restore** brings it back.
+- **Use the main picture for other codes too**: type the GI codes of the same
+  family (sizes S–XXXL, 5 mm / 6 mm …) and **Assign**.
+- When a code has no picture but a code of the **same family** has one, it is
+  offered: **Use this**. Nothing is attached until somebody chooses.
+
+One set of pictures per code, shared by every site. Every change is audited.
+Everybody else sees the pictures. **Pictures from Drive:** put a file named by
+its GI code in Drive's **Material Images** folder (`GI-7000003.jpg`) and it
+arrives with the next pull (`docs/GDRIVE_SETUP.md` Part 4). GI Hub never
+searches the web for pictures.
+
+**Where pictures show:** the Stock list (beside the SAP), a material's card,
+the ⌘K search, Requests & Pending, the HOD's PR lines, and Logistics' PR review
+(open a PR's row to see its lines with pictures).
+
+**A PR for an item GI Hub does not stock yet.** In *Purchase Requests → Create
+PR*, type three letters of the item: below the stocked items the box lists
+catalogue codes **not stocked yet**. Such a line carries the GI code and **no
+SAP code**; none is made up. It links itself when your workbook adds the item.
 
 ## 3.21 Phase 22 in Practice, and a tidier top bar (October 2026)
 

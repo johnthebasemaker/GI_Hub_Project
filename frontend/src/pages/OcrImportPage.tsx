@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Key } from 'react'
 import PracticeNotice from '../components/PracticeNotice'
 import {
-  Alert, App, Button, Card, DatePicker, Descriptions, Input, InputNumber, Popconfirm, Radio,
+  Alert, App, AutoComplete, Button, Card, DatePicker, Descriptions, Input, InputNumber, Popconfirm, Radio,
   Select, Space, Tag, Typography, Upload,
 } from 'antd'
 import { Table } from '../lib/smartTable'
@@ -13,13 +13,15 @@ import dayjs, { Dayjs } from 'dayjs'
 import { api } from '../api/client'
 import type { Row as ApiRow } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { fillPageTank, inheritTankFromAbove, insertBySno, undoPageTank } from '../lib/pageTank'
+import type { TankSnapshot } from '../lib/pageTank'
 import { useDocsRequired, useList, useSites, useWbsOptions } from '../api/hooks'
 import EntryDocsUpload from '../components/EntryDocsUpload'
 import type { EntryDoc } from '../components/EntryDocsUpload'
 import OcrJobProgress from '../components/OcrJobProgress'
 import type { OcrJobStatus } from '../components/OcrJobProgress'
 import { status } from '../theme/tokens'
-import { pickPreparers } from '../components/PreparersCard'
+import { coversOn, pickPreparers } from '../components/PreparersCard'
 import type { PreparerEntry } from '../components/PreparersCard'
 
 function errMsg(e: unknown): string {
@@ -63,6 +65,23 @@ interface OcrRow extends ApiRow {
   wb_status?: 'same' | 'differs' | 'missing'
   wb_row?: number | null
   wb_diffs?: Record<string, [unknown, unknown]>
+  // Phase 23b — the printed row number, and a row the second read found
+  sno?: string | number | null
+  second_read?: boolean
+}
+
+interface SecondReadState {
+  status: 'running' | 'done' | 'error'
+  rows: number[]
+  expected_s?: number
+  added?: OcrRow[]
+  seconds?: number
+}
+
+interface PageTanks {
+  from: string; to: string
+  recent: { tag: string; lines: number }[]
+  learned: string[]
 }
 
 interface TankMatch {
@@ -106,6 +125,17 @@ interface DnHeader { DN_No: string; Date: string; Mob_From: string; Driver_Name:
 
 const MATCH_COLOR = { auto: 'green', pick: 'gold', unknown: 'red', suggested: 'gold' } as const
 const MATCH_LABEL = { auto: 'matched', pick: 'pick', unknown: 'not found', suggested: 'check' } as const
+
+/** [2,3,4,9] → "2–4, 9" */
+function snoRuns(nums: number[]): string {
+  const out: [number, number][] = []
+  for (const n of [...new Set(nums.filter((x) => Number.isFinite(x)))].sort((a, b) => a - b)) {
+    const last = out[out.length - 1]
+    if (last && n === last[1] + 1) last[1] = n
+    else out.push([n, n])
+  }
+  return out.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join(', ')
+}
 
 // 📷 OCR Import — the new-stack port of the legacy Daily Issue Log OCR lanes.
 // Photo lane: POST /ai/jobs → poll → review. Paste lane: instant + offline.
@@ -158,6 +188,12 @@ export default function OcrImportPage() {
   const [tankTags, setTankTags] = useState<string[]>([])
   const [selected, setSelected] = useState<Key[]>([])
   const [bulkTank, setBulkTank] = useState<string | undefined>()
+  // Phase 23b — the tank for the whole page (Q23-2) and the background second
+  // read of the rows the first read skipped (Q23-3)
+  const [pageTank, setPageTank] = useState<string | undefined>()
+  const [pageTankUndo, setPageTankUndo] = useState<Record<string, TankSnapshot> | null>(null)
+  const [second, setSecond] = useState<{ jobId: number; rows: number[]; since: number; expected: number } | null>(null)
+  const [secondNote, setSecondNote] = useState<{ type: 'info' | 'success' | 'warning'; text: string } | null>(null)
   const [cmp, setCmp] = useState<CompareRes | null>(null)
   const { data: prepData } = useQuery<{ history: PreparerEntry[] }>({
     queryKey: ['/ai/ocr/preparers', site],
@@ -189,11 +225,47 @@ export default function OcrImportPage() {
       if (r.status === 'done' && r.result) {
         adopt(r.result)
         if (lastFile) void attachPhoto(lastFile)
+        const sr = r.result.second_read as SecondReadState | undefined
+        if (sr?.status === 'running' && jobId != null) {
+          setSecond({ jobId, rows: sr.rows, since: Date.now(), expected: sr.expected_s ?? 90 })
+          setSecondNote({ type: 'info', text: `Reading again the printed rows the first read skipped (S.No ${snoRuns(sr.rows)}). `
+            + 'Keep working — any rows found are added here, marked “2nd read”.' })
+        }
         setJobId(null)
         message.success('Photo read — review the rows below')
       } else if (r.status === 'error') {
         setJobId(null)
         message.error(r.error ?? 'OCR failed')
+      }
+      return r
+    },
+  })
+
+  // Phase 23b — the second read finishes in the background; the page keeps
+  // working and its rows slot in at their printed S.No when they arrive.
+  useQuery({
+    queryKey: ['/ai/jobs/second', second?.jobId],
+    enabled: second != null,
+    refetchInterval: 4000,
+    queryFn: async () => {
+      if (!second) return null
+      const r = (await api.get(`/ai/jobs/${second.jobId}`)).data
+      const sr = r.result?.second_read as SecondReadState | undefined
+      const late = Date.now() - second.since > Math.max(300, second.expected * 3) * 1000
+      if (sr?.status === 'done') {
+        setSecond(null)
+        const added = sr.added ?? []
+        if (added.length) {
+          await addSecondRows(added)
+          setSecondNote({ type: 'success', text: `The second read found ${added.length} more row(s): S.No `
+            + `${snoRuns(added.map((x) => Number(x.sno)))}. They are marked “2nd read” — check them like any row.` })
+        } else {
+          setSecondNote({ type: 'success', text: 'The second read found nothing more — the skipped rows are blank.' })
+        }
+      } else if (sr?.status === 'error' || late) {
+        setSecond(null)
+        setSecondNote({ type: 'warning', text: 'The second read did not finish. The rows above are the first read; '
+          + 'add any missing line by hand.' })
       }
       return r
     },
@@ -324,6 +396,41 @@ export default function OcrImportPage() {
       api.post('/ai/ocr/tank-alias', { site_id: site, tag, written }).catch(() => undefined)
     }
   }
+  // Second-read rows: matched like the first read's (names, tank, work type),
+  // then put in at their S.No; a ditto tank or remark takes the row above.
+  const addSecondRows = async (added: OcrRow[]) => {
+    const fresh = added.map((r) => ({ ...r, _key: `s${String(r.sno)}`, second_read: true }))
+    const rs = await checkPaper(await rematch(fresh), null, false)
+    setRows((cur) => {
+      const merged = insertBySno(cur, rs)
+      const idxs = merged.map((r, k) => (r.second_read ? k : -1)).filter((k) => k >= 0)
+      const withTank = inheritTankFromAbove(merged, idxs)
+      return withTank.map((r, k) => (idxs.includes(k) && k > 0 && !String(r.work_type ?? '').trim()
+        ? { ...r, work_type: withTank[k - 1].work_type } : r))
+    })
+  }
+
+  const { data: pageTanks } = useQuery<PageTanks>({
+    queryKey: ['/ai/ocr/page-tanks', site, date.format('YYYY-MM-DD')],
+    enabled: isConsumption && !!site && dateConfirmed && rows.length > 0,
+    queryFn: async () => (await api.get('/ai/ocr/page-tanks',
+      { params: { site_id: site, date: date.format('YYYY-MM-DD') } })).data,
+  })
+  const choosePageTank = (tag: string) => {
+    const base = pageTankUndo ? undoPageTank(rows, pageTankUndo) : rows
+    const r = fillPageTank(base, tag)
+    setRows(r.rows)
+    setPageTank(tag)
+    setPageTankUndo(r.undo)
+    message.success(`${r.filled.length} row(s) set to ${tag} — ditto, blank or unknown only; `
+      + `${r.kept} row(s) with their own tank kept`)
+  }
+  const clearPageTank = () => {
+    if (pageTankUndo) setRows((rs) => undoPageTank(rs, pageTankUndo))
+    setPageTank(undefined)
+    setPageTankUndo(null)
+  }
+
   const sameTank = (i: number) => {
     const g = rows[i]?.tank_group
     return rows.map((r, k) => (r.tank_group === g ? k : -1)).filter((k) => k >= 0)
@@ -344,6 +451,10 @@ export default function OcrImportPage() {
     setPreparedOverride(null)
     setSelected([])
     setCmp(null)
+    setPageTank(undefined)
+    setPageTankUndo(null)
+    setSecond(null)
+    setSecondNote(null)
     void (async () => {
       let rs = await rematch(fresh)
       if (isConsumption) rs = await checkPaper(rs, result.date_text)
@@ -485,6 +596,7 @@ export default function OcrImportPage() {
             {r.blocked ? 'blocked' : r.match_source === 'learned'
               ? `learned${r.learned_count ? ` ×${r.learned_count}` : ''}` : MATCH_LABEL[v]}</Tag>
           {(r.markers ?? []).map((m) => <span key={m}>{m}</span>)}
+          {r.second_read && <Tag color="purple" data-testid="ocr-second-read">2nd read</Tag>}
         </Space>
       ) },
     { title: 'As written', dataIndex: 'material_text', ellipsis: true },
@@ -771,9 +883,17 @@ export default function OcrImportPage() {
                 </Tag>
               )}
               <span>Prepared by</span>
-              <Input size="small" style={{ width: 180 }} value={preparedBy} data-testid="ocr-prepared-by"
+              {/* Phase 23c (Q23-1): the regular name, plus that day's one-day cover(s) */}
+              <AutoComplete size="small" style={{ width: 180 }} value={preparedBy}
                 placeholder="set the site's names (Admin → Sites)"
-                onChange={(e) => setPreparedOverride(e.target.value)} />
+                onChange={(v) => setPreparedOverride(v)}
+                options={[...new Set([(() => {
+                  const p = pickPreparers(prepData?.history ?? [], date.format('YYYY-MM-DD'))
+                  return (shift?.shift === 'Night' ? p?.night : p?.day) || ''
+                })(), ...coversOn(prepData?.history ?? [], date.format('YYYY-MM-DD'), shift?.shift)])]
+                  .filter(Boolean).map((n) => ({ value: n }))}>
+                <Input size="small" data-testid="ocr-prepared-by" />
+              </AutoComplete>
             </Space>
           )}
           {inWorkbook && cmp && (
@@ -787,6 +907,31 @@ export default function OcrImportPage() {
                 <Tag>{cmp.counts.extra ?? 0} workbook row(s) not on this page</Tag>
                 <span>Fix a difference in the workbook; the next pull brings it in.</span>
               </Space>} />
+          )}
+          {secondNote && (
+            <Alert type={secondNote.type} showIcon style={{ marginBottom: 8 }} data-testid="ocr-second-note"
+              title={secondNote.text} closable onClose={() => setSecondNote(null)} />
+          )}
+          {isConsumption && rows.length > 0 && (
+            <Space wrap style={{ marginBottom: 8 }} data-testid="ocr-page-tank">
+              <span>Tank for this whole page</span>
+              <Select size="small" style={{ width: 260 }} showSearch allowClear value={pageTank}
+                placeholder={pageTanks ? 'Choose — fills ditto, blank and unknown rows' : 'Settle the date first'}
+                disabled={!pageTanks} onChange={(v) => (v ? choosePageTank(v) : clearPageTank())}
+                data-testid="ocr-page-tank-pick"
+                options={pageTanks ? [
+                  { label: `Used ${dayjs(pageTanks.from).format('D MMM')} – ${dayjs(pageTanks.to).format('D MMM')}`,
+                    options: pageTanks.recent.map((t) => ({ value: t.tag, label: `${t.tag} · ${t.lines} line(s)` })) },
+                  ...(pageTanks.learned.length ? [{ label: 'Other tanks at this site',
+                    options: pageTanks.learned.map((t) => ({ value: t, label: t })) }] : []),
+                ] : []} />
+              {pageTank && (
+                <Button size="small" onClick={clearPageTank} data-testid="ocr-page-tank-undo">Undo</Button>
+              )}
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                A tank written and matched on its own row, or one you chose, is never changed.
+              </Typography.Text>
+            </Space>
           )}
           {isConsumption && selected.length > 0 && (
             <Space wrap style={{ marginBottom: 8 }} data-testid="ocr-bulk-tank">
@@ -859,7 +1004,7 @@ export default function OcrImportPage() {
                         : `Stage ${readyCount} row(s) for HOD approval`}
               </Button>
             </Popconfirm>
-            <Button onClick={() => { setRows([]); setHeader(null); setPaperDate(null); setDateConfirmed(true); setCmp(null); setShift(null); setSelected([]) }}>
+            <Button onClick={() => { setRows([]); setHeader(null); setPaperDate(null); setDateConfirmed(true); setCmp(null); setShift(null); setSelected([]); setPageTank(undefined); setPageTankUndo(null); setSecond(null); setSecondNote(null) }}>
               Discard
             </Button>
           </Space>

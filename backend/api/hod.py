@@ -68,7 +68,9 @@ class RejectIn(BaseModel):
 
 
 class PRLineIn(BaseModel):
-    SAP_Code: str
+    # Phase 23d (Q23-5): blank for a catalogue item not stocked yet — the line
+    # then carries its GI code in Material_Code and no SAP is invented
+    SAP_Code: str = ""
     Requested_Qty: float
     Material_Code: Optional[str] = None
     Material_Name: Optional[str] = None

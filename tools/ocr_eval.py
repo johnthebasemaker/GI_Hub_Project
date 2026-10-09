@@ -176,12 +176,60 @@ async def read_page(raw: bytes) -> tuple[str, float]:
     return out.text, time.perf_counter() - t0
 
 
+async def read_strip(strip: bytes, gaps: list[int]) -> tuple[str, float]:
+    """Phase 23b — the second read, exactly as `jobs._run_second_read` asks it."""
+    from backend.api.ai import ocr
+    from backend.api.ai import route as R
+    from backend.api.ai import second_read as SR
+    t0 = time.perf_counter()
+    out = await R.call_vision(SR.LANE, SR.user_prompt(gaps), system=SR.SYSTEM_PROMPT,
+                              image_b64=base64.b64encode(strip).decode(),
+                              image_tokens=ocr.estimate_image_tokens(strip), temperature=0.1)
+    if out.error_class:
+        raise RuntimeError(f"vision failed: {out.error_class}")
+    return out.text, time.perf_counter() - t0
+
+
 def cache_key(raw: bytes) -> str:
     from backend.api.ai import ocr
     h = hashlib.sha256(raw)
     h.update(ocr.SYSTEM_PROMPTS["ocr_consumption"].encode())
     h.update(ocr.USER_PROMPTS["ocr_consumption"].encode())
     return h.hexdigest()[:24]
+
+
+async def second_pass(raw: bytes, parsed: dict, page_no: int, rescore: bool, log: list) -> dict:
+    """Cut the gap strips from the SAME prepped image the app would hold, read
+    them (cached by strip hash), and merge the accepted rows into the page."""
+    from backend.api.ai import ocr
+    from backend.api.ai import second_read as SR
+    rows = parsed.get("rows") or []
+    gaps = SR.missing_rows(rows)
+    entry = {"page": page_no, "read": len(rows), "gaps": gaps, "added": 0, "seconds": None,
+             "geometry": None}
+    cut = SR.strip_image(ocr.prep_image_for_vision(raw), gaps, read=SR.read_snos(rows)) if gaps else None
+    if cut:
+        strip, meta = cut
+        gaps = meta["rows"]
+        entry.update(geometry=meta["geometry"], written=gaps, blank=meta.get("blank"))
+        cp = CACHE / f"second_{hashlib.sha256(strip + SR.user_prompt(gaps).encode() + SR.SYSTEM_PROMPT.encode()).hexdigest()[:24]}.txt"
+        if cp.exists():
+            text2 = cp.read_text()
+        elif rescore:
+            text2 = None
+        else:
+            print(f"  page {page_no}: second read of S.No {SR._rows_text(gaps)}…", flush=True)
+            text2, secs = await read_strip(strip, gaps)
+            cp.write_text(text2)
+            entry["seconds"] = round(secs, 1)
+        if text2 is not None:
+            rows2 = SR.parse_rows(text2)
+            added = SR.accept(rows2, gaps, rows)
+            entry["added"] = len(added)
+            entry["added_snos"] = [r.get("sno") for r in added]
+            parsed = {**parsed, "rows": SR.merge(rows, added)}
+    log.append(entry)
+    return parsed
 
 
 def to_form(parsed: dict, form_id: str) -> dict:
@@ -309,7 +357,7 @@ def tank_tags(path: Path) -> list[str]:
 
 def lines_report(forms: list[dict], truth: list[dict], inventory, stock, tags: list[str],
                  preparers: dict[str, str], *, aliases=None, accept_first=True,
-                 today: _dt.date = PHOTO_DAY) -> dict:
+                 page_tank: bool = False, today: _dt.date = PHOTO_DAY) -> dict:
     """Pages grouped by (date, preparer) — the shift's pages together — paired
     one to one with the workbook block of that date and preparer, exactly as
     OCR Import's Compare does (`ai/paper_compare.align`). Counts only."""
@@ -326,11 +374,46 @@ def lines_report(forms: list[dict], truth: list[dict], inventory, stock, tags: l
         shift, _marked = shift_of(HW.parse_shift(f.get("date_text")))
         who = preparers.get(shift)
         day = f.get("date_iso")
+        # the workbook left Prepared By blank for the day (7–8 Oct 2026): score
+        # against the whole day — both shifts' pages in one block
+        if day and not any(t["date"] == day and t["prepared"] == who for t in truth) \
+                and any(t["date"] == day and not t["prepared"] for t in truth):
+            who = ""
         if day and who and any(t["date"] == day and t["prepared"] == who for t in truth):
             page_ok += 1
         res = HW.process_batch([f], inventory, stock, today=today)
         tm = fill_dittos([match_tank(r.get("tank_no"), tags) for r in res["rows"]])
         wts = fill_work_types([r.get("work_type") for r in res["rows"]])
+        if page_tank:
+            # Phase 23b (Q23-2): the store keeper reads the page's first tank
+            # cell and sets that tank once. Simulated as the workbook tank of
+            # this shift that fits THIS page best (a shift's pages switch
+            # tanks, so one tank per shift would be wrong); it fills ONLY
+            # ditto / blank / unknown / gold rows, as `lib/pageTank.ts` does.
+            wb_block = [dict(t, work_type=nwt(t["work_type"])) for t in truth
+                        if t["date"] == day and t["prepared"] == who]
+            fillable = [not re.search(r"[A-Za-z0-9]", str(r.get("tank_no") or ""))
+                        or not t.get("tag") or t.get("state") in ("unknown", "suggested")
+                        for r, t in zip(res["rows"], tm)]
+
+            def page_rows(tag):
+                out = []
+                for r, t, wt, fill in zip(res["rows"], tm, wts, fillable):
+                    m = CM.match(r.get("product_name_raw") or "", inventory, aliases=aliases, stock=stock)
+                    sap = m["sap"] if (m["state"] == "auto" or (accept_first and m["state"] == "suggested")) else None
+                    out.append({"SAP_Code": sap, "quantity": r.get("qty"),
+                                "tank": tag if fill else (t.get("tag") or r.get("tank_no")),
+                                "work_type": nwt(wt), "issued_to": r.get("received_by")})
+                return out
+
+            def tank_right(rows_):
+                al = PC.align(rows_, wb_block)
+                return sum(1 for ln in al["lines"] if ln["status"] in ("same", "differs")
+                           and "tank" not in ln["diffs"])
+            cands = sorted({t["tank"] for t in wb_block if t["tank"]})
+            if cands and any(fillable):
+                best = max(cands, key=lambda c: tank_right(page_rows(c)))
+                tm = [dict(t, tag=best) if fill else t for t, fill in zip(tm, fillable)]
         for r, t, wt in zip(res["rows"], tm, wts):
             m = CM.match(r.get("product_name_raw") or "", inventory, aliases=aliases, stock=stock)
             sap = m["sap"] if (m["state"] == "auto" or (accept_first and m["state"] == "suggested")) else None
@@ -362,7 +445,7 @@ def lines_report(forms: list[dict], truth: list[dict], inventory, stock, tags: l
             "line_recall": round(paired / max(tot["truth"], 1), 3),
             "line_precision": round(paired / max(tot["paper"], 1), 3),
             "field_accuracy_on_paired": acc, "accept_first_suggestion": accept_first,
-            "aliases_applied": bool(aliases)}
+            "page_tank": page_tank, "aliases_applied": bool(aliases)}
 
 
 async def main() -> int:
@@ -378,15 +461,23 @@ async def main() -> int:
                          "same date and preparer (the scorecard keeps the day totals too)")
     ap.add_argument("--preparers", default="Day=Johnson,Night=Kalied",
                     help="the site's Day / Night preparers for --lines")
+    ap.add_argument("--photo-day", default=PHOTO_DAY.isoformat(),
+                    help="the day the photos were taken (dates after it are implausible); "
+                         "2026-10-06 for the 1–6 Oct sets, 2026-10-09 for 7–8 Oct")
+    ap.add_argument("--second-read", action="store_true",
+                    help="Phase 23b: read the S.No gaps again (strips, cached) and score the "
+                         "merged pages; prints lines added and seconds per page")
     ap.add_argument("--equipment", default=str(_ROOT / "Equipment.xlsx"),
                     help="the SME equipment workbook (the official tank tags) for --lines")
     a = ap.parse_args()
+    today = _dt.date.fromisoformat(a.photo_day)
     imgs = sorted(p for p in Path(a.images).glob("*") if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".heic"))
     if not imgs:
         print(f"❌ no photos in {a.images}")
         return 2
     CACHE.mkdir(parents=True, exist_ok=True)
     forms, timings = [], []
+    second_log: list[dict] = []
     for i, p in enumerate(imgs, 1):
         raw = p.read_bytes()
         cp = CACHE / f"{cache_key(raw)}.txt"
@@ -402,13 +493,15 @@ async def main() -> int:
             timings.append(round(secs, 1))
         from backend.api.ai import ocr
         parsed = ocr.parse_vision_reply("ocr_consumption", text)
+        if a.second_read:
+            parsed = await second_pass(raw, parsed, i, a.rescore, second_log)
         forms.append(to_form(parsed, f"page{i:02d}"))
 
     from backend.api.ai import handwritten as HW
-    checked_forms, date_table = date_checked(forms)
+    checked_forms, date_table = date_checked(forms, today)
     dates = {t["used"] for t in date_table if t["used"]}
     for f in forms:
-        d, _flag = HW.parse_form_date(f.get("date_text"), PHOTO_DAY)
+        d, _flag = HW.parse_form_date(f.get("date_text"), today)
         if d:
             dates.add(d)
     inventory, stock, truth_rows = load_workbook(Path(a.workbook), dates)
@@ -420,15 +513,15 @@ async def main() -> int:
     if a.semantic:
         from backend.api.ai import consumption_semantic as SEM
         semantic = await SEM.build_local(inventory)
-    pred, recs = predictions(forms, inventory, stock, aliases=aliases, semantic=semantic)
+    pred, recs = predictions(forms, inventory, stock, aliases=aliases, semantic=semantic, today=today)
     truth = aggregate(truth_rows)
     sc = score(aggregate(pred), truth)
-    pred_c, recs_c = predictions(checked_forms, inventory, stock, aliases=aliases, semantic=semantic)
+    pred_c, recs_c = predictions(checked_forms, inventory, stock, aliases=aliases, semantic=semantic, today=today)
     sc_c = score(aggregate(pred_c), truth)
     states = collections.Counter(r["state"] for r in recs)
     sources = collections.Counter(r["source"] for r in recs if r["source"])
     rows_total = len(recs)
-    pages_dated = sum(1 for f in forms if HW.parse_form_date(f.get("date_text"), PHOTO_DAY)[0])
+    pages_dated = sum(1 for f in forms if HW.parse_form_date(f.get("date_text"), today)[0])
     card = {"at": _dt.datetime.now().isoformat(timespec="seconds"), "pages": len(forms),
             "pages_dated": pages_dated, "dates_used": sorted({t["used"] for t in date_table if t["used"]}),
             "rows": rows_total, "states": dict(states), "sources": dict(sources),
@@ -446,6 +539,16 @@ async def main() -> int:
     print("\nwritten name → state → SAP (count):")
     for (w, st, sap), n in sorted(confusion.items(), key=lambda x: -x[1])[:60]:
         print(f"  {n:>3} × {w!r:<28} {st:<9} {sap or '—'}")
+    if a.second_read:
+        card["second_read"] = {
+            "pages": len(second_log),
+            "pages_with_gaps": sum(1 for x in second_log if x["gaps"]),
+            "pages_read_again": sum(1 for x in second_log if x.get("written")),
+            "rows_added": sum(x["added"] for x in second_log),
+            "seconds": [x["seconds"] for x in second_log if x["seconds"] is not None],
+            "per_page": [{k: v for k, v in x.items() if k != "page_name"} for x in second_log]}
+        print("\nSECOND READ (Phase 23b):")
+        print(json.dumps(card["second_read"], indent=1))
     if a.lines:
         preps = dict(x.split("=", 1) for x in a.preparers.split(",") if "=" in x)
         truth_lines = load_lines(Path(a.workbook), set(d for d in dates if d))
@@ -453,9 +556,13 @@ async def main() -> int:
         for accept in (False, True):
             key = "lines_accept_first" if accept else "lines_auto_only"
             card[key] = lines_report(forms, truth_lines, inventory, stock, tags, preps,
-                                     aliases=aliases, accept_first=accept)
+                                     aliases=aliases, accept_first=accept, today=today)
+        card["lines_accept_first_page_tank"] = lines_report(
+            forms, truth_lines, inventory, stock, tags, preps, aliases=aliases,
+            accept_first=True, page_tank=True, today=today)
         print("\nLINE BY LINE (Phase 22e):")
-        print(json.dumps({k: card[k] for k in ("lines_auto_only", "lines_accept_first")}, indent=1))
+        print(json.dumps({k: card[k] for k in ("lines_auto_only", "lines_accept_first",
+                                               "lines_accept_first_page_tank")}, indent=1))
     SCORECARD.parent.mkdir(parents=True, exist_ok=True)
     SCORECARD.write_text(json.dumps(card, indent=1))
     if a.propose_aliases:

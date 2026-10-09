@@ -88,6 +88,8 @@ export const QC_WAREHOUSE = 'WH-01'
 export const RUNTIME_DIR = path.resolve(__dirname, '..', '.runtime')
 /** Phase 22b — the Live API's Drive cache in the E2E stack (DN / MTC copies a spec places). */
 export const DRIVE_CACHE_DIR = path.join(RUNTIME_DIR, 'drive-cache')
+// Phase 23d — the catalogue's pictures, never the dev Mac's media/catalog
+export const MEDIA_DIR = path.join(RUNTIME_DIR, 'media')
 export const AUTH_DIR = path.resolve(__dirname, '..', '.auth')
 export const storageStatePath = (role: Role) => path.join(AUTH_DIR, `${role}.json`)
 

@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react'
-import { Alert, Card, Collapse, Input, Segmented, Space, Switch, Tag, Tooltip, Typography } from 'antd'
+import { Card, Input, Segmented, Space, Switch, Tag, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table/interface'
 import { useQuery } from '@tanstack/react-query'
 import { Table } from '../lib/smartTable'
 import { api } from '../api/client'
 import { SiteFilter } from '../components/SiteField'
+import SapMapper from '../components/SapMapper'
+import { SapThumb } from '../catalogue/thumbs'
 
 /**
  * Phase 22d — Requests & Pending (rulings Q22-12/13).
@@ -22,6 +24,8 @@ interface Item {
   requested: number; received: number; wb_received: number | null; pending: number
   wb_pending: number | null; differs: boolean; pr: string | null; without_pr: boolean
   type: string | null; remarks: string | null; site: string | null; age_days: number | null
+  // Phase 23c — what the mapper decided for a line the workbook gave no SAP
+  status?: 'sap' | 'needs_sap' | 'not_stocked' | 'mapped' | 'not_stock' | 'linked_by_code'
 }
 interface Resp {
   items: Item[]; totals: { lines: number; open: number; without_pr_open: number; differs: number }
@@ -56,12 +60,17 @@ export default function RequestsPendingPage() {
         {r.age_days != null && <Typography.Text type="secondary" style={{ fontSize: 11 }}>{r.age_days} days ago</Typography.Text>}
       </Space> },
     { title: 'Item', key: 'item', width: 280, sorter: (a, b) => a.description.localeCompare(b.description),
-      render: (_: unknown, r) => <Space direction="vertical" size={0}>
+      render: (_: unknown, r) => <Space size={8} align="start">{r.SAP_Code && <SapThumb sap={r.SAP_Code} size={36} />}
+        <Space direction="vertical" size={0}>
         <span>{r.description}</span>
         <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-          {r.SAP_Code ? `SAP ${r.SAP_Code}` : <Tag color="orange" style={{ margin: 0 }}>no SAP code</Tag>}
+          {r.SAP_Code ? `SAP ${r.SAP_Code}` : r.status === 'not_stocked'
+            ? <Tag color="blue" style={{ margin: 0 }}>not stocked yet</Tag>
+            : r.status === 'not_stock' ? <Tag style={{ margin: 0 }}>not a stock item</Tag>
+              : <Tag color="orange" style={{ margin: 0 }}>no SAP code</Tag>}
+          {r.status === 'mapped' && <Tag color="green" style={{ margin: '0 0 0 4px' }}>linked here</Tag>}
           {r.Material_Code ? ` · ${r.Material_Code}` : ''}</Typography.Text>
-      </Space> },
+      </Space></Space> },
     { title: 'PR', key: 'pr', width: 130,
       render: (_: unknown, r) => (r.without_pr ? <Tag color="gold">no PR</Tag> : <Typography.Text style={{ fontSize: 12 }}>{r.pr}</Typography.Text>) },
     { title: 'Asked', dataIndex: 'requested', key: 'req', align: 'right', width: 80, render: n },
@@ -100,14 +109,7 @@ export default function RequestsPendingPage() {
         <span><Switch size="small" checked={openOnly} onChange={setOpenOnly} data-testid="req-open-only" /> pending only</span>
         <Input.Search allowClear placeholder="Item, SAP, code or file" style={{ width: 240 }} onSearch={setQ} onChange={(e) => !e.target.value && setQ('')} />
       </Space>
-      {!!data?.needs_sap.length && (
-        <Alert type="warning" showIcon style={{ marginBottom: 12 }} data-testid="req-needs-sap"
-          title={`${data.needs_sap.length} request line(s) have no SAP code — add it in the workbook so they can be matched to stock`}
-          description={<Collapse ghost size="small" items={[{ key: 'x', label: 'Show them', children: (
-            <ul style={{ margin: 0, paddingLeft: 18 }}>{data.needs_sap.map((x) => (
-              <li key={`${x.file}|${x.row}`}>{x.file} · {x.sheet} row {x.row}: {x.description}{x.Material_Code ? ` (${x.Material_Code})` : ''}</li>
-            ))}</ul>) }]} />} />
-      )}
+      <SapMapper site={site} />
       <div data-testid="req-table">
         <Table size="small" loading={isFetching} columns={cols} dataSource={rows} rowKey="id"
           scroll={{ x: 1200 }} pagination={{ pageSize: 25, showTotal: (t) => `${t} line(s)` }} />

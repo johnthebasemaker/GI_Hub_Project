@@ -59,6 +59,17 @@
    "admin",
    "hod"
   ],
+  "/catalogue": [
+   "admin",
+   "logistics",
+   "auditor",
+   "hod",
+   "qc_hod",
+   "warehouse_user",
+   "supervisor",
+   "qc",
+   "store_keeper"
+  ],
   "/documents": [
    "admin",
    "logistics",
@@ -307,6 +318,7 @@
   "/admin/users": "Users",
   "/assets": "Assets",
   "/bulk-import": "Bulk Excel Import",
+  "/catalogue": "Catalogue",
   "/documents": "Documents",
   "/entry/adjust": "Stock Adjustment",
   "/entry/count": "Stock Count",

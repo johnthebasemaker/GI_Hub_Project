@@ -11,7 +11,7 @@
     "test:design": "node scripts/design_check.mjs",
     "lint": "oxlint",
     "parity:sme": "node scripts/sme_parity.mjs",
-    "test:ui-math": "node --import ./scripts/register-ts.mjs scripts/sme_ui_math.mjs",
+    "test:ui-math": "node --import ./scripts/register-ts.mjs scripts/sme_ui_math.mjs && node --import ./scripts/register-ts.mjs scripts/ocr_page_tank.mjs",
     "test:nav": "node scripts/nav_routes_check.mjs && node scripts/tour_check.mjs",
     "preview": "vite preview",
     "preview:local": "npm run build && VITE_TUNNEL=1 VITE_TUNNEL_HOST=local.giinventory.com vite preview",

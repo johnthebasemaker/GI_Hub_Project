@@ -151,3 +151,6 @@ data-archive/ocr_ground_truth/
 # delivery notes and certificates; Practice's drawn examples under practice/).
 # Served by /drive/files only. NEVER committed.
 .cache/drive/
+
+# Phase 23d — material / equipment pictures (on disk, backed up nightly by bin/backup_db.sh)
+media/
