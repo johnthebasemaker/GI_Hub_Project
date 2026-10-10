@@ -1,4 +1,4 @@
-# SESSION HANDOVER — read this first (updated 2026-10-07, Phase 21 complete)
+# SESSION HANDOVER — read this first (updated 2026-10-10, Phase 23 complete)
 
 > This file is the orientation for a fresh session. It replaces every earlier
 > version (they are in git history). After it, read
@@ -11,60 +11,61 @@
 
 ## 0. State in ten lines
 
-1. **Phase 22 is on `main`**, PRs #127–#134. What was done, what is left and
-   what the operator does are in **[`PHASE22_SUMMARY.md`](PHASE22_SUMMARY.md)**.
-   - Drive as a service: pull times in the UI, Pull button, "last updated"
-     chip, checked arrivals, auto-commit of additions only, the DN / MTC /
-     Pending folders cached (22a).
-   - DN copies on receipts/returns, WD numbers (22b); MTC certificates on their
-     lots, QC confirms the rest (22c); Requests & Pending (22d).
-   - The consumption paper line by line: shift → Prepared by, tanks, Compare
-     not Stage (22e); raw colours 0, Practice overlay v11 (22f).
-   - Rulings Q22-1..24 are in `PROJECT_HANDOVER.md` → *Phase 22*. Phase 21 is
-     in `PHASE21_SUMMARY.md`.
+1. **Phase 23 is on `main`**, PRs #136–#139 plus the 23g docs PR. What was
+   done, what is left and what the operator does are in
+   **[`PHASE23_SUMMARY.md`](PHASE23_SUMMARY.md)**.
+   - 23a: downloads work for every role (the Execution 422 was an admin print
+     with no `site_id`); `tests/downloads` (pytest, in `dual-ci`) calls every
+     file route as every role.
+   - 23b: the OCR page tank, and a background second read of skipped numbered
+     lines (0 s wait). 23c: the SAP-code mapper; earlier preparers and one-day
+     covers. 23d: the 5,976-code catalogue, plant & tools, pictures.
+   - 23e: Whistle dictation (pinned, local, telemetry off) and read-aloud.
+     23f: Practice one-click sign-in, the admin password in Live only, Reset
+     Practice passwords, twelve more Auto demos, two tutorials.
+   - Rulings Q23-1..17 are in `PROJECT_HANDOVER.md` → *Phase 23*. Phase 22 is
+     in `PHASE22_SUMMARY.md`.
 2. ⚠️ **Standing order (CLAUDE.md §5):** every change goes branch → PR →
    green checks → auto-merge → `git pull` on local `main`, without waiting to
    be asked. Rollback is a revert PR, never a history rewrite.
-3. **Alembic head `d7fa4c8e2b19`.** Live was migrated slice by slice on
-   2026-10-07/08 (ruling Q22-23), a backup before each in `.backups/`
-   (`…before_phase22a…` → `…before_phase22e…`). Practice DBs: migrated and
-   overlay **v11** applied at the end of Phase 22.
-4. **All gates green** (2026-10-08):
+3. **Alembic head `f9bc6e1a4d32`.** Live was migrated on 2026-10-09 (backup
+   `.backups/gihub_2026-10-09_225500_before_phase23cd_migrate.sql.gz`).
+   Practice DBs: migrated, overlay **v12**. **No Hetzner yet — local Mac only.**
+4. **All gates green** (2026-10-10):
 
    | Gate | Result |
    |---|---|
-   | service_tests | **3,003 / 0** |
-   | E2E | **207** |
-   | AI Tier 1 | 147/147 |
-   | Router L2 | pass |
+   | service_tests | **3,036 / 0** |
+   | downloads (pytest) | **250** |
+   | E2E | **226** |
+   | AI Tier 1 | 147/147 + Router L2 pass |
    | grid | 72 |
    | parity:sme | 1,334 |
-   | ui-math | 33/0 |
-   | nav | 54 routes, plus **page tours 53** |
-   | bug_check | 599/0/0 |
-   | build | design contract green (raw hex ratchet **0**); critical path re-baselined for Phase 22 (+1.3 KB raw, each step said why) |
+   | ui-math + OCR page rules | 33 + 15 |
+   | nav | 55 routes, page tours 54 |
+   | bug_check | 599/0/0 (needs `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` for zbar) |
+   | build | design contract green; critical path re-baselined in small explained steps |
 5. ⚠️ **`main` is BRANCH-PROTECTED** (Q18-1). `dual-ci`, `ai-router-eval` and
    `frontend-build` are required and strict, admins included. A PR that falls
    behind `main` needs `gh pr update-branch` before auto-merge can land it.
    **CI does not run Playwright**, so E2E is a local gate.
-6. **The operator owes four things:**
-   - the Drive token (`docs/GDRIVE_SETUP.md`);
-   - one ERP **Commit** (the dry run is clean apart from 35 bad-lot rows and
-     SAP 1004 at 4 vs 3);
-   - a review of the 11 proposed OCR names (2 look wrong);
-   - checking OCR staging with a real photo on Live (TC-21G-06).
-7. **Next work, waiting for go-ahead** (`PHASE21_SUMMARY.md` §3):
-   - DN / follow-up / MTC ingestion from Drive (plan §11);
-   - the SME chart colours;
-   - tank-number learning for OCR.
+6. **The operator owes** (details in `PHASE23_SUMMARY.md` §4): the Drive
+   *Material Images* folder; SAP codes in the workbook for the remaining
+   request lines; Prepared_By on the 7–8 Oct workbook rows; a look at the 12
+   GI-8xxx codes missing from the catalogue file.
+7. **Voice** needs `models/stt/` (git-ignored, `tools/stt_setup.py` once); with
+   no model the microphone hides itself. It is the one model outside Ollama
+   (Q23-12, 88 MB).
 8. The operator works on a battery-powered Mac, so **Postgres may be asleep**
    (`./bin/power.sh wake`). Ollama is started only when needed and stopped
-   again.
+   again. Vision is slow here (92–398 s a page).
 9. The operator has **limited internet**: do not download anything large.
-10. **The demo** lives only in the Practice process (`/practice/demo/*`; Live
-    returns 404). Reset demo data restores everything it changed. Test logins
-    are limited to 10 a minute per IP, so a spec that signs in often gives
-    each login its own `X-Real-IP` bucket.
+10. **The demos** live only in the Practice process (`/practice/demo/*`; Live
+    returns 404): 18 of them; the server `CATALOG` and `frontend/src/demo/scripts.ts`
+    must agree (suite 21F). Reset demo data restores everything they change.
+    Test logins are limited to 10 a minute per IP, so a spec that signs in
+    often gives each login its own `X-Real-IP` bucket. On the Practice login
+    page, match the submit button with `{ name: 'Sign in', exact: true }`.
 
 ---
 

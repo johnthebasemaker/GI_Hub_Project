@@ -1,6 +1,6 @@
 # General Industries Hub — Standard Operating Procedure
 
-**Version 2.0** · 3 October 2026 · The whole system, by role
+**Version 2.1** · 10 October 2026 · The whole system, by role
 **Owners:** Site HOD Council · Logistics Manager · Warehouse Lead · GI Hub Administrator
 **Applies to:** every site and warehouse on GI Hub (the React / FastAPI application)
 **Companion documents:** `USER_MANUAL.md` — every page, field and button (the §
@@ -146,6 +146,22 @@ to the HOD.
 - **Surface Shield queue** — Execution Entries → the queue. One card is one job
   (one tank, one day, one note). Check the area the note filled in, tick the
   materials that belong to the job, submit to the HOD. (manual §4.9a)
+- **A consumption paper (OCR Import)** — the paper routine (manual §3.17):
+  1. Photograph the whole page, flat, and upload it (or paste the text).
+  2. Check the **date**. If it is flagged, take the suggestion that matches the
+     paper.
+  3. Check **Night / Day** and **Prepared by**. A one-day cover is offered
+     beside the regular name.
+  4. If the page's first rows have a scribbled tank or ditto marks, choose
+     **Tank for this whole page**. It fills only ditto, blank and unknown
+     rows. A tank written and matched on its own row is never changed.
+     **Undo** puts the rows back.
+  5. Resolve every gold and red name, attach the paper, and stage.
+  6. If the paper is **already in the workbook**, it is *compared*, not staged.
+     Report a difference to whoever keeps the workbook.
+  7. Leave the page open, or come back later: the **second read** adds any
+     numbered line the first read skipped. It runs in the background; nobody
+     waits for it.
 
 **End of day**
 1. Everything issued today is entered (no "I'll do it tomorrow").
@@ -220,6 +236,25 @@ The HOD approves everything the site stages and plans the site's material.
   buying it.
 - **Records → Inventory → New item / Edit** — add a material for your site when
   a new one arrives. (Deleting is the Admin's.)
+- **Requests & Pending → Needs a SAP code** — for each new request line
+  (manual §3.20):
+  1. Read what was written.
+  2. Take a suggestion only if it is the same item.
+  3. Otherwise choose the item from the list and press **Link**.
+  4. A line with a GI catalogue code GI Hub does not stock yet: **Not stocked
+     yet**. No SAP number is made up.
+  5. A line that is not stock (a service, a one-off): **Not a stock item**.
+  6. A wrong decision: **Decided → Undo**.
+- **Pictures** (Catalogue, manual §3.22) — when a material arrives with no
+  picture:
+  1. Open it.
+  2. Use a family picture if one is offered and the item looks the same.
+  3. Otherwise **Add a picture (or take one)**: the item, on a plain
+     background, its label readable.
+  Remove a wrong one; it can be restored.
+- **A PR for an item not stocked yet** — in Create PR, type three letters and
+  pick the catalogue code (*not stocked yet*). The line carries no SAP code
+  and links itself when the workbook adds the item.
 
 **End of day**
 1. The approval queues are empty, or every item left has a reason.
@@ -247,8 +282,12 @@ in §5.
    users into the right role and site.
 2. **Admin → Console → Overview** — services, the WhatsApp and email outboxes
    (retry failures), feedback.
-3. If the workbooks were updated yesterday, run the **Excel sync** (§5.1) and
-   read its report.
+3. Look at the **Drive chip** in the top bar (§5.7). Navy means this
+   morning's 07:30 pull worked. Amber or red means a pull failed, is old, or
+   is waiting for the ERP **Commit**. Deal with it before anyone reads a stock
+   figure.
+4. If the workbooks were updated outside the schedule, run the **Excel sync**
+   (§5.1), or press **Pull**, and read the report.
 
 **During the day**
 - Users: create, change role or site, reset 2FA, revoke sessions.
@@ -256,6 +295,12 @@ in §5.
   no history.
 - **Console → Lots** — record a disposal or quarantine the HOD decided (§6.6).
 - Triage **Feedback** (bug reports); copy the prompt for a developer.
+- **Printing a consumption form as Admin** (Execution): you belong to no
+  single site, so **choose the site first**, then the lining system. The form
+  is registered against that site (manual §4.9).
+- **Practice passwords** — if a class is locked out of Practice: **Admin →
+  Console → Practice accounts → Reset Practice passwords** in **Live**. The
+  Practice admin password is shown there, and only there (§5.5).
 
 **End of day** — the outboxes are clear; nothing is stuck in Overdue Actions.
 
@@ -283,7 +328,10 @@ start a second tunnel connector; share a Practice password as a Live one.
 HOD); **DN Approvals** (date stage); **Purchase Orders** — overdue and partial
 deliveries; Reschedules and Vendor Returns waiting.
 **During the day** — Create PO (or **Import PO PDF**); assign each PO to a
-warehouse; chase vendors on overdue lines; approve DN dates.
+warehouse; chase vendors on overdue lines; approve DN dates. Open an incoming
+PR's row to see each line's **picture** before buying; a line marked *not
+stocked yet* has a GI code and no SAP. Map new request lines to their SAP code
+and look after pictures, as the HOD does (§4.3).
 **End of day** — no PR older than its SLA without a note; DN date queue empty.
 **Weekly** — open POs review; Lining Coverage for the next month's shortfalls.
 **Monthly** — Force-Closures review; vendor performance from Reports.
@@ -395,7 +443,14 @@ never overwrite the original workbook.
 ### §5.5 Practice and training
 
 - New staff learn in **Practice** with the shared `practice.<role>` accounts
-  (manual §26.3). Each new Live feature has a Practice example (manual §26.4).
+  (manual §26.3). The Practice sign-in screen lists them with one-click sign-in.
+  Each new Live feature has a Practice example (manual §26.4).
+- **The Practice admin password** is never on the Practice sign-in screen. A
+  Live admin finds it in **Admin → Console → Practice accounts**, hidden until
+  asked for. **Reset Practice passwords** there puts all nine back. From a
+  terminal: `.venv/bin/python tools/practice_db.py passwords`.
+- **Auto demo** (Practice): eighteen self-driving demos, including a management
+  tour (manual §26.8). After a class, an HOD presses **Reset demo data**.
 - Reset Practice from **Admin → Console → Practice** (Practice only) when it is
   cluttered; it returns to the seeded state.
 - Training videos and acknowledgements: **Training**; HODs see compliance.
@@ -405,6 +460,24 @@ never overwrite the original workbook.
 `./bin/power.sh sleep` stops Postgres and the tunnel to save battery —
 **gi.giinventory.com is offline while asleep.** `./bin/power.sh wake` brings
 both back; `./bin/power.sh status` shows what is running.
+
+### §5.7 Drive pulls — when the chip is amber or red
+
+GI Hub pulls the workbooks, delivery notes, certificates and request files from
+Google Drive at **07:30 and 19:30** (manual §3.19). The cloud chip in the top bar
+says how it went:
+
+| Chip | Means | Do |
+|---|---|---|
+| **Navy**, a time | The last pull worked within 26 hours | Nothing |
+| **Amber** · *Commit* | Pulled, but the ERP changes are not all additions | Admin: review the dry run (Admin Console → Drive sync) and **Commit** |
+| **Amber** · *(old)* | No successful pull for 26 hours | Check the Mac is awake (`./bin/power.sh status`), then **Pull** |
+| **Red** · *pull failed* | The last run failed | Hover the chip for the reason; fix it (often a workbook open on someone's PC, or no internet) and **Pull** |
+| **Red** · *sign-in ended* | Google's sign-in expired | Admin: re-authorise Drive (`docs/GDRIVE_SETUP.md`) |
+| **Red badge** with a number | Workbook rows name a bad lot | Click the chip → the rows; send them to the workbook keeper |
+
+The Drive token is **read-only**: GI Hub never writes to Drive. Pictures for
+the catalogue go in Drive's **Material Images** folder, named by GI code.
 
 ---
 
@@ -835,7 +908,8 @@ For the full vocabulary see `USER_MANUAL.md` §11.5. Terms used in this SOP:
 |---|---|---|---|
 | 1.0 | 2026-06 | Initial release | Procurement chain: Site HOD, Logistics, Warehouse User, SK, Admin. RACI, cadences, 4 decision trees, escalation matrix, 7 recovery procedures, 5 quick cards. |
 | 1.1 | 2026-06-28 | Update | Man-Hours and Material Estimator HOD cadences; glossary entries. |
-| **2.0** | **2026-10-03** | **Rewrite** | Whole system, by role, for the React / FastAPI application. New: the system's day (§2); RACI for all nine roles (§3); daily plans for Store Keeper, Supervisor, HOD, Admin, Logistics, Warehouse, QC, Head of Qualities, Auditor (§4); the administrator's data procedures — Excel and Lot Register sync, stock vs Excel, backups, updates, Practice, power (§5); decision trees for lots and FEFO (§6.5–6.7); recovery for sync problems, offline entries and Practice/Live mistakes (§8.8–8.10); new quick cards (§9); lot and Practice terms in the glossary. Procurement trees, escalation and recovery from v1.0 kept as §6.1–6.4, §7 and §8.1–8.7. |
+| 2.0 | 2026-10-03 | Rewrite | Whole system, by role, for the React / FastAPI application. New: the system's day (§2); RACI for all nine roles (§3); daily plans for Store Keeper, Supervisor, HOD, Admin, Logistics, Warehouse, QC, Head of Qualities, Auditor (§4); the administrator's data procedures — Excel and Lot Register sync, stock vs Excel, backups, updates, Practice, power (§5); decision trees for lots and FEFO (§6.5–6.7); recovery for sync problems, offline entries and Practice/Live mistakes (§8.8–8.10); new quick cards (§9); lot and Practice terms in the glossary. Procurement trees, escalation and recovery from v1.0 kept as §6.1–6.4, §7 and §8.1–8.7. |
+| **2.1** | **2026-10-10** | **Phases 22–23** | The OCR paper routine with the page tank, Compare and the second read (§4.1); mapping new request lines to SAP codes, pictures and PRs for items not stocked yet (§4.3, §4.5); the Drive chip at the start of the Admin's day and what amber or red means (§4.4, §5.7); printing forms as Admin; Practice sign-in, the admin password and Reset Practice passwords (§4.4, §5.5). |
 
 ---
 

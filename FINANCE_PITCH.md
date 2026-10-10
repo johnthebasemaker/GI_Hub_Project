@@ -1,7 +1,8 @@
 # GI-Hub — the case for company-wide implementation
 
 *A 10-minute presentation for the Finance Manager, with a live demo on the
-Practice sandbox. Prepared 2026-10-04 (Phase 20).*
+Practice sandbox. Prepared 2026-10-04 (Phase 20); Phases 22–23 added
+2026-10-10 (§3A, measured numbers only — ruling Q23-16).*
 
 **The slide deck** (13 slides, GI branding, speaker notes on every slide;
 downloads as PowerPoint or PDF from its page):
@@ -99,6 +100,56 @@ with a hosting budget of about **€69.49 a month** for one server
 
 ---
 
+## 3A. Phases 22–23, measured (October 2026)
+
+Everything in this section is **[measured]** on the office Mac, on 7–10
+October 2026, from GI-Hub itself. Where a figure needs one of your own numbers
+it says **[operator]**; nothing here is projected.
+
+**The paper trail, from Google Drive (Phase 22).**
+
+| What | Measured |
+|---|---|
+| Delivery-note photos in Drive that open from their receipt | **152 of 160** (95 %) [measured, Live, 10 Oct] |
+| Deliveries that came with no note | each has a **WD number**, so it can still be found |
+| Certificates (MTC) filed on their lot | **11 of 24** files; the rest wait for a person (no batch on the page) [measured] |
+| Request lines read from the request workbooks | 313 lines, 265 matched to a SAP code on day one [measured, 7 Oct] |
+| Request lines still needing a SAP code, after the catalogue | **82 → 15**; 33 more carry a catalogue code not stocked yet [measured, 9 Oct] |
+
+**Reading the handwritten consumption papers (Phases 21–23).** The same
+photographs, scored against what the store keepers typed into the workbook
+(`tools/ocr_eval.py`):
+
+| Papers | Lines found (recall), before → after the second read | Correct lines (precision) |
+|---|---|---|
+| 1–4 Oct (11 photos) | 0.742 → **0.761** | 0.79 → 0.773 |
+| 5–6 Oct | 0.735 → **0.767** | 0.764 → 0.767 |
+| 7–8 Oct | 0.855 → **0.867** | 0.876 → 0.856 |
+
+- **The tank on each line:** right **0.42 → 0.81** once one tank is chosen for
+  the whole page; lines entirely right **32 → 52** (5–6 Oct).
+- **The second read** costs the store keeper **0 seconds**: it runs after the
+  first read, in the background, about 14 seconds a page.
+- **Time per page to read:** 92 to 398 seconds on this Mac's local AI
+  [measured, 2 Sep]. The paper never leaves the building.
+- **Minutes a store keeper spends typing one paper by hand:** **[operator]**.
+  Multiply by papers a day for the hours this saves; we have not measured it,
+  so we do not quote it.
+
+**Buying the right thing (Phase 23).** The company's **5,976** material codes
+are in GI-Hub's catalogue, with the 37 plant and tool lines of the site list
+[measured, Live]. A purchase request now carries the item's **picture**, and a
+HOD can request an item the site does not stock yet without anyone inventing a
+SAP number. The pictures are being added (the operator's Drive folder); the
+benefit is fewer wrong sizes and wrong grades delivered — **[operator]**: one
+wrong delivery you remember, and what it cost.
+
+**Voice.** Speech is turned into text on the office Mac in **15 ms** a phrase,
+with a word-error rate of **0.14** on twenty site phrases, using 88 MB of
+memory and no internet [measured, `tools/stt_eval.py`].
+
+---
+
 ## 4. Risk, security and control (the questions Finance always asks)
 
 | They ask | The answer |
@@ -119,7 +170,9 @@ with a hosting budget of about **€69.49 a month** for one server
 - The night before, rebuild Practice so every figure is fresh:
   `.venv/bin/python tools/practice_db.py build`. It resets trainee data.
 - Open GI-Hub on **localhost**, in Practice mode, for the introduction.
-- Accounts are `practice.*` (password from the Practice set-up).
+- Accounts are `practice.*`: the Practice sign-in screen lists them with one-click
+  sign-in (Phase 23). Or let the app present itself: **▶ Auto demo → Management
+  tour** walks the whole system with captions and voice.
 - For the multi-user part on the hosted site, sign in with the **Practice**
   accounts too, never Live accounts, so production data is untouched.
 
@@ -134,9 +187,12 @@ with a hosting budget of about **€69.49 a month** for one server
 | 7 | practice.storekeeper | **Return desk**: scan *PR-SC-0005*, take 1 back (a partial return), print a slip. | "Tools come back, or we know who has them." |
 | 8 | any | Hub Assistant: a how-to, then a trick question that is refused. | "An assistant on our own server, guarded and tested." |
 | 9 | practice.admin | Audit log of the last ten minutes. | "Every click you just saw is on record." |
+| 10 | practice.hod | **Catalogue** → a rubber sheet → its family picture; then a PR for an item not stocked yet, with its picture. | "Logistics buys what the site means — the picture travels with the request." |
+| 11 | practice.hod | **Requests & Pending → Needs a SAP code**: link a line, then Undo. | "A request line counts against stock the moment it is linked, and the workbook is never touched." |
 
 **Fallback, if anything misbehaves:**
-- Switch to the pre-recorded walkthrough videos (`docs/exec_video/`);
+- Switch to the pre-recorded walkthrough videos (`docs/exec_video/`, and the
+  management tour in `docs/tutorials/out/`);
 - or show the screenshots in the appendix.
 - Never improvise on Live.
 

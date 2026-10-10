@@ -1251,6 +1251,20 @@ Stock-vs-Excel uploads and the Manpower Planner; plain `/api/…` links and a
 than the list cap. All fixed, and `tests/downloads` (pytest, in `dual-ci`) now
 calls every file-returning route as every role.
 
+**Phase 23 shipped (2026-10-09/10):** #136 23a · #137 23b+23c+23d (one PR) ·
+#138 23e · #139 23f · 23g (docs). Live migrated `d7fa4c8e2b19` →
+`e8ab5d9f3c21` → **`f9bc6e1a4d32`** (backup
+`.backups/gihub_2026-10-09_225500_before_phase23cd_migrate.sql.gz`); both
+Practice DBs at the same head with overlay **v12**. Deviations, each recorded
+in `PHASE23_SUMMARY.md`:
+- the second read targets printed **S.No gaps that carry ink**, not "the
+  bottom third" of the plan — the lines the reader skipped were ditto rows in
+  the middle of the page;
+- 23b–23d shipped as one PR;
+- a handover-day Night cover (Mydeen, 2026-09-26) was added beside Q23-1's
+  Imtiyaz cover;
+- in CI (no voice model) the voice E2E asserts the microphone is HIDDEN.
+
 ### Phase 22 — Deep Drive integration, OCR line by line & final polish (2026-10-07, RULED)
 
 `PROPOSED_PHASE22_PLAN.md` was approved whole (2026-10-07). **Shipped
@@ -1298,6 +1312,13 @@ in `PHASE22_SUMMARY.md`.** Rulings:
 | **Q21-21..24** | Industrial luxury corporate (navy/gold) for the product; a minimalist-brutalism VIEW (PDF/image) for comparison only. Install frontend-design, webapp-testing, Emil Kowalski's skills and Vercel's guidelines into the project. Self-hosted IBM Plex Sans (UI) + a serif for titles. Screenshot baselines are a REPORT, not a gate. | `docs/DESIGN_SYSTEM.md`, `.claude/skills/` (21e) |
 
 ## PRESENT — current state and baselines
+
+> **Updated 2026-10-10 — Phase 23 complete (PRs #136–#139 + 23g).** Baselines:
+> **service tests 3,036/0** · **downloads 250** · **E2E 226** (201 in the full pack + the 25 serial-chained specs re-run 27/27) ·
+> AI Tier 1 147/147 + Router L2 · grid 72 · parity:sme 1,334 · UI math 33 + OCR
+> page rules 15 · nav 55 routes / 54 tours · legacy 599 · alembic head
+> **`f9bc6e1a4d32`** (Live and both Practice DBs). Orientation:
+> `SESSION_HANDOVER.md`; what happened: `PHASE23_SUMMARY.md`.
 
 > **Updated 2026-10-03 — Phases 13–16 merged (PRs #78–#102), CI parity fixed on
 > `chore/phase16-cleanup`.** Baselines: **service tests 2,762/0** · **E2E 178** ·

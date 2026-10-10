@@ -1630,6 +1630,22 @@ resident beside `llama3.1:8b` (5.46 GB). The 0.95 block target is NOT met
 every dev attack but generalises to under a third of the holdout. It is printed
 as the gap on every run, not tuned away.
 
+### 7m. Phase 23 — downloads, the second read, the mapper, pictures, voice, demos
+
+*Rulings Q23-1..17 (`PROJECT_HANDOVER.md` → Phase 23). Slices 23a–23g; the
+summary is `PHASE23_SUMMARY.md`.*
+
+| Slice | Where it lives | The one thing to know |
+|---|---|---|
+| 23a downloads | `frontend/src/api/errorBody.ts`, `authedFile.ts`; `tests/downloads/test_download_contract.py` | Every file route is DISCOVERED (FastAPI 0.138 includes routers lazily — walk `_IncludedRouter.effective_route_contexts()`, plus helper-returning routes), called as all 9 roles, and a 422 or 5xx fails. A global role (admin) is called WITHOUT `site_id`, and the calling UI must then send one (`_ui_sends_site`). The Execution 422 was exactly that. |
+| 23b second read | `ai/second_read.py`, `ai/jobs.py` (`_plan_second_read`, `_run_second_read`), lane `ocr_consumption_second` | Targets printed S.No GAPS that carry ink (a tilt-aware ruled-line grid, `INK_SHARE` 0.35), sends ONE strip with the column header, asks for a compact pipe format (`num_predict` 1024, no cloud). The first read is written `done` first, so the store keeper waits 0 s (Q23-3). |
+| 23b page tank | `frontend/src/lib/pageTank.ts`, `GET /ai/ocr/page-tanks` | Pure functions keyed by `_key`: fill only ditto / blank / unknown rows, undo exactly. `recent_tanks` = the 7 days before the paper's date. |
+| 23c mapper | `request_sap_map` (`e8ab5d9f3c21`), `services/requests_sync.py` | Decisions are applied at READ time in `overview()`; the workbook is never written. `_MAPPERS` = hod, logistics, admin (Q23-4). |
+| 23c preparers | `services/preparers.py` | History rows plus one-day covers `{on, cover, shift}`; `names_on()` is what OCR offers. |
+| 23d catalogue | `material_catalog`, `site_equipment`, `item_images` (`f9bc6e1a4d32`); `services/catalogue.py`, `services/media.py`, `catalogue.py` router | Pictures re-encoded (EXIF gone), stored by sha256 in `media/catalog/` (Practice: `media/practice/`), ≤ 4 per item, served by HMAC-signed links `/catalogue/img/{id}/{size}?e=&t=`; `bin/backup_db.sh` archives `media/`. The Drive token stays read-only (Q23-7). |
+| 23e voice | `services/stt.py`, `stt.py` router, `frontend/src/voice/` | `cactus-needle==3.1.3` + Whistle, pinned by sha256 in `models/stt/manifest.json` (`tools/stt_setup.py`); telemetry off; a mismatch hides the 🎤. Runs on the CPU outside Ollama, 88 MB (the Q23-12 exception). Read-aloud is the browser's `speechSynthesis`, local voices only. |
+| 23f Practice | `practice.py` (`accounts_router` Practice-only, `live_router` Live-admin-only), `practice_demo.py` (`CATALOG`, `_RESET_PHASE23`), `frontend/src/demo/scripts.ts`, overlay v12 | 18 demos; the server catalogue and the scripts must agree (suite 21F). **Reset Practice passwords** shells out to `tools/practice_db.py passwords`, which runs each Practice DB as a Practice process — Live never opens a Practice database (rule 17). |
+
 ## 8. Testing — the gates
 
 > 🔄 **2026-08-13 — the service tests run against their OWN database.**
@@ -1653,6 +1669,11 @@ bash bin/ci_preflight.sh
 DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:5433/gihub \
 JWT_SECRET=ci-only-service-test-secret-key-32bytes-min \
 .venv/bin/python -u -m backend.api.service_tests
+
+# 1b. Phase 23a — every download, every role (in dual-ci). Discovers the file
+#     routes itself; a 422 or 5xx fails, and so does a UI that would not send
+#     the site_id a global role needs.
+.venv/bin/python -m pytest tests/downloads -q
 
 # 2. SQLite↔PG parity oracle (5 aggregates) — same env vars (Phase B: tools/)
 #    ⚠️ meaningful ONLY on CI or a freshly-cutover DB (PG is permanently ahead).
