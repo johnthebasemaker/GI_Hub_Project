@@ -37,6 +37,9 @@ export interface Beat {
   /** `type`: press Enter afterwards (a search box, a date picker, a scan desk). */
   enter?: boolean
   as?: string
+  /** `read`: keep only the first group of this pattern (e.g. the PR number in
+   *  "PR 2026-0042 created …"); no match keeps nothing and fails the beat. */
+  pattern?: string
   /** After the action, wait until this selector is visible. */
   until?: string
   /** …or until this text is on the page. */

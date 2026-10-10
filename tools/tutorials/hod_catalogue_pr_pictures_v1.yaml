@@ -1,0 +1,142 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GI Hub — role tutorial script.  HOD · Pictures, and a PR with pictures
+# (Phase 23d/23f, rulings Q23-5..8, Q23-14).
+#
+# ⚠️ RECORDED IN PRACTICE (P12-0): drawn pictures, invented codes. It signs in
+# through the Practice login page's one-click card, because only the Practice
+# overlay carries the catalogue rows and pictures this walks through.
+#
+# Narration is lifted from §3.22 (the catalogue) and §26 (Practice), inside an
+# HOD's manual allowlist.
+# ─────────────────────────────────────────────────────────────────────────────
+
+tutorial_id: hod_catalogue_pr_pictures_v1
+title: Pictures, and a purchase request with pictures
+subtitle: Head of Department · the catalogue, a family picture, a PR for an item not stocked yet
+
+role: hod
+hub_role: hod
+language: en
+
+avatar:
+  avatar_id: PLACEHOLDER_AVATAR_ID
+  voice_id: PLACEHOLDER_VOICE_ID
+  background: transparent
+  ratio: "1:1"
+  # The catalogue drawer opens on the RIGHT — the head sits bottom left.
+  corner: bottom-left
+
+routes:
+  - /login
+  - /
+  - /catalogue
+  - /hod/prs
+
+audience: [hod]
+
+manual_sections: [3, 26]
+
+redaction:
+  mask: []
+  replace: {}
+
+steps:
+  - do: goto
+    path: /
+    settle: 800
+  - do: click
+    selector: button[aria-label="Sign out"]
+  - do: click
+    selector: .gi-env-switch .ant-segmented-item:has-text("Practice")
+    settle: 1200
+  - do: click
+    selector: '[data-testid="practice-signin-hod"]'
+    settle: 1500
+  - do: goto
+    path: /catalogue
+  - do: expect_visible
+    selector: '[data-testid="catalogue-materials"]'
+    settle: 600
+    beat: open
+    note: The catalogue
+  - do: type
+    selector: '[data-testid="catalogue-search"] input'
+    text: Practice Rubber Sheet
+  - do: press
+    key: Enter
+    settle: 1200
+    beat: search
+    note: Find a code
+  - do: click
+    selector: tr:has-text("MAT-990002")
+    settle: 800
+  - do: expect_visible
+    selector: '[data-testid="catalogue-family"]'
+    beat: family
+    note: Its family has a picture
+  - do: click
+    selector: '[data-testid="catalogue-family"] button'
+    settle: 1200
+  - do: expect_visible
+    selector: '[data-testid="catalogue-image"]'
+    beat: used
+    note: Used — and audited
+  - do: press
+    key: Escape
+    settle: 600
+  - do: goto
+    path: /hod/prs
+  - do: click
+    selector: .ant-tabs-tab:has-text("Create PR")
+    settle: 600
+  - do: type
+    selector: '[data-testid="pr-item"] input'
+    text: MAT-990001
+  - do: expect_visible
+    selector: .ant-select-item-option:has-text("MAT-990001")
+    settle: 800
+    beat: pick
+    note: A catalogue item, not stocked yet
+  - do: click
+    selector: .ant-select-item-option:has-text("MAT-990001")
+  - do: type
+    selector: input[placeholder="Qty"]
+    text: "20"
+  - do: click
+    selector: button:has-text("Create PR")
+  - do: expect_visible
+    selector: text=created (
+    settle: 600
+    beat: created
+    note: No SAP number is made up
+
+narration:
+  - beat: open
+    say: >-
+      The catalogue lists every material code in the company list, with its
+      pictures. This is Practice, so the pictures are drawn.
+  - beat: search
+    say: >-
+      Search by GI code, description or SAP code. Here, a rubber sheet in two
+      sizes.
+  - beat: family
+    say: >-
+      The six millimetre sheet has no picture yet. Its family does: the five
+      millimetre sheet shares its name apart from the size. The picture is
+      offered, and nothing is attached until somebody chooses.
+  - beat: used
+    say: >-
+      Use this, and the six millimetre sheet shows it too — in Stock, on
+      purchase request lines and in the search. The Admin, the HOD and
+      Logistics can change pictures, every change is audited, and a removed
+      picture can be restored.
+  - beat: pick
+    say: >-
+      In a purchase request, typing three letters also searches the catalogue.
+      Items GI Hub does not stock yet are listed below the stocked ones, each
+      with its picture.
+  - beat: created
+    say: >-
+      The line carries the GI code and no SAP number — none is made up. It
+      links itself the day the workbook adds the item, and Logistics sees the
+      picture when the request reaches them.

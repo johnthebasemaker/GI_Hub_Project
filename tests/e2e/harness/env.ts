@@ -90,6 +90,11 @@ export const RUNTIME_DIR = path.resolve(__dirname, '..', '.runtime')
 export const DRIVE_CACHE_DIR = path.join(RUNTIME_DIR, 'drive-cache')
 // Phase 23d — the catalogue's pictures, never the dev Mac's media/catalog
 export const MEDIA_DIR = path.join(RUNTIME_DIR, 'media')
+// Phase 23f — Practice's own pictures (rule 17), written by the overlay during
+// `practice_db.py build` AND served by the Practice API: the two must agree, or
+// every drawn picture is a 404 (and the build would write into the dev Mac's
+// media/practice instead)
+export const PRACTICE_MEDIA_DIR = path.join(RUNTIME_DIR, 'media-practice')
 export const AUTH_DIR = path.resolve(__dirname, '..', '.auth')
 export const storageStatePath = (role: Role) => path.join(AUTH_DIR, `${role}.json`)
 

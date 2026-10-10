@@ -21,7 +21,7 @@ import * as path from 'node:path'
 import {
   API_PORT, API_URL, ASYNC_DB_URL, AUTH_DIR, E2E_DB, E2E_PASSWORD, JWT_SECRET,
   PG_HOST, PG_PORT, PG_USER, PRACTICE_ADMIN_PASSWORD, PRACTICE_API_PORT,
-  PRACTICE_API_URL, PRACTICE_DB, PRACTICE_DB_URL, PRACTICE_JWT_SECRET, PY, ROOT, RUNTIME_DIR, DRIVE_CACHE_DIR, MEDIA_DIR,
+  PRACTICE_API_URL, PRACTICE_DB, PRACTICE_DB_URL, PRACTICE_JWT_SECRET, PY, ROOT, RUNTIME_DIR, DRIVE_CACHE_DIR, MEDIA_DIR, PRACTICE_MEDIA_DIR,
   SYNC_DB_URL, USERS, WEB_PORT, WEB_URL,
 } from './harness/env'
 
@@ -374,6 +374,7 @@ export default async function globalSetup() {
     PRACTICE_ADMIN_URL: `postgresql://${PG_USER}@${PG_HOST}:${PG_PORT}/postgres`,
     PRACTICE_ADMIN_PASSWORD,
     GI_DOTENV: '0',
+    GI_MEDIA_DIR: PRACTICE_MEDIA_DIR,
   }
   console.log('[e2e] building the Practice sandbox via tools/practice_db.py …')
   for (const step of ['wall', 'build']) {
@@ -434,7 +435,7 @@ export default async function globalSetup() {
         GI_SCHEDULER: '0',
         // Phase 21c: never the operator's real Drive token (deploy/gdrive_*.json)
         GI_DRIVE_SECRETS_DIR: '/nonexistent-e2e-drive',
-        GI_MEDIA_DIR: MEDIA_DIR,
+        GI_MEDIA_DIR: PRACTICE_MEDIA_DIR,
         JWT_SECRET: PRACTICE_JWT_SECRET,
         DATABASE_URL: PRACTICE_DB_URL.replace('postgresql://', 'postgresql+asyncpg://'),
       },

@@ -1,0 +1,167 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GI Hub — role tutorial script.  HOD · The management tour (Phase 23f, Q23-14).
+#
+# ⚠️ RECORDED IN PRACTICE (P12-0). The recording signs out of the harness's Live
+# account and signs in to Practice with the login page's one-click card — the
+# Phase 23f feature — so every screen shows the overlay's synthetic data,
+# including the catalogue and the request lines the Live tutorial dataset does
+# not carry. English captions and voice only (Q23-14).
+#
+# Narration is lifted from §3 (what changed, Phases 21–23), §6 (the HOD's
+# approvals) and §26 (Practice) — all inside an HOD's manual allowlist.
+# ─────────────────────────────────────────────────────────────────────────────
+
+tutorial_id: hod_management_tour_v1
+title: GI Hub — the management tour
+subtitle: Head of Department · one walk through the whole system, on Practice data
+
+role: hod
+hub_role: hod
+language: en
+
+avatar:
+  avatar_id: PLACEHOLDER_AVATAR_ID
+  voice_id: PLACEHOLDER_VOICE_ID
+  background: transparent
+  ratio: "1:1"
+  corner: bottom-right
+
+routes:
+  - /login
+  - /
+  - /stock
+  - /requests-pending
+  - /catalogue
+  - /lots
+  - /execution
+  - /hod/approvals
+  - /hod/prs
+
+audience: [hod]
+
+manual_sections: [3, 6, 26]
+
+# Practice data is synthetic end to end — nothing to mask (P12-0 is met by the
+# environment itself; the PRACTICE badge and watermark are on every frame).
+redaction:
+  mask: []
+  replace: {}
+
+steps:
+  - do: goto
+    path: /
+    settle: 800
+  - do: click
+    selector: button[aria-label="Sign out"]
+  - do: click
+    selector: .gi-env-switch .ant-segmented-item:has-text("Practice")
+    settle: 1200
+  - do: expect_visible
+    selector: '[data-testid="practice-accounts"]'
+    beat: practice
+    note: Practice — every role, one click
+  - do: click
+    selector: '[data-testid="practice-signin-hod"]'
+    settle: 1500
+  - do: expect_visible
+    selector: .ant-card
+    beat: dashboard
+    note: The dashboard
+  - do: goto
+    path: /stock?tab=reorder
+  - do: expect_visible
+    selector: '[data-testid="reorder-signals"]'
+    settle: 800
+    beat: reorder
+    note: Smart Reorder — what to order, and why
+  - do: goto
+    path: /requests-pending
+  - do: expect_visible
+    selector: '[data-testid="req-table"]'
+    settle: 800
+    beat: requests
+    note: Requests & Pending
+  - do: goto
+    path: /catalogue
+  - do: expect_visible
+    selector: '[data-testid="catalogue-materials"]'
+    settle: 800
+    beat: catalogue
+    note: The catalogue, with pictures
+  - do: goto
+    path: /lots
+  - do: expect_visible
+    selector: '[data-testid="lot-table"]'
+    settle: 800
+    beat: lots
+    note: Lots & Expiry
+  - do: goto
+    path: /execution
+  - do: expect_visible
+    selector: text=Print a consumption form
+    settle: 800
+    beat: execution
+    note: Execution — the lining done each day
+  - do: goto
+    path: /hod/approvals
+  - do: expect_visible
+    selector: .ant-tabs-tab
+    settle: 800
+    beat: approvals
+    note: Approvals — nothing reaches the ledger without the HOD
+  - do: goto
+    path: /hod/prs
+  - do: expect_visible
+    selector: .ant-tabs-tab
+    settle: 800
+    beat: prs
+    note: Purchase requests
+
+narration:
+  - beat: practice
+    say: >-
+      This tour runs on Practice, the training copy of GI Hub. Every number on
+      these screens is made up. The Practice sign-in screen lists one account
+      per role, with a single shared password, and signs you in with one click.
+  - beat: dashboard
+    say: >-
+      The dashboard is where the day starts: the site's stock, what is about to
+      expire, and what is waiting for a decision. The cloud chip in the top bar
+      says how fresh the data is — in Live, the site workbooks are pulled from
+      Google Drive on a schedule.
+  - beat: reorder
+    say: >-
+      Smart Reorder lists every item under its minimum, and the order that
+      brings it back to twice that minimum. It takes off what is already on
+      order, and what was requested without a purchase request, so nothing is
+      ordered twice. The working behind each figure is one click away.
+  - beat: requests
+    say: >-
+      Requests and Pending reads every request workbook, line by line, against
+      what has actually arrived. A line with no SAP code is linked to its item
+      once, here, and GI Hub remembers the decision. The workbook itself is
+      never changed.
+  - beat: catalogue
+    say: >-
+      The catalogue holds the company's material codes, about six thousand in
+      Live, with their pictures. A purchase request shows the picture, so the
+      buyer sees exactly which size the site means. Pictures stay on the
+      company's own machine.
+  - beat: lots
+    say: >-
+      Lots and Expiry shows every batch on site, its expiry date and its
+      certificate. When material is issued, the earliest expiry goes first.
+  - beat: execution
+    say: >-
+      Execution records the lining done each day, tank by tank, with the
+      material it drew. Consumption forms are printed here with a QR code, and
+      the filled form comes back as a photograph read by the local AI.
+  - beat: approvals
+    say: >-
+      Approvals. Receipts, issues and returns wait here, and nothing reaches the
+      stock ledger until the Head of Department approves it.
+  - beat: prs
+    say: >-
+      Purchase requests are raised here, with pictures, and handed to
+      Logistics. That is GI Hub: one record of the store, checked once, and
+      visible to everyone who needs it.

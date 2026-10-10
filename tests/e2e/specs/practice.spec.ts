@@ -31,7 +31,7 @@ function sql(db: string, q: string): string {
 async function signIn(page: import('@playwright/test').Page, user: string, pw: string) {
   await page.getByPlaceholder('Username').fill(user)
   await page.getByPlaceholder('Password').fill(pw)
-  await page.getByRole('button', { name: 'Sign in' }).click()
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
   await expect(page.getByRole('button', { name: /sign out/i })).toBeVisible({ timeout: 20_000 })
 }
 
@@ -48,7 +48,7 @@ test('Live is the default, and no Practice banner is painted on it', async ({ pa
   await expect(page.locator('.gi-practice-badge')).toHaveCount(0)
   await expect(page).not.toHaveTitle(/^PRACTICE/)
   // Live keeps its gold primary (Phase 15c changes Practice only)
-  expect(await page.getByRole('button', { name: 'Sign in' }).evaluate(
+  expect(await page.getByRole('button', { name: 'Sign in', exact: true }).evaluate(
     (el) => getComputedStyle(el).backgroundColor)).toBe('rgb(212, 175, 55)')
 })
 
@@ -62,7 +62,7 @@ test('15c: Practice is violet, with a pulsing PRACTICE badge top-left on the log
     expect(box!.x).toBeLessThan(40)
     expect(box!.y).toBeLessThan(40)
     expect(await floating.evaluate((el) => getComputedStyle(el).animationName)).toBe('gi-practice-glow')
-    expect(await page.getByRole('button', { name: 'Sign in' }).evaluate(
+    expect(await page.getByRole('button', { name: 'Sign in', exact: true }).evaluate(
       (el) => getComputedStyle(el).backgroundColor)).toBe('rgb(142, 108, 239)')
     await signIn(page, 'practice.hod', PRACTICE_PASSWORD)
     const badge = page.locator('.gi-sider .gi-practice-badge')
