@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Suspense, lazy, useState } from 'react'
 import { App, Button, ConfigProvider, Form, Input, Segmented, Select, Tooltip, Typography } from 'antd'
 import { EnvironmentOutlined, ExperimentOutlined, LockOutlined, SafetyOutlined, SettingOutlined, ThunderboltOutlined, UserOutlined } from '@ant-design/icons'
 import { useAuth } from '../auth/AuthContext'
@@ -10,6 +10,9 @@ import MandatoryEnrollPanel from '../components/MandatoryEnrollPanel'
 import { apiBase, isApiOverridden, switchEnvironment } from '../api/client'
 import { CURRENT_ENV, type GiEnv } from '../api/environment'
 import PracticeBanner, { PracticeBadge } from '../components/PracticeBanner'
+
+// Phase 23f (Q23-13) — Practice only, and off the Live sign-in critical path
+const PracticeAccounts = lazy(() => import('../components/PracticeAccounts'))
 
 function errMsg(e: unknown): string {
   const x = e as { response?: { data?: { detail?: string } }; message?: string }
@@ -168,10 +171,13 @@ export default function LoginPage() {
             <>
               <PracticeBanner compact />
               <Typography.Paragraph type="secondary" className="gi-practice-hint">
-                Sign in with the practice account your trainer gave you
-                (e.g. <code>practice.storekeeper</code>, <code>practice.hod</code>).
-                Your Live password does not work here.
+                Sign in with a practice account below (e.g. <code>practice.storekeeper</code>,
+                {' '}<code>practice.hod</code>). Your Live password does not work here.
               </Typography.Paragraph>
+              <Suspense fallback={null}>
+                <PracticeAccounts busy={loading}
+                  onSignIn={(username, password) => void onLogin({ username, password })} />
+              </Suspense>
             </>
           )}
 

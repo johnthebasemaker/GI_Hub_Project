@@ -243,7 +243,14 @@ export class DemoRunner {
         return
       case 'read': {
         const inp = inputIn(el)
-        this.vars[b.as ?? 'value'] = (inp?.value ?? el.textContent ?? '').trim()
+        const got = (inp?.value ?? el.textContent ?? '').trim()
+        if (b.pattern) {
+          const m = new RegExp(b.pattern).exec(got)
+          if (!m) throw new Error(`the page did not show what the demo needed to note (${b.as ?? 'value'})`)
+          this.vars[b.as ?? 'value'] = (m[1] ?? m[0]).trim()
+        } else {
+          this.vars[b.as ?? 'value'] = got
+        }
         return
       }
       case 'click':

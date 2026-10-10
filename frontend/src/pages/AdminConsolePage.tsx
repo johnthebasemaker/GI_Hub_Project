@@ -12,6 +12,7 @@ import type { Row as ApiRow } from '../api/client'
 import { useSystemOverview } from '../api/hooks'
 import { AiTracesPanel } from './AiTracesPage'
 import PracticeResetCard from '../components/PracticeResetCard'
+import PracticeCredentialsCard from '../components/PracticeCredentialsCard'
 import PreparersCard from '../components/PreparersCard'
 import DriveSyncCard from '../components/DriveSyncCard'
 import { useInstance } from '../components/PracticeBanner'
@@ -574,7 +575,9 @@ export default function AdminConsolePage() {
               <TutorialFreshness />
             </>
           ) },
-          ...(practice ? [{ key: 'practice', label: 'Practice', children: <PracticeResetCard /> }] : []),
+          ...(practice ? [{ key: 'practice', label: 'Practice', children: <PracticeResetCard /> }]
+            // Phase 23f (Q23-13): on LIVE, the Practice sign-in details (admin password included)
+            : [{ key: 'practice-accounts', label: 'Practice accounts', children: <PracticeCredentialsCard /> }]),
         ]}
       />
     </div>

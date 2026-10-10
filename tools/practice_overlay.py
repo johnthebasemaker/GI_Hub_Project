@@ -51,7 +51,7 @@ os.environ.setdefault("GI_DOTENV", "0")
 
 # Bumped when the OVERLAY's content changes. Reported with the tutorial
 # fixture's own DATASET_VERSION as "<fixture>.<overlay>".
-OVERLAY_VERSION = 11  # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
+OVERLAY_VERSION = 12  # 2 = Phase 15e two-note job · 3 = Phase 16 lots & expiry (2026-10-01)
                       # · 4 = Phase 18 return desk loans (2026-10-03)
                       # · 5 = Phase 18 reorder-signal trio (2026-10-03)
                       # · 6 = Phase 19 accepted minimum · per-site / global POs ·
@@ -275,6 +275,10 @@ async def seed_queues() -> dict:
                 out["drive"] = await seed_drive_examples(today)
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
                 print(f"  ⚠️  Drive examples skipped: {type(e).__name__}: {str(e)[:160]}")
+            try:
+                out["phase23"] = await seed_phase23_examples(today)
+            except Exception as e:  # noqa: BLE001 — an example, never a blocker
+                print(f"  ⚠️  Phase 23 examples skipped: {type(e).__name__}: {str(e)[:160]}")
             try:
                 out["loans"] = await seed_returnables()
             except Exception as e:  # noqa: BLE001 — an example, never a blocker
@@ -1039,6 +1043,126 @@ def _practice_xlsx(rows: list[list]) -> bytes:
     return buf.getvalue()
 
 
+def _practice_picture(label: str, color: tuple[int, int, int]) -> bytes:
+    """A drawn product picture — a coloured shape and its name, plainly
+    synthetic (no real photos in Practice, ruling Q22-21)."""
+    import io
+
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (480, 360), (245, 245, 240))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([60, 50, 420, 250], radius=28, fill=color, outline=(40, 40, 40), width=4)
+    d.ellipse([200, 110, 280, 190], fill=(250, 250, 250), outline=(40, 40, 40), width=3)
+    d.text((70, 280), label[:40], fill=(20, 20, 20))
+    d.text((70, 310), "PRACTICE PICTURE", fill=(120, 120, 120))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+async def seed_phase23_examples(today: str) -> dict:
+    """Phase 23 (rule 17g) — the catalogue with pictures, plant & tools, the
+    SAP-code mapper, the page tank and a one-day preparer cover, on Practice
+    data. Idempotent; never fatal. Pictures are DRAWN and land in Practice's
+    own folder (media/practice — services/media.py picks it in Practice)."""
+    import datetime as _d
+
+    from sqlalchemy import text
+
+    from backend.api.db import SessionLocal
+    from backend.api.services import catalogue as CAT
+    from backend.api.services import media as M
+    from backend.api.services import preparers as PREP
+
+    out = {"catalogue": 0, "pictures": 0, "equipment": 0, "requests": 0}
+    t = _d.date.fromisoformat(today)
+    async with SessionLocal() as s:
+        inv = (await s.execute(text(
+            'SELECT "Material_Code", "Equipment_Description", "UOM" FROM inventory '
+            "WHERE COALESCE(\"Material_Code\", '') <> '' ORDER BY \"SAP_Code\" LIMIT 40"))).all()
+        rows = [(c, d_ or c, u) for c, d_, u in inv]
+        # a family GI Hub does NOT stock: two sizes of one sheet, and a clamp
+        rows += [("MAT-990001", "Practice Rubber Sheet 5MM", "M"), ("MAT-990002", "Practice Rubber Sheet 6MM", "M"),
+                 ("MAT-990003", "Practice Jubilee Clamp 1in", "EA")]
+        for code, desc, uom in rows:
+            out["catalogue"] += (await s.execute(text('''
+                INSERT INTO material_catalog ("Material_Code", description, uom, series, source_file)
+                VALUES (:c, :d, :u, 'P', 'Practice catalogue (drawn)')
+                ON CONFLICT ("Material_Code") DO NOTHING'''), {"c": code, "d": desc, "u": uom})).rowcount or 0
+        # pictures for a handful — and the 5 mm sheet, so the 6 mm is OFFERED it
+        palette = [(214, 175, 55), (70, 130, 180), (60, 160, 110), (200, 90, 70), (130, 100, 170)]
+        picked = [r for r in rows if not r[0].startswith("MAT-9900")][:5] + [rows[-3]]
+        for i, (code, desc, _u) in enumerate(picked):
+            have = (await s.execute(text("SELECT 1 FROM item_images WHERE kind = 'material' AND item_key = :k "
+                                         "AND removed_at IS NULL"), {"k": code})).first()
+            if have:
+                continue
+            st = M.store(_practice_picture(desc, palette[i % len(palette)]))
+            await CAT.add_image(s, "material", code, st, source="practice", user="practice.logistics")
+            out["pictures"] += 1
+        # plant & tools
+        for key, cat, desc, qty in (("utilities|practice generator", "Utilities", "Practice Generator 70 KVA", 2),
+                                    ("blasting equipment|practice air compressor", "Blasting Equipment",
+                                     "Practice Air Compressor 750 CFM", 1),
+                                    ("vehicle|practice pickup", "Vehicle", "Practice Pickup", 1)):
+            out["equipment"] += (await s.execute(text('''
+                INSERT INTO site_equipment ("Site_ID", equipment_key, category, description, uom, qty,
+                    condition, source_file, source_row)
+                VALUES (:s, :k, :c, :d, 'EA', :q, 'Ok', 'Practice equipment list (drawn)', 1)
+                ON CONFLICT ("Site_ID", equipment_key) DO NOTHING'''),
+                {"s": SITE, "k": key, "c": cat, "d": desc, "q": qty})).rowcount or 0
+        if not (await s.execute(text("SELECT 1 FROM item_images WHERE kind = 'equipment' AND removed_at IS NULL"))).first():
+            st = M.store(_practice_picture("Practice Air Compressor", (90, 110, 130)))
+            await CAT.add_image(s, "equipment", "blasting equipment|practice air compressor", st,
+                                source="practice", user="practice.logistics")
+            out["pictures"] += 1
+        # requests without a SAP code: one to decide, one not stocked yet, one decided
+        rid = (await s.execute(text("SELECT id FROM material_requests WHERE drive_file_id = -2301"))).scalar()
+        if rid is None:
+            rid = (await s.execute(text('''
+                INSERT INTO material_requests (drive_file_id, file_name, request_date, layout, is_summary, "Site_ID")
+                VALUES (-2301, 'Practice Request (Phase 23).xlsx', :d, 'practice', false, :s) RETURNING id'''),
+                {"d": t - _d.timedelta(days=6), "s": SITE})).scalar()
+            for row, code, desc, qty in ((1, "N/A", "Practice Garden Trowel (hand)", 4),
+                                         (2, "MAT-990002", "PRACTICE RUBBER SHEET 6MM", 12),
+                                         (3, "N/A", "Practice Measuring Cup 1L", 2)):
+                await s.execute(text('''
+                    INSERT INTO material_request_lines (request_id, sheet, row_no, "SAP_Code", "Material_Code",
+                        description, uom, requested_qty, without_pr, request_date)
+                    VALUES (:r, 'Sheet1', :rw, NULL, :c, :d, 'EA', :q, true, :dt)'''),
+                    {"r": rid, "rw": row, "c": code, "d": desc, "q": qty, "dt": t - _d.timedelta(days=6)})
+                out["requests"] += 1
+            sap = (await s.execute(text('''SELECT "SAP_Code" FROM inventory WHERE "Site_ID" = :s
+                AND "Equipment_Description" ILIKE '%Mixing%' ORDER BY "SAP_Code" LIMIT 1'''), {"s": SITE})).scalar()
+            if sap:
+                await s.execute(text('''
+                    INSERT INTO request_sap_map ("Site_ID", written_key, written_example, decision, "SAP_Code",
+                        created_by, updated_by)
+                    VALUES (:s, 'desc:practice measuring cup 1l', 'Practice Measuring Cup 1L', 'item', :p,
+                            'practice.hod', 'practice.hod')
+                    ON CONFLICT ("Site_ID", written_key) DO NOTHING'''), {"s": SITE, "p": sap})
+        # the page tank: the site's tank used in the week before today
+        n_tank = (await s.execute(text('''SELECT count(*) FROM consumption WHERE "Site_ID" = :s
+            AND "Tank_No" = 'PRACTICE-TK-01' AND LEFT("Date", 10) >= :lo'''),
+            {"s": SITE, "lo": (t - _d.timedelta(days=7)).isoformat()})).scalar()
+        if not n_tank:
+            sap1 = (await s.execute(text('SELECT "SAP_Code" FROM inventory WHERE "Site_ID" = :s '
+                                         'ORDER BY "SAP_Code" LIMIT 1'), {"s": SITE})).scalar()
+            for back in (2, 4):
+                await s.execute(text('''INSERT INTO consumption ("SAP_Code", "Quantity", "Date", "Site_ID",
+                    "Tank_No", "Remarks", "Issued_By") VALUES (:p, 1, :d, :s, 'PRACTICE-TK-01',
+                    'practice — page-tank example', 'practice.storekeeper')'''),
+                    {"p": sap1, "d": (t - _d.timedelta(days=back)).isoformat(), "s": SITE})
+        # a one-day cover three days ago
+        hist = await PREP.history(s, SITE)
+        cover_day = (t - _d.timedelta(days=3)).isoformat()
+        if hist and not any(h.get("on") == cover_day for h in hist):
+            hist = [h for h in hist if not h.get("on")] + [{"on": cover_day, "cover": "Practice Relief", "shift": ""}]
+            await PREP.save(s, SITE, hist)
+        await s.commit()
+    return out
+
+
 async def seed_drive_examples(today: str) -> dict:
     """Phase 22 (rule 17g) — the Drive features, on Practice data.
 
@@ -1177,6 +1301,17 @@ async def run() -> int:
               file=sys.stderr)
         return 2
     from backend.api.db import SessionLocal, engine
+    if os.environ.get("GI_OVERLAY_ACCOUNTS_ONLY") == "1":
+        # Phase 23f — `practice_db.py passwords` (the Live Admin Console's
+        # button): the nine accounts back to their passwords, nothing else
+        async with SessionLocal() as s:
+            acc = await seed_accounts(s)
+            await s.commit()
+        await engine.dispose()
+        print(f"▶ passwords → {database_name()}: accounts={acc['accounts']}")
+        if acc["admin_password"]:
+            print(f"  🔑 practice.admin password (generated — shown ONCE): {acc['admin_password']}")
+        return 0 if acc["accounts"] == len(ACCOUNTS) else 1
     print(f"▶ overlay v{OVERLAY_VERSION} → {database_name()}")
     async with SessionLocal() as s:
         acc = await seed_accounts(s)

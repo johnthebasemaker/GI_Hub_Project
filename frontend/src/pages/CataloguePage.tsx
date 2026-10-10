@@ -9,6 +9,7 @@ import type { ColumnsType } from 'antd/es/table/interface'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Table } from '../lib/smartTable'
 import { api } from '../api/client'
+import { CURRENT_ENV } from '../api/environment'
 import { SiteFilter } from '../components/SiteField'
 import { Thumb, imgSrc } from '../catalogue/thumbs'
 
@@ -286,6 +287,10 @@ export default function CataloguePage() {
               {c.item_master_not_in_catalogue.length > 0 && <span>{c.item_master_not_in_catalogue.length} GI code(s) in the
                 item master are not in this file: {c.item_master_not_in_catalogue.slice(0, 20).join(', ')}</span>}
             </Space>) : undefined} />
+      ) : CURRENT_ENV === 'training' ? (
+        // Phase 23f — Practice never pulls from Drive (rule 17): its catalogue is the overlay's
+        <Alert type="info" showIcon style={{ marginBottom: 12 }} data-testid="catalogue-practice"
+          title="Practice catalogue — invented codes and drawn pictures. Practice never reads Google Drive." />
       ) : (
         <Alert type="warning" showIcon style={{ marginBottom: 12 }}
           title="The catalogue has not been read from Drive yet — the next pull reads “All MATERIAL CODES-….xlsx”." />

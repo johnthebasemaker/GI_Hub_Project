@@ -39,6 +39,19 @@
 one-page list of what changed and where each change is explained. Lots, FEFO
 and the Lot Register workbook are **§3.10**.
 
+> **What's new in Phases 22 and 23 (October 2026)**
+>
+> | What | Where |
+> |---|---|
+> | Delivery notes and certificates from Google Drive; WD numbers; the *last updated* chip | §3.19 |
+> | Requests & Pending, and **mapping a request line to its SAP code** | §3.20 |
+> | Phase 22 in Practice; the tidier top bar | §3.21 |
+> | OCR papers: the names matched, earlier preparers and one-day covers, the **page tank**, Compare, and the background **second read** | §3.17 |
+> | The **catalogue** of every material and tool, with **pictures**; a PR for an item not stocked yet | §3.22 |
+> | **Voice**: dictate into any box, read a page or an answer aloud | §3.23 |
+> | **Practice**: one-click sign-in, the admin password in Live only, twelve more Auto demos | §3.24, §26 |
+> | Downloads that work for every role (the site picker on the consumption form and the Excel check) | §4.9, §3.9 |
+
 ---
 
 # 1. Introduction & System Overview
@@ -1423,6 +1436,30 @@ Details.xlsx* is never read as requests. Where its pending figure differs from
 GI Hub's, the row is listed at the bottom of the page — look at it; nothing is
 changed.
 
+## 3.21 Phase 22 in Practice, and a tidier top bar (October 2026)
+
+**Practice has examples of everything Phase 22 added** (it never pulls from
+Drive — these are drawn, synthetic files):
+- **Records → Receipts** (HOD): search `90001` — the 📎 opens a drawn delivery
+  note; search `WD` — deliveries without a DN carry their **WD-CNCEC-00nn**
+  number.
+- **Lots & Expiry → Certificates (MTC) from Drive**: *PRACTICE PU PRIMER
+  (BNO-PR-SOON)* is on lot PR-SOON by itself (its expiry is *from MTC*); *PRACTICE
+  MTC - container 1* is proposed by the HOD on PR-LATE — sign in as
+  `practice.qc` and **Confirm** it.
+- **Requests & Pending**: a request from ten days ago, with a line that has no
+  SAP code.
+- **OCR Import**: the site's preparers are *Practice Day* / *Practice Night*.
+  Paste a paper dated **two days ago** with "(Night)", for example
+  `Date: <that day> (Night)` then a line of the first two items — it is already
+  in the "workbook", so it is **compared**, not staged. The spelling `Tank one`
+  is learned for the first tank.
+
+**The top bar on a laptop.** Below 1440 pixels wide the top bar drops the role
+name before your username and the words *API online* (the green dot stays, and
+both are in the tooltips), so the Drive chip, the PRACTICE tag and the demo
+launcher fit on one line.
+
 ## 3.22 The catalogue: every material and tool, with pictures (Phase 23, October 2026)
 
 **Where:** sidebar → **Catalogue** (everyone who handles material). Two tabs:
@@ -1497,29 +1534,24 @@ Leaving the page stops it.
 **On a laptop the top bar is tighter:** *Sign out* shows as its icon only (hover
 for the name).
 
-## 3.21 Phase 22 in Practice, and a tidier top bar (October 2026)
+## 3.24 Practice: sign in with one click, and twelve more demos (Phase 23, October 2026)
 
-**Practice has examples of everything Phase 22 added** (it never pulls from
-Drive — these are drawn, synthetic files):
-- **Records → Receipts** (HOD): search `90001` — the 📎 opens a drawn delivery
-  note; search `WD` — deliveries without a DN carry their **WD-CNCEC-00nn**
-  number.
-- **Lots & Expiry → Certificates (MTC) from Drive**: *PRACTICE PU PRIMER
-  (BNO-PR-SOON)* is on lot PR-SOON by itself (its expiry is *from MTC*); *PRACTICE
-  MTC - container 1* is proposed by the HOD on PR-LATE — sign in as
-  `practice.qc` and **Confirm** it.
-- **Requests & Pending**: a request from ten days ago, with a line that has no
-  SAP code.
-- **OCR Import**: the site's preparers are *Practice Day* / *Practice Night*.
-  Paste a paper dated **two days ago** with "(Night)", for example
-  `Date: <that day> (Night)` then a line of the first two items — it is already
-  in the "workbook", so it is **compared**, not staged. The spelling `Tank one`
-  is learned for the first tank.
+**Practice sign-in.** Choose **Practice** on the sign-in screen and a
+**Practice accounts** card lists the eight role accounts, what each one does,
+and their shared password (with a copy button). **Sign in** beside a role signs
+you in as it: no typing. The **admin** account is not listed; its password is
+in **Live** *Admin Console → Practice accounts*, for a Live admin only (§26.3).
 
-**The top bar on a laptop.** Below 1440 pixels wide the top bar drops the role
-name before your username and the words *API online* (the green dot stays, and
-both are in the tooltips), so the Drive chip, the PRACTICE tag and the demo
-launcher fit on one line.
+**Twelve more Auto demos** (Practice → **▶ Auto demo**), each listed in §26.8:
+the Drive chip, a receipt's delivery note and a WD number, a certificate
+confirmed by QC, the SAP-code mapper, the page tank and Compare on a paper, a
+PR with pictures reviewed by Logistics, a family picture, printing a
+consumption form, voice in the Hub Assistant, a return with its return DN,
+Smart Reorder with requests that have no PR, and a **management tour**.
+
+**Every Phase 23 feature has a Practice example** (rule 17g): the catalogue
+with drawn pictures, plant and tools, request lines without a SAP code, a tank
+used in the last week for the page tank, and a one-day preparer cover (§26.4).
 
 # 4. Store Keeper Manual
 
@@ -7687,8 +7719,10 @@ red bar comes back.
 
 ## 26.3 The practice accounts
 
-Practice has **one shared account per role**. Your trainer gives you the
-password for these accounts.
+Practice has **one shared account per role**. Since Phase 23 the **Practice
+sign-in screen lists them** in a *Practice accounts* card: each role, its
+username, what it does, the shared password (📋 copies it), and a **Sign in**
+button that signs you straight in as that role.
 
 | Role | Practice account |
 |---|---|
@@ -7700,13 +7734,24 @@ password for these accounts.
 | Warehouse | `practice.warehouse` |
 | Logistics | `practice.logistics` |
 | Auditor (view-only) | `practice.auditor` |
-| Admin | `practice.admin` (separate password, held by your trainer or administrator) |
+| Admin | `practice.admin` (separate password — not on the sign-in screen) |
 
 The site-based accounts work at site **CNCEC**, and the Warehouse account works
 at warehouse **WH-01**.
 
 Everyone in a class uses the same accounts, so you will see each other's
 practice entries. That is normal.
+
+**The admin account's password** can wipe everybody's practice work, so it is
+never on the Practice sign-in screen. A **Live** admin finds it in *Admin
+Console → Practice accounts*, hidden until **👁** is pressed. The same card
+shows the shared password and has **Reset Practice passwords**: if somebody
+changed a Practice password and the class is locked out, it puts all nine back
+(the shared one, and the admin's from the server's settings) and changes nothing
+else in Practice. It is refused until the admin password is set on the server
+(`PRACTICE_ADMIN_PASSWORD` in `deploy/.env`), so it can never replace it with a
+random one. The same reset from a terminal:
+`.venv/bin/python tools/practice_db.py passwords`.
 
 ## 26.4 What is in Practice
 
@@ -7731,6 +7776,10 @@ be tried before it is used for real. The current ones:
 | Lots, FEFO and expiry (§3.10.4) | **PRACTICE PU PRIMER (899971)**: `PR-OLD` (expired), `PR-SOON` (the FEFO lot), `PR-LATE`. |
 | CHEMOLINE rolls (§3.10.4) | **PRACTICE CHEMOLINE (899973)**, batch `1O26009999`, three rolls. |
 | Lots used but never received (§3.10.3) | Lot `PR-TYPO`. |
+| The catalogue and pictures (§3.22) | **Catalogue**: 43 codes, drawn pictures on five of them and on **MAT-990001** (*Practice Rubber Sheet 5MM*). **MAT-990002** (6 mm) has none, so its family picture is offered. Plant & tools: a generator, an air compressor (with a picture), a pickup. |
+| The SAP-code mapper (§3.20) | *Requests & Pending*: a request from six days ago with *Practice Garden Trowel (hand)* (needs a SAP code), *PRACTICE RUBBER SHEET 6MM* (not stocked yet) and *Practice Measuring Cup 1L* (already decided). |
+| The page tank (§3.17) | `PRACTICE-TK-01` was used two and four days ago, so a paper from this week is offered it. |
+| Earlier preparers and one-day covers (§3.17) | *Practice Relief* covers three days ago. |
 | The assistant's quick answers (§3.12) | As `practice.hod`, ask the Hub Assistant *"which lots expire in the next 30 days?"* — a table, from Practice's own lots. As `practice.storekeeper`, ask *"open the lots page"* — an **Open Lots & Expiry** button — and *"is there a video on staging a return?"*. Nothing new had to be added: the quick check reads whatever database the Practice process holds (rule 17). |
 
 ## 26.5 What works differently in Practice
@@ -7794,6 +7843,27 @@ uses the admin account.
 | **Set the site's SQM pace, then accept a minimum** (HOD) | The HOD opens Reorder signals, sets the site's pace to 6 m²/day, finds the lining primer, reviews minimums and accepts its minimum. |
 | **A consumption paper: date check, names, stage** | A paper whose date was misread (the right day, the wrong month) is pasted. The demo picks the suggested date. *Nitril glovs* is green (learned) and *Safty goggls* is gold (Accept). PV becomes PU. The paper is attached, and the rows are staged for the HOD. |
 
+**Phase 23 demos (October 2026)** — twelve more, on Practice data:
+
+| Demo | Starts as | What you see |
+|---|---|---|
+| **Pull from Drive, and where today's numbers came from** | HOD | The cloud chip in the top bar (in Practice it only says *Practice*): what navy, amber and red mean, the tooltip, and the **Pull** button. |
+| **A receipt and its delivery-note photo; a WD number** | HOD | *Records → Receipts*: 📎 opens delivery note 90001 (a drawn practice note); a delivery that came with no note shows its **WD** number. |
+| **A certificate from Drive, confirmed onto its lot** | QC | *Lots & Expiry*: the *container 1* certificate the HOD proposed for lot `PR-LATE`. QC opens it and **Confirms**. |
+| **Requests & Pending: map a request to its SAP code** | HOD | The trowel line is linked to a notched trowel, the *Not stocked yet* and *Decided* views are shown, and the link is **undone** again. |
+| **A paper's tank, set once for the whole page** | Store keeper | A Night paper from two days ago that is already in the workbook: it is **compared**, not staged. The **Tank for this whole page** fills the scribbled and ditto rows, the clearly written one stays, and **Undo** puts them back. Nothing is staged. |
+| **Raise a PR with pictures; Logistics sees them** | HOD → Logistics | A `DEMO-` PR for *Practice Rubber Sheet 5MM* (not stocked yet, no SAP), submitted to Logistics, who opens it and sees the picture. |
+| **A picture for a material, and for its family** | Logistics | The 6 mm sheet takes the 5 mm sheet's picture (**Use this**), then it is **removed** again (and could be restored). |
+| **Print a consumption form for a lining system** | Supervisor | A lining system is chosen and the **Download** button and the *Upload a filled form* card are explained. It stops before Download, so no form number is used. |
+| **Ask the Hub Assistant by voice; hear the answer** | Anyone | The 🎤 (when the server has the voice model), a question typed in and sent, the 🔊 on the answer, and the top bar's voice controls. |
+| **A return to the vendor, with its return DN** | Store keeper → HOD | One gasket set is returned against the receipt on DN 90001 with a `DEMO-` return DN and a practice slip; the HOD approves it; *Records → Returns* shows it. |
+| **Smart Reorder, and requests without a PR** | HOD | *Reorder signals*: the order suggested, what is on order, and *requested (no PR)*; then *Requests & Pending*. Looks only. |
+| **Management tour: GI Hub in one walk-through** | HOD | Dashboard, the Drive chip, Smart Reorder, Requests & Pending, the catalogue, Lots & Expiry, Execution, Approvals and Purchase Requests. English captions and voice. Looks only. |
+
+Ask the assistant in Practice, for example *"show me how to map a request to
+its SAP code"* or *"give me the management tour"*, and the answer offers the
+demo.
+
 **The controls** (at the bottom, or the top when the action is low on the
 screen):
 - **Pause** / **Resume**;
@@ -7830,6 +7900,12 @@ Two demos change settings rather than add entries: the reorder demo (the
 site's pace and one accepted minimum) and the OCR demo (the name it teaches).
 What those settings were is recorded when a demo starts, and the reset puts
 them back exactly. Other trainees' work is not touched.
+
+The Phase 23 demos that change something undo it themselves before they end
+(the SAP link, the family picture). The reset also covers a demo stopped
+half-way: it removes the trowel's SAP decision and the 6 mm sheet's family
+picture, puts the *container 1* certificate back in QC's queue, and removes a
+demo return (tagged on its return DN) and a `DEMO-` PR.
 
 **Page tours.** The same chooser has **Page tours**: a narrated, read-only walk
 through a page. It covers what each part is for, who uses it and what to look

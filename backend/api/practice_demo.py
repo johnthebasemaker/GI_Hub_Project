@@ -73,6 +73,43 @@ CATALOG = [
     {"id": "ocr-paste", "title": "A consumption paper: date check, names, stage",
      "start": "/entry/ocr", "roles": ["store_keeper", "hod", "admin"],
      "keywords": ["ocr", "paper", "photo", "paste", "names", "handwritten", "date", "stage"]},
+    # Phase 23f (ruling Q23-14) — the twelve demos of plan §6.2
+    {"id": "drive-freshness", "title": "Pull from Drive, and where today's numbers came from",
+     "start": "/", "roles": ["hod", "logistics", "admin"],
+     "keywords": ["drive", "pull", "sync", "fresh", "updated", "workbook", "google"]},
+    {"id": "dn-wd", "title": "A receipt and its delivery-note photo; a WD number",
+     "start": "/records/receipts", "roles": ["hod", "admin"],
+     "keywords": ["dn", "delivery", "note", "photo", "wd", "receipt", "without"]},
+    {"id": "mtc-confirm", "title": "A certificate from Drive, confirmed onto its lot",
+     "start": "/lots", "roles": ["qc", "hod", "admin"],
+     "keywords": ["mtc", "certificate", "lot", "batch", "qc", "confirm"]},
+    {"id": "requests-sap", "title": "Requests & Pending: map a request to its SAP code",
+     "start": "/requests-pending", "roles": ["hod", "logistics", "admin"],
+     "keywords": ["request", "pending", "sap", "code", "map", "requested", "received"]},
+    {"id": "ocr-page-tank", "title": "A paper's tank, set once for the whole page",
+     "start": "/entry/ocr", "roles": ["store_keeper", "hod", "admin"],
+     "keywords": ["tank", "page", "ditto", "ocr", "paper", "second", "read", "compare"]},
+    {"id": "pr-pictures", "title": "Raise a PR with pictures; Logistics sees them",
+     "start": "/hod/prs", "roles": ["hod", "admin"],
+     "keywords": ["pr", "purchase", "request", "picture", "photo", "catalogue", "stocked"]},
+    {"id": "catalogue-family", "title": "A picture for a material, and for its family",
+     "start": "/catalogue", "roles": ["logistics", "hod", "admin"],
+     "keywords": ["catalogue", "picture", "photo", "image", "family", "material", "equipment"]},
+    {"id": "form-print", "title": "Print a consumption form for a lining system",
+     "start": "/execution", "roles": ["supervisor", "hod", "admin"],
+     "keywords": ["form", "print", "consumption", "execution", "lining", "download"]},
+    {"id": "assistant-voice", "title": "Ask the Hub Assistant by voice; hear the answer",
+     "start": "/", "roles": ["store_keeper", "supervisor", "hod", "qc", "logistics", "admin"],
+     "keywords": ["voice", "speak", "microphone", "dictate", "read", "aloud", "assistant"]},
+    {"id": "return-dn", "title": "A return to the vendor, with its return DN",
+     "start": "/records/returns", "roles": ["store_keeper", "hod", "admin"],
+     "keywords": ["return", "vendor", "rdn", "dn", "returned", "surplus"]},
+    {"id": "reorder-requests", "title": "Smart Reorder, and requests without a PR",
+     "start": "/stock?tab=reorder", "roles": ["hod", "logistics", "admin"],
+     "keywords": ["reorder", "order", "minimum", "requested", "without", "pr", "smart"]},
+    {"id": "management-tour", "title": "Management tour: GI Hub in one walk-through",
+     "start": "/", "roles": ["hod", "logistics", "admin"],
+     "keywords": ["tour", "management", "overview", "story", "everything", "presentation"]},
 ]
 
 # ── what a demo changes that a DEMO- tag cannot mark ─────────────────────────
@@ -208,6 +245,29 @@ _RESET = (
     ("qc_escalations", ('"Lot_Number"',)), ("qc_inspections", ('"Lot_Number"',)),
     ("returnable_items", ("borrower_name", '"Item_Ref"')),   # its returns cascade
     ("entry_attachments", ("file_name",)),                  # the generated DEMO slips
+    ("pr_master", ('"Notes"',)),                            # Phase 23: the pictures-PR demo
+)
+# Phase 23 — what a demo changes that carries no DEMO- tag of its own. Each
+# demo that acts also undoes itself (Link → Undo, Use this → Remove); should
+# one stop half-way, Reset puts these back exactly:
+#   · the SAP-mapper demo's decision on the overlay's trowel line;
+#   · the family picture the catalogue demo gave the 6 mm sheet;
+#   · the overlay's "container 1" certificate, back to proposed for QC;
+#   · a demo return: pending_returns has no remarks, so the tag rides on the
+#     Return DN No., and an approved one's remark reads "Return DN: DEMO-…".
+# The overlay's own decided example (the measuring cup) is not touched.
+_MTC2 = "(SELECT id FROM drive_files WHERE drive_id = 'practice-mtc-2')"
+_RESET_PHASE23 = (
+    ("request_sap_map", "DELETE FROM request_sap_map WHERE \"Site_ID\" = 'CNCEC' "
+                        "AND written_key = 'desc:practice garden trowel hand'"),
+    ("item_images", "DELETE FROM item_images WHERE source = 'family' AND item_key = 'MAT-990002'"),
+    ("mtc_documents", f"DELETE FROM mtc_documents WHERE drive_file_id IN {_MTC2}"),
+    ("mtc_assignments", "UPDATE mtc_assignments SET status = 'proposed', decided_by = NULL, decided_at = NULL "
+                        f"WHERE drive_file_id IN {_MTC2} AND status <> 'proposed'"),
+    ("drive_files", "UPDATE drive_files SET link_status = 'unlinked' "
+                    "WHERE drive_id = 'practice-mtc-2' AND link_status = 'linked'"),
+    ("pending_returns", "DELETE FROM pending_returns WHERE \"Return_DN_No\" LIKE 'DEMO-%'"),
+    ("returns", "DELETE FROM returns WHERE \"Remarks\" LIKE 'Return DN: DEMO-%'"),
 )
 # A demo JOB is one filed on a DEMO- tank (overlay v10 seeds DEMO-TANK-1 with two
 # ready days) or one whose note carries the tag.
@@ -255,6 +315,9 @@ async def reset_demo_data(session: AsyncSession) -> dict[str, int]:
         where = " OR ".join(f"{c} LIKE :t" for c in cols)
         res = await session.execute(text(f"DELETE FROM {table} WHERE {where}"), {"t": t})
         removed[table] = res.rowcount or 0
+    for table, stmt in _RESET_PHASE23:
+        res = await session.execute(text(stmt))
+        removed[table] = (removed.get(table) or 0) + (res.rowcount or 0)
     removed["settings_restored"] = await restore_demo_state(session)
     return removed
 

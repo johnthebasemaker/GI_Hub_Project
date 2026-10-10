@@ -5422,6 +5422,63 @@ id.
 **TC-23E-06 — the measurement.** `.venv/bin/python tools/stt_eval.py` → WER
 ≈ 0.14 with keywords, ≈ 15 ms a phrase.
 
+## 23f. Phase 23f — Practice sign-in details and twelve more demos (rulings Q23-13/14)
+
+**TC-23F-00 — the Practice data (once per phase).**
+
+```bash
+.venv/bin/python tools/practice_db.py overlay
+```
+
+→ overlay **v12** on both Practice databases: catalogue rows `MAT-990001..3`,
+drawn pictures, plant & tools, the Phase 23 request lines, `PRACTICE-TK-01`
+used this week, a one-day cover (*Practice Relief*).
+
+**TC-23F-01 — the Practice login card.** Sign-in screen → **Practice** → the
+**Practice accounts** card lists **8** roles (no `practice.admin`) and the
+shared password; 📋 copies it. **Sign in** beside *Quality Control* → you are
+`practice.qc` without typing. In **Live**, the card is not there.
+
+**TC-23F-02 — the admin password, Live only.** Sign in to **Live** as an admin
+→ *Admin Console → Practice accounts* → `practice.admin`'s password shows as
+dots; 👁 reveals it. A Live HOD has no such tab. `curl` the open route on Live
+(`/practice/accounts`) → **404**.
+
+**TC-23F-03 — Reset Practice passwords.** In Practice, change
+`practice.storekeeper`'s password (Profile). In Live → *Admin Console → Practice
+accounts* → **Reset Practice passwords** → confirm → *Every Practice password is
+back (2 database(s))*. The store keeper signs in with the shared password
+again. With `PRACTICE_ADMIN_PASSWORD` unset the button is disabled and the API
+answers **409**. The terminal twin: `.venv/bin/python tools/practice_db.py
+passwords`.
+
+**TC-23F-04 — each new demo runs to its end.** Practice → **▶ Auto demo** →
+start each Phase 23 demo (USER_MANUAL §26.8) as the role it lists; each must
+reach *Demo complete.* Then check:
+- *A certificate … confirmed*: lot `PR-LATE` now has the *container 1* file;
+- *Raise a PR with pictures*: Logistics sees the 5 mm sheet's picture on the
+  `DEMO-` PR;
+- *A return … with its return DN*: *Records → Returns* lists it;
+- *Requests & Pending*, *A picture … family* and *A paper's tank*: nothing is
+  left changed (each undoes itself);
+- *Print a consumption form*: no new form number is used.
+
+**TC-23F-05 — Reset demo data.** As `practice.hod` → **▶ Auto demo → Reset demo
+data** → the `DEMO-` PR and return are gone, the *container 1* certificate is
+back under *Waiting for QC to confirm*, and the 6 mm sheet has no family
+picture.
+
+**TC-23F-06 — the assistant offers them.** In Practice ask *"show me how to map
+a request to its SAP code"* (HOD), *"show me the page tank on an ocr paper"*
+(store keeper), *"give me the management tour"* (HOD) → each answer has
+**▶ Run this demo**. A store keeper asking *"raise a pr with a picture"* gets
+no demo button (that demo is HOD-only).
+
+**TC-23F-07 — the recorded tutorials.** `docs/tutorials/out/` holds the two
+Phase 23 tutorials (management tour; catalogue and a PR with pictures) with
+their `.vtt` captions. A render that looks wrong is re-rendered; it is not a
+red build.
+
 ## 21d. Phase 21d — OCR measured against the workbook; the name matcher (Q21-1..6)
 
 **Why this exists.** The 11 photos of the *Safety & Production Consumables*

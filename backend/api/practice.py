@@ -242,3 +242,50 @@ def mounted() -> bool:
     """Whether main.py includes the router. A function so the decision is in
     one place and suite TR can assert it."""
     return is_practice() and os.environ.get("GI_PRACTICE_RESET", "on") != "off"
+
+
+async def _run_passwords() -> tuple[int, str]:
+    """`tools/practice_db.py passwords` — the nine Practice accounts back to
+    their passwords, in both Practice databases. A SUBPROCESS, on purpose: the
+    tool runs each database as a Practice process (GI_INSTANCE=training), so
+    this Live process never opens a Practice database itself (rule 17). The
+    output is logged as counts only — it can carry a generated password."""
+    import asyncio
+    import pathlib
+    import sys
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, str(root / "tools" / "practice_db.py"), "passwords", cwd=str(root),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return 124, "timed out after 3 minutes"
+    lines = [ln for ln in (out or b"").decode(errors="replace").splitlines()
+             if ln.startswith("▶ passwords") or ln.startswith("❌")]
+    return proc.returncode or 0, "\n".join(lines)
+
+
+@live_router.post("/reset-passwords", summary="Every Practice password back to its value (Live admin)")
+async def reset_practice_passwords(user: dict = Depends(require_roles("admin"))):
+    """LIVE ONLY, ADMIN ONLY (plan §6.1). Somebody changed a Practice password
+    inside the sandbox and the class is locked out: this puts all nine back —
+    the shared one, and practice.admin's from deploy/.env — and touches no
+    other Practice data. Refused while PRACTICE_ADMIN_PASSWORD is unset: the
+    tool would then make a NEW admin password up and show it only once, in a
+    log nobody reads."""
+    if not os.environ.get("PRACTICE_ADMIN_PASSWORD", "").strip():
+        raise HTTPException(409, "set PRACTICE_ADMIN_PASSWORD in deploy/.env first — otherwise the "
+                                 "Practice admin password would be replaced by a new random one")
+    code, summary = await _run_passwords()
+    from .db import SessionLocal
+    from .services.ledger import write_audit
+    async with SessionLocal() as s:
+        await write_audit(s, user["username"], "PRACTICE_PASSWORDS_RESET", "users",
+                          f"tools/practice_db.py passwords → exit {code}")
+        await s.commit()
+    if code != 0:
+        raise HTTPException(502, f"the reset did not finish (exit {code}): {summary or 'see the API log'}")
+    return {"ok": True, "databases": summary.count("▶ passwords"), "detail": summary}

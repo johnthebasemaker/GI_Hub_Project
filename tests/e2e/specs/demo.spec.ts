@@ -45,7 +45,7 @@ async function practiceAs(page: Page, user: string, fast = true) {
     await page.getByPlaceholder('Password').fill(PRACTICE_PASSWORD)
     await expect(page.getByPlaceholder('Username')).toHaveValue(user, { timeout: 1000 })
   }).toPass({ timeout: 15_000 })
-  await page.getByRole('button', { name: 'Sign in' }).click()
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
   await expect(page.getByRole('button', { name: /sign out/i })).toBeVisible({ timeout: 20_000 })
 }
 
@@ -180,4 +180,105 @@ test('21g: a page tour walks the page it is on, read-only', async ({ page }) => 
   await page.getByTestId('demo-tour-here').click()
   await expect(page.getByTestId('demo-subtitle')).toHaveText('Demo complete.', { timeout: 60_000 })
   await expect(page).toHaveURL(/\/lots$/)
+})
+
+// ── Phase 23f (ruling Q23-14): the twelve new demos, each driven to its end ──
+
+async function again(page: Page, id: string) {
+  await page.getByTestId('demo-close').click()
+  await runDemo(page, id)
+}
+
+test('23f: the look-only demos — Drive chip, Smart Reorder, the management tour, form print, voice', async ({ page }) => {
+  test.setTimeout(600_000)
+  await practiceAs(page, 'practice.hod')
+  await runDemo(page, 'drive-freshness')
+  await again(page, 'reorder-requests')
+  await again(page, 'management-tour')
+  await expect(page).toHaveURL(/\/hod\/prs$/)
+  // the form demo stops BEFORE Download — no form number is used up
+  const forms = sql(`SELECT count(*) FROM sme_consumption_form`)
+  await again(page, 'form-print')
+  await expect(page.locator('.gi-user-label')).toContainText('practice.supervisor')
+  expect(sql(`SELECT count(*) FROM sme_consumption_form`)).toBe(forms)
+  await again(page, 'assistant-voice')
+})
+
+test('23f: a receipt opens its delivery note, a delivery without one shows its WD number', async ({ page }) => {
+  test.setTimeout(300_000)
+  await practiceAs(page, 'practice.hod')
+  await runDemo(page, 'dn-wd')
+})
+
+test('23f: QC confirms the proposed certificate; reset puts it back in the queue', async ({ page }) => {
+  test.setTimeout(300_000)
+  const q = `SELECT a.status || '/' || (SELECT count(*) FROM mtc_documents m WHERE m.drive_file_id = f.id)
+             FROM mtc_assignments a JOIN drive_files f ON f.id = a.drive_file_id WHERE f.drive_id = 'practice-mtc-2'`
+  expect(sql(q)).toBe('proposed/0')
+  await practiceAs(page, 'practice.hod')
+  await runDemo(page, 'mtc-confirm')
+  await expect(page.locator('.gi-user-label')).toContainText('practice.qc')
+  expect(sql(q)).toBe('confirmed/1')
+  await resetFresh(page.context().browser()!)
+  expect(sql(q)).toBe('proposed/0')
+})
+
+test('23f: the SAP mapper demo links the trowel and undoes it — nothing is left decided', async ({ page }) => {
+  test.setTimeout(300_000)
+  const q = `SELECT count(*) FROM request_sap_map WHERE written_key = 'desc:practice garden trowel hand'`
+  const unmaps = () => Number(sql(`SELECT count(*) FROM system_audit_log WHERE action_type = 'REQUEST_SAP_UNMAP'
+                                     AND details LIKE '%practice garden trowel hand%'`))
+  const before = unmaps()
+  await practiceAs(page, 'practice.hod')
+  await runDemo(page, 'requests-sap')
+  // it linked (and the link was audited), then undid it — the line needs a decision again
+  expect(sql(q)).toBe('0')
+  expect(unmaps()).toBe(before + 1)
+})
+
+test('23f: a Night paper already in the workbook is compared; the page tank fills it and Undo puts it back; nothing is staged', async ({ page }) => {
+  test.setTimeout(300_000)
+  const staged = () => sql(`SELECT count(*) FROM pending_issues`)
+  const before = staged()
+  await practiceAs(page, 'practice.storekeeper')
+  await runDemo(page, 'ocr-page-tank')
+  expect(staged()).toBe(before)
+})
+
+test('23f: a PR for a catalogue item reaches Logistics with its picture; reset removes it', async ({ page }) => {
+  test.setTimeout(480_000)
+  page.on('console', (m) => { if (process.env.DEMO_DEBUG) console.log('[console]', m.type(), m.text()) })
+  const q = `SELECT count(*) FROM pr_master WHERE "Notes" LIKE 'DEMO-%' AND "Material_Code" = 'MAT-990001' AND "SAP_Code" = ''`
+  await practiceAs(page, 'practice.hod')
+  await runDemo(page, 'pr-pictures')
+  await expect(page.locator('.gi-user-label')).toContainText('practice.logistics')
+  expect(sql(q)).toBe('1')
+  await resetFresh(page.context().browser()!)
+  expect(sql(`SELECT count(*) FROM pr_master WHERE "Notes" LIKE 'DEMO-%'`)).toBe('0')
+})
+
+test('23f: the 6 mm sheet uses its family picture, then removes it; reset clears the family row', async ({ page }) => {
+  test.setTimeout(300_000)
+  const q = `SELECT count(*) || '/' || count(removed_at) FROM item_images WHERE item_key = 'MAT-990002' AND source = 'family'`
+  // the drawn pictures must LOAD: the overlay writes them where the Practice API serves them
+  const pics: number[] = []
+  page.on('response', (r) => { if (r.url().includes('/catalogue/img/')) pics.push(r.status()) })
+  await practiceAs(page, 'practice.hod')
+  await runDemo(page, 'catalogue-family')
+  expect(sql(q)).toBe('1/1')
+  expect(pics.length).toBeGreaterThan(0)
+  expect(pics.filter((st) => st !== 200)).toEqual([])
+  await resetFresh(page.context().browser()!)
+  expect(sql(q)).toBe('0/0')
+})
+
+test('23f: a return against its receipt, with its return DN, approved by the HOD; reset removes it', async ({ page }) => {
+  test.setTimeout(300_000)
+  await practiceAs(page, 'practice.storekeeper')
+  await runDemo(page, 'return-dn')
+  expect(sql(`SELECT status FROM pending_returns WHERE "Return_DN_No" LIKE 'DEMO-%'`)).toBe('approved')
+  expect(sql(`SELECT count(*) FROM returns WHERE "Remarks" LIKE 'Return DN: DEMO-%'`)).toBe('1')
+  await resetAsHod(page)
+  expect(sql(`SELECT count(*) FROM pending_returns WHERE "Return_DN_No" LIKE 'DEMO-%'`)).toBe('0')
+  expect(sql(`SELECT count(*) FROM returns WHERE "Remarks" LIKE 'Return DN: DEMO-%'`)).toBe('0')
 })

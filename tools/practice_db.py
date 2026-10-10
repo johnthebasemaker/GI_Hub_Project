@@ -7,6 +7,7 @@ tools/practice_db.py — build, reset and verify the Practice sandbox (rule 17).
     .venv/bin/python tools/practice_db.py reset     # sandbox := clone(seed)   (~1 s)
     .venv/bin/python tools/practice_db.py verify    # prove the walls hold; exit 1 if not
     .venv/bin/python tools/practice_db.py migrate   # seed + sandbox → alembic head, trainee data kept
+    .venv/bin/python tools/practice_db.py passwords # every Practice password back (Phase 23f)
 
 Connection settings (defaults are the local :5433 trust-auth mirror):
 
@@ -233,12 +234,15 @@ def cmd_build(today: _dt.date) -> int:
 
 
 # ── overlay (Phase 23f) ─────────────────────────────────────────────────────
-def cmd_overlay() -> int:
+def cmd_overlay(accounts_only: bool = False) -> int:
     """Re-apply tools/practice_overlay.py to BOTH Practice databases — the new
     examples of a phase, and every Practice password set back to its value
     (the shared one, and practice.admin's from deploy/.env). Same hardening as
     `build`: an ephemeral signing key, no outbound secrets, GI_DOTENV=0 — only
-    the two Practice passwords are read from deploy/.env."""
+    the two Practice passwords are read from deploy/.env.
+
+    `accounts_only` (the `passwords` command, Phase 23f): the nine accounts
+    only — what the Live Admin Console's "Reset Practice passwords" runs."""
     import secrets as _secrets
     py = str(_ROOT / ".venv" / "bin" / "python")
     keep = {}
@@ -257,6 +261,8 @@ def cmd_overlay() -> int:
                   "SMTP_USER", "SMTP_PASS", "GI_AI_VISION_API_KEY", "GI_AI_RO_URL"):
             env.pop(k, None)
         env.update(keep)
+        if accounts_only:
+            env["GI_OVERLAY_ACCOUNTS_ONLY"] = "1"
         env.update(JWT_SECRET=_secrets.token_hex(32), GI_INSTANCE="training", GI_DOTENV="0",
                    GI_SCHEDULER="0", DATABASE_URL=with_db(practice_url(), db).replace(
                        "postgresql://", "postgresql+asyncpg://", 1))
@@ -265,7 +271,7 @@ def cmd_overlay() -> int:
         if proc.returncode != 0:
             print(f"❌ overlay failed on {db} (exit {proc.returncode})")
             return proc.returncode
-    return cmd_wall()
+    return 0 if accounts_only else cmd_wall()
 
 
 # ── reset ───────────────────────────────────────────────────────────────────
@@ -422,7 +428,8 @@ def cmd_verify() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
-    ap.add_argument("command", choices=("wall", "build", "reset", "verify", "migrate", "overlay"))
+    ap.add_argument("command", choices=("wall", "build", "reset", "verify", "migrate", "overlay",
+                                           "passwords"))
     ap.add_argument("--today", default=None,
                     help="anchor for the synthetic dates (default: today). The "
                          "tutorial RENDERS keep their pinned anchor; only the "
@@ -439,6 +446,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_migrate()
     if a.command == "overlay":
         return cmd_overlay()
+    if a.command == "passwords":
+        return cmd_overlay(accounts_only=True)
     return cmd_verify()
 
 

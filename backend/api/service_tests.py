@@ -31838,6 +31838,146 @@ async def test_phase23f_practice_credentials():
           and hod.status_code == 403 and anon.status_code == 401,
           f"open={open_.status_code} adm={adm.status_code} hod={hod.status_code} anon={anon.status_code}")
 
+    # "Reset Practice passwords" (plan §6.1): a Live admin runs the tool; it is
+    # refused while the admin password is unset (it would be replaced by a new
+    # random one); an HOD is refused. The subprocess is stubbed — the tool's
+    # own run is `tools/practice_db.py passwords`.
+    calls = []
+
+    async def fake_run():
+        calls.append(1)
+        return 0, "▶ passwords → a_seed: accounts=9\n▶ passwords → a: accounts=9"
+    real_run = PR._run_passwords
+    PR._run_passwords = fake_run
+    saved = _os4.environ.get("PRACTICE_ADMIN_PASSWORD")
+    try:
+        async with AsyncClient(transport=transport, base_url="http://t") as c:
+            _os4.environ.pop("PRACTICE_ADMIN_PASSWORD", None)
+            unset = await c.post("/admin/practice/reset-passwords", headers=tok("sv23f_admin", "admin"))
+            _os4.environ["PRACTICE_ADMIN_PASSWORD"] = "sv23f-admin-pw"
+            ok = await c.post("/admin/practice/reset-passwords", headers=tok("sv23f_admin", "admin"))
+            hodr = await c.post("/admin/practice/reset-passwords", headers=tok("sv23f_hod", "hod", "CNCEC"))
+        async with SessionLocal() as s_:
+            from sqlalchemy import text as _t
+            aud = (await s_.execute(_t("SELECT count(*) FROM system_audit_log WHERE username = 'sv23f_admin' "
+                                       "AND action_type = 'PRACTICE_PASSWORDS_RESET'"))).scalar()
+            await s_.execute(_t("DELETE FROM system_audit_log WHERE username = 'sv23f_admin'"))
+            await s_.commit()
+    finally:
+        PR._run_passwords = real_run
+        if saved is None:
+            _os4.environ.pop("PRACTICE_ADMIN_PASSWORD", None)
+        else:
+            _os4.environ["PRACTICE_ADMIN_PASSWORD"] = saved
+    check("23f-05: Reset Practice passwords — a Live admin runs `practice_db.py passwords` (audited, "
+          "both databases reported, no password in the answer); refused (409) while the Practice admin "
+          "password is unset; an HOD is refused",
+          unset.status_code == 409 and ok.status_code == 200 and ok.json().get("databases") == 2
+          and "sv23f-admin-pw" not in ok.text and hodr.status_code == 403 and len(calls) == 1 and aud == 1,
+          f"unset={unset.status_code} ok={ok.status_code} hod={hodr.status_code} calls={len(calls)} aud={aud}")
+
+
+
+async def test_phase23f_demo_reset():
+    """Suite 23F (cont.) — the twelve Phase 23f demos (ruling Q23-14). Reset demo
+    data puts back what a demo changes WITHOUT a DEMO- tag of its own — the
+    trowel's SAP decision, the 6 mm sheet's family picture, the "container 1"
+    certificate QC confirmed, a demo return (tagged on its Return DN) — and the
+    DEMO- PR; it leaves a real decision and a real picture alone. The assistant
+    offers each new demo for the question a person would ask."""
+    from sqlalchemy import text as _t
+
+    from . import practice_demo as PD
+
+    async def ex_(sql, **kw):
+        async with SessionLocal() as s_:
+            await s_.execute(_t(sql), kw)
+            await s_.commit()
+
+    async def one(sql, **kw):
+        async with SessionLocal() as s_:
+            return (await s_.execute(_t(sql), kw)).scalar()
+
+    async def clean():
+        await ex_("DELETE FROM request_sap_map WHERE created_by = 'sv23f'")
+        await ex_("DELETE FROM item_images WHERE uploaded_by = 'sv23f'")
+        await ex_("DELETE FROM mtc_documents WHERE submitted_by = 'sv23f'")
+        await ex_("DELETE FROM mtc_assignments WHERE proposed_by = 'sv23f'")
+        await ex_("DELETE FROM drive_files WHERE drive_id IN ('practice-mtc-2', 'sv23f-other')")
+        await ex_("DELETE FROM pending_returns WHERE submitted_by = 'sv23f'")
+        await ex_("DELETE FROM returns WHERE \"Remarks\" LIKE 'Return DN: DEMO-SV23F%' OR \"Remarks\" = 'sv23f real'")
+        await ex_("DELETE FROM pr_master WHERE \"PR_Number\" LIKE 'SV23F-%'")
+
+    await clean()
+    try:
+        await ex_("""INSERT INTO request_sap_map ("Site_ID", written_key, decision, "SAP_Code", created_by)
+                     VALUES ('CNCEC', 'desc:practice garden trowel hand', 'item', '800096', 'sv23f'),
+                            ('CNCEC', 'desc:sv23f real decision', 'item', '800096', 'sv23f')""")
+        await ex_("""INSERT INTO item_images (kind, item_key, sha256, source, uploaded_by)
+                     VALUES ('material', 'MAT-990002', 'sv23f-a', 'family', 'sv23f'),
+                            ('material', 'MAT-990002', 'sv23f-b', 'upload', 'sv23f')""")
+        await ex_("""INSERT INTO drive_files (drive_id, kind, name, link_status)
+                     VALUES ('practice-mtc-2', 'mtc', 'PRACTICE MTC - container 1.pdf', 'linked'),
+                            ('sv23f-other', 'mtc', 'other.pdf', 'linked')""")
+        for did in ("practice-mtc-2", "sv23f-other"):
+            await ex_("""INSERT INTO mtc_assignments (drive_file_id, "SAP_Code", "Lot_Number", source, status,
+                            proposed_by, decided_by)
+                         SELECT id, '899971', 'PR-LATE', 'manual', 'confirmed', 'sv23f', 'practice.qc'
+                         FROM drive_files WHERE drive_id = :d""", d=did)
+            await ex_("""INSERT INTO mtc_documents ("SAP_Code", "Lot_Number", submitted_by, drive_file_id)
+                         SELECT '899971', 'PR-LATE', 'sv23f', id FROM drive_files WHERE drive_id = :d""", d=did)
+        await ex_("""INSERT INTO pending_returns ("Site_ID", "SAP_Code", "Quantity", "Return_Reason", "Return_DN_No",
+                        submitted_by) VALUES ('CNCEC', '899001', 1, 'overstock', 'DEMO-SV23F-1', 'sv23f'),
+                                         ('CNCEC', '899001', 1, 'overstock', 'RDN-REAL', 'sv23f')""")
+        await ex_("""INSERT INTO returns ("SAP_Code", "Quantity", "Site_ID", "Remarks")
+                     VALUES ('899001', 1, 'CNCEC', 'Return DN: DEMO-SV23F-1 · approved by practice.hod'),
+                            ('899001', 1, 'CNCEC', 'sv23f real')""")
+        await ex_("""INSERT INTO pr_master ("PR_Number", "SAP_Code", "Material_Code", "Requested_Qty", "Notes")
+                     VALUES ('SV23F-1', '', 'MAT-990001', 20, 'DEMO-SV23F practice demo'),
+                            ('SV23F-2', '', 'MAT-990001', 20, 'a real PR')""")
+        async with SessionLocal() as s_:
+            removed = await PD.reset_demo_data(s_)
+            await s_.commit()
+        left = {
+            "map": await one("SELECT string_agg(written_key, ',') FROM request_sap_map WHERE created_by = 'sv23f'"),
+            "img": await one("SELECT string_agg(source, ',') FROM item_images WHERE uploaded_by = 'sv23f'"),
+            "mtc2": await one("""SELECT a.status || '/' || COALESCE(a.decided_by, '-') || '/' || f.link_status
+                                 FROM mtc_assignments a JOIN drive_files f ON f.id = a.drive_file_id
+                                 WHERE f.drive_id = 'practice-mtc-2'"""),
+            "other": await one("""SELECT a.status || '/' || f.link_status FROM mtc_assignments a
+                                  JOIN drive_files f ON f.id = a.drive_file_id WHERE f.drive_id = 'sv23f-other'"""),
+            "docs": await one("SELECT count(*) FROM mtc_documents WHERE submitted_by = 'sv23f'"),
+            "pend": await one("SELECT string_agg(\"Return_DN_No\", ',') FROM pending_returns WHERE submitted_by = 'sv23f'"),
+            "ret": await one("SELECT string_agg(\"Remarks\", ',') FROM returns WHERE \"Remarks\" LIKE '%sv23f%' "
+                             "OR \"Remarks\" LIKE '%SV23F%'"),
+            "pr": await one("SELECT string_agg(\"PR_Number\", ',') FROM pr_master WHERE \"PR_Number\" LIKE 'SV23F-%'"),
+        }
+        check("23f-03: Reset demo data undoes what the Phase 23 demos change without a DEMO- tag — the "
+              "trowel's SAP decision, the 6 mm sheet's family picture, the container-1 certificate (back "
+              "to proposed, unfiled), a demo return and a DEMO- PR — and leaves the real ones alone",
+              left == {"map": "desc:sv23f real decision", "img": "upload", "mtc2": "proposed/-/unlinked",
+                       "other": "confirmed/linked", "docs": 1, "pend": "RDN-REAL", "ret": "sv23f real",
+                       "pr": "SV23F-2"}
+              and removed.get("pr_master", 0) >= 1, f"{left} {removed}")
+    finally:
+        await clean()
+    asks = (("show me how to map a request to its sap code", "hod", "requests-sap"),
+            ("show me the page tank on an ocr paper", "store_keeper", "ocr-page-tank"),
+            ("how do i pull from google drive", "hod", "drive-freshness"),
+            ("show me a certificate mtc confirm", "qc", "mtc-confirm"),
+            ("raise a pr with a picture", "hod", "pr-pictures"),
+            ("give a material a picture from its family", "logistics", "catalogue-family"),
+            ("print a consumption form", "supervisor", "form-print"),
+            ("ask by voice and hear it read aloud", "store_keeper", "assistant-voice"),
+            ("return to the vendor with a return dn", "store_keeper", "return-dn"),
+            ("smart reorder and requests without a pr", "hod", "reorder-requests"),
+            ("give me the management tour", "hod", "management-tour"),
+            ("open the delivery note photo of a receipt", "hod", "dn-wd"),
+            ("raise a pr with a picture", "store_keeper", None))
+    got = [(PD.match_demo(q, r) or {}).get("id") for q, r, _w in asks]
+    check("23f-04: the assistant offers each of the twelve new demos for the question a person "
+          "would ask — and not the HOD's PR demo to a store keeper (rule 9)",
+          got == [w for _q, _r, w in asks] and len(PD.CATALOG) == 18, str(got))
 
 async def test_phase23d_catalogue_pictures():
     """Suite 23D — Phase 23d (rulings Q23-5..9). The catalogue is read from the
@@ -33578,6 +33718,7 @@ async def main() -> int:
     print("\n 23F. Phase 23f — Practice sign-in details: the 8 shared accounts on the Practice "
           "login page only, the admin password only for a Live admin")
     await test_phase23f_practice_credentials()
+    await test_phase23f_demo_reset()
     print("\n DE. A replay is not a second entry — one Idempotency-Key per "
           "submission, claimed in the same transaction as the staged row")
     await test_entry_replay_idempotency()

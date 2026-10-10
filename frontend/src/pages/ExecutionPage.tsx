@@ -1102,7 +1102,7 @@ function FormPrintCard() {
             options={(sites ?? []).map((x) => ({ value: x, label: x }))} />
         )}
         <Select
-          style={{ width: 300 }} placeholder="Lining system" loading={isLoading}
+          style={{ width: 300 }} placeholder="Lining system" loading={isLoading} data-testid="form-print-system"
           value={code} showSearch optionFilterProp="label"
           onChange={(v) => { setCode(v); setEsc(undefined) }}
           options={(systems ?? []).map((x) => ({
@@ -1264,7 +1264,7 @@ function OcrUploadCard({ onDraft }: { onDraft: (id: number) => void }) {
   const problems = (job.data?.result as Row | undefined)?.problems as string[] | undefined
 
   return (
-    <Card size="small" style={{ marginBottom: 12 }}
+    <Card size="small" style={{ marginBottom: 12 }} data-testid="form-upload-card"
       title={<Space><CameraOutlined />Upload a filled form</Space>}>
       <PracticeNotice kind="ocr" />
       <Space wrap align="start">
