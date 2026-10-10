@@ -5422,6 +5422,23 @@ id.
 **TC-23E-06 — the measurement.** `.venv/bin/python tools/stt_eval.py` → WER
 ≈ 0.14 with keywords, ≈ 15 ms a phrase.
 
+## 23g. Phase 23g — the documents
+
+**TC-23G-01 — the manual's map.** `USER_MANUAL.md`: the *What's new in Phases 22
+and 23* box under the table of contents links §3.17, §3.19–§3.24 and §26, and
+§3.19 → §3.24 are in order.
+
+**TC-23G-02 — the SOP.** `SOP.md` v2.1: the store keeper's paper routine
+(§4.1), the HOD's request-line mapping and pictures (§4.3), the Admin's Drive
+chip check and §5.7 (amber / red), Practice passwords (§5.5). Each screen it
+names exists under that name.
+
+**TC-23G-03 — the finance pitch.** `FINANCE_PITCH.md` §3A: every number is
+labelled **[measured]** or **[operator]**; none is projected (Q23-16).
+
+**TC-23G-04 — the gates still agree.** `.venv/bin/python tools/gen_eval_grid.py
+--check` is current after the manual edits.
+
 ## 23f. Phase 23f — Practice sign-in details and twelve more demos (rulings Q23-13/14)
 
 **TC-23F-00 — the Practice data (once per phase).**
