@@ -40,7 +40,7 @@ as every role, so a 422 like the Execution one fails a pull request first.
 | #137 | 23b + 23c + 23d | The page tank and the background second read. The SAP-code mapper. Earlier preparers and one-day covers. The catalogue, plant & tools and pictures. Two Live migrations |
 | #138 | 23e | Whistle dictation (pinned, local, telemetry off) and device read-aloud. Groundwork for the Practice sign-in details |
 | #139 | 23f | The Practice accounts card with one-click sign-in. The Practice admin password and **Reset Practice passwords** in the Live Admin Console. Twelve demos. Overlay **v12**. Two tutorials |
-| (this one) | 23g | `USER_MANUAL.md` (a "what's new in 22–23" box; §3.21 moved into order), `SOP.md` v2.1, `FINANCE_PITCH.md` §3A, `docs/ARCHITECTURE.md` §7m, both handovers, this summary |
+| #140 | 23g | `USER_MANUAL.md` (a "what's new in 22–23" box; §3.21 moved into order), `SOP.md` v2.1, `FINANCE_PITCH.md` §3A, `docs/ARCHITECTURE.md` §7m, both handovers, this summary |
 
 ### 2.2 Where I did not follow the plan exactly
 

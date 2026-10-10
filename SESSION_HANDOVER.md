@@ -11,7 +11,7 @@
 
 ## 0. State in ten lines
 
-1. **Phase 23 is on `main`**, PRs #136–#139 plus the 23g docs PR. What was
+1. **Phase 23 is on `main`**, PRs #136–#140. What was
    done, what is left and what the operator does are in
    **[`PHASE23_SUMMARY.md`](PHASE23_SUMMARY.md)**.
    - 23a: downloads work for every role (the Execution 422 was an admin print

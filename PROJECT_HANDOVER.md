@@ -1252,7 +1252,7 @@ than the list cap. All fixed, and `tests/downloads` (pytest, in `dual-ci`) now
 calls every file-returning route as every role.
 
 **Phase 23 shipped (2026-10-09/10):** #136 23a · #137 23b+23c+23d (one PR) ·
-#138 23e · #139 23f · 23g (docs). Live migrated `d7fa4c8e2b19` →
+#138 23e · #139 23f · #140 23g (docs). Live migrated `d7fa4c8e2b19` →
 `e8ab5d9f3c21` → **`f9bc6e1a4d32`** (backup
 `.backups/gihub_2026-10-09_225500_before_phase23cd_migrate.sql.gz`); both
 Practice DBs at the same head with overlay **v12**. Deviations, each recorded
@@ -1313,7 +1313,7 @@ in `PHASE22_SUMMARY.md`.** Rulings:
 
 ## PRESENT — current state and baselines
 
-> **Updated 2026-10-10 — Phase 23 complete (PRs #136–#139 + 23g).** Baselines:
+> **Updated 2026-10-10 — Phase 23 complete (PRs #136–#140).** Baselines:
 > **service tests 3,036/0** · **downloads 250** · **E2E 226** (201 in the full pack + the 25 serial-chained specs re-run 27/27) ·
 > AI Tier 1 147/147 + Router L2 · grid 72 · parity:sme 1,334 · UI math 33 + OCR
 > page rules 15 · nav 55 routes / 54 tours · legacy 599 · alembic head
